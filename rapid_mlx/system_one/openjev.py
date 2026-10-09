@@ -27,7 +27,7 @@ import copy
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .schema import Question
 
@@ -79,15 +79,15 @@ def render_question(question: Question) -> tuple[str, list[tuple[str, str]]]:
         else str(question.instructions)
     )
     if question.type == "choice":
-        assert isinstance(question.criteria, dict)
+        # Question's own validator guarantees the criteria shape per type.
+        choices = cast(dict[str, Any], question.criteria)
         return instructions, [
-            (str(key), _description(value)) for key, value in question.criteria.items()
+            (str(key), _description(value)) for key, value in choices.items()
         ]
     if question.type == "score":
-        assert isinstance(question.criteria, list)
+        levels = cast(list[Any], question.criteria)
         return instructions + SCORE_SUFFIX, [
-            (str(index), _description(value))
-            for index, value in enumerate(question.criteria)
+            (str(index), _description(value)) for index, value in enumerate(levels)
         ]
     criteria = question.criteria if isinstance(question.criteria, dict) else {}
     return instructions, [
