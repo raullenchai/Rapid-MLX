@@ -88,11 +88,16 @@ def test_startup_load_skips_active_shutdown_save(tmp_path, monkeypatch):
         target=_save_worker,
         args=(cache_dir, "first", save_entered, release_save, outcome),
     )
+    writes = []
 
     class Engine:
         def load_cache_from_disk(self, path, protected_import=False):
             shutil.rmtree(path + ".new", ignore_errors=True)
             return 0
+
+        def save_cache_to_disk(self, path, should_abort=None):
+            writes.append(path)
+            return False
 
     monkeypatch.setattr(
         runtime_cache, "get_config", lambda: SimpleNamespace(engine=Engine())
@@ -112,6 +117,8 @@ def test_startup_load_skips_active_shutdown_save(tmp_path, monkeypatch):
 
     assert saver.exitcode == 0
     assert outcome.get(timeout=2) is True
+    runtime_cache.save_prefix_cache_to_disk(budget_sec=0)
+    assert writes == []
 
 
 def test_busy_shutdown_save_skips_without_touching_cache(tmp_path, monkeypatch):

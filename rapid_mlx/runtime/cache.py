@@ -44,6 +44,7 @@ _COMMIT_HEADROOM_SEC = 0.4
 # the v0.12.19 dogfood: a cache written for an older checkpoint / KV dtype was
 # structurally loadable but produced token-id-0-style garbage after restart.
 _PREFIX_CACHE_NAMESPACE_VERSION = 2
+_AUTO_LOAD_SKIPPED_ATTR = "_rapid_mlx_auto_cache_load_skipped"
 
 
 @contextmanager
@@ -120,6 +121,7 @@ def load_prefix_cache_from_disk() -> None:
         # only the EXPLICIT ``POST /v1/cache/import`` (#476) pins its entries.
         with _exclusive_cache_lock(d, operation="load") as acquired:
             if not acquired:
+                setattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, True)
                 return
             loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
             if loaded > 0:
@@ -127,6 +129,7 @@ def load_prefix_cache_from_disk() -> None:
             else:
                 logger.debug("[lifespan] No prefix cache entries found on disk")
             _load_radix_index_after_cache(cfg.engine, d)
+            setattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, False)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
 
@@ -236,6 +239,12 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
     """
     cfg = get_config()
     if cfg.engine is None:
+        return
+    if getattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, False):
+        logger.warning(
+            "[cache_persist] startup restore skipped under contention; "
+            "preserving the existing disk snapshot instead of saving an incomplete one"
+        )
         return
     if budget_sec is None:
         budget_sec = _shutdown_budget_sec()
