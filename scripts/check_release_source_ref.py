@@ -14,6 +14,7 @@ FROZEN_REF = f"refs/heads/{FROZEN_BRANCH}"
 FROZEN_PRODUCT_SHA = "837d6d6234936f6886caf1edff9f5d01eaee1330"
 FROZEN_ALLOWED_PATHS = {
     ".github/workflows/auto-release.yml",
+    ".github/workflows/ci.yml",
     ".github/workflows/release-preflight.yml",
     "scripts/check_main_head.py",
     "scripts/check_release_environment.py",

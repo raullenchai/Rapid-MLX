@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
+import runpy
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from scripts import check_release_source_ref as mod
+
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = importlib.util.spec_from_file_location(
-    "check_release_source_ref", ROOT / "scripts/check_release_source_ref.py"
-)
-mod = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader
-sys.modules[SPEC.name] = mod
-SPEC.loader.exec_module(mod)
 A = "a" * 40
 B = "b" * 40
 
@@ -55,6 +49,111 @@ def test_stale_head_fails_before_git():
             accepted_sha="b" * 40,
             release_sha=A,
             version=mod.FROZEN_VERSION,
+        )
+
+
+def test_malformed_sha_and_cli_result(capsys):
+    assert (
+        mod.main(
+            [
+                "--source-ref",
+                "refs/heads/main",
+                "--live-sha",
+                A,
+                "--accepted-sha",
+                A,
+                "--release-sha",
+                A,
+                "--version",
+                "1.2.3",
+            ]
+        )
+        == 0
+    )
+    assert "accepted == release" in capsys.readouterr().out
+    assert (
+        mod.main(
+            [
+                "--source-ref",
+                "refs/heads/main",
+                "--live-sha",
+                "SHORT",
+                "--accepted-sha",
+                A,
+                "--release-sha",
+                A,
+                "--version",
+                "1.2.3",
+            ]
+        )
+        == 1
+    )
+    assert "lowercase full SHA" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "stage,match",
+    [
+        ("ancestor", "not an ancestor"),
+        ("merge", "linear"),
+        ("aggregate", "non-policy"),
+        ("commit", "touched disallowed"),
+    ],
+)
+def test_frozen_history_fail_closed(monkeypatch, stage, match):
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "R", (), {"returncode": int(stage == "ancestor")}
+        )(),
+    )
+
+    def output(command, **kwargs):
+        joined = " ".join(command)
+        if "--min-parents=2" in joined:
+            return A + "\n" if stage == "merge" else ""
+        if "diff --name-only" in joined:
+            return (
+                "rapid_mlx/server.py\n" if stage == "aggregate" else "pyproject.toml\n"
+            )
+        if "rev-list" in joined:
+            return A + "\n"
+        if "diff-tree" in joined:
+            return "rapid_mlx/server.py\n" if stage == "commit" else "pyproject.toml\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(mod.subprocess, "check_output", output)
+    with pytest.raises(mod.ReleaseSourceError, match=match):
+        mod.check_source(
+            source_ref=mod.FROZEN_REF,
+            live_sha=A,
+            accepted_sha=A,
+            release_sha=A,
+            version=mod.FROZEN_VERSION,
+        )
+
+
+def test_module_entrypoint_rejects_bad_sha(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            str(ROOT / "scripts/check_release_source_ref.py"),
+            "--source-ref",
+            "refs/heads/main",
+            "--live-sha",
+            "bad",
+            "--accepted-sha",
+            A,
+            "--release-sha",
+            A,
+            "--version",
+            "1.2.3",
+        ],
+    )
+    with pytest.raises(SystemExit, match="1"):
+        runpy.run_path(
+            str(ROOT / "scripts/check_release_source_ref.py"), run_name="__main__"
         )
 
 
@@ -109,6 +208,7 @@ def test_frozen_current_policy_tree_passes():
 def test_workflows_pin_only_exact_frozen_route():
     auto = (ROOT / ".github/workflows/auto-release.yml").read_text()
     pre = (ROOT / ".github/workflows/release-preflight.yml").read_text()
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "refs/heads/release/0.16.0" in auto
     assert 'FROZEN_RELEASE_VERSION" != "0.16.0"' in auto
     assert auto.count("check_release_source_ref.py") >= 3
@@ -119,3 +219,5 @@ def test_workflows_pin_only_exact_frozen_route():
     assert '--bump-base-sha "$BASE_SHA"' in pre
     assert "check_release_source_ref.py" in pre
     assert 'TARGET_BRANCH" = "release/0.16.0"' in pre
+    assert "--cov=scripts.check_release_source_ref" in ci
+    assert "--cov=scripts.check_release_environment" in ci

@@ -4,25 +4,32 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_SCRIPT = _REPO_ROOT / "scripts" / "check_release_environment.py"
+from scripts import check_release_environment
 
 
 @pytest.fixture(scope="module")
 def checker():
-    spec = importlib.util.spec_from_file_location("check_release_environment", _SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return check_release_environment
+
+
+def test_parser_accepts_explicit_branch_allowlist(checker):
+    args = checker._parser().parse_args(
+        [
+            "--environment-json",
+            "env.json",
+            "--policy-json",
+            "policies.json",
+            "--expected-branch",
+            "main",
+            "--expected-branch",
+            "release/0.16.0",
+        ]
+    )
+    assert args.expected_branches == ["main", "release/0.16.0"]
 
 
 def _env(
