@@ -1863,7 +1863,7 @@ def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
     )
 
 
-def test_chat_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
+def test_chat_command_forwards_cache_policies_and_log_target(monkeypatch, capsys):
     spawn_kwargs: dict = {}
 
     class _NoopProc:
@@ -1899,10 +1899,12 @@ def test_chat_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
         ns.base_url = None
         ns.port = None
         ns.disable_disk_caches = True
+        ns.disable_model_downloads = True
         ns.log_file = "/dev/null"
         cli.chat_command(ns)
 
     assert spawn_kwargs["disable_disk_caches"] is True
+    assert spawn_kwargs["disable_model_downloads"] is True
     assert spawn_kwargs["log_target"] == "/dev/null"
     assert "log: discarded (/dev/null)" in capsys.readouterr().out
 

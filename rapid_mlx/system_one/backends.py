@@ -153,7 +153,8 @@ class ClefBackend:
                 )
 
         import torch
-        from huggingface_hub import snapshot_download
+
+        from rapid_mlx.model_downloads import snapshot_download
 
         if device == "gpu" and not torch.backends.mps.is_available():
             raise RuntimeError(

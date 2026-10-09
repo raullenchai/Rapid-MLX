@@ -623,7 +623,7 @@ def test_spawn_serve_leaves_level_to_environment(monkeypatch):
     assert "--log-level" not in mock_popen.call_args.args[0]
 
 
-def test_share_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
+def test_share_command_forwards_cache_policies_and_log_target(monkeypatch, capsys):
     monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
     serve_proc = MagicMock()
     serve_proc.poll.return_value = None
@@ -648,10 +648,15 @@ def test_share_command_forwards_disk_caches_and_log_target(monkeypatch, capsys):
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
         share_cli.share_command(
-            _make_args(disable_disk_caches=True, log_file="/dev/null")
+            _make_args(
+                disable_disk_caches=True,
+                disable_model_downloads=True,
+                log_file="/dev/null",
+            )
         )
 
     assert "--disable-disk-caches" in spawn_kwargs["extra_args"]
+    assert "--disable-model-downloads" in spawn_kwargs["extra_args"]
     assert spawn_kwargs["log_target"] == "/dev/null"
 
 

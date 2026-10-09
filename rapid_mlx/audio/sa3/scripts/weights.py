@@ -169,7 +169,7 @@ def ensure_local(local_rel_path: str, verbose: bool = True) -> Path:
         print(f"  ↓ downloading {hf_filename}  (from {REPO_ID})")
 
     try:
-        from huggingface_hub import hf_hub_download
+        from rapid_mlx.model_downloads import hf_hub_download
     except ImportError as e:
         raise RuntimeError(
             "huggingface_hub is required to auto-download weights.\n"

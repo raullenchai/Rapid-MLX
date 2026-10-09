@@ -47,6 +47,8 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
+from ..model_downloads import ModelDownloadsDisabledError
+
 logger = logging.getLogger("rapid_mlx.exception_handlers")
 
 
@@ -1150,6 +1152,29 @@ def install_exception_handlers(app: FastAPI) -> None:
             sanitized,
         )
         response = _validation_error_response(exc, request)
+        if _is_anthropic_path(request):
+            response = _wrap_for_anthropic(response)
+        return response
+
+    @app.exception_handler(ModelDownloadsDisabledError)
+    async def _model_downloads_disabled_handler(
+        request: Request,
+        exc: ModelDownloadsDisabledError,
+    ):
+        response = JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "message": (
+                        f"The model `{exc.model}` is not available on this "
+                        "server, and model downloads are disabled."
+                    ),
+                    "type": "not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
         if _is_anthropic_path(request):
             response = _wrap_for_anthropic(response)
         return response

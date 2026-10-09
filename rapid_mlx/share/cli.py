@@ -537,6 +537,8 @@ def share_command(args: argparse.Namespace) -> None:
     extra_serve_args: list[str] = []
     if getattr(args, "disable_disk_caches", False):
         extra_serve_args.append("--disable-disk-caches")
+    if getattr(args, "disable_model_downloads", False):
+        extra_serve_args.append("--disable-model-downloads")
     # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
     # turns it on and ``--no-thinking`` (or the default) turns it off. We
     # forward ``--no-thinking`` to serve only when explicitly disabled —
@@ -989,9 +991,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "you wire it up by hand)."
         ),
     )
-    from ..cli_parser import _add_disable_disk_caches_arg, _add_log_file_arg
+    from ..cli_parser import (
+        _add_disable_disk_caches_arg,
+        _add_disable_model_downloads_arg,
+        _add_log_file_arg,
+    )
 
     _add_disable_disk_caches_arg(p)
+    _add_disable_model_downloads_arg(p)
     _add_log_file_arg(p)
 
     # ── QuickSilver compute-pool mode (provider spec §4) ─────────────
