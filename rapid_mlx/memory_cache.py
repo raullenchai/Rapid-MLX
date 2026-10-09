@@ -2220,6 +2220,30 @@ class MemoryAwarePrefixCache:
         with self._lock:
             return self._fetch_locked(tokens, tokens_key)
 
+    def shared_prefix_length(self, tokens: list[int]) -> int:
+        """Most leading tokens ``tokens`` shares with any stored entry.
+
+        A read-only probe: it neither counts as a lookup nor touches recency.
+        The entries sharing the longest prefix with a key sort next to it, so
+        only the two neighbours of its insertion point are compared.
+        """
+        key = tuple(tokens)
+        best = 0
+        with self._lock:
+            keys = self._sorted_keys
+            idx = bisect.bisect_left(keys, key)
+            for neighbour in keys[max(idx - 1, 0) : idx + 1]:
+                # Bisect on slice equality so the comparisons run in C.
+                low, high = 0, min(len(key), len(neighbour))
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if key[low:mid] == neighbour[low:mid]:
+                        low = mid
+                    else:
+                        high = mid - 1
+                best = max(best, low)
+        return best
+
     def _fetch_locked(
         self, tokens: list[int], tokens_key: tuple[int, ...]
     ) -> tuple[list[Any] | None, list[int]]:

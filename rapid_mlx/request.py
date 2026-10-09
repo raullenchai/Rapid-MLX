@@ -184,6 +184,9 @@ class Request:
     cached_tokens: int = 0  # Number of tokens retrieved from cache
     remaining_tokens: list[int] | None = None  # Tokens still needing processing
     prefix_boundary: int = 0  # Token count for shared prefix (messages[:-1])
+    # Absolute prompt position where the prefill stores a snapshot because the
+    # prompt shares that span with a stored entry it could not resume from.
+    shared_prefix_snapshot_at: int = 0
 
     # Routing hints used by PFlash to decide whether to compress (#287).
     has_tools: bool = False
