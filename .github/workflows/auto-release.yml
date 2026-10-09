@@ -1029,7 +1029,7 @@ jobs:
           ENV_NAME="rapid-mac-tag"
           gh api "repos/${REPO}/environments/${ENV_NAME}" \
             > "$RUNNER_TEMP/re-env.json" || {
-            echo "::error::production tag environment '${ENV_NAME}' is missing at claim time. A workflow reference would auto-create an UNPROTECTED environment, which is not the approved human gate. Recreate it with a required reviewer + main-only deployment policy before tagging." >&2
+            echo "::error::production tag environment '${ENV_NAME}' is missing at claim time. A workflow reference would auto-create an UNPROTECTED environment, which is not the approved human gate. Recreate it with a required reviewer + the exact approved deployment branch policies before tagging." >&2
             exit 1
           }
           gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
@@ -1037,9 +1037,13 @@ jobs:
             echo "::error::cannot read the deployment-branch policy for '${ENV_NAME}' at claim time; treating as NO-GO." >&2
             exit 1
           }
+          # A normal release accepts the exact approved inventory before or
+          # after cleanup of the 0.16 policy. The frozen route still requires it.
           EXPECTED_BRANCH_ARGS=(--expected-branch main)
           if [ "$SOURCE_BRANCH" = "release/0.16.0" ]; then
             EXPECTED_BRANCH_ARGS+=(--expected-branch release/0.16.0)
+          else
+            EXPECTED_BRANCH_ARGS+=(--allow-retained-0160-policy)
           fi
           python3 scripts/check_release_environment.py \
             --environment-json "$RUNNER_TEMP/re-env.json" \

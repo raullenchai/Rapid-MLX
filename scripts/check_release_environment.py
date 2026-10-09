@@ -58,6 +58,7 @@ def read_back(
     expected_reviewer: str = EXPECTED_REVIEWER,
     expected_env_name: str = EXPECTED_ENV_NAME,
     expected_branches: Sequence[str] = (EXPECTED_BRANCH,),
+    allow_retained_0160_policy: bool = False,
 ) -> list[str]:
     """Verify the environment; return evidence lines or raise EnvironmentGateError."""
 
@@ -129,6 +130,16 @@ def read_back(
     # Branch policy list must exactly match the explicitly expected branch policies.
     policies = _load(policy_json)
     expected = tuple(expected_branches)
+    # Normal releases may run before or after the documented cleanup of the
+    # already-authorized 0.16 frozen policy. Only these two exact inventories
+    # are allowed; never copy arbitrary policy names from the API response.
+    if allow_retained_0160_policy:
+        if expected != (EXPECTED_BRANCH,):
+            raise EnvironmentGateError(
+                "retained 0.16 policy compatibility requires main only"
+            )
+        if policies.get("total_count") == 2:
+            expected = (EXPECTED_BRANCH, "release/0.16.0")
     if not expected or len(set(expected)) != len(expected):
         raise EnvironmentGateError(
             f"expected branches must be nonempty and unique, got {expected!r}"
@@ -188,6 +199,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-reviewer", default=EXPECTED_REVIEWER)
     parser.add_argument("--expected-env-name", default=EXPECTED_ENV_NAME)
     parser.add_argument("--expected-branch", action="append", dest="expected_branches")
+    parser.add_argument("--allow-retained-0160-policy", action="store_true")
     return parser
 
 
@@ -200,6 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_reviewer=args.expected_reviewer,
             expected_env_name=args.expected_env_name,
             expected_branches=args.expected_branches or (EXPECTED_BRANCH,),
+            allow_retained_0160_policy=args.allow_retained_0160_policy,
         )
     except EnvironmentGateError as exc:
         print(f"release environment: {exc}", file=sys.stderr)
