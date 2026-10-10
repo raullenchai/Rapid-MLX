@@ -5,6 +5,9 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
+from rapid_mlx.agents import get_profile
 from rapid_mlx.agents.testing import AgentTestRunner
 from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
@@ -23,13 +26,16 @@ def test_auth_headers_use_bearer_without_exposing_key_in_argv(monkeypatch):
     }
 
 
-def test_harness_model_discovery_uses_same_bearer(monkeypatch):
+@pytest.mark.parametrize(
+    "base_url", ["http://127.0.0.1:8000", "http://127.0.0.1:8000/v1"]
+)
+def test_harness_model_discovery_uses_same_bearer(monkeypatch, base_url):
     monkeypatch.setenv("RAPID_MLX_API_KEY", "harness-secret")
     response = Mock()
     response.json.return_value = {"data": [{"id": "secured-model"}]}
 
     with patch("httpx.get", return_value=response) as get:
-        runner = AgentTestRunner(Mock(), base_url="http://127.0.0.1:8000/v1")
+        runner = AgentTestRunner(get_profile("codex"), base_url=base_url)
 
     assert runner.model_id == "secured-model"
     # The bearer rides alongside the Rapid-owned client label; neither
