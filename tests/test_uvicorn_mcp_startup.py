@@ -146,3 +146,19 @@ def test_runner_retains_import_string_requirement(options):
     with pytest.raises(SystemExit) as caught:
         run_uvicorn(object(), log_level="error", **options)
     assert caught.value.code == 1
+
+
+def test_custom_runner_retains_uvicorn_keyword_contract():
+    calls = []
+
+    def runner(app, *, host, port):
+        calls.append((app, host, port))
+
+    run_uvicorn(
+        "unused:app",
+        uvicorn_runner=runner,
+        on_server_accepting=lambda: None,
+        host="127.0.0.1",
+        port=12345,
+    )
+    assert calls == [("unused:app", "127.0.0.1", 12345)]

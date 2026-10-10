@@ -163,9 +163,12 @@ def run_uvicorn(
     ``uvicorn_runner`` is an explicit test seam; production uses _run_server.
     """
     try:
-        (uvicorn_runner or _run_server)(
-            app, on_server_accepting=on_server_accepting, **config_kwargs
-        )
+        if uvicorn_runner is None:
+            _run_server(app, on_server_accepting=on_server_accepting, **config_kwargs)
+        else:
+            # Custom runners retain uvicorn.run's keyword contract. The
+            # post-bind callback belongs only to our server implementation.
+            uvicorn_runner(app, **config_kwargs)
     except BaseException:
         from rapid_mlx.telemetry.server_start import failed
 
