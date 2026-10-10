@@ -5240,10 +5240,10 @@
        "type": null
       },
       {
-       "class": "rapid_mlx.cli_parser._StoreExplicitAction",
+       "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 0.0,
+       "default": null,
        "dest": "idle_unload_seconds",
        "help": "Release the configured primary model after this many idle seconds while keeping the API endpoint online. A later request reloads it. 0 disables primary idle unload (default: 0).",
        "metavar": null,

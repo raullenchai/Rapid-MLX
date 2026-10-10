@@ -104,6 +104,22 @@ def test_embedding_only_rejects_explicit_falsy_primary_options(flag, value, caps
     resolve_port.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("options", "explicit", "seconds"),
+    [
+        ([], False, 0.0),
+        (["--idle-unload-seconds=0"], True, 0.0),
+        (["--idle-unload-seconds", "60"], True, 60.0),
+    ],
+)
+def test_primary_idle_unload_parser_preserves_default_and_provenance(
+    options, explicit, seconds
+):
+    args = cli.build_parser().parse_args(["serve", "primary-model", *options])
+    assert args.idle_unload_seconds == seconds
+    assert args._idle_unload_seconds_explicit is explicit
+
+
 def test_embedding_only_rejects_video_output_before_creating_directory(
     tmp_path, capsys
 ):

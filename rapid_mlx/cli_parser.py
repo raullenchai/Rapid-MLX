@@ -26,14 +26,6 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-class _StoreExplicitAction(argparse.Action):
-    """Store a value while preserving an explicit default-valued option."""
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, values)
-        setattr(namespace, f"_{self.dest}_explicit", True)
-
-
 class _PortContextArgumentParser(argparse.ArgumentParser):
     """Argument parser that records the effective bind-port provenance."""
 
@@ -44,6 +36,15 @@ class _PortContextArgumentParser(argparse.ArgumentParser):
             parsed = super().parse_args(args)
         else:
             parsed = super().parse_args(args, namespace)
+        if hasattr(parsed, "idle_unload_seconds"):
+            # A missing value differs from an explicitly supplied zero for
+            # embedding-only validation. Normalize after stdlib parsing so
+            # callers still receive the established numeric default.
+            parsed._idle_unload_seconds_explicit = (
+                parsed.idle_unload_seconds is not None
+            )
+            if parsed.idle_unload_seconds is None:
+                parsed.idle_unload_seconds = 0.0
         return _stamp_port_explicit(parsed)
 
 
@@ -1240,9 +1241,8 @@ def _add_serve_parser(
     )
     serve_parser.add_argument(
         "--idle-unload-seconds",
-        action=_StoreExplicitAction,
         type=float,
-        default=0.0,
+        default=None,
         help=(
             "Release the configured primary model after this many idle "
             "seconds while keeping the API endpoint online. A later request "
