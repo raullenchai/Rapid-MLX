@@ -189,6 +189,8 @@ class MCPClient:
                         f"({len(self._tools)} tools available)"
                     )
                     ready.set_result(True)
+                    # Created before this owner starts; cleared only after it exits.
+                    assert self._stop_requested is not None
                     await self._stop_requested.wait()
                 except Exception as exc:
                     self._state = MCPServerState.ERROR
