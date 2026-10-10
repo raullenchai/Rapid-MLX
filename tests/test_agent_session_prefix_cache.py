@@ -347,6 +347,52 @@ def _register(sched: Scheduler, uid: int, prompt_len: int) -> Request:
     return req
 
 
+@pytest.mark.parametrize("tail", [1, 16, 64])
+def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    first = list(range(128))
+    second = list(range(500, 628))
+    assert cache.store(first, _hybrid_cache(4 * MB), message_boundary=True)
+    assert cache.store(second, _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 71, 128 + tail)
+    req.prompt_token_ids = first + list(range(1000, 1000 + tail))
+
+    sched._fetch_memory_aware_prefix(req)
+
+    assert req.cached_tokens == 128
+    assert req._cache_snapshot_boundary == 128
+    assert req._cache_snapshot_stored
+    assert req._boundary_snapshot_taken
+    sched._prompt_cache_save_cb(71, _hybrid_cache(4 * MB))
+    assert set(cache._entries) == {tuple(first), tuple(second)}
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    assert set(cache._entries) == {tuple(first), tuple(second)}
+
+
+@pytest.mark.parametrize("case", ["long_tail", "unmarked", "dense", "new_boundary"])
+def test_restored_boundary_retention_is_narrow(monkeypatch, case):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    boundary = list(range(128))
+    layers = [_KVLayer(4 * MB)] if case == "dense" else _hybrid_cache(4 * MB)
+    assert cache.store(boundary, layers, message_boundary=case != "unmarked")
+    tail = 65 if case == "long_tail" else 16
+    req = _register(sched, 72, 128 + tail)
+    req.prompt_token_ids = boundary + list(range(1000, 1000 + tail))
+    if case == "new_boundary":
+        req.prefix_boundary = 136
+
+    sched._fetch_memory_aware_prefix(req)
+
+    assert req.cached_tokens == 128
+    assert not getattr(req, "_cache_snapshot_stored", False)
+
+
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
     sched = _scheduler(monkeypatch)
     req = _register(sched, 7, 40)
