@@ -433,7 +433,7 @@ python scripts/release_control.py prepare \
   --notes /path/to/curated-release-notes.md \
   --highlights /path/to/desktop-highlights.md \
   --worktree /private/tmp/harbor-desk-release-X.Y.Z
-python scripts/release_control.py resume --version X.Y.Z
+python scripts/release_control.py run --version X.Y.Z
 python scripts/release_control.py status --version X.Y.Z
 ```
 
@@ -455,9 +455,28 @@ are not a substitute for useful release notes.
 4. After all required preflight jobs succeed, replace the `Release-Preflight:`
    evidence line while preserving the rest of the PR body.
 
-Call `resume` again after an in-progress stage finishes; use `status` for run,
-attempt, failure-job links and approval-required state. No polling daemon or
-scheduled agent is started. Plans and mutation intents are in the common Git
+`run` performs those steps automatically, waiting for ordinary queued/running
+jobs between transitions. It requires no agent or repeated `resume` commands.
+Run it in a persistent terminal; it is a foreground process, not an installed
+service. By default it polls every 30 seconds with a six-hour wait budget:
+
+```bash
+python scripts/release_control.py run --version X.Y.Z \
+  --poll-seconds 30 --timeout-seconds 21600
+```
+
+It emits one JSON line per state transition. Exit code 0 means preparation
+completed; 2 means a failed/invalid run or platform approval needs operator
+action; 3 means the wait budget expired. Errors (including source drift or a
+concurrent active mutation) exit 1; Ctrl-C exits 130. Restart the same `run`
+command after interruption to reconcile saved state, rather than starting a new
+transaction. A missing dispatch response is only observed while waiting, never
+resent. The state lock is released between polls, so `status` and another
+operator can inspect/reconcile the transaction without duplicate requests.
+
+Use `resume` for a single advancement, or `status` for run, attempt, failure-job
+links and approval-required state. No polling daemon or scheduled agent is
+started. Plans and mutation intents are in the common Git
 directory, `release-preparation/X.Y.Z.json`, with a per-version file lock.
 All worktrees of this checkout share that state. Preserve it across an operator
 handoff; another clone does not have its local dispatch receipts.
