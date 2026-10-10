@@ -54,6 +54,22 @@ def snapshot_identity(path: Path) -> dict:
     files = sorted(path.glob("*.safetensors"))
     if not files or not all(p.is_file() for p in files):
         raise ValueError("snapshot has no complete local weights")
+    index = path / "model.safetensors.index.json"
+    if index.is_file():
+        manifest = json.loads(index.read_text()).get("weight_map")
+        if not isinstance(manifest, dict) or not manifest:
+            raise ValueError("checkpoint index has no weight manifest")
+        shards = set(manifest.values())
+        if any(
+            not isinstance(name, str)
+            or Path(name).name != name
+            or not name.endswith(".safetensors")
+            or not (path / name).is_file()
+            for name in shards
+        ):
+            raise ValueError("checkpoint index references missing or invalid shards")
+    elif len(files) != 1:
+        raise ValueError("sharded checkpoint requires a complete weight index")
     return {
         "repository": path.parent.parent.name.removeprefix("models--").replace(
             "--", "/"
@@ -293,8 +309,10 @@ def qualify(model_path: Path, histories: list[int], steps: int, out: Path) -> di
                             tokens.append(token)
                         if row_count - start != steps * enrolled:
                             raise RuntimeError("missing decode comparisons")
-                    except (ValueError, RuntimeError) as exc:
-                        error = str(exc)
+                    except Exception as exc:
+                        # Operational failures become failed receipts. Process
+                        # controls (KeyboardInterrupt/SystemExit) still escape.
+                        error = f"{type(exc).__name__}: {exc}"
                     trajectory = {
                         "history": history,
                         "order": list(order),
@@ -367,9 +385,18 @@ def main() -> int:
         for index, model in enumerate(args.model):
             out = args.output / str(index)
             out.mkdir()
-            results.append(
-                qualify(model.expanduser().absolute(), args.histories, args.steps, out)
-            )
+            try:
+                result = qualify(
+                    model.expanduser().absolute(), args.histories, args.steps, out
+                )
+            except Exception as exc:
+                result = {
+                    "model": str(model),
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "trajectories": [],
+                }
+            results.append(result)
     report = {
         "inventory": inventory,
         "histories": args.histories,

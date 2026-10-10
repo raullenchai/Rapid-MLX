@@ -129,19 +129,25 @@ def test_production_fallback_cannot_false_green(tiny_real_model, monkeypatch):
     assert all(t["steps_completed"] == 0 for t in report["trajectories"])
 
 
-def test_prefill_failure_preserves_both_order_receipts(tiny_real_model, monkeypatch):
+@pytest.mark.parametrize("failure", [RuntimeError, FileNotFoundError, TypeError])
+def test_prefill_failure_preserves_both_order_receipts(
+    tiny_real_model, monkeypatch, failure
+):
     from scripts.qualify_qwen35_fused_gdn import qualify
 
     model, snapshot, out = tiny_real_model
 
     def fail(*args, **kwargs):
-        raise RuntimeError("injected prefill failure")
+        raise failure("injected prefill failure")
 
     monkeypatch.setattr(type(model), "__call__", fail)
     report = qualify(snapshot, [8], 2, out)
     assert report["status"] == "mismatch"
     assert len(report["trajectories"]) == 2
-    assert all(t["error"] == "injected prefill failure" for t in report["trajectories"])
+    assert all(
+        t["error"] == f"{failure.__name__}: injected prefill failure"
+        for t in report["trajectories"]
+    )
     assert all(t["steps_completed"] == 0 for t in report["trajectories"])
 
 
@@ -229,3 +235,60 @@ def test_invalid_state_retains_failed_row_and_witness(
     assert (out / "mismatch-0.safetensors").is_file()
     if defect == "nan":
         assert np.load(out / "mismatch-0-state-indices.npy").tolist() == [0]
+
+
+def test_sharded_snapshot_requires_all_indexed_files(tmp_path):
+    import json
+
+    path = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    (path / "model-1.safetensors").write_bytes(b"cached")
+    index = path / "model.safetensors.index.json"
+    index.write_text(
+        json.dumps(
+            {"weight_map": {"a": "model-1.safetensors", "b": "model-2.safetensors"}}
+        )
+    )
+    with pytest.raises(ValueError, match="missing or invalid shards"):
+        snapshot_identity(path)
+    (path / "model-2.safetensors").write_bytes(b"cached")
+    assert len(snapshot_identity(path)["weights"]) == 2
+    index.unlink()
+    with pytest.raises(ValueError, match="requires a complete weight index"):
+        snapshot_identity(path)
+
+
+def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
+    tmp_path, monkeypatch
+):
+    import json
+    import sys
+
+    from scripts import qualify_qwen35_fused_gdn as qualification
+
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qualify", "--model", "missing", "--model", "next", "--output", str(output)],
+    )
+    monkeypatch.setattr(qualification, "source_inventory", lambda: {"head": "test"})
+    seen = []
+
+    def fake(model, histories, steps, out):
+        seen.append(model.name)
+        if model.name == "missing":
+            raise FileNotFoundError("missing checkpoint shard")
+        return {"status": "not_admitted", "trajectories": []}
+
+    monkeypatch.setattr(qualification, "qualify", fake)
+    assert qualification.main() == 1
+    assert seen == ["missing", "next"]
+    report = json.loads((output / "report.json").read_text())
+    assert report["exact"] is False
+    assert report["results"][0]["status"] == "error"
+    assert (
+        report["results"][0]["error"] == "FileNotFoundError: missing checkpoint shard"
+    )
+    assert report["results"][1]["status"] == "not_admitted"
