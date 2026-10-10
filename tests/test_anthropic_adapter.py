@@ -122,7 +122,9 @@ class TestConvertTool:
     """Tests for _convert_tool."""
 
     def test_minimal_tool(self):
-        tool = AnthropicToolDef(name="search")
+        tool = AnthropicToolDef(
+            name="search", input_schema={"type": "object", "properties": {}}
+        )
         result = _convert_tool(tool)
         assert result.type == "function"
         assert result.function["name"] == "search"
