@@ -31,7 +31,9 @@ CASES = {"late_edit": (60, 4096), "mid_edit": (35, 2048), "head_edit": (0, 0)}
 ARMS = {f"prefill{p}-checkpoint{c}" for p in (0, 1) for c in (0, 4)}
 
 
-def stream_receipt(lines: Iterable[str], started: float) -> dict:
+def stream_receipt(
+    lines: Iterable[str], started: float, *, require_full_budget: bool = True
+) -> dict:
     """Reject truncated/error streams even when they emitted some valid text."""
     first = None
     content, reasoning = [], []
@@ -76,16 +78,23 @@ def stream_receipt(lines: Iterable[str], started: float) -> dict:
             ).encode()
         ).hexdigest(),
     }
-    validate_receipt(receipt)
+    validate_receipt(receipt, require_full_budget=require_full_budget)
     return receipt
 
 
-def validate_receipt(receipt: dict) -> None:
+def validate_receipt(receipt: dict, *, require_full_budget: bool = True) -> None:
     usage = receipt["usage"]
     for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
         if type(usage.get(key)) is not int or usage[key] <= 0:
             raise ValueError(f"invalid usage {key}")
-    if usage["completion_tokens"] != 32 or receipt["finish_reason"] != "length":
+    if not 1 <= usage["completion_tokens"] <= 32 or receipt["finish_reason"] not in (
+        "length",
+        "stop",
+    ):
+        raise ValueError("invalid completion budget or finish reason")
+    if require_full_budget and (
+        usage["completion_tokens"] != 32 or receipt["finish_reason"] != "length"
+    ):
         raise ValueError(
             "benchmark requires a complete 32-token length-capped response"
         )
@@ -285,7 +294,7 @@ def main():
             r = client.post(base + "/v1/cache/clear")
             r.raise_for_status()
 
-        def ask(messages):
+        def ask(messages, *, warmup=False):
             t = time.perf_counter()
             with client.stream(
                 "POST",
@@ -301,7 +310,7 @@ def main():
                 },
             ) as r:
                 r.raise_for_status()
-                return stream_receipt(r.iter_lines(), t)
+                return stream_receipt(r.iter_lines(), t, require_full_budget=not warmup)
 
         # Counterbalance checkpoint order within each prefill mode.
         for prefill, checkpoint in [(0, 0), (0, 4), (1, 4), (1, 0)]:
@@ -373,7 +382,7 @@ def main():
                         time.sleep(0.2)
                     else:
                         raise TimeoutError("server readiness timeout")
-                    ask([{"role": "user", "content": "Say READY."}])
+                    ask([{"role": "user", "content": "Say READY."}], warmup=True)
                     for rd in range(args.rounds):
                         rng = random.Random(7000 + rd)
                         words = [

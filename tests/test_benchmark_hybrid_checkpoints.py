@@ -210,3 +210,13 @@ def test_stream_error_after_output_still_fails():
     lines.insert(1, 'data: {"error": {"message": "decode failed"}}')
     with pytest.raises(ValueError, match="server stream error"):
         stream_receipt(iter(lines), time.perf_counter() - 0.1)
+
+
+def test_short_eos_warmup_does_not_relax_measured_response_contract():
+    item = receipt()
+    item["usage"]["completion_tokens"] = 1
+    item["usage"]["total_tokens"] = 6501
+    item["finish_reason"] = "stop"
+    validate_receipt(item, require_full_budget=False)
+    with pytest.raises(ValueError, match="32-token"):
+        validate_receipt(item)
