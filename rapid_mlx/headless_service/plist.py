@@ -50,7 +50,7 @@ def _prepend_exec(argv: list[str], executable: str | list[str]) -> list[str]:
 
 def serve_argv(
     executable: str | list[str],
-    model: str | None,
+    model: str,
     *,
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -68,7 +68,7 @@ def serve_argv(
     ``serve_args`` are additional non-secret ``--flag value`` tokens (e.g.
     ``--max-num-seqs 4``) passed straight through after ``--host/--port``.
     """
-    argv = ["serve", *([model] if model else []), "--host", host, "--port", str(port)]
+    argv = ["serve", model, "--host", host, "--port", str(port)]
     if serve_args:
         argv.extend(serve_args)
     return _prepend_exec(argv, executable)
@@ -94,6 +94,15 @@ def build_plist_dict(
     log directory. All paths are absolute — launchd does not expand ``$HOME``
     or ``~`` in plist values.
     """
+    if config_path is not None:
+        program_arguments = [executable, "service", "run", "--config", str(config_path)]
+    else:
+        if model is None:
+            raise ValueError("model is required without a service config path")
+        program_arguments = serve_argv(
+            executable, model, host=host, port=port, serve_args=serve_args
+        )
+
     environment: dict[str, str] = {
         # Mandatory in the system launchd domain: without HOME, Hugging
         # Face cannot resolve the service account's model cache.
@@ -103,13 +112,7 @@ def build_plist_dict(
     return {
         "Label": label,
         "UserName": user,
-        "ProgramArguments": (
-            [executable, "service", "run", "--config", str(config_path)]
-            if config_path is not None
-            else serve_argv(
-                executable, model, host=host, port=port, serve_args=serve_args
-            )
-        ),
+        "ProgramArguments": program_arguments,
         "WorkingDirectory": str(home),
         "EnvironmentVariables": environment,
         # Unconditional KeepAlive = continuously enabled appliance. Use

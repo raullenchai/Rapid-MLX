@@ -55,6 +55,11 @@ def test_plist_is_deterministic(plist_kwargs):
     assert a == b
 
 
+def test_legacy_plist_requires_primary_model(plist_kwargs):
+    with pytest.raises(ValueError, match="model is required"):
+        build_plist_dict(**{**plist_kwargs, "model": None})
+
+
 def test_plist_matches_documented_safety_contract(plist_kwargs):
     """Same safety assertions as the static-template test
     ``test_headless_service_assets`` but for the generated plist."""
