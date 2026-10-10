@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field, replace
+from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass
@@ -162,6 +163,23 @@ class AgentProfile:
                         return vs.testing
         return self.testing
 
+    def normalize_base_url(self, base_url: str) -> str:
+        """Accept a server root for Codex while preserving explicit API paths.
+
+        Codex appends ``/responses`` to its provider URL, so a bare Rapid-MLX
+        server address needs the OpenAI API prefix. Other agents may require
+        a server root (e.g. Anthropic clients); their contracts are unchanged.
+        """
+        if self.name == "codex":
+            parsed = urlsplit(base_url)
+            if (
+                parsed.scheme in {"http", "https"}
+                and parsed.netloc
+                and parsed.path in {"", "/"}
+            ):
+                return urlunsplit(parsed._replace(path="/v1"))
+        return base_url
+
     def render_config(
         self,
         base_url: str,
@@ -182,6 +200,7 @@ class AgentProfile:
             dict for env-based configs
         """
         cfg = self.get_config_for_version(agent_version)
+        base_url = self.normalize_base_url(base_url)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
         ctx_str = str(context_length if context_length is not None else 32768)
         has_rapid_key = bool(os.environ.get("RAPID_MLX_API_KEY"))
