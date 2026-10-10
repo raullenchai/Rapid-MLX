@@ -958,7 +958,7 @@ def test_configure_dry_run_clear_and_error_paths(monkeypatch, tmp_path, capsys):
 
 # A chat service can be switched to embeddings-only; clearing its only model fails.
 def test_configure_switches_between_model_and_embedding_model(monkeypatch, tmp_path):
-    configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
+    configure, home, current_path, _ = _installed_config(monkeypatch, tmp_path)
     monkeypatch.setattr(configure, "is_root", lambda: True)
     assert (
         configure.configure_command(
@@ -970,6 +970,18 @@ def test_configure_switches_between_model_and_embedding_model(monkeypatch, tmp_p
     assert (candidate.model, candidate.embedding_model) == (None, "embed")
 
     assert configure.configure_command(_configure_args(clear_model=True)) == 1
+
+    # A persisted embedding-only service can be staged back to the legacy schema.
+    atomic_write(current_path, config_bytes(candidate))
+    assert (
+        configure.configure_command(
+            _configure_args(model="chat-model", clear_embedding_model=True)
+        )
+        == 0
+    )
+    restored = load_config(pending_config_path(home))
+    assert (restored.model, restored.embedding_model) == ("chat-model", None)
+    assert b'"embedding_model"' not in config_bytes(restored)
 
 
 def test_configure_launchctl_wrappers(monkeypatch):

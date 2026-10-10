@@ -294,7 +294,8 @@ def test_serve_command_with_model_does_not_take_embedding_only_mode():
 
 
 # Security config, embedding load, bind stamping, uvicorn and hard exit.
-def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch):
+@pytest.mark.parametrize("listen_fd", [None, 7])
+def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch, listen_fd):
     import rapid_mlx
     from rapid_mlx.config import get_config
 
@@ -333,7 +334,7 @@ def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch):
         embedding_model=EMBED_ID,
         host="0.0.0.0",
         port=8123,
-        listen_fd=None,
+        listen_fd=listen_fd,
         log_level="info",
         api_key="secret",
         timeout=300,
@@ -347,5 +348,39 @@ def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch):
     assert stub_server._api_key == "secret"
     assert stub_server._default_timeout == 300
     assert stub_server._max_request_bytes == 1024
-    assert (cfg.bind_host, cfg.bind_port) == ("localhost", 8123)
+    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
+        ("localhost", 8123, None) if listen_fd is None else (None, None, listen_fd)
+    )
     assert uvicorn_kwargs["on_server_accepting"]() is None
+
+
+@pytest.mark.parametrize(
+    ("body_limit", "expected"),
+    [("4096", 4096), ("-1", 0), ("invalid", 8 * 1024 * 1024)],
+)
+def test_engineless_security_applies_environment_limit_and_rate_limiter(
+    monkeypatch, body_limit, expected
+):
+    from rapid_mlx.middleware import auth
+
+    monkeypatch.setenv("RAPID_MLX_MAX_REQUEST_BYTES", body_limit)
+    limiter = object()
+    configure_limiter = mock.Mock(return_value=limiter)
+    monkeypatch.setattr(auth, "configure_rate_limiter", configure_limiter)
+    server = types.SimpleNamespace(
+        _resolve_api_key=lambda key: key,
+        configure_cors_from_env=mock.Mock(),
+        configure_trusted_hosts=mock.Mock(),
+    )
+    args = Namespace(
+        api_key="test-key",
+        timeout=30,
+        max_request_bytes=None,
+        cors_origins=None,
+        trusted_hosts=None,
+        rate_limit=30,
+    )
+    cli._configure_engineless_server_security(args, server)
+    assert server._max_request_bytes == expected
+    assert server._rate_limiter is limiter
+    configure_limiter.assert_called_once_with(30, enabled=True)

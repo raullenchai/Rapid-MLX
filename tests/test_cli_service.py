@@ -1406,6 +1406,10 @@ def test_render_human_lines():
     assert "pid:                   42 (as serveuser)" in text
     assert "healthy" not in text
 
+    embedding_text = st._render_human(dict(s, model=None, embedding_model="embed"))
+    assert "embedding model:       embed" in embedding_text
+    assert "  model:" not in embedding_text
+
     lifecycle_status = dict(
         s,
         model_state="standby",
