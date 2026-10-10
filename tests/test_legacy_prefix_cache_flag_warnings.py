@@ -156,7 +156,6 @@ def _stub_heavy_serve_deps(monkeypatch) -> dict:
     step in ``serve_command`` should be stubbed here rather than worked
     around so the test keeps following the production path.
     """
-    import uvicorn
 
     from rapid_mlx import _version_check
     from rapid_mlx import server as server_mod
@@ -183,7 +182,7 @@ def _stub_heavy_serve_deps(monkeypatch) -> dict:
     monkeypatch.setattr(
         reqlog_mod, "install_request_logging_middleware", lambda *a: None
     )
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", fake_run)
     # The serve path runs a real port preflight before uvicorn.run. This test
     # pins the dropped-flag warning loop, not port binding — and without this
     # stub the preflight sys.exit(1)s on any dev machine where something

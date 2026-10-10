@@ -595,7 +595,7 @@ def test_run_ddtree_server_loads_runtime_on_separate_executor(monkeypatch) -> No
     monkeypatch.setattr(server, "have_runtime", lambda: True)
     monkeypatch.setattr(server, "_ddtree_loader_executor", loader)
     monkeypatch.setattr(server, "_ddtree_executor", generator)
-    monkeypatch.setattr("uvicorn.run", uvicorn_run)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", uvicorn_run)
 
     server.run_ddtree_server(
         main_model_repo="mlx-community/Qwen3.5-9B-8bit",
