@@ -15,6 +15,7 @@ import uuid
 
 from .anthropic_models import (
     ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
+    AnthropicContentBlock,
     AnthropicMessage,
     AnthropicOutputConfig,
     AnthropicRequest,
@@ -816,6 +817,21 @@ def openai_to_anthropic(
     )
 
 
+class AnthropicContentError(ValueError):
+    """Content that cannot be preserved by the Anthropic adapter."""
+
+
+def _image_content_part(block: AnthropicContentBlock) -> dict:
+    """Translate a validated Anthropic image into the shared image URL shape."""
+    source = block.source
+    assert source is not None  # Guaranteed by AnthropicContentBlock validation.
+    if source["type"] == "url":
+        url = source["url"]
+    else:
+        url = f"data:{source['media_type']};base64,{source['data']}"
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
 def _convert_message(msg: AnthropicMessage) -> list[Message]:
     """
     Convert an Anthropic message to one or more OpenAI messages.
@@ -836,12 +852,23 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
     # Content is a list of blocks
     messages = []
     text_parts = []
+    content_parts = []
+    tool_images = []
     tool_calls_for_assistant = []
     tool_results = []
 
     for block in msg.content:
         if block.type == "text":
             text_parts.append(block.text or "")
+            content_parts.append({"type": "text", "text": block.text or ""})
+
+        elif block.type == "image":
+            content_parts.append(_image_content_part(block))
+
+        elif block.type == "document":
+            raise AnthropicContentError(
+                "document inputs are not supported on /v1/messages"
+            )
 
         elif block.type == "tool_use":
             # Assistant message with tool calls
@@ -866,6 +893,14 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
                 for item in result_content:
                     if isinstance(item, dict) and item.get("type") == "text":
                         parts.append(item.get("text", ""))
+                    elif isinstance(item, dict) and item.get("type") == "image":
+                        tool_images.append(
+                            _image_content_part(AnthropicContentBlock(**item))
+                        )
+                    elif isinstance(item, dict) and item.get("type") == "document":
+                        raise AnthropicContentError(
+                            "document inputs are not supported in tool_result content"
+                        )
                     elif isinstance(item, str):
                         parts.append(item)
                 result_content = "\n".join(parts)
@@ -897,15 +932,23 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
             messages.append(Message(role="assistant", content=""))
     elif msg.role == "user":
         # User messages: collect text parts, then add tool results separately
-        if text_parts:
-            combined_text = "\n".join(text_parts)
-            messages.append(Message(role="user", content=combined_text))
+        if content_parts:
+            content = (
+                content_parts
+                if any(part["type"] == "image_url" for part in content_parts)
+                else "\n".join(text_parts)
+            )
+            messages.append(Message(role="user", content=content))
 
         # Tool results become separate tool messages
         messages.extend(tool_results)
+        # The shared prompt extractor flattens tool content to text. Keep
+        # screenshot results in a user turn after all correlated tool replies.
+        if tool_images:
+            messages.append(Message(role="user", content=tool_images))
 
-        # If no text and no tool results, add empty user message
-        if not text_parts and not tool_results:
+        # If no content and no tool results, add empty user message
+        if not content_parts and not tool_results:
             messages.append(Message(role="user", content=""))
     else:
         # Other roles
