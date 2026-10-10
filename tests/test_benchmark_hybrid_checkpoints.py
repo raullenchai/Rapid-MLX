@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -220,3 +221,17 @@ def test_short_eos_warmup_does_not_relax_measured_response_contract():
     validate_receipt(item, require_full_budget=False)
     with pytest.raises(ValueError, match="32-token"):
         validate_receipt(item)
+
+
+def test_recorded_m5_matrix_qualifies_incremental_but_rejects_cold_contract():
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "docs/engineering/performance/fixtures/m5-checkpoints-2026-10-09/checkpoint-matrix.json"
+    )
+    result = json.loads(fixture.read_text())
+    summary = summarize(result)
+    assert summary == result["summary"]
+    assert summary["passed"] and len(summary["incremental_pairs"]) == 18
+    assert summary["cold_exact_pairs"] == 26 and summary["cold_total_pairs"] == 36
+    result["contract"] = "cold"
+    assert not summarize(result)["passed"]
