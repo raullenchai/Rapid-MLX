@@ -151,6 +151,8 @@ def test_health_probes_report_embedding_model_loaded(embeddings_only_config):
 @pytest.mark.requires_mlx
 @pytest.mark.asyncio
 async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
+    from contextlib import asynccontextmanager
+
     from rapid_mlx import server
     from rapid_mlx.config import reset_config
     from rapid_mlx.routes import audio, video
@@ -171,7 +173,7 @@ async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
     monkeypatch.setattr(audio, "shutdown_audio_lanes", mock.AsyncMock())
     assert cfg.ready is False
     try:
-        async with server.lifespan(server.app):
+        async with asynccontextmanager(server.lifespan)(server.app):
             assert cfg.ready is True
             assert cfg.model_loaded is True
         assert cfg.ready is False
