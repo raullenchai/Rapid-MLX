@@ -118,7 +118,19 @@ class MCPClientManager:
             ]
 
             if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                except asyncio.CancelledError:
+                    # Some peers may already be connected when another startup
+                    # is cancelled. Roll back the entire incomplete generation.
+                    cleanup = asyncio.ensure_future(
+                        asyncio.gather(
+                            *(client.disconnect() for client in self._clients.values()),
+                            return_exceptions=True,
+                        )
+                    )
+                    await MCPClient._wait_for_cleanup(cleanup)
+                    raise
 
                 # Log results
                 for client, result in zip(
@@ -151,7 +163,13 @@ class MCPClientManager:
             # Disconnect from all servers in parallel
             tasks = [client.disconnect() for client in self._clients.values()]
             if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                cleanup = asyncio.ensure_future(
+                    asyncio.gather(*tasks, return_exceptions=True)
+                )
+                try:
+                    await MCPClient._wait_for_cleanup(cleanup)
+                finally:
+                    self._started = False
 
             self._started = False
             logger.info("MCP client manager stopped")
