@@ -24,7 +24,8 @@ IDs and answers for all seven cases. Every cache-off request must report zero
 cached tokens; the cache-on initial request must also be cold. Each of the five
 resumed cases must restore at least 95% of its prompt. Each resumed input
 prompt must contain at least as many tokens as the initial input prompt.
-Checkpoint boundaries can leave a few initial tokens to recompute. A tiny shared system prefix or truncated history
+Checkpoint boundaries can leave a few initial tokens to recompute.
+A tiny shared system prefix or truncated history
 cannot qualify. Invalid counts, empty visible answers (including EOS-only
 outputs), incomplete cases, different source fingerprints and different
 hardware fail qualification. Checkpoint/runtime identities must match the
@@ -32,7 +33,8 @@ qualified profile and the probe fingerprint must match the actual script,
 even if both artifacts agree on an incorrect value.
 
 The probe records its own SHA-256 before loading the model and rejects dirty
-tracked serving sources. Comparison resolves the recorded commit and requires its `rapid_mlx` Git tree
+tracked serving sources. Comparison resolves the recorded commit and requires
+its `rapid_mlx` Git tree
 to match the current clean serving tree; documentation-only commits remain
 compatible with retained evidence. The serving commit, runtime versions, checkpoint
 revision, CPU and RAM accompany each artifact. The initial MVP probe can be
@@ -60,13 +62,13 @@ The retained [qualification artifact](fixtures/nemotron-prefix-mvp-2026-10-10.js
 
 | Case | Cache-on prefill | Cache-off prefill | Cache-on token TTFT |
 | --- | ---: | ---: | ---: |
-| initial | 16.695 s | 18.130 s | 16.729 s |
-| continue | 0.288 s | 17.214 s | 0.321 s |
-| continue_again | 0.403 s | 18.929 s | 0.437 s |
-| edit | 0.295 s | 20.259 s | 0.328 s |
-| regenerate | 0.290 s | 14.641 s | 0.324 s |
-| branch | 0.293 s | 17.023 s | 0.326 s |
-| different_inventory | 0.245 s | 0.281 s | 0.245 s |
+| initial | 11.134 s | 10.831 s | 11.169 s |
+| continue | 0.142 s | 13.174 s | 0.173 s |
+| continue_again | 0.162 s | 13.270 s | 0.194 s |
+| edit | 0.161 s | 11.995 s | 0.192 s |
+| regenerate | 0.162 s | 12.366 s | 0.194 s |
+| branch | 0.143 s | 13.480 s | 0.175 s |
+| different_inventory | 0.140 s | 0.199 s | 0.141 s |
 
 The qualification does not establish sampled, concurrent, tool-bearing,
 cross-restart, ordinary-backend or arbitrary-length behavior. The accelerated
