@@ -512,20 +512,67 @@ def fused_gdn_runtime_supported() -> bool:
     )
 
 
+def _qwen4_conv_silu_matches_stock() -> bool:
+    """Qualify the shipped fast SiLU over every finite bf16 bit pattern.
+
+    MLX compilation and Metal's fast exp can change with the runtime/device.
+    Keep this out of structural admission and never substitute a different
+    sigmoid form based on an isolated sweep. A mismatch only disables fusion.
+    """
+    import mlx.nn as nn
+
+    bits = mx.concatenate(
+        [
+            mx.arange(0x7F80, dtype=mx.uint16),
+            mx.arange(0x8000, 0xFF80, dtype=mx.uint16),
+        ]
+    )
+    values = bits.view(mx.bfloat16)
+    kernel = mx.fast.metal_kernel(
+        name="rapid_qwen4_conv_silu_qualification",
+        input_names=["x"],
+        output_names=["out"],
+        header=_HEADER,
+        source="""
+            uint i = thread_position_in_grid.x;
+            T xb = x[i];
+            T sig = mlx_sigmoid_fast(xb);
+            out[i] = xb * sig;
+        """,
+    )
+    (actual,) = kernel(
+        inputs=[values],
+        template=[("T", mx.bfloat16)],
+        grid=(values.size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[values.shape],
+        output_dtypes=[mx.bfloat16],
+    )
+    expected = nn.silu(values)
+    return bool(mx.array_equal(actual.view(mx.uint16), expected.view(mx.uint16)).item())
+
+
 _PROBED_THREADGROUP_Y: int | None = None
 _PROBE_COMPLETE = False
 _PROBE_LOCK = Lock()
 
 
 def probe_qwen4_fused_gdn_decode(dtype) -> int | None:
-    """Compile candidates once and publish the supported geometry atomically."""
+    """Qualify bf16 SiLU and compile candidates once on the process GPU."""
     global _PROBE_COMPLETE, _PROBED_THREADGROUP_Y
+    if dtype != mx.bfloat16 or not fused_gdn_runtime_supported():
+        return None
     if _PROBE_COMPLETE:
         return _PROBED_THREADGROUP_Y
     with _PROBE_LOCK:
         if _PROBE_COMPLETE:
             return _PROBED_THREADGROUP_Y
-        if not fused_gdn_runtime_supported():
+        try:
+            silu_matches = _qwen4_conv_silu_matches_stock()
+        except Exception as exc:  # an optional optimization must fail closed
+            logger.info("Qwen4 fused GDN SiLU qualification failed: %s", exc)
+            silu_matches = False
+        if not silu_matches:
             _PROBE_COMPLETE = True
             return None
 

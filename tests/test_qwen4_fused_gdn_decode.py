@@ -269,12 +269,14 @@ def test_runtime_capability_and_probe_fail_closed_without_metal():
     assert isinstance(fused_gdn.fused_gdn_runtime_supported(), bool)
 
     with (
+        patch.object(fused_gdn, "fused_gdn_runtime_supported", return_value=True),
         patch.object(fused_gdn, "_PROBE_COMPLETE", True),
         patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", 8),
     ):
         assert fused_gdn.probe_qwen4_fused_gdn_decode(mx.bfloat16) == 8
 
     with (
+        patch.object(fused_gdn, "_qwen4_conv_silu_matches_stock", return_value=True),
         patch.object(fused_gdn, "_PROBE_COMPLETE", False),
         patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", None),
         patch.object(fused_gdn, "_PROBE_LOCK", Lock()),
@@ -285,6 +287,7 @@ def test_runtime_capability_and_probe_fail_closed_without_metal():
 
 def test_probe_skips_threadgroup_resource_errors_and_stops_on_other_value_error():
     with (
+        patch.object(fused_gdn, "_qwen4_conv_silu_matches_stock", return_value=True),
         patch.object(fused_gdn, "_PROBE_COMPLETE", False),
         patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", None),
         patch.object(fused_gdn, "_PROBE_LOCK", Lock()),
@@ -318,6 +321,7 @@ def test_concurrent_probe_publishes_only_after_initialization():
         return (object(), object(), object())
 
     with (
+        patch.object(fused_gdn, "_qwen4_conv_silu_matches_stock", return_value=True),
         patch.object(fused_gdn, "_PROBE_COMPLETE", False),
         patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", None),
         patch.object(fused_gdn, "_PROBE_LOCK", Lock()),
@@ -339,6 +343,7 @@ def test_concurrent_probe_publishes_only_after_initialization():
 def test_probe_tries_smaller_threadgroup_after_runtime_error():
     successful_outputs = (object(), object(), object())
     with (
+        patch.object(fused_gdn, "_qwen4_conv_silu_matches_stock", return_value=True),
         patch.object(fused_gdn, "_PROBE_COMPLETE", False),
         patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", None),
         patch.object(fused_gdn, "_PROBE_LOCK", Lock()),
@@ -772,13 +777,7 @@ def test_precise_silu_matches_nn_silu_on_every_finite_bf16():
 
 
 @requires_metal
-def test_fast_silu_differs_from_nn_silu_on_at_most_the_one_known_bf16_input():
-    """Known defect (#4208): whether the form this kernel uses is
-    bit-identical to ``nn.silu`` is GPU-family dependent. The GitHub Apple
-    runners show no mismatch; M3 Ultra shows exactly one (x = -6.84375).
-    This pins that bound over every finite bf16 input — a different or an
-    additional mismatch fails. It does not claim the kernel is bit-exact on
-    every device; #4208 tracks restoring that."""
+def test_admitted_fast_silu_matches_nn_silu_on_every_finite_bf16():
     x = _finite_bf16()
     reference = nn.silu(x)
     fast = _header_helper(
@@ -788,12 +787,105 @@ def test_fast_silu_differs_from_nn_silu_on_at_most_the_one_known_bf16_input():
         mx.bfloat16,
     )
     mx.eval(reference, fast)
-    x_bits, ref_bits, fast_bits = (
-        np.array(a.view(mx.uint16)) for a in (x, reference, fast)
-    )
-    mismatches = [
-        (int(x_bits[k]), int(ref_bits[k]), int(fast_bits[k]))
-        for k in np.flatnonzero(ref_bits != fast_bits)
-    ]
-    print(f"fast-form bf16 SiLU mismatches vs nn.silu: {len(mismatches)}")
-    assert mismatches in ([], [(0xC0DB, 0xBBEE, 0xBBF0)])
+    mismatches = _bit_mismatches(fast, reference, mx.uint16)
+    print(f"fast-form bf16 SiLU mismatches vs nn.silu: {mismatches}")
+    assert fused_gdn._qwen4_conv_silu_matches_stock() == (mismatches == 0)
+    if mismatches:
+        assert fused_gdn.probe_qwen4_fused_gdn_decode(mx.bfloat16) is None
+
+
+@pytest.mark.parametrize("failure", [False, RuntimeError("qualification failed")])
+def test_silu_qualification_failure_is_cached_before_dispatch(failure):
+    with (
+        patch.object(fused_gdn, "_PROBE_COMPLETE", False),
+        patch.object(fused_gdn, "_PROBED_THREADGROUP_Y", None),
+        patch.object(fused_gdn, "_PROBE_LOCK", Lock()),
+        patch.object(fused_gdn, "fused_gdn_runtime_supported", return_value=True),
+        patch.object(
+            fused_gdn,
+            "_qwen4_conv_silu_matches_stock",
+            **(
+                {"side_effect": failure}
+                if isinstance(failure, Exception)
+                else {"return_value": failure}
+            ),
+        ) as qualify,
+        patch.object(fused_gdn, "qwen4_fused_gdn_decode") as execute,
+    ):
+        for _ in range(2):
+            assert fused_gdn.probe_qwen4_fused_gdn_decode(mx.bfloat16) is None
+        qualify.assert_called_once_with()
+        execute.assert_not_called()
+
+
+def test_unsupported_dtype_does_not_poison_bf16_probe():
+    with (
+        patch.object(fused_gdn, "_PROBE_COMPLETE", False),
+        patch.object(fused_gdn, "_qwen4_conv_silu_matches_stock") as qualify,
+    ):
+        assert fused_gdn.probe_qwen4_fused_gdn_decode(mx.float16) is None
+        assert not fused_gdn._PROBE_COMPLETE
+        qualify.assert_not_called()
+
+
+@requires_metal
+def test_real_decode_at_silu_edge_matches_stock_and_preserves_declined_cache():
+    args = tiny_args()
+    args.linear_num_key_heads = 16
+    args.linear_num_value_heads = 48
+    args.linear_key_head_dim = args.linear_value_head_dim = 128
+    mx.random.seed(4208)
+    layer = qwen4_exp.GatedDeltaNet(args)
+    layer.set_dtype(mx.bfloat16)
+    layer.eval()
+    # Unit last tap and a fixed projected value force the actual convolution
+    # activation through the reported edge, independent of recurrent history.
+    edge = 2 * fused_gdn.KEY_DIM
+    layer.conv1d.weight[edge, :, 0] = mx.array([0, 0, 0, 1], dtype=mx.bfloat16)
+    layer.in_proj_qkv.weight[edge, :] = mx.zeros((args.hidden_size,), dtype=mx.bfloat16)
+    layer.in_proj_qkv.weight[edge, 0] = -6.84375
+    hidden = mx.random.normal((1, 1, args.hidden_size)).astype(mx.bfloat16)
+    hidden[0, 0, 0] = 1
+    stock_cache = qwen4_exp.Qwen4ExpStateCache(2)
+    layer.set_fused_gdn_decode_mode("stock")
+    mx.eval(layer(hidden, cache=stock_cache), *stock_cache.cache)
+    candidate_cache = qwen4_exp.Qwen4ExpStateCache(2)
+    candidate_cache.cache = [mx.array(a) for a in stock_cache.cache]
+    qualified = fused_gdn.probe_qwen4_fused_gdn_decode(mx.bfloat16)
+    layer.set_fused_gdn_decode_mode("fused")
+    if qualified is None:
+        original = list(candidate_cache.cache)
+        projections = [
+            proj(hidden)
+            for proj in (
+                layer.in_proj_qkv,
+                layer.in_proj_z,
+                layer.in_proj_b,
+                layer.in_proj_a,
+            )
+        ]
+        assert (
+            layer._try_fused_decode(
+                *projections, None, candidate_cache, record_rollback=False
+            )
+            is None
+        )
+        assert all(a is b for a, b in zip(original, candidate_cache.cache, strict=True))
+    for _ in range(32):
+        layer.set_fused_gdn_decode_mode("stock")
+        expected = layer(hidden, cache=stock_cache)
+        layer.set_fused_gdn_decode_mode("fused")
+        actual = layer(hidden, cache=candidate_cache)
+        mx.eval(expected, actual, *stock_cache.cache, *candidate_cache.cache)
+        assert bool(
+            mx.array_equal(expected.view(mx.uint16), actual.view(mx.uint16)).item()
+        )
+        for a, b in zip(stock_cache.cache, candidate_cache.cache, strict=True):
+            view = mx.uint32 if a.dtype == mx.float32 else mx.uint16
+            assert bool(mx.array_equal(a.view(view), b.view(view)).item())
+    if qualified is None:
+        assert layer.fused_gdn_decode_calls == 0
+        assert layer.fused_gdn_decode_fallbacks == 33
+    else:
+        assert layer.fused_gdn_decode_calls == 32
+        assert layer.fused_gdn_decode_fallbacks == 0
