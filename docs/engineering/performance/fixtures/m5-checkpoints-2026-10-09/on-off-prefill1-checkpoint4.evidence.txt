@@ -1,0 +1,12 @@
+INFO:rapid_mlx.gdn_prefill:[gdn_prefill] blocked-seq GDN prefill kernel installed (prompt>=64 tokens, Dk=128)
+INFO:     Started server process [34508]
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=5585 entry_len=6515 resumed_at=4096 remaining=2444
+INFO:rapid_mlx.scheduler:[cache_fetch] request=chatcmpl-0fc HIT prompt_tokens=6540 cached=4096 remaining=2444 time=0.001s
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=3264 entry_len=6515 resumed_at=2048 remaining=4492
+INFO:rapid_mlx.scheduler:[cache_fetch] request=chatcmpl-c4e HIT prompt_tokens=6540 cached=2048 remaining=4492 time=0.000s
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=5555 entry_len=6494 resumed_at=4096 remaining=2423
+INFO:rapid_mlx.scheduler:[cache_fetch] request=chatcmpl-bab HIT prompt_tokens=6519 cached=4096 remaining=2423 time=0.001s
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=3245 entry_len=6494 resumed_at=2048 remaining=4471
+INFO:rapid_mlx.scheduler:[cache_fetch] request=chatcmpl-791 HIT prompt_tokens=6519 cached=2048 remaining=4471 time=0.000s
+INFO:     Application shutdown complete.
+INFO:     Finished server process [34508]

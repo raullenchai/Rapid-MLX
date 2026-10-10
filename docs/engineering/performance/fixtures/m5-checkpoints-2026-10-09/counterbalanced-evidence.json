@@ -1,0 +1,57 @@
+{
+  "measured_commit": "fe09916eed82a163ac0bd1be7b6a5904f280a5f0",
+  "raw_matrix_sha256": "17c7f1dd5b800050cff2828fc4ecd075e53be7a14814d65cf31417e6e457197c",
+  "start_utc": "2026-10-10T09:11:39Z",
+  "finish_utc": "2026-10-10T09:17:07Z",
+  "normalization": "Selected original startup, prefill, checkpoint-resume and following request-hit, shutdown lines; paths excluded by selection. Observation values, process and request identities unchanged.",
+  "arms": [
+    {
+      "name": "off-on-prefill0-checkpoint0",
+      "original_log_sha256": "556b5a97b97d920df9f3b5c3d1ef5b135ce6ffb2172b90310e8eb084f8035aa3",
+      "excerpt": "off-on-prefill0-checkpoint0.evidence.txt",
+      "excerpt_sha256": "0e5e2d2a49827895012e41773c80d369fe598e123d220cdb0e04a6ed8587120d"
+    },
+    {
+      "name": "off-on-prefill0-checkpoint4",
+      "original_log_sha256": "b5c87d7d500366dedaf6f7baf0b8061b087a920ef34875e68570ade4cdf5670f",
+      "excerpt": "off-on-prefill0-checkpoint4.evidence.txt",
+      "excerpt_sha256": "2e50581726d6fd313ef7b1b4f047fc781347e17aaa81e458a69e5e6058f955f6"
+    },
+    {
+      "name": "on-off-prefill1-checkpoint4",
+      "original_log_sha256": "fd54e275faaf8594485cfe34626b9bc7857a1355cb9661f7af232f057c074f6c",
+      "excerpt": "on-off-prefill1-checkpoint4.evidence.txt",
+      "excerpt_sha256": "10252c6c8eb31e24177bfc319783f5a29040fce7ebf723c8c29440b2bb7fb759"
+    },
+    {
+      "name": "on-off-prefill1-checkpoint0",
+      "original_log_sha256": "e0617dabd2513099c1a0c8668118dc1cf8a197d4c6a93bd1ca9fb4c9a20e9474",
+      "excerpt": "on-off-prefill1-checkpoint0.evidence.txt",
+      "excerpt_sha256": "e1b872379556e09a82f57e714cbccb61c3b48dd4bb50f2f70e0d4e7611208fdd"
+    },
+    {
+      "name": "off-on-prefill1-checkpoint0",
+      "original_log_sha256": "5c522f59cc0f44c2dea4a1f14af6b9f078cf7f4fc163be4ca059282ac3455b17",
+      "excerpt": "off-on-prefill1-checkpoint0.evidence.txt",
+      "excerpt_sha256": "3f3cfe336423a8dd8c3ed69d97b59459ffe96ff6b99559f72ab7927f1ba1ba05"
+    },
+    {
+      "name": "off-on-prefill1-checkpoint4",
+      "original_log_sha256": "e50d5143e261b07486e2e6f77d3d88f373f3e05c9c1fd1fd601adf1698739951",
+      "excerpt": "off-on-prefill1-checkpoint4.evidence.txt",
+      "excerpt_sha256": "ae73b995f8c77d85ce3a485ed900f8eac82f32e8053ba715c1c965a2103b1298"
+    },
+    {
+      "name": "on-off-prefill0-checkpoint4",
+      "original_log_sha256": "0e700dd43799d458b082ff27e4f1c98a6640b450493aa0a6b1d09446205193b4",
+      "excerpt": "on-off-prefill0-checkpoint4.evidence.txt",
+      "excerpt_sha256": "0eee8a47eff1570ea3c3df0062796d633d10a0c4a0a500c633ca18c2411f18b3"
+    },
+    {
+      "name": "on-off-prefill0-checkpoint0",
+      "original_log_sha256": "655ca9855cc352806161c105c6a5f1c29e930686aa20dea0324a9541d1fd6268",
+      "excerpt": "on-off-prefill0-checkpoint0.evidence.txt",
+      "excerpt_sha256": "033fdc20d589666569b225835f75e09ee3c768866ffd9b6c70feb509add06e82"
+    }
+  ]
+}

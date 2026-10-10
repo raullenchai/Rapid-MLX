@@ -10,14 +10,12 @@ from mlx_lm.tokenizer_utils import (
     BPEStreamingDetokenizer,
     NaiveStreamingDetokenizer,
 )
-from transformers import AutoTokenizer
 
-# Every test here goes through one of the three fixtures below, which
-# legitimately fetch/load ``mlx-community/Qwen3-0.6B-8bit`` into the empty
-# per-test cache. Reviewed opt-in (#2518, PR #2525): the hermetic default pins
-# the Hub offline and refuses non-loopback sockets, which would fail these
-# fixtures at setup on the Apple lane.
-pytestmark = [pytest.mark.requires_network, pytest.mark.requires_mlx]
+from tests.tokenizer_fixtures import byte_level_tokenizer
+
+# These tests exercise real BPE encoding/decoding and mlx-lm's tokenizer loader,
+# without requiring model weights, a populated host cache, or network access.
+pytestmark = pytest.mark.requires_mlx
 
 
 class TestStreamingDetokenizer:
@@ -25,8 +23,8 @@ class TestStreamingDetokenizer:
 
     @pytest.fixture
     def qwen_tokenizer(self):
-        """Load Qwen tokenizer."""
-        return AutoTokenizer.from_pretrained("mlx-community/Qwen3-0.6B-8bit")
+        """Build a byte-complete BPE tokenizer locally."""
+        return byte_level_tokenizer()
 
     def test_naive_streaming_matches_batch(self, qwen_tokenizer):
         """Verify NaiveStreamingDetokenizer output matches batch decode."""
@@ -127,13 +125,10 @@ class TestSchedulerDetokenizer:
     @pytest.fixture
     def scheduler_mock(self):
         """Create a mock scheduler with detokenizer pool."""
-        from transformers import AutoTokenizer
 
         class MockScheduler:
             def __init__(self):
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    "mlx-community/Qwen3-0.6B-8bit"
-                )
+                self.tokenizer = byte_level_tokenizer()
                 self._detokenizer_pool = {}
 
             def _get_detokenizer(self, request_id):
@@ -207,12 +202,12 @@ class TestOptimizedDetokenizer:
     """Test that optimized detokenizer is used when available."""
 
     @pytest.fixture
-    def tokenizer_wrapper(self):
-        """Load tokenizer via mlx_lm to get TokenizerWrapper with optimized detokenizer."""
-        from mlx_lm import load
+    def tokenizer_wrapper(self, tmp_path):
+        """Exercise mlx-lm's actual decoder detection without loading weights."""
+        from mlx_lm.tokenizer_utils import load
 
-        _, tokenizer = load("mlx-community/Qwen3-0.6B-8bit")
-        return tokenizer
+        byte_level_tokenizer().save_pretrained(tmp_path)
+        return load(tmp_path)
 
     def test_tokenizer_wrapper_has_optimized_detokenizer(self, tokenizer_wrapper):
         """Verify TokenizerWrapper has optimized detokenizer class."""
@@ -221,11 +216,16 @@ class TestOptimizedDetokenizer:
         # Qwen uses BPE tokenizer
         assert tokenizer_wrapper._detokenizer_class == BPEStreamingDetokenizer
 
-    def test_optimized_detokenizer_correctness(self, tokenizer_wrapper):
+    @pytest.mark.parametrize(
+        "text", ["Hello, how are you doing today?", "Test message 你好 مرحبا 🎉"]
+    )
+    def test_optimized_detokenizer_correctness(self, tokenizer_wrapper, text):
         """Verify optimized detokenizer produces correct output."""
-        text = "Hello, how are you doing today?"
         raw_tokenizer = tokenizer_wrapper._tokenizer
         tokens = raw_tokenizer.encode(text)
+        assert any(
+            len(piece) > 1 for piece in raw_tokenizer.convert_ids_to_tokens(tokens)
+        )
 
         # Use optimized detokenizer
         detok = tokenizer_wrapper.detokenizer
@@ -236,6 +236,7 @@ class TestOptimizedDetokenizer:
 
         # Compare with batch decode
         batch_result = raw_tokenizer.decode(tokens)
+        assert batch_result == text
         assert detok.text == batch_result
 
     def test_scheduler_uses_optimized_detokenizer(self, tokenizer_wrapper):

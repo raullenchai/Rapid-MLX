@@ -754,7 +754,11 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
     ]
 
 
-def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None:
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_native_mtp_server_sanitizes_glm_target_before_load(
+    monkeypatch, platform
+) -> None:
+    from rapid_mlx.models import glm5_shardwise_load
     from rapid_mlx.speculative.native_mtp import server as native_server
 
     class ImmediateExecutor:
@@ -777,6 +781,13 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None
         return "model", "processor"
 
     mlx_vlm.load = _load
+
+    def _shardwise(repo, revision):
+        events.append("shardwise")
+        return _load(repo, revision)
+
+    monkeypatch.setattr(glm5_shardwise_load, "load_glm5_shardwise", _shardwise)
+    monkeypatch.setattr(native_server.sys, "platform", platform)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     uvicorn = ModuleType("uvicorn")
     uvicorn.run = lambda *_args, **_kwargs: None
@@ -813,6 +824,7 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None
 
     assert events == [
         "sanitize",
+        *(["shardwise"] if platform == "darwin" else []),
         (
             "load",
             GLM53_FLASH_4BIT.target_repo,

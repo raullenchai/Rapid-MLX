@@ -29,6 +29,42 @@ python3.12 -m scripts.pr_validate <PR#> --body-only
 # exit 0 = MERGE-SAFE, exit 1 = DO NOT MERGE
 ```
 
+## Automatic queue handoff (maintainer opt-in)
+
+```bash
+python3.12 -m scripts.pr_validate <PR#> --queue-on-success
+```
+
+Choose this at the start of validation to avoid a second operator visit after
+validation finishes. The complete default pipeline must finish MERGE-SAFE with
+an executed Codex review. Partial runs, explicit `--base` overrides, step removal and description,
+review or stress overrides cannot authorize this handoff. Ordinary applicability
+skips remain visible in the scorecard. Existing validation behavior is unchanged
+without the option.
+
+The handoff waits up to 30 minutes for this exact head's current GitHub Actions
+source checks, selects the successful merge lane, applies its ready label and
+waits for the existing `merge-ready-head` authorization. Source-preflight patch
+coverage may be deferred; full candidate checks and patch coverage still gate
+landing. It then rechecks head, labels, authorization and checks before sending
+one supported `@mergifyio queue` command. Initial provider auto-admission is
+respected if the PR is already labeled queued. This requests admission; only the
+provider's candidate results and actual merge establish delivery.
+
+Only same-repository, non-draft PRs targeting main are supported. Release/version
+PRs, dequeued PRs, conflicting labels and PRs with any historical queue command
+require separate operator disposition. This option never resets failed queue
+state. Keep a single designated queue operator per PR across hosts.
+
+A durable exclusive receipt under the clone's common Git directory,
+`rapid-queue-receipts/<PR>-<SHA>.json`, prevents duplicate issuance by concurrent
+worktrees. A receipt is retained after timeout or transport failure. Inspect it
+and fully paginated live PR/provider history before diagnosed manual recovery;
+never delete it or rerun the helper to blindly replay an ambiguous request.
+Authentication requires repository write permission. Run from a trusted current
+main checkout with the existing authenticated `gh`; never place write tokens in
+an untrusted PR's execution environment.
+
 ## Pipeline
 
 | # | step | gate | runtime |

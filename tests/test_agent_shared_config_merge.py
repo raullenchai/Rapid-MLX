@@ -463,6 +463,17 @@ def _run_harness(profile_name, isolated_home, model_id=MODEL, *, setup_fails=Fal
     profile = get_profile(profile_name)
     assert profile is not None
     with ExitStack() as stack:
+        # Version detection invokes the host CLI, which can create state under
+        # the operator's XDG dirs before the harness installs its child env.
+        # This fixture tests config isolation, not installed-version discovery.
+        stack.enter_context(
+            patch(
+                "rapid_mlx.agents.opencode_version.installed_version", return_value=None
+            )
+        )
+        stack.enter_context(
+            patch("rapid_mlx.agents.testing.installed_version", return_value=None)
+        )
         stack.enter_context(
             patch(
                 "rapid_mlx.agents.testing.tempfile.TemporaryDirectory",

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from typing import Any
 
@@ -100,7 +101,14 @@ def run_native_mtp_server(
             )
 
             install_glm5_next_runtime_fix()
-        model, processor = load(pair.target_repo, revision=pair.target_revision)
+        target_loader = load
+        if sys.platform == "darwin" and pair.drafter_model_type == "glm5_next_mtp":
+            from rapid_mlx.models.glm5_shardwise_load import load_glm5_shardwise
+
+            target_loader = load_glm5_shardwise
+        model, processor = target_loader(
+            pair.target_repo, revision=pair.target_revision
+        )
         runtime = load_runtime(
             pair.drafter_repo,
             target_revision=pair.target_revision,

@@ -650,7 +650,11 @@ _OUTPUT_GATE_LINE = re.compile(
     r"mlx_sigmoid_(\w+)<float>\(float\(z\[hv \* DV \+ d\]\)\);\s*$",
     re.MULTILINE,
 )
-_CONV_SILU_LINE = re.compile(r"^\s*T sig = mlx_sigmoid_(\w+)\(xb\);\s*$", re.MULTILINE)
+_CONV_SILU_LINE = re.compile(
+    r"^\s*T sig = Q35 \? mlx_sigmoid_(\w+)\(xb\) : "
+    r"mlx_sigmoid_(\w+)\(xb\);\s*$",
+    re.MULTILINE,
+)
 
 
 def _production_gate_form(pattern: re.Pattern) -> str:
@@ -674,8 +678,8 @@ def test_output_gate_uses_precise_float_sigmoid():
     assert _production_gate_form(_OUTPUT_GATE_LINE) == "precise"
 
 
-def test_conv_silu_keeps_fast_sigmoid():
-    assert _production_gate_form(_CONV_SILU_LINE) == "fast"
+def test_conv_silu_uses_precise_qwen35_and_keeps_fast_qwen4():
+    assert _CONV_SILU_LINE.findall(fused_gdn._SOURCE) == [("precise", "fast")]
 
 
 def _finite_bf16() -> mx.array:
@@ -751,6 +755,20 @@ def test_precise_float_sigmoid_matches_mx_sigmoid_on_every_bf16_valued_float():
     print(
         f"fast-form f32 mismatches vs mx.sigmoid: {_bit_mismatches(fast, reference, mx.uint32)}"
     )
+
+
+@requires_metal
+def test_precise_silu_matches_nn_silu_on_every_finite_bf16():
+    x = _finite_bf16()
+    reference = nn.silu(x)
+    precise = _header_helper(
+        "silu_precise",
+        "{ T v = x[i]; T s = mlx_sigmoid_precise(v); out[i] = v * s; }",
+        x,
+        mx.bfloat16,
+    )
+    mx.eval(reference, precise)
+    assert _bit_mismatches(precise, reference, mx.uint16) == 0
 
 
 @requires_metal

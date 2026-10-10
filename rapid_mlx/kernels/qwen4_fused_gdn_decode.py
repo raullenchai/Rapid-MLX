@@ -234,7 +234,9 @@ _SOURCE = r"""
       acc += float(conv_state[(size_t)tap * CD + c]) * float(wc[tap]);
     acc += float(qkv[c]) * float(wc[K - 1]);
     T xb = static_cast<T>(acc);
-    T sig = mlx_sigmoid_fast(xb);
+    // Qwen3.5's stock SiLU uses the precise bf16 sigmoid. The fast
+    // exponential differs at x=-6.84375 and corrupts a recurrent-state row.
+    T sig = Q35 ? mlx_sigmoid_precise(xb) : mlx_sigmoid_fast(xb);
     T sl = xb * sig;
     if (part == 0u) sq[d] = float(sl);
     else if (part == 1u) sk[d] = float(sl);

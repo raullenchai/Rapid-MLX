@@ -1,0 +1,8 @@
+INFO:rapid_mlx.gdn_prefill:[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=5585 entry_len=6515 resumed_at=4096 remaining=2444
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=3264 entry_len=6515 resumed_at=2048 remaining=4492
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=5555 entry_len=6494 resumed_at=4096 remaining=2423
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=3245 entry_len=6494 resumed_at=2048 remaining=4471
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=5579 entry_len=6496 resumed_at=4096 remaining=2434
+INFO:rapid_mlx.memory_cache:[cache_fetch] LCP snapped to checkpoint: shared=3263 entry_len=6496 resumed_at=2048 remaining=4482
+INFO:     Application shutdown complete.

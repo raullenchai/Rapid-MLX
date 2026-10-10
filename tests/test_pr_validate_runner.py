@@ -81,6 +81,69 @@ def _fake_pipeline(after_fetch: list[tuple[str, str]]) -> list[Step]:
     return [_FakeFetch(), *(_FakeStep(name, status) for name, status in after_fetch)]
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"body_only": True},
+        {"skip_steps": ("lint",)},
+        {"steps": []},
+        {"base": "head"},
+    ],
+)
+def test_queue_handoff_rejects_partial_runs_before_validation(repo_root_cwd, options):
+    assert run_pipeline(999, queue_on_success=True, **options) == 1
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "PR_VALIDATE_SKIP_DESC",
+        "PR_VALIDATE_NO_STRESS",
+        "PR_VALIDATE_NO_CODEX",
+        "PR_VALIDATE_NO_DEEPSEEK",
+    ],
+)
+def test_queue_handoff_rejects_gate_overrides(repo_root_cwd, monkeypatch, variable):
+    monkeypatch.setenv(variable, "1")
+    assert run_pipeline(999, queue_on_success=True) == 1
+
+
+@pytest.mark.parametrize("status", ["pass", "fail"])
+def test_queue_handoff_only_called_after_merge_safe(repo_root_cwd, monkeypatch, status):
+    from scripts.pr_validate import queue_ready, runner
+
+    monkeypatch.setattr(runner, "STEPS", _fake_pipeline([("review", status)]))
+    calls = []
+    monkeypatch.setattr(
+        queue_ready, "queue_validated_head", lambda *args: calls.append(args)
+    )
+    assert run_pipeline(999, queue_on_success=True) == (0 if status == "pass" else 1)
+    assert len(calls) == (1 if status == "pass" else 0)
+
+
+def test_queue_error_does_not_claim_admission(repo_root_cwd, monkeypatch):
+    from scripts.pr_validate import queue_ready, runner
+
+    monkeypatch.setattr(runner, "STEPS", _fake_pipeline([("review", "pass")]))
+
+    def fail(*args):
+        raise RuntimeError("transport ambiguous")
+
+    monkeypatch.setattr(queue_ready, "queue_validated_head", fail)
+    assert run_pipeline(999, queue_on_success=True) == 1
+
+
+def test_cli_opt_in_reaches_runner(monkeypatch):
+    from scripts.pr_validate import pr_validate
+
+    calls = []
+    monkeypatch.setattr(
+        pr_validate, "run_pipeline", lambda *args, **kwargs: calls.append(kwargs) or 0
+    )
+    assert pr_validate.main(["42", "--queue-on-success"]) == 0
+    assert calls[0]["queue_on_success"] is True
+
+
 class TestFailFast:
     def test_default_runs_all_steps_after_a_fail(self, repo_root_cwd, capsys):
         """Without fail_fast, every step after fetch runs even when one
