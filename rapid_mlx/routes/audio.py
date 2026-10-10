@@ -254,6 +254,7 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     from ..runtime.resident_models import (
         ResidentModelCapacityError,
         ResidentModelError,
+        ResidentModelSwitchingError,
     )
     from ..runtime.role_capacity import alignment_capacity
 
@@ -285,12 +286,17 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         capacity_source=capacity.source,
         replace_existing=replace_existing,
         release_exclusive_role="speech-input",
+        reject_primary_switch=True,
     )
     # Upload/capacity resolution can yield after the HTTP entry guard. Do not
     # queue a new admission behind the primary loader while its handoff is held.
     await require_audio_worker_available()
     try:
         admission = await ctx.__aenter__()
+    except ResidentModelSwitchingError as exc:
+        from ..runtime.model_switching import ModelSwitchingError
+
+        raise ModelSwitchingError() from exc
     except ResidentModelCapacityError as exc:
         # The aligner was REJECTED before any load ran. ``admit_role``'s own
         # rollback has already restored the retired speech-input reservation
@@ -339,12 +345,21 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         # speech-input reservation stays retired — nothing to restore.
 
 
-async def _release_alignment_role() -> None:
+async def _release_alignment_role(*, reject_primary_switch: bool = False) -> None:
     """Stop charging the alignment role after its engine was released."""
 
     manager = _residency_manager()
     if manager is not None:
-        await manager.release_role("alignment")
+        if not reject_primary_switch:
+            await manager.release_role("alignment")
+            return
+        from ..runtime.model_switching import ModelSwitchingError
+        from ..runtime.resident_models import ResidentModelSwitchingError
+
+        try:
+            await manager.release_role("alignment", reject_primary_switch=True)
+        except ResidentModelSwitchingError as exc:
+            raise ModelSwitchingError() from exc
 
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
@@ -1977,7 +1992,9 @@ async def _evict_other_lane(keep: str) -> None:
     # charging its role so the ledger never keeps a reservation for an
     # engine this process no longer holds.
     if lane == "alignment":
-        await _release_alignment_role()
+        # Before any engine was removed, a new request can leave the lock
+        # queue on switching. Actual unload cleanup must always finish.
+        await _release_alignment_role(reject_primary_switch=cached is None)
 
 
 def _evict_other_lane_sync(keep: str) -> None:

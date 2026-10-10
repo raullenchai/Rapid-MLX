@@ -473,3 +473,161 @@ async def test_audio_rechecks_handoff_before_residency_wait(
             if task is not None:
                 await asyncio.gather(task, return_exceptions=True)
             await asyncio.gather(request, return_exceptions=True)
+
+
+async def wait_for_lock_waiters(lock, count):
+    async def wait():
+        while len(lock._waiters or ()) < count:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alignment", [False, True])
+async def test_queued_audio_leaves_residency_wait_when_switch_starts(
+    switching_server, monkeypatch, alignment
+):
+    from rapid_mlx.routes import audio
+
+    env = switching_server
+    monkeypatch.setattr(audio, "_stt_engine", None)
+    monkeypatch.setattr(audio, "_aligner_engine", None)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.role_capacity.alignment_capacity",
+        lambda name: SimpleNamespace(requested_bytes=GIB, source="test"),
+    )
+    weight_loads = []
+
+    def forbidden_weight_load(*args, **kwargs):
+        weight_loads.append(args)
+        raise AssertionError("queued request must reject before audio weight load")
+
+    monkeypatch.setattr(
+        "rapid_mlx.audio.stt.STTEngine",
+        lambda name: SimpleNamespace(load=forbidden_weight_load),
+    )
+    monkeypatch.setattr(audio, "_load_aligner_blocking", forbidden_weight_load)
+    data = {"model": "whisper-large-v3-turbo"}
+    if alignment:
+        data = {"model": audio.DEFAULT_ALIGNER_ALIAS, "text": "hello"}
+    # Another control-plane operation initially holds residency. Replacement
+    # queues first; audio passes its guard and queues second before any handoff.
+    await env.manager._lock.acquire()
+    initial_owner = True
+    task = start_switch(env)
+    request = None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://test"
+    ) as client:
+        try:
+            await wait_for_lock_waiters(env.manager._lock, 1)
+            request = asyncio.create_task(
+                client.post(
+                    "/v1/audio/transcriptions",
+                    data=data,
+                    files={"file": ("speech.wav", b"audio", "audio/wav")},
+                )
+            )
+            await wait_for_lock_waiters(env.manager._lock, 2)
+            assert env.dispatcher.handoff_in_progress is False
+            env.manager._lock.release()
+            initial_owner = False
+            await asyncio.wait_for(env.started.wait(), timeout=2)
+            response = await asyncio.wait_for(asyncio.shield(request), timeout=1)
+            assert response.status_code == 503, response.text
+            assert response.json()["error"]["code"] == "model_switching"
+            assert response.headers["retry-after"] == "5"
+            assert env.manager._roles == {}
+            assert weight_loads == []
+            assert not task.done()
+        finally:
+            # Only release the initial holder if it has not already handed
+            # ownership to the replacement transaction.
+            if initial_owner:
+                env.manager._lock.release()
+            env.release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if request is not None:
+                await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acquired", [False, True])
+async def test_cancelled_audio_lock_wait_does_not_release_another_owner(
+    switching_server, acquired
+):
+    env = switching_server
+    await env.manager._lock.acquire()
+    waiter = asyncio.create_task(
+        env.manager.release_role(
+            "alignment",
+            reject_primary_switch=True,
+        )
+    )
+    await wait_for_lock_waiters(env.manager._lock, 1)
+    if acquired:
+        env.manager._lock.release()
+        await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert env.manager._lock.locked() is (not acquired)
+    if not acquired:
+        env.manager._lock.release()
+    # An uncontended guarded request still acquires/releases normally.
+    await asyncio.wait_for(
+        env.manager.release_role(
+            "alignment",
+            reject_primary_switch=True,
+        ),
+        timeout=1,
+    )
+    assert not env.manager._lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_terminal_audio_cleanup_waits_through_switching(switching_server):
+    env = switching_server
+    task = start_switch(env)
+    cleanup = None
+    try:
+        await asyncio.wait_for(env.started.wait(), timeout=2)
+        cleanup = asyncio.create_task(env.manager.release_role("alignment"))
+        await wait_for_lock_waiters(env.manager._lock, 1)
+        assert not cleanup.done()
+        env.release.set()
+        await task
+        await asyncio.wait_for(cleanup, timeout=1)
+        assert not env.manager._lock.locked()
+    finally:
+        env.release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if cleanup is not None:
+            await asyncio.gather(cleanup, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_role_registration_rolls_back_guarded_admission(
+    switching_server,
+):
+    env = switching_server
+    loop = asyncio.get_running_loop()
+
+    class CancelAfterRegistration(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            loop.call_soon(asyncio.current_task().cancel)
+
+    env.manager._roles = CancelAfterRegistration()
+    with pytest.raises(asyncio.CancelledError):
+        async with env.manager.admit_role(
+            role="alignment",
+            model_id="aligner",
+            requested_bytes=GIB,
+            capacity_source="test",
+            reject_primary_switch=True,
+        ):
+            await asyncio.sleep(0)
+    assert env.manager._roles == {}
+    assert not env.manager._lock.locked()
