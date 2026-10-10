@@ -1,0 +1,294 @@
+{
+  "cache_on": {
+    "profile": "nemotron-3.5-lightning-tensorfold",
+    "revision": "d9d758fb83953437f7263256b0d96157e2a348b8",
+    "runtime": "0.6.6",
+    "runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "mlx": "0.32.3",
+    "probe_sha256": "e861e4aeeba4d96b9500c9bb6903e2486d582bc22094b6ccbb0c8802831a20ab",
+    "source_commit": "325cb82824873cbc2ae40b102e63cd3a6e627c44",
+    "host": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit",
+      "cpu": "Apple M3 Ultra",
+      "ram_bytes": 274877906944
+    },
+    "cache": "on",
+    "rows": [
+      {
+        "request_sha256": "34e5f071ddd81717eeb7029726fc80b7abf9e116cbb5357f224e44e69da5bae0",
+        "prompt_tokens": 19371,
+        "cached_tokens": 0,
+        "token_ids": [
+          1784,
+          36058,
+          20100,
+          1032,
+          1054,
+          1053,
+          1048,
+          4810,
+          13085,
+          1044,
+          2744,
+          1454,
+          1261,
+          17911,
+          10551,
+          1044,
+          69859,
+          6139,
+          1044,
+          1321,
+          16692,
+          4995,
+          1044,
+          2478,
+          17911,
+          10551,
+          1321,
+          69859,
+          6139,
+          11119,
+          2645,
+          1032
+        ],
+        "answer": "The inventory lists 650 service workers, each with a queue capacity, retry limit, and owner team, where queue capacity and retry limit cycle through ",
+        "prefill_seconds": 11.13449008302996,
+        "ttft_seconds": 11.1690267919912,
+        "total_seconds": 11.38198033295339,
+        "case": "initial"
+      },
+      {
+        "request_sha256": "2073e06f18cf0d8d4bdc44be6d421872c7c05856091598afecec01c14e574f13",
+        "prompt_tokens": 19431,
+        "cached_tokens": 19365,
+        "token_ids": [
+          1051,
+          11
+        ],
+        "answer": "3",
+        "prefill_seconds": 0.1421045419992879,
+        "ttft_seconds": 0.17349699995247647,
+        "total_seconds": 0.19457904197042808,
+        "case": "continue"
+      },
+      {
+        "request_sha256": "b3088fc72d55bad06596bc266b0ab5048cdebcee73e23d1dc6fef8b715a37236",
+        "prompt_tokens": 19461,
+        "cached_tokens": 19365,
+        "token_ids": [
+          1053,
+          11
+        ],
+        "answer": "5",
+        "prefill_seconds": 0.1616972919437103,
+        "ttft_seconds": 0.19366074999561533,
+        "total_seconds": 0.21616462501697242,
+        "case": "continue_again"
+      },
+      {
+        "request_sha256": "080e1c6db4c6880cf495bc7f00684f5a56e8165c54e71e24b38e2cebe88f078e",
+        "prompt_tokens": 19461,
+        "cached_tokens": 19365,
+        "token_ids": [
+          1049,
+          11
+        ],
+        "answer": "1",
+        "prefill_seconds": 0.16129249997902662,
+        "ttft_seconds": 0.19181049999315292,
+        "total_seconds": 0.21344000002136454,
+        "case": "edit"
+      },
+      {
+        "request_sha256": "080e1c6db4c6880cf495bc7f00684f5a56e8165c54e71e24b38e2cebe88f078e",
+        "prompt_tokens": 19461,
+        "cached_tokens": 19365,
+        "token_ids": [
+          1049,
+          11
+        ],
+        "answer": "1",
+        "prefill_seconds": 0.16154945804737508,
+        "ttft_seconds": 0.19446387502830476,
+        "total_seconds": 0.21779283398063853,
+        "case": "regenerate"
+      },
+      {
+        "request_sha256": "168e2bfc0e5ad9071e1c80400c2209f6245aa7060657e4553da5070f5380b01e",
+        "prompt_tokens": 19431,
+        "cached_tokens": 19365,
+        "token_ids": [
+          1050,
+          11
+        ],
+        "answer": "2",
+        "prefill_seconds": 0.1426870419527404,
+        "ttft_seconds": 0.17512279201764613,
+        "total_seconds": 0.199148082989268,
+        "case": "branch"
+      },
+      {
+        "request_sha256": "f6de988d7cdeed4777436250476a3e479b078e679067a17a6c55876e4e76ff50",
+        "prompt_tokens": 64,
+        "cached_tokens": 0,
+        "token_ids": [
+          1057,
+          1057,
+          11
+        ],
+        "answer": "99",
+        "prefill_seconds": 0.14037974999519065,
+        "ttft_seconds": 0.14099266700213775,
+        "total_seconds": 0.16395412501879036,
+        "case": "different_inventory"
+      }
+    ]
+  },
+  "cache_off": {
+    "profile": "nemotron-3.5-lightning-tensorfold",
+    "revision": "d9d758fb83953437f7263256b0d96157e2a348b8",
+    "runtime": "0.6.6",
+    "runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "mlx": "0.32.3",
+    "probe_sha256": "e861e4aeeba4d96b9500c9bb6903e2486d582bc22094b6ccbb0c8802831a20ab",
+    "source_commit": "325cb82824873cbc2ae40b102e63cd3a6e627c44",
+    "host": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit",
+      "cpu": "Apple M3 Ultra",
+      "ram_bytes": 274877906944
+    },
+    "cache": "off",
+    "rows": [
+      {
+        "request_sha256": "34e5f071ddd81717eeb7029726fc80b7abf9e116cbb5357f224e44e69da5bae0",
+        "prompt_tokens": 19371,
+        "cached_tokens": 0,
+        "token_ids": [
+          1784,
+          36058,
+          20100,
+          1032,
+          1054,
+          1053,
+          1048,
+          4810,
+          13085,
+          1044,
+          2744,
+          1454,
+          1261,
+          17911,
+          10551,
+          1044,
+          69859,
+          6139,
+          1044,
+          1321,
+          16692,
+          4995,
+          1044,
+          2478,
+          17911,
+          10551,
+          1321,
+          69859,
+          6139,
+          11119,
+          2645,
+          1032
+        ],
+        "answer": "The inventory lists 650 service workers, each with a queue capacity, retry limit, and owner team, where queue capacity and retry limit cycle through ",
+        "prefill_seconds": 10.831261291983537,
+        "ttft_seconds": 10.86538037500577,
+        "total_seconds": 11.446556208014954,
+        "case": "initial"
+      },
+      {
+        "request_sha256": "2073e06f18cf0d8d4bdc44be6d421872c7c05856091598afecec01c14e574f13",
+        "prompt_tokens": 19431,
+        "cached_tokens": 0,
+        "token_ids": [
+          1051,
+          11
+        ],
+        "answer": "3",
+        "prefill_seconds": 13.173980417021085,
+        "ttft_seconds": 13.207436041033361,
+        "total_seconds": 13.259531041025184,
+        "case": "continue"
+      },
+      {
+        "request_sha256": "b3088fc72d55bad06596bc266b0ab5048cdebcee73e23d1dc6fef8b715a37236",
+        "prompt_tokens": 19461,
+        "cached_tokens": 0,
+        "token_ids": [
+          1053,
+          11
+        ],
+        "answer": "5",
+        "prefill_seconds": 13.269832749967463,
+        "ttft_seconds": 13.303472624975257,
+        "total_seconds": 13.36548016697634,
+        "case": "continue_again"
+      },
+      {
+        "request_sha256": "080e1c6db4c6880cf495bc7f00684f5a56e8165c54e71e24b38e2cebe88f078e",
+        "prompt_tokens": 19461,
+        "cached_tokens": 0,
+        "token_ids": [
+          1049,
+          11
+        ],
+        "answer": "1",
+        "prefill_seconds": 11.995201624988113,
+        "ttft_seconds": 12.030079541960731,
+        "total_seconds": 12.083319332974497,
+        "case": "edit"
+      },
+      {
+        "request_sha256": "080e1c6db4c6880cf495bc7f00684f5a56e8165c54e71e24b38e2cebe88f078e",
+        "prompt_tokens": 19461,
+        "cached_tokens": 0,
+        "token_ids": [
+          1049,
+          11
+        ],
+        "answer": "1",
+        "prefill_seconds": 12.366488916974049,
+        "ttft_seconds": 12.39872366603231,
+        "total_seconds": 12.449997999996413,
+        "case": "regenerate"
+      },
+      {
+        "request_sha256": "168e2bfc0e5ad9071e1c80400c2209f6245aa7060657e4553da5070f5380b01e",
+        "prompt_tokens": 19431,
+        "cached_tokens": 0,
+        "token_ids": [
+          1050,
+          11
+        ],
+        "answer": "2",
+        "prefill_seconds": 13.479555875004735,
+        "ttft_seconds": 13.51303575001657,
+        "total_seconds": 13.57803687499836,
+        "case": "branch"
+      },
+      {
+        "request_sha256": "f6de988d7cdeed4777436250476a3e479b078e679067a17a6c55876e4e76ff50",
+        "prompt_tokens": 64,
+        "cached_tokens": 0,
+        "token_ids": [
+          1057,
+          1057,
+          11
+        ],
+        "answer": "99",
+        "prefill_seconds": 0.1990110000479035,
+        "ttft_seconds": 0.1997188330278732,
+        "total_seconds": 0.22987287503201514,
+        "case": "different_inventory"
+      }
+    ]
+  }
+}
