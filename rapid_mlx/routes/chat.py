@@ -345,7 +345,7 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     return None
 
 
-def _compute_forced_tool_prefix(cfg, request) -> str | None:
+def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
     """The forced-function assistant-turn prefix for a forced/named ``tool_choice``,
     or ``None`` when the request is not a forced single/named choice or the parser
     has no audited wire opener.
@@ -371,6 +371,68 @@ def _compute_forced_tool_prefix(cfg, request) -> str | None:
         _forced_name = request.tools[0].function.get("name")
     if not _forced_name:
         return None
+    # A permissive parser can accept both JSON and XML, but the prefill must
+    # agree with the template the model was trained to continue (#4428).
+    template = served_chat_template(engine) if engine is not None else None
+    if isinstance(template, dict):
+        template = template.get("tool_use") or template.get("default")
+    if (
+        cfg.tool_call_parser in {"hermes", "nous", "qwen3_coder"}
+        and isinstance(template, str)
+        and "<function=" in template
+        and "<parameter=" in template
+    ):
+        # XML names are literal wire bytes, unlike JSON-escaped names.
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(_forced_name):
+            return None
+        # Templates can contain inactive XML branches. Probe the rendered
+        # assistant call with this request's template kwargs rather than
+        # choosing a format solely from source literals.
+        from jinja2 import TemplateError
+        from transformers.utils.chat_template_utils import render_jinja_template
+
+        from ..utils.chat_template import _normalize_assistant_tool_call_arguments
+
+        probe_messages = [m.model_dump(exclude_none=True) for m in request.messages]
+        probe_messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": _forced_name, "arguments": {}},
+                    }
+                ],
+            }
+        )
+        probe_messages = _normalize_assistant_tool_call_arguments(probe_messages)
+        probe_kwargs = dict(request.chat_template_kwargs or {})
+        resolved_thinking = _resolve_enable_thinking(request)
+        if resolved_thinking is not None:
+            probe_kwargs["enable_thinking"] = resolved_thinking
+        try:
+            rendered, _ = render_jinja_template(
+                [probe_messages[:-1], probe_messages],
+                tools=[t.model_dump(exclude_none=True) for t in request.tools],
+                chat_template=template,
+                **probe_kwargs,
+            )
+        except (TypeError, ValueError, TemplateError):
+            # An unprobeable template has no verified forced wire format.
+            # Let native generation choose it rather than guess JSON.
+            return None
+        # Inspect only bytes added by the synthetic assistant turn. A marker
+        # in user/tool history cannot establish the assistant wire format.
+        if len(rendered) != 2 or not rendered[1].startswith(rendered[0]):
+            return None
+        assistant_render = rendered[1][len(rendered[0]) :]
+        if (
+            assistant_render.rsplit("<tool_call>", 1)[-1]
+            .lstrip()
+            .startswith(f"<function={_forced_name}>")
+        ):
+            return f"<tool_call>\n<function={_forced_name}>\n"
     return _forced_tool_call_prefix(cfg.tool_call_parser, _forced_name)
 
 
@@ -4914,7 +4976,7 @@ async def _create_chat_completion_impl(
     # the grammar is the stronger, self-sufficient lever.
     _forced_prefix = None
     if _glp is None:
-        _forced_prefix = _compute_forced_tool_prefix(cfg, request)
+        _forced_prefix = _compute_forced_tool_prefix(cfg, request, engine)
     if _forced_prefix:
         chat_kwargs["forced_assistant_prefix"] = _forced_prefix
 
@@ -5009,7 +5071,7 @@ async def _create_chat_completion_impl(
         _glp = None
         _line1_gate_engaged = False
         _line1_prefix = _LINE1_SEED_UNSET
-        _restored_prefix = _compute_forced_tool_prefix(cfg, request)
+        _restored_prefix = _compute_forced_tool_prefix(cfg, request, engine)
         if _restored_prefix:
             chat_kwargs["forced_assistant_prefix"] = _restored_prefix
 
@@ -5050,7 +5112,7 @@ async def _create_chat_completion_impl(
         chat_kwargs.pop("grammar_logits_processor", None)
         _glp = None
         _line1_gate_engaged = False
-        _restored_prefix = _compute_forced_tool_prefix(cfg, request)
+        _restored_prefix = _compute_forced_tool_prefix(cfg, request, engine)
         if _restored_prefix:
             chat_kwargs["forced_assistant_prefix"] = _restored_prefix
 
@@ -7719,21 +7781,17 @@ async def stream_chat_completion(
                 # #1256: on the streaming surface headers are already on the
                 # wire so we cannot 422 mid-flight. If the synthesised call's
                 # arguments fail the target tool's schema, DON'T fabricate it —
-                # leave ``fallback_tool_calls`` empty so the turn finishes with
-                # its REAL terminal reason (``stop`` normally, or ``length`` if
-                # the model truncated — we deliberately don't mask that) instead
-                # of shipping a ``tool_calls`` chunk the client would execute as
-                # a broken call. Mirrors the non-stream 422 in spirit within the
-                # route's "no mid-stream 422" constraint.
+                # leave ``fallback_tool_calls`` empty. The terminal gate below
+                # reports a forced-choice error unless generation hit ``length``;
+                # never ship a broken call that the client might execute.
                 _synth_err = _forced_synth_schema_error(
                     _synth_target, _synth_call.function.arguments, request.tools
                 )
                 if _synth_err:
                     logger.warning(
                         "[SSE-FORCED-SYNTH-#1256] refusing to synthesize a "
-                        "schema-invalid forced call to %r: %s; finishing "
-                        "without a fabricated tool_call (real terminal reason "
-                        "preserved).",
+                        "schema-invalid forced call to %r: %s; "
+                        "no fabricated tool_call will be emitted.",
                         _synth_target,
                         _synth_err,
                     )
@@ -7802,6 +7860,39 @@ async def stream_chat_completion(
                             continue
                         yield _content_sse_chunk(_text, _logprobs)
                 _forced_content_pending.clear()
+
+        # Required/named requests must never report a successful stop after
+        # dropping every call. Headers are already sent, so signal a stream
+        # error rather than fabricating arguments.
+        if (
+            _stream_tool_choice
+            and _stream_tool_choice.get("mode") in {"required", "named"}
+            and processor._tool_calls_emitted_to_wire == 0
+            and not fallback_tool_calls
+            and (
+                buffered_finish is None or buffered_finish[0].finish_reason != "length"
+            )
+        ):
+            error = {
+                "error": {
+                    "message": "Forced tool choice produced no valid tool call.",
+                    "type": "server_error",
+                    "code": "tool_choice_violation",
+                }
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+            yield "data: [DONE]\n\n"
+            from rapid_mlx.telemetry import inference as _telemetry_inference
+
+            _telemetry_inference.emit_completed_request(
+                model=served_telemetry_id or "<custom>",
+                endpoint="/v1/chat/completions",
+                caller_agent=caller_agent,
+                caller_client=caller_client,
+                result="failed",
+                error_class="output_contract_unmet",
+            )
+            return
 
         # Emit the terminal chunk. Three cases:
         #   (a) Streaming parser already emitted tool_calls during the
