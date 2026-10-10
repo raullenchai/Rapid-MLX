@@ -55,7 +55,7 @@ DEFAULT_DRAFTER_KIND = "dflash"
 # checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
 # architectures through ``mlx_vlm.models.<model_type>``; pre-registering a
 # package-compatible ``sys.modules`` shim that exposes the vendored
-# package's ``Model``/``ModelConfig`` (preserving any existing exports,
+# package's ``Model``/``ModelConfig`` and optional ``TextConfig`` (preserving exports,
 # ``__path__`` and ``__spec__``) makes the pinned loader construct the
 # vendored classes, so the documented runtime fixes reach production
 # drafters. Bindings install lazily, one family per load, and existing
@@ -77,21 +77,24 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
         return
     target = f"mlx_vlm.models.{model_type}"
     package = importlib.import_module(f"{__name__}.{model_type}")
+    exports = {"Model": package.Model, "ModelConfig": package.ModelConfig}
+    # The nested-config loader resolves TextConfig from this same module.
+    # Bind the vendored adapter too: a cold shim lacks it, while a stale
+    # pinned adapter can overwrite the corrected nested-family dispatch.
+    if hasattr(package, "TextConfig"):
+        exports["TextConfig"] = package.TextConfig
     existing = sys.modules.get(target)
-    if (
-        existing is not None
-        and getattr(existing, "Model", None) is package.Model
-        and getattr(existing, "ModelConfig", None) is package.ModelConfig
+    if existing is not None and all(
+        getattr(existing, name, None) is value for name, value in exports.items()
     ):
         return
-    # Package-compatible shim: preserve an existing canonical module's
-    # exports (including ``__path__``/``__spec__``) so submodule imports
-    # keep working; only ``Model``/``ModelConfig`` are overridden.
+    # Package-compatible shim: preserve unrelated canonical exports and
+    # package metadata so submodule imports keep working.
     shim = ModuleType(target)
     if existing is not None:
         setattr(shim, "__path__", getattr(existing, "__path__", []))
         for name, value in vars(existing).items():
-            if name not in ("Model", "ModelConfig"):
+            if name not in exports:
                 setattr(shim, name, value)  # noqa: B010
         setattr(
             shim,
@@ -118,8 +121,8 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
                 "__spec__",
                 importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
             )
-    setattr(shim, "Model", package.Model)  # noqa: B010
-    setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+    for name, value in exports.items():
+        setattr(shim, name, value)
     sys.modules[target] = shim
     # a previously imported pinned child leaves a stale attribute on
     # the parent package; ``from mlx_vlm.models import <model_type>``

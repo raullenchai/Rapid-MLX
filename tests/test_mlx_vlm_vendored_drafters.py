@@ -599,7 +599,7 @@ from typing import Any, Optional, Tuple
 # checkpoint ``model_type`` values. pinned ``load_model`` resolves sidecar
 # architectures through ``mlx_vlm.models.<model_type>``; pre-registering a
 # package-compatible ``sys.modules`` shim that exposes the vendored
-# package's ``Model``/``ModelConfig`` (preserving any existing exports,
+# package's ``Model``/``ModelConfig`` and optional ``TextConfig`` (preserving exports,
 # ``__path__`` and ``__spec__``) makes the pinned loader construct the
 # vendored classes, so the documented runtime fixes reach production
 # drafters. Bindings install lazily, one family per load, and existing
@@ -621,21 +621,24 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
         return
     target = f"mlx_vlm.models.{model_type}"
     package = importlib.import_module(f"{__name__}.{model_type}")
+    exports = {"Model": package.Model, "ModelConfig": package.ModelConfig}
+    # The nested-config loader resolves TextConfig from this same module.
+    # Bind the vendored adapter too: a cold shim lacks it, while a stale
+    # pinned adapter can overwrite the corrected nested-family dispatch.
+    if hasattr(package, "TextConfig"):
+        exports["TextConfig"] = package.TextConfig
     existing = sys.modules.get(target)
-    if (
-        existing is not None
-        and getattr(existing, "Model", None) is package.Model
-        and getattr(existing, "ModelConfig", None) is package.ModelConfig
+    if existing is not None and all(
+        getattr(existing, name, None) is value for name, value in exports.items()
     ):
         return
-    # Package-compatible shim: preserve an existing canonical module's
-    # exports (including ``__path__``/``__spec__``) so submodule imports
-    # keep working; only ``Model``/``ModelConfig`` are overridden.
+    # Package-compatible shim: preserve unrelated canonical exports and
+    # package metadata so submodule imports keep working.
     shim = ModuleType(target)
     if existing is not None:
         setattr(shim, "__path__", getattr(existing, "__path__", []))
         for name, value in vars(existing).items():
-            if name not in ("Model", "ModelConfig"):
+            if name not in exports:
                 setattr(shim, name, value)  # noqa: B010
         setattr(
             shim,
@@ -662,8 +665,8 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
                 "__spec__",
                 importlib.machinery.ModuleSpec(target, loader=None, is_package=True),
             )
-    setattr(shim, "Model", package.Model)  # noqa: B010
-    setattr(shim, "ModelConfig", package.ModelConfig)  # noqa: B010
+    for name, value in exports.items():
+        setattr(shim, name, value)
     sys.modules[target] = shim
     # a previously imported pinned child leaves a stale attribute on
     # the parent package; ``from mlx_vlm.models import <model_type>``
@@ -2555,6 +2558,77 @@ def test_binding_shim_preserves_canonical_submodule_path(monkeypatch, tmp_path):
     assert shim.Model is vendored_pkg.Model
     config_mod = importlib.import_module("mlx_vlm.models.glm5_next_mtp.config")
     assert config_mod.MARKER == 41
+
+
+@pytest.mark.parametrize("family", ["qwen3_5_mtp", "glm5_next_mtp"])
+@pytest.mark.parametrize("state", ["cold", "stale_text", "missing_text"])
+def test_binding_exports_nested_text_config(monkeypatch, family, state):
+    """Nested config loading must not depend on prior canonical imports."""
+    import importlib
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import drafters
+
+    package = importlib.import_module(f"{drafters.__name__}.{family}")
+    target = f"mlx_vlm.models.{family}"
+    parent = sys.modules["mlx_vlm.models"]
+    # Register undo state even when the hook creates previously absent entries.
+    monkeypatch.setitem(sys.modules, target, sys.modules.get(target))
+    monkeypatch.setattr(parent, family, getattr(parent, family, None), raising=False)
+    monkeypatch.delitem(sys.modules, target)
+    monkeypatch.delattr(parent, family)
+    if state != "cold":
+        existing = ModuleType(target)
+        existing.Model = package.Model
+        existing.ModelConfig = package.ModelConfig
+        existing.MARKER = object()
+        existing.__path__ = ["canonical-search-path"]
+        if state == "stale_text":
+            existing.TextConfig = object
+        monkeypatch.setitem(sys.modules, target, existing)
+        monkeypatch.setattr(parent, family, existing, raising=False)
+
+    drafters.install_served_architecture_bindings(family)
+    shim = sys.modules[target]
+    assert shim.TextConfig is package.TextConfig
+    assert shim.Model is package.Model
+    assert shim.ModelConfig is package.ModelConfig
+    assert getattr(parent, family) is shim
+    if state != "cold":
+        assert shim.MARKER is existing.MARKER
+        assert shim.__path__ == existing.__path__
+    drafters.install_served_architecture_bindings(family)
+    assert sys.modules[target] is shim
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe", "qwen3_next"])
+def test_cold_binding_satisfies_real_nested_config_loader(monkeypatch, model_type):
+    """Exercise the pinned loader boundary, including corrected MoE dispatch."""
+    import importlib
+
+    from mlx_vlm.utils import update_module_configs
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import drafters
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.qwen3_5_mtp import (
+        config as configs,
+    )
+
+    target = "mlx_vlm.models.qwen3_5_mtp"
+    parent = sys.modules["mlx_vlm.models"]
+    monkeypatch.setitem(sys.modules, target, sys.modules.get(target))
+    monkeypatch.setattr(
+        parent, "qwen3_5_mtp", getattr(parent, "qwen3_5_mtp", None), raising=False
+    )
+    monkeypatch.delitem(sys.modules, target)
+    monkeypatch.delattr(parent, "qwen3_5_mtp")
+    drafters.install_served_architecture_bindings("qwen3_5_mtp")
+    shim = importlib.import_module(target)
+    raw = {"text_config": {**_TEXT_FIELDS, "model_type": model_type, "num_experts": 2}}
+    config = shim.ModelConfig.from_dict(raw)
+    updated = update_module_configs(config, shim, raw, ["text", "vision"])
+    expected = (
+        configs.DenseTextConfig if model_type == "qwen3_5" else configs.MoeTextConfig
+    )
+    assert isinstance(updated.text_config, expected)
 
 
 def test_qwen3_next_postprocess_rejects_partial_expert_group():

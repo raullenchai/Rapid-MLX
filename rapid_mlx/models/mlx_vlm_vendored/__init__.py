@@ -428,12 +428,14 @@ vendored copy differs by exactly the deviations listed):
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)
-  exposing the vendored package's ``Model``/``ModelConfig`` so the
+  exposing the vendored package's ``Model``/``ModelConfig`` and optional
+  ``TextConfig`` (required by the nested configuration loader) so the
   pinned ``load_model`` dispatch constructs the vendored classes and
   the runtime fixes reach production drafters; the shim preserves the
   canonical module's exports (``__path__``/``__spec__``) so submodule
   imports keep working, and entries that do not match the vendored
-  classes (an earlier pinned import, a pre-swap GLM shim) are re-bound
+  classes, including a missing or stale nested configuration adapter
+  (an earlier pinned import, a pre-swap GLM shim), are re-bound
   so no stale implementation is served; sidecar checkpoints that
   declare the backbone model type with a nested ``dflash_config`` are
   bound as ``dflash2`` when the DFlash2-exclusive selector/conv keys
