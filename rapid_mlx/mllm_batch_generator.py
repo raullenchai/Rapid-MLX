@@ -1375,11 +1375,14 @@ class MLLMBatchGenerator:
         # it calls ``get_input_embeddings`` for the vision merge, then
         # ``language_model(..., mask=None)`` so the LM builds its own causal
         # mask. We mirror that for gemma-3 only (``_run_vision_encoding``);
-        # gemma-4 / Qwen-VL pass the raw 2D/None mask straight through and are
-        # unaffected. Keyed on ``model_type`` so future gemma-3 quant variants
-        # are covered without an allowlist.
+        # Other families keep their own mask handling. Gemma-4 unified
+        # needs a separate metadata-preserving path below. Keyed on
+        # ``model_type`` so future quant variants are covered.
         model_config = getattr(model, "config", None)
         self._is_gemma3_vlm = getattr(model_config, "model_type", None) == "gemma3"
+        self._is_gemma4_unified_vlm = (
+            getattr(model_config, "model_type", None) == "gemma4_unified"
+        )
         if self._is_gemma3_vlm:
             logger.info(
                 "MLLMBatchGenerator: gemma-3 image path uses direct "
@@ -3800,6 +3803,22 @@ class MLLMBatchGenerator:
                         prefix_len=request.shared_prefix_store_at,
                     )
             output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
+        elif (
+            getattr(self, "_is_gemma4_unified_vlm", False)
+            and request.pixel_values is not None
+        ):
+            # The unified wrapper drops modality token types before calling
+            # the LM. Without them, vision tokens receive causal attention and
+            # image readout degrades (#4482). Use the established generation
+            # path: merge pixels once, then pass embeddings, per-layer inputs
+            # and the processor's modality metadata directly to the LM.
+            # Keep the entire image span in one prefill forward.
+            emb = self.model.get_input_embeddings(input_ids, **kwargs)
+            lm_kwargs = {k: v for k, v in emb.to_dict().items() if v is not None}
+            for key in ("mm_token_type_ids", "token_type_ids"):
+                if key in kwargs:
+                    lm_kwargs[key] = kwargs[key]
+            output = self.language_model(input_ids, cache=cache, **lm_kwargs)
         elif (
             getattr(self, "_is_gemma3_vlm", False) and request.pixel_values is not None
         ):

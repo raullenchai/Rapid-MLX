@@ -254,7 +254,9 @@ class VisionEmbeddingCache:
             input_ids=input_ids,
             attention_mask=attention_mask,
             image_grid_thw=image_grid_thw,
-            extra_kwargs=extra_kwargs or {},
+            # Requests clear their metadata after prefill; the cache must
+            # own its mapping so repeat images retain modality/position IDs.
+            extra_kwargs=dict(extra_kwargs or {}),
             processing_time=processing_time,
         )
         self._pixel_cache[key] = entry
