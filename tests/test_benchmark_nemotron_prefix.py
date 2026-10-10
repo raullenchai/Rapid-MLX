@@ -171,13 +171,24 @@ def test_measure_reads_terminal_usage_and_restores_submit_after_failure():
     assert scheduler.submit is original
 
 
-def test_measure_rejects_incomplete_response():
+@pytest.mark.parametrize("stale_terminal", [False, True])
+def test_measure_rejects_incomplete_response(stale_terminal):
     scheduler = SimpleNamespace(submit=lambda _: None)
     app = SimpleNamespace(
         scheduler=scheduler,
         tokenizer=SimpleNamespace(apply_chat_template=lambda *a, **k: "prompt"),
     )
     provider = SimpleNamespace(backend=SimpleNamespace(_app=app), last_outputs=[])
+    if stale_terminal:
+        provider.last_outputs = [
+            SimpleNamespace(
+                finished=True,
+                output_token_ids=[1],
+                output_text="old answer",
+                prompt_tokens=20000,
+                cached_tokens=19000,
+            )
+        ]
 
     def outputs(*args, **kwargs):
         scheduler.submit(SimpleNamespace(started_at=10, prefilled_at=11))

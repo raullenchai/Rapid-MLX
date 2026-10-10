@@ -71,6 +71,7 @@ def measure(provider, messages: list[dict[str, str]]) -> dict:
     prompt = app.tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
+    provider.last_outputs = []
     scheduler.submit = submit
     started = time.perf_counter()
     first = None
