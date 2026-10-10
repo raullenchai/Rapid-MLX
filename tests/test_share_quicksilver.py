@@ -3391,3 +3391,58 @@ def test_heartbeat_certificate_failure_supervisor_reports_ca_repair(capsys):
     assert "revoked" not in err
     serve.terminate.assert_called_once()
     tunnel.stop.assert_called()
+
+
+def test_service_reinstall_restores_previous_job_on_bootstrap_failure():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    path.parent.mkdir(parents=True)
+    previous = plistlib.dumps(
+        {"Label": "old-job", "ProgramArguments": ["/stable/rapid-mlx"]}
+    )
+    path.write_bytes(previous)
+    with (
+        patch.object(
+            qs.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(5, "launchctl"),
+                subprocess.CompletedProcess([], 0),
+            ],
+        ) as run,
+        pytest.raises(
+            qs.QuickSilverError, match="previous service configuration restored"
+        ),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    assert path.read_bytes() == previous
+    assert run.call_count == 3
+    assert run.call_args.args[0] == [
+        "launchctl",
+        "bootstrap",
+        f"gui/{os.getuid()}",
+        str(path),
+    ]
+
+
+def test_service_reinstall_reports_failed_recovery():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    path.parent.mkdir(parents=True)
+    previous = plistlib.dumps({"Label": "old-job"})
+    path.write_bytes(previous)
+    with (
+        patch.object(
+            qs.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(5, "new bootstrap"),
+                subprocess.CalledProcessError(5, "old bootstrap"),
+            ],
+        ),
+        pytest.raises(qs.QuickSilverError, match="previous service recovery failed"),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    assert path.read_bytes() == previous

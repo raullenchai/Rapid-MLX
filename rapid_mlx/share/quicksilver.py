@@ -1314,19 +1314,22 @@ def install_service(
     from rapid_mlx.headless_service.plist import serialize_plist
 
     try:
+        previous_plist = plist_path.read_bytes() if plist_path.exists() else None
         plist_path.write_bytes(serialize_plist(plist))
     except OSError as exc:
         raise QuickSilverError(f"could not write {plist_path}: {exc}") from None
     print(f"Wrote {plist_path}")
     domain = f"gui/{os.getuid()}"
+    stopped_previous = False
     try:
         # A replacement must first unload the old job; a missing job is normal.
-        subprocess.run(
+        bootout = subprocess.run(
             ["launchctl", "bootout", f"{domain}/{label}"],
             capture_output=True,
             text=True,
             check=False,
         )
+        stopped_previous = bootout.returncode == 0
         subprocess.run(
             ["launchctl", "bootstrap", domain, str(plist_path)],
             capture_output=True,
@@ -1334,8 +1337,24 @@ def install_service(
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
+        recovery = ""
+        if previous_plist is not None:
+            try:
+                plist_path.write_bytes(previous_plist)
+                if stopped_previous:
+                    subprocess.run(
+                        ["launchctl", "bootstrap", domain, str(plist_path)],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                recovery = "; previous service configuration restored"
+            except (OSError, subprocess.CalledProcessError) as rollback_exc:
+                recovery = (
+                    f"; previous service recovery failed: {_redact(str(rollback_exc))}"
+                )
         raise QuickSilverError(
-            f"service plist written but launchctl bootstrap failed: {_redact(str(exc))}"
+            f"launchctl bootstrap failed: {_redact(str(exc))}{recovery}"
         ) from None
     print(f"Started {label}. Stop with: launchctl bootout {domain}/{label}")
 

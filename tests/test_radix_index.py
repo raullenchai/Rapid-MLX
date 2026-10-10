@@ -332,3 +332,22 @@ def test_save_does_not_follow_predictable_staging_symlink(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o644
     assert not (tmp_path / "radix.index").is_symlink()
     assert RadixPrefixIndex().load(str(tmp_path / "radix.index"))
+
+
+def test_save_closes_descriptor_if_fdopen_fails(tmp_path, monkeypatch):
+    import pytest
+
+    original_open = os.fdopen
+    descriptors = []
+
+    def fail(fd, *args, **kwargs):
+        descriptors.append(fd)
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(os, "fdopen", fail)
+    RadixPrefixIndex().save(str(tmp_path / "radix.index"))
+    monkeypatch.setattr(os, "fdopen", original_open)
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert not list(tmp_path.iterdir())

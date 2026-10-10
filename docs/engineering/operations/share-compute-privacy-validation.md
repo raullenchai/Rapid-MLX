@@ -67,7 +67,7 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 469 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 472 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.
@@ -90,3 +90,9 @@ writes/chmod. Both independent reproduction and the added
 and permissions remain unchanged. The diff-only reviewer lacked that unchanged
 pre-clean context. Concurrent malicious same-UID path replacement remains
 outside the boundary above.
+
+Later review fixes add restoration of the previous plist and re-bootstrap of
+a stopped previous job if replacement bootstrap fails. Recovery failures are
+reported explicitly. Radix temporary descriptors are closed if wrapping the
+file object fails. Focused regressions cover both recovery outcomes and the
+descriptor failure path.

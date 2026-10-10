@@ -462,17 +462,22 @@ class RadixPrefixIndex:
         import tempfile
 
         tmp = None
+        fd = None
         try:
             fd, tmp = tempfile.mkstemp(
                 prefix=os.path.basename(path) + ".",
                 suffix=".tmp",
                 dir=os.path.dirname(path),
             )
-            with os.fdopen(fd, "w") as f:
+            f = os.fdopen(fd, "w")
+            fd = None  # The file object now owns the descriptor.
+            with f:
                 os.fchmod(f.fileno(), 0o600)
                 json.dump(payload, f)
             os.replace(tmp, path)
         except Exception as e:
+            if fd is not None:
+                os.close(fd)
             # Best-effort: if we can't write the index file the only cost
             # is a rebuild from cache._entries on next boot.
             logger.warning(
