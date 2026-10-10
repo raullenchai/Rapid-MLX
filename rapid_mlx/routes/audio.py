@@ -286,6 +286,9 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         replace_existing=replace_existing,
         release_exclusive_role="speech-input",
     )
+    # Upload/capacity resolution can yield after the HTTP entry guard. Do not
+    # queue a new admission behind the primary loader while its handoff is held.
+    await require_audio_worker_available()
     try:
         admission = await ctx.__aenter__()
     except ResidentModelCapacityError as exc:
@@ -1951,6 +1954,9 @@ async def _evict_other_lane(keep: str) -> None:
     footprint — alternating requests would leave both models resident. MLX
     frees on refcount, so clearing the global is the release.
     """
+    # Upload and lane-lock waits can outlive the route's entry check. Recheck
+    # before changing cached engines or waiting on the residency role ledger.
+    await require_audio_worker_available()
     lane, cached = _other_stt_lane(keep)
     if cached is not None:
         logger.info(

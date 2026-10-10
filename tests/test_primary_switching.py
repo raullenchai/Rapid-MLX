@@ -1,6 +1,7 @@
 """HTTP and lifecycle regressions for destructive, low-memory primary replacement."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -393,3 +394,82 @@ async def test_audio_switch_guard_keeps_auth_first(switching_server):
     finally:
         env.release.set()
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("barrier", ["asr_upload", "alignment_capacity"])
+async def test_audio_rechecks_handoff_before_residency_wait(
+    switching_server, monkeypatch, barrier
+):
+    from rapid_mlx.routes import audio
+
+    env = switching_server
+    reached = asyncio.Event()
+    upload_release = asyncio.Event()
+    capacity_release = threading.Event()
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(audio, "_stt_engine", None)
+    monkeypatch.setattr(audio, "_aligner_engine", None)
+    weight_loads = []
+
+    def forbidden_weight_load(*args, **kwargs):
+        weight_loads.append(args)
+        raise AssertionError("switching must reject before audio weight load")
+
+    monkeypatch.setattr(
+        "rapid_mlx.audio.stt.STTEngine",
+        lambda name: SimpleNamespace(load=forbidden_weight_load),
+    )
+    monkeypatch.setattr(audio, "_load_aligner_blocking", forbidden_weight_load)
+
+    async def upload(file, target):
+        target.write(b"audio")
+        if barrier == "asr_upload":
+            reached.set()
+            await upload_release.wait()
+
+    def capacity(name):
+        loop.call_soon_threadsafe(reached.set)
+        assert capacity_release.wait(timeout=5)
+        return SimpleNamespace(requested_bytes=GIB, source="test")
+
+    monkeypatch.setattr(audio, "_stream_upload_to_tempfile", upload)
+    monkeypatch.setattr("rapid_mlx.runtime.role_capacity.alignment_capacity", capacity)
+    data = {"model": "whisper-large-v3-turbo"}
+    if barrier == "alignment_capacity":
+        data = {"model": audio.DEFAULT_ALIGNER_ALIAS, "text": "hello"}
+    task = None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://test"
+    ) as client:
+        request = asyncio.create_task(
+            client.post(
+                "/v1/audio/transcriptions",
+                data=data,
+                files={"file": ("speech.wav", b"audio", "audio/wav")},
+            )
+        )
+        try:
+            # The route dependency has passed, then upload/capacity pauses.
+            await asyncio.wait_for(reached.wait(), timeout=2)
+            task = start_switch(env)
+            await asyncio.wait_for(env.started.wait(), timeout=2)
+            upload_release.set()
+            capacity_release.set()
+            response = await asyncio.wait_for(asyncio.shield(request), timeout=1)
+            assert response.status_code == 503, response.text
+            assert response.json()["error"]["code"] == "model_switching"
+            assert response.headers["retry-after"] == "5"
+            assert env.dispatcher.snapshot() == []
+            assert env.manager._roles == {}
+            assert weight_loads == []
+            assert audio._stt_engine is None
+            assert audio._aligner_engine is None
+            assert not task.done()  # No need to wait for primary loading.
+        finally:
+            upload_release.set()
+            capacity_release.set()
+            env.release.set()
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+            await asyncio.gather(request, return_exceptions=True)
