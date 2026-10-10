@@ -182,7 +182,7 @@ owns any later runtime/default-policy decision. This report qualifies one
 model and workload on one M5; it makes no M3/M4 comparison or release claim.
 
 
-The normalized `*.evidence.log` excerpts were extracted from the original
+The normalized `*.evidence.txt` excerpts were extracted from the original
 child logs after rechecking their SHA256 against `server-evidence.json`.
 They retain prefill install/disable messages, checkpoint resume positions and
 shutdown completion. The matrix's added `controlled_env` fields are reconstructed

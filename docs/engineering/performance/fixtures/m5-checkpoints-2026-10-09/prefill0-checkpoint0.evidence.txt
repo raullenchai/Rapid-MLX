@@ -1,0 +1,2 @@
+INFO:rapid_mlx.gdn_prefill:[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0
+INFO:     Application shutdown complete.
