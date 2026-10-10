@@ -2466,9 +2466,9 @@ def test_forced_prefix_block_is_gated_on_grammar_absence():
         "route must reconcile an engaged gate whose coupled budget did not build "
         "(codex r4 #3) — discard the gate, restore forced-prefix"
     )
-    assert "_restored_prefix = _compute_forced_tool_prefix(cfg, request)" in src, (
-        "reconcile must RESTORE the forced-prefix via the shared helper (r4 #3)"
-    )
+    assert (
+        "_restored_prefix = _compute_forced_tool_prefix(cfg, request, engine)" in src
+    ), "reconcile must RESTORE the forced-prefix via the shared helper (r4 #3)"
 
 
 # --------------------------------------------------------------------------- #

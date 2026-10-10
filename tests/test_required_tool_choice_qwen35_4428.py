@@ -416,3 +416,58 @@ def test_xml_marker_in_user_history_cannot_spoof_json_assistant_format():
         SimpleNamespace(tool_call_parser="hermes"), req, engine
     )
     assert '"arguments": ' in prefix
+
+
+def test_nonappend_only_template_defers_to_native_generation():
+    template = (
+        "{% if messages[-1].role == 'assistant' %}changed{% else %}original{% endif %}"
+        + XML_TEMPLATE
+    )
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=template))
+    assert (
+        _compute_forced_tool_prefix(
+            SimpleNamespace(tool_call_parser="hermes"), request(), engine
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("context_room", [False, True])
+def test_grammar_fallback_restores_native_xml_prefill(context_room, monkeypatch):
+    from rapid_mlx.routes import chat
+
+    async def gated_grammar(*args, **kwargs):
+        return SimpleNamespace(reasoning_gate_id=1)
+
+    monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "0")
+    monkeypatch.setattr(chat, "_offload_tool_grammar_build", gated_grammar)
+    monkeypatch.setattr(chat, "_line1_context_room_ok", lambda *args: context_room)
+    monkeypatch.setattr(chat, "_build_reasoning_budget_processor", lambda *a, **k: None)
+    engine = TemplateEngine()
+    engine.body = "<parameter=city>\nParis\n</parameter>\n"
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test",
+                "messages": [{"role": "user", "content": "Weather in Paris?"}],
+                "tools": [tool()],
+                "tool_choice": "required",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert engine.prefix == "<tool_call>\n<function=get_weather>\n"
+    choice = response.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
+        "city": "Paris"
+    }
