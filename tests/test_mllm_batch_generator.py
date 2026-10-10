@@ -50,7 +50,9 @@ def test_explicit_context_counts_expanded_media_tokens():
 
 
 @pytest.mark.parametrize("prompt_tokens, budget", [(120, 40), (159, 1)])
-def test_preprocessed_context_reserves_only_remaining_decode_tokens(prompt_tokens, budget):
+def test_preprocessed_context_reserves_only_remaining_decode_tokens(
+    prompt_tokens, budget
+):
     from types import SimpleNamespace
 
     request = MLLMBatchRequest(uid=1, request_id="decode-budget", prompt="hi")
