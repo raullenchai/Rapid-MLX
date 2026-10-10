@@ -1,0 +1,196 @@
+{
+  "inventory": {
+    "head": "6fb0add2d1a292489646f81dd681b521c809a765",
+    "dirty": [],
+    "source_sha256": {
+      "harness": "afb130d6ff7101f3eb0e46db0efdbfce2ac1d4c841feca9fc4311052e1ea79fc",
+      "adapter": "40dffc2935370dcb056bb955b2dcee3ade75dd73aba6ed04d4078469c85ea77d",
+      "kernel": "6c3a2914f4b75430e620da06646ce730ab7ec345976351c6d3aa55f96bd2e154",
+      "native_layer": "f0daa30bba5cb521c8bdfa7093101a544c6a37bbba09bca582288219cb04ae3a",
+      "native_recurrence": "79c8376a51c694b03e54d2f996ced6ea6c8c42868b8571529f97334db165a3e1",
+      "native_normalization": "3c572fe3fbb36721efab4d80d1bb6af11beb4ad1caae18deefc9fc84cbcd9b79"
+    },
+    "packages": {
+      "mlx": "0.32.3",
+      "mlx-metal": "0.32.3",
+      "mlx-lm": "0.31.3",
+      "numpy": "2.4.4"
+    },
+    "python": "3.12.14 (main, Aug 12 2026, 13:57:54) [Clang 21.0.0 (clang-2100.1.1.101)]",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "hardware": "Apple M3 Ultra",
+    "execution": {
+      "arms": "serial mx.eval barriers",
+      "hardware_exclusive": false,
+      "performance_claim": false
+    }
+  },
+  "models": [
+    {
+      "repository": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "config_sha256": "c0cf317cba802cfb1d2984d4b4afc98ceb3d86450ed757e028383bfb03643964",
+      "index_sha256": "56f02123353b7fe444b287a46a779a836cb939860502908da4a79e3b43931cdb",
+      "weights": [
+        {
+          "name": "model-00001-of-00004.safetensors",
+          "size": 5285828971,
+          "sha256": "0952c2fd5ec5f6163a045003eb0e60465290ac0ebedbe2cecde35dd95abed345"
+        },
+        {
+          "name": "model-00002-of-00004.safetensors",
+          "size": 5366101807,
+          "sha256": "ddf163fcbaa7fc1ff2e93ee2e3306b1c31c4fe3c7dd46990cd2737d0cc30197f"
+        },
+        {
+          "name": "model-00003-of-00004.safetensors",
+          "size": 5364643286,
+          "sha256": "5e7d8deca9240eec828c9a451fbd8a95389a7cc18494f400c330d0717c41f6e1"
+        },
+        {
+          "name": "model-00004-of-00004.safetensors",
+          "size": 4375105375,
+          "sha256": "b540bac1ef081d7011e32428e0c2da77f00699db2f4f1508da73ee3b8de40551"
+        }
+      ]
+    },
+    {
+      "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "config_sha256": "a822a9e48b0aafbe3144ec37d4fb067e178ed96615ce6e4420b3149893cc5767",
+      "index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea",
+      "weights": [
+        {
+          "name": "model-00001-of-00004.safetensors",
+          "size": 5288196018,
+          "sha256": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8"
+        },
+        {
+          "name": "model-00002-of-00004.safetensors",
+          "size": 5368472749,
+          "sha256": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f"
+        },
+        {
+          "name": "model-00003-of-00004.safetensors",
+          "size": 5368324139,
+          "sha256": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03"
+        },
+        {
+          "name": "model-00004-of-00004.safetensors",
+          "size": 4377211365,
+          "sha256": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "8164d64ed438774133afb7de8569c9ebc3edccd025dfc4e2ad17a53d5fae8847"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "8164d64ed438774133afb7de8569c9ebc3edccd025dfc4e2ad17a53d5fae8847"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "f1f1252b719bdb9187b9ca241156786ac951c0bc04d5d598d340ad9aa41afd46"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "f1f1252b719bdb9187b9ca241156786ac951c0bc04d5d598d340ad9aa41afd46"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    }
+  ],
+  "row_digests": [
+    "44f238f4585c09f8683d094106187817a53de6f016b647f63e2ae29b794d74a1",
+    "6048ebf09367a28b240335d84954f2dc29dc30a2d73e5678e6e29780851cdaf6"
+  ]
+}
