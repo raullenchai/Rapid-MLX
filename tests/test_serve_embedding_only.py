@@ -117,7 +117,73 @@ def test_primary_idle_unload_parser_preserves_default_and_provenance(
 ):
     args = cli.build_parser().parse_args(["serve", "primary-model", *options])
     assert args.idle_unload_seconds == seconds
-    assert args._idle_unload_seconds_explicit is explicit
+    assert ("--idle-unload-seconds" in args._serve_explicit_options) is explicit
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--max-num-seqs", "16"],
+        ["--max-num-seqs=16"],
+        ["--default-temperature", "0"],
+        ["--default-top-p", "1"],
+        ["--disable-prefix-cache"],
+        ["--no-thinking"],
+        ["--no-think"],
+        ["--text-only"],
+        ["--simple-engine"],
+        ["--force-hybrid"],
+        ["--vision-min-pixels", "0"],
+        ["--gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_embedding_only_rejects_explicit_generation_tuning(options, capsys):
+    args = cli.build_parser().parse_args(
+        ["serve", "--embedding-model", EMBED_ID, *options]
+    )
+    with (
+        mock.patch.object(cli, "_resolve_serve_port") as resolve_port,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli.serve_command(args)
+    assert exc_info.value.code == 2
+    assert "embeddings-only" in capsys.readouterr().err
+    resolve_port.assert_not_called()
+
+
+def test_embedding_only_accepts_shared_and_embedding_options():
+    args = cli.build_parser().parse_args(
+        [
+            "--no-banner",
+            "serve",
+            "--embedding-model",
+            EMBED_ID,
+            "--embedding-max-length=256",
+            "--embedding-overflow-policy",
+            "error",
+            "--host=127.0.0.1",
+            "--port=8123",
+            "--api-key=local-test",
+            "--rate-limit=30",
+            "--max-request-bytes=4096",
+            "--timeout=30",
+            "--cors-origins=http://localhost",
+            "--trusted-hosts=localhost",
+            "--log-level=info",
+            "--disable-disk-caches",
+            "--disable-model-downloads",
+            "-y",
+        ]
+    )
+    assert cli._embedding_only_incompatible_options(args) == []
+
+
+@pytest.mark.parametrize("flag", ["--lazy", "--lazy-l", "--embedding-mo=other"])
+def test_embedding_only_parser_rejects_abbreviated_options(flag, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.build_parser().parse_args(["serve", "--embedding-model", EMBED_ID, flag])
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 def test_embedding_only_rejects_video_output_before_creating_directory(

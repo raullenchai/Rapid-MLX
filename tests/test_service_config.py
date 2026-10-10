@@ -144,13 +144,12 @@ def test_service_config_rejects_null_model_without_embedding_model():
         ServiceConfig.from_dict(raw)
 
 
-@pytest.mark.parametrize("flag", ["--lazy-load", "--lazy", "--lazy-l"])
-def test_embeddings_only_service_rejects_lazy_load_before_qualification(flag):
+def test_embeddings_only_service_rejects_lazy_load_before_qualification():
     with pytest.raises(ServiceConfigError, match="embeddings-only.*--lazy-load"):
         _config(
             model=None,
             embedding_model="embeddinggemma-300m-6bit",
-            serve_args=(flag,),
+            serve_args=("--lazy-load",),
         )
 
 

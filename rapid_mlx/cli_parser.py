@@ -9,6 +9,7 @@ on this module (not on :mod:`rapid_mlx.cli`) to affect parser construction.
 """
 
 import argparse
+import sys
 import textwrap
 
 from rapid_mlx._completion import alias_completer
@@ -27,24 +28,35 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
 
 
 class _PortContextArgumentParser(argparse.ArgumentParser):
-    """Argument parser that records the effective bind-port provenance."""
+    """Record bind-port provenance and explicit serve options after parsing."""
 
     def parse_args(self, args=None, namespace=None):
+        supplied_args = sys.argv[1:] if args is None else list(args)
         if args is None and namespace is None:
             parsed = super().parse_args()
         elif namespace is None:
-            parsed = super().parse_args(args)
+            parsed = super().parse_args(supplied_args)
         else:
-            parsed = super().parse_args(args, namespace)
-        if hasattr(parsed, "idle_unload_seconds"):
-            # A missing value differs from an explicitly supplied zero for
-            # embedding-only validation. Normalize after stdlib parsing so
-            # callers still receive the established numeric default.
-            parsed._idle_unload_seconds_explicit = (
-                parsed.idle_unload_seconds is not None
-            )
-            if parsed.idle_unload_seconds is None:
-                parsed.idle_unload_seconds = 0.0
+            parsed = super().parse_args(supplied_args, namespace)
+        if getattr(parsed, "command", None) == "serve":
+            for action in self._actions:
+                if not isinstance(action, argparse._SubParsersAction):
+                    continue
+                serve = action.choices["serve"]
+                options = {
+                    flag: option.option_strings[0]
+                    for option in serve._actions
+                    for flag in option.option_strings
+                }
+                explicit = []
+                for token in supplied_args:
+                    flag = token.split("=", 1)[0]
+                    if flag in options:
+                        explicit.append(options[flag])
+                # Record canonical spellings after successful stdlib parsing;
+                # preserve explicit default values and aliases. Serve already
+                # disables long-option abbreviation.
+                parsed._serve_explicit_options = tuple(dict.fromkeys(explicit))
         return _stamp_port_explicit(parsed)
 
 
@@ -1242,7 +1254,7 @@ def _add_serve_parser(
     serve_parser.add_argument(
         "--idle-unload-seconds",
         type=float,
-        default=None,
+        default=0.0,
         help=(
             "Release the configured primary model after this many idle "
             "seconds while keeping the API endpoint online. A later request "

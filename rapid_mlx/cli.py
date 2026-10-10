@@ -5218,6 +5218,30 @@ def _cua_only_incompatible_options(args) -> list[str]:
 def _embedding_only_incompatible_options(args) -> list[str]:
     """Return primary-model options that cannot apply to an embeddings-only server."""
 
+    explicit = getattr(args, "_serve_explicit_options", None)
+    if explicit is not None:
+        shared = {
+            "--yes",
+            "--host",
+            "--port",
+            "--listen-fd",
+            "--log-level",
+            "--log-file",
+            "--watchdog-ppid",
+            "--api-key",
+            "--timeout",
+            "--max-request-bytes",
+            "--cors-origins",
+            "--trusted-hosts",
+            "--rate-limit",
+            "--embedding-model",
+            "--embedding-max-length",
+            "--embedding-overflow-policy",
+            "--disable-disk-caches",
+            "--disable-model-downloads",
+        }
+        return [flag for flag in explicit if flag not in shared]
+
     def provided(name: str) -> bool:
         return getattr(args, name, None) is not None
 

@@ -81,13 +81,7 @@ class ServiceConfig:
         # Installation temporarily removes --lazy-load to qualify resident
         # weights. Without this guard, an embeddings-only service could pass
         # qualification but fail to boot from the persisted definition.
-        if self.model is None and any(
-            token.startswith("--")
-            and token != "--"
-            and "--lazy-load".startswith(token.split("=", 1)[0])
-            for token in self.serve_args
-        ):
-            # argparse also accepts unique long-option abbreviations.
+        if self.model is None and "--lazy-load" in self.serve_args:
             raise ServiceConfigError("embeddings-only services cannot use --lazy-load")
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
