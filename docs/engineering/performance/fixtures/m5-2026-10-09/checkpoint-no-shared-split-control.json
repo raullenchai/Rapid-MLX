@@ -1,0 +1,108 @@
+{
+  "model": "<HF_CACHE>/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "rows": [
+    {
+      "arm": "prefill0-checkpoint0",
+      "round": 0,
+      "case": "late_edit",
+      "seed": {
+        "ttft_s": 1.6114739580007154,
+        "elapsed_s": 1.9005001670011552,
+        "usage": {
+          "prompt_tokens": 6530,
+          "completion_tokens": 32,
+          "total_tokens": 6562
+        },
+        "finish_reason": "length",
+        "output_text": "Based on the provided document, here are three specific facts:\n\n1.  **Section 0** contains a list of 32 items, starting with",
+        "reasoning_text": "",
+        "cached_tokens": 0,
+        "output_sha256": "a5603f1eb6079e871341dc9a91c4143096dfb72a6ef04ea67951eb4d277766fe"
+      },
+      "warm": {
+        "ttft_s": 1.6029531250023865,
+        "elapsed_s": 1.8922803749992454,
+        "usage": {
+          "prompt_tokens": 6540,
+          "completion_tokens": 32,
+          "total_tokens": 6572
+        },
+        "finish_reason": "length",
+        "output_text": "Based on the provided document, here are three specific facts:\n\n1.  **Section 60 contains a unique update:** Unlike all other sections which consist",
+        "reasoning_text": "",
+        "cached_tokens": 0,
+        "output_sha256": "9bc81ffecf3151c5948162b3ba34872da7edd2dd8da4c7b762cefceb3facbb64"
+      },
+      "cold": {
+        "ttft_s": 1.6062948340004368,
+        "elapsed_s": 1.8956875000003492,
+        "usage": {
+          "prompt_tokens": 6540,
+          "completion_tokens": 32,
+          "total_tokens": 6572
+        },
+        "finish_reason": "length",
+        "output_text": "Based on the provided document, here are three specific facts:\n\n1.  **Section 60 contains a unique update:** Unlike all other sections which consist",
+        "reasoning_text": "",
+        "cached_tokens": 0,
+        "output_sha256": "9bc81ffecf3151c5948162b3ba34872da7edd2dd8da4c7b762cefceb3facbb64"
+      },
+      "repeated_cold": {
+        "ttft_s": 1.6062621669989312,
+        "elapsed_s": 1.894713083998795,
+        "usage": {
+          "prompt_tokens": 6540,
+          "completion_tokens": 32,
+          "total_tokens": 6572
+        },
+        "finish_reason": "length",
+        "output_text": "Based on the provided document, here are three specific facts:\n\n1.  **Section 60 contains a unique update:** Unlike all other sections which consist",
+        "reasoning_text": "",
+        "cached_tokens": 0,
+        "output_sha256": "9bc81ffecf3151c5948162b3ba34872da7edd2dd8da4c7b762cefceb3facbb64"
+      },
+      "output_exact": true,
+      "ttft_speedup_vs_same_arm_cold": 1.0020847203489156
+    }
+  ],
+  "arms": [
+    {
+      "name": "prefill0-checkpoint0",
+      "command": [
+        "<RUNTIME_PYTHON>",
+        "-c",
+        "from rapid_mlx.scheduler import Scheduler; Scheduler._shared_prefix_local_split = lambda self, request, pending: setattr(request, 'shared_prefix_snapshot_at', 0); import runpy; runpy.run_module('rapid_mlx.cli', run_name='__main__')",
+        "serve",
+        "<HF_CACHE>/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "--served-model-name",
+        "m5-qualification",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8617",
+        "--no-mllm",
+        "--no-spec-decode",
+        "--enable-prefix-cache",
+        "--hybrid-cache-entries",
+        "8",
+        "--prefill-step-size",
+        "2048",
+        "--log-level",
+        "INFO"
+      ],
+      "log": "prefill0-checkpoint0.server.log",
+      "server_exit": -15
+    }
+  ],
+  "correctness": "SHA256 of concatenated content/reasoning fields; HTTP does not expose token IDs",
+  "other_flags": {
+    "fused_gdn_decode": false,
+    "compiled_decode": false,
+    "speculation": false
+  },
+  "all_outputs_exact": true,
+  "configured_rounds": 3,
+  "executed_rows": 1,
+  "diagnostic_intervention": "disable Scheduler._shared_prefix_local_split in child process",
+  "qualification_scope": "one late-edit row, checkpoint and blocked prefill disabled; not a full matrix"
+}

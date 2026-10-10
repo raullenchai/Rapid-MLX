@@ -147,6 +147,29 @@ this experiment. The harness correctly exited nonzero. Full cold/warm
 equivalence remains unqualified and needs a separate control investigation.
 The four server arms ran serially, not in randomized cross-process order.
 
+### Follow-up: shared-prefix segmentation control
+
+A checkpoint-off, stock-prefill diagnostic repeated the first late-edit case,
+adding a second cleared-cold request. All edited requests reported zero cached
+tokens. The two cold outputs matched, while the warm output differed. Server
+logs showed that the warm request additionally snapshotted a shared prefix at
+5568 tokens; the cold requests did not. A zero-token cache hit therefore does
+not imply identical prefill segmentation.
+
+In a separate child process, disabling only `Scheduler._shared_prefix_local_split`
+with a diagnostic monkeypatch made warm, cold and repeated-cold outputs match
+the original cold digest. Their TTFTs were 1.603, 1.606 and 1.606 seconds.
+Receipts are in `checkpoint-baseline-control.json` and
+`checkpoint-no-shared-split-control.json`. Each executed one late-edit row;
+the configured round count is not the number of completed repetitions.
+
+This supports shared-prefix prefill segmentation as an explanation for this
+particular mismatch, rather than checkpoint restoration. It does not qualify
+the other nine mismatches, establish a numerical root cause, or justify
+disabling shared-prefix snapshots in production. The diagnostic launcher also
+imports the scheduler before entering the CLI; an import-order control and a
+broader matrix remain necessary before proposing a runtime change.
+
 ## MTP
 
 The existing continuous-MTP harness completed 15 pairs over five prompts,
