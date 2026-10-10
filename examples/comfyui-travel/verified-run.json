@@ -1,0 +1,111 @@
+{
+  "environment": {
+    "date": "2026-10-10",
+    "hardware": "Apple M3 Ultra, 256 GB unified memory",
+    "os": "26.5.2",
+    "python": "3.12.13",
+    "rapid_mlx_source_commit": "60d0983ebb97e86245c19b0e481069b812117f1b",
+    "comfyui_commit": "0df64eb242b7c5759c3e86afd5d1846d923b1033",
+    "comfyui_packages": {
+      "torch": "2.14.1",
+      "numpy": "2.5.3",
+      "pillow": "12.3.0",
+      "comfyui-frontend-package": "1.55.14",
+      "transformers": "5.19.0"
+    },
+    "rapid_mlx_packages": {
+      "rapid-mlx": "0.15.7",
+      "mflux": "0.20.0",
+      "mlx": "0.32.3"
+    },
+    "model": "mlx-community/Qwen-Image-2.1-mflux-q4",
+    "model_revision": "746a58556820933a2df5c75887a2570f1ad200c0",
+    "width": 1024,
+    "height": 1024,
+    "steps": 40,
+    "mode": "ComfyUI CPU orchestration; Rapid-MLX MLX diffusion"
+  },
+  "method": "One real demo session, cached model weights; no comparative or controlled benchmark. Server times are image route wall time; client times also include ComfyUI queue/polling.",
+  "attempts": 8,
+  "selected_images": 6,
+  "rejected_candidates": "Two original subtitle spelling failures retained under media/rejected; accepted reruns use shorter text and new seeds.",
+  "outputs": [
+    {
+      "destination": "lunar-night-market",
+      "seed": 4300,
+      "image_sha256": "37bf4160bc3bd1b327fefc57724d7d4b2e14d1e2d4e7698ef2b24b553db38c76",
+      "prompt_id": "e9d66b51-c4fc-4249-b3ad-dc1f1579c208",
+      "client_wall_seconds_including_queue": 333.36,
+      "server_total_seconds": 204.81,
+      "denoise_seconds": 199.76,
+      "seconds_per_step": 4.99
+    },
+    {
+      "destination": "cloud-ocean",
+      "seed": 4201,
+      "image_sha256": "6901785ddc8d04c61c5bdce3afd9a6afa6e032a6e126d845ff535c33437f7d4d",
+      "prompt_id": "67aedd0e-2318-4b48-9800-44a860039653",
+      "client_wall_seconds_including_queue": 202.69,
+      "server_total_seconds": 201.97,
+      "denoise_seconds": 197.13,
+      "seconds_per_step": 4.93
+    },
+    {
+      "destination": "mushroom-forest",
+      "seed": 4202,
+      "image_sha256": "a3be77f6c9e0457a157b764c1aed1d7dd98b816c0848a5c1aba3b3c3bd909748",
+      "prompt_id": "6bc4c977-61fa-4234-ad7d-bd989ed2937a",
+      "client_wall_seconds_including_queue": 393.43,
+      "server_total_seconds": 188.58,
+      "denoise_seconds": 184.01,
+      "seconds_per_step": 4.6
+    },
+    {
+      "destination": "saturn-riviera",
+      "seed": 4303,
+      "image_sha256": "d48e65180e1f9bca54339e4d3800605786e39d62b19bf768049cea652e0b4228",
+      "prompt_id": "c2a21eb0-365d-46bf-b952-c75588b8131c",
+      "client_wall_seconds_including_queue": 353.21,
+      "server_total_seconds": 194.04,
+      "denoise_seconds": 188.89,
+      "seconds_per_step": 4.72
+    },
+    {
+      "destination": "deep-sea-express",
+      "seed": 4204,
+      "image_sha256": "cbfbc5fb98fed27561723d7b3a34f86f9b6d4ab26a59a65279fae26f74f07ae2",
+      "prompt_id": "63d16e61-0fee-4438-a048-2616d024ceaa",
+      "client_wall_seconds_including_queue": 192.55,
+      "server_total_seconds": 192.1,
+      "denoise_seconds": 186.9,
+      "seconds_per_step": 4.67
+    },
+    {
+      "destination": "origami-city",
+      "seed": 4205,
+      "image_sha256": "fe5ae6523de0579c6f0ca1f17c7d00a4f20c1e13835bd8853ac6df8eacb2f328",
+      "prompt_id": "49df01c3-9e08-4829-a5f8-9c55ec553860",
+      "client_wall_seconds_including_queue": 389.17,
+      "server_total_seconds": 194.69,
+      "denoise_seconds": 189.84,
+      "seconds_per_step": 4.75
+    }
+  ],
+  "reel": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1920,
+        "height": 1080,
+        "r_frame_rate": "30/1"
+      }
+    ],
+    "format": {
+      "duration": "20.000000",
+      "size": "10946570"
+    }
+  },
+  "reel_type": "FFmpeg animated stills, not diffusion-generated motion"
+}

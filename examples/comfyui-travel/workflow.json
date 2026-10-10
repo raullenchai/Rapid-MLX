@@ -1,0 +1,96 @@
+{
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "RapidMLXImage",
+      "pos": [
+        80,
+        100
+      ],
+      "size": [
+        450,
+        490
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RapidMLXImage"
+      },
+      "widgets_values": [
+        "http://127.0.0.1:18427",
+        "qwen-image-2.1",
+        "A spectacular premium retro-futurist travel poster, cinematic editorial illustration with exquisitely detailed architecture, dramatic depth, tiny travelers for scale, sophisticated color grading, luxurious print design, full bleed square composition. A bustling night market inside a colossal glass dome on the moon, red and amber paper lanterns, noodle stalls, astronauts in elegant silver suits, massive blue Earth hanging in a black starry sky, the lunar dust glowing violet. Rich indigo, vermilion and warm gold. At the top render the exact large readable headline \"LUNAR NIGHT MARKET\" in beautifully arranged bold display typography. Under the headline render the smaller exact words \"OPEN ALL NIGHT\". At the very bottom render the small words \"RAPID TRAVEL\". Integrate the lettering elegantly into the poster. No other text. Original imaginary destination, astonishing yet coherent composition.",
+        1024,
+        1024,
+        40,
+        4300,
+        "fixed"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "SaveImage",
+      "pos": [
+        620,
+        100
+      ],
+      "size": [
+        480,
+        560
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "rapid-travel/lunar-night-market"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.85,
+      "offset": [
+        70,
+        90
+      ]
+    }
+  },
+  "version": 0.4
+}
