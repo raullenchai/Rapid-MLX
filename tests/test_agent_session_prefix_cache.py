@@ -508,6 +508,35 @@ def test_restored_boundary_insert_failure_rearms_cold_snapshot(monkeypatch):
     assert req._cache_snapshot_boundary == 128
 
 
+@pytest.mark.parametrize("lost", ["metadata", "backend"])
+def test_restored_retention_without_its_boundary_preserves_fallback(monkeypatch, lost):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    assert cache.store(list(range(128)), _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 78, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    layers = _hybrid_cache(4 * MB)
+    assert sched._boundary_snapshot_supersedes(req, layers, 144)
+
+    if lost == "backend":
+        sched.memory_aware_cache = None
+        assert not sched._boundary_snapshot_supersedes(req, layers, 144)
+        return
+
+    del req._cache_snapshot_boundary
+    sched._prompt_cache_save_cb(78, layers)
+    assert tuple(req.prompt_token_ids) in cache._entries
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    # Missing restored metadata must not suppress the completion under pressure.
+    assert tuple(req.prompt_token_ids + req.output_token_ids) in cache._entries
+
+
 def test_restored_boundary_completion_decision_blocks_concurrent_eviction(monkeypatch):
     from rapid_mlx import scheduler as scheduler_module
 
