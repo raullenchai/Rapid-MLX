@@ -2629,32 +2629,14 @@ def load_model(
                 "(alias pins is_text_only=True but --mllm was also given)"
             )
 
-    # Hybrid/linear-attention VLM checkpoints (e.g. Qwen3.5/3.6/3.8 GatedDeltaNet
-    # with a vision tower) auto-route to the MLLM lane on their vision weights.
-    # Post-#1798 the MLLM engine CAN serve an ArraysCache backbone, but only in
-    # a serialized one-request-at-a-time lane (a BatchKVCache cannot be built
-    # over ArraysCache, so concurrent batching stays off — GitHub #352). Left
-    # alone, the naive ``rapid-mlx serve <flagship>`` command would boot the
-    # whole model into that B=1 lane, capping text throughput for every request.
-    # Auto-fall-back to the text-only mlx-lm lane HERE, at the routing layer,
-    # with one clear INFO line, so the common text path keeps full batching and
-    # --mllm opts into the serialized vision lane. The dense text lane serves the
-    # GatedDeltaNet backbone coherently and keeps ``is_hybrid=False`` (avoiding
-    # the metal::malloc throttle wedge the 4B/9B/27B dense variants hit under
-    # the hybrid scheduler path — see model_auto_config r6-A R6-C1).
-    #
-    # The fallback is tracked in ``_auto_text_fallback`` — a state DISTINCT
-    # from the explicit ``force_text`` / ``--no-mllm`` flag — so diagnostics say
-    # "auto-downgraded" and never falsely claim the user passed ``--no-mllm``
-    # (codex #2 on #1178). The materialize-then-probe order is load-bearing:
-    # ``_ensure_routing_config`` must run BEFORE ``resolve_serving_lane`` so a
-    # first-time uncached hybrid VLM has real config evidence and is routed on
-    # fact, not on a missing config (codex BLOCKING on #1178). Only fires in
-    # auto mode: an explicit ``--mllm`` (force_mllm) is respected so the
-    # operator who wants vision gets the serialized MLLM lane (#1798) — for a
-    # hybrid backbone that serves vision at B=1; for an arch mlx-vlm cannot
-    # drive it still errors — rather than a silent override. #352 dogfood
-    # P1-② (0.10.16).
+    # Hybrid vision checkpoints retain the MLLM lane when the installed
+    # runtime supports their architecture. Lane resolution may still choose
+    # text for a requested speculative decoder or an unavailable vision
+    # runtime. After loading, qualified backbones share their language weights
+    # with a native-cache text scheduler; media keeps the serialized vision
+    # scheduler. This preserves image input without loading weights twice.
+    # Materialize routing evidence before resolving an uncached checkpoint.
+    # An explicit --mllm continues to request vision rather than a text fallback.
     #
     # The generative-media lanes are exempt. An ``image-gen`` / ``video-gen``
     # alias never reaches ``resolve_serving_lane``'s question at all — it

@@ -15,6 +15,24 @@ users and is always enabled.
 rapid-mlx serve qwen3.5-4b-4bit
 ```
 
+## Hybrid Vision Models
+
+Qualified Qwen hybrid checkpoints share their already-loaded language weights
+with a native-cache text scheduler. This includes the dense 27B backbone used
+by Qwen3.8-27B and the previously qualified 35B-A3B backbone. Text-only requests
+can batch while image and video requests retain the serialized vision scheduler.
+There is one copy of the model weights; both schedulers execute on the same
+model worker and isolate their position and cache state.
+
+Qualification uses the loaded architecture and exact layer geometry, rather
+than the model name. Other hybrid backbones keep the serialized vision path.
+Explicit speculative decoding retains its existing routing behavior. To keep
+all requests on the serialized vision scheduler for comparison or rollback,
+pass `--mllm --no-hybrid --no-spec-decode`.
+
+See the [27B qualification](../engineering/performance/2026-10-10-hybrid-vision-text-batching.md)
+for reproducible measurements and the single-client throughput tradeoff.
+
 ## With Paged Cache
 
 For memory-efficient prefix sharing:

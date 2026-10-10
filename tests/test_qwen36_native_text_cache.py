@@ -20,6 +20,7 @@ from rapid_mlx.engine.batched import (
     _qwen36_text_arrays_cache_type,
     _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
+    _supports_qwen38_dense_native_text_cache,
 )
 from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 
@@ -431,8 +432,10 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backbone", ["moe", "dense27b", "unqualified_dense"])
 async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     monkeypatch,
+    backbone,
 ):
     from rapid_mlx import mllm_scheduler as mllm_scheduler_module
     from rapid_mlx.engine import batched as batched_module
@@ -456,11 +459,18 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         layers=[SimpleNamespace(is_linear=(index + 1) % 4 != 0) for index in range(40)],
     )
 
+    config_model_type = "qwen3_5_moe"
+    if backbone != "moe":
+        language_model = _dense_27b_model()
+        config_model_type = "qwen3_5"
+        if backbone == "unqualified_dense":
+            language_model.args.hidden_size = 4096
+
     class _FakeMultimodalLM:
         def __init__(self, *_args, **_kwargs):
             self.model = SimpleNamespace(language_model=language_model)
             self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
-            self.config = {"model_type": "qwen3_5_moe"}
+            self.config = {"model_type": config_model_type}
 
         def load(self):
             return None
@@ -495,7 +505,7 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         engine._model_load_executor.shutdown(wait=True)
         engine._model_load_executor = None
 
-    assert activated == [language_model]
+    assert activated == ([] if backbone == "unqualified_dense" else [language_model])
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
 
 
@@ -663,3 +673,83 @@ def test_dual_lane_cache_stats_preserve_mllm_shape_and_expose_text_lane():
         "entries": 1,
         "text_scheduler": {"hits": 5, "entries": 3},
     }
+
+
+_DENSE_27B_GEOMETRY = {
+    "model_type": "qwen3_5_text",
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "num_hidden_layers": 64,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "full_attention_interval": 4,
+    "linear_conv_kernel_dim": 4,
+    "linear_num_value_heads": 48,
+    "linear_num_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_value_head_dim": 128,
+}
+
+
+def _dense_27b_model():
+    return SimpleNamespace(
+        args=SimpleNamespace(**_DENSE_27B_GEOMETRY),
+        layers=[SimpleNamespace(is_linear=(i + 1) % 4 != 0) for i in range(64)],
+    )
+
+
+def test_dense_27b_uses_shared_weight_text_scheduler():
+    model = _dense_27b_model()
+    assert _supports_qwen38_dense_native_text_cache(model)
+    assert _should_start_qwen36_native_text_cache(
+        model, config_model_type="qwen3_5", arrays_cache_compat=True, spec_decode="none"
+    )
+    wrapper = Qwen36NativeCacheTextWrapper(model)
+    assert wrapper.layers is model.layers
+    caches = wrapper.make_cache()
+    assert len(caches) == 64
+    assert all(
+        isinstance(c, ArraysCache if i % 4 != 3 else KVCache)
+        for i, c in enumerate(caches)
+    )
+
+
+@pytest.mark.parametrize("field", list(_DENSE_27B_GEOMETRY))
+def test_dense_qualification_rejects_unqualified_geometry(field):
+    model = _dense_27b_model()
+    delattr(model.args, field)
+    assert not _supports_qwen38_dense_native_text_cache(model)
+    setattr(model.args, field, "unknown" if field == "model_type" else -1)
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
+@pytest.mark.parametrize("change", ["missing_layer", "wrong_kind", "malformed_layers"])
+def test_dense_qualification_rejects_unqualified_layers(change):
+    model = _dense_27b_model()
+    if change == "missing_layer":
+        model.layers.pop()
+    elif change == "wrong_kind":
+        model.layers[0].is_linear = False
+    else:
+        model.layers = None
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"config_model_type": "qwen3_5_moe"},
+        {"config_model_type": None},
+        {"arrays_cache_compat": False},
+        {"spec_decode": "mtp"},
+        {"spec_decode": "dflash"},
+        {"no_hybrid": True},
+    ],
+)
+def test_dense_start_gate_respects_architecture_and_operator_overrides(overrides):
+    kwargs = dict(
+        config_model_type="qwen3_5", arrays_cache_compat=True, spec_decode="none"
+    )
+    kwargs.update(overrides)
+    assert not _should_start_qwen36_native_text_cache(_dense_27b_model(), **kwargs)
