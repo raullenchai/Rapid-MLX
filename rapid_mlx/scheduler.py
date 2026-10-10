@@ -8456,7 +8456,8 @@ class Scheduler:
             cached = request.cached_tokens
             if (
                 0 < len(remaining) <= _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP
-                and request.prefix_boundary <= cached
+                and self._tile_aligned_boundary(request, request.prefix_boundary)
+                <= cached
                 and _cache_has_non_trimmable(cache)
             ):
                 with store._lock:

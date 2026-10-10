@@ -381,11 +381,11 @@ def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     boundary = list(range(128))
     layers = [_KVLayer(4 * MB)] if case == "dense" else _hybrid_cache(4 * MB)
     assert cache.store(boundary, layers, message_boundary=case != "unmarked")
-    tail = 65 if case == "long_tail" else 16
+    tail = 65 if case == "long_tail" else 64 if case == "new_boundary" else 16
     req = _register(sched, 72, 128 + tail)
     req.prompt_token_ids = boundary + list(range(1000, 1000 + tail))
     if case == "new_boundary":
-        req.prefix_boundary = 136
+        req.prefix_boundary = 160
 
     sched._fetch_memory_aware_prefix(req)
 
