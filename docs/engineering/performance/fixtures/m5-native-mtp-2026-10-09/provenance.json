@@ -1,0 +1,38 @@
+{
+  "source_commit": "a792c741277cc519e77dafa9714a64c6196ab91a",
+  "python": "3.12.13",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "device": {
+    "device_name": "Apple M5 Max",
+    "max_recommended_working_set_size": 30150672384,
+    "memory_size": 38654705664,
+    "architecture": "applegpu_g17s",
+    "max_buffer_length": 22613000192,
+    "resource_limit": 499000
+  },
+  "versions": {
+    "mlx": "0.32.3",
+    "mlx-metal": "0.32.3",
+    "mlx-lm": "0.31.3",
+    "mlx-vlm": "0.7.2",
+    "transformers": "5.15.1",
+    "numpy": "2.5.3",
+    "huggingface-hub": "1.33.0",
+    "tokenizers": "0.22.2"
+  },
+  "source_commit_note": "Exact loader and benchmark code commit; following documentation-only commit records observations.",
+  "sha256": {
+    "rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/__init__.py": "314180242483cb90f3397aaef17377cdbf3036b1dad12bbd9da79fb0792b7b5b",
+    "scripts/benchmark_m5_native_mtp.py": "ddb3588dc927a74268aa164a5e82fbe21d940d76195181d58f0f27729cb99819"
+  },
+  "warmup": "coding prompt, 32 output tokens, ar/mtp/mtp/ar",
+  "mode_order": "ar then mtp in rounds 0 and 2; mtp then ar in round 1",
+  "processes": 2,
+  "generation": "mlx_vlm.stream_generate 0.7.2; vendored production load_drafter; greedy; block size 3; normal EOS; fresh request caches",
+  "environment": {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "RAPID_MLX_TELEMETRY": "0",
+    "PYTHONPATH": "."
+  }
+}

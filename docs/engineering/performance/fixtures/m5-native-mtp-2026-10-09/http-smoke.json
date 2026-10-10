@@ -1,0 +1,51 @@
+{
+  "command": [
+    "$PYTHON",
+    "-m",
+    "rapid_mlx.cli",
+    "serve",
+    "qwen3.6-35b-4bit",
+    "--speculative-config",
+    "{\"method\":\"mtp\",\"backend\":\"native\"}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8618",
+    "--served-model-name",
+    "native-mtp-smoke",
+    "--no-mllm",
+    "--max-tokens",
+    "32"
+  ],
+  "requests": [
+    {
+      "stream": false,
+      "status": 200,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 18,
+        "completion_tokens": 2,
+        "total_tokens": 20,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null
+      },
+      "content_sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526"
+    },
+    {
+      "stream": true,
+      "status": 200,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 18,
+        "completion_tokens": 2,
+        "total_tokens": 20
+      },
+      "done": true,
+      "content_sha256": "c2e3ac47f4a325469c1a2d5f117e463ec943c721986d5d9f09ac4540b7d80526"
+    }
+  ],
+  "health_status": 200,
+  "server_exit": -15,
+  "note": "Fresh normal CLI server; HF metadata access enabled because pinned repository resolver attempts a tree lookup even with copied snapshots. Uses existing immutable default-cache weights.",
+  "shutdown_note": "Server shutdown logged application completion and a multiprocessing resource_tracker semaphore cleanup warning; resource-leak behavior is not qualified here."
+}
