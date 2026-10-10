@@ -334,3 +334,66 @@ def test_inactive_xml_branch_does_not_choose_xml_prefill(xml_enabled):
         assert prefix == "<tool_call>\n<function=get_weather>\n"
     else:
         assert '"arguments": ' in prefix
+
+
+def test_xml_probe_normalizes_replayed_arguments_without_mutating_request():
+    req = request()
+    req.messages = ChatCompletionRequest(
+        model="test",
+        messages=[
+            {"role": "user", "content": "Weather?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city":"Paris"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_old", "content": "Sunny"},
+            {"role": "user", "content": "And now?"},
+        ],
+    ).messages
+    before = req.model_dump()
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=XML_TEMPLATE))
+    assert (
+        _compute_forced_tool_prefix(
+            SimpleNamespace(tool_call_parser="hermes"), req, engine
+        )
+        == "<tool_call>\n<function=get_weather>\n"
+    )
+    assert req.model_dump() == before
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+def test_xml_probe_uses_resolved_top_level_thinking(thinking):
+    template = (
+        "{% if enable_thinking %}" + XML_TEMPLATE + "{% else %}JSON template{% endif %}"
+    )
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=template))
+    req = request()
+    req.enable_thinking = thinking
+    prefix = _compute_forced_tool_prefix(
+        SimpleNamespace(tool_call_parser="hermes"), req, engine
+    )
+    assert ("<function=get_weather>" in prefix) == thinking
+
+
+def test_xml_probe_failure_does_not_guess_a_json_prefill():
+    template = (
+        XML_TEMPLATE
+        + "{% if messages[-1].role == 'assistant' %}{{ raise_exception('probe unsupported') }}{% endif %}"
+    )
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=template))
+    assert (
+        _compute_forced_tool_prefix(
+            SimpleNamespace(tool_call_parser="hermes"), request(), engine
+        )
+        is None
+    )

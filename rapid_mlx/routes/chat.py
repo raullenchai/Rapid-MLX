@@ -391,6 +391,8 @@ def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
         from jinja2 import TemplateError
         from transformers.utils.chat_template_utils import render_jinja_template
 
+        from ..utils.chat_template import _normalize_assistant_tool_call_arguments
+
         probe_messages = [m.model_dump(exclude_none=True) for m in request.messages]
         probe_messages.append(
             {
@@ -404,15 +406,22 @@ def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
                 ],
             }
         )
+        probe_messages = _normalize_assistant_tool_call_arguments(probe_messages)
+        probe_kwargs = dict(request.chat_template_kwargs or {})
+        resolved_thinking = _resolve_enable_thinking(request)
+        if resolved_thinking is not None:
+            probe_kwargs["enable_thinking"] = resolved_thinking
         try:
             rendered, _ = render_jinja_template(
                 [probe_messages],
                 tools=[t.model_dump(exclude_none=True) for t in request.tools],
                 chat_template=template,
-                **(request.chat_template_kwargs or {}),
+                **probe_kwargs,
             )
         except (TypeError, ValueError, TemplateError):
-            rendered = []
+            # An unprobeable template has no verified forced wire format.
+            # Let native generation choose it rather than guess JSON.
+            return None
         if rendered and rendered[0].rsplit("<tool_call>", 1)[-1].lstrip().startswith(
             f"<function={_forced_name}>"
         ):
