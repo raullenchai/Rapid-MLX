@@ -318,3 +318,17 @@ class TestRadixHitMissCounters:
         s = idx.stats()
         assert s["hits"] == 2
         assert s["misses"] == 2
+
+
+def test_save_does_not_follow_predictable_staging_symlink(tmp_path):
+    target = tmp_path / "unrelated"
+    target.write_text("unchanged")
+    target.chmod(0o644)
+    (tmp_path / "radix.index.tmp").symlink_to(target)
+    idx = RadixPrefixIndex()
+    idx.insert([1, 2])
+    idx.save(str(tmp_path / "radix.index"))
+    assert target.read_text() == "unchanged"
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / "radix.index").is_symlink()
+    assert RadixPrefixIndex().load(str(tmp_path / "radix.index"))

@@ -55,7 +55,9 @@ An independent adversarial reviewer reproduced heartbeat certificate failure
 using a real localhost HTTPS server with a self-signed certificate. The first
 failure now sets a fatal CA-repair message; subsequent heartbeat attempts do
 not send requests. The supervisor stops its child and reports the certificate
-repair hint instead of a revoked-key message. The reviewer approved the fix.
+repair hint instead of a revoked-key message. The reviewer approved the fix. A subsequent validator review also prompted
+exclusive random radix staging files, no-follow descriptor permission changes,
+and refusal of symlinked cache ancestors; four regressions cover these cases.
 
 ## Regression command
 
@@ -65,7 +67,7 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 464 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 468 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.

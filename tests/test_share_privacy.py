@@ -146,3 +146,18 @@ def test_all_unhashed_legacy_candidates_are_ambiguous(
     with pytest.raises(OSError, match="ambiguous"):
         clear_legacy_prompt_cache(selected)
     assert (path / "tokens.bin").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("component", [".cache", ".cache/rapid-mlx"])
+def test_cleanup_refuses_symlinked_ancestor(tmp_path, monkeypatch, component):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    marker = elsewhere / "keep"
+    marker.write_text("unchanged")
+    link = tmp_path / component
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError, match="symlink"):
+        clear_legacy_prompt_cache("model")
+    assert marker.read_text() == "unchanged"

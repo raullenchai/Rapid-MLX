@@ -28,9 +28,11 @@ def _known_namespaces(model: str, safe_name: str) -> set[str]:
 def clear_legacy_prompt_cache(model: str) -> int:
     from rapid_mlx.runtime.cache import _exclusive_cache_lock
 
-    root = Path.home() / ".cache" / "rapid-mlx" / "prefix_cache"
-    if root.is_symlink():
-        raise OSError("refusing a symlink as the prompt-cache root")
+    root = Path.home()
+    for component in (".cache", "rapid-mlx", "prefix_cache"):
+        root = root / component
+        if root.is_symlink():
+            raise OSError("refusing a symlink in the prompt-cache root path")
     safe_name = (
         model.replace("/", "--").replace("\\", "--").replace("..", "--").lstrip(".")
     ) or "default"

@@ -3532,3 +3532,27 @@ def test_snapshot_is_private_even_with_permissive_umask(tmp_path):
     assert stat.S_IMODE(snapshot.stat().st_mode) == 0o700
     for path in snapshot.iterdir():
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch):
+    import rapid_mlx.memory_cache as mc
+
+    target = tmp_path / "unrelated"
+    target.write_text("unchanged")
+    target.chmod(0o644)
+    original = mc._fsync_dir
+
+    def inject_link(directory):
+        if str(directory).endswith(".new"):
+            from pathlib import Path
+
+            (Path(directory) / "injected").symlink_to(target)
+        return original(directory)
+
+    monkeypatch.setattr(mc, "_fsync_dir", inject_link)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert target.read_text() == "unchanged"
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / "snapshot").exists()

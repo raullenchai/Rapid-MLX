@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import os
+import stat
 import struct
 import threading
 from collections import OrderedDict
@@ -3771,7 +3772,16 @@ class MemoryAwarePrefixCache:
         # Give each published artifact an explicit private mode as well.
         try:
             for name in os.listdir(new_dir):
-                os.chmod(os.path.join(new_dir, name), 0o600)
+                fd = os.open(
+                    os.path.join(new_dir, name),
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise OSError("snapshot artifact is not a regular file")
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
         except OSError as exc:
             logger.warning("[cache_persist] cannot protect snapshot files: %s", exc)
             return False
