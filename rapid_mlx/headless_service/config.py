@@ -78,6 +78,11 @@ class ServiceConfig:
             raise ServiceConfigError(
                 "embedding_model is set; remove --embedding-model from serve_args"
             )
+        # Installation temporarily removes --lazy-load to qualify resident
+        # weights. Without this guard, an embeddings-only service could pass
+        # qualification but fail to boot from the persisted definition.
+        if self.model is None and "--lazy-load" in self.serve_args:
+            raise ServiceConfigError("embeddings-only services cannot use --lazy-load")
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
                 "host must be a non-empty address without whitespace"

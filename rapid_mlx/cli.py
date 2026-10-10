@@ -5391,6 +5391,19 @@ def serve_command(args):
         _serve_cua_only_mode(args)
         return
 
+    embeddings_only = not getattr(args, "model", None) and bool(
+        getattr(args, "embedding_model", None)
+    )
+    if embeddings_only:
+        incompatible = _embedding_only_incompatible_options(args)
+        if incompatible:
+            print(
+                "rapid-mlx serve without a model (embeddings-only) cannot be "
+                "combined with " + ", ".join(incompatible),
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
     _validate_primary_lifecycle_args(args)
 
     if bounds_error := _vision_pixel_bounds_error(
@@ -5432,15 +5445,7 @@ def serve_command(args):
 
     install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
 
-    if not getattr(args, "model", None) and getattr(args, "embedding_model", None):
-        incompatible = _embedding_only_incompatible_options(args)
-        if incompatible:
-            print(
-                "rapid-mlx serve without a model (embeddings-only) cannot be "
-                "combined with " + ", ".join(incompatible),
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
+    if embeddings_only:
         args.port = _resolve_serve_port(
             getattr(args, "host", "127.0.0.1"),
             getattr(args, "port", None),

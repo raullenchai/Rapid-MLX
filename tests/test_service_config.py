@@ -127,6 +127,15 @@ def test_service_config_rejects_null_model_without_embedding_model():
         ServiceConfig.from_dict(raw)
 
 
+def test_embeddings_only_service_rejects_lazy_load_before_qualification():
+    with pytest.raises(ServiceConfigError, match="embeddings-only.*--lazy-load"):
+        _config(
+            model=None,
+            embedding_model="embeddinggemma-300m-6bit",
+            serve_args=("--lazy-load",),
+        )
+
+
 def test_service_config_rejects_string_serve_args():
     raw = _config().to_dict()
     raw["serve_args"] = "--max-num-seqs 4"

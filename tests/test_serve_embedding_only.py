@@ -81,6 +81,20 @@ def test_serve_command_rejects_primary_model_flags_in_embedding_only_mode(capsys
     resolve_port.assert_not_called()
 
 
+def test_embedding_only_rejects_video_output_before_creating_directory(
+    tmp_path, capsys
+):
+    output = tmp_path / "video-output"
+    args = cli.build_parser().parse_args(
+        ["serve", "--embedding-model", EMBED_ID, "--video-output-dir", str(output)]
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(args)
+    assert exc_info.value.code == 2
+    assert "--video-output-dir" in capsys.readouterr().err
+    assert not output.exists()
+
+
 @pytest.fixture
 def embeddings_only_config():
     from rapid_mlx.config import reset_config

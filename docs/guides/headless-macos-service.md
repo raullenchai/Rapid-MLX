@@ -84,7 +84,8 @@ rapid-mlx service config
 To clear advanced serve flags, use `service configure --clear-serve-args`.
 `--embedding-model MODEL` sets the embedding model; `--clear-model` and
 `--clear-embedding-model` remove the chat or embedding model, as long as one of
-the two remains.
+the two remains. Embeddings-only services load their model at startup;
+`--lazy-load` is rejected when validating their configuration.
 Changing the service account or executable still requires uninstall/install,
 because those are security boundaries rather than runtime preferences.
 
