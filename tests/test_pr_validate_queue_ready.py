@@ -138,6 +138,7 @@ def test_no_mac_route_and_deferred_source_coverage(harness):
         lambda h: h.ctx.results.append(h.ctx.results[0]),
         lambda h: setattr(h.ctx, "head_sha", "short"),
         lambda h: setattr(h.ctx, "base_strategy", "tip-fallback"),
+        lambda h: setattr(h.ctx, "base_strategy", "override"),
         lambda h: h.pull.update(state="closed"),
         lambda h: h.pull.update(draft=True),
         lambda h: h.pull.update(body="unchecked test plan"),

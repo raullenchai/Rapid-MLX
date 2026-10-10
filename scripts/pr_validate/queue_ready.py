@@ -11,7 +11,7 @@ import json
 import re
 import subprocess
 import time
-from typing import Any
+from typing import Any, cast
 
 from .context import Context
 
@@ -47,7 +47,7 @@ def check_pull(ctx: Context) -> dict[str, Any]:
         or (pull.get("body") or "") != ctx.pr_body
     ):
         raise ValueError("PR changed or requires a separate recovery/release path")
-    return pull
+    return cast(dict[str, Any], pull)
 
 
 def existing_request(ctx: Context) -> bool:
@@ -133,7 +133,7 @@ def queue_validated_head(
         or results.get("fetch") != "pass"
         or results.get("codex_review") != "pass"
         or not re.fullmatch(r"[0-9a-f]{40}", ctx.head_sha)
-        or ctx.base_strategy == "tip-fallback"
+        or ctx.base_strategy not in {"git-merge-base", "gh-compare"}
     ):
         raise ValueError(
             "queue handoff requires complete validation and executed review"

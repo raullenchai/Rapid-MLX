@@ -37,7 +37,7 @@ python3.12 -m scripts.pr_validate <PR#> --queue-on-success
 
 Choose this at the start of validation to avoid a second operator visit after
 validation finishes. The complete default pipeline must finish MERGE-SAFE with
-an executed Codex review. Partial runs, explicit step removal and description,
+an executed Codex review. Partial runs, explicit `--base` overrides, step removal and description,
 review or stress overrides cannot authorize this handoff. Ordinary applicability
 skips remain visible in the scorecard. Existing validation behavior is unchanged
 without the option.

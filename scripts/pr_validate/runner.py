@@ -137,6 +137,7 @@ def run_pipeline(
     """
     if queue_on_success and (
         body_only
+        or base
         or skip_steps
         or steps is not None
         or any(

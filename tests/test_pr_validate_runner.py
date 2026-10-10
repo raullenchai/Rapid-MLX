@@ -87,6 +87,7 @@ def _fake_pipeline(after_fetch: list[tuple[str, str]]) -> list[Step]:
         {"body_only": True},
         {"skip_steps": ("lint",)},
         {"steps": []},
+        {"base": "head"},
     ],
 )
 def test_queue_handoff_rejects_partial_runs_before_validation(repo_root_cwd, options):
