@@ -1,0 +1,546 @@
+{
+  "label": "prefill-2048-recheck",
+  "model": "<HOME>/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/32f3e8ecf65426fc3306969496342d504bfa13f3",
+  "started": 1791647170.334541,
+  "runs": [
+    {
+      "kind": "contention",
+      "rows": [
+        {
+          "ttft_ms": 12440.224665973801,
+          "total_ms": 13799.865749955643,
+          "mean_tpot_ms": 13.4149201790263,
+          "sse_gap_p95_ms": 16.75716700265184,
+          "sse_gap_max_ms": 39.37937499722466,
+          "usage": {
+            "prompt_tokens": 16412,
+            "completion_tokens": 96,
+            "total_tokens": 16508
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "350c008d028a54096f540af1d5ccaee5459e9507abdf64c41cd6e7b1ceeca728",
+          "output_text": "These records define a sequence of 621 deterministic modular multiplication functions, each mapping an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 while `m` increases by 3 for each subsequent record. This pattern generates a structured set of linear congruential generators (LCGs) or modular transformations. Such a collection is likely used for"
+        },
+        {
+          "ttft_ms": 6934.097124962136,
+          "total_ms": 13490.773457975592,
+          "mean_tpot_ms": 69.00800876870849,
+          "sse_gap_p95_ms": 496.6552499681711,
+          "sse_gap_max_ms": 507.90420797420666,
+          "usage": {
+            "prompt_tokens": 284,
+            "completion_tokens": 96,
+            "total_tokens": 380
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "3018b77a5e64d31f5d79e300d41bb79b60d34514e48f1ad026a57b722c5164f0",
+          "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The coefficients ($k$) and moduli ($m$) are carefully chosen to likely form part of a cryptographic challenge or a mathematical puzzle. Specifically, the increasing moduli (101, 104, 107, etc.) suggest a progression toward larger"
+        }
+      ],
+      "repeat": 0,
+      "short_solo": {
+        "ttft_ms": 184.327042021323,
+        "total_ms": 825.7695840438828,
+        "mean_tpot_ms": 5.770914031707338,
+        "sse_gap_p95_ms": 6.3874589977785945,
+        "sse_gap_max_ms": 8.601499954238534,
+        "usage": {
+          "prompt_tokens": 284,
+          "completion_tokens": 96,
+          "total_tokens": 380
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "4b166b2230b70eb5804cd5137348d327b46a0194ab9d8cac55656574ed2334e9",
+        "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The coefficients ($k$) and moduli ($m$) increase sequentially, suggesting a structured progression likely used to generate a pseudo-random number generator (PRNG) or a cryptographic key schedule. In such systems, these functions often serve as linear congruential generators (LCGs)"
+      },
+      "observed_status": {
+        "status": "generating",
+        "model": "agent-probe",
+        "uptime_s": 14.9,
+        "steps_executed": 122,
+        "num_running": 1,
+        "num_waiting": 0,
+        "total_requests_processed": 3,
+        "total_prompt_tokens": 16862,
+        "total_completion_tokens": 114,
+        "generation_tps": 175.4,
+        "prompt_tps": 1675.16,
+        "adaptive_prefill": {
+          "chunk_size": 2048,
+          "protected_chunks": 0,
+          "reduced_chunks": 0
+        },
+        "shared_prefix_waits": 0,
+        "decode_stall": {
+          "chunk_size": null,
+          "bounded_chunks": 0
+        },
+        "mtp_prompt_lookup": {},
+        "idle_cache_clear": {
+          "enabled": false,
+          "seconds": 0.0,
+          "clear_count": 0,
+          "last_clear_at": null
+        },
+        "metal": {
+          "active_memory_gb": 2.72,
+          "peak_memory_gb": 3.11,
+          "cache_memory_gb": 0.0
+        },
+        "cache": {
+          "hits": 0,
+          "misses": 4,
+          "hit_rate": 0.0,
+          "evictions": 0,
+          "tokens_saved": 0,
+          "current_memory_mb": 0.0,
+          "max_memory_mb": 39808.99,
+          "current_memory_bytes": 0,
+          "max_memory_bytes": 41742755430,
+          "memory_utilization": 0.0,
+          "entry_count": 0,
+          "load_skipped": 0,
+          "save_drift_drops": 0,
+          "non_trimmable_skips": 0,
+          "non_trimmable_entries": 0,
+          "radix": {
+            "hits": 0,
+            "misses": 4,
+            "inserts": 6,
+            "removes": 0,
+            "deduped_prefix_bytes_saved": 1588,
+            "node_count": 0,
+            "entry_count": 0,
+            "max_depth": 0,
+            "lookup_p50_seconds": 1.25e-06,
+            "lookup_p99_seconds": 1.25e-06
+          }
+        },
+        "requests": [
+          {
+            "request_id": "chatcmpl-5d76563e9257428fb38c48b36b5c1da8",
+            "status": "running",
+            "phase": "prefill",
+            "elapsed_s": 0.02,
+            "prompt_tokens": 16412,
+            "completion_tokens": 0,
+            "max_tokens": 96,
+            "progress": 0.0,
+            "tokens_per_second": null,
+            "ttft_s": null,
+            "cache_hit_type": "miss",
+            "cached_tokens": 0
+          }
+        ]
+      },
+      "wall_s": 13.804766000015661,
+      "output_tps": 13.908240096194472
+    },
+    {
+      "kind": "contention",
+      "rows": [
+        {
+          "ttft_ms": 12373.159540991765,
+          "total_ms": 13733.08520799037,
+          "mean_tpot_ms": 13.425389042516288,
+          "sse_gap_p95_ms": 16.775165975559503,
+          "sse_gap_max_ms": 38.88812498189509,
+          "usage": {
+            "prompt_tokens": 16412,
+            "completion_tokens": 96,
+            "total_tokens": 16508
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "ac83363f81fd4530205491d2bc784db2a2a5540c272e9f299f9846c3193ad5c6",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 and `m` increases by 3 for each subsequent record. This structure generates a linear congruential generator (LCG) family, likely designed to test cryptographic properties, random number generation"
+        },
+        {
+          "ttft_ms": 6867.218667000998,
+          "total_ms": 13428.132708999328,
+          "mean_tpot_ms": 69.05319034734643,
+          "sse_gap_p95_ms": 492.91737499879673,
+          "sse_gap_max_ms": 536.3186249742284,
+          "usage": {
+            "prompt_tokens": 284,
+            "completion_tokens": 96,
+            "total_tokens": 380
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "439e6b3ebb749718f17d87c8034dc3ba80104113a2423b934abc3c757bf70689",
+          "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The modulus $m$ increases sequentially from 101 to 128, while the multiplier $k$ follows a specific arithmetic progression. This structure suggests a systematic generation of pseudo-random values or a construction of a lookup table for a cryptographic hash function or stream cipher. By"
+        }
+      ],
+      "repeat": 1,
+      "short_solo": {
+        "ttft_ms": 187.449541001115,
+        "total_ms": 803.6202500225045,
+        "mean_tpot_ms": 5.688082894898559,
+        "sse_gap_p95_ms": 6.197459006216377,
+        "sse_gap_max_ms": 9.425875032320619,
+        "usage": {
+          "prompt_tokens": 284,
+          "completion_tokens": 96,
+          "total_tokens": 380
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "98a05268e65c55059440498edb39637df3c3ea01747aa759f9191cea9e3d2faf",
+        "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The modulus $m$ increases by 3 in each step (101, 104, 107, ...), while the multiplier $k$ follows an arithmetic progression starting at 7 with a difference of 13. This pattern suggests a structured generation"
+      },
+      "observed_status": {
+        "status": "generating",
+        "model": "agent-probe",
+        "uptime_s": 30.1,
+        "steps_executed": 336,
+        "num_running": 1,
+        "num_waiting": 0,
+        "total_requests_processed": 6,
+        "total_prompt_tokens": 33842,
+        "total_completion_tokens": 402,
+        "generation_tps": 177.84,
+        "prompt_tps": 1650.42,
+        "adaptive_prefill": {
+          "chunk_size": 2048,
+          "protected_chunks": 0,
+          "reduced_chunks": 0
+        },
+        "shared_prefix_waits": 0,
+        "decode_stall": {
+          "chunk_size": null,
+          "bounded_chunks": 15
+        },
+        "mtp_prompt_lookup": {},
+        "idle_cache_clear": {
+          "enabled": false,
+          "seconds": 0.0,
+          "clear_count": 0,
+          "last_clear_at": null
+        },
+        "metal": {
+          "active_memory_gb": 2.58,
+          "peak_memory_gb": 9.67,
+          "cache_memory_gb": 0.0
+        },
+        "cache": {
+          "hits": 0,
+          "misses": 7,
+          "hit_rate": 0.0,
+          "evictions": 0,
+          "tokens_saved": 0,
+          "current_memory_mb": 0.0,
+          "max_memory_mb": 39808.99,
+          "current_memory_bytes": 0,
+          "max_memory_bytes": 41742755430,
+          "memory_utilization": 0.0,
+          "entry_count": 0,
+          "load_skipped": 0,
+          "save_drift_drops": 0,
+          "non_trimmable_skips": 0,
+          "non_trimmable_entries": 0,
+          "radix": {
+            "hits": 0,
+            "misses": 7,
+            "inserts": 12,
+            "removes": 0,
+            "deduped_prefix_bytes_saved": 69192,
+            "node_count": 0,
+            "entry_count": 0,
+            "max_depth": 0,
+            "lookup_p50_seconds": 7.5e-07,
+            "lookup_p99_seconds": 1.25e-06
+          }
+        },
+        "requests": [
+          {
+            "request_id": "chatcmpl-bfd901e5c5144f4ba223fdd7eec44a2a",
+            "status": "running",
+            "phase": "prefill",
+            "elapsed_s": 0.02,
+            "prompt_tokens": 16412,
+            "completion_tokens": 0,
+            "max_tokens": 96,
+            "progress": 0.0,
+            "tokens_per_second": null,
+            "ttft_s": null,
+            "cache_hit_type": "miss",
+            "cached_tokens": 0
+          }
+        ]
+      },
+      "wall_s": 13.73764674999984,
+      "output_tps": 13.976192829387045
+    },
+    {
+      "kind": "contention",
+      "rows": [
+        {
+          "ttft_ms": 12327.341584023088,
+          "total_ms": 13676.343167026062,
+          "mean_tpot_ms": 13.391754820967387,
+          "sse_gap_p95_ms": 16.882958996575326,
+          "sse_gap_max_ms": 37.709583004470915,
+          "usage": {
+            "prompt_tokens": 16412,
+            "completion_tokens": 96,
+            "total_tokens": 16508
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "63527db499ae2b106b6c8e2e16af011f1f6e1fd29588a4dcf18a52104eb34429",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 and `m` increases by 3 for each subsequent record. This pattern generates a structured set of linear congruential generators or transformation rules. Such a collection is likely used to create a"
+        },
+        {
+          "ttft_ms": 6856.528541014995,
+          "total_ms": 13375.617291021626,
+          "mean_tpot_ms": 68.61774430512206,
+          "sse_gap_p95_ms": 493.52808302501217,
+          "sse_gap_max_ms": 518.9987500198185,
+          "usage": {
+            "prompt_tokens": 284,
+            "completion_tokens": 96,
+            "total_tokens": 380
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "b659ee975ca69d8226ce6ed57022491716dab07b0f55126f8ef6ef3ef005a0f2",
+          "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The coefficients ($k$) and moduli ($m$) are carefully chosen to likely form part of a cryptographic challenge or a mathematical puzzle involving discrete logarithms or hash collisions. Specifically, the increasing moduli (101, 104, 107,"
+        }
+      ],
+      "repeat": 2,
+      "short_solo": {
+        "ttft_ms": 190.2699579950422,
+        "total_ms": 817.7399170235731,
+        "mean_tpot_ms": 5.723172810394317,
+        "sse_gap_p95_ms": 6.256416963879019,
+        "sse_gap_max_ms": 9.499415988102555,
+        "usage": {
+          "prompt_tokens": 284,
+          "completion_tokens": 96,
+          "total_tokens": 380
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "e969732abba5572bea551189cae9bbfb39ef73161f47e58525f36cba7a9fa542",
+        "output_text": "These code records define a sequence of deterministic modular multiplication functions, each mapping an integer input $x$ to an output via the formula $(x \\cdot k) \\pmod{m}$. The coefficients ($k$) and moduli ($m$) increase sequentially, suggesting a structured progression likely used for generating pseudo-random numbers or constructing a lookup table. In cryptographic or simulation contexts, such functions often serve as linear congruential generators (LCGs) or components of a"
+      },
+      "observed_status": {
+        "status": "generating",
+        "model": "agent-probe",
+        "uptime_s": 45.2,
+        "steps_executed": 550,
+        "num_running": 1,
+        "num_waiting": 0,
+        "total_requests_processed": 9,
+        "total_prompt_tokens": 50822,
+        "total_completion_tokens": 690,
+        "generation_tps": 176.61,
+        "prompt_tps": 1608.1,
+        "adaptive_prefill": {
+          "chunk_size": 2048,
+          "protected_chunks": 0,
+          "reduced_chunks": 0
+        },
+        "shared_prefix_waits": 0,
+        "decode_stall": {
+          "chunk_size": null,
+          "bounded_chunks": 30
+        },
+        "mtp_prompt_lookup": {},
+        "idle_cache_clear": {
+          "enabled": false,
+          "seconds": 0.0,
+          "clear_count": 0,
+          "last_clear_at": null
+        },
+        "metal": {
+          "active_memory_gb": 2.83,
+          "peak_memory_gb": 9.67,
+          "cache_memory_gb": 0.0
+        },
+        "cache": {
+          "hits": 0,
+          "misses": 10,
+          "hit_rate": 0.0,
+          "evictions": 0,
+          "tokens_saved": 0,
+          "current_memory_mb": 0.0,
+          "max_memory_mb": 39808.99,
+          "current_memory_bytes": 0,
+          "max_memory_bytes": 41742755430,
+          "memory_utilization": 0.0,
+          "entry_count": 0,
+          "load_skipped": 0,
+          "save_drift_drops": 0,
+          "non_trimmable_skips": 0,
+          "non_trimmable_entries": 0,
+          "radix": {
+            "hits": 0,
+            "misses": 10,
+            "inserts": 18,
+            "removes": 0,
+            "deduped_prefix_bytes_saved": 136796,
+            "node_count": 0,
+            "entry_count": 0,
+            "max_depth": 0,
+            "lookup_p50_seconds": 7.08e-07,
+            "lookup_p99_seconds": 1.25e-06
+          }
+        },
+        "requests": [
+          {
+            "request_id": "chatcmpl-2e31b086fa4845ebb534a8980ad349a4",
+            "status": "running",
+            "phase": "prefill",
+            "elapsed_s": 0.02,
+            "prompt_tokens": 16412,
+            "completion_tokens": 0,
+            "max_tokens": 96,
+            "progress": 0.0,
+            "tokens_per_second": null,
+            "ttft_s": null,
+            "cache_hit_type": "miss",
+            "cached_tokens": 0
+          }
+        ]
+      },
+      "wall_s": 13.681411541998386,
+      "output_tps": 14.033639687733228
+    }
+  ],
+  "initial_status": {
+    "status": "idle",
+    "model": "agent-probe",
+    "uptime_s": 13.0,
+    "steps_executed": 4,
+    "num_running": 0,
+    "num_waiting": 0,
+    "total_requests_processed": 1,
+    "total_prompt_tokens": 11,
+    "total_completion_tokens": 2,
+    "generation_tps": 392.76,
+    "prompt_tps": 227.82,
+    "adaptive_prefill": {
+      "chunk_size": 2048,
+      "protected_chunks": 0,
+      "reduced_chunks": 0
+    },
+    "shared_prefix_waits": 0,
+    "decode_stall": {
+      "chunk_size": null,
+      "bounded_chunks": 0
+    },
+    "mtp_prompt_lookup": {},
+    "idle_cache_clear": {
+      "enabled": false,
+      "seconds": 0.0,
+      "clear_count": 0,
+      "last_clear_at": null
+    },
+    "metal": {
+      "active_memory_gb": 2.49,
+      "peak_memory_gb": 2.79,
+      "cache_memory_gb": 0.02
+    },
+    "cache": {
+      "hits": 0,
+      "misses": 1,
+      "hit_rate": 0.0,
+      "evictions": 0,
+      "tokens_saved": 0,
+      "current_memory_mb": 148.09,
+      "max_memory_mb": 39808.99,
+      "current_memory_bytes": 155287552,
+      "max_memory_bytes": 41742755430,
+      "memory_utilization": 0.0037,
+      "entry_count": 2,
+      "load_skipped": 0,
+      "save_drift_drops": 0,
+      "non_trimmable_skips": 0,
+      "non_trimmable_entries": 2,
+      "radix": {
+        "hits": 0,
+        "misses": 1,
+        "inserts": 2,
+        "removes": 0,
+        "deduped_prefix_bytes_saved": 40,
+        "node_count": 13,
+        "entry_count": 2,
+        "max_depth": 13,
+        "lookup_p50_seconds": 1.25e-06,
+        "lookup_p99_seconds": 1.25e-06
+      }
+    },
+    "requests": []
+  },
+  "final_status": {
+    "status": "idle",
+    "model": "agent-probe",
+    "uptime_s": 58.8,
+    "steps_executed": 665,
+    "num_running": 0,
+    "num_waiting": 0,
+    "total_requests_processed": 11,
+    "total_prompt_tokens": 51106,
+    "total_completion_tokens": 882,
+    "generation_tps": 75.68,
+    "prompt_tps": 1335.1,
+    "adaptive_prefill": {
+      "chunk_size": 2048,
+      "protected_chunks": 0,
+      "reduced_chunks": 0
+    },
+    "shared_prefix_waits": 0,
+    "decode_stall": {
+      "chunk_size": null,
+      "bounded_chunks": 45
+    },
+    "mtp_prompt_lookup": {},
+    "idle_cache_clear": {
+      "enabled": false,
+      "seconds": 0.0,
+      "clear_count": 0,
+      "last_clear_at": null
+    },
+    "metal": {
+      "active_memory_gb": 7.67,
+      "peak_memory_gb": 9.67,
+      "cache_memory_gb": 0.0
+    },
+    "cache": {
+      "hits": 0,
+      "misses": 11,
+      "hit_rate": 0.0,
+      "evictions": 0,
+      "tokens_saved": 0,
+      "current_memory_mb": 2546.48,
+      "max_memory_mb": 39808.99,
+      "current_memory_bytes": 2670182400,
+      "max_memory_bytes": 41742755430,
+      "memory_utilization": 0.064,
+      "entry_count": 4,
+      "load_skipped": 0,
+      "save_drift_drops": 0,
+      "non_trimmable_skips": 0,
+      "non_trimmable_entries": 4,
+      "radix": {
+        "hits": 0,
+        "misses": 11,
+        "inserts": 22,
+        "removes": 0,
+        "deduped_prefix_bytes_saved": 203376,
+        "node_count": 16883,
+        "entry_count": 4,
+        "max_depth": 16508,
+        "lookup_p50_seconds": 7.08e-07,
+        "lookup_p99_seconds": 1.25e-06
+      }
+    },
+    "requests": []
+  },
+  "finished": 1791647216.166417
+}

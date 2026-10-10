@@ -1,0 +1,367 @@
+{
+  "label": "prefill-2048",
+  "sessions": [
+    [
+      {
+        "ttft_ms": 1963.4371669963002,
+        "total_ms": 2406.618291977793,
+        "mean_tpot_ms": 5.869900126801064,
+        "sse_gap_p95_ms": 6.296125007793307,
+        "sse_gap_max_ms": 9.791209013201296,
+        "usage": {
+          "prompt_tokens": 4124,
+          "completion_tokens": 64,
+          "total_tokens": 4188
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "8a6476823971c63868f3ef73f7e40bd09b73b0131b310b77948688f911f83b86",
+        "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `",
+        "turn": 1
+      },
+      {
+        "ttft_ms": 133.859624969773,
+        "total_ms": 587.4723339802586,
+        "mean_tpot_ms": 5.897710317864068,
+        "sse_gap_p95_ms": 6.342999986372888,
+        "sse_gap_max_ms": 9.914499998558313,
+        "usage": {
+          "prompt_tokens": 4214,
+          "completion_tokens": 64,
+          "total_tokens": 4278,
+          "prompt_tokens_details": {
+            "cached_tokens": 4096
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "1fdff360a962b6a449d071e67d69d1f65166a4eae27b6472d9ad847204d69fe2",
+        "output_text": "A key property of these records is that the modulus $m$ for each function is exactly 13 greater than the coefficient $k$ used in the multiplication, creating a fixed difference of $m - k = 13$ across the entire sequence. This structural relationship implies that for any input $x$, the",
+        "turn": 2
+      },
+      {
+        "ttft_ms": 135.83862502127886,
+        "total_ms": 592.7067919983529,
+        "mean_tpot_ms": 5.952181872941317,
+        "sse_gap_p95_ms": 6.458125018980354,
+        "sse_gap_max_ms": 9.668624959886074,
+        "usage": {
+          "prompt_tokens": 4304,
+          "completion_tokens": 64,
+          "total_tokens": 4368,
+          "prompt_tokens_details": {
+            "cached_tokens": 4192
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "daaa2d46818ce39c7dac12b6c752f2eea71fbb261c836d7d89100575faa1ec37",
+        "output_text": "Another defining characteristic of these records is that the modulus $m$ for each function is always exactly 13 greater than the coefficient $k$ used in the multiplication, resulting in a constant difference of $m - k = 13$ throughout the sequence. This specific arithmetic progression ensures that the modulus is never copr",
+        "turn": 3
+      },
+      {
+        "ttft_ms": 135.74958400567994,
+        "total_ms": 582.8685000305995,
+        "mean_tpot_ms": 5.919451047370713,
+        "sse_gap_p95_ms": 6.401291990187019,
+        "sse_gap_max_ms": 9.567417029757053,
+        "usage": {
+          "prompt_tokens": 4394,
+          "completion_tokens": 64,
+          "total_tokens": 4458,
+          "prompt_tokens_details": {
+            "cached_tokens": 4288
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "1f408396a9a67f5909f309e91fa18c45c9c4a04f00878104437bfc4f3d7cf79c",
+        "output_text": "Another critical property is that the coefficient $k$ and the modulus $m$ are consecutive terms in an arithmetic progression with a common difference of 13, meaning $k_{n+1} = k_n + 13$ and $m_{n+1} = m_n + 13$.",
+        "turn": 4
+      },
+      {
+        "ttft_ms": 135.3718750178814,
+        "total_ms": 577.4874170310795,
+        "mean_tpot_ms": 5.9149933965980175,
+        "sse_gap_p95_ms": 6.295291008427739,
+        "sse_gap_max_ms": 9.616625029593706,
+        "usage": {
+          "prompt_tokens": 4484,
+          "completion_tokens": 64,
+          "total_tokens": 4548,
+          "prompt_tokens_details": {
+            "cached_tokens": 4379
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "91fbe8b155326f9a67bc9745a8d28b64230b5d2597717077ac478d39473eca4d",
+        "output_text": "Another significant property is that the modulus $m$ for each function is always exactly 13 greater than the coefficient $k$ used in the multiplication, resulting in a constant difference of $m - k = 13$ throughout the sequence. This specific arithmetic relationship ensures that the modulus is never coprime to the",
+        "turn": 5
+      }
+    ],
+    [
+      {
+        "ttft_ms": 1926.5510839759372,
+        "total_ms": 2364.838959008921,
+        "mean_tpot_ms": 5.870959651286876,
+        "sse_gap_p95_ms": 6.12570799421519,
+        "sse_gap_max_ms": 10.04112500231713,
+        "usage": {
+          "prompt_tokens": 4124,
+          "completion_tokens": 64,
+          "total_tokens": 4188
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "176783c4d25c6d882dd499364cfbf5d19d95659c45224bbaa82f2ae1bb298568",
+        "output_text": "These records define a sequence of deterministic modular multiplication functions, likely representing a cryptographic challenge or a computational puzzle. Each function `record_N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly. This pattern suggests a systematic generation of",
+        "turn": 1
+      },
+      {
+        "ttft_ms": 132.73137499345466,
+        "total_ms": 571.6768330312334,
+        "mean_tpot_ms": 5.880635587446806,
+        "sse_gap_p95_ms": 6.390790978912264,
+        "sse_gap_max_ms": 10.051666002254933,
+        "usage": {
+          "prompt_tokens": 4214,
+          "completion_tokens": 64,
+          "total_tokens": 4278,
+          "prompt_tokens_details": {
+            "cached_tokens": 4096
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "f71f681ce66459f9f51a50746fdc728e17010bce7df547f6a92b1f6ada09f488",
+        "output_text": "A key property of these arithmetic records is that they form a linear progression where both the multiplier and the modulus increase by exactly 3 in each successive step. This creates a structured sequence of linear congruential generators, where the $n$-th record corresponds to the transformation $x \\mapsto (x \\cdot",
+        "turn": 2
+      },
+      {
+        "ttft_ms": 131.84245803859085,
+        "total_ms": 587.984999991022,
+        "mean_tpot_ms": 5.919351189818588,
+        "sse_gap_p95_ms": 6.516124994959682,
+        "sse_gap_max_ms": 9.911334025673568,
+        "usage": {
+          "prompt_tokens": 4304,
+          "completion_tokens": 64,
+          "total_tokens": 4368,
+          "prompt_tokens_details": {
+            "cached_tokens": 4192
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "54a751ba053ff86261473e8272014a61fec13168c45856cd493731e7cb143e11",
+        "output_text": "Another defining characteristic of these records is that the multiplier $k$ and the modulus $m$ are always consecutive terms in an arithmetic progression, specifically $k = 3n + 7$ and $m = 3n + 10$ for $n \\ge 0$. This relationship ensures that the",
+        "turn": 3
+      },
+      {
+        "ttft_ms": 135.0547500187531,
+        "total_ms": 574.9385000090115,
+        "mean_tpot_ms": 5.891193793753961,
+        "sse_gap_p95_ms": 6.456583039835095,
+        "sse_gap_max_ms": 9.919875010382384,
+        "usage": {
+          "prompt_tokens": 4394,
+          "completion_tokens": 64,
+          "total_tokens": 4458,
+          "prompt_tokens_details": {
+            "cached_tokens": 4288
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "7a8b9b4f70b7b6944558c85cb58efdef42d725224eed77fc831f4c479b48f407",
+        "output_text": "Another critical property is that the modulus $m$ for each record is always a prime number, ensuring the mathematical operation of modular multiplication behaves predictably within a finite field. This primality guarantees that the multiplier $k$ (which is coprime to $m$ in most cases, except when $k$ is a",
+        "turn": 4
+      },
+      {
+        "ttft_ms": 134.7974170348607,
+        "total_ms": 574.1634169826284,
+        "mean_tpot_ms": 5.919432539182405,
+        "sse_gap_p95_ms": 6.247707991860807,
+        "sse_gap_max_ms": 10.076083010062575,
+        "usage": {
+          "prompt_tokens": 4484,
+          "completion_tokens": 64,
+          "total_tokens": 4548,
+          "prompt_tokens_details": {
+            "cached_tokens": 4379
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "db04ec70d9c27612431ed43b467d36d6a45a796d922fa7bb7044d5d8d10fcd41",
+        "output_text": "A significant property of these records is that the multiplier $k$ and the modulus $m$ are always coprime, meaning their greatest common divisor is 1. This ensures that the function $f(x) = (x \\cdot k) \\pmod m$ is a bijection (a one-to-one mapping",
+        "turn": 5
+      }
+    ],
+    [
+      {
+        "ttft_ms": 1925.566166988574,
+        "total_ms": 2379.827541997656,
+        "mean_tpot_ms": 5.928113746146361,
+        "sse_gap_p95_ms": 6.352042022626847,
+        "sse_gap_max_ms": 9.515625017229468,
+        "usage": {
+          "prompt_tokens": 4124,
+          "completion_tokens": 64,
+          "total_tokens": 4188
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "7b0d03405ca7d514235859df14dccc4ff2181fa52c5b2b7656e56adac42a1f96",
+        "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13, and `m` increases",
+        "turn": 1
+      },
+      {
+        "ttft_ms": 132.13633303530514,
+        "total_ms": 575.1520000048913,
+        "mean_tpot_ms": 5.913081348851501,
+        "sse_gap_p95_ms": 6.2502920045517385,
+        "sse_gap_max_ms": 9.491917036939412,
+        "usage": {
+          "prompt_tokens": 4214,
+          "completion_tokens": 64,
+          "total_tokens": 4278,
+          "prompt_tokens_details": {
+            "cached_tokens": 4096
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "d9cabfb0d73bd66f04fb409d28eca94faa3ee72a154a196839ab83f1d499dd7e",
+        "output_text": "A key property of these records is that the modulus $m$ for each function is exactly 13 greater than the coefficient $k$ used in the multiplication, creating a constant difference of 13 across the entire sequence. This structural relationship means that for any record $N$, the operation is defined as $f",
+        "turn": 2
+      },
+      {
+        "ttft_ms": 134.02845797827467,
+        "total_ms": 579.822041967418,
+        "mean_tpot_ms": 5.951150143075557,
+        "sse_gap_p95_ms": 6.525374948978424,
+        "sse_gap_max_ms": 9.821582993026823,
+        "usage": {
+          "prompt_tokens": 4304,
+          "completion_tokens": 64,
+          "total_tokens": 4368,
+          "prompt_tokens_details": {
+            "cached_tokens": 4192
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "b56b35b0a68ec7c2337df4af12c537852bb2beb26ebb759db5fcc409918ae9a3",
+        "output_text": "Another defining characteristic of these records is that the modulus $m$ for each function is always exactly 13 greater than the coefficient $k$ used in the multiplication, creating a constant difference of 13 across the entire sequence. This structural relationship means that for any record $N$, the operation is defined as $",
+        "turn": 3
+      },
+      {
+        "ttft_ms": 132.71624996559694,
+        "total_ms": 585.0976670044474,
+        "mean_tpot_ms": 5.9034199840093535,
+        "sse_gap_p95_ms": 6.381541024893522,
+        "sse_gap_max_ms": 7.859584002289921,
+        "usage": {
+          "prompt_tokens": 4394,
+          "completion_tokens": 64,
+          "total_tokens": 4458,
+          "prompt_tokens_details": {
+            "cached_tokens": 4288
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "f96ca9f428466d930d0a0b36bdbc2a49de648439b9f95998a7fdff84b194aa8e",
+        "output_text": "Another critical property is that the modulus $m$ for each function is always exactly 13 greater than the coefficient $k$ used in the multiplication, creating a constant difference of 13 across the entire sequence. This structural relationship means that for any record $N$, the operation is defined as $f_N(x",
+        "turn": 4
+      },
+      {
+        "ttft_ms": 133.15562502248213,
+        "total_ms": 581.5805839956738,
+        "mean_tpot_ms": 5.971827380736137,
+        "sse_gap_p95_ms": 6.334375008009374,
+        "sse_gap_max_ms": 9.97404201189056,
+        "usage": {
+          "prompt_tokens": 4484,
+          "completion_tokens": 64,
+          "total_tokens": 4548,
+          "prompt_tokens_details": {
+            "cached_tokens": 4379
+          }
+        },
+        "finish_reason": "length",
+        "done": true,
+        "output_sha256": "03c3d223ebcb4ba9302cad7105bba39ea824d8c86c2a6c8408b4e1148945fc60",
+        "output_text": "Another significant property is that the coefficient $k$ and the modulus $m$ are coprime for every record, ensuring that the function $f_N(x) = (x \\cdot k) \\pmod m$ is a bijection (a one-to-one mapping) from the set $\\{0, 1",
+        "turn": 5
+      }
+    ]
+  ],
+  "status": {
+    "status": "idle",
+    "model": "agent-probe",
+    "uptime_s": 77.2,
+    "steps_executed": 1673,
+    "num_running": 0,
+    "num_waiting": 0,
+    "total_requests_processed": 26,
+    "total_prompt_tokens": 115666,
+    "total_completion_tokens": 1842,
+    "generation_tps": 171.42,
+    "prompt_tps": 39429.95,
+    "adaptive_prefill": {
+      "chunk_size": 2048,
+      "protected_chunks": 0,
+      "reduced_chunks": 0
+    },
+    "shared_prefix_waits": 0,
+    "decode_stall": {
+      "chunk_size": null,
+      "bounded_chunks": 45
+    },
+    "mtp_prompt_lookup": {},
+    "idle_cache_clear": {
+      "enabled": false,
+      "seconds": 0.0,
+      "clear_count": 0,
+      "last_clear_at": null
+    },
+    "metal": {
+      "active_memory_gb": 4.06,
+      "peak_memory_gb": 9.67,
+      "cache_memory_gb": 0.0
+    },
+    "cache": {
+      "hits": 12,
+      "misses": 14,
+      "hit_rate": 0.4615,
+      "evictions": 6,
+      "tokens_saved": 50865,
+      "current_memory_mb": 1584.38,
+      "max_memory_mb": 39808.99,
+      "current_memory_bytes": 1661337600,
+      "max_memory_bytes": 41742755430,
+      "memory_utilization": 0.0398,
+      "entry_count": 8,
+      "load_skipped": 0,
+      "save_drift_drops": 0,
+      "non_trimmable_skips": 0,
+      "non_trimmable_entries": 8,
+      "radix": {
+        "hits": 12,
+        "misses": 14,
+        "inserts": 52,
+        "removes": 6,
+        "deduped_prefix_bytes_saved": 664704,
+        "node_count": 4752,
+        "entry_count": 8,
+        "max_depth": 4548,
+        "lookup_p50_seconds": 3.208e-06,
+        "lookup_p99_seconds": 0.000279042
+      }
+    },
+    "requests": []
+  }
+}

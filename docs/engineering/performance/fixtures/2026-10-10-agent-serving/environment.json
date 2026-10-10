@@ -1,0 +1,14 @@
+{
+  "mlx": "0.32.3",
+  "mlx-lm": "0.31.3",
+  "mlx-vlm": "0.7.2",
+  "transformers": "5.15.1",
+  "httpx": "0.28.1",
+  "python": "3.12.13",
+  "os": "macOS-26.5.2-arm64-arm-64bit",
+  "commit": "dfaa9cc407a0abb80dd0b5aa0afd46c6d249c47b",
+  "hardware": "Apple M3 Ultra",
+  "memory_gib": 256,
+  "model_revision": "32f3e8ecf65426fc3306969496342d504bfa13f3",
+  "shared_host": true
+}

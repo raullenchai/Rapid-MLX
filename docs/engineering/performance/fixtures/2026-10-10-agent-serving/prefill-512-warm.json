@@ -1,0 +1,895 @@
+{
+  "label": "prefill-512",
+  "runs": [
+    {
+      "concurrency": 1,
+      "repeat": 0,
+      "populate": [
+        {
+          "ttft_ms": 2155.5145829916,
+          "total_ms": 2273.3300830004737,
+          "mean_tpot_ms": 5.951309568315212,
+          "sse_gap_p95_ms": 6.081208004616201,
+          "sse_gap_max_ms": 8.440833946224302,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 68.20187496487051,
+          "total_ms": 704.1972079896368,
+          "mean_tpot_ms": 5.918030263120799,
+          "sse_gap_p95_ms": 6.323000008706003,
+          "sse_gap_max_ms": 10.006125026848167,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "4e74ab109f378c58b5875bea53e51279bced7acce343deb08d07386e86acb852",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a computational puzzle. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 3 and 3 respectively. This pattern suggests a systematic generation of a lookup table or a set of transformation rules for a specific algorithm. The consistent"
+        }
+      ],
+      "wall_s": 0.7083462919690646,
+      "output_tps": 135.52693236120248
+    },
+    {
+      "concurrency": 1,
+      "repeat": 1,
+      "populate": [
+        {
+          "ttft_ms": 2129.4867079705,
+          "total_ms": 2256.11374998698,
+          "mean_tpot_ms": 6.442559575329402,
+          "sse_gap_p95_ms": 6.702582992147654,
+          "sse_gap_max_ms": 10.027374955825508,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 67.57308298256248,
+          "total_ms": 717.3812079709023,
+          "mean_tpot_ms": 5.9723811371153905,
+          "sse_gap_p95_ms": 6.384292035363615,
+          "sse_gap_max_ms": 9.923083009198308,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "4e74ab109f378c58b5875bea53e51279bced7acce343deb08d07386e86acb852",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a computational puzzle. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 3 and 3 respectively. This pattern suggests a systematic generation of a lookup table or a set of transformation rules for a specific algorithm. The consistent"
+        }
+      ],
+      "wall_s": 0.7210289159556851,
+      "output_tps": 133.14306524414096
+    },
+    {
+      "concurrency": 1,
+      "repeat": 2,
+      "populate": [
+        {
+          "ttft_ms": 2105.786125001032,
+          "total_ms": 2224.884125054814,
+          "mean_tpot_ms": 5.993291719018349,
+          "sse_gap_p95_ms": 6.250916980206966,
+          "sse_gap_max_ms": 8.180624980013818,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 66.90533400978893,
+          "total_ms": 717.6026669912972,
+          "mean_tpot_ms": 5.979344294725084,
+          "sse_gap_p95_ms": 6.310165976174176,
+          "sse_gap_max_ms": 9.737416985444725,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "4e74ab109f378c58b5875bea53e51279bced7acce343deb08d07386e86acb852",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a computational puzzle. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 3 and 3 respectively. This pattern suggests a systematic generation of a lookup table or a set of transformation rules for a specific algorithm. The consistent"
+        }
+      ],
+      "wall_s": 0.721324541955255,
+      "output_tps": 133.08849819497067
+    },
+    {
+      "concurrency": 2,
+      "repeat": 0,
+      "populate": [
+        {
+          "ttft_ms": 2107.702875044197,
+          "total_ms": 2228.3904580399394,
+          "mean_tpot_ms": 6.039023707022092,
+          "sse_gap_p95_ms": 6.277790991589427,
+          "sse_gap_max_ms": 7.834249990992248,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2103.266582998913,
+          "total_ms": 2226.8697079853155,
+          "mean_tpot_ms": 5.978875003555523,
+          "sse_gap_p95_ms": 5.998624954372644,
+          "sse_gap_max_ms": 8.433625043835491,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 100.85558396531269,
+          "total_ms": 898.9301669644192,
+          "mean_tpot_ms": 7.575264905187252,
+          "sse_gap_p95_ms": 8.103624975774437,
+          "sse_gap_max_ms": 15.812165976967663,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "6ef58dab8f690b73299a9c7dd5c04e4626c1d1c10de05bf76682cb267617b827",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, likely serving as a lookup table or lookup-free mapping for a cryptographic or simulation challenge. Each function `record_N` maps an input `x` to `(x * k) % m`, where `k` and `m` increment linearly. This pattern suggests a systematic generation of pseudo-random values or a specific mathematical transformation required to solve a problem involving modular arithmetic properties, such as finding a pre-image or verifying a hash"
+        },
+        {
+          "ttft_ms": 101.10720800003037,
+          "total_ms": 899.1253330023028,
+          "mean_tpot_ms": 7.575070179116569,
+          "sse_gap_p95_ms": 8.105667016934603,
+          "sse_gap_max_ms": 15.819250023923814,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        }
+      ],
+      "wall_s": 0.9042120410013013,
+      "output_tps": 212.33957445134675
+    },
+    {
+      "concurrency": 2,
+      "repeat": 1,
+      "populate": [
+        {
+          "ttft_ms": 2106.688625004608,
+          "total_ms": 2226.887958997395,
+          "mean_tpot_ms": 5.983119140312608,
+          "sse_gap_p95_ms": 6.12554099643603,
+          "sse_gap_max_ms": 8.154333976563066,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2103.885041025933,
+          "total_ms": 2220.8410410094075,
+          "mean_tpot_ms": 5.854285712952593,
+          "sse_gap_p95_ms": 6.187541002873331,
+          "sse_gap_max_ms": 7.259624951984733,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 103.59824995975941,
+          "total_ms": 898.6959159956314,
+          "mean_tpot_ms": 7.561576747531562,
+          "sse_gap_p95_ms": 8.217249996960163,
+          "sse_gap_max_ms": 15.52458299556747,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "6ef58dab8f690b73299a9c7dd5c04e4626c1d1c10de05bf76682cb267617b827",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, likely serving as a lookup table or lookup-free mapping for a cryptographic or simulation challenge. Each function `record_N` maps an input `x` to `(x * k) % m`, where `k` and `m` increment linearly. This pattern suggests a systematic generation of pseudo-random values or a specific mathematical transformation required to solve a problem involving modular arithmetic properties, such as finding a pre-image or verifying a hash"
+        },
+        {
+          "ttft_ms": 103.71220798697323,
+          "total_ms": 898.6442079767585,
+          "mean_tpot_ms": 7.561894737208556,
+          "sse_gap_p95_ms": 8.251542050857097,
+          "sse_gap_max_ms": 15.520125045441091,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        }
+      ],
+      "wall_s": 0.9037378749926575,
+      "output_tps": 212.4509830923706
+    },
+    {
+      "concurrency": 2,
+      "repeat": 2,
+      "populate": [
+        {
+          "ttft_ms": 2107.310666993726,
+          "total_ms": 2224.207207967993,
+          "mean_tpot_ms": 5.971101137609886,
+          "sse_gap_p95_ms": 6.167208019178361,
+          "sse_gap_max_ms": 8.418207988142967,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2108.5679159732535,
+          "total_ms": 2231.71199997887,
+          "mean_tpot_ms": 6.046827433497778,
+          "sse_gap_p95_ms": 6.39824999962002,
+          "sse_gap_max_ms": 7.439500011969358,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 102.59179200511426,
+          "total_ms": 902.243125019595,
+          "mean_tpot_ms": 7.584692978937375,
+          "sse_gap_p95_ms": 8.43983399681747,
+          "sse_gap_max_ms": 16.363958013243973,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "6ef58dab8f690b73299a9c7dd5c04e4626c1d1c10de05bf76682cb267617b827",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, likely serving as a lookup table or lookup-free mapping for a cryptographic or simulation challenge. Each function `record_N` maps an input `x` to `(x * k) % m`, where `k` and `m` increment linearly. This pattern suggests a systematic generation of pseudo-random values or a specific mathematical transformation required to solve a problem involving modular arithmetic properties, such as finding a pre-image or verifying a hash"
+        },
+        {
+          "ttft_ms": 102.48083295300603,
+          "total_ms": 902.2165419883095,
+          "mean_tpot_ms": 7.584461410480895,
+          "sse_gap_p95_ms": 8.456333016511053,
+          "sse_gap_max_ms": 16.381208959501237,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        }
+      ],
+      "wall_s": 0.906938457977958,
+      "output_tps": 211.70124423664734
+    },
+    {
+      "concurrency": 4,
+      "repeat": 0,
+      "populate": [
+        {
+          "ttft_ms": 2105.2590829785913,
+          "total_ms": 2221.7151669901796,
+          "mean_tpot_ms": 5.929952429141849,
+          "sse_gap_p95_ms": 6.1177919851616025,
+          "sse_gap_max_ms": 8.04354198044166,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2110.598416009452,
+          "total_ms": 2229.8955000005662,
+          "mean_tpot_ms": 6.104637003902878,
+          "sse_gap_p95_ms": 6.4192909630946815,
+          "sse_gap_max_ms": 7.677709043491632,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2110.25037500076,
+          "total_ms": 2240.445750008803,
+          "mean_tpot_ms": 6.235178576649299,
+          "sse_gap_p95_ms": 6.801125011406839,
+          "sse_gap_max_ms": 8.26762500219047,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2117.1379589941353,
+          "total_ms": 2242.542209045496,
+          "mean_tpot_ms": 6.036208285617509,
+          "sse_gap_p95_ms": 6.140750017948449,
+          "sse_gap_max_ms": 8.146999985910952,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 164.24104204634205,
+          "total_ms": 1285.857584036421,
+          "mean_tpot_ms": 10.853470178737648,
+          "sse_gap_p95_ms": 24.965250049717724,
+          "sse_gap_max_ms": 30.118125025182962,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "fdf9ace97be563e5d6a132c3c39e64b38dea6316751af0a1988c28ae5521b914",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a cryptographic key schedule. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 13 and 3 respectively. This pattern suggests a systematic generation of pseudo-random permutations or a specific mathematical transformation used in a cryptographic protocol,"
+        },
+        {
+          "ttft_ms": 164.22345902537927,
+          "total_ms": 1286.0419999924488,
+          "mean_tpot_ms": 10.853821925794412,
+          "sse_gap_p95_ms": 24.950166000053287,
+          "sse_gap_max_ms": 30.340291967149824,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.47399999015033,
+          "total_ms": 1286.0684170154855,
+          "mean_tpot_ms": 10.854821937085179,
+          "sse_gap_p95_ms": 24.959833011962473,
+          "sse_gap_max_ms": 30.464959039818496,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.75216700928286,
+          "total_ms": 1286.58929199446,
+          "mean_tpot_ms": 10.852610083958623,
+          "sse_gap_p95_ms": 24.870666034985334,
+          "sse_gap_max_ms": 30.21516598528251,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f3dc382c9f5fbe7c691041a39f5ff9ad11e031b2e50679381e517f5ae0070e20",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. Such a pattern is typically used in cryptographic challenges,"
+        }
+      ],
+      "wall_s": 1.295526499976404,
+      "output_tps": 296.4045891820769
+    },
+    {
+      "concurrency": 4,
+      "repeat": 1,
+      "populate": [
+        {
+          "ttft_ms": 2103.092458040919,
+          "total_ms": 2225.0016250181943,
+          "mean_tpot_ms": 5.86764284941767,
+          "sse_gap_p95_ms": 6.216708046849817,
+          "sse_gap_max_ms": 7.293832954019308,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2117.035333008971,
+          "total_ms": 2240.3762920293957,
+          "mean_tpot_ms": 6.176648861063378,
+          "sse_gap_p95_ms": 6.410499976482242,
+          "sse_gap_max_ms": 7.9037080286070704,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2112.0397920021787,
+          "total_ms": 2237.7164170029573,
+          "mean_tpot_ms": 6.343434573084648,
+          "sse_gap_p95_ms": 6.541333976201713,
+          "sse_gap_max_ms": 10.245500016026199,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2108.38337498717,
+          "total_ms": 2232.3512089787982,
+          "mean_tpot_ms": 6.016607146843204,
+          "sse_gap_p95_ms": 6.383499945513904,
+          "sse_gap_max_ms": 8.109333051834255,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 164.6730840438977,
+          "total_ms": 1280.045917024836,
+          "mean_tpot_ms": 10.886653947129258,
+          "sse_gap_p95_ms": 25.499875016976148,
+          "sse_gap_max_ms": 27.89912500884384,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "fdf9ace97be563e5d6a132c3c39e64b38dea6316751af0a1988c28ae5521b914",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a cryptographic key schedule. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 13 and 3 respectively. This pattern suggests a systematic generation of pseudo-random permutations or a specific mathematical transformation used in a cryptographic protocol,"
+        },
+        {
+          "ttft_ms": 161.35966696310788,
+          "total_ms": 1276.5002499800175,
+          "mean_tpot_ms": 10.885667536824354,
+          "sse_gap_p95_ms": 25.431832997128367,
+          "sse_gap_max_ms": 27.82137499889359,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.37154199229553,
+          "total_ms": 1279.6519169933163,
+          "mean_tpot_ms": 10.887272810367378,
+          "sse_gap_p95_ms": 25.52279195515439,
+          "sse_gap_max_ms": 28.037499985657632,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.58191600395367,
+          "total_ms": 1279.913041042164,
+          "mean_tpot_ms": 10.886397810750886,
+          "sse_gap_p95_ms": 25.343584013171494,
+          "sse_gap_max_ms": 27.931416989304125,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f3dc382c9f5fbe7c691041a39f5ff9ad11e031b2e50679381e517f5ae0070e20",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. Such a pattern is typically used in cryptographic challenges,"
+        }
+      ],
+      "wall_s": 1.2858578749583103,
+      "output_tps": 298.63331514180754
+    },
+    {
+      "concurrency": 4,
+      "repeat": 2,
+      "populate": [
+        {
+          "ttft_ms": 2111.2955000135116,
+          "total_ms": 2232.354584033601,
+          "mean_tpot_ms": 6.06931557246883,
+          "sse_gap_p95_ms": 6.1211250140331686,
+          "sse_gap_max_ms": 8.42525000916794,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "e4abb13996d372a54d56a755c564bb3361872e5810bae12eb66a8afb33e698a9",
+          "output_text": "These records define a sequence of 1"
+        },
+        {
+          "ttft_ms": 2104.791624995414,
+          "total_ms": 2227.9557500150986,
+          "mean_tpot_ms": 5.878238148787724,
+          "sse_gap_p95_ms": 6.3273750129155815,
+          "sse_gap_max_ms": 7.035000016912818,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2106.8102919962257,
+          "total_ms": 2230.1412919769064,
+          "mean_tpot_ms": 6.068488000892103,
+          "sse_gap_p95_ms": 6.031167053151876,
+          "sse_gap_max_ms": 8.233457978349179,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        },
+        {
+          "ttft_ms": 2110.0527920061722,
+          "total_ms": 2229.139583010692,
+          "mean_tpot_ms": 5.893476141084518,
+          "sse_gap_p95_ms": 6.250125006772578,
+          "sse_gap_max_ms": 7.377541973255575,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 8,
+            "total_tokens": 4132
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "03e9a45cfaecb9f2a71fcce9fb317f563cd0defb2311fc93d96f389e1cb01d4a",
+          "output_text": "These records define a sequence of deterministic modular"
+        }
+      ],
+      "rows": [
+        {
+          "ttft_ms": 164.61166698718444,
+          "total_ms": 1275.0224170158617,
+          "mean_tpot_ms": 10.85822149486232,
+          "sse_gap_p95_ms": 25.29041701927781,
+          "sse_gap_max_ms": 30.983541975729167,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "fdf9ace97be563e5d6a132c3c39e64b38dea6316751af0a1988c28ae5521b914",
+          "output_text": "These records define a sequence of 160 deterministic modular multiplication functions, likely representing a cryptographic challenge or a cryptographic key schedule. Each function `record_0000N` maps an input `x` to `(x * k) % m`, where the multiplier `k` and modulus `m` increment linearly by 13 and 3 respectively. This pattern suggests a systematic generation of pseudo-random permutations or a specific mathematical transformation used in a cryptographic protocol,"
+        },
+        {
+          "ttft_ms": 164.4857919891365,
+          "total_ms": 1274.701250018552,
+          "mean_tpot_ms": 10.85895789529834,
+          "sse_gap_p95_ms": 25.320707994978875,
+          "sse_gap_max_ms": 31.138750026002526,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.9168329895474,
+          "total_ms": 1275.364790984895,
+          "mean_tpot_ms": 10.85778026302394,
+          "sse_gap_p95_ms": 25.30245896195993,
+          "sse_gap_max_ms": 31.02824999950826,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f00d3c6e883caeecfa0d8fbadb448b1ad2429d4e50ccd1f8c28f62673202a834",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. The purpose is likely to generate a pseudo-random sequence"
+        },
+        {
+          "ttft_ms": 164.18195801088586,
+          "total_ms": 1274.3782500037923,
+          "mean_tpot_ms": 10.858621052466333,
+          "sse_gap_p95_ms": 25.313584017567337,
+          "sse_gap_max_ms": 31.004082993604243,
+          "usage": {
+            "prompt_tokens": 4124,
+            "completion_tokens": 96,
+            "total_tokens": 4220,
+            "prompt_tokens_details": {
+              "cached_tokens": 4096
+            }
+          },
+          "finish_reason": "length",
+          "done": true,
+          "output_sha256": "f3dc382c9f5fbe7c691041a39f5ff9ad11e031b2e50679381e517f5ae0070e20",
+          "output_text": "These records define a sequence of deterministic modular multiplication functions, where each function `record_N` maps an input `x` to `(x * k) % m`. The coefficients `k` and moduli `m` follow a strict arithmetic progression: `k` increases by 13 in each step, while `m` increases by 3. This creates a structured set of linear congruential generators or transformation rules. Such a pattern is typically used in cryptographic challenges,"
+        }
+      ],
+      "wall_s": 1.2812025420134887,
+      "output_tps": 299.7184187572094
+    }
+  ],
+  "status": {
+    "status": "idle",
+    "model": "agent-probe",
+    "uptime_s": 188.5,
+    "steps_executed": 3815,
+    "num_running": 0,
+    "num_waiting": 0,
+    "total_requests_processed": 83,
+    "total_prompt_tokens": 305047,
+    "total_completion_tokens": 5946,
+    "generation_tps": 93.88,
+    "prompt_tps": 121460.88,
+    "adaptive_prefill": {
+      "chunk_size": 512,
+      "protected_chunks": 0,
+      "reduced_chunks": 0
+    },
+    "shared_prefix_waits": 0,
+    "decode_stall": {
+      "chunk_size": null,
+      "bounded_chunks": 37
+    },
+    "mtp_prompt_lookup": {},
+    "idle_cache_clear": {
+      "enabled": false,
+      "seconds": 0.0,
+      "clear_count": 0,
+      "last_clear_at": null
+    },
+    "metal": {
+      "active_memory_gb": 4.54,
+      "peak_memory_gb": 7.57,
+      "cache_memory_gb": 0.0
+    },
+    "cache": {
+      "hits": 27,
+      "misses": 56,
+      "hit_rate": 0.3253,
+      "evictions": 24,
+      "tokens_saved": 110592,
+      "current_memory_mb": 2025.5,
+      "max_memory_mb": 40025.73,
+      "current_memory_bytes": 2123890688,
+      "max_memory_bytes": 41970024448,
+      "memory_utilization": 0.0506,
+      "entry_count": 8,
+      "load_skipped": 0,
+      "save_drift_drops": 0,
+      "non_trimmable_skips": 0,
+      "non_trimmable_entries": 8,
+      "radix": {
+        "hits": 27,
+        "misses": 56,
+        "inserts": 163,
+        "removes": 24,
+        "deduped_prefix_bytes_saved": 1610444,
+        "node_count": 16856,
+        "entry_count": 8,
+        "max_depth": 4220,
+        "lookup_p50_seconds": 1.083e-06,
+        "lookup_p99_seconds": 0.000280417
+      }
+    },
+    "requests": []
+  }
+}

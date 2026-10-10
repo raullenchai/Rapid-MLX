@@ -1,0 +1,19 @@
+{
+  "serving_commit": "dfaa9cc407a0abb80dd0b5aa0afd46c6d249c47b",
+  "request_payloads_and_timing_logic": "unchanged across arms; later scripts add output text, output directory/URL overrides, contention-only entry point and formatting",
+  "files": {
+    "environment.json": "d30324bfd4b9a2dae72e6071f0d511c9cdd7e7a94a33be39e56cf6ebf44f9b47",
+    "multiturn_probe.py": "61980816b13c62ac01cc4dc4e14085c21a3b32f3e53eed628419ea249c0c8d95",
+    "prefill-2048-multiturn.json": "4d1ef2b06ce430236211336b5bbc0e9d12d0d87d7a21a7153ba55513dfd14aa5",
+    "prefill-2048-recheck.json": "683d57486593c41776a91e068c617dc2bad2d1a0e0ebb6dad3997cb27d7fc1d8",
+    "prefill-2048-warm.json": "d166ddf23806f45c01f4ff3ef915a1669c9de2024dbe67512491dea05b1fb08e",
+    "prefill-2048.json": "2c03344d281e16482bf662811e1bd498ba347d673bacaaa7210801ff2c831e31",
+    "prefill-512-multiturn.json": "624477d92cec0b91f0a426b2d1cc82bf87ea913805a658dcfbd97be741a525fb",
+    "prefill-512-warm.json": "8399b0980b48d9a4a894d06799ae50e5340407fb12b2acf3a0ee1cf9f0c7332c",
+    "prefill-512.json": "35f33ddb451fa35fc7dcb722201e65a771a02c3da689a129ed24bbbde0ca10a4",
+    "probe.py": "ac2dc6347ea958ee097e0ddb552a69d2ee9f64f5deda60acd21ef4cc8e6e83cb",
+    "summarize.py": "1061facfa1e30b492e077a62f1d5749c6450e7fa6317ad01efd2b5062793fa55",
+    "summary.json": "89adf493e9a4da7b434ea6c131739d139f514b6ba30d0a6b5e150830b3dc5f6e",
+    "warm_probe.py": "24b98fe46af7ae674a98bcdedc373a0129f0c30555a87c1b5402e0284fee7d1d"
+  }
+}

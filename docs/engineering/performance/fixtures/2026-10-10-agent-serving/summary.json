@@ -1,0 +1,198 @@
+{
+  "prefill-2048": {
+    "cache": {
+      "cold_ttft_ms": 1942.4297920195386,
+      "exact_ttft_ms": 70.10133296716958,
+      "append_ttft_ms": 100.35858297487721,
+      "exact_output_equal_count": 3
+    },
+    "cold_concurrency": {
+      "1": {
+        "ttft_ms": 968.4965829947032,
+        "output_tps": 60.44598433645074,
+        "mean_tpot_ms": 5.761020179029162
+      },
+      "2": {
+        "ttft_ms": 1989.037812978495,
+        "output_tps": 69.13054033294341,
+        "mean_tpot_ms": 7.3865241260806975
+      },
+      "4": {
+        "ttft_ms": 3902.823582990095,
+        "output_tps": 77.47533375084001,
+        "mean_tpot_ms": 10.215088378907623
+      }
+    },
+    "contention": {
+      "short_ttft_ms": 6869.943000026979,
+      "short_solo_ttft_ms": 190.30929094878957,
+      "long_ttft_ms": 12595.59179196367,
+      "short_max_gap_ms": 532.3912500170991,
+      "output_tps": 13.616852312712147,
+      "short_output_equal_count": 0
+    },
+    "warm_concurrency": {
+      "1": {
+        "ttft_ms": 66.53691700194031,
+        "output_tps": 135.17717192637238,
+        "mean_tpot_ms": 5.91069605311771,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "2": {
+        "ttft_ms": 101.54316699481569,
+        "output_tps": 212.93189756745485,
+        "mean_tpot_ms": 7.561245831464858,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "4": {
+        "ttft_ms": 168.49418700439855,
+        "output_tps": 296.7911962928437,
+        "mean_tpot_ms": 10.794717325877986,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096
+        ]
+      }
+    },
+    "metal": {
+      "active_memory_gb": 7.69,
+      "peak_memory_gb": 9.67,
+      "cache_memory_gb": 0.0
+    },
+    "multiturn": {
+      "sessions": 3,
+      "warm_turns": 12,
+      "warm_hits": 12,
+      "cold_ttft_ms": 1926.5510839759372,
+      "warm_ttft_ms": 133.94404147402383,
+      "warm_cached_fraction": 0.9749269449891962
+    }
+  },
+  "prefill-512": {
+    "cache": {
+      "cold_ttft_ms": 2066.05554104317,
+      "exact_ttft_ms": 68.01562500186265,
+      "append_ttft_ms": 101.57620802056044,
+      "exact_output_equal_count": 3
+    },
+    "cold_concurrency": {
+      "1": {
+        "ttft_ms": 1043.8202079967596,
+        "output_tps": 57.03050477446046,
+        "mean_tpot_ms": 5.8412728108171565
+      },
+      "2": {
+        "ttft_ms": 2051.8080000183545,
+        "output_tps": 67.58314277461741,
+        "mean_tpot_ms": 7.422762063001038
+      },
+      "4": {
+        "ttft_ms": 3892.9415624879766,
+        "output_tps": 77.33268298734401,
+        "mean_tpot_ms": 10.32494956315005
+      }
+    },
+    "contention": {
+      "short_ttft_ms": 1896.6461250092834,
+      "short_solo_ttft_ms": 185.8174170483835,
+      "long_ttft_ms": 11508.47787503153,
+      "short_max_gap_ms": 375.5634590052068,
+      "output_tps": 15.025679237972856,
+      "short_output_equal_count": 1
+    },
+    "warm_concurrency": {
+      "1": {
+        "ttft_ms": 67.57308298256248,
+        "output_tps": 133.14306524414096,
+        "mean_tpot_ms": 5.9723811371153905,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "2": {
+        "ttft_ms": 102.53631247906014,
+        "output_tps": 212.33957445134675,
+        "mean_tpot_ms": 7.5751675421519105,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096
+        ]
+      },
+      "4": {
+        "ttft_ms": 164.4798959896434,
+        "output_tps": 298.63331514180754,
+        "mean_tpot_ms": 10.858421273664327,
+        "cached_tokens": [
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096,
+          4096
+        ]
+      }
+    },
+    "metal": {
+      "active_memory_gb": 7.32,
+      "peak_memory_gb": 7.57,
+      "cache_memory_gb": 0.0
+    },
+    "multiturn": {
+      "sessions": 3,
+      "warm_turns": 12,
+      "warm_hits": 12,
+      "cold_ttft_ms": 2111.530583992135,
+      "warm_ttft_ms": 137.6735834928695,
+      "warm_cached_fraction": 0.9750401192507774
+    }
+  },
+  "prefill-2048-recheck": {
+    "cold_concurrency": {},
+    "contention": {
+      "short_ttft_ms": 6867.218667000998,
+      "short_solo_ttft_ms": 187.449541001115,
+      "long_ttft_ms": 12373.159540991765,
+      "short_max_gap_ms": 518.9987500198185,
+      "output_tps": 13.976192829387045,
+      "short_output_equal_count": 0
+    },
+    "metal": {
+      "active_memory_gb": 7.67,
+      "peak_memory_gb": 9.67,
+      "cache_memory_gb": 0.0
+    }
+  }
+}
