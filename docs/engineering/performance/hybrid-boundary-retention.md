@@ -102,11 +102,13 @@ their results are excluded from the table. A successful intermediate prototype
 was also excluded because the table qualifies the recorded runtime revision.
 Independent review found and fixed eviction after planning, cached-insert retry
 handling and a concurrent-eviction window before the reported experiments.
-The final M5 scheduler/cache suite passed 157 tests; removing the restored-boundary
+The final M5 scheduler/cache suite passed 159 tests; removing the restored-boundary
 arm made all four targeted retention/alignment regressions fail. Replacing the
 atomic implementation with the earlier split-lock implementation made the
 deterministic concurrent-eviction regression fail. The pinned Python 3.11 type
-budget passed without growth or new suppressions. These focused tests and HTTP
+budget passed without growth or new suppressions. Focused coverage exercised all
+44 changed executable scheduler lines (100%), including missing restored metadata
+and an unavailable cache backend. These focused tests and HTTP
 experiments are distinct from the repository's complete unit and CI gates.
 
 ## Reproduction
