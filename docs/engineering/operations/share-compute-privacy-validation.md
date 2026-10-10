@@ -67,7 +67,7 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 472 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 474 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.
@@ -96,3 +96,8 @@ a stopped previous job if replacement bootstrap fails. Recovery failures are
 reported explicitly. Radix temporary descriptors are closed if wrapping the
 file object fails. Focused regressions cover both recovery outcomes and the
 descriptor failure path.
+
+Trust roots are initialized lazily inside the HTTPS request error boundary.
+Invalid CA bundles raise the same terminal certificate error as an untrusted
+peer, preserving supervisor cleanup and repair guidance. A real malformed
+bundle and lazy handler initialization have regression coverage.

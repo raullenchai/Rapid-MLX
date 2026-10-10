@@ -161,3 +161,16 @@ def test_cleanup_refuses_symlinked_ancestor(tmp_path, monkeypatch, component):
     with pytest.raises(OSError, match="symlink"):
         clear_legacy_prompt_cache("model")
     assert marker.read_text() == "unchanged"
+
+
+def test_broken_trust_bundle_uses_terminal_certificate_error(tmp_path, monkeypatch):
+    import certifi
+
+    from rapid_mlx.share.tls import CERTIFICATE_HINT
+
+    broken = tmp_path / "broken.pem"
+    broken.write_text("not a certificate")
+    monkeypatch.setattr(certifi, "where", lambda: str(broken))
+    with pytest.raises(ssl.SSLCertVerificationError, match="SSL_CERT_FILE") as error:
+        client_context()
+    assert CERTIFICATE_HINT in str(error.value)

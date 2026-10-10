@@ -3446,3 +3446,18 @@ def test_service_reinstall_reports_failed_recovery():
     ):
         qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
     assert path.read_bytes() == previous
+
+
+def test_https_trust_setup_is_lazy_and_terminal():
+    import ssl
+
+    with patch.object(
+        qs.tls,
+        "client_context",
+        side_effect=ssl.SSLCertVerificationError(qs.tls.CERTIFICATE_HINT),
+    ) as context:
+        handler = qs._VerifiedHTTPSHandler()
+        context.assert_not_called()
+        with pytest.raises(ssl.SSLCertVerificationError, match="SSL_CERT_FILE"):
+            handler.https_open(urllib.request.Request("https://localhost/register"))
+    context.assert_called_once()

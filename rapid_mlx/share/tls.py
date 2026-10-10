@@ -9,11 +9,16 @@ import urllib.error
 
 def client_context() -> ssl.SSLContext:
     # Preserve system/private roots and SSL_CERT_FILE/SSL_CERT_DIR overrides.
-    context = ssl.create_default_context()
-    import certifi
+    try:
+        context = ssl.create_default_context()
+        import certifi
 
-    context.load_verify_locations(cafile=certifi.where())
-    return context
+        context.load_verify_locations(cafile=certifi.where())
+        return context
+    except OSError:
+        # Trust-store setup failures must use the same terminal path as an
+        # untrusted peer, including relay and heartbeat shutdown.
+        raise ssl.SSLCertVerificationError(CERTIFICATE_HINT) from None
 
 
 def certificate_error(exc: BaseException | None) -> bool:

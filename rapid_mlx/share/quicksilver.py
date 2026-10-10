@@ -791,9 +791,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_URL_OPENER = urllib.request.build_opener(
-    _NoRedirectHandler, urllib.request.HTTPSHandler(context=tls.client_context())
-)
+class _VerifiedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        # Load trust roots inside the request error boundary, not module import.
+        if self._context is None:
+            self._context = tls.client_context()
+        return super().https_open(req)
+
+
+_URL_OPENER = urllib.request.build_opener(_NoRedirectHandler, _VerifiedHTTPSHandler)
 
 
 def _open(req: urllib.request.Request, timeout: float):
