@@ -28,6 +28,7 @@ from pathlib import Path
 import httpx
 
 CASES = {"late_edit": (60, 4096), "mid_edit": (35, 2048), "head_edit": (0, 0)}
+ORDERS = {"off-on": (0, 4), "on-off": (4, 0)}
 ARMS = {f"prefill{p}-checkpoint{c}" for p in (0, 1) for c in (0, 4)}
 
 
@@ -169,6 +170,32 @@ def child_environment(prefill: int, checkpoint: int) -> dict[str, str]:
     return env
 
 
+def server_command(python: str, model: str, port: int) -> list[str]:
+    """Canonical text-only launch; recorded arguments are execution receipts."""
+    return [
+        python,
+        "-m",
+        "rapid_mlx.cli",
+        "serve",
+        str(model),
+        "--served-model-name",
+        "m5-qualification",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--no-mllm",
+        "--no-spec-decode",
+        "--enable-prefix-cache",
+        "--hybrid-cache-entries",
+        "8",
+        "--prefill-step-size",
+        "2048",
+        "--log-level",
+        "INFO",
+    ]
+
+
 def prefill_evidence(log_text: str, prefill: int) -> list[str]:
     """Require the server's install/disable log, not an arm label alone."""
     lines = [line for line in log_text.splitlines() if "[gdn_prefill]" in line]
@@ -192,25 +219,57 @@ def summarize(result: dict) -> dict:
         or threshold <= 1
     ):
         raise ValueError("invalid qualification contract or speed threshold")
+    balanced = result.get("schema_version", 1) == 2
+    orders = tuple(ORDERS) if balanced else ("historical",)
+
+    def identity(order, prefill, checkpoint):
+        name = f"prefill{prefill}-checkpoint{checkpoint}"
+        return f"{order}-{name}" if balanced else name
+
+    expected_arms = {identity(o, p, c) for o in orders for p in (0, 1) for c in (0, 4)}
     arms = result["arms"]
-    if len(arms) != len(ARMS) or {a["name"] for a in arms} != ARMS:
+    if len(arms) != len(expected_arms) or {a["name"] for a in arms} != expected_arms:
         raise ValueError("missing or duplicate server arm")
     for arm in arms:
         if arm.get("error") or arm.get("server_exit") not in (0, -15):
             raise ValueError("incomplete or unclean server arm")
-        if arm["name"] != f"prefill{arm['prefill']}-checkpoint{arm['checkpoint_max']}":
+        if balanced:
+            cmd = arm.get("command", [])
+            if not cmd or cmd != server_command(
+                cmd[0], result["model"], result["port"]
+            ):
+                raise ValueError("noncanonical server command")
+        order = arm.get("order", "historical")
+        if order not in orders or arm["name"] != identity(
+            order, arm["prefill"], arm["checkpoint_max"]
+        ):
             raise ValueError("arm configuration disagrees with identity")
         if arm.get("controlled_env") != controlled_environment(
             arm["prefill"], arm["checkpoint_max"]
         ):
             raise ValueError("missing or inconsistent controlled environment")
         prefill_evidence("\n".join(arm.get("prefill_evidence", [])), arm["prefill"])
-    expected = {(a, r, c) for a in ARMS for r in range(rounds) for c in CASES}
+    if balanced:
+        expected_sequence = [
+            identity(order, prefill, checkpoint)
+            for prefill, order in (
+                (0, "off-on"),
+                (1, "on-off"),
+                (1, "off-on"),
+                (0, "on-off"),
+            )
+            for checkpoint in ORDERS[order]
+        ]
+        if [a["name"] for a in arms] != expected_sequence:
+            raise ValueError("server execution order is not counterbalanced")
+    expected = {(a, r, c) for a in expected_arms for r in range(rounds) for c in CASES}
     rows = {}
     for row in result["rows"]:
         key = (row["arm"], row["round"], row["case"])
         if type(row["round"]) is not int or key not in expected or key in rows:
             raise ValueError("unexpected or duplicate experiment row")
+        if balanced and row.get("order") != row["arm"].split("-prefill")[0]:
+            raise ValueError("row order disagrees with arm identity")
         for phase in ("seed", "warm", "cold"):
             validate_receipt(row[phase])
         checkpoint_on = row["arm"].endswith("checkpoint4")
@@ -224,47 +283,66 @@ def summarize(result: dict) -> dict:
     if set(rows) != expected:
         raise ValueError("incomplete matrix")
     incremental, groups = [], []
-    for prefill in (0, 1):
-        for case in CASES:
-            gains = []
-            for rd in range(rounds):
-                off = rows[(f"prefill{prefill}-checkpoint0", rd, case)]
-                on = rows[(f"prefill{prefill}-checkpoint4", rd, case)]
-                comparisons = {
-                    phase + "_exact": same_output(off[phase], on[phase])
-                    for phase in ("seed", "warm", "cold")
-                }
-                gain = off["warm"]["ttft_s"] / on["warm"]["ttft_s"]
-                gains.append(gain)
-                incremental.append(
+    for order in orders:
+        for prefill in (0, 1):
+            for case in CASES:
+                gains = []
+                for rd in range(rounds):
+                    off = rows[(identity(order, prefill, 0), rd, case)]
+                    on = rows[(identity(order, prefill, 4), rd, case)]
+                    comparisons = {
+                        phase + "_exact": same_output(off[phase], on[phase])
+                        for phase in ("seed", "warm", "cold")
+                    }
+                    gain = off["warm"]["ttft_s"] / on["warm"]["ttft_s"]
+                    gains.append(gain)
+                    incremental.append(
+                        {
+                            "order": order,
+                            "prefill": prefill,
+                            "round": rd,
+                            "case": case,
+                            **comparisons,
+                            "ttft_speedup": gain,
+                        }
+                    )
+                groups.append(
                     {
+                        "order": order,
                         "prefill": prefill,
-                        "round": rd,
                         "case": case,
-                        **comparisons,
-                        "ttft_speedup": gain,
+                        "median_paired_speedup": statistics.median(gains),
+                        "positive_pairs": sum(g > 1 for g in gains),
+                        "pairs": rounds,
                     }
                 )
-            groups.append(
-                {
-                    "prefill": prefill,
-                    "case": case,
-                    "median_paired_speedup": statistics.median(gains),
-                    "positive_pairs": sum(g > 1 for g in gains),
-                    "pairs": rounds,
-                }
-            )
+    balanced_groups = [
+        {
+            "prefill": p,
+            "case": c,
+            "median_paired_speedup": statistics.median(
+                row["ttft_speedup"]
+                for row in incremental
+                if row["prefill"] == p and row["case"] == c
+            ),
+            "pairs": rounds * len(orders),
+        }
+        for p in (0, 1)
+        for c in CASES
+    ]
     incremental_ok = all(
         p[k] for p in incremental for k in ("seed_exact", "warm_exact", "cold_exact")
     )
     cold_exact = sum(same_output(r["warm"], r["cold"]) for r in rows.values())
-    performance_ok = all(
+    performance_ok = balanced and all(
         g["median_paired_speedup"] >= threshold
         for g in groups
         if g["case"] != "head_edit"
     )
     return {
         "contract": contract,
+        "order_balanced": balanced,
+        "balanced_groups": balanced_groups if balanced else [],
         "rows": len(rows),
         "incremental_pairs": incremental,
         "incremental_passed": incremental_ok,
@@ -303,7 +381,8 @@ def main():
         probe.bind(("127.0.0.1", args.port))
     base = f"http://127.0.0.1:{args.port}"
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "port": args.port,
         "contract": args.contract,
         "min_speedup": args.min_speedup,
         "model": str(args.model),
@@ -366,41 +445,31 @@ def main():
                 r.raise_for_status()
                 return stream_receipt(r.iter_lines(), t, require_full_budget=not warmup)
 
-        # Reverse checkpoint order between prefill modes; each mode is
-        # measured in one process order, so this is not within-mode counterbalancing.
-        for prefill, checkpoint in [(0, 0), (0, 4), (1, 4), (1, 0)]:
-            name = f"prefill{prefill}-checkpoint{checkpoint}"
+        # Each prefill mode has both checkpoint orders. Reverse the prefill
+        # block order in the second half too; no thermal-equivalence claim.
+        schedule = [
+            (prefill, order, checkpoint)
+            for prefill, order in (
+                (0, "off-on"),
+                (1, "on-off"),
+                (1, "off-on"),
+                (0, "on-off"),
+            )
+            for checkpoint in ORDERS[order]
+        ]
+        for prefill, order, checkpoint in schedule:
+            name = f"{order}-prefill{prefill}-checkpoint{checkpoint}"
             log = args.output.parent / (name + ".server.log")
             env = child_environment(prefill, checkpoint)
             controlled_env = controlled_environment(prefill, checkpoint)
-            cmd = [
-                sys.executable,
-                "-m",
-                "rapid_mlx.cli",
-                "serve",
-                str(args.model),
-                "--served-model-name",
-                "m5-qualification",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(args.port),
-                "--no-mllm",
-                "--no-spec-decode",
-                "--enable-prefix-cache",
-                "--hybrid-cache-entries",
-                "8",
-                "--prefill-step-size",
-                "2048",
-                "--log-level",
-                "INFO",
-            ]
+            cmd = server_command(sys.executable, str(args.model), args.port)
             with log.open("w") as stream:
                 proc = subprocess.Popen(
                     cmd, env=env, stdout=stream, stderr=subprocess.STDOUT
                 )
                 arm = {
                     "name": name,
+                    "order": order,
                     "command": cmd,
                     "controlled_env": controlled_env,
                     "log": log.name,
@@ -491,6 +560,7 @@ def main():
                             cold = ask(messages(edited))
                             row = {
                                 "arm": name,
+                                "order": order,
                                 "round": rd,
                                 "case": case,
                                 "seed": seed,

@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from scripts.benchmark_hybrid_checkpoints import (
-    ARMS,
     CASES,
     child_environment,
     controlled_environment,
+    server_command,
     stream_receipt,
     summarize,
     validate_receipt,
@@ -38,17 +38,34 @@ def receipt(cached=0, ttft=1.0, text="warm"):
 
 def matrix():
     result = {
+        "schema_version": 2,
+        "model": "/cached/snapshot",
+        "port": 8617,
         "rounds": 2,
         "contract": "cold",
         "min_speedup": 1.1,
         "arms": [],
         "rows": [],
     }
-    for arm in sorted(ARMS):
-        prefill, checkpoint = int(arm[7]), int(arm[-1])
+    schedule = [
+        (0, "off-on", 0),
+        (0, "off-on", 4),
+        (1, "on-off", 4),
+        (1, "on-off", 0),
+        (1, "off-on", 0),
+        (1, "off-on", 4),
+        (0, "on-off", 4),
+        (0, "on-off", 0),
+    ]
+    for prefill, order, checkpoint in schedule:
+        arm = f"{order}-prefill{prefill}-checkpoint{checkpoint}"
         result["arms"].append(
             {
                 "name": arm,
+                "command": server_command(
+                    "/env/bin/python", result["model"], result["port"]
+                ),
+                "order": order,
                 "prefill": prefill,
                 "checkpoint_max": checkpoint,
                 "server_exit": -15,
@@ -66,6 +83,7 @@ def matrix():
                 result["rows"].append(
                     {
                         "arm": arm,
+                        "order": order,
                         "round": rd,
                         "case": case,
                         "seed": receipt(text="seed"),
@@ -84,9 +102,9 @@ def test_complete_matrix_joins_by_identity_and_reports_each_group():
     result["rows"].reverse()
     summary = summarize(result)
     assert summary["passed"]
-    assert summary["cold_exact_pairs"] == summary["rows"] == 24
-    assert len(summary["incremental_pairs"]) == 12
-    assert len(summary["groups"]) == 6
+    assert summary["cold_exact_pairs"] == summary["rows"] == 48
+    assert len(summary["incremental_pairs"]) == 24
+    assert len(summary["groups"]) == 12
 
 
 def test_incremental_contract_does_not_hide_cold_drift():
@@ -165,7 +183,7 @@ def test_incomplete_or_wrong_execution_cannot_qualify(mutation):
 def test_each_edit_group_must_meet_its_performance_gate():
     result = matrix()
     for row in result["rows"]:
-        if row["arm"] == "prefill1-checkpoint4" and row["case"] == "mid_edit":
+        if row["arm"] == "off-on-prefill1-checkpoint4" and row["case"] == "mid_edit":
             row["warm"]["ttft_s"] = 1.5
     summary = summarize(result)
     assert summary["incremental_passed"] and not summary["performance_passed"]
@@ -247,8 +265,9 @@ def test_recorded_m5_matrix_qualifies_incremental_but_rejects_cold_contract():
     )
     result = json.loads(fixture.read_text())
     summary = summarize(result)
-    assert summary == result["summary"]
-    assert summary["passed"] and len(summary["incremental_pairs"]) == 18
+    # Historical fixed-order receipts remain observations, never certification.
+    assert not summary["passed"] and not summary["order_balanced"]
+    assert summary["incremental_passed"] and len(summary["incremental_pairs"]) == 18
     assert summary["cold_exact_pairs"] == 26 and summary["cold_total_pairs"] == 36
     result["contract"] = "cold"
     assert not summarize(result)["passed"]
@@ -314,3 +333,47 @@ def test_child_environment_runs_python_without_ambient_pythonhome(monkeypatch):
         timeout=10,
     )
     assert json.loads(proc.stdout) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing_order", "row_order", "arm_order", "sequence"]
+)
+def test_order_evidence_cannot_be_missing_or_mixed(mutation):
+    result = matrix()
+    if mutation == "missing_order":
+        result["arms"] = [a for a in result["arms"] if a["order"] == "off-on"]
+        result["rows"] = [r for r in result["rows"] if r["order"] == "off-on"]
+    elif mutation == "row_order":
+        result["rows"][0]["order"] = "on-off"
+    elif mutation == "arm_order":
+        result["arms"][0]["order"] = "on-off"
+    else:
+        result["arms"][0], result["arms"][1] = result["arms"][1], result["arms"][0]
+    with pytest.raises(ValueError):
+        summarize(result)
+
+
+def test_each_order_must_pass_even_when_pooled_gain_is_large():
+    result = matrix()
+    for row in result["rows"]:
+        if row["arm"] == "on-off-prefill0-checkpoint4" and row["case"] == "late_edit":
+            row["warm"]["ttft_s"] = 1.01
+    summary = summarize(result)
+    assert summary["incremental_passed"] and not summary["performance_passed"]
+    assert not summary["passed"]
+
+
+@pytest.mark.parametrize("mutation", ["chunk", "model", "speculation", "extra"])
+def test_noncanonical_launch_cannot_qualify(mutation):
+    result = matrix()
+    cmd = result["arms"][0]["command"]
+    if mutation == "chunk":
+        cmd[cmd.index("--prefill-step-size") + 1] = "1024"
+    elif mutation == "model":
+        cmd[4] = "/other/model"
+    elif mutation == "speculation":
+        cmd.remove("--no-spec-decode")
+    else:
+        cmd.extend(["--temperature", "1"])
+    with pytest.raises(ValueError, match="noncanonical"):
+        summarize(result)
