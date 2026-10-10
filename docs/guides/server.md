@@ -183,6 +183,20 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
 
+### Cache persistence and diagnostics
+
+Cache export/import currently support text serving. A loaded vision-capable
+server returns HTTP 501 with `error.code: "cache_persistence_unsupported"` and a
+message identifying the unsupported operation, including when a separate text
+scheduler is present. An unloaded engine still returns HTTP 503. Vision prefix
+reuse and cache clearing remain available in memory.
+
+`GET /v1/cache/stats` identifies the active backend (`model_type: "mllm"` for
+vision, `"llm"` for text, or `null` when no engine is installed). Vision
+`multimodal_kv_cache` contains the active engine's reusable-prefix counters, or
+`null` if those counters are unavailable. It does not depend on optional
+package-global image-cache APIs.
+
 ### Low-memory model switching
 
 When `POST /v1/models/load` must evict the primary before loading its replacement,

@@ -475,25 +475,20 @@ async def status():
 
 @router.get("/v1/cache/stats")
 async def cache_stats():
-    """Get cache statistics."""
-    try:
-        from mlx_vlm.utils import (
-            get_multimodal_kv_cache_stats,
-            get_pil_cache_stats,
-            get_pixel_values_cache_stats,
-        )
-
+    """Report cache statistics from the active backend, not optional globals."""
+    engine = get_config().engine
+    if engine is None:
+        return {"message": "engine not loaded", "model_type": None}
+    if engine.is_mllm:
         return {
-            "multimodal_kv_cache": get_multimodal_kv_cache_stats(),
-            "pixel_values_cache": get_pixel_values_cache_stats(),
-            "pil_image_cache": get_pil_cache_stats(),
+            "model_type": "mllm",
+            "multimodal_kv_cache": engine.get_cache_stats(),
         }
-    except ImportError:
-        return {
-            "message": "Vision cache stats not available (text-only model loaded). "
-            "Prompt cache is managed internally by the engine.",
-            "model_type": "llm",
-        }
+    return {
+        "message": "Vision cache stats not available (text-only model loaded). "
+        "Prompt cache is managed internally by the engine.",
+        "model_type": "llm",
+    }
 
 
 @admin_router.delete("/v1/cache")
