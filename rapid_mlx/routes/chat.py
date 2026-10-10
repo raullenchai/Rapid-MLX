@@ -385,7 +385,38 @@ def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
         # XML names are literal wire bytes, unlike JSON-escaped names.
         if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(_forced_name):
             return None
-        return f"<tool_call>\n<function={_forced_name}>\n"
+        # Templates can contain inactive XML branches. Probe the rendered
+        # assistant call with this request's template kwargs rather than
+        # choosing a format solely from source literals.
+        from jinja2 import TemplateError
+        from transformers.utils.chat_template_utils import render_jinja_template
+
+        probe_messages = [m.model_dump(exclude_none=True) for m in request.messages]
+        probe_messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": _forced_name, "arguments": {}},
+                    }
+                ],
+            }
+        )
+        try:
+            rendered, _ = render_jinja_template(
+                [probe_messages],
+                tools=[t.model_dump(exclude_none=True) for t in request.tools],
+                chat_template=template,
+                **(request.chat_template_kwargs or {}),
+            )
+        except (TypeError, ValueError, TemplateError):
+            rendered = []
+        if rendered and rendered[0].rsplit("<tool_call>", 1)[-1].lstrip().startswith(
+            f"<function={_forced_name}>"
+        ):
+            return f"<tool_call>\n<function={_forced_name}>\n"
     return _forced_tool_call_prefix(cfg.tool_call_parser, _forced_name)
 
 

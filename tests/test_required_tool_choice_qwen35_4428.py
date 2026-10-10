@@ -249,6 +249,8 @@ def test_stream_missing_call_error_and_length_boundary(finish, choice, monkeypat
             assert terminal == ["length"]
         elif finish == "stop":
             assert terminal == ["stop"]
+        else:
+            assert terminal == ["stop"]
     assert response.text.count("data: [DONE]") == 1
 
 
@@ -315,3 +317,20 @@ def test_named_stream_wrong_function_cannot_satisfy_choice(monkeypatch):
     assert not [
         c for ch in chunks for c in ch.get("choices", []) if c.get("finish_reason")
     ]
+
+
+@pytest.mark.parametrize("xml_enabled", [False, True])
+def test_inactive_xml_branch_does_not_choose_xml_prefill(xml_enabled):
+    template = (
+        "{% if xml_enabled %}" + XML_TEMPLATE + "{% else %}JSON template{% endif %}"
+    )
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=template))
+    req = request()
+    req.chat_template_kwargs = {"xml_enabled": xml_enabled}
+    prefix = _compute_forced_tool_prefix(
+        SimpleNamespace(tool_call_parser="hermes"), req, engine
+    )
+    if xml_enabled:
+        assert prefix == "<tool_call>\n<function=get_weather>\n"
+    else:
+        assert '"arguments": ' in prefix
