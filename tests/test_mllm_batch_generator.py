@@ -49,18 +49,42 @@ def test_explicit_context_counts_expanded_media_tokens():
         _enforce_preprocessed_context_window([request], 160)
 
 
-def test_process_prompts_checks_expanded_tokens_before_vision(monkeypatch):
+@pytest.mark.parametrize("prompt_tokens, budget", [(120, 40), (159, 1)])
+def test_preprocessed_context_reserves_only_remaining_decode_tokens(
+    prompt_tokens, budget
+):
+    from types import SimpleNamespace
+
+    request = MLLMBatchRequest(uid=1, request_id="decode-budget", prompt="hi")
+    request.input_ids = SimpleNamespace(size=prompt_tokens)
+    request.max_tokens = 100
+    _enforce_preprocessed_context_window([request], 160)
+    assert request.max_tokens == budget
+    request.max_tokens = 1
+    _enforce_preprocessed_context_window([request], 160)
+    assert request.max_tokens == 1
+
+
+@pytest.mark.parametrize("configured_context", [None, 100, 200])
+@pytest.mark.parametrize("prompt_tokens", [100, 120])
+def test_process_prompts_checks_expanded_tokens_before_vision(
+    monkeypatch, configured_context, prompt_tokens
+):
     from types import SimpleNamespace
 
     from rapid_mlx.config import get_config
 
     generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    generator.model = SimpleNamespace(
+        args=SimpleNamespace(text_config=SimpleNamespace(max_position_embeddings=100))
+    )
+    generator.processor = SimpleNamespace(tokenizer=object())
     generator._media_mrope_restore = lambda: None
     generator._preprocess_request = lambda req: setattr(
-        req, "input_ids", SimpleNamespace(size=120)
+        req, "input_ids", SimpleNamespace(size=prompt_tokens)
     )
     request = MLLMBatchRequest(uid=1, request_id="media-overflow", prompt="hi")
-    monkeypatch.setattr(get_config(), "context_length", 100)
+    monkeypatch.setattr(get_config(), "context_length", configured_context)
 
     with pytest.raises(ClientRequestError, match="context_length_exceeded"):
         generator._process_prompts([request])

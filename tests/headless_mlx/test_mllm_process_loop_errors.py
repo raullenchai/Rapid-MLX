@@ -214,6 +214,10 @@ def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
         yield
 
     generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
+    generator.model = SimpleNamespace(
+        args=SimpleNamespace(max_position_embeddings=8192)
+    )
+    generator.processor = SimpleNamespace(tokenizer=object())
     generator.language_model = object()
     generator._stream = owned_stream
     generator.vision_prefill_token_budget = 8192
@@ -224,7 +228,7 @@ def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
     generator._run_vision_encoding = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         RuntimeError("prefill reached")
     )
-    request = SimpleNamespace(input_ids=SimpleNamespace(size=1))
+    request = SimpleNamespace(input_ids=SimpleNamespace(size=1), max_tokens=16)
     monkeypatch.setattr(
         cache_module, "make_prompt_cache", lambda _model: object(), raising=False
     )

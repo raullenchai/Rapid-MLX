@@ -5360,7 +5360,8 @@ def context_overflow_from_client_error(
 
     match = re.fullmatch(
         r"context_length_exceeded: prompt has (\d+) tokens after media "
-        r"expansion, exceeding --context-length (\d+)",
+        r"expansion, (?:exceeding --context-length |reaching or exceeding "
+        r"the context window of )(\d+)(?: tokens)?",
         str(exc),
     )
     if match is None:
@@ -5545,7 +5546,9 @@ def _requires_exact_prompt_count() -> bool:
 
 def _tokenized_prompt_length(tokenized) -> int:
     """Return sequence length from tokenizer list, batch, or tensor output."""
-    if isinstance(tokenized, dict):
+    from collections.abc import Mapping
+
+    if isinstance(tokenized, Mapping):
         tokenized = tokenized.get("input_ids")
     if tokenized is None:
         return 0
@@ -5659,7 +5662,7 @@ def enforce_context_length_for_messages(
     Returns the integer prompt-token count so callers that already pay
     the build_prompt + tokenize cost can reuse it (e.g. Anthropic
     streaming usage's ``message_start.input_tokens`` plumbing). Returns
-    ``None`` when the render or tokenization was skipped — MLLM engine,
+    ``None`` when the render or tokenization was skipped — unavailable template,
     no ``build_prompt`` attribute, empty rendered prompt, or
     tokenizer-returned-zero — so callers can distinguish "no estimate
     available" from "real zero count" without re-parsing a sentinel
@@ -5667,10 +5670,10 @@ def enforce_context_length_for_messages(
     discard the return value keep working unchanged — this is an
     additive contract change.
 
-    MLLM models normally skip this preflight because media token cost is
-    computed by the multimodal processor. An explicit operator window
-    enables a text-token preflight; the multimodal generator checks the
-    expanded token count after preprocessing as well.
+    MLLM models also run a text-token preflight against the model window.
+    Media token cost is computed by the multimodal processor, so the
+    generator checks the expanded count before prefill as well. Missing
+    text-template support defers to that authoritative processor check.
 
     ``enable_thinking`` is forwarded to the engine's ``build_prompt``
     so the rendered template matches what the engine will actually
@@ -5701,8 +5704,6 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        if not _requires_exact_prompt_count():
-            return None
         # The multimodal processor performs the authoritative count after
         # expanding media. A missing text template is only fatal for the
         # separate pre-prefill max_prompt_tokens admission cap.
@@ -5906,8 +5907,6 @@ def enforce_context_length_for_prompt(
     handles both shapes; see its docstring for the codex round-2
     BLOCKING #3 rationale on non-string prompts.
     """
-    if getattr(engine, "is_mllm", False) and not _requires_exact_prompt_count():
-        return max_tokens
     if not prompt:
         return max_tokens
     prompt_tokens = count_prompt_tokens(engine, prompt)

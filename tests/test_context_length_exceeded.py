@@ -507,7 +507,7 @@ def test_operational_prompt_cap_allows_countable_mllm_prompt_under_cap():
     )
 
 
-def test_mllm_prompt_admission_keeps_legacy_skip_without_operational_cap():
+def test_mllm_prompt_admission_defers_missing_template_to_processor():
     from rapid_mlx.service.helpers import enforce_context_length_for_messages
 
     class _MLLMEngine:
@@ -519,6 +519,49 @@ def test_mllm_prompt_admission_keeps_legacy_skip_without_operational_cap():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("prompt_tokens", [99, 100, 101])
+def test_mllm_default_native_window_text_preflight(prompt_tokens):
+    from collections import UserDict
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    engine = SimpleNamespace(
+        is_mllm=True,
+        _model=_StubModel(
+            args=_StubArgs(text_config=_StubArgs(max_position_embeddings=100))
+        ),
+        tokenizer=SimpleNamespace(
+            apply_chat_template=lambda *args, **kwargs: UserDict(
+                input_ids=[1] * prompt_tokens, attention_mask=[1] * prompt_tokens
+            )
+        ),
+    )
+    messages = [{"role": "user", "content": "prompt"}]
+    if prompt_tokens < 100:
+        assert enforce_context_length_for_messages(engine, messages) == prompt_tokens
+    else:
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_context_length_for_messages(engine, messages)
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+
+
+def test_mllm_default_native_window_raw_prompt_preflight():
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_prompt
+
+    engine = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=100)))
+    engine.is_mllm = True
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_prompt(engine, list(range(101)))
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
 
 
 @pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
@@ -552,7 +595,8 @@ def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure
 
 
 @pytest.mark.parametrize("failure", ["missing", "raises", "empty"])
-def test_explicit_context_mllm_defers_unavailable_text_count_to_processor(failure):
+@pytest.mark.parametrize("context_length", [None, 4096])
+def test_mllm_defers_unavailable_text_count_to_processor(failure, context_length):
     from rapid_mlx.config import get_config
     from rapid_mlx.service.helpers import enforce_context_length_for_messages
 
@@ -567,7 +611,7 @@ def test_explicit_context_mllm_defers_unavailable_text_count_to_processor(failur
         tokenizer = object() if failure == "missing" else _Tokenizer()
 
     cfg = get_config()
-    cfg.context_length = 4096
+    cfg.context_length = context_length
     cfg.max_prompt_tokens = None
     assert (
         enforce_context_length_for_messages(
