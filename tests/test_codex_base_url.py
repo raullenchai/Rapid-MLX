@@ -86,6 +86,44 @@ def test_cli_rejects_root_query_without_echoing_secret(tmp_path, monkeypatch, ca
     assert not (tmp_path / "config.toml").exists()
 
 
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "http://user:credential-canary-4436＠localhost:8899",
+        "http://user:credential-canary-4436@localhost：8899/v1",
+        "http://user:credential-canary-4436@[::1",
+    ],
+)
+def test_malformed_url_rejected_without_echoing_secret(
+    tmp_path, monkeypatch, capsys, supplied
+):
+    import traceback
+
+    from rapid_mlx.cli import agents_command
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    profile = get_profile("codex")
+    for operation in (
+        lambda: setup_agent_config(profile, supplied, "local-qwen"),
+        lambda: AgentTestRunner(profile, supplied),
+    ):
+        with pytest.raises(ValueError) as exc:
+            operation()
+        assert "credential-canary-4436" not in "".join(
+            traceback.format_exception(exc.value)
+        )
+        assert "valid HTTP(S)" in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        agents_command(
+            Namespace(agent_name="codex", base_url=supplied, setup=True, test=False)
+        )
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "credential-canary-4436" not in output
+    assert "valid HTTP(S)" in output
+    assert not (tmp_path / "config.toml").exists()
+
+
 def test_cli_normalizes_before_discovery_verification_and_write(tmp_path, monkeypatch):
     from rapid_mlx.cli import agents_command
 

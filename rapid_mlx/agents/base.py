@@ -171,7 +171,14 @@ class AgentProfile:
         a server root (e.g. Anthropic clients); their contracts are unchanged.
         """
         if self.name == "codex":
-            parsed = urlsplit(base_url)
+            try:
+                parsed = urlsplit(base_url)
+            except ValueError:
+                # Parser errors may include credential-bearing netloc text.
+                raise ValueError(
+                    "Invalid Codex base URL; use a valid HTTP(S) server address "
+                    "or explicit API path."
+                ) from None
             if (
                 parsed.scheme in {"http", "https"}
                 and parsed.netloc
