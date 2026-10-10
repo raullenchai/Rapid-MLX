@@ -109,6 +109,24 @@ def supported_kv_cache_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
     return plain + (VLMKVCache,), rotating + (VLMRotatingKVCache,)
 
 
+def supported_recurrent_cache_types() -> tuple[type, ...]:
+    """Exact bounded state classes that may coexist with quantized attention KV.
+
+    These caches are passed through unchanged, never quantized. Match class
+    identity rather than names so unknown implementations remain fail-closed.
+    """
+    from mlx_lm.models.cache import ArraysCache
+
+    from .models.mlx_vlm_vendored.cache import ArraysCache as VendoredArraysCache
+
+    recurrent = (ArraysCache, VendoredArraysCache)
+    try:
+        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+    except ImportError:
+        return recurrent
+    return recurrent + (VLMArraysCache,)
+
+
 def _quantize(x: mx.array, group_size: int, bits: int) -> list[mx.array]:
     """Quantize along the last (head) dim -> [packed_uint32, scales, biases]."""
     return list(mx.quantize(x, group_size=group_size, bits=bits))
@@ -668,7 +686,7 @@ def install_quantized_batch_cache(
 
     Only exact top-level ``KVCache`` layers are swapped. This deliberately
     supports hybrid per-layer layouts: full-attention layers use packed KV while
-    bounded rotating layers keep their bf16 behavior.
+    bounded rotating layers and recurrent ``ArraysCache`` state stay unchanged.
 
     * ``RotatingKVCache`` (sliding-window / ``max_kv_size``) — quantized batched
       sliding-window is NYI upstream (``BatchRotatingKVCache`` raises NYI).
