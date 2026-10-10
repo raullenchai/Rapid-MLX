@@ -12,6 +12,13 @@ subprocess CLI checks find its installed entry points instead of another
 checkout's executables. Use the existing default Hugging Face cache; do not
 create another model cache or fetch weights to make unit tests pass.
 
+The canonical suite also executes JavaScript workflow harnesses and validates
+MCP command discovery. Put a real Node.js installation (including `npx`) on
+the noninteractive runner's `PATH`; a Python environment alone is insufficient.
+Check `node --version` and `npx --version` in the same shell that will launch
+pytest. Missing executables are validation prerequisites, not reasons to skip
+the workflow or security tests.
+
 ```sh
 python3.12 -m venv .venv
 . .venv/bin/activate
