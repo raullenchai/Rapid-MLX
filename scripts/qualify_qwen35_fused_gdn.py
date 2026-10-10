@@ -83,6 +83,8 @@ def snapshot_identity(path: Path) -> dict:
             for name in shards
         ):
             raise ValueError("checkpoint index references missing or invalid shards")
+        if {p.name for p in files} != shards:
+            raise ValueError("checkpoint contains unindexed weight files")
     elif len(files) != 1:
         raise ValueError("sharded checkpoint requires a complete weight index")
     return {

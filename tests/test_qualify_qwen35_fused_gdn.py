@@ -267,6 +267,11 @@ def test_sharded_snapshot_requires_all_indexed_files(tmp_path):
         snapshot_identity(path)
     cached_weight(path, "model-2.safetensors", b"cached")
     assert len(snapshot_identity(path)["weights"]) == 2
+    extra = path / "model-extra.safetensors"
+    cached_weight(path, extra.name, b"extra")
+    with pytest.raises(ValueError, match="unindexed weight files"):
+        snapshot_identity(path)
+    extra.unlink()
     index.unlink()
     with pytest.raises(ValueError, match="requires a complete weight index"):
         snapshot_identity(path)
