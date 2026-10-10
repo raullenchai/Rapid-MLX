@@ -132,7 +132,7 @@ def test_cli_snapshot_fixture_has_two_cpu_consumers_each_in_one_shard():
         ["tests/conftest.py"],
         ["tests/fixtures/config.py"],
         ["rapid_mlx/cli.py", "tests/fixtures/other.json"],
-        ["rapid_mlx/cli.py", "tests/headless_mlx/test_engine_lifecycle.py"],
+        ["rapid_mlx/cli.py", "tests/headless_mlx/conftest.py"],
         ["tests/test_ci_main_qualification.py"],
         ["tests/test_queue_tree_evidence.py"],
         ["scripts/classify_ci_changes.py"],

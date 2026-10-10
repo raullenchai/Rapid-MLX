@@ -334,7 +334,7 @@ _SOURCE_PREFLIGHT_FIXTURES = {"tests/fixtures/cli_parser_snapshot.json"}
 def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
     """CPU source prefilter only; combined candidates still enforce every gate.
 
-    Restrict the opt-in to engine code and ordinary single-file test changes.
+    Restrict the opt-in to engine code, ordinary CPU tests and the type debt file.
     Controllers, collection support, cross-product and unknown paths self-check
     in full. This is deliberately broader than a mapped regression contract.
     """
@@ -344,6 +344,10 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
         pure = PurePosixPath(path)
         if not pure.parts or pure.is_absolute() or ".." in pure.parts:
             return False
+        # The existing type-check job still enforces the shrink-only budget.
+        # Interpreter/toolchain pins and collection configuration stay full.
+        if path == "config/mypy-error-baseline.txt":
+            continue
         if path in _DOC_FILES or pure.parts[0] in _DOC_ROOTS:
             continue
         if path in _SOURCE_PREFLIGHT_FIXTURES:
@@ -352,7 +356,10 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
             return False
         if pure.parts[0] == "rapid_mlx":
             continue
-        if pure.parts[0] == "tests" and len(pure.parts) == 2:
+        if pure.parts[0] == "tests" and (
+            len(pure.parts) == 2
+            or (len(pure.parts) == 3 and pure.parts[1] == "headless_mlx")
+        ):
             name = pure.name
             if (
                 name.startswith("test_")
