@@ -250,6 +250,8 @@ def test_early_precondition_failure_writes_typed_result_evidence(tmp_path: Path)
         env={
             **os.environ,
             "HOME": str(tmp_path),
+            # Exercise missing-app evidence independently of operator host admission.
+            "RAPID_HOST_PRECHECK_HELD": "1",
             "RAPID_GUI_GOLDEN_OUT": str(output),
             "RAPID_GUI_SOURCE_APP": str(missing_app),
         },
