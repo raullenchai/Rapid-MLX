@@ -26,6 +26,8 @@ which CI does not install, so that check is not repeated here.
 
 import importlib
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -143,10 +145,44 @@ def test_flattened_config_fallback():
     assert args.text.num_hidden_layers == 52
 
 
+def _run_full_float32_check(check, seed):
+    """Select precision before MLX caches its process-wide Metal policy.
+
+    M5's default float32 GEMM uses TF32 while single-token GEMV does not.
+    Cache semantics need an equal-precision comparison, in a fresh process
+    so other tests and the serving runtime retain their precision policy.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; "
+            "runpy.run_path(sys.argv[1])[sys.argv[2]](int(sys.argv[3]))",
+            str(Path(__file__).resolve()),
+            check,
+            str(seed),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "MLX_ENABLE_TF32": "0"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, (
+        f"{check}, seed={seed}, exit={result.returncode}\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
 def test_configs_without_both_layer_kinds():
+    _run_full_float32_check("_check_configs_without_both_layer_kinds", 0)
+
+
+def _check_configs_without_both_layer_kinds(seed):
     """Explicit all-sliding configs and short default-pattern configs
     (< 4 layers -> no full-attention layer) must construct and run
     (codex r1 #2)."""
+    mx.random.seed(seed)
     for text_cfg in (
         dict(TINY_TEXT, num_hidden_layers=2, layer_types=[mg._SLIDING] * 2),
         dict(TINY_TEXT, num_hidden_layers=3),  # default pattern -> [S,S,S]
@@ -165,7 +201,13 @@ def test_configs_without_both_layer_kinds():
         assert float(mx.abs(inc - no_cache).max()) < 2e-3
 
 
-def test_forward_softcap_and_cache_parity():
+@pytest.mark.parametrize("seed", range(32))
+def test_forward_softcap_and_cache_parity(seed):
+    _run_full_float32_check("_check_forward_softcap_and_cache_parity", seed)
+
+
+def _check_forward_softcap_and_cache_parity(seed):
+    mx.random.seed(seed)
     model = tiny_model()
     ids = mx.random.randint(0, TINY_TEXT["vocab_size"], (1, 24))
 
@@ -179,6 +221,16 @@ def test_forward_softcap_and_cache_parity():
     inc = mx.concatenate(steps, axis=1)
     diff = float(mx.abs(inc - logits).max())
     assert diff < 2e-3, diff
+
+
+def test_forward_softcap_default_precision():
+    """The caller's precision policy still executes the real GPU forward."""
+    model = tiny_model()
+    ids = mx.random.randint(0, TINY_TEXT["vocab_size"], (1, 24))
+    logits = model(ids)
+    assert logits.shape == (1, 24, TINY_TEXT["vocab_size"])
+    assert bool(mx.all(mx.isfinite(logits)))
+    assert float(mx.abs(logits).max()) <= model.text_args.final_logit_softcapping + 1e-4
 
 
 def test_input_embeddings_used_raw():
