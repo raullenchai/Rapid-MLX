@@ -1,0 +1,138 @@
+{
+  "inventory": {
+    "head": "e9857873cd72b64e51e3c5495f43bfa906abfd85",
+    "dirty": [],
+    "source_sha256": {
+      "harness": "37d98ec007f189eb110ef8b4bce8901cac3e66e23679bfa683d4ceb397b487d2",
+      "adapter": "40dffc2935370dcb056bb955b2dcee3ade75dd73aba6ed04d4078469c85ea77d",
+      "kernel": "6c3a2914f4b75430e620da06646ce730ab7ec345976351c6d3aa55f96bd2e154",
+      "native_layer": "f0daa30bba5cb521c8bdfa7093101a544c6a37bbba09bca582288219cb04ae3a",
+      "native_recurrence": "79c8376a51c694b03e54d2f996ced6ea6c8c42868b8571529f97334db165a3e1",
+      "native_normalization": "3c572fe3fbb36721efab4d80d1bb6af11beb4ad1caae18deefc9fc84cbcd9b79"
+    },
+    "packages": {
+      "mlx": "0.32.3",
+      "mlx-metal": "0.32.3",
+      "mlx-lm": "0.31.3",
+      "numpy": "2.4.4"
+    },
+    "python": "3.12.14 (main, Aug 12 2026, 13:57:54) [Clang 21.0.0 (clang-2100.1.1.101)]",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "hardware": "Apple M3 Ultra",
+    "execution": {
+      "arms": "serial mx.eval barriers",
+      "hardware_exclusive": false,
+      "performance_claim": false
+    }
+  },
+  "cases": [
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "8164d64ed438774133afb7de8569c9ebc3edccd025dfc4e2ad17a53d5fae8847"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "8164d64ed438774133afb7de8569c9ebc3edccd025dfc4e2ad17a53d5fae8847"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "f1f1252b719bdb9187b9ca241156786ac951c0bc04d5d598d340ad9aa41afd46"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "f1f1252b719bdb9187b9ca241156786ac951c0bc04d5d598d340ad9aa41afd46"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "token_hash": "efe9505095bc3fd7d975365c06a3de40520b243925ddf160f8907f3c58cf37b5"
+    }
+  ],
+  "row_digests": [
+    "a6f3b1f5fc4678ef22c6b0eeca81257b84db238bf5c4bfdd92445aca0b4d796d",
+    "6c119e8c07150c458f11e46e7900c1cb8985a8ad2a0cff7362a5fae611902cca"
+  ]
+}
