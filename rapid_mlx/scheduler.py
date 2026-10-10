@@ -9396,11 +9396,13 @@ class Scheduler:
                 entry = store._entries.get(tuple(prompt_tokens[:cached]))
                 retained = entry is not None and entry.message_boundary
             if retained:
-                request._cache_snapshot_boundary = cached
-                request._cache_snapshot_stored = True
-                request._cache_snapshot_restored = True
-                request._cache_snapshot_is_internal = False
-                request._boundary_snapshot_taken = True
+                # Snapshot lifecycle metadata is attached dynamically to requests.
+                retained_state: Any = request
+                retained_state._cache_snapshot_boundary = cached
+                retained_state._cache_snapshot_stored = True
+                retained_state._cache_snapshot_restored = True
+                retained_state._cache_snapshot_is_internal = False
+                retained_state._boundary_snapshot_taken = True
         return snapshot_boundary
 
     def _max_running_sequences(self) -> int:
@@ -9889,11 +9891,12 @@ class Scheduler:
                     request.remaining_tokens = request.prompt_token_ids
                     tokens_to_process = request.prompt_token_ids
                     if getattr(request, "_cache_snapshot_restored", False):
-                        request._cache_snapshot_restored = False
-                        request._cache_snapshot_stored = False
-                        request._boundary_snapshot_taken = False
-                        request._cache_snapshot_is_internal = False
-                        del request._cache_snapshot_boundary
+                        retry_state: Any = request
+                        retry_state._cache_snapshot_restored = False
+                        retry_state._cache_snapshot_stored = False
+                        retry_state._boundary_snapshot_taken = False
+                        retry_state._cache_snapshot_is_internal = False
+                        del retry_state._cache_snapshot_boundary
                         self._resolve_snapshot_boundary(request)
                     # The retry keeps only the message boundary split.
                     request.shared_prefix_snapshot_at = 0
