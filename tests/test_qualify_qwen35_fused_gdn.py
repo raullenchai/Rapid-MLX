@@ -274,6 +274,15 @@ def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
         ["qualify", "--model", "missing", "--model", "next", "--output", str(output)],
     )
     monkeypatch.setattr(qualification, "source_inventory", lambda: {"head": "test"})
+
+    # The CLI's real cooperative lock must not make this stubbed-model unit
+    # test contend with a concurrently running real qualification process.
+    def isolated_open(path, *args, **kwargs):
+        if path == "/private/tmp/rapid-mlx-qwen35-qualification.lock":
+            path = tmp_path / "qualification.lock"
+        return open(path, *args, **kwargs)
+
+    monkeypatch.setattr(qualification, "open", isolated_open, raising=False)
     seen = []
 
     def fake(model, histories, steps, out):
