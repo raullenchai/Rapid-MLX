@@ -178,6 +178,23 @@ class AnthropicContentBlock(BaseModel):
                             f"image source.{key} must be a string "
                             f"(got {type(val).__name__})"
                         )
+            source_type = self.source.get("type")
+            if source_type not in ("base64", "url"):
+                raise ValueError("image source.type must be 'base64' or 'url'")
+            required = ("data", "media_type") if source_type == "base64" else ("url",)
+            for key in required:
+                value = self.source.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"image source.{key} must be a non-empty string")
+            if source_type == "base64" and self.source["media_type"] not in {
+                "image/jpeg",
+                "image/png",
+                "image/gif",
+                "image/webp",
+            }:
+                raise ValueError(
+                    "image source.media_type must be a supported image MIME type"
+                )
         return self
 
 
