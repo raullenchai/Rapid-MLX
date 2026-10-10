@@ -254,7 +254,10 @@ class AnthropicToolDef(BaseModel):
 
     name: str
     description: str | None = None
-    input_schema: dict | None = None
+    # Custom tools require an explicit schema, including zero-argument tools.
+    # Otherwise OpenAI-style `parameters` is ignored and the tool loses its
+    # argument contract before reaching the model (#4455).
+    input_schema: dict
 
 
 class AnthropicOutputFormat(BaseModel):

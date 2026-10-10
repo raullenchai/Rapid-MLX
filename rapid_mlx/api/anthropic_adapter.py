@@ -927,7 +927,7 @@ def _convert_tool(tool: AnthropicToolDef) -> ToolDefinition:
         function={
             "name": tool.name,
             "description": tool.description or "",
-            "parameters": tool.input_schema or {"type": "object", "properties": {}},
+            "parameters": tool.input_schema,
         },
     )
 
