@@ -229,10 +229,13 @@ jobs:
           ENV_NAME="rapid-mac-tag"
           gh api "repos/${REPO}/environments/${ENV_NAME}" > "$RUNNER_TEMP/re-env.json"
           gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" > "$RUNNER_TEMP/re-policy.json"
+          # Read the complete persistent approved inventory, not only this run's ref.
+          EXPECTED_BRANCH_ARGS=(--expected-branch main --allow-retained-0160-policy)
           python3 scripts/check_release_environment.py \
             --environment-json "$RUNNER_TEMP/re-env.json" \
             --policy-json "$RUNNER_TEMP/re-policy.json" \
-            --expected-env-name "$ENV_NAME"
+            --expected-env-name "$ENV_NAME" \
+            "${EXPECTED_BRANCH_ARGS[@]}"
 
       - name: Re-verify blockers and immutable Desktop publication
         env:

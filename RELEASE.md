@@ -172,8 +172,8 @@ signed/notarised/DMG-validated lane, and which is still the live `main` head**:
   validates the exact release commit **before** the tag claim, producing a
   Desktop manifest bound to the source SHA, embedded app versions and DMG digest.
 - The tag claim runs inside the **`rapid-mac-tag`** environment (required
-  reviewer, `prevent_self_review=false`, deployment-branch policy exactly
-  `main`), after the pre-approval `release-prep` job has printed the exact
+  reviewer, `prevent_self_review=false`, deployment-branch inventory exactly
+  `main`, or `main` plus the already-authorized retained `release/0.16.0` policy), after the pre-approval `release-prep` job has printed the exact
   validated SHA + live main head + live release-blocker evidence.
 - Release-blocker evidence and the live main-head identity are re-queried
   **immediately before** the immutable claim. This is a **freshness/cutoff

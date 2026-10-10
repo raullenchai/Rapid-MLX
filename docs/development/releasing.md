@@ -191,6 +191,12 @@ those two branch policies during this release. Remove the added branch policy
 after the published release and rollback checks are complete, restoring the
 normal main-only environment contract.
 
+Main preflight, tag claim and post-DMG recovery accept the exact approved
+inventory both before and after that cleanup. They do not infer authorization
+from arbitrary live branch names; extra policies, wildcard replacements and
+weakened reviewer rules still fail. The frozen route itself requires both
+policies. This compatibility does not authorize another frozen version.
+
 After the frozen bump PR and `release-preflight.yml` complete successfully,
 dispatch `auto-release.yml` from `release/0.16.0` with only
 `frozen_release_version=0.16.0`. This mode does not accept `force_version`,
