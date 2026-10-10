@@ -299,6 +299,14 @@ def test_shared_kernel_rejects_non_integral_head_ratio_before_dispatch():
 
 
 @pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+@pytest.mark.parametrize("threadgroup_y", (32, 16, 8, 4))
+def test_convolution_sigmoid_edge_matches_stock_state(threadgroup_y):
+    # The probe includes x=-6.84375 in a value-channel convolution. The
+    # previous fast sigmoid changed a state row even when output stayed equal.
+    assert fused._probe_candidate(threadgroup_y)
+
+
+@pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
 def test_real_metal_probe_matches_output_and_both_states(monkeypatch):
     monkeypatch.setattr(fused, "_PROBE_COMPLETE", False)
     monkeypatch.setattr(fused, "_PROBED_THREADGROUP_Y", None)
