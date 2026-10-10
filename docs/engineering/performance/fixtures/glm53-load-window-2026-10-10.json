@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "issue": 3709,
+  "host": {
+    "chip": "Apple M3 Ultra",
+    "memory_gib": 256,
+    "macos": "26.5.2"
+  },
+  "runtime": {
+    "python": "3.12.14",
+    "mlx": "0.32.2",
+    "mlx-lm": "0.31.3",
+    "mlx-vlm": "0.7.2"
+  },
+  "target": {
+    "repo": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+    "shards": 43,
+    "bytes": 181709451790,
+    "largest_shard_bytes": 4295149840
+  },
+  "source_sha256": {
+    "rapid_mlx/models/glm5_shardwise_load.py": "25e96703884f67efe5bffaec90a3efce5e1fe86337bd814adccacd93b1b23dc6",
+    "rapid_mlx/models/mllm.py": "cf8d47397bd6b0d66c6ab40799ae138172a3a7f09a52f42a0e702073d82bf731",
+    "rapid_mlx/speculative/native_mtp/server.py": "2514918766276fa242922f2029675ca78fc7855ecba329ce1cf0ba0ebf76f21c"
+  },
+  "limits": {
+    "sampling_interval_seconds": 2,
+    "scope": "whole-machine startup samples; not isolated per-model RSS or a throughput benchmark",
+    "controlled_40_gib_cotenant_success": false,
+    "watchdog": "stop on >12 GiB additional physical compressor, >1 GiB additional swap, low available memory, or timeout"
+  },
+  "runs": [
+    {
+      "mode": "ordinary-mllm",
+      "base_commit": "d2dc1a9c7510ced2c9f75c7899023f8f88bace64",
+      "source_state": "base plus this task adapter and call sites; source digests above reflect final equivalent loader behavior",
+      "command": "python -m rapid_mlx.cli serve glm5.3-flash-4bit --host 127.0.0.1 --port 18709 --disable-model-downloads --no-spec-decode",
+      "offline": true,
+      "background_services_preserved": true,
+      "result": "server startup and inference succeeded",
+      "cleanup_signal": "SIGTERM after successful startup and HTTP request",
+      "http_completion_status": 200,
+      "usage": {
+        "prompt_tokens": 24,
+        "completion_tokens": 32,
+        "total_tokens": 56,
+        "completion_tokens_details": {
+          "reasoning_tokens": 15
+        }
+      },
+      "finish_reason": "length",
+      "memory_gib": {
+        "File-backed pages": {
+          "baseline": 10.9591064453125,
+          "min": 10.471084594726562,
+          "max": 15.023452758789062
+        },
+        "Anonymous pages": {
+          "baseline": 13.987808227539062,
+          "min": 13.987808227539062,
+          "max": 182.52444458007812
+        },
+        "Pages occupied by compressor": {
+          "baseline": 30.4718017578125,
+          "min": 30.4705810546875,
+          "max": 30.4718017578125
+        },
+        "swap_used_GiB": {
+          "baseline": 8.833193359375,
+          "min": 8.833193359375,
+          "max": 8.833193359375
+        }
+      }
+    },
+    {
+      "mode": "native-mtp",
+      "base_commit": "226f6bcddfd87360def0f4c70d3f119e1697c2ea",
+      "source_state": "base plus this task adapter and call sites; source digests above reflect final equivalent loader behavior",
+      "command": "python -m rapid_mlx.cli serve glm5.3-flash-4bit --host 127.0.0.1 --port 18709 --disable-model-downloads",
+      "offline": true,
+      "background_services_preserved": true,
+      "result": "server startup and inference succeeded",
+      "cleanup_signal": "SIGTERM after successful startup and HTTP request",
+      "http_completion_status": 200,
+      "usage": {
+        "prompt_tokens": 24,
+        "completion_tokens": 32,
+        "total_tokens": 56,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null
+      },
+      "finish_reason": "length",
+      "memory_gib": {
+        "File-backed pages": {
+          "baseline": 15.51220703125,
+          "min": 14.83074951171875,
+          "max": 18.888031005859375
+        },
+        "Anonymous pages": {
+          "baseline": 14.239273071289062,
+          "min": 14.239273071289062,
+          "max": 185.4814910888672
+        },
+        "Pages occupied by compressor": {
+          "baseline": 30.469589233398438,
+          "min": 30.469512939453125,
+          "max": 30.469589233398438
+        },
+        "swap_used_GiB": {
+          "baseline": 8.833193359375,
+          "min": 8.833193359375,
+          "max": 8.833193359375
+        }
+      }
+    }
+  ]
+}

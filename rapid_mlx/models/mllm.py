@@ -1675,6 +1675,14 @@ class MLXMultimodalLM:
                 **({} if trust_remote_code else {"trust_remote_code": False}),
             )
             if (
+                sys.platform == "darwin"
+                and isinstance(self.config, dict)
+                and self.config.get("model_type") == "glm5_next"
+            ):
+                from .glm5_shardwise_load import load_glm5_shardwise
+
+                load = load_glm5_shardwise
+            if (
                 isinstance(self.config, dict)
                 and self.config.get("model_type") == "prism_hadamard_qwen35"
             ):
