@@ -57,8 +57,8 @@ python scripts/benchmark_hybrid_vision_text_batching.py \
   --output /private/tmp/hybrid-vision-text-batching-bench/result.json
 ```
 
-Run the baseline at the commit above,
-then run the candidate, keeping other GPU inference idle. The recorded baseline
+Run the candidate first, then the baseline at the commit above,
+keeping other GPU inference idle to match the recorded phase order. The recorded baseline
 used the same candidate dependency environment with native-text startup
 qualification disabled to preserve the exact pre-change serialized policy.
 The probe requires final usage and exactly the requested token count; incomplete

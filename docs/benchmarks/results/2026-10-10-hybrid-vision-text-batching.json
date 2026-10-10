@@ -562,5 +562,26 @@
         "text": "734, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, "
       }
     ]
+  },
+  "http_unequal_limit_probe": {
+    "max_tokens": [
+      8,
+      48,
+      16,
+      32
+    ],
+    "actual_completion_tokens": [
+      3,
+      3,
+      3,
+      3
+    ],
+    "expected_answers": [
+      "21",
+      "22",
+      "23",
+      "24"
+    ],
+    "note": "All four requests ended naturally before their different limits; actual unequal-length completion evidence is recorded separately in native_cache_dogfood."
   }
 }
