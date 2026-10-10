@@ -152,6 +152,23 @@ def controlled_environment(prefill: int, checkpoint: int) -> dict[str, str]:
     }
 
 
+def child_environment(prefill: int, checkpoint: int) -> dict[str, str]:
+    """Keep native process essentials; exclude ambient inference/import knobs.
+
+    An absolute Python executable and local snapshot make PATH, PYTHONPATH,
+    virtualenv activation, model credentials and cache overrides unnecessary.
+    HOME retains the single default HF cache; system temp/locale values are
+    retained for macOS/Python runtime operation, never serialized as evidence.
+    """
+    env = {
+        key: os.environ[key]
+        for key in ("HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE")
+        if key in os.environ
+    }
+    env.update(controlled_environment(prefill, checkpoint))
+    return env
+
+
 def prefill_evidence(log_text: str, prefill: int) -> list[str]:
     """Require the server's install/disable log, not an arm label alone."""
     lines = [line for line in log_text.splitlines() if "[gdn_prefill]" in line]
@@ -354,9 +371,8 @@ def main():
         for prefill, checkpoint in [(0, 0), (0, 4), (1, 4), (1, 0)]:
             name = f"prefill{prefill}-checkpoint{checkpoint}"
             log = args.output.parent / (name + ".server.log")
-            env = os.environ.copy()
+            env = child_environment(prefill, checkpoint)
             controlled_env = controlled_environment(prefill, checkpoint)
-            env.update(controlled_env)
             cmd = [
                 sys.executable,
                 "-m",

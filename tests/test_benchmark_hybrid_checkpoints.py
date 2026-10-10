@@ -11,6 +11,7 @@ import pytest
 from scripts.benchmark_hybrid_checkpoints import (
     ARMS,
     CASES,
+    child_environment,
     controlled_environment,
     stream_receipt,
     summarize,
@@ -267,3 +268,49 @@ def test_arm_requires_controlled_environment_and_effective_prefill(mutation):
         ]
     with pytest.raises(ValueError):
         summarize(result)
+
+
+def test_child_environment_excludes_ambient_inference_and_import_overrides(monkeypatch):
+    for key, value in {
+        "RAPID_MLX_GDN_PREFILL": "9",
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": "99",
+        "RAPID_MLX_API_KEY": "test-only-credential",
+        "RAPID_MLX_QSA_INDEXED_SPLITK": "0",
+        "PYTHONPATH": "/unrelated/imports",
+        "PYTHONHOME": "/unrelated/python",
+        "DYLD_LIBRARY_PATH": "/unrelated/libraries",
+        "HF_TOKEN": "test-only-credential",
+        "HF_HOME": "/unrelated/cache",
+        "MLX_METAL_FAST_SYNCH": "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("HOME", "/test/home")
+    env = child_environment(0, 4)
+    assert env["HOME"] == "/test/home"
+    assert {k: env[k] for k in controlled_environment(0, 4)} == controlled_environment(
+        0, 4
+    )
+    assert set(env) <= set(controlled_environment(0, 4)) | {
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+    }
+
+
+def test_child_environment_runs_python_without_ambient_pythonhome(monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("PYTHONHOME", "/unrelated/python")
+    monkeypatch.setenv("PYTHONPATH", "/unrelated/imports")
+    proc = subprocess.run(
+        [sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"],
+        env=child_environment(1, 0),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert json.loads(proc.stdout) == {"ok": True}
