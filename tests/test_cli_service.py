@@ -2964,7 +2964,10 @@ def test_stage_plist_write_failure_closes_and_cleans(
         assert not raw_path.exists()
 
 
-def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("embedding_only", [False, True])
+def test_install_success_cleans_secure_staging_file(
+    monkeypatch, tmp_path, capsys, embedding_only
+):
     import shutil
 
     import rapid_mlx.headless_service.install as ins
@@ -2973,7 +2976,10 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
     monkeypatch.setattr(ins, "is_root", lambda: True)
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
-    monkeypatch.setattr(ins, "_wait_qualified", lambda _config: True)
+    qualified = []
+    monkeypatch.setattr(
+        ins, "_wait_qualified", lambda config: qualified.append(config) or True
+    )
     monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
     config_writes = []
     monkeypatch.setattr(
@@ -2991,12 +2997,25 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     code = ins.install_command(
         _ns(
             dry_run=False,
-            serve_args=["--", "--lazy-load", "--max-num-seqs", "4"],
+            model=None if embedding_only else "qwen3.5-4b-4bit",
+            embedding_model="embeddinggemma-300m-6bit" if embedding_only else None,
+            serve_args=(
+                [] if embedding_only else ["--", "--lazy-load", "--max-num-seqs", "4"]
+            ),
         )
     )
     assert code == 0
     assert "Installed and running" in capsys.readouterr().out
     assert not list(tmp_path.glob("rapid-mlx-service-*.plist"))
+    if embedding_only:
+        assert len(config_writes) == 2
+        assert config_writes[0] == config_writes[1]
+        assert config_writes[0]["model"] is None
+        assert config_writes[0]["embedding_model"] == "embeddinggemma-300m-6bit"
+        assert qualified[0].embedding_model == "embeddinggemma-300m-6bit"
+        plist = parse_plist((tmp_path / "com.rapidmlx.server.plist").read_bytes())
+        assert plist["ProgramArguments"][1:4] == ["service", "run", "--config"]
+        return
     assert config_writes[0]["serve_args"] == ["--max-num-seqs", "4"]
     assert config_writes[1]["serve_args"] == [
         "--lazy-load",
