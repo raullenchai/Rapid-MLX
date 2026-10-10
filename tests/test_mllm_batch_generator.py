@@ -3040,7 +3040,10 @@ def test_gemma4_unified_text_keeps_wrapper_path():
     model.get_input_embeddings.assert_not_called()
 
 
-def test_gemma4_unified_prefill_uses_bidirectional_image_attention(monkeypatch):
+@pytest.mark.parametrize("metadata_key", ["mm_token_type_ids", "token_type_ids"])
+def test_gemma4_unified_prefill_uses_bidirectional_image_attention(
+    monkeypatch, metadata_key
+):
     """Exercise real attention masks: future pixels attend, future text does not."""
     from types import SimpleNamespace
 
@@ -3087,7 +3090,7 @@ def test_gemma4_unified_prefill_uses_bidirectional_image_attention(monkeypatch):
     generator.prefill_step_size = 1
     request = _make_request(
         pixel_values=mx.ones((1, 2, 4)),
-        extra_kwargs={"mm_token_type_ids": types},
+        extra_kwargs={metadata_key: types},
     )
     request.input_ids = ids
     output = generator._run_vision_encoding(request, cache=lm.make_cache())
