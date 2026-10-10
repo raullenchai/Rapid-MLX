@@ -283,6 +283,7 @@ def test_checkpoint_error_still_writes_report_and_runs_next_model(
 ):
     import json
     import sys
+    from pathlib import Path
 
     from scripts import qualify_qwen35_fused_gdn as qualification
 
