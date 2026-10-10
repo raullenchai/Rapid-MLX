@@ -174,3 +174,82 @@ def test_broken_trust_bundle_uses_terminal_certificate_error(tmp_path, monkeypat
     with pytest.raises(ssl.SSLCertVerificationError, match="SSL_CERT_FILE") as error:
         client_context()
     assert CERTIFICATE_HINT in str(error.value)
+
+
+def test_https_private_ca_verified_and_context_reused(tmp_path, monkeypatch):
+    import shutil
+    import ssl
+    import subprocess
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from unittest.mock import patch
+
+    from rapid_mlx.share import quicksilver as qs
+
+    openssl = shutil.which("openssl")
+    if not openssl:
+        pytest.skip("openssl certificate fixture generator unavailable")
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"verified")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"https://localhost:{server.server_port}/"
+    try:
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        opener = urllib.request.build_opener(qs._VerifiedHTTPSHandler)
+        with patch.object(
+            qs.tls, "client_context", wraps=qs.tls.client_context
+        ) as loaded:
+            for _ in range(2):
+                with opener.open(url, timeout=5) as response:
+                    assert response.status == 200
+                    assert response.read() == b"verified"
+            loaded.assert_called_once()
+        monkeypatch.delenv("SSL_CERT_FILE")
+        untrusted = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=ssl.create_default_context())
+        )
+        with pytest.raises(urllib.error.URLError) as error:
+            untrusted.open(url, timeout=5)
+        assert qs.tls.certificate_error(error.value)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

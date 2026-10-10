@@ -3534,7 +3534,8 @@ def test_snapshot_is_private_even_with_permissive_umask(tmp_path):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch):
+@pytest.mark.parametrize("artifact", ["symlink", "directory"])
+def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch, artifact):
     import rapid_mlx.memory_cache as mc
 
     target = tmp_path / "unrelated"
@@ -3546,7 +3547,10 @@ def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch):
         if str(directory).endswith(".new"):
             from pathlib import Path
 
-            (Path(directory) / "injected").symlink_to(target)
+            if artifact == "symlink":
+                (Path(directory) / "injected").symlink_to(target)
+            else:
+                (Path(directory) / "injected").mkdir()
         return original(directory)
 
     monkeypatch.setattr(mc, "_fsync_dir", inject_link)
@@ -3570,3 +3574,20 @@ def test_snapshot_preclean_rejects_existing_staging_symlink(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o755
     assert marker.read_text() == "unchanged"
     assert list(target.iterdir()) == [marker]
+
+
+def test_snapshot_aborts_when_staging_cannot_be_protected(tmp_path, monkeypatch):
+    import rapid_mlx.memory_cache as mc
+
+    original = mc.os.chmod
+
+    def deny(path, mode, *args, **kwargs):
+        if str(path).endswith(".new"):
+            raise PermissionError("permission denied")
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(mc.os, "chmod", deny)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert not list(tmp_path.rglob("*_tokens.bin"))

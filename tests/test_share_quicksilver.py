@@ -3461,3 +3461,31 @@ def test_https_trust_setup_is_lazy_and_terminal():
         with pytest.raises(ssl.SSLCertVerificationError, match="SSL_CERT_FILE"):
             handler.https_open(urllib.request.Request("https://localhost/register"))
     context.assert_called_once()
+
+
+def test_install_service_requires_stable_launcher():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        patch.object(qs.shutil, "which", return_value=None),
+        pytest.raises(qs.QuickSilverError, match="installed rapid-mlx command on PATH"),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+
+
+def test_pool_cleanup_failure_prevents_serve_spawn(capsys):
+    from rapid_mlx.share import privacy
+
+    serve, ctrl_c = _patched_run_env(None)
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        _enter(*_run_patches(serve, lambda **kw: _fake_tunnel(), ctrl_c)),
+        patch.object(
+            privacy, "clear_legacy_prompt_cache", side_effect=OSError("busy cache")
+        ),
+        patch.object(share_cli, "_spawn_serve") as spawn,
+        pytest.raises(SystemExit) as error,
+    ):
+        qs.run_share(_make_args())
+    assert error.value.code == 2
+    assert "could not retire legacy model prompt cache" in capsys.readouterr().err
+    spawn.assert_not_called()

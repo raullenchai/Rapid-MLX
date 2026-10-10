@@ -67,7 +67,7 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 474 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 479 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.
@@ -106,3 +106,9 @@ Python 3.12 compatibility: HTTPSHandler eagerly creates a context during its
 constructor on newer Python versions. The verified handler initializes the HTTP
 base directly and owns a separate lazy context, so malformed-bundle guidance
 works consistently. Python 3.12 verification: 238 related tests passed.
+
+Final coverage regressions cover unavailable stable launchers, cleanup failure
+before child spawn, staging protection failure/nonregular artifacts, and real
+HTTPS trust via SSL_CERT_FILE with context reuse and untrusted-peer rejection.
+The focused suite passes under coverage instrumentation; diff-cover against
+`dfaa9cc40` reports 100% changed-line coverage and zero missing lines.
