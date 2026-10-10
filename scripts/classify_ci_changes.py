@@ -101,6 +101,7 @@ _DESKTOP_SUPPORT = {
 _DOC_ROOTS = {"docs"}
 _DOC_FILES = {
     "README.md",
+    "RELEASE.md",
     "AGENTS.md",
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
@@ -330,6 +331,19 @@ _SOURCE_PREFLIGHT_CONTROL_TESTS = {
 # configure collection, runtime, integration, or platform-specific behavior.
 _SOURCE_PREFLIGHT_FIXTURES = {"tests/fixtures/cli_parser_snapshot.json"}
 
+# Offline metadata/preparation operators have ordinary CPU contracts in every
+# unit shard. Their full Python compatibility and Apple qualification belong
+# to the integration candidate, not a duplicate source run. Keep publishing,
+# signing, authority, workflow and collection controllers outside this list.
+_SOURCE_PREFLIGHT_RELEASE_PATHS = {
+    "scripts/release_control.py",
+    "scripts/release_prepare.py",
+    "scripts/release_version.py",
+    "tests/test_release_control.py",
+    "tests/test_release_prepare.py",
+    "tests/test_release_version.py",
+}
+
 
 def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
     """CPU source prefilter only; combined candidates still enforce every gate.
@@ -347,6 +361,8 @@ def _source_preflight_paths(paths: set[str], lanes: Lanes) -> bool:
         if path in _DOC_FILES or pure.parts[0] in _DOC_ROOTS:
             continue
         if path in _SOURCE_PREFLIGHT_FIXTURES:
+            continue
+        if path in _SOURCE_PREFLIGHT_RELEASE_PATHS:
             continue
         if len(pure.parts) < 2:
             return False

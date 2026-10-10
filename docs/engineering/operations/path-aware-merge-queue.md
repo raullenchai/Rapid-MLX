@@ -5,6 +5,30 @@ pay the full release-grade macOS cost.
 
 ## PR gate
 
+### Release preparation source feedback
+
+With `RAPID_MLX_SOURCE_PREFLIGHT=true`, same-repository ordinary PRs changing
+only `scripts/release_control.py`, `scripts/release_prepare.py`,
+`scripts/release_version.py`, their corresponding `tests/test_release_*.py`
+files (those three exact names), and recognized documentation can use the
+existing CPU source preflight. It runs all three Python 3.11 unit shards,
+Linux coverage aggregation, lint, type checking and repository guards. It
+defers Apple tests, model smokes and final changed-line coverage to the full
+combined integration candidate. `RELEASE.md` is recognized documentation.
+
+This is source feedback, not full qualification or permission to merge.
+Promoted queue/train candidates, main and release pushes retain full validation
+inside the selected lanes. Forks, disabled preflight, publishing/signing or
+authority helpers, workflow/collection/dependency changes and unknown paths
+retain their full source route; adding an eligible release path never makes a
+mixed control change eligible. The existing flag disables this preflight
+expansion without changing candidate gates. No separate controller is needed.
+
+The expected benefit is fewer duplicate Python-version and Apple runs before
+integration. It does not shorten the full candidate itself or guarantee a
+particular merge time. Measure source duration, Mac runner allocation and
+push-to-merge latency separately.
+
 `scripts/classify_ci_changes.py` assigns changed paths to the engine and desktop
 lanes. The policy fails closed: an empty diff, workflow change, or unknown
 product area selects all applicable lanes.
