@@ -469,3 +469,24 @@ def test_mllm_loader_installs_qwen35_fused_gdn_decode():
     source = inspect.getsource(MLXMultimodalLM.load)
     assert source.count("install_qwen35_moe_router") == 2
     assert source.count("install_qwen35_fused_gdn_decode") == 2
+
+
+@pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+def test_other_convolution_law_cannot_pass_full_state_probe(monkeypatch):
+    selected = shared_kernel._qwen35_conv_silu_precise()
+    monkeypatch.setattr(
+        shared_kernel, "_qwen35_conv_silu_precise", lambda: not selected
+    )
+    assert not fused._probe_candidate(4)
+
+
+def test_unsupported_convolution_law_keeps_enrollment_fail_closed(monkeypatch):
+    monkeypatch.setattr(fused, "_PROBE_COMPLETE", False)
+    monkeypatch.setattr(fused, "_PROBED_THREADGROUP_Y", None)
+    monkeypatch.setattr(fused, "fused_gdn_runtime_supported", lambda: True)
+    monkeypatch.setattr(
+        shared_kernel,
+        "_qwen35_conv_silu_precise",
+        lambda: (_ for _ in ()).throw(RuntimeError("unsupported native SiLU")),
+    )
+    assert fused.probe_qwen35_fused_gdn_decode() is None

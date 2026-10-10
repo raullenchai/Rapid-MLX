@@ -226,7 +226,14 @@ def test_kernel_dispatch_is_one_threadgroup_per_value_head():
         ]
 
     values = production_values()
-    with patch.object(fused_gdn, "_kernel", return_value=fake_kernel):
+    with (
+        patch.object(fused_gdn, "_kernel", return_value=fake_kernel),
+        patch.object(
+            fused_gdn,
+            "_qwen35_conv_silu_precise",
+            side_effect=AssertionError("Qwen4 must not select a new law"),
+        ),
+    ):
         outputs = fused_gdn.qwen4_fused_gdn_decode(
             values["qkv"],
             values["z"],
@@ -247,6 +254,7 @@ def test_kernel_dispatch_is_one_threadgroup_per_value_head():
     assert outputs[1].shape == (1, 3, 10240)
     assert outputs[2].shape == (1, 48, 128, 128)
     assert ("RATIO", 3) in calls[0]["template"]
+    assert ("CONV_PRECISE", False) in calls[0]["template"]
 
     with pytest.raises(ValueError, match="unsupported threadgroup_y"):
         fused_gdn.qwen4_fused_gdn_decode(
@@ -632,14 +640,11 @@ def test_probe_exception_preserves_cache():
 # exactness gate is bit-identity with those ops: the beta gate is
 # ``mx.sigmoid(beta)`` in bf16, the output gate is
 # ``mx.sigmoid(z.astype(float32))``, and the convolution activation is
-# ``nn.silu(x)``. On the tested MLX builds (0.32.1 and a 0.32.2 development
-# build) ``mx.sigmoid`` and the compiled ``nn.silu`` do not agree at the bit
-# level, so the kernel picks the form per boundary: ``mlx_sigmoid_precise``
-# matches ``mx.sigmoid`` on every finite bf16 input in bf16 and in float32
-# (the fast form differs on one bf16 input, x ~ -6.85, and on 628 inputs at
-# float32), while ``x * mlx_sigmoid_fast(x)`` matches ``nn.silu`` on every
-# finite bf16 input (the precise form differs on one). See ml-explore/mlx#4461
-# for the underlying ``metal::exp`` resolution difference.
+# ``nn.silu(x)``. Native convolution SiLU differs between supported MLX
+# builds. Qwen3.5 selects only an exhaustive finite-bf16 exact match, then
+# validates the complete recurrent step. Qwen4 retains its fixed fast law
+# and refuses enrollment if that law does not match the installed runtime.
+# The beta and float32 output gates continue using the precise form.
 #
 # The source-string contracts below pin which helper each production
 # assignment uses. The Metal sweeps compile isolated helper bodies against
@@ -656,7 +661,7 @@ _OUTPUT_GATE_LINE = re.compile(
     re.MULTILINE,
 )
 _CONV_SILU_LINE = re.compile(
-    r"^\s*T sig = Q35 \? mlx_sigmoid_(\w+)\(xb\) : "
+    r"^\s*T sig = CONV_PRECISE \? mlx_sigmoid_(\w+)\(xb\) : "
     r"mlx_sigmoid_(\w+)\(xb\);\s*$",
     re.MULTILINE,
 )
@@ -683,7 +688,7 @@ def test_output_gate_uses_precise_float_sigmoid():
     assert _production_gate_form(_OUTPUT_GATE_LINE) == "precise"
 
 
-def test_conv_silu_uses_precise_qwen35_and_keeps_fast_qwen4():
+def test_conv_silu_qualifies_qwen35_and_keeps_fast_qwen4():
     assert _CONV_SILU_LINE.findall(fused_gdn._SOURCE) == [("precise", "fast")]
 
 
@@ -763,17 +768,18 @@ def test_precise_float_sigmoid_matches_mx_sigmoid_on_every_bf16_valued_float():
 
 
 @requires_metal
-def test_precise_silu_matches_nn_silu_on_every_finite_bf16():
+def test_qualified_qwen35_silu_matches_nn_silu_on_every_finite_bf16():
     x = _finite_bf16()
     reference = nn.silu(x)
-    precise = _header_helper(
-        "silu_precise",
-        "{ T v = x[i]; T s = mlx_sigmoid_precise(v); out[i] = v * s; }",
+    form = "precise" if fused_gdn._qwen35_conv_silu_precise() else "fast"
+    actual = _header_helper(
+        f"silu_qualified_{form}",
+        f"{{ T v = x[i]; T s = mlx_sigmoid_{form}(v); out[i] = v * s; }}",
         x,
         mx.bfloat16,
     )
-    mx.eval(reference, precise)
-    assert _bit_mismatches(precise, reference, mx.uint16) == 0
+    mx.eval(reference, actual)
+    assert _bit_mismatches(actual, reference, mx.uint16) == 0
 
 
 @requires_metal
@@ -901,3 +907,76 @@ def test_real_decode_at_silu_edge_matches_stock_and_preserves_declined_cache():
     else:
         assert layer.fused_gdn_decode_calls == 32
         assert layer.fused_gdn_decode_fallbacks == 0
+
+
+@pytest.mark.parametrize(
+    "matches, expected, calls",
+    [
+        ([True], True, [True]),
+        ([False, True], False, [True, False]),
+    ],
+)
+def test_qwen35_convolution_law_requires_native_parity_and_is_cached(
+    matches, expected, calls
+):
+    select = fused_gdn._qwen35_conv_silu_precise
+    select.cache_clear()
+    try:
+        with patch.object(
+            fused_gdn, "_conv_silu_matches_stock", side_effect=matches
+        ) as qualify:
+            assert select() is expected
+            assert select() is expected
+            assert [call.kwargs["precise"] for call in qualify.call_args_list] == calls
+    finally:
+        select.cache_clear()
+
+
+@pytest.mark.parametrize("failure", [False, RuntimeError("compile failed")])
+def test_qwen35_convolution_law_never_accepts_unsupported_runtime(failure):
+    select = fused_gdn._qwen35_conv_silu_precise
+    select.cache_clear()
+    try:
+        kwargs = (
+            {"side_effect": failure}
+            if isinstance(failure, Exception)
+            else {"return_value": failure}
+        )
+        with (
+            patch.object(fused_gdn, "_conv_silu_matches_stock", **kwargs),
+            pytest.raises(RuntimeError),
+        ):
+            select()
+    finally:
+        select.cache_clear()
+
+
+@pytest.mark.parametrize("precise", [True, False])
+def test_qwen35_dispatch_uses_the_qualified_convolution_law(precise):
+    values = production_values()
+    with (
+        patch.object(
+            fused_gdn, "_qwen35_conv_silu_precise", return_value=precise
+        ) as select,
+        patch.object(fused_gdn, "_kernel") as kernel,
+    ):
+        kernel.return_value.return_value = ["output", "conv", "state"]
+        fused_gdn.fused_gdn_decode(
+            values["qkv"],
+            values["z"],
+            values["beta"],
+            values["alpha"],
+            values["conv_state"],
+            values["conv_weight"],
+            values["a_log"],
+            values["dt_bias"],
+            values["recurrent_state"],
+            values["norm_weight"],
+            1e-6,
+            threadgroup_y=4,
+            qwen35_semantics=True,
+        )
+        assert ("CONV_PRECISE", precise) in kernel.return_value.call_args.kwargs[
+            "template"
+        ]
+        select.assert_called_once_with()
