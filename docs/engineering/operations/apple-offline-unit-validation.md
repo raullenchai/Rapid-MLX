@@ -19,11 +19,17 @@ Check `node --version` and `npx --version` in the same shell that will launch
 pytest. Missing executables are validation prerequisites, not reasons to skip
 the workflow or security tests.
 
+For the complete numerical qualification, launch pytest with
+`MLX_ENABLE_TF32=0` as well as the offline flags. Several models compare
+matrix-based prefill with matrix-vector decode at float32 tolerances; on M5
+the default arithmetic policy gives those paths different precision. Set the
+flag at process launch, before MLX initializes its cached precision policy.
+
 ```sh
 python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[test]'
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m pytest tests/ \
+MLX_ENABLE_TF32=0 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m pytest tests/ \
   --ignore=tests/integrations --ignore=tests/test_event_loop.py \
   -q --no-header --tb=line --junitxml=full-unit.xml
 ```
@@ -81,6 +87,13 @@ model shapes, sequence length and assertions, and retain seeds 0–31 as named
 regressions. A forward smoke test also runs under the caller's precision policy.
 The parent test process and serving runtime keep their existing policy; this
 does not establish a `0.002` parity guarantee for default TF32 inference.
+
+This precision prerequisite also explains the retained numerical failures in
+Bailing, DeepSeek V4, G9V3, K2 Horizon, MLA absorbed verification, MLLM batch
+generation and Qwen4 tests. On M5, the unchanged seven modules pass all
+373 tests with full float32. Use the process-launch flag for complete-suite
+qualification; the isolated Glimmer tests also work when invoked from an
+already initialized default-precision parent.
 
 To repeat the strict seeded test without changing the suite's precision:
 
