@@ -32,7 +32,10 @@ continues to include shared tool preflight and cleanup; per-journey time starts
 after shared preflight. A preflight failure produces only the overall result.
 
 On the first failed assertion, the harness stops and retains earlier journey
-records. The active journey receives failure evidence after cleanup; an
+records. Success is recorded only after the journey's owned persona, operator
+server and telemetry sink cleanup completes. A cleanup failure leaves the
+journey active for EXIT failure evidence. The active journey receives failure
+evidence after cleanup; an
 interrupted startup stops its launch timer before cleanup. Journeys that never
 start and flows excluded by source routing produce no record. SIGKILL and host
 loss cannot run the EXIT handler and may leave the active journey without a

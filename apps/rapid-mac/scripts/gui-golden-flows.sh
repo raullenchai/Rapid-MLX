@@ -445,6 +445,11 @@ run_journey() {
     LAUNCH_DURATION_MS=0
     LAUNCH_COUNT=0
     "$@"
+    # Publish success only after all owned fixtures have stopped. These
+    # helpers are idempotent (journeys and EXIT already share them).
+    cleanup_persona
+    cleanup_operator_server
+    cleanup_telemetry_sink
     write_journey_result pass 0
     JOURNEY=""
 }

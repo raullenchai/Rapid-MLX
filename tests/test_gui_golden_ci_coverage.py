@@ -532,17 +532,40 @@ def test_relaunches_are_accumulated(tmp_path):
     assert record["launch_duration_seconds"] >= 0.06
 
 
-def test_cleanup_failure_cannot_leave_active_journey_green(tmp_path):
+@pytest.mark.parametrize(
+    "helper", ["cleanup_persona", "cleanup_operator_server", "cleanup_telemetry_sink"]
+)
+@pytest.mark.parametrize("code", [1, 7])
+def test_cleanup_failure_cannot_leave_active_journey_green(tmp_path, helper, code):
+    result = run_shell(
+        tmp_path,
+        f"""
+        {helper}() {{ return {code}; }}
+        normal() {{ :; }}
+        run_journey cleanup normal
+        run_journey never normal
+    """,
+    )
+    assert result.returncode == code, result.stderr
+    record = read_journey(tmp_path, "cleanup")
+    assert record["status"] == "fail"
+    assert record["exit_code"] == code
+    assert not (tmp_path / "journeys/never.json").exists()
+
+
+def test_cleanup_time_is_part_of_execution_cost(tmp_path):
     result = run_shell(
         tmp_path,
         """
-        cleanup_persona() { return 1; }
-        broken() { exit 0; }
-        run_journey cleanup broken
+        cleanup_persona() { sleep 0.03; }
+        normal() { :; }
+        run_journey cleanup normal
     """,
     )
-    assert result.returncode == 1, result.stderr
-    assert read_journey(tmp_path, "cleanup")["status"] == "fail"
+    assert result.returncode == 0, result.stderr
+    record = read_journey(tmp_path, "cleanup")
+    assert record["launch_duration_seconds"] == 0
+    assert record["execution_duration_seconds"] >= 0.03
 
 
 def test_failed_assertion_aborts_the_function_before_success(tmp_path):
