@@ -5240,7 +5240,7 @@
        "type": null
       },
       {
-       "class": "argparse._StoreAction",
+       "class": "rapid_mlx.cli_parser._StoreExplicitAction",
        "completer": null,
        "const": null,
        "default": 0.0,

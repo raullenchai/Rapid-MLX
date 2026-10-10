@@ -81,6 +81,29 @@ def test_serve_command_rejects_primary_model_flags_in_embedding_only_mode(capsys
     resolve_port.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--max-tokens", "0"),
+        ("--idle-unload-seconds", "0"),
+        ("--served-model-name", ""),
+        ("--mcp-config", ""),
+    ],
+)
+def test_embedding_only_rejects_explicit_falsy_primary_options(flag, value, capsys):
+    args = cli.build_parser().parse_args(
+        ["serve", "--embedding-model", EMBED_ID, flag, value]
+    )
+    with (
+        mock.patch.object(cli, "_resolve_serve_port") as resolve_port,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli.serve_command(args)
+    assert exc_info.value.code == 2
+    assert flag in capsys.readouterr().err
+    resolve_port.assert_not_called()
+
+
 def test_embedding_only_rejects_video_output_before_creating_directory(
     tmp_path, capsys
 ):

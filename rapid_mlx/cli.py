@@ -5218,27 +5218,31 @@ def _cua_only_incompatible_options(args) -> list[str]:
 def _embedding_only_incompatible_options(args) -> list[str]:
     """Return primary-model options that cannot apply to an embeddings-only server."""
 
+    def provided(name: str) -> bool:
+        return getattr(args, name, None) is not None
+
     checks = {
-        "served-model-name": getattr(args, "served_model_name", None),
-        "max-tokens": getattr(args, "max_tokens", None),
-        "context-length": getattr(args, "context_length", None),
-        "max-prompt-tokens": getattr(args, "max_prompt_tokens", None),
-        "tool-call-parser": getattr(args, "tool_call_parser", None),
+        "served-model-name": provided("served_model_name"),
+        "max-tokens": provided("max_tokens"),
+        "context-length": provided("context_length"),
+        "max-prompt-tokens": provided("max_prompt_tokens"),
+        "tool-call-parser": provided("tool_call_parser"),
         "enable-auto-tool-choice": getattr(args, "enable_auto_tool_choice", False),
-        "reasoning-parser": getattr(args, "reasoning_parser", None),
+        "reasoning-parser": provided("reasoning_parser"),
         "enable-audio": getattr(args, "enable_audio", False),
-        "mcp-config": getattr(args, "mcp_config", None),
-        "video-output-dir": getattr(args, "video_output_dir", None),
-        "image-weight-precision": getattr(args, "image_weight_precision", None),
+        "mcp-config": provided("mcp_config"),
+        "video-output-dir": provided("video_output_dir"),
+        "image-weight-precision": provided("image_weight_precision"),
         "mllm": getattr(args, "mllm", False),
         "no-mllm": getattr(args, "no_mllm", False),
         "lazy-load": getattr(args, "lazy_load", False),
-        "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
+        "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0)
+        or getattr(args, "_idle_unload_seconds_explicit", False),
         "disk-stream": getattr(args, "disk_stream", False),
         "enable-dflash": getattr(args, "enable_dflash", False),
         "enable-ddtree": getattr(args, "enable_ddtree", False),
-        "speculative-config": getattr(args, "speculative_config", None),
-        "mtp-sidecar": getattr(args, "mtp_sidecar", None),
+        "speculative-config": provided("speculative_config"),
+        "mtp-sidecar": provided("mtp_sidecar"),
     }
     return [f"--{name}" for name, value in checks.items() if value]
 

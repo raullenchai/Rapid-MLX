@@ -26,6 +26,14 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+class _StoreExplicitAction(argparse.Action):
+    """Store a value while preserving an explicit default-valued option."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"_{self.dest}_explicit", True)
+
+
 class _PortContextArgumentParser(argparse.ArgumentParser):
     """Argument parser that records the effective bind-port provenance."""
 
@@ -1232,6 +1240,7 @@ def _add_serve_parser(
     )
     serve_parser.add_argument(
         "--idle-unload-seconds",
+        action=_StoreExplicitAction,
         type=float,
         default=0.0,
         help=(
