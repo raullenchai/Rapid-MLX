@@ -427,3 +427,18 @@ def test_provenance_must_be_complete_without_claiming_authentication(mutation):
         result["schema_version"] = True
     with pytest.raises(ValueError):
         summarize(result)
+
+
+def test_recorded_counterbalanced_matrix_passes_only_incremental_contract():
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "docs/engineering/performance/fixtures/m5-checkpoints-2026-10-09/counterbalanced-matrix.json"
+    )
+    result = json.loads(fixture.read_text())
+    summary = summarize(result)
+    assert summary == result["summary"]
+    assert summary["passed"] and summary["order_balanced"]
+    assert summary["rows"] == 48 and len(summary["incremental_pairs"]) == 24
+    assert summary["cold_exact_pairs"] == 36 and not summary["cold_passed"]
+    result["contract"] = "cold"
+    assert not summarize(result)["passed"]

@@ -78,12 +78,14 @@ cache receipts passed for all 36 rows. Retained child-log excerpts confirm
 six snaps to 4096 and six to 2048 across the checkpoint-on arms; blocked
 prefill installation and stock disablement were also logged.
 
-The incremental contract passed its 1.1x threshold in every late/middle
-group. The stronger cold contract **failed: only 26/36 warm/cold comparisons
+The historical summary passed its 1.1x threshold in every late/middle
+group under its fixed-order rules. The current harness rejects performance
+qualification of this schema-1 matrix because it lacks both orders per mode. The stronger cold contract **failed: only 26/36 warm/cold comparisons
 matched**, including failures with checkpoints disabled and zero resumed
 tokens. Re-evaluating the same receipts under the cold contract returns
-`passed: false`. These results qualify the incremental benefit under this
-request history; they do not support lossless cold/warm equivalence.
+`passed: false`. These results describe the incremental observations under this
+request history; they do not establish a controlled causal gain or lossless
+cold/warm equivalence.
 
 The measured matrix and recomputed summary are retained in
 `fixtures/m5-checkpoints-2026-10-09/`. Filesystem paths are normalized; hashes,
@@ -190,3 +192,66 @@ from the historical launcher source, as their origin field states; they were
 not originally emitted by that run. Future runs persist this allowlist directly
 and fail qualification if the server's effective prefill evidence disagrees.
 Ambient environment variables and credentials are never serialized.
+
+## Within-mode counterbalance and evidence boundary
+
+The current schema-2 harness runs eight fresh server arms, in blocks stock
+off/on, blocked on/off, blocked off/on, stock on/off. Both checkpoint orders
+use the same document seeds and clear/seed/warm/clear/cold sequence within
+each prefill mode. Each row carries its order identity; missing orders,
+incorrect arm execution sequence, mixed identities and duplicate rows fail
+closed. Every late/middle group must clear the threshold in each order before
+any pooled estimate can qualify. Head edits remain a zero-reuse control.
+The prefill block order is reversed in the second half; this is a serial
+order-balanced design, not randomized thermal equivalence.
+
+Schema-1 fixtures retain their original raw numbers and historical summary.
+Recomputing with the current harness retains output/cold comparisons but
+returns `order_balanced: false`, `performance_passed: false` and `passed: false`.
+The original summary is historical evidence, not current certification.
+
+Schema-2 qualification also checks the exact canonical text-only launch
+arguments: prefix cache enabled, eight hybrid entries, 2048-token chunks,
+loopback binding and speculation/vision disabled. Controlled environment
+flags and effective prefill install/disable logs are checked independently.
+Actual HTTP cache receipts establish the observed 4096/2048/0 reuse, not an
+independent attestation of the maximum number of retained checkpoints.
+
+Source/model/dependency hashes and commands are reproducibility receipts.
+They cannot authenticate an author-supplied matrix or expected manifest.
+Trusted execution attestation requires a separate verifier and is outside
+this opt-in benchmark. HOME retains existing user configuration and the
+default model cache; the minimal environment prevents ambient environment
+overrides but does not isolate the filesystem or authenticate execution.
+The new exclusive-leased M5 campaign completed on 2026-10-10,
+09:11:39–09:17:07 UTC, at clean `fe09916eed82a163ac0bd1be7b6a5904f280a5f0`.
+The harness SHA256 is
+`912a191df00f3239f757588978ccc3ef37c1a6bfc7771b8c90d51cffc4df245b`;
+model and dependency versions match the environment above. Two document seeds
+were measured in every order, with all 48 rows retained. Subsequent changes only
+validate provenance completeness and port bounds; they do not change the
+launcher, request sequence or inference implementation.
+
+| Prefill | Edit | Off/on median | On/off median | Order-balanced median |
+| --- | --- | ---: | ---: | ---: |
+| Stock | Late | 2.1888x | 2.1902x | 2.1902x |
+| Stock | Middle | 1.3703x | 1.3658x | 1.3674x |
+| Blocked | Late | 2.1498x | 2.1491x | 2.1491x |
+| Blocked | Middle | 1.3580x | 1.3583x | 1.3583x |
+
+All 16 late/middle pairs improved. All 24 checkpoint-on/off comparisons
+matched in each of seed, warm and cold (72/72 phase comparisons). Both orders
+passed the 1.1x per-group threshold. Head edits have zero reuse and order-balanced
+medians 0.9998x stock / 0.9992x blocked. The independent cold contract still
+**fails: 36/48 warm/cold pairs match**; no rows or failures were excluded.
+These results qualify only the incremental contract for this measured workload.
+Two seeds per order are a bounded qualification sample, not a confidence interval
+or a universal performance claim. Temperature/power traces were not collected;
+we cannot claim thermal equivalence.
+
+`counterbalanced-matrix.json` retains all actual receipts and recomputed summaries.
+`counterbalanced-evidence.json` binds original child-log hashes to normalized
+prefill/resume/shutdown excerpts. Re-evaluation with the current validator passes
+only the explicitly selected incremental contract and fails the cold contract.
+The same reproduction command now emits schema 2 and eight arms; `--rounds 2`
+reproduces this campaign's sample count.
