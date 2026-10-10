@@ -19,8 +19,11 @@ def test_real_manager_stdio_lifecycle(tmp_path):
         from pathlib import Path
         with Path(sys.argv[1]).open("a") as file:
             file.write(str(os.getpid()) + "\\n")
-        from mcp.server.fastmcp import FastMCP
-        mcp = FastMCP("lifecycle")
+        try:
+            from mcp.server.fastmcp import FastMCP as Server
+        except ImportError:
+            from mcp.server.mcpserver import MCPServer as Server
+        mcp = Server("lifecycle")
         @mcp.tool()
         async def echo(text: str) -> str:
             if text == "wait":
@@ -284,3 +287,20 @@ async def test_failed_handshake_unwinds_and_can_retry(owned_client, monkeypatch)
     release.set()
     assert await client.connect()
     await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_owner_cancellation_is_reported(owned_client):
+    import asyncio
+
+    from rapid_mlx.mcp.types import MCPServerState
+
+    client, _, _, release, _, _ = owned_client
+    release.set()
+    assert await client.connect()
+    client._lifecycle_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await client.disconnect()
+    assert client.state == MCPServerState.ERROR
+    assert "cancelled" in client.get_status().error
+    assert client._lifecycle_task is None

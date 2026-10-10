@@ -139,11 +139,15 @@ class MCPClient:
                 # Interrupt a blocked handshake, then let its owning task unwind
                 # every entered SDK context before releasing the client lock.
                 self._lifecycle_task.cancel()
-                await self._wait_for_cleanup(self._lifecycle_task)
+                await self._wait_for_cleanup(
+                    self._lifecycle_task, allow_owner_cancel=True
+                )
                 raise
 
     @staticmethod
-    async def _wait_for_cleanup(task: asyncio.Future) -> None:
+    async def _wait_for_cleanup(
+        task: asyncio.Future, *, allow_owner_cancel: bool = False
+    ) -> None:
         """Drain an owner even if the requesting task is cancelled repeatedly."""
         cancelled = False
         waiter = asyncio.gather(task, return_exceptions=True)
@@ -153,10 +157,9 @@ class MCPClient:
             except asyncio.CancelledError:
                 cancelled = True
         result = waiter.result()[0]
-        if isinstance(result, BaseException) and not isinstance(
-            result, asyncio.CancelledError
-        ):
-            raise result
+        if isinstance(result, BaseException):
+            if not (allow_owner_cancel and isinstance(result, asyncio.CancelledError)):
+                raise result
         if cancelled:
             raise asyncio.CancelledError
 
@@ -194,6 +197,12 @@ class MCPClient:
                     logger.error(
                         f"Failed to connect to MCP server '{self.name}': {self._error}"
                     )
+        except asyncio.CancelledError:
+            if ready.done():
+                self._state = MCPServerState.ERROR
+                self._error = "Connection lifecycle cancelled before clean shutdown"
+                logger.warning(f"MCP server '{self.name}': {self._error}")
+            raise
         except Exception as exc:
             self._state = MCPServerState.ERROR
             self._error = self._describe_failure(exc)
@@ -354,7 +363,8 @@ class MCPClient:
                 self._stop_requested = None
                 self._stdio_client = self._sse_client = None
                 self._close_stderr_file()
-                self._state = MCPServerState.DISCONNECTED
+                if self._state != MCPServerState.ERROR:
+                    self._state = MCPServerState.DISCONNECTED
                 self._tools = []
                 logger.info(f"Disconnected from MCP server '{self.name}'")
 
