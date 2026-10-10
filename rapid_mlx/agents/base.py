@@ -173,6 +173,11 @@ class AgentProfile:
         if self.name == "codex":
             try:
                 parsed = urlsplit(base_url)
+                if parsed.scheme in {"http", "https"}:
+                    if not parsed.hostname:
+                        raise ValueError("missing hostname")
+                    # urlsplit defers port validation until this property is read.
+                    _ = parsed.port
             except ValueError:
                 # Parser errors may include credential-bearing netloc text.
                 raise ValueError(

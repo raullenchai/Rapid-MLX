@@ -22,6 +22,8 @@ from rapid_mlx.agents.testing import AgentTestRunner
         ("http://localhost:8899/v1/", "http://localhost:8899/v1/"),
         ("https://inference.example/local/v1", "https://inference.example/local/v1"),
         ("https://inference.example/api", "https://inference.example/api"),
+        ("http://localhost:1", "http://localhost:1/v1"),
+        ("http://localhost:65535/v1", "http://localhost:65535/v1"),
     ],
 )
 def test_setup_and_runner_agree_on_api_base(tmp_path, monkeypatch, supplied, expected):
@@ -92,6 +94,10 @@ def test_cli_rejects_root_query_without_echoing_secret(tmp_path, monkeypatch, ca
         "http://user:credential-canary-4436＠localhost:8899",
         "http://user:credential-canary-4436@localhost：8899/v1",
         "http://user:credential-canary-4436@[::1",
+        "http://user:credential-canary-4436@localhost:abc",
+        "http://user:credential-canary-4436@localhost:65536/v1",
+        "http://user:credential-canary-4436@",
+        "http:///v1",
     ],
 )
 def test_malformed_url_rejected_without_echoing_secret(
