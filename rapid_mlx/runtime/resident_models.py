@@ -1090,15 +1090,31 @@ class ResidentModelManager:
             > self.memory_limit_bytes
         ):
             candidates = self._eviction_candidates_locked(exclude)
-            if not candidates:
-                usage = self._accounted_usage()
+            usage = self._accounted_usage()
+            # Reject impossible admission before stopping any working engine.
+            # This is an optimistic lower bound: even crediting every eligible
+            # resident's entire reservation must leave room for the incoming
+            # model. Actual allocator release is still checked after each stop.
+            reclaimable = sum(
+                max(record.estimated_bytes, record.measured_bytes)
+                for record in candidates
+            )
+            if not candidates or (
+                max(0, usage - usage_credit_bytes - reclaimable) + incoming_bytes
+                > self.memory_limit_bytes
+            ):
+                eviction_reason = (
+                    "eligible idle unpinned models cannot free enough memory"
+                    if candidates
+                    else "no idle unpinned model is eligible for eviction"
+                )
                 if requested_role is None:
                     raise ResidentModelCapacityError(
                         "resident model memory ceiling exceeded: "
                         f"usage={usage / _GIB:.2f} GiB, "
                         f"incoming={incoming_bytes / _GIB:.2f} GiB, "
                         f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
-                        "no idle unpinned model is eligible for eviction"
+                        f"{eviction_reason}"
                     )
                 coerced_role = self._coerce_role(requested_role)
                 assert coerced_role is not None
@@ -1109,7 +1125,7 @@ class ResidentModelManager:
                         f"{incoming_bytes / _GIB:.2f} GiB, "
                         f"used={usage / _GIB:.2f} GiB, "
                         f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
-                        "no idle unpinned model is eligible for eviction"
+                        f"{eviction_reason}"
                     ),
                     reason=f"role_capacity_{requested_role.replace('-', '_')}",
                     requested_bytes=incoming_bytes,
