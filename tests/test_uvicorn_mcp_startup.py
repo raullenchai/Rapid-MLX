@@ -171,6 +171,68 @@ def test_runner_retains_import_string_requirement(options):
     assert caught.value.code == 1
 
 
+@pytest.mark.parametrize(
+    ("options", "supervisor_name"),
+    [({"reload": True}, "ChangeReload"), ({"workers": 2}, "Multiprocess")],
+)
+def test_runner_delegates_import_string_app_to_supervisor(
+    monkeypatch, options, supervisor_name
+):
+    import rapid_mlx._uvicorn as runner_module
+
+    bound_socket = object()
+    calls = []
+
+    def bind_socket(config):
+        calls.append(("bind", config))
+        return bound_socket
+
+    class Supervisor:
+        def __init__(self, config, *, target, sockets):
+            assert target.__self__.config is config
+            assert target.__self__._on_server_accepting is ready
+            assert sockets == [bound_socket]
+            self.config = config
+
+        def run(self):
+            calls.append(("supervise", self.config))
+
+    def ready():
+        pytest.fail("the supervisor must own server execution")
+
+    monkeypatch.setattr(runner_module.uvicorn.Config, "bind_socket", bind_socket)
+    monkeypatch.setattr(runner_module, supervisor_name, Supervisor)
+    run_uvicorn("unused:app", on_server_accepting=ready, log_level="error", **options)
+    assert [name for name, _ in calls] == ["bind", "supervise"]
+    assert calls[0][1] is calls[1][1]
+
+
+def test_runner_loads_application_from_app_dir(monkeypatch, tmp_path):
+    module_name = "startup_app_dir_fixture"
+    (tmp_path / f"{module_name}.py").write_text(
+        "async def app(scope, receive, send): pass\n"
+    )
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    def run(instance):
+        instance.config.load()
+        assert instance.config.loaded_app is sys.modules[module_name].app
+        instance.started = True
+
+    monkeypatch.setattr(AcceptingConnectionsServer, "run", run)
+    try:
+        run_uvicorn(
+            f"{module_name}:app",
+            app_dir=str(tmp_path),
+            interface="asgi3",
+            proxy_headers=False,
+            log_level="error",
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+
 def test_custom_runner_retains_uvicorn_keyword_contract():
     calls = []
 
