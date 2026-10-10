@@ -1450,6 +1450,7 @@ class AgentTestRunner:
         agent_version: str | None = None,
     ):
         self.profile = profile
+        base_url = profile.normalize_base_url(base_url)
         self.base_url = base_url
         self.agent_version = (
             installed_version()
