@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "repository": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "config_sha256": "c0cf317cba802cfb1d2984d4b4afc98ceb3d86450ed757e028383bfb03643964",
+      "index_sha256": "56f02123353b7fe444b287a46a779a836cb939860502908da4a79e3b43931cdb",
+      "weights": [
+        {
+          "name": "model-00001-of-00004.safetensors",
+          "size": 5285828971,
+          "sha256": "0952c2fd5ec5f6163a045003eb0e60465290ac0ebedbe2cecde35dd95abed345"
+        },
+        {
+          "name": "model-00002-of-00004.safetensors",
+          "size": 5366101807,
+          "sha256": "ddf163fcbaa7fc1ff2e93ee2e3306b1c31c4fe3c7dd46990cd2737d0cc30197f"
+        },
+        {
+          "name": "model-00003-of-00004.safetensors",
+          "size": 5364643286,
+          "sha256": "5e7d8deca9240eec828c9a451fbd8a95389a7cc18494f400c330d0717c41f6e1"
+        },
+        {
+          "name": "model-00004-of-00004.safetensors",
+          "size": 4375105375,
+          "sha256": "b540bac1ef081d7011e32428e0c2da77f00699db2f4f1508da73ee3b8de40551"
+        }
+      ]
+    },
+    {
+      "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "config_sha256": "a822a9e48b0aafbe3144ec37d4fb067e178ed96615ce6e4420b3149893cc5767",
+      "index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea",
+      "weights": [
+        {
+          "name": "model-00001-of-00004.safetensors",
+          "size": 5288196018,
+          "sha256": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8"
+        },
+        {
+          "name": "model-00002-of-00004.safetensors",
+          "size": 5368472749,
+          "sha256": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f"
+        },
+        {
+          "name": "model-00003-of-00004.safetensors",
+          "size": 5368324139,
+          "sha256": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03"
+        },
+        {
+          "name": "model-00004-of-00004.safetensors",
+          "size": 4377211365,
+          "sha256": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "ec7301b5f96b01898830a484e5ca325ca501995d82b231caa92cfcfdf8430115"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "ec7301b5f96b01898830a484e5ca325ca501995d82b231caa92cfcfdf8430115"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "8e0153cfb7fed959688f1d642db8db9728dc78dc573b0fc910bd0f08f82c88d0"
+    },
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "8e0153cfb7fed959688f1d642db8db9728dc78dc573b0fc910bd0f08f82c88d0"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "14084100d3ddccf6657aa214c71f76b97bf932ab644a307083cf9a7c650a6ecc"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 128,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "14084100d3ddccf6657aa214c71f76b97bf932ab644a307083cf9a7c650a6ecc"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "stock",
+        "fused"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "8e0153cfb7fed959688f1d642db8db9728dc78dc573b0fc910bd0f08f82c88d0"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "history": 8192,
+      "order": [
+        "fused",
+        "stock"
+      ],
+      "steps_completed": 256,
+      "rows": 7680,
+      "error": null,
+      "comparisons": {
+        "metric_comparisons": 30720,
+        "exact_comparisons": 30720,
+        "non_finite_comparisons": 0,
+        "differing_elements": 0,
+        "metric_errors": 0,
+        "exact": true
+      },
+      "tokens_sha256": "8e0153cfb7fed959688f1d642db8db9728dc78dc573b0fc910bd0f08f82c88d0"
+    }
+  ],
+  "executions": [
+    {
+      "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+      "threadgroup_y": 32,
+      "started_utc": "2026-10-10T21:40:10.360192+00:00",
+      "finished_utc": "2026-10-10T21:43:31.487292+00:00",
+      "samples": 196,
+      "capture_errors": [],
+      "collector_sha256": "3dcfb22b55c5233a5be1871dc2e26c0bd8b44e60ce78975a05695513ae761cd2",
+      "workloads_sha256": "118deca7e4c0b1bae36ce52ae36b56ca565547c65c1b4c0620c0df23eb73bca6",
+      "first_sample_utc": "2026-10-10T21:40:10.388724+00:00",
+      "last_sample_utc": "2026-10-10T21:43:31.483860+00:00",
+      "max_sample_gap_seconds": 1.0802397499792278,
+      "baseline_gpu_client_names": [
+        "AccessibilityUIS",
+        "ControlCenter",
+        "Finder",
+        "GeneralSettings",
+        "NotificationCent",
+        "Spotlight",
+        "System Settings",
+        "Terminal",
+        "TextInputMenuAge",
+        "VTDecoderXPCServ",
+        "WallpaperAerials",
+        "WindowServer",
+        "avconferenced",
+        "com.apple.dock.e",
+        "loginwindow",
+        "replayd",
+        "runningboardd"
+      ],
+      "new_gpu_clients": [
+        "qualification process"
+      ],
+      "rows_sha256": "5286619e620497aa801d5a600217491312ad8a25ecf6a8655d6aa82b1ad66569",
+      "report_sha256": "1c9e3efde66d281f812cb14f48aa9a7e673df60b51faaf7a81f1746deee85131",
+      "inventory_sha256": "701d135a12d6e484f6cbb363297fb15779504d6447710d1c094a575a6afa0b5e",
+      "execution_sha256": "5dc32a230eaf0f6e492db530024e9dfd5a11544cfe552016da1ce3aa81d1e0ab"
+    },
+    {
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "threadgroup_y": 32,
+      "started_utc": "2026-10-10T21:43:32.314933+00:00",
+      "finished_utc": "2026-10-10T21:46:47.013566+00:00",
+      "samples": 189,
+      "capture_errors": [],
+      "collector_sha256": "3dcfb22b55c5233a5be1871dc2e26c0bd8b44e60ce78975a05695513ae761cd2",
+      "workloads_sha256": "3e6834907ae64fceb56bf9cc596edc19a22c0f8755ccdeda69cb09c5b9bda836",
+      "first_sample_utc": "2026-10-10T21:43:32.347901+00:00",
+      "last_sample_utc": "2026-10-10T21:46:47.009920+00:00",
+      "max_sample_gap_seconds": 1.0816451250575483,
+      "baseline_gpu_client_names": [
+        "AccessibilityUIS",
+        "ControlCenter",
+        "Finder",
+        "GeneralSettings",
+        "NotificationCent",
+        "Spotlight",
+        "System Settings",
+        "Terminal",
+        "TextInputMenuAge",
+        "VTDecoderXPCServ",
+        "WallpaperAerials",
+        "WindowServer",
+        "avconferenced",
+        "com.apple.dock.e",
+        "loginwindow",
+        "replayd",
+        "runningboardd"
+      ],
+      "new_gpu_clients": [
+        "qualification process"
+      ],
+      "rows_sha256": "52682c8616a98712cfddcecaa87a9fdd4bc553aac881e982a4ac48f389fe1763",
+      "report_sha256": "fa2b15e1e0e305bcccc32987b6d1559e20b4a0cb58f3cdd4ef064719de786f54",
+      "inventory_sha256": "4ab8c6887974f2de3507c74aee2424fa213a95806a5ec2177c9a2dd04c038633",
+      "execution_sha256": "21a0b7f6d12d0c0ffa713a982e5c0bb51548aa22244aaf830048a192ed86cd46"
+    }
+  ],
+  "total_rows": 61440,
+  "total_tensor_comparisons": 245760,
+  "hardware_exclusive": false,
+  "execution_claim": "Dedicated leased model workload; no competing model compute observed. Normal macOS desktop GPU clients remain active; sampled evidence does not enforce or prove hardware-wide isolation.",
+  "lease_evidence": {
+    "epoch": 25,
+    "observations": 14,
+    "initial_expiry_covers_first_observation": true,
+    "first_observation_utc": "2026-10-10T21:41:10.744645+00:00",
+    "first_observation_server_time": 1791668470.783267,
+    "last_observation_server_time": 1791668840.667845,
+    "capture_errors": 0,
+    "lease_acquisition_json_sha256": "0486e8ac7112c24e10980f48087216f48b915d93f6eb9a146bd30055b0144206",
+    "lease_observations_jsonl_sha256": "45cac247a84db4e4da8c0c4b4f565b2cf212bdd0b103bab054592fc019729000",
+    "lease_after_compute_json_sha256": "0b829b55389ee0b62f034cb340cf8e464cb0b0ed4a0dbb6d509d99dbd148fc54",
+    "lease_after_release_json_sha256": "d4af821e91d3556c9ab529bf7ad15a0838b7731402eb6b24bb3012f54a24e45c"
+  },
+  "inventory": {
+    "head": "ff7a54403aa9f256460602194059c2896941c13d",
+    "dirty": [],
+    "source_sha256": {
+      "harness": "afb130d6ff7101f3eb0e46db0efdbfce2ac1d4c841feca9fc4311052e1ea79fc",
+      "adapter": "40dffc2935370dcb056bb955b2dcee3ade75dd73aba6ed04d4078469c85ea77d",
+      "kernel": "6eecf397507d5c86b1a109fe53333819ec6e85d7b10d4aa3581f158c4cc081ba",
+      "native_layer": "f0daa30bba5cb521c8bdfa7093101a544c6a37bbba09bca582288219cb04ae3a",
+      "native_recurrence": "79c8376a51c694b03e54d2f996ced6ea6c8c42868b8571529f97334db165a3e1",
+      "native_normalization": "3c572fe3fbb36721efab4d80d1bb6af11beb4ad1caae18deefc9fc84cbcd9b79"
+    },
+    "packages": {
+      "mlx": "0.32.3",
+      "mlx-metal": "0.32.3",
+      "mlx-lm": "0.31.3",
+      "numpy": "2.4.4"
+    },
+    "python": "3.12.13 (main, Aug  7 2026, 02:15:23) [Clang 22.1.3 ]",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "hardware": "Apple M4 Pro"
+  },
+  "initial_startup_failure": {
+    "status": "error",
+    "counted_as_qualification": false,
+    "error": "ValueError: snapshot has no complete local weights",
+    "report_sha256": "b8d5cac6b3bac7140ba3f177276be128c4c768ef917644134a7ef2ed9cfd889d"
+  },
+  "focused_tests": {
+    "passed": 86,
+    "log_sha256": "c96b3a2e48fccb080b35417167813fa0ce1fbb6a51957dcfb344ef2ad2ed0a7b"
+  },
+  "packages_sha256": "d895e29a60181552e5d96a068a3941ef16bb943ce224dbf689ddbdbaca1fb355"
+}
