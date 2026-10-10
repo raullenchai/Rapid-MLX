@@ -35,15 +35,17 @@ The enforcement / round-trip tests use the ACTUAL target model tokenizer
 ``mlx-community/Qwen3-Coder-Next-4bit`` (pinned by revision below for an
 immutable artifact — its ``<tool_call>``/``</tool_call>`` single-special-token
 layout and the inner XML byte markers are fixed at this commit). They skip ONLY
-on genuine unavailability (llguidance extra absent, or the tokenizer neither
-cached nor reachable); any OTHER failure is surfaced, not swallowed. The
+on genuine unavailability (llguidance extra absent, or the tokenizer not
+cached locally); any OTHER failure is surfaced, not swallowed. The
 pure-Python golden / structure-triple / regression tests never skip.
 """
 
 import importlib.util
 import json
+from pathlib import Path
 
 import pytest
+from huggingface_hub.constants import HF_HUB_CACHE as _TOKENIZER_CACHE
 
 pytestmark = pytest.mark.requires_mlx
 
@@ -434,46 +436,38 @@ def test_qwen3coder_structure_info_returns_xml_wire_triple():
 # --------------------------------------------------------------------------
 # Grammar ENFORCEMENT + ROUND-TRIP on the REAL Qwen3-Coder tokenizer.
 # --------------------------------------------------------------------------
-def _offline_skip_exc_types():
-    """Genuine network/cache-miss exceptions that are a sanctioned skip.
+def _load_cached_tokenizer(transformers):
+    """Probe the pinned cache before loading; cached corruption must fail.
 
-    A corrupt tokenizer artifact / invalid revision must FAIL the test, not
-    skip it, so we skip ONLY on the specific offline/cache-miss signals.
+    The collection-time cache root survives temporary per-test Hub constants.
+    Load the snapshot directory itself so no template-discovery HTTP is possible.
     """
-    types: list[type[BaseException]] = []
-    try:
-        from huggingface_hub.errors import (
-            LocalEntryNotFoundError,
-            OfflineModeIsEnabled,
+    from huggingface_hub import try_to_load_from_cache
+
+    for filename in ("tokenizer.json", "tokenizer_config.json"):
+        cached = try_to_load_from_cache(
+            _TOKENIZER_MODEL,
+            filename,
+            revision=_TOKENIZER_REVISION,
+            cache_dir=_TOKENIZER_CACHE,
         )
-
-        types += [LocalEntryNotFoundError, OfflineModeIsEnabled]
-    except Exception:  # pragma: no cover - old hub without these names
-        pass
-    try:
-        from requests.exceptions import ConnectionError as _ReqConnErr
-
-        types.append(_ReqConnErr)
-    except Exception:  # pragma: no cover - requests not present
-        pass
-    return tuple(types) or (OSError,)
+        if not isinstance(cached, str):
+            pytest.skip(
+                f"tokenizer {_TOKENIZER_MODEL}@{_TOKENIZER_REVISION[:8]} not in "
+                "the local HF cache — XML enforcement tests require it locally"
+            )
+    return transformers.AutoTokenizer.from_pretrained(
+        str(Path(cached).parent), local_files_only=True
+    )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def tok():
-    transformers = pytest.importorskip("transformers")
-    try:
-        return transformers.AutoTokenizer.from_pretrained(
-            _TOKENIZER_MODEL, revision=_TOKENIZER_REVISION
-        )
-    except _offline_skip_exc_types():  # pragma: no cover - offline & uncached
-        pytest.skip(
-            f"tokenizer {_TOKENIZER_MODEL}@{_TOKENIZER_REVISION[:8]} not cached "
-            "and no network — XML enforcement tests require it"
-        )
+    # Function scope puts this after the per-test offline/cache isolation.
+    return _load_cached_tokenizer(pytest.importorskip("transformers"))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def lltok(tok):
     """Build an llguidance LLTokenizer from the fast (Rust) tokenizer via the
     module's own resolver (the spike-proven candidate-3 direct build handles the
@@ -558,6 +552,7 @@ def _wire_c(*, language="python", timeout=None, verbose=None):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_finding5_tokenizer_llguidance_integration_not_broken(tok):
     # FINDING 5: with llguidance importable AND the tokenizer loaded (cached), the
     # production ``build_lltokenizer`` MUST yield a real ``LLTokenizer`` — a
@@ -576,6 +571,7 @@ def test_finding5_tokenizer_llguidance_integration_not_broken(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_valid_call_accepted_and_terminates(tok, lltok):
     grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
     assert grammar is not None
@@ -585,6 +581,7 @@ def test_xml_valid_call_accepted_and_terminates(tok, lltok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_tool_with_a_freeform_string_is_not_constrained_at_all(tok):
     """#1996, on the real tokenizer through the real builder.
 
@@ -601,6 +598,7 @@ def test_xml_tool_with_a_freeform_string_is_not_constrained_at_all(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_optional_and_scalar_params_enforced(tok, lltok):
     # Optional int/bool params present with valid scalar surface forms are
     # accepted + terminal; the enum on the required ``language`` is honored.
@@ -614,6 +612,7 @@ def test_xml_optional_and_scalar_params_enforced(tok, lltok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_bad_enum_value_is_rejected(tok, lltok):
     # ``language`` enum is {python, cpp}; "rust" must be masked.
     grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
@@ -622,6 +621,7 @@ def test_xml_bad_enum_value_is_rejected(tok, lltok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_off_schema_scalar_is_rejected(tok, lltok):
     # ``timeout`` is an integer; a non-numeric value must be masked by ``%json``.
     grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
@@ -635,6 +635,7 @@ def test_xml_off_schema_scalar_is_rejected(tok, lltok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_forced_rejects_prose_before_the_call(tok, lltok):
     # Forced (required) non-reasoning: the first call sits AT the trigger with no
     # free prefix, so bare prose before it is masked at token 0.
@@ -1047,6 +1048,7 @@ def test_xml_ref_to_object_still_uses_json():
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_xml_ref_to_string_opts_out_and_still_parses_raw(tok):
     # F3 resolved the ``$ref`` BEFORE the string-vs-``%json`` decision so a
     # ``$ref`` -> string takes the same path as an inline string. Since #1996
@@ -1067,6 +1069,7 @@ def test_xml_ref_to_string_opts_out_and_still_parses_raw(tok):
 
 # ---- F1/F2/F4/F5 OPT-OUT through build_tool_grammar (real parser) --------
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_f1_toplevel_ref(tok):
     # Control: a representable XML tool DOES build a grammar (proves the opt-out
     # below is the guard, not a generic build failure).
@@ -1092,6 +1095,7 @@ def test_build_tool_grammar_opts_out_f1_toplevel_ref(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_f2_string_pattern(tok):
     # F2: a string param with `pattern` cannot be enforced on the raw value path.
     pat_tool = [
@@ -1108,6 +1112,7 @@ def test_build_tool_grammar_opts_out_f2_string_pattern(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_f4_dependent_required(tok):
     # F4: `dependentRequired` (object-level relation) is emitted-around, not
     # enforced — it would let `a` appear without its required `b` -> opt out.
@@ -1125,6 +1130,7 @@ def test_build_tool_grammar_opts_out_f4_dependent_required(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_f5_unsafe_key(tok):
     # F5: a key containing `>` inserted RAW into `<parameter=KEY>` would be parsed
     # back as a DIFFERENT key -> opt out.
@@ -1143,6 +1149,7 @@ def test_build_tool_grammar_opts_out_f5_unsafe_key(tok):
 
 # ---- codex round-3: end-to-end opt-out (real parser) — no crash on bad input --
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_r3_malformed_required_no_crash(tok):
     # codex r3 #4: a malformed `required` (non-list, or a list with an UNHASHABLE
     # member) must opt out to free-form (None) WITHOUT raising — `set(required)`
@@ -1164,6 +1171,7 @@ def test_build_tool_grammar_opts_out_r3_malformed_required_no_crash(tok):
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_opts_out_r3_bad_enum(tok):
     # codex r3 #2/#3: an enum type-mismatch / unsupported sibling / delimiter-bearing
     # value each opt the whole request out of grammar; a clean string enum builds.
@@ -1201,3 +1209,81 @@ def test_build_tool_grammar_opts_out_r3_bad_enum(tok):
         _xml_grammar(_tool({"type": "string", "enum": ["ok", "no"]}), "required", tok)
         is not None
     )
+
+
+@pytest.mark.parametrize("missing", ["tokenizer.json", "tokenizer_config.json"])
+def test_tokenizer_cache_miss_skips_without_loading(monkeypatch, missing):
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, filename, **kwargs: (
+            None if filename == missing else "/cached/file"
+        ),
+    )
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("an incomplete cache must not start a tokenizer load")
+
+    transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=unexpected_load)
+    )
+    with pytest.raises(pytest.skip.Exception, match="not in the local HF cache"):
+        _load_cached_tokenizer(transformers)
+
+
+def test_cached_tokenizer_corruption_fails_offline(monkeypatch):
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda *args, **kwargs: "/cached/file",
+    )
+    failure = OSError("corrupt cached tokenizer")
+
+    def corrupt_load(snapshot, *, local_files_only):
+        assert snapshot == "/cached"
+        assert local_files_only is True
+        raise failure
+
+    transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=corrupt_load)
+    )
+    with pytest.raises(OSError) as caught:
+        _load_cached_tokenizer(transformers)
+    assert caught.value is failure
+
+
+def test_cached_tokenizer_load_needs_no_model_config(monkeypatch):
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    probes = []
+
+    def cached(repo, filename, *, revision, cache_dir):
+        assert repo == _TOKENIZER_MODEL
+        assert revision == _TOKENIZER_REVISION
+        assert cache_dir == _TOKENIZER_CACHE
+        probes.append(filename)
+        if filename == "config.json":
+            return None
+        return f"/cached/snapshot/{filename}"
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", cached)
+    tokenizer = object()
+
+    def load(snapshot, *, local_files_only):
+        assert snapshot == "/cached/snapshot"
+        assert local_files_only is True
+        return tokenizer
+
+    transformers = SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=load))
+    assert _load_cached_tokenizer(transformers) is tokenizer
+    assert probes == ["tokenizer.json", "tokenizer_config.json"]
