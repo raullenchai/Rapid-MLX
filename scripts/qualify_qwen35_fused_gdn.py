@@ -403,8 +403,8 @@ def main() -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             for index, model in enumerate(args.model):
                 out = args.output / str(index)
-                out.mkdir()
                 try:
+                    out.mkdir()
                     result = qualify(
                         model.expanduser().absolute(), args.histories, args.steps, out
                     )

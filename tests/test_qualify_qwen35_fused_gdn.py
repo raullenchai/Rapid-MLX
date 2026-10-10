@@ -277,8 +277,9 @@ def test_sharded_snapshot_requires_all_indexed_files(tmp_path):
         snapshot_identity(path)
 
 
-def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("failure", ["load", "mkdir"])
+def test_checkpoint_error_still_writes_report_and_runs_next_model(
+    tmp_path, monkeypatch, failure
 ):
     import json
     import sys
@@ -301,6 +302,14 @@ def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
         return open(path, *args, **kwargs)
 
     monkeypatch.setattr(qualification, "open", isolated_open, raising=False)
+    original_mkdir = Path.mkdir
+
+    def checkpoint_mkdir(path, *args, **kwargs):
+        if failure == "mkdir" and path == output / "0":
+            raise PermissionError("checkpoint output unavailable")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", checkpoint_mkdir)
     seen = []
 
     def fake(model, histories, steps, out):
@@ -311,13 +320,16 @@ def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
 
     monkeypatch.setattr(qualification, "qualify", fake)
     assert qualification.main() == 1
-    assert seen == ["missing", "next"]
+    assert seen == (["missing", "next"] if failure == "load" else ["next"])
     report = json.loads((output / "report.json").read_text())
     assert report["exact"] is False
     assert report["results"][0]["status"] == "error"
-    assert (
-        report["results"][0]["error"] == "FileNotFoundError: missing checkpoint shard"
+    expected = (
+        "FileNotFoundError: missing checkpoint shard"
+        if failure == "load"
+        else "PermissionError: checkpoint output unavailable"
     )
+    assert report["results"][0]["error"] == expected
     assert report["results"][1]["status"] == "not_admitted"
 
 
