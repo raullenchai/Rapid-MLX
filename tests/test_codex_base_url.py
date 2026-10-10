@@ -50,7 +50,9 @@ def test_runner_discovers_model_at_normalized_api(monkeypatch):
     assert calls == ["http://127.0.0.1:8899/v1/models"]
 
 
-@pytest.mark.parametrize("suffix", ["?token=secret", "/?token=secret", "#fragment"])
+@pytest.mark.parametrize(
+    "suffix", ["?token=secret", "/?token=secret", "#fragment", "?", "#", "/?#"]
+)
 def test_root_query_or_fragment_rejected_before_setup_or_discovery(
     tmp_path, monkeypatch, suffix
 ):

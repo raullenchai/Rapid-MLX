@@ -177,7 +177,7 @@ class AgentProfile:
                 and parsed.netloc
                 and parsed.path in {"", "/"}
             ):
-                if parsed.query or parsed.fragment:
+                if "?" in base_url or "#" in base_url:
                     raise ValueError(
                         "Codex server-root URLs must not contain a query or fragment; "
                         "use the server address and RAPID_MLX_API_KEY for authentication."
