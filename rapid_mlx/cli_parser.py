@@ -38,7 +38,11 @@ class _PortContextArgumentParser(argparse.ArgumentParser):
             parsed = super().parse_args(supplied_args)
         else:
             parsed = super().parse_args(supplied_args, namespace)
-        if getattr(parsed, "command", None) == "serve":
+        if (
+            getattr(parsed, "command", None) == "serve"
+            and getattr(parsed, "model", None) is None
+            and getattr(parsed, "embedding_model", None)
+        ):
             for action in self._actions:
                 if not isinstance(action, argparse._SubParsersAction):
                     continue

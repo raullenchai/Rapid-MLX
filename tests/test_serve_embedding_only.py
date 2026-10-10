@@ -112,10 +112,12 @@ def test_embedding_only_rejects_explicit_falsy_primary_options(flag, value, caps
         (["--idle-unload-seconds", "60"], True, 60.0),
     ],
 )
-def test_primary_idle_unload_parser_preserves_default_and_provenance(
+def test_embedding_only_parser_preserves_idle_default_and_provenance(
     options, explicit, seconds
 ):
-    args = cli.build_parser().parse_args(["serve", "primary-model", *options])
+    args = cli.build_parser().parse_args(
+        ["serve", "--embedding-model", EMBED_ID, *options]
+    )
     assert args.idle_unload_seconds == seconds
     assert ("--idle-unload-seconds" in args._serve_explicit_options) is explicit
 
