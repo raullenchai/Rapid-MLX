@@ -8451,23 +8451,6 @@ class Scheduler:
             request.prompt_cache = cache
             request.cached_tokens = len(prompt) - len(remaining)
             request.remaining_tokens = remaining
-            # Experimental: reuse the existing retention policy when a live
-            # nearby message boundary supplied this hybrid cache hit.
-            cached = request.cached_tokens
-            if (
-                0 < len(remaining) <= _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP
-                and self._tile_aligned_boundary(request, request.prefix_boundary)
-                <= cached
-                and _cache_has_non_trimmable(cache)
-            ):
-                with store._lock:
-                    entry = store._entries.get(tuple(prompt[:cached]))
-                    retained = entry is not None and entry.message_boundary
-                if retained:
-                    request._cache_snapshot_boundary = cached
-                    request._cache_snapshot_stored = True
-                    request._cache_snapshot_is_internal = False
-                    request._boundary_snapshot_taken = True
             logger.info(
                 f"[cache_fetch] request={request.request_id[:12]} HIT "
                 f"prompt_tokens={len(prompt)} "
@@ -9367,15 +9350,31 @@ class Scheduler:
                 snapshot_boundary,
                 len(prompt_tokens),
             )
-        restored_boundary = int(getattr(request, "_cache_snapshot_boundary", 0) or 0)
-        preserve_restored = (
-            snapshot_boundary <= 0
-            and getattr(request, "_cache_snapshot_stored", False)
-            and not getattr(request, "_cache_snapshot_is_internal", False)
-            and 0 < restored_boundary <= int(request.cached_tokens or 0)
-        )
-        if override_boundary and not preserve_restored:
+        if override_boundary:
             request._cache_snapshot_boundary = snapshot_boundary
+        # A nearby live boundary restored for this request deserves the same
+        # retention as a freshly captured one. Do this after split planning:
+        # tile alignment may discard the caller's proposed new boundary.
+        cached = int(request.cached_tokens or 0)
+        caller_boundary = int(getattr(request, "prefix_boundary", 0) or 0)
+        if (
+            self.memory_aware_cache is not None
+            and cached > 0
+            and 0 < caller_boundary < len(prompt_tokens)
+            and 0 < len(prompt_tokens) - cached <= _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP
+            and snapshot_boundary <= cached
+            and request.prompt_cache
+            and _cache_has_non_trimmable(request.prompt_cache)
+        ):
+            store = self.memory_aware_cache
+            with store._lock:
+                entry = store._entries.get(tuple(prompt_tokens[:cached]))
+                retained = entry is not None and entry.message_boundary
+            if retained:
+                request._cache_snapshot_boundary = cached
+                request._cache_snapshot_stored = True
+                request._cache_snapshot_is_internal = False
+                request._boundary_snapshot_taken = True
         return snapshot_boundary
 
     def _max_running_sequences(self) -> int:

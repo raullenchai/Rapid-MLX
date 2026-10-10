@@ -358,6 +358,7 @@ def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail
     assert cache.store(second, _hybrid_cache(4 * MB), message_boundary=True)
     req = _register(sched, 71, 128 + tail)
     req.prompt_token_ids = first + list(range(1000, 1000 + tail))
+    req.prefix_boundary = 128
 
     sched._fetch_memory_aware_prefix(req)
     sched._resolve_snapshot_boundary(req)
@@ -375,7 +376,9 @@ def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail
     assert set(cache._entries) == {tuple(first), tuple(second)}
 
 
-@pytest.mark.parametrize("case", ["long_tail", "unmarked", "dense", "new_boundary"])
+@pytest.mark.parametrize(
+    "case", ["long_tail", "unmarked", "dense", "new_boundary", "internal", "invalid"]
+)
 def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     sched = _scheduler(monkeypatch)
     cache = sched.memory_aware_cache
@@ -385,10 +388,16 @@ def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     tail = 65 if case == "long_tail" else 64 if case == "new_boundary" else 16
     req = _register(sched, 72, 128 + tail)
     req.prompt_token_ids = boundary + list(range(1000, 1000 + tail))
+    req.prefix_boundary = 128
     if case == "new_boundary":
         req.prefix_boundary = 160
+    elif case == "internal":
+        req.prefix_boundary = 0
+    elif case == "invalid":
+        req.prefix_boundary = len(req.prompt_token_ids)
 
     sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
 
     assert req.cached_tokens == 128
     assert not getattr(req, "_cache_snapshot_stored", False)
@@ -411,6 +420,22 @@ def test_restored_boundary_retention_uses_prefill_tile_alignment(monkeypatch):
     assert req.prefix_boundary == 129
     assert req._cache_snapshot_boundary == 128
     assert req._cache_snapshot_stored
+
+
+def test_restored_boundary_evicted_before_split_planning_is_not_retained(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    assert sched.memory_aware_cache.store(
+        list(range(128)), _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 74, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched.memory_aware_cache.clear()
+
+    sched._resolve_snapshot_boundary(req)
+
+    assert req.cached_tokens == 128
+    assert not getattr(req, "_cache_snapshot_stored", False)
 
 
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
