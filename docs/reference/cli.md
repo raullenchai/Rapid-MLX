@@ -316,6 +316,15 @@ are the argparse defaults from `rapid_mlx/cli.py`.
 | `--kv-disk-checkpoint-interval` | Token interval at which the scheduler snapshots KV state to `~/.cache/rapid-mlx/kv_checkpoints/`. 0 disables. Each snapshot writes the whole KV cache of every running request (gigabytes at long context) and nothing reads the files back; each snapshot also blocks decode for O(context) — enable only for external tooling that consumes the files. Disk cap via `RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`. Overruled by `--disable-disk-caches`. | 0 (disabled) |
 | `--metal-cap-kv-bytes-per-token` | Override the per-token KV-cache size (bytes) the admission gate projects. Set when running a quantized KV cache so long prompts are not spuriously 503'd; under-setting risks the OOM cliff the gate prevents. 0 auto-derives an architecture-aware fp16 figure. | 0 (auto) |
 
+For text hybrid models with full-attention `KVCache` layers and bounded
+recurrent `ArraysCache` state (including Qwen3-Coder-Next), `--kv-cache-dtype int8`
+or `int4` quantizes only attention KV. Recurrent state keeps its original dtype
+and behavior. Startup logs report the attention and recurrent layer counts;
+unknown cache implementations and layouts with no quantizable attention KV
+remain unsupported. Memory savings apply to attention KV, not model weights or
+recurrent state, and do not guarantee a particular maximum context length.
+
+
 #### Model loading, residency, and modalities
 
 | Option | Description | Default |
