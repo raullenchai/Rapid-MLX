@@ -7883,7 +7883,7 @@ async def stream_chat_completion(
                 caller_agent=caller_agent,
                 caller_client=caller_client,
                 result="failed",
-                error_class="tool_choice_violation",
+                error_class="output_contract_unmet",
             )
             return
 
