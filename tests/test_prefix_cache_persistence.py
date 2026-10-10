@@ -3516,3 +3516,19 @@ def test_kv_checkpoint_hook_returns_early_when_disk_caches_are_disabled():
         assert scheduler.Scheduler._maybe_disk_checkpoint(fake, object(), None) is None
     finally:
         disk_caches.configure(False)
+
+
+def test_snapshot_is_private_even_with_permissive_umask(tmp_path):
+    import stat
+
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    old_umask = os.umask(0)
+    try:
+        assert cache.save_to_disk(str(tmp_path / "snapshot"))
+    finally:
+        os.umask(old_umask)
+    snapshot = tmp_path / "snapshot"
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o700
+    for path in snapshot.iterdir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600

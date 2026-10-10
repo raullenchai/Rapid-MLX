@@ -40,8 +40,10 @@ import logging
 import math
 import os
 import secrets
+import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -53,7 +55,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import ws_tunnel
+from . import tls, ws_tunnel
 
 log = logging.getLogger(__name__)
 
@@ -789,7 +791,9 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_URL_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+_URL_OPENER = urllib.request.build_opener(
+    _NoRedirectHandler, urllib.request.HTTPSHandler(context=tls.client_context())
+)
 
 
 def _open(req: urllib.request.Request, timeout: float):
@@ -912,7 +916,14 @@ def register_node(
                 with contextlib.suppress(Exception):
                     exc.close()
             detail = _error_detail(error_body)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            ssl.SSLCertVerificationError,
+        ) as exc:
+            if tls.certificate_error(exc):
+                raise QuickSilverError(tls.CERTIFICATE_HINT) from None
             status = None
             detail = _redact(str(exc))[:200]
         except (ValueError, UnicodeDecodeError) as exc:
@@ -1191,10 +1202,16 @@ def install_service(
     log_dir = _state_dir()
     home = Path.home()
 
+    # Keep the package manager's stable entry point (including its symlink),
+    # rather than baking a versioned Cellar/uv interpreter into launchd.
+    launcher = shutil.which("rapid-mlx")
+    if launcher is None:
+        raise QuickSilverError(
+            "--install-service needs the installed rapid-mlx command on PATH. "
+            "Install Rapid-MLX with a persistent package manager, then retry."
+        )
     argv = [
-        sys.executable,
-        "-m",
-        "rapid_mlx.cli",
+        os.path.abspath(launcher),
         "share",
         serve_alias,
         "--quicksilver",
@@ -1290,12 +1307,26 @@ def install_service(
     except OSError as exc:
         raise QuickSilverError(f"could not write {plist_path}: {exc}") from None
     print(f"Wrote {plist_path}")
-    # ``launchctl load`` still works but is deprecated; ``bootstrap`` is
-    # the modern per-user-domain verb — print the line that will age well.
-    print(
-        f"Activate with:  launchctl bootstrap gui/$(id -u) {plist_path}\n"
-        f"Stop with:      launchctl bootout gui/$(id -u)/{label}"
-    )
+    domain = f"gui/{os.getuid()}"
+    try:
+        # A replacement must first unload the old job; a missing job is normal.
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise QuickSilverError(
+            f"service plist written but launchctl bootstrap failed: {_redact(str(exc))}"
+        ) from None
+    print(f"Started {label}. Stop with: launchctl bootout {domain}/{label}")
 
 
 # ───────────────────────── supervisor (§5.3, §5.5) ─────────────────────────
@@ -1505,7 +1536,9 @@ def _run_share(
     # gateway-side and a 120 rpm cap would throttle paying traffic),
     # but an EXPLICIT ``--rate-limit`` is the user's own call and must
     # be honored, not silently dropped.
-    extra: list[str] = []
+    # Pool prompts must never enter optional persistent caches, even when the
+    # operator enables checkpointing or APC through serve passthrough settings.
+    extra: list[str] = ["--disable-disk-caches"]
     # Exact flag match (not a prefix): the same test _pool_max_concurrency
     # uses, so the injected default and the advertised slots can't disagree.
     if not any(t.split("=", 1)[0] == "--max-num-seqs" for t in passthrough):
@@ -1547,6 +1580,16 @@ def _run_share(
         extra.append("--rate-limit")
         extra.append(str(args.rate_limit))
     extra.extend(passthrough)
+
+    from .privacy import clear_legacy_prompt_cache
+
+    try:
+        for model in {serve_alias, _resolve_serve_hf_path(serve_alias)}:
+            clear_legacy_prompt_cache(model)
+    except OSError as exc:
+        raise QuickSilverError(
+            f"could not retire legacy model prompt cache: {exc}"
+        ) from None
 
     api_key = secrets.token_hex(24)
     try:
@@ -1717,6 +1760,8 @@ def _run_share(
                     )
                     break
                 if not connected or tunnel.closed_event.is_set():
+                    if tls.certificate_error(tunnel.error):
+                        raise QuickSilverError(tls.CERTIFICATE_HINT)
                     # Terminal share-key rejections must never spin
                     # (§5.5), but ONLY an explicit rejection signal may
                     # kill the node: HTTP 401 at upgrade, or WS close

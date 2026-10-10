@@ -3215,7 +3215,14 @@ class MemoryAwarePrefixCache:
                 )
                 return False
 
-        os.makedirs(new_dir, exist_ok=True)
+        # Token IDs and KV tensors can disclose the entire prompt. Protect the
+        # staging directory before writing the first byte, regardless of umask.
+        os.makedirs(new_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(new_dir, 0o700)
+        except OSError as exc:
+            logger.warning("[cache_persist] cannot protect staging directory: %s", exc)
+            return False
 
         # Single source of truth for per-entry on-disk filenames. Used
         # by both the save loop and the post-loop "did the files
@@ -3664,7 +3671,12 @@ class MemoryAwarePrefixCache:
         # filter above proves at least one entry's files exist, so the
         # dir must too, but a stat-cache delay or NFS-style coherence
         # window could still trip the open() below. Cheap insurance.
-        os.makedirs(new_dir, exist_ok=True)
+        os.makedirs(new_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(new_dir, 0o700)
+        except OSError as exc:
+            logger.warning("[cache_persist] cannot protect staging directory: %s", exc)
+            return False
 
         # TOCTOU re-check: between the filter above and the index.json
         # write below, the same external process could clobber new_dir
@@ -3755,6 +3767,14 @@ class MemoryAwarePrefixCache:
         # Atomic-ish directory swap. If we crash between the two renames,
         # load_from_disk's recovery path (see below) handles it.
         rename_committed = False
+        # The directory is already private while files are being written.
+        # Give each published artifact an explicit private mode as well.
+        try:
+            for name in os.listdir(new_dir):
+                os.chmod(os.path.join(new_dir, name), 0o600)
+        except OSError as exc:
+            logger.warning("[cache_persist] cannot protect snapshot files: %s", exc)
+            return False
         try:
             if os.path.exists(cache_dir):
                 os.rename(cache_dir, old_dir)
