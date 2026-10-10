@@ -38,7 +38,10 @@ content/reasoning pair and also compare prompt/completion counts and finish
 reason. These are HTTP byte-output comparisons, not direct token-ID checks.
 
 Four serial arms run stock off/on, then blocked on/off. This reverses
-checkpoint order within prefill modes but does not randomize process order.
+checkpoint order between prefill modes. Each mode uses one fixed process order;
+there is no within-mode counterbalancing or randomized process order, so thermal
+or process-order effects may bias these observed ratios. Repeat each mode in
+both orders before treating the ratios as a controlled causal speedup estimate.
 The summary joins cases by prefill mode, document round and edit location;
 missing/duplicate rows, incomplete streams, invalid timings or usage, failed
 server arms and unexpected cached-token counts cannot qualify a campaign.

@@ -206,6 +206,15 @@ def test_stream_requires_content_finish_usage_and_terminal_marker():
             stream_receipt(iter(lines), time.perf_counter() - 0.1)
 
 
+def test_stream_rejects_duplicate_choice_zero_in_one_event():
+    lines = stream()
+    event = json.loads(lines[0][5:])
+    event["choices"].append(dict(event["choices"][0]))
+    lines[0] = "data: " + json.dumps(event)
+    with pytest.raises(ValueError, match="additional choice"):
+        stream_receipt(iter(lines), time.perf_counter() - 0.1)
+
+
 def test_stream_error_after_output_still_fails():
     lines = stream()
     lines.insert(1, 'data: {"error": {"message": "decode failed"}}')

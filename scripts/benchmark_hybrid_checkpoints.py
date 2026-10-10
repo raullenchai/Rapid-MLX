@@ -50,7 +50,10 @@ def stream_receipt(
         if obj.get("error"):
             raise ValueError(f"server stream error: {obj['error']}")
         usage = obj.get("usage") or usage
-        for choice in obj.get("choices", []):
+        choices = obj.get("choices", [])
+        if len(choices) > 1:
+            raise ValueError("unexpected additional choice")
+        for choice in choices:
             if choice.get("index", 0) != 0:
                 raise ValueError("unexpected additional choice")
             delta = choice.get("delta") or {}
@@ -312,7 +315,8 @@ def main():
                 r.raise_for_status()
                 return stream_receipt(r.iter_lines(), t, require_full_budget=not warmup)
 
-        # Counterbalance checkpoint order within each prefill mode.
+        # Reverse checkpoint order between prefill modes; each mode is
+        # measured in one process order, so this is not within-mode counterbalancing.
         for prefill, checkpoint in [(0, 0), (0, 4), (1, 4), (1, 0)]:
             name = f"prefill{prefill}-checkpoint{checkpoint}"
             log = args.output.parent / (name + ".server.log")
