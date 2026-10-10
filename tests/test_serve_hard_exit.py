@@ -351,8 +351,8 @@ def _entrypoint_call_sequence(entrypoint_name: str) -> list[str]:
 
 @pytest.mark.parametrize(
     "entrypoint",
-    ["serve_command", "_serve_audio_mode"],
-    ids=["serve_command", "serve_audio_mode"],
+    ["serve_command", "_serve_audio_mode", "_serve_embedding_only_mode"],
+    ids=["serve_command", "serve_audio_mode", "serve_embedding_only_mode"],
 )
 def test_serve_entrypoints_call_hard_exit_immediately_after_uvicorn(entrypoint):
     """Both serve entrypoints MUST dispatch uvicorn and then IMMEDIATELY

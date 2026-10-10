@@ -115,11 +115,16 @@ def run_command(args) -> int:
         argv = [
             config.executable,
             "serve",
-            config.model,
+            *([config.model] if config.model else []),
             "--host",
             config.host,
             "--port",
             str(config.port),
+            *(
+                ["--embedding-model", config.embedding_model]
+                if config.embedding_model
+                else []
+            ),
             *config.serve_args,
         ]
         return _supervise(argv, env, config)

@@ -213,9 +213,12 @@ def _render_primary_lifecycle(cfg: Any) -> list[str]:
     lifecycle = getattr(cfg, "primary_model_lifecycle", None)
     snapshot_available = True
     if lifecycle is None:
+        loaded = getattr(cfg, "model_loaded", None)
+        if loaded is None:
+            loaded = getattr(cfg, "engine", None) is not None
         snapshot: dict[str, Any] = {
-            "state": "ready" if getattr(cfg, "engine", None) is not None else "standby",
-            "model_loaded": getattr(cfg, "engine", None) is not None,
+            "state": "ready" if loaded else "standby",
+            "model_loaded": loaded,
             "load_total": 0,
             "load_failures_total": 0,
             "last_load_duration_seconds": 0.0,
