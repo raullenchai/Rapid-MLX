@@ -147,6 +147,11 @@ class AudioWorkerDispatcher:
         with self._lock:
             return self._worker
 
+    @property
+    def handoff_in_progress(self) -> bool:
+        with self._lock:
+            return self._handoff_token is not None
+
     def _fallback_worker(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the dedicated worker used by audio-only/non-batched servers."""
 
@@ -296,6 +301,14 @@ def bind_audio_worker(worker: ModelWorker | None) -> None:
     audio_worker.bind(worker)
 
 
+async def require_audio_worker_available() -> None:
+    """Reject before an audio route waits on residency or changes lane state."""
+    if audio_worker.handoff_in_progress:
+        from .model_switching import ModelSwitchingError
+
+        raise ModelSwitchingError()
+
+
 async def run_audio_mlx(
     lane: str,
     model: str,
@@ -304,7 +317,12 @@ async def run_audio_mlx(
     *args: Any,
     **kwargs: Any,
 ) -> _T:
-    return await audio_worker.execute(lane, model, operation, func, *args, **kwargs)
+    try:
+        return await audio_worker.execute(lane, model, operation, func, *args, **kwargs)
+    except AudioWorkerBusyError as exc:
+        from .model_switching import ModelSwitchingError
+
+        raise ModelSwitchingError() from exc
 
 
 def run_audio_mlx_sync(
@@ -315,4 +333,9 @@ def run_audio_mlx_sync(
     *args: Any,
     **kwargs: Any,
 ) -> _T:
-    return audio_worker.execute_sync(lane, model, operation, func, *args, **kwargs)
+    try:
+        return audio_worker.execute_sync(lane, model, operation, func, *args, **kwargs)
+    except AudioWorkerBusyError as exc:
+        from .model_switching import ModelSwitchingError
+
+        raise ModelSwitchingError() from exc

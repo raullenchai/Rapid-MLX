@@ -200,6 +200,10 @@ class ResidentModelBusyError(ResidentModelError):
     """A model cannot be removed while it owns active work."""
 
 
+class ResidentModelSwitchingError(ResidentModelBusyError):
+    """A request-side role operation was interrupted before taking the lock."""
+
+
 class _CommittedReplacementCancelled(asyncio.CancelledError):
     """Cancellation observed after replacement routing became authoritative."""
 
@@ -739,6 +743,7 @@ class ResidentModelManager:
         self._baseline_memory_bytes = self._read_memory()
         self._on_primary_handoff = on_primary_handoff
         self._on_primary_changed = on_primary_changed
+        self._primary_switching_event = asyncio.Event()
         self._records: dict[str, ResidencyRecord] = {}
         self._index: dict[str, str] = {}
         self._roles: dict[str, ResidentRoleReservation] = {}
@@ -751,6 +756,62 @@ class ResidentModelManager:
         self.evictions_total = 0
         self.loads_total = 0
         self.registry.on_engine_access = self.touch
+
+    @property
+    def primary_switching(self) -> bool:
+        """Whether destructive replacement owns the primary transition.
+
+        HTTP readers must not acquire ``_lock``: the loader holds it for the
+        entire transition. This marker is owned by that serialized transaction.
+        """
+        return self._primary_switching_event.is_set()
+
+    @asynccontextmanager
+    async def _role_lock(self, reject_primary_switch: bool):
+        """Let new audio work leave the lock queue when replacement starts.
+
+        Cleanup retains the ordinary unconditional lock. Request-side entry
+        races acquisition against the transition signal so an earlier queued
+        replacement cannot strand it behind a long model load.
+        """
+        if not reject_primary_switch:
+            async with self._lock:
+                yield
+            return
+        if self.primary_switching:
+            raise ResidentModelSwitchingError("primary model switching in progress")
+        acquire = asyncio.create_task(self._lock.acquire())
+        switching = asyncio.create_task(self._primary_switching_event.wait())
+        entered = False
+        try:
+            await asyncio.wait(
+                (acquire, switching), return_when=asyncio.FIRST_COMPLETED
+            )
+            if switching.done() or self.primary_switching:
+                raise ResidentModelSwitchingError("primary model switching in progress")
+            # Acquisition is the completed task when switching has not fired.
+            await acquire
+            switching.cancel()
+            # Drain helper tasks BEFORE the caller can mutate its ledger.
+            # Lock exit after mutation must not introduce a cancellation point.
+            await asyncio.gather(acquire, switching, return_exceptions=True)
+            entered = True
+            yield
+        finally:
+            # Cancellation can race a successful acquisition. Release exactly
+            # the lock owned by this waiter, even if both tasks completed.
+            acquire.cancel()
+            switching.cancel()
+            try:
+                if not entered:
+                    await asyncio.gather(acquire, switching, return_exceptions=True)
+            finally:
+                if (
+                    acquire.done()
+                    and not acquire.cancelled()
+                    and acquire.exception() is None
+                ):
+                    self._lock.release()
 
     def _canonical(self, name: str | None) -> str | None:
         if not name or name == "default":
@@ -1087,6 +1148,7 @@ class ResidentModelManager:
         capacity_source: str,
         replace_existing: bool = False,
         release_exclusive_role: str | None = None,
+        reject_primary_switch: bool = False,
     ):
         """Reserve a protected auxiliary role before its weights load.
 
@@ -1136,7 +1198,7 @@ class ResidentModelManager:
             coerced_exclusive_role.value if coerced_exclusive_role is not None else None
         )
 
-        async with self._lock:
+        async with self._role_lock(reject_primary_switch):
             previous = self._roles.get(role)
             # Capture the mutually-exclusive sibling WITHOUT removing it. The
             # sibling's reservation is RETAINED in ``_roles`` for the whole
@@ -1321,7 +1383,9 @@ class ResidentModelManager:
             ):
                 self._roles.pop(release_exclusive_role, None)
 
-    async def release_role(self, role: str) -> None:
+    async def release_role(
+        self, role: str, *, reject_primary_switch: bool = False
+    ) -> None:
         """Stop charging a role after its owning lane released the engine."""
 
         # Gate release against the closed enum too: an unknown role must not be
@@ -1329,7 +1393,7 @@ class ResidentModelManager:
         # defined), keeping ``_roles`` consistent with the closed role set.
         coerced_role = self._coerce_role(role)
         assert coerced_role is not None  # role is required for release
-        async with self._lock:
+        async with self._role_lock(reject_primary_switch):
             self._roles.pop(coerced_role.value, None)
 
     async def load(
@@ -1584,6 +1648,10 @@ class ResidentModelManager:
                         if not destructive_replacement:
                             await self._resume_engines(paused_engines)
                     raise
+                finally:
+                    # Include eviction/callback errors and cancellation, even
+                    # when no replacement engine ever reaches publication.
+                    self._primary_switching_event.clear()
                 result = record
         # Lock released. Drive post-commit retirement OUTSIDE the lock: each
         # retirement enqueues under a brief lock scope but awaits its cleanup
@@ -1706,6 +1774,10 @@ class ResidentModelManager:
         handoff = None
         if old_primary is not None and self._on_primary_handoff is not None:
             handoff = self._on_primary_handoff(old_primary.entry)
+        if old_primary is not None:
+            # Quiesced primary work and audio are unavailable from handoff
+            # reservation, including any sibling retirement before eviction.
+            self._primary_switching_event.set()
         destructive_started = False
         try:
             # Retire sibling assistants while the healthy primary remains
@@ -2485,6 +2557,7 @@ class ResidentModelManager:
         usage = self._accounted_usage()
         return {
             "memory_limit_bytes": self.memory_limit_bytes,
+            "primary_switching": self.primary_switching,
             "memory_used_bytes": usage,
             "memory_available_bytes": (
                 max(0, self.memory_limit_bytes - usage)
