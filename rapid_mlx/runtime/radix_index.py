@@ -461,7 +461,9 @@ class RadixPrefixIndex:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         try:
-            with open(tmp, "w") as f:
+            fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                os.fchmod(f.fileno(), 0o600)
                 json.dump(payload, f)
             os.replace(tmp, path)
         except Exception as e:

@@ -44,9 +44,11 @@ Pool mode always disables optional disk caches. Before starting the local
 server, it removes the selected model's old automatic prompt snapshots,
 including interrupted saves, from `~/.cache/rapid-mlx/prefix_cache/`. Other
 models and downloaded weights are preserved. Stop any other server using that
-model before sharing; a busy cache or failed cleanup prevents the node from
+model before sharing; a busy cache, ambiguous legacy ownership, or failed cleanup prevents the node from
 joining the pool. Local serving outside pool mode can still persist prompt
 caches; new snapshots use private directories and files (0700 and 0600).
+Snapshots whose model ownership cannot be established from their full
+fingerprint require manual review and removal before sharing can start.
 
 The API and relay use verified TLS with system roots and the bundled CA list.
 Certificate verification failures stop registration or relay connection

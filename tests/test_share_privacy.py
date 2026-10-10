@@ -6,7 +6,7 @@ import ssl
 
 import pytest
 
-from rapid_mlx.share.privacy import clear_legacy_prompt_cache
+from rapid_mlx.share.privacy import _known_namespaces, clear_legacy_prompt_cache
 from rapid_mlx.share.tls import client_context
 from rapid_mlx.share.ws_tunnel import TunnelClient
 
@@ -16,11 +16,12 @@ def test_cleanup_only_selected_model_and_all_interrupted_snapshots(
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     root = tmp_path / ".cache/rapid-mlx/prefix_cache"
-    target = "org--model"
+    target = "model"
+    fingerprint = sorted(_known_namespaces(target, target))[0]
     names = [
         target,
-        target + "--0123456789abcdef",
-        target + "--0123456789abcdef.new",
+        fingerprint,
+        fingerprint + ".new",
         target + ".old",
         target + "-other",
         "unrelated",
@@ -29,10 +30,10 @@ def test_cleanup_only_selected_model_and_all_interrupted_snapshots(
         directory = root / name
         directory.mkdir(parents=True)
         (directory / "tokens.bin").write_bytes(b"private")
-    assert clear_legacy_prompt_cache("org/model") == 4
+    assert clear_legacy_prompt_cache(target) == 4
     assert (root / (target + "-other") / "tokens.bin").exists()
     assert (root / "unrelated" / "tokens.bin").exists()
-    assert clear_legacy_prompt_cache("org/model") == 0
+    assert clear_legacy_prompt_cache(target) == 0
 
 
 def test_cleanup_fails_closed_under_contention(tmp_path, monkeypatch):
@@ -68,3 +69,63 @@ def test_tls_verification_and_relay_scheme():
         "ssl"
     ].check_hostname
     assert "ssl" not in client._verified_connect_kwargs("ws://localhost/up", None)
+
+
+@pytest.mark.parametrize("model", ["model.new", "model.old"])
+def test_model_transaction_suffix_is_not_stripped(tmp_path, monkeypatch, model):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    for suffix in ("", ".new", ".old"):
+        (root / (model + suffix)).mkdir(parents=True)
+    assert clear_legacy_prompt_cache(model) == 3
+
+
+def test_colliding_model_names_fail_closed_without_deleting_either(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    selected = sorted(_known_namespaces("a/b", "a--b"))[0]
+    other = sorted(_known_namespaces("a--b", "a--b"))[0]
+    for name in (selected, other):
+        (root / name).mkdir(parents=True)
+        (root / name / "tokens.bin").write_bytes(b"keep")
+    with pytest.raises(OSError, match="ambiguous"):
+        clear_legacy_prompt_cache("a/b")
+    assert (root / selected / "tokens.bin").exists()
+    assert (root / other / "tokens.bin").exists()
+
+
+def test_ambiguous_legacy_name_ending_in_suffix_stops_pool(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    (root / "org--foo.new").mkdir(parents=True)
+    with pytest.raises(OSError, match="ambiguous"):
+        clear_legacy_prompt_cache("org/foo.new")
+
+
+def test_radix_artifact_is_private_before_publication(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    from rapid_mlx.runtime.radix_index import RadixPrefixIndex
+
+    radix = RadixPrefixIndex()
+    radix.insert((100, 200, 300))
+    path = tmp_path / "radix.index"
+    staging = tmp_path / "radix.index.tmp"
+    staging.write_text("old")
+    staging.chmod(0o666)
+    real_dump = __import__("json").dump
+
+    def checked_dump(payload, stream):
+        assert stat.S_IMODE(os.fstat(stream.fileno()).st_mode) == 0o600
+        return real_dump(payload, stream)
+
+    monkeypatch.setattr("rapid_mlx.runtime.radix_index.json.dump", checked_dump)
+    old_umask = os.umask(0)
+    try:
+        radix.save(str(path))
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
