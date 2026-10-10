@@ -817,6 +817,18 @@ def test_silu_qualification_failure_is_cached_before_dispatch(failure):
         qualify.assert_called_once_with()
         execute.assert_not_called()
 
+        # Positive control: the probe's candidate loop calls this exact boundary
+        # once qualification admits it, so the rejection assertion is observable.
+        fused_gdn._PROBE_COMPLETE = False
+        qualify.side_effect = None
+        qualify.return_value = True
+        execute.return_value = ()
+        assert (
+            fused_gdn.probe_qwen4_fused_gdn_decode(mx.bfloat16)
+            == fused_gdn._THREADGROUP_Y_CANDIDATES[0]
+        )
+        execute.assert_called_once()
+
 
 def test_unsupported_dtype_does_not_poison_bf16_probe():
     with (
