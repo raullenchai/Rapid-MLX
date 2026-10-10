@@ -107,6 +107,15 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--kv-disk-checkpoint-interval` | Token interval for KV snapshots to `~/.cache/rapid-mlx/kv_checkpoints/`; each snapshot writes the whole KV cache of every running request, nothing reads it back, and it blocks decode — external tooling only. `0` disables. Overruled by `--disable-disk-caches`. | `0` |
 | `--metal-cap-kv-bytes-per-token` | Override the projected per-token KV size (bytes) in the admission gate; set when running a quantized KV cache. `0` auto-derives an fp16 figure. | `0` (auto) |
 
+For text hybrid models with full-attention `KVCache` layers and bounded
+recurrent `ArraysCache` state (including Qwen3-Coder-Next), `--kv-cache-dtype int8`
+or `int4` quantizes only attention KV. Recurrent state keeps its original dtype
+and behavior. Startup logs report the attention and recurrent layer counts;
+unknown cache implementations and layouts with no quantizable attention KV
+remain unsupported. Memory savings apply to attention KV, not model weights or
+recurrent state, and do not guarantee a particular maximum context length.
+
+
 ### Model Loading and Residency Options
 
 | Option | Description | Default |
