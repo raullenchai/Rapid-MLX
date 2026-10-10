@@ -19,10 +19,9 @@ def test_cleanup_only_selected_model_and_all_interrupted_snapshots(
     target = "model"
     fingerprint = sorted(_known_namespaces(target, target))[0]
     names = [
-        target,
         fingerprint,
         fingerprint + ".new",
-        target + ".old",
+        fingerprint + ".old",
         target + "-other",
         "unrelated",
     ]
@@ -30,7 +29,7 @@ def test_cleanup_only_selected_model_and_all_interrupted_snapshots(
         directory = root / name
         directory.mkdir(parents=True)
         (directory / "tokens.bin").write_bytes(b"private")
-    assert clear_legacy_prompt_cache(target) == 4
+    assert clear_legacy_prompt_cache(target) == 3
     assert (root / (target + "-other") / "tokens.bin").exists()
     assert (root / "unrelated" / "tokens.bin").exists()
     assert clear_legacy_prompt_cache(target) == 0
@@ -39,12 +38,13 @@ def test_cleanup_only_selected_model_and_all_interrupted_snapshots(
 def test_cleanup_fails_closed_under_contention(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     root = tmp_path / ".cache/rapid-mlx/prefix_cache"
-    (root / "model").mkdir(parents=True)
-    with (root / "model.txlock").open("w") as lock:
+    fingerprint = sorted(_known_namespaces("model", "model"))[0]
+    (root / fingerprint).mkdir(parents=True)
+    with (root / (fingerprint + ".txlock")).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(OSError, match="in use"):
             clear_legacy_prompt_cache("model")
-    assert (root / "model").exists()
+    assert (root / fingerprint).exists()
 
 
 def test_cleanup_refuses_symlink_without_touching_target(tmp_path, monkeypatch):
@@ -54,7 +54,8 @@ def test_cleanup_refuses_symlink_without_touching_target(tmp_path, monkeypatch):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (elsewhere / "private").write_bytes(b"keep")
-    (root / "model").symlink_to(elsewhere, target_is_directory=True)
+    fingerprint = sorted(_known_namespaces("model", "model"))[0]
+    (root / fingerprint).symlink_to(elsewhere, target_is_directory=True)
     with pytest.raises(OSError, match="symlink"):
         clear_legacy_prompt_cache("model")
     assert (elsewhere / "private").read_bytes() == b"keep"
@@ -75,8 +76,9 @@ def test_tls_verification_and_relay_scheme():
 def test_model_transaction_suffix_is_not_stripped(tmp_path, monkeypatch, model):
     monkeypatch.setenv("HOME", str(tmp_path))
     root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    fingerprint = sorted(_known_namespaces(model, model))[0]
     for suffix in ("", ".new", ".old"):
-        (root / (model + suffix)).mkdir(parents=True)
+        (root / (fingerprint + suffix)).mkdir(parents=True)
     assert clear_legacy_prompt_cache(model) == 3
 
 
@@ -129,3 +131,18 @@ def test_radix_artifact_is_private_before_publication(tmp_path, monkeypatch):
     finally:
         os.umask(old_umask)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "selected,legacy", [("model", "model"), (".model", "model"), ("model", "model.new")]
+)
+def test_all_unhashed_legacy_candidates_are_ambiguous(
+    tmp_path, monkeypatch, selected, legacy
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / ".cache/rapid-mlx/prefix_cache" / legacy
+    path.mkdir(parents=True)
+    (path / "tokens.bin").write_bytes(b"keep")
+    with pytest.raises(OSError, match="ambiguous"):
+        clear_legacy_prompt_cache(selected)
+    assert (path / "tokens.bin").read_bytes() == b"keep"

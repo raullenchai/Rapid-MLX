@@ -37,10 +37,9 @@ def clear_legacy_prompt_cache(model: str) -> int:
     if not root.exists():
         return 0
     known = _known_namespaces(model, safe_name)
-    # Unhashed names with a replacement marker have no recoverable ownership:
-    # a/b and a--b both became a--b. Refuse rather than erase another model.
-    if "--" not in safe_name:
-        known.add(safe_name)
+    # Unhashed names have no recoverable ownership: even model and .model
+    # collide, and model.new can name a model or an interrupted transaction.
+    # Refuse every unhashed candidate rather than erase another model.
     candidates: set[str] = set()
     for path in root.iterdir():
         name = path.name
