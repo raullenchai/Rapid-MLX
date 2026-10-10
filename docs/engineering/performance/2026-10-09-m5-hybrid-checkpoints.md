@@ -22,7 +22,7 @@ separately. Fused GDN decode, compiled decode, host prompt caching and
 speculation are disabled. Optional disk caches and automatic prefix-cache
 restore/save are disabled for the child servers.
 
-## Workload and contracts
+## Historical schema-1 workload and contracts
 
 Three seeded documents contain about 6.5K prompt tokens each. Edits replace
 section 60, 35 or 0 in a 70-section document. Each case executes:
@@ -37,7 +37,7 @@ tokens, `length`, usage and `[DONE]`. Output comparisons hash the decoded
 content/reasoning pair and also compare prompt/completion counts and finish
 reason. These are HTTP byte-output comparisons, not direct token-ID checks.
 
-Four serial arms run stock off/on, then blocked on/off. This reverses
+The historical schema-1 campaign used four serial arms: stock off/on, then blocked on/off. This reverses
 checkpoint order between prefill modes. Each mode uses one fixed process order;
 there is no within-mode counterbalancing or randomized process order, so thermal
 or process-order effects may bias these observed ratios. Repeat each mode in
@@ -46,7 +46,7 @@ The summary joins cases by prefill mode, document round and edit location;
 missing/duplicate rows, incomplete streams, invalid timings or usage, failed
 server arms and unexpected cached-token counts cannot qualify a campaign.
 
-Two contracts are explicit:
+Two contracts are explicit; the current schema-2 harness additionally requires both orders within each mode, as detailed below:
 
 - **Incremental:** seed, warm and cold outputs each match between checkpoint
   on/off for the same prefill mode and history. Late/middle edits report
