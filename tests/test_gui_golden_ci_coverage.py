@@ -356,7 +356,8 @@ def test_persona_update_isolation_is_applied_to_launch_and_relaunch(tmp_path):
         for override in (False, True):
             capture.unlink(missing_ok=True)
             script = (
-                function
+                "begin_launch() { :; }\n"
+                + function
                 + """
 trap 'if [[ -n "${APP_PID:-}" ]]; then kill -- "-$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi' EXIT
 launch_persona_app "$MODE"
