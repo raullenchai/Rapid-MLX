@@ -60,7 +60,7 @@ Two contracts are explicit; the current schema-2 harness additionally requires b
 summary still reports every cold-equivalence failure. Neither contract
 compares stock versus blocked output or certifies answer quality.
 
-## Results
+## Historical schema-1 results
 
 | Prefill | Edit | Checkpoints off: warm TTFT | On: warm TTFT | Median paired gain | Resumed tokens |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -124,8 +124,9 @@ runtime change or cold-equivalence certification of the current checkout.
 
 ## Reproduction
 
-Use the tested checkout and dependency versions above, with the immutable
-model already in the default cache. Choose an unused loopback port and a new,
+To repeat the current schema-2 campaign, use clean `fe09916e` (or the later
+receipt-validation-only code) and the dependency versions above, with the
+immutable model already in the default cache. Choose an unused loopback port and a new,
 empty campaign directory. The script owns and reaps only its child servers;
 an occupied port fails before it sends HTTP requests.
 
@@ -133,10 +134,11 @@ an occupied port fails before it sends HTTP requests.
 python scripts/benchmark_hybrid_checkpoints.py \
   --model "$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46" \
   --output /private/tmp/Pierre-checkpoint-repeat/receipts.json \
-  --rounds 3 --port 8637 --contract incremental --min-speedup 1.1
+  --rounds 2 --port 8637 --contract incremental --min-speedup 1.1
 ```
 
-Omit `--contract incremental` to require the stronger cold contract. Changing
+For the historical schema-1 campaign only, use checkout `fcbd6d83` and
+`--rounds 3`. Omit `--contract incremental` to require the stronger cold contract. Changing
 the port does not relax any qualification condition. The workload and exact
 4096/2048/0 cache receipts are specific to this model, prompt generator and
 chunk configuration; another model may correctly fail these expectations.
@@ -255,3 +257,12 @@ prefill/resume/shutdown excerpts. Re-evaluation with the current validator passe
 only the explicitly selected incremental contract and fails the cold contract.
 The same reproduction command now emits schema 2 and eight arms; `--rounds 2`
 reproduces this campaign's sample count.
+
+Per-arm excerpts also retain original server process IDs and the request-hit
+line immediately following each checkpoint snap. These distinguish repeated
+executions even when their deterministic functional resume messages match.
+Identical selected functional messages are expected for the same inputs and
+configuration; different complete-log hashes include different request/process
+identities and timings. A selected excerpt and its hash are not a cryptographic
+proof that it came from an authenticated execution. Independent review compared
+the retained excerpts and hashes against the complete private raw logs.

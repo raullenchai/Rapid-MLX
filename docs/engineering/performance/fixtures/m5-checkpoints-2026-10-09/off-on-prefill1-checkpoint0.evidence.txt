@@ -1,2 +1,4 @@
 INFO:rapid_mlx.gdn_prefill:[gdn_prefill] blocked-seq GDN prefill kernel installed (prompt>=64 tokens, Dk=128)
+INFO:     Started server process [34515]
 INFO:     Application shutdown complete.
+INFO:     Finished server process [34515]
