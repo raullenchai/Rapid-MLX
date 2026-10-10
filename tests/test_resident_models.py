@@ -800,6 +800,101 @@ async def test_load_evicts_least_recently_used_unpinned_model():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("incoming_gib", [11, 7])
+async def test_impossible_load_preserves_idle_residents(incoming_gib):
+    manager, registry, loaded, clock = manager_fixture(limit_gib=10)
+    await manager.load("secondary", estimated_bytes=2 * GIB)
+    before = manager.snapshot()
+
+    with pytest.raises(ResidentModelCapacityError):
+        await manager.load("incoming", estimated_bytes=incoming_gib * GIB)
+
+    assert manager.snapshot() == before
+    assert "incoming" not in loaded
+    assert registry.get_engine("secondary") is loaded["secondary"]
+    assert not loaded["secondary"].stopped
+    async with manager.lease("secondary"):
+        assert registry.get_engine("secondary") is loaded["secondary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protected", ["pinned", "leased", "busy"])
+async def test_impossible_load_counts_only_eligible_residents(protected):
+    manager, registry, loaded, _ = manager_fixture(limit_gib=10)
+    await manager.load("protected", estimated_bytes=2 * GIB, pin=protected == "pinned")
+    await manager.load("idle-a", estimated_bytes=GIB)
+    await manager.load("idle-b", estimated_bytes=GIB)
+    if protected == "busy":
+        loaded["protected"].running = 1
+
+    async def reject():
+        before = manager.snapshot()
+        with pytest.raises(ResidentModelCapacityError):
+            await manager.load("incoming", estimated_bytes=5 * GIB)
+        assert manager.snapshot() == before
+        assert "incoming" not in loaded
+        assert all(not engine.stopped for engine in loaded.values())
+        assert registry.get_engine("idle-a") is loaded["idle-a"]
+        assert registry.get_engine("idle-b") is loaded["idle-b"]
+
+    if protected == "leased":
+        async with manager.lease("protected"):
+            await reject()
+    else:
+        await reject()
+
+
+def test_capacity_rejection_via_http_preserves_secondary(monkeypatch):
+    from rapid_mlx.routes.residency import router
+
+    manager, registry, loaded, _ = manager_fixture(limit_gib=10)
+    monkeypatch.setattr(
+        "rapid_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/v1/models/load", json={"model": "secondary", "estimated_size_gb": 2}
+            ).status_code
+            == 200
+        )
+        before = client.get("/v1/models/residency").json()
+        rejected = client.post(
+            "/v1/models/load", json={"model": "incoming", "estimated_size_gb": 11}
+        )
+        assert rejected.status_code == 507
+        assert "cannot free enough memory" in rejected.json()["detail"]
+        assert client.get("/v1/models/residency").json() == before
+        assert registry.get_engine("secondary") is loaded["secondary"]
+        assert not loaded["secondary"].stopped
+
+
+@pytest.mark.asyncio
+async def test_feasible_load_can_reclaim_growth_beyond_resident_reservation():
+    manager, registry, loaded, _ = manager_fixture(limit_gib=10)
+    await manager.load("secondary", estimated_bytes=2 * GIB)
+    process_usage = [9 * GIB]
+    manager._memory_reader = lambda: process_usage[0]
+
+    async def stop():
+        loaded["secondary"].stopped = True
+        process_usage[0] = 4 * GIB
+
+    loaded["secondary"].stop = stop
+    # The secondary accumulated KV/cache pages after its load measurement.
+    # It can release 5 GiB even though its reservation was only 2 GiB.
+    await manager.load("incoming", estimated_bytes=4 * GIB)
+
+    assert "secondary" not in registry
+    assert registry.get_engine("incoming") is loaded["incoming"]
+    assert loaded["secondary"].stopped
+    assert manager.snapshot()["evictions_total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_pin_and_active_lease_are_never_evicted():
     manager, registry, loaded, clock = manager_fixture(limit_gib=9)
     clock.now = 1
