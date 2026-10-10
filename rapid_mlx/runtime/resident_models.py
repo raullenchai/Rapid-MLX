@@ -891,7 +891,11 @@ class ResidentModelManager:
             return 0
 
     def _accounted_usage(self) -> int:
-        measured = self._read_memory()
+        # Some engines construct lazy arrays: keep their full reservation in
+        # force even before the process footprint materializes those pages.
+        return max(self._read_memory(), self._reserved_usage())
+
+    def _reserved_usage(self) -> int:
         reserved = sum(
             max(record.estimated_bytes, record.measured_bytes)
             for record in self._records.values()
@@ -908,12 +912,7 @@ class ResidentModelManager:
             for record in self._roles.values()
             if record.state in {"loading", "resident"}
         )
-        # Some engines (notably mflux) construct lazy MLX arrays without
-        # faulting all weight pages into the process. The footprint delta at
-        # load time can therefore be much smaller than the memory the first
-        # request will materialize. Keep the catalog/heuristic reservation in
-        # force until the actual process footprint grows past it.
-        return max(measured, reserved)
+        return reserved
 
     def _coerce_role(self, role: str | ResidentRole | None) -> ResidentRole | None:
         """Validate a role against the closed enum before it touches the ledger.
@@ -1092,15 +1091,17 @@ class ResidentModelManager:
             candidates = self._eviction_candidates_locked(exclude)
             usage = self._accounted_usage()
             # Reject impossible admission before stopping any working engine.
-            # This is an optimistic lower bound: even crediting every eligible
-            # resident's entire reservation must leave room for the incoming
-            # model. Actual allocator release is still checked after each stop.
+            # Only the reservation ledger establishes an irreducible floor.
+            # Process footprint can include KV/allocator growth released by a
+            # candidate's stop(), beyond its load-time measured reservation.
+            # Actual allocator release is still checked after each stop.
             reclaimable = sum(
                 max(record.estimated_bytes, record.measured_bytes)
                 for record in candidates
             )
             if not candidates or (
-                max(0, usage - usage_credit_bytes - reclaimable) + incoming_bytes
+                max(0, self._reserved_usage() - usage_credit_bytes - reclaimable)
+                + incoming_bytes
                 > self.memory_limit_bytes
             ):
                 eviction_reason = (

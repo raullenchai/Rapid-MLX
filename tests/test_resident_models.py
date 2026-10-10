@@ -873,6 +873,28 @@ def test_capacity_rejection_via_http_preserves_secondary(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_feasible_load_can_reclaim_growth_beyond_resident_reservation():
+    manager, registry, loaded, _ = manager_fixture(limit_gib=10)
+    await manager.load("secondary", estimated_bytes=2 * GIB)
+    process_usage = [9 * GIB]
+    manager._memory_reader = lambda: process_usage[0]
+
+    async def stop():
+        loaded["secondary"].stopped = True
+        process_usage[0] = 4 * GIB
+
+    loaded["secondary"].stop = stop
+    # The secondary accumulated KV/cache pages after its load measurement.
+    # It can release 5 GiB even though its reservation was only 2 GiB.
+    await manager.load("incoming", estimated_bytes=4 * GIB)
+
+    assert "secondary" not in registry
+    assert registry.get_engine("incoming") is loaded["incoming"]
+    assert loaded["secondary"].stopped
+    assert manager.snapshot()["evictions_total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_pin_and_active_lease_are_never_evicted():
     manager, registry, loaded, clock = manager_fixture(limit_gib=9)
     clock.now = 1
