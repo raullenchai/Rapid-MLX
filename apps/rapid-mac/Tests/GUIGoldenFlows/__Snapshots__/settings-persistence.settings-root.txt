@@ -89,6 +89,12 @@ AXApplication title="Rapid-MLX"
         AXCheckBox subrole=AXToggle id="Settings.Models.ShowAllModelsToggle" desc="Show small models in the picker" help="Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat." value=bool:false enabled=true
         AXCheckBox subrole=AXToggle id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true
         AXCheckBox subrole=AXToggle id="Settings.Models.ConfirmActiveRequestSwitchToggle" desc="Confirm before interrupting active requests" help="When off, model switches may interrupt active API or streaming requests without asking." value=bool:true enabled=true
+        AXHeading desc="Model download address" enabled=true
+        AXTextField id="Settings.ModelManagement.DownloadEndpoint" desc="Hugging Face endpoint" value=empty enabled=true
+        AXStaticText value=text enabled=true
+          AXLink id="https://hf-mirror.com" desc="https://hf-mirror.com" enabled=false
+        AXButton id="Settings.ModelManagement.SaveDownloadEndpoint" desc="Save" enabled=true
+        AXButton id="Settings.ModelManagement.ResetDownloadEndpoint" desc="Use default" enabled=true
         AXGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
           AXButton desc="Chat models" enabled=true
           AXButton desc="Image models" enabled=true
