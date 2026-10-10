@@ -13220,7 +13220,11 @@ def agents_command(args):
         sys.exit(1)  # pragma: no cover - CLI error path
 
     # Share Codex's API base across discovery, setup, and integration tests.
-    base_url = profile.normalize_base_url(base_url)
+    try:
+        base_url = profile.normalize_base_url(base_url)
+    except ValueError as exc:
+        print(f"  Invalid base URL: {exc}")
+        sys.exit(1)
 
     # --test: run integration tests
     if args.test:

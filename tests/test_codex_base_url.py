@@ -50,6 +50,40 @@ def test_runner_discovers_model_at_normalized_api(monkeypatch):
     assert calls == ["http://127.0.0.1:8899/v1/models"]
 
 
+@pytest.mark.parametrize("suffix", ["?token=secret", "/?token=secret", "#fragment"])
+def test_root_query_or_fragment_rejected_before_setup_or_discovery(
+    tmp_path, monkeypatch, suffix
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    profile = get_profile("codex")
+    supplied = "http://localhost:8899" + suffix
+    with pytest.raises(ValueError, match="must not contain a query or fragment"):
+        setup_agent_config(profile, supplied, "local-qwen")
+    with pytest.raises(ValueError, match="must not contain a query or fragment"):
+        AgentTestRunner(profile, supplied)
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_cli_rejects_root_query_without_echoing_secret(tmp_path, monkeypatch, capsys):
+    from rapid_mlx.cli import agents_command
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        agents_command(
+            Namespace(
+                agent_name="codex",
+                base_url="http://localhost:8899?token=secret",
+                setup=True,
+                test=False,
+            )
+        )
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "must not contain a query or fragment" in output
+    assert "secret" not in output
+    assert not (tmp_path / "config.toml").exists()
+
+
 def test_cli_normalizes_before_discovery_verification_and_write(tmp_path, monkeypatch):
     from rapid_mlx.cli import agents_command
 

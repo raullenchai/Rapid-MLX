@@ -47,7 +47,8 @@ For a non-default port, `--base-url http://127.0.0.1:8899` is accepted by
 both `--setup` and `--test`: Codex's API base becomes
 `http://127.0.0.1:8899/v1`. Explicit API paths (including `/v1` and reverse
 proxy prefixes such as `/local/v1`) are preserved; supply the full API base
-when using a proxy.
+when using a proxy. Server-root URLs with a query or fragment are rejected;
+use `RAPID_MLX_API_KEY` for authentication instead of a URL query parameter.
 
 Project settings, selected profiles and `codex --model` / `--config` flags
 can override those saved defaults. If Codex reports an unknown model or falls
