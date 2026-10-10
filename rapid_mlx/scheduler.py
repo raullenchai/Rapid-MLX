@@ -5429,6 +5429,22 @@ class Scheduler:
 
         return _prompt_cache_save
 
+    def _has_retained_boundary(self, request: Any) -> bool:
+        """A restored boundary must still exist when its retention is used."""
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
+            return False
+        if not getattr(request, "_cache_snapshot_restored", False):
+            return True
+        boundary = int(getattr(request, "_cache_snapshot_boundary", 0) or 0)
+        store = self.memory_aware_cache
+        if store is None or boundary <= 0:
+            return False
+        with store._lock:
+            entry = store._entries.get(tuple(request.prompt_token_ids[:boundary]))
+            return entry is not None and entry.message_boundary
+
     def _boundary_snapshot_supersedes(
         self, request: Any, cache: list[Any], entry_len: int
     ) -> bool:
@@ -5440,9 +5456,7 @@ class Scheduler:
         would add at most ``_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP`` tokens of
         reuse beyond the boundary. Internal N-1 snapshots keep their own rule.
         """
-        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
-            request, "_cache_snapshot_is_internal", False
-        ):
+        if not self._has_retained_boundary(request):
             return False
         boundary = int(
             getattr(
@@ -5469,9 +5483,7 @@ class Scheduler:
         Otherwise the caller stores it and :meth:`_touch_boundary_entry` moves
         the boundary back to most-recently-used.
         """
-        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
-            request, "_cache_snapshot_is_internal", False
-        ):
+        if not self._has_retained_boundary(request):
             return True
         if not _cache_has_non_trimmable(cache):
             return True
@@ -5495,9 +5507,7 @@ class Scheduler:
 
     def _touch_boundary_entry(self, request: Any) -> None:
         """Mark this request's stored boundary entry most-recently-used."""
-        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
-            request, "_cache_snapshot_is_internal", False
-        ):
+        if not self._has_retained_boundary(request):
             return
         boundary = int(
             getattr(
@@ -9373,6 +9383,7 @@ class Scheduler:
             if retained:
                 request._cache_snapshot_boundary = cached
                 request._cache_snapshot_stored = True
+                request._cache_snapshot_restored = True
                 request._cache_snapshot_is_internal = False
                 request._boundary_snapshot_taken = True
         return snapshot_boundary
@@ -9862,6 +9873,13 @@ class Scheduler:
                     request.cached_tokens = 0
                     request.remaining_tokens = request.prompt_token_ids
                     tokens_to_process = request.prompt_token_ids
+                    if getattr(request, "_cache_snapshot_restored", False):
+                        request._cache_snapshot_restored = False
+                        request._cache_snapshot_stored = False
+                        request._boundary_snapshot_taken = False
+                        request._cache_snapshot_is_internal = False
+                        del request._cache_snapshot_boundary
+                        self._resolve_snapshot_boundary(request)
                     # The retry keeps only the message boundary split.
                     request.shared_prefix_snapshot_at = 0
                     # Recompute split against the now-full prompt

@@ -438,6 +438,64 @@ def test_restored_boundary_evicted_before_split_planning_is_not_retained(monkeyp
     assert not getattr(req, "_cache_snapshot_stored", False)
 
 
+def test_restored_boundary_evicted_after_planning_keeps_prompt_fallback(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    assert cache.store(list(range(128)), _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 75, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    assert req._cache_snapshot_stored
+    cache.clear()
+
+    sched._prompt_cache_save_cb(75, _hybrid_cache(4 * MB))
+
+    assert tuple(req.prompt_token_ids) in cache._entries
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    # The prompt entry remains usable by an extension with a different suffix.
+    restored, remaining = cache.fetch(req.prompt_token_ids + [999])
+    assert restored is not None
+    assert remaining == [999]
+
+
+def test_restored_boundary_insert_failure_rearms_cold_snapshot(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    sched._prefill_tile_rows_cached = 32
+    assert sched.memory_aware_cache.store(
+        list(range(128)), _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 76, 144)
+    req.prefix_boundary = 129
+    sched._fetch_memory_aware_prefix(req)
+    sched.waiting.append(req)
+    generator = MagicMock()
+    generator.insert.side_effect = RuntimeError("cached insert rejected")
+    generator.insert_segments.return_value = [101]
+    sched.batch_generator = generator
+    monkeypatch.setattr(sched, "_ensure_batch_generator", lambda: True)
+    monkeypatch.setattr(sched, "_get_request_sampler", lambda _r: MagicMock())
+    monkeypatch.setattr(sched, "_register_uid_processors", MagicMock())
+    monkeypatch.setattr(sched, "_validate_cache", lambda _c: True)
+
+    assert sched._schedule_waiting() == [req]
+
+    generator.insert.assert_called_once()
+    assert generator.insert_segments.call_args.kwargs["caches"] is None
+    assert generator.insert_segments.call_args.args[0] == [
+        [list(range(128)), list(range(128, 144))]
+    ]
+    assert req.cached_tokens == 0
+    assert not req._cache_snapshot_restored
+    assert not req._cache_snapshot_stored
+    assert not req._boundary_snapshot_taken
+    assert req._cache_snapshot_boundary == 128
+
+
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
     sched = _scheduler(monkeypatch)
     req = _register(sched, 7, 40)
