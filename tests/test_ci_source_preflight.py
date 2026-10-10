@@ -223,6 +223,19 @@ def test_rendered_aggregate_has_no_failure_or_wrong_context_success(updates, pas
 
 
 @pytest.mark.parametrize(
+    "changed_paths",
+    [
+        ["rapid_mlx/server.py"],
+        ["scripts/release_control.py", "tests/test_release_control.py", "RELEASE.md"],
+        [
+            "scripts/release_prepare.py",
+            "scripts/release_version.py",
+            "tests/test_release_prepare.py",
+            "tests/test_release_version.py",
+        ],
+    ],
+)
+@pytest.mark.parametrize(
     ("event", "head_repo", "head_ref", "enabled", "expected"),
     [
         ("pull_request", "owner/repo", "feature/server", "true", True),
@@ -236,6 +249,7 @@ def test_rendered_aggregate_has_no_failure_or_wrong_context_success(updates, pas
 )
 def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
     tmp_path,
+    changed_paths,
     event,
     head_repo,
     head_ref,
@@ -250,7 +264,7 @@ def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
     bindir = tmp_path / "bin"
     bindir.mkdir()
     git = bindir / "git"
-    git.write_text('#!/bin/sh\nprintf "rapid_mlx/server.py\\n"\n')
+    git.write_text('#!/bin/sh\nprintf "%s\\n" ' + " ".join(changed_paths) + "\n")
     git.chmod(0o755)
     python = bindir / "python"
     python.symlink_to(sys.executable)
@@ -455,3 +469,71 @@ def test_documentation_does_not_expand_the_mapped_source_namespace():
     policy = classify_policy(["rapid_mlx/_banner.py", "README.md"], source_canary=True)
     assert not policy.source_canary_tests
     assert policy.linux_matrix_mode == "full"
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "scripts/classify_ci_changes.py",
+        "scripts/ci_candidate_admission.py",
+        "scripts/check_release_environment.py",
+        "scripts/check_release_source_ref.py",
+        "scripts/upload_release_r2.py",
+        "scripts/publish_release.py",
+        ".github/workflows/ci.yml",
+        "tests/test_ci_source_preflight.py",
+        "tests/test_release_stamp_scripts.py",
+        "tests/conftest.py",
+        "pyproject.toml",
+        "config/mypy-requirements.txt",
+        "apps/rapid-mac/Sources/Rapid/App.swift",
+        "unknown/thing.py",
+        "scripts/../scripts/release_control.py",
+        "/scripts/release_control.py",
+    ],
+)
+def test_release_source_prefilter_never_neutralizes_other_control_paths(control):
+    paths = [
+        "scripts/release_control.py",
+        "tests/test_release_control.py",
+        "RELEASE.md",
+        control,
+    ]
+    policy = classify_policy(paths, source_preflight=True)
+    assert not policy.source_preflight
+    assert policy.linux_matrix_mode == "full"
+
+
+def test_release_preparation_exact_source_scope_and_documentation():
+    paths = [
+        "scripts/release_control.py",
+        "scripts/release_prepare.py",
+        "scripts/release_version.py",
+        "tests/test_release_control.py",
+        "tests/test_release_prepare.py",
+        "tests/test_release_version.py",
+        "RELEASE.md",
+    ]
+    source = classify_policy(paths, source_preflight=True)
+    assert source.source_preflight
+    assert source.lanes.engine and not source.lanes.desktop
+    assert not source.source_canary_tests
+    assert not classify_policy(paths).source_preflight
+    assert not classify_policy(
+        paths, force_full=True, source_preflight=True
+    ).source_preflight
+    docs = classify_policy(["RELEASE.md"], source_preflight=True)
+    assert docs.lanes.docs_only and not docs.lanes.engine and not docs.lanes.desktop
+
+
+def test_classifier_changes_have_real_hosted_coverage_in_existing_shards():
+    steps = jobs()["test-matrix"]["steps"]
+    ordinary = next(
+        s["run"] for s in steps if "--cov=scripts.release_control" in s.get("run", "")
+    )
+    assert "--cov=scripts.classify_ci_changes" in ordinary
+    assert "tests" in ordinary
+    # Keep the combined coverage and mandatory diff gate; enrollment is not a waiver.
+    gate = jobs()["changed-lines-coverage"]["steps"][-1]["run"]
+    assert "--fail-under 100" in gate
+    assert "coverage-data/linux/coverage-linux-3.11.data" in gate
