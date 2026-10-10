@@ -397,7 +397,7 @@ def test_fix3_standalone_server_forwards_parsed_mtp_to_lane_contract(monkeypatch
         lambda *_a, **_kw: (_ for _ in ()).throw(_StopAtPFlashError()),
     )
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
-    monkeypatch.setattr("uvicorn.run", lambda *_a, **_kw: None)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )

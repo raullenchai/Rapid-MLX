@@ -228,9 +228,10 @@ def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
     monkeypatch.setattr(server_mod, "_ensure_routing_config", lambda *_a, **_kw: None)
     monkeypatch.setattr(server_mod, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr("rapid_mlx.cli._port_preflight_or_die", lambda *_a, **_kw: None)
-    import uvicorn as _uvicorn
 
-    monkeypatch.setattr(_uvicorn, "run", lambda *_a, **_kw: events.append("uvicorn"))
+    monkeypatch.setattr(
+        "rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: events.append("uvicorn")
+    )
     monkeypatch.setattr(
         "rapid_mlx.cli._hard_exit_after_serve",
         lambda: events.append("hard_exit"),

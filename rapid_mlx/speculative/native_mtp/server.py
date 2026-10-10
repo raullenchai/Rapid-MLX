@@ -75,7 +75,6 @@ def run_native_mtp_server(
     """Load the immutable target/drafter pair and run the serial API server."""
 
     try:
-        import uvicorn
         from mlx_vlm import load
     except ImportError as exc:
         raise RuntimeError(
@@ -189,7 +188,6 @@ def run_native_mtp_server(
         log_level=uvicorn_log_level,
         timeout_keep_alive=30,
         on_server_accepting=_print_ready,
-        uvicorn_runner=uvicorn.run,
         port_explicit=port_explicit,
     )
 

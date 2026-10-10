@@ -614,9 +614,7 @@ def test_run_uvicorn_exits_nonzero_on_eaddrinuse(monkeypatch, capsys):
         def _raise_eaddrinuse(*_args, **_kwargs):
             raise OSError(errno.EADDRINUSE, "Address already in use")
 
-        import uvicorn
-
-        monkeypatch.setattr(uvicorn, "run", _raise_eaddrinuse)
+        monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_eaddrinuse)
 
         ns = _serve_ns(port)
         with pytest.raises(SystemExit) as excinfo:
@@ -649,9 +647,7 @@ def test_run_uvicorn_reraises_unrelated_oserror(monkeypatch):
     def _raise_eacces(*_args, **_kwargs):
         raise OSError(errno.EACCES, "Permission denied")
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", _raise_eacces)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_eacces)
 
     ns = _serve_ns(port=80)  # port irrelevant — uvicorn.run is stubbed
     with pytest.raises(OSError) as excinfo:
@@ -688,9 +684,7 @@ def test_run_uvicorn_eaddrinuse_socket_level_discriminator(monkeypatch, capsys):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
                 probe.bind((kwargs["host"], kwargs["port"]))
 
-        import uvicorn
-
-        monkeypatch.setattr(uvicorn, "run", _try_real_bind)
+        monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _try_real_bind)
 
         ns = _serve_ns(port)
         with pytest.raises(SystemExit) as excinfo:
@@ -731,9 +725,7 @@ def test_run_uvicorn_systemexit_from_uvicorn_eaddrinuse_reemits_message(
             # ``sys.exit(1)``.
             raise SystemExit(1)
 
-        import uvicorn
-
-        monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+        monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_sysexit)
 
         ns = _serve_ns(port)
         with pytest.raises(SystemExit) as excinfo:
@@ -769,9 +761,7 @@ def test_run_uvicorn_probe_failure_does_not_mask_systemexit(monkeypatch):
     def _probe_explodes(*_args, **_kwargs):
         raise TypeError("simulated probe-side failure (bad host type)")
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_sysexit)
     monkeypatch.setattr(cli, "_port_is_busy", _probe_explodes)
 
     ns = _serve_ns(port=8000)
@@ -814,9 +804,7 @@ def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(monkeypatch, caps
     def _raise_sysexit(*_args, **_kwargs):
         raise SystemExit(1)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_sysexit)
 
     # OS-chosen port that we DON'T hold — the probe will succeed,
     # confirming the SystemExit wasn't a port collision.
@@ -852,9 +840,7 @@ def test_run_uvicorn_listen_fd_eaddrinuse_uses_fd_specific_message(monkeypatch, 
     def _raise_eaddrinuse(*_args, **_kwargs):
         raise OSError(errno.EADDRINUSE, "Address already in use")
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", _raise_eaddrinuse)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _raise_eaddrinuse)
 
     ns = types.SimpleNamespace(
         host="127.0.0.1", port=8000, listen_fd=11, _port_explicit=None

@@ -288,9 +288,9 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
     fake_mlx_vlm.load = lambda _repo, **_kwargs: (MagicMock(), MagicMock())
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "rapid_mlx._uvicorn._run_server", lambda *_args, **_kwargs: None
+    )
     with caplog.at_level("WARNING"):
         srv.run_dflash_server(
             main_model_repo="user/target-4bit",
@@ -658,11 +658,9 @@ def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
 
     captured: dict = {}
-    import uvicorn
 
     monkeypatch.setattr(
-        uvicorn,
-        "run",
+        "rapid_mlx._uvicorn._run_server",
         lambda app, **_kwargs: captured.setdefault("app", app),
     )
 
@@ -2886,9 +2884,8 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
     monkeypatch.setattr(srv, "load_runtime", _fake_load_runtime)
 
     # No-op uvicorn so we don't bind a port; return immediately after load.
-    import uvicorn
 
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *a, **kw: None)
 
     srv.run_dflash_server(
         main_model_repo="mlx-community/Qwen3.5-27B-8bit",
