@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause
 """Uvicorn startup seam that reports readiness only after socket creation."""
 
 from __future__ import annotations
 
-import importlib
 import logging
+import os
 import socket
 import sys
 from collections.abc import Callable
@@ -12,6 +12,7 @@ from typing import Any
 
 import uvicorn
 from uvicorn.main import STARTUP_FAILURE
+from uvicorn.supervisors import ChangeReload, Multiprocess
 
 ServerAcceptingCallback = Callable[[], None]
 logger = logging.getLogger(__name__)
@@ -109,6 +110,44 @@ class AcceptingConnectionsServer(uvicorn.Server):
                         pass
 
 
+def _run_server(
+    app: Any,
+    *,
+    on_server_accepting: ServerAcceptingCallback | None = None,
+    **config_kwargs: Any,
+) -> None:
+    """Use Uvicorn's runner lifecycle without replacing its public Server class."""
+    # Adapted from Uvicorn 0.41.0 main.run; BSD-3-Clause notice in NOTICE.
+    app_dir = config_kwargs.pop("app_dir", None)
+    if app_dir is not None:
+        sys.path.insert(0, app_dir)
+    config = uvicorn.Config(app, **config_kwargs)
+    server = AcceptingConnectionsServer(config, on_server_accepting=on_server_accepting)
+    if (config.reload or config.workers > 1) and not isinstance(app, str):
+        logger.warning(
+            "You must pass the application as an import string to enable 'reload' or 'workers'."
+        )
+        raise SystemExit(1)
+
+    try:
+        if config.should_reload:
+            sock = config.bind_socket()
+            ChangeReload(config, target=server.run, sockets=[sock]).run()
+        elif config.workers > 1:
+            sock = config.bind_socket()
+            Multiprocess(config, target=server.run, sockets=[sock]).run()
+        else:
+            server.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if config.uds and os.path.exists(config.uds):
+            os.remove(config.uds)
+
+    if not server.started and not config.should_reload and config.workers == 1:
+        raise SystemExit(STARTUP_FAILURE)
+
+
 def run_uvicorn(
     app: Any,
     *,
@@ -117,29 +156,21 @@ def run_uvicorn(
     port_explicit: bool | None = None,
     **config_kwargs: Any,
 ) -> None:
-    """Run Uvicorn with its normal runner and the post-bind server subclass."""
+    """Run the post-bind server without mutating Uvicorn's module globals.
 
-    uvicorn_main: Any = importlib.import_module("uvicorn.main")
-    original_server = uvicorn_main.Server
-
-    def server_factory(config: uvicorn.Config) -> AcceptingConnectionsServer:
-        return AcceptingConnectionsServer(
-            config,
-            on_server_accepting=on_server_accepting,
-        )
-
-    # ``uvicorn.run`` has no server-class injection point. Rapid-MLX starts one
-    # server per process, so replacing the constructor for this synchronous
-    # call gives us the seam while preserving Uvicorn's fd/UDS, signal, cleanup,
-    # and version-specific startup-exit behavior verbatim.
-    uvicorn_main.Server = server_factory
+    Lazy imports during lifespan startup (including MCP's SSE dependency)
+    must see the real ``uvicorn.main.Server`` and its signal handler.
+    ``uvicorn_runner`` is an explicit test seam; production uses _run_server.
+    """
     try:
-        try:
-            (uvicorn_runner or uvicorn.run)(app, **config_kwargs)
-        except BaseException:
-            from rapid_mlx.telemetry.server_start import failed
+        if uvicorn_runner is None:
+            _run_server(app, on_server_accepting=on_server_accepting, **config_kwargs)
+        else:
+            # Custom runners retain uvicorn.run's keyword contract. The
+            # post-bind callback belongs only to our server implementation.
+            uvicorn_runner(app, **config_kwargs)
+    except BaseException:
+        from rapid_mlx.telemetry.server_start import failed
 
-            failed("bind", port_explicit=port_explicit)
-            raise
-    finally:
-        uvicorn_main.Server = original_server
+        failed("bind", port_explicit=port_explicit)
+        raise

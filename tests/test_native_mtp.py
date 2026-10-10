@@ -681,11 +681,14 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
         loaded.append((repo, revision)) or "model",
         "processor",
     )
-    uvicorn = ModuleType("uvicorn")
     run_calls = []
-    uvicorn.run = lambda app, **kwargs: run_calls.append((app, kwargs))
+
+    def capture_run(app, *, on_server_accepting, **kwargs):
+        assert callable(on_server_accepting)
+        run_calls.append((app, kwargs))
+
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", capture_run)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
 
     bound = []
     drafter = SimpleNamespace(bind=lambda model: bound.append(model))
@@ -789,9 +792,7 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(
     monkeypatch.setattr(glm5_shardwise_load, "load_glm5_shardwise", _shardwise)
     monkeypatch.setattr(native_server.sys, "platform", platform)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    uvicorn = ModuleType("uvicorn")
-    uvicorn.run = lambda *_args, **_kwargs: None
-    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: None)
 
     drafter = SimpleNamespace(bind=lambda _model: None)
     runtime = SimpleNamespace(
@@ -836,7 +837,7 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(
 def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None:
     from rapid_mlx.speculative.native_mtp import server as native_server
 
-    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", None)
     with pytest.raises(RuntimeError, match=r"reinstall rapid-mlx"):
         native_server.run_native_mtp_server(
             pair=QWEN36_35B_4BIT,

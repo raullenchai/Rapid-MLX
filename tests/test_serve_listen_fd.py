@@ -191,9 +191,7 @@ def test_run_uvicorn_passes_fd_when_listen_fd_set(monkeypatch):
         captured_kwargs["app"] = app
         captured_kwargs.update(kwargs)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", fake_run)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -230,9 +228,7 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
         captured_kwargs["app"] = app
         captured_kwargs.update(kwargs)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", fake_run)
 
     ns = _minimal_serve_ns(port=9000, host="127.0.0.1")
     assert getattr(ns, "listen_fd", None) is None
@@ -357,7 +353,6 @@ def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
     ordering). Drive the real ``serve_command`` through its stubbed
     prologue and record the event order.
     """
-    import uvicorn
 
     events: list[str] = []
     captured: dict = {}
@@ -367,7 +362,7 @@ def test_serve_command_hard_exits_immediately_after_uvicorn_returns(
         captured["app"] = app
         captured.update(kwargs)
 
-    stub_heavy_serve_deps.setattr(uvicorn, "run", fake_run)
+    stub_heavy_serve_deps.setattr("rapid_mlx._uvicorn._run_server", fake_run)
     stub_heavy_serve_deps.setattr(
         cli, "_hard_exit_after_serve", lambda: events.append("hard_exit")
     )
@@ -527,9 +522,7 @@ def _capture_uvicorn_run(monkeypatch):
         captured["app"] = app
         captured.update(kwargs)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", fake_run)
     monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     return captured
 
