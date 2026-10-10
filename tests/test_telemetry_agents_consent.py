@@ -592,6 +592,11 @@ def test_non_oserror_write_failure_is_not_misclassified(
 
 
 def test_adapter_failure_outcomes_use_closed_mapping(loopback_telemetry, monkeypatch):
+    # Exercise the supplied config specs rather than a host-dependent version
+    # override (which can replace the deliberately path-less spec below).
+    monkeypatch.setattr(
+        "rapid_mlx.agents.opencode_version.installed_version", lambda: None
+    )
     opencode = get_profile("opencode")
     codex = get_profile("codex")
     hermes = get_profile("hermes")

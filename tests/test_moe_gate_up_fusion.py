@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import weakref
+from unittest.mock import Mock
 
 import pytest
 
@@ -160,7 +161,7 @@ class TestRewriteSemantics:
         import mlx_vlm
         import mlx_vlm.utils
 
-        from rapid_mlx.models import mllm
+        from rapid_mlx.models import glm5_shardwise_load, mllm
         from rapid_mlx.utils import tokenizer as tokenizer_utils
 
         model = TinyVLMMoE(n_layers=1)
@@ -171,7 +172,10 @@ class TestRewriteSemantics:
             {"tokenizer": type("Tokenizer", (), {})()},
         )()
         monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
-        monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
+        loader = Mock(return_value=(model, processor))
+        monkeypatch.setattr(mlx_vlm, "load", loader)
+        # Darwin routes GLM through the shardwise loader instead of mlx_vlm.load.
+        monkeypatch.setattr(glm5_shardwise_load, "load_glm5_shardwise", loader)
         monkeypatch.setattr(
             mlx_vlm.utils,
             "load_config",
@@ -190,6 +194,7 @@ class TestRewriteSemantics:
 
         wrapper = mllm.MLXMultimodalLM("unit-test/glm5-next")
         wrapper.load()
+        loader.assert_called_once()
 
         layer = model.layers[0]
         if moe_fusion._supports_fused_call_contract(type(layer)):

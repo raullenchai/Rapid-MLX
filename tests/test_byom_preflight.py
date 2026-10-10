@@ -1008,7 +1008,7 @@ def test_fetch_hub_config_timeout_is_no_verdict(monkeypatch):
     assert pf._fetch_hub_config("o/r", None) is None
 
 
-def test_golden_interactive_pass_summary(monkeypatch, capsys):
+def test_golden_interactive_pass_summary(monkeypatch, capsys, uncached):
     """The one intended output change: an interactive terminal sees the
     pre-download summary from the approved mock before the download starts."""
     info = _info(
@@ -1018,10 +1018,6 @@ def test_golden_interactive_pass_summary(monkeypatch, capsys):
     _no_deadline(monkeypatch)
     import huggingface_hub
 
-    from rapid_mlx import _download_gate
-
-    monkeypatch.setattr(_download_gate, "is_repo_cached", lambda name: False)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(huggingface_hub, "model_info", lambda *a, **kw: info)
     monkeypatch.setattr(pf, "supported_model_types", lambda: SUPPORTED)
     monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 36 * GIB)
