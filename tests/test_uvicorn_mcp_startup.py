@@ -19,12 +19,35 @@ def test_cold_mcp_connect_and_execute_during_lifespan(tmp_path, listener):
     tool_server = tmp_path / "tools.py"
     tool_server.write_text(
         textwrap.dedent("""\
-        from mcp.server.fastmcp import FastMCP
-        mcp = FastMCP("startup-regression")
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-        mcp.run(transport="stdio")
+        import json
+        import sys
+
+        # Keep the peer independent of SDK server API renames. The serving
+        # process below still cold-imports and exercises the real MCP client.
+        for line in sys.stdin:
+            message = json.loads(line)
+            if "id" not in message:
+                continue
+            method = message.get("method")
+            if method == "initialize":
+                result = {
+                    "protocolVersion": message["params"]["protocolVersion"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "startup-regression", "version": "1"},
+                }
+            elif method == "tools/list":
+                result = {"tools": [{
+                    "name": "echo", "description": "Echo text",
+                    "inputSchema": {"type": "object", "properties": {
+                        "text": {"type": "string"}}, "required": ["text"]},
+                }]}
+            elif method == "tools/call":
+                result = {"content": [{"type": "text", "text":
+                    message["params"]["arguments"]["text"]}], "isError": False}
+            else:
+                result = {}
+            print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                              "result": result}), flush=True)
     """)
     )
     # A subprocess is essential: the main test process may already have imported
