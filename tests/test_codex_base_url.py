@@ -95,6 +95,7 @@ def test_cli_rejects_root_query_without_echoing_secret(tmp_path, monkeypatch, ca
         "http://user:credential-canary-4436@localhost：8899/v1",
         "http://user:credential-canary-4436@[::1",
         "http://user:credential-canary-4436@localhost:abc",
+        "http://user:credential-canary-4436@localhost:0",
         "http://user:credential-canary-4436@localhost:65536/v1",
         "http://user:credential-canary-4436@",
         "http:///v1",

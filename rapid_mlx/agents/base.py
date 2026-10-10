@@ -177,7 +177,8 @@ class AgentProfile:
                     if not parsed.hostname:
                         raise ValueError("missing hostname")
                     # urlsplit defers port validation until this property is read.
-                    _ = parsed.port
+                    if parsed.port == 0:
+                        raise ValueError("port must be in 1..65535")
             except ValueError:
                 # Parser errors may include credential-bearing netloc text.
                 raise ValueError(
