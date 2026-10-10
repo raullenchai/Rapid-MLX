@@ -631,6 +631,10 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
     if existing is not None and all(
         getattr(existing, name, None) is value for name, value in exports.items()
     ):
+        # Reusing a correct child must also repair the parent's import alias.
+        parent = sys.modules.get("mlx_vlm.models")
+        if parent is not None:
+            setattr(parent, model_type, existing)
         return
     # Package-compatible shim: preserve unrelated canonical exports and
     # package metadata so submodule imports keep working.
@@ -2598,6 +2602,34 @@ def test_binding_exports_nested_text_config(monkeypatch, family, state):
         assert shim.__path__ == existing.__path__
     drafters.install_served_architecture_bindings(family)
     assert sys.modules[target] is shim
+
+
+@pytest.mark.parametrize("family", ["glm5_next_mtp", "qwen3_5_mtp"])
+@pytest.mark.parametrize("parent_state", ["missing", "stale"])
+def test_reused_binding_repairs_parent_import_alias(monkeypatch, family, parent_state):
+    import importlib
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative import drafters
+
+    package = importlib.import_module(f"{drafters.__name__}.{family}")
+    existing = ModuleType(f"mlx_vlm.models.{family}")
+    for name in ("Model", "ModelConfig", "TextConfig"):
+        setattr(existing, name, getattr(package, name))
+    parent = ModuleType("mlx_vlm.models")
+    parent.__path__ = []
+    if parent_state == "stale":
+        setattr(parent, family, ModuleType(existing.__name__))
+    monkeypatch.setitem(sys.modules, existing.__name__, existing)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", parent)
+
+    drafters.install_served_architecture_bindings(family)
+
+    assert sys.modules[existing.__name__] is existing
+    assert getattr(parent, family) is existing
+    imported = __import__("mlx_vlm.models", fromlist=[family])
+    assert getattr(imported, family).TextConfig is package.TextConfig
 
 
 @pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe", "qwen3_next"])

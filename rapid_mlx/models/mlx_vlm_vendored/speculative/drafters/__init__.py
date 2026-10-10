@@ -87,6 +87,10 @@ def install_served_architecture_bindings(model_type: Optional[str] = None) -> No
     if existing is not None and all(
         getattr(existing, name, None) is value for name, value in exports.items()
     ):
+        # Reusing a correct child must also repair the parent's import alias.
+        parent = sys.modules.get("mlx_vlm.models")
+        if parent is not None:
+            setattr(parent, model_type, existing)
         return
     # Package-compatible shim: preserve unrelated canonical exports and
     # package metadata so submodule imports keep working.
