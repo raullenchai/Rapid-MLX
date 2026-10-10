@@ -163,14 +163,21 @@ def _extract_error(body: dict) -> dict:
     return body
 
 
-def test_expanded_media_context_error_has_token_counts_and_remedy():
+@pytest.mark.parametrize(
+    "limit_message",
+    [
+        "exceeding --context-length 80",
+        "reaching or exceeding the context window of 80 tokens",
+    ],
+)
+def test_expanded_media_context_error_has_token_counts_and_remedy(limit_message):
     from rapid_mlx.request import ClientRequestError
     from rapid_mlx.service.helpers import context_overflow_from_client_error
 
     error = context_overflow_from_client_error(
         ClientRequestError(
             "context_length_exceeded: prompt has 101 tokens after media "
-            "expansion, exceeding --context-length 80"
+            f"expansion, {limit_message}"
         )
     )
     assert error is not None
