@@ -102,7 +102,7 @@ class ServiceConfig:
             raise ServiceConfigError(str(exc)) from None
         if any("\0" in token for token in self.serve_args):
             raise ServiceConfigError("serve_args must not contain NUL bytes")
-        if self.model is None:
+        if self.model is None and self.embedding_model is not None:
             # Validate the persisted arguments before qualification can strip
             # flags, and before configure can stage an unbootable definition.
             import contextlib
