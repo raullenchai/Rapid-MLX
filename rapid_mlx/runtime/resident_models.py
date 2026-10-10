@@ -739,6 +739,7 @@ class ResidentModelManager:
         self._baseline_memory_bytes = self._read_memory()
         self._on_primary_handoff = on_primary_handoff
         self._on_primary_changed = on_primary_changed
+        self._primary_switching = False
         self._records: dict[str, ResidencyRecord] = {}
         self._index: dict[str, str] = {}
         self._roles: dict[str, ResidentRoleReservation] = {}
@@ -751,6 +752,15 @@ class ResidentModelManager:
         self.evictions_total = 0
         self.loads_total = 0
         self.registry.on_engine_access = self.touch
+
+    @property
+    def primary_switching(self) -> bool:
+        """Whether destructive replacement has temporarily removed the primary.
+
+        HTTP readers must not acquire ``_lock``: the loader holds it for the
+        entire transition. This marker is owned by that serialized transaction.
+        """
+        return self._primary_switching
 
     def _canonical(self, name: str | None) -> str | None:
         if not name or name == "default":
@@ -1584,6 +1594,10 @@ class ResidentModelManager:
                         if not destructive_replacement:
                             await self._resume_engines(paused_engines)
                     raise
+                finally:
+                    # Include eviction/callback errors and cancellation, even
+                    # when no replacement engine ever reaches publication.
+                    self._primary_switching = False
                 result = record
         # Lock released. Drive post-commit retirement OUTSIDE the lock: each
         # retirement enqueues under a brief lock scope but awaits its cleanup
@@ -1717,6 +1731,7 @@ class ResidentModelManager:
                 record.pinned = False
                 await self._evict_locked(record, reason=f"replace_{group}_evict_first")
             if old_primary is not None:
+                self._primary_switching = True
                 if self._on_primary_changed is not None:
                     self._on_primary_changed(None)
                 self.registry.clear_default()
@@ -2485,6 +2500,7 @@ class ResidentModelManager:
         usage = self._accounted_usage()
         return {
             "memory_limit_bytes": self.memory_limit_bytes,
+            "primary_switching": self.primary_switching,
             "memory_used_bytes": usage,
             "memory_available_bytes": (
                 max(0, self.memory_limit_bytes - usage)

@@ -3135,7 +3135,12 @@ def bind_model_generation(generation: Any):
 
 def get_engine(model_name: str | None = None) -> BaseEngine:
     """Get the engine for a model, routing by name in multi-model mode."""
+    from ..runtime.model_switching import ModelSwitchingError, primary_switching
+
     cfg = get_config()
+    switching = primary_switching()
+    if switching and (not model_name or model_name == "default"):
+        raise ModelSwitchingError()
     expected = _expected_model_generation.get()
     if expected is not None:
         if cfg.model_registry and hasattr(expected, "model_name"):
@@ -3156,9 +3161,18 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
         )
     if cfg.model_registry:
         try:
-            return cfg.model_registry.get_engine(model_name)
+            # A registry miss normally falls back to its default. During a
+            # switch only an explicit, still-resident secondary is routable.
+            if switching and model_name not in cfg.model_registry:
+                raise ModelSwitchingError()
+            engine = cfg.model_registry.get_engine(model_name)
+            if switching and engine is cfg.engine:
+                raise ModelSwitchingError()
+            return engine
         except KeyError:
             pass
+    if switching:
+        raise ModelSwitchingError()
     if cfg.engine is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     return cfg.engine
@@ -3395,6 +3409,10 @@ def _validate_model_name(request_model: str) -> None:
     cfg = get_config()
     if cfg.model_registry and request_model in cfg.model_registry:
         return
+    from ..runtime.model_switching import ModelSwitchingError, primary_switching
+
+    if primary_switching():
+        raise ModelSwitchingError()
     if cfg.model_registry and request_model == "default":
         return
 

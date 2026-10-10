@@ -34,11 +34,16 @@ from starlette.responses import PlainTextResponse, Response
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 from ..model_downloads import ModelDownloadsDisabledError
+from ..runtime.audio_worker import require_audio_worker_available
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_AUDIO_POST_DEPENDENCIES = [
+    Depends(verify_api_key),
+    Depends(require_audio_worker_available),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -2347,7 +2352,7 @@ async def _run_alignment_request(
                 )
 
 
-@router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/transcriptions", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_transcription(
     request: Request,
     file: UploadFile,
@@ -2662,7 +2667,7 @@ async def create_transcription(
     return response
 
 
-@router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/translations", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_translation(
     file: UploadFile,
     # OpenAI's translations endpoint mirrors transcriptions but
@@ -3155,7 +3160,7 @@ def _generate_speech_blocking(
     )
 
 
-@router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/speech", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
 
@@ -3782,7 +3787,7 @@ def _resolve_music_model(model: str | None) -> tuple[str, str]:
     return MUSIC_MODEL_ALIASES[alias]
 
 
-@router.post("/v1/audio/music", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/music", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_music(request: AudioMusicRequest = Body(...)):
     """Generate music / SFX from a text prompt.
 
