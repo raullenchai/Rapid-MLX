@@ -4,26 +4,14 @@ import asyncio
 import os
 
 import httpx as _httpx
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-_BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
-try:
-    MODEL_ID = _httpx.get(f"{_BASE}/models", timeout=5).json()["data"][0]["id"]
-except Exception:
-    MODEL_ID = "default"
 
-model = OpenAIChatModel(
-    model_name=MODEL_ID,
-    provider=OpenAIProvider(
-        base_url=_BASE,
-        api_key="not-needed",
-    ),
-)
-
-if __name__ == "__main__":
+def run_tests(model, runner):
     results = {}
 
     # === 1. Plain completion ===
@@ -52,7 +40,7 @@ if __name__ == "__main__":
                     chunks.append(delta)
             return "".join(chunks)
 
-        out = asyncio.run(stream_test())
+        out = runner.run(stream_test())
         assert len(out) > 5, f"Too short: {out}"
         assert any(d in out for d in ["1", "2", "3"]), out
         print(f"PASS: chunks={len(out)} chars, output={out[:80]}")
@@ -168,4 +156,31 @@ if __name__ == "__main__":
     print(f"PydanticAI: {passed}/{total} passed")
     for k, v in results.items():
         print(f"  {k}: {v[:120]}")
-    exit(0 if passed == total else 1)
+    return 0 if passed == total else 1
+
+
+def main():
+    base_url = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+    try:
+        model_id = _httpx.get(f"{base_url}/models", timeout=5).json()["data"][0]["id"]
+    except Exception:
+        model_id = "default"
+
+    # run_sync uses the current event loop. Runner installs that same loop
+    # for streaming and closes it only after the shared HTTP pool is closed.
+    # Supplying our own client also avoids the SDK's cached default pool.
+    with asyncio.Runner() as runner:
+        runner.get_loop()
+        client = AsyncOpenAI(base_url=base_url, api_key="not-needed")
+        try:
+            model = OpenAIChatModel(
+                model_name=model_id,
+                provider=OpenAIProvider(openai_client=client),
+            )
+            return run_tests(model, runner)
+        finally:
+            runner.run(client.close())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

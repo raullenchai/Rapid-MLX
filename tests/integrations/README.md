@@ -167,6 +167,19 @@ bash tests/integrations/test_openhands.sh --model qwen3.5-4b-4bit --port 8802
 python3 tests/integrations/test_librechat_docker.py
 ```
 
+The PydanticAI deep-flow script preserves synchronous calls and real streaming
+on one event loop, and closes its shared SDK client before closing the loop.
+Its deterministic lifecycle regression needs no model or running server:
+
+```bash
+python3 -m pip install 'pydantic-ai-slim[openai]'
+python3 -m pytest tests/test_pydantic_ai_client_lifecycle.py
+```
+
+These regressions skip when the optional SDK is absent. They exercise HTTP
+keep-alive across sync/stream/sync requests, a failing stream's exit status,
+and client cleanup on both successful and exceptional exits.
+
 ## Environment overrides
 
 | Variable | Default | Purpose |
