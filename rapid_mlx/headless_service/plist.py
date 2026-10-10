@@ -50,7 +50,7 @@ def _prepend_exec(argv: list[str], executable: str | list[str]) -> list[str]:
 
 def serve_argv(
     executable: str | list[str],
-    model: str,
+    model: str | None,
     *,
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -68,7 +68,7 @@ def serve_argv(
     ``serve_args`` are additional non-secret ``--flag value`` tokens (e.g.
     ``--max-num-seqs 4``) passed straight through after ``--host/--port``.
     """
-    argv = ["serve", model, "--host", host, "--port", str(port)]
+    argv = ["serve", *([model] if model else []), "--host", host, "--port", str(port)]
     if serve_args:
         argv.extend(serve_args)
     return _prepend_exec(argv, executable)
@@ -79,7 +79,7 @@ def build_plist_dict(
     label: str,
     user: str,
     executable: str,
-    model: str,
+    model: str | None,
     home: Path,
     log_dir: Path,
     host: str = "127.0.0.1",

@@ -113,7 +113,7 @@ def _build_healthz_payload() -> tuple[int, bytes]:
         payload = {
             "status": "draining",
             "ready": False,
-            "model_loaded": cfg.engine is not None,
+            "model_loaded": cfg.model_loaded,
             "model_name": cfg.model_name,
         }
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -121,7 +121,7 @@ def _build_healthz_payload() -> tuple[int, bytes]:
     payload = {
         "status": "healthy",
         "ready": bool(cfg.ready),
-        "model_loaded": cfg.engine is not None,
+        "model_loaded": cfg.model_loaded,
         "model_name": cfg.model_name,
     }
     # ``separators`` strips whitespace — shaves a handful of bytes and

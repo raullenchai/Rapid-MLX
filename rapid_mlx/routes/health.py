@@ -102,7 +102,7 @@ async def health():
     model_loaded = (
         bool(primary_status["model_loaded"])
         if primary_status is not None
-        else engine is not None
+        else cfg.model_loaded
     )
     switching = primary_switching()
 
@@ -112,6 +112,8 @@ async def health():
         model_type = "video-gen"
     elif getattr(engine, "is_mllm", False):
         model_type = "mllm"
+    elif cfg.embeddings_only:
+        model_type = "embedding"
     else:
         model_type = "llm"
 
@@ -161,9 +163,7 @@ async def health_ready():
         "model": cfg.model_name,
         "state": status["state"] if status is not None else "ready",
         "model_loaded": (
-            bool(status["model_loaded"])
-            if status is not None
-            else cfg.engine is not None
+            bool(status["model_loaded"]) if status is not None else cfg.model_loaded
         ),
     }
 
@@ -210,7 +210,7 @@ async def healthz():
     model_loaded = (
         bool(lifecycle_status["model_loaded"])
         if lifecycle_status is not None
-        else cfg.engine is not None
+        else cfg.model_loaded
     )
     if cfg.draining:
         # Mirror the JSON shape the healthy path emits so operators /

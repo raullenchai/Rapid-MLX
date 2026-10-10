@@ -297,6 +297,29 @@ def test_install_without_service_user_errors(monkeypatch):
     assert code == 1
 
 
+# Only --embedding-model installs an embeddings-only service, no default model.
+def test_install_dry_run_embeddings_only(monkeypatch, capsys):
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins_mod, "_port_busy", staticmethod(lambda h, p: False))
+    code = ins_mod.install_command(
+        _ns(model=None, embedding_model="embeddinggemma-300m-6bit")
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "  model: (none)" in out
+    assert "  embedding model: embeddinggemma-300m-6bit" in out
+
+
+# Neither --model nor --embedding-model keeps the documented default model.
+def test_install_dry_run_defaults_model_without_embedding_model(monkeypatch, capsys):
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins_mod, "_port_busy", staticmethod(lambda h, p: False))
+    assert ins_mod.install_command(_ns(model=None)) == 0
+    out = capsys.readouterr().out
+    assert "  model: qwen3.5-4b-4bit" in out
+    assert "embedding model" not in out
+
+
 def test_install_refuses_admin_user(monkeypatch, capsys):
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins_mod, "is_admin_user", staticmethod(lambda u: True))
@@ -1272,6 +1295,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
     effective = types.SimpleNamespace(
         executable="/opt/rapid/bin/rapid-mlx",
         model="model-from-config",
+        embedding_model="embed-from-config",
         host="127.0.0.1",
         port=8123,
         credential_file=None,
@@ -1297,6 +1321,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
     assert status["config_valid"] is True
     assert status["pending_config"] is True
     assert status["model"] == "model-from-config"
+    assert status["embedding_model"] == "embed-from-config"
     assert status["port"] == 8123
     assert status["config_sha256"] == "digest"
 

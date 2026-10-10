@@ -786,8 +786,9 @@ existing non-administrator service account and (for `install`/`uninstall`/
 `restart`) root.
 
 ```bash
-rapid-mlx service install --service-user USER --model MODEL \
-  [--host HOST] [--port PORT] [--dry-run] [-- SERVE_OPTIONS...]
+rapid-mlx service install --service-user USER [--model MODEL] \
+  [--embedding-model MODEL] [--host HOST] [--port PORT] [--dry-run] \
+  [-- SERVE_OPTIONS...]
 rapid-mlx service status [--json]
 rapid-mlx service logs [--follow] [--tail N]
 rapid-mlx service restart [--dry-run]
@@ -803,6 +804,10 @@ rapid-mlx service uninstall [--dry-run]
   installation while its weights are unusable. The requested lazy policy is
   persisted only after that qualification succeeds.
   `--dry-run` prints every step without changing anything.
+- `--model` defaults to `qwen3.5-4b-4bit` unless only `--embedding-model` is
+  given; then the service runs embeddings-only. `configure` accepts
+  `--embedding-model`, `--clear-model` and `--clear-embedding-model`; at least
+  one of the two models must remain.
 - Additional `serve` options must follow a `--` separator, for example
   `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
   rejected; use the service command's own `--host` and `--port` flags.

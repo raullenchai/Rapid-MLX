@@ -1714,7 +1714,8 @@ def _add_serve_parser(
         default=None,
         help=(
             "Pre-load an embedding model at startup (e.g. "
-            "mlx-community/embeddinggemma-300m-6bit). Requires the "
+            "mlx-community/embeddinggemma-300m-6bit). Without a positional "
+            "model, the server runs embeddings-only. Requires the "
             "[embeddings] extra. "
             + optional_extra_install_hint("embeddings", include_paths=False)
         ),

@@ -1165,14 +1165,12 @@ def _serve_audio_mode(args, entry) -> None:
     * Run uvicorn with the same FastAPI ``app`` text models use; the
       ``/v1/audio/*`` routes are already mounted on it.
     """
-    import os
     import sys
 
     # Late imports — audio mode runs on the lighter base install +
     # ``[audio]`` extra; we don't want the text-LM engine machinery to
     # boot until / unless it's actually needed.
     from . import server
-    from .middleware.auth import configure_rate_limiter
     from .server import app
 
     uvicorn_log_level = server.configure_logging(args.log_level)
@@ -1209,34 +1207,12 @@ def _serve_audio_mode(args, entry) -> None:
     # and CLI flags govern auth + body-size caps + CORS. Diverging
     # here would silently weaken the deployment posture for anyone who
     # added ``--api-key`` to their ``rapid-mlx serve kokoro`` command.
-    server._api_key = server._resolve_api_key(args.api_key)
-    server._default_timeout = args.timeout
+    _configure_engineless_server_security(args, server)
     server._max_prompt_tokens = getattr(args, "max_prompt_tokens", None)
     server._context_length = getattr(args, "context_length", None)
     from .config import get_config
 
     get_config().context_length = server._context_length
-
-    _max_body_arg = getattr(args, "max_request_bytes", None)
-    if _max_body_arg is not None:
-        server._max_request_bytes = max(0, int(_max_body_arg))
-    else:
-        _env = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
-        if _env:
-            try:
-                server._max_request_bytes = max(0, int(_env))
-            except ValueError:
-                server._max_request_bytes = 8 * 1024 * 1024
-
-    # Body-receive timeout — same env-driven hook the text path uses.
-    _apply_body_receive_timeout_env(server)
-
-    # CORS — same friendly default the text path uses.
-    server.configure_cors_from_env(args.cors_origins)
-    # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
-    server.configure_trusted_hosts(getattr(args, "trusted_hosts", None))
-    if args.rate_limit > 0:
-        server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
     # CRITICAL: copy the just-set server globals into the
     # ServerConfig singleton the middleware actually reads.
@@ -1333,6 +1309,79 @@ def _serve_audio_mode(args, entry) -> None:
     sys.stdout.flush()
 
     _run_uvicorn(app, args, uvicorn_log_level)
+    _hard_exit_after_serve()
+
+
+# Auth, body-size, CORS, trusted-host and rate-limit setup for serve modes
+# that skip ``server.load_model`` (audio-only, embeddings-only).
+def _configure_engineless_server_security(args, server) -> None:
+    import os
+
+    from .middleware.auth import configure_rate_limiter
+
+    server._api_key = server._resolve_api_key(args.api_key)
+    server._default_timeout = args.timeout
+
+    _max_body_arg = getattr(args, "max_request_bytes", None)
+    if _max_body_arg is not None:
+        server._max_request_bytes = max(0, int(_max_body_arg))
+    else:
+        _env = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
+        if _env:
+            try:
+                server._max_request_bytes = max(0, int(_env))
+            except ValueError:
+                server._max_request_bytes = 8 * 1024 * 1024
+
+    # Body-receive timeout — same env-driven hook the text path uses.
+    _apply_body_receive_timeout_env(server)
+
+    # CORS — same friendly default the text path uses.
+    server.configure_cors_from_env(args.cors_origins)
+    # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
+    server.configure_trusted_hosts(getattr(args, "trusted_hosts", None))
+    if args.rate_limit > 0:
+        server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
+
+
+def _serve_embedding_only_mode(args) -> None:
+    """Serve ``/v1/embeddings`` for ``--embedding-model`` without a primary model.
+
+    Lets scaled deployments run dedicated embedding replicas without a chat
+    model on disk. Chat/completion routes answer 503 because no engine is
+    loaded.
+    """
+    import sys
+
+    from . import server
+    from .config import get_config
+    from .server import app
+
+    uvicorn_log_level = server.configure_logging(args.log_level)
+    _configure_engineless_server_security(args, server)
+    server._sync_config()
+    _load_embedding_model_or_exit(args, server.load_embedding_model)
+
+    print()
+    print("  Embeddings-only mode: no primary model loaded.")
+    host_display = "localhost" if args.host == "0.0.0.0" else args.host
+    listen_fd = getattr(args, "listen_fd", None)
+    cfg = get_config()
+    cfg.bind_host = None
+    cfg.bind_port = None
+    cfg.bind_listen_fd = None
+    if listen_fd is None:
+        cfg.bind_host = host_display
+        cfg.bind_port = args.port
+        print(f"  Starting server on http://{host_display}:{args.port}")
+    else:
+        cfg.bind_listen_fd = listen_fd
+        print(f"  Starting server on inherited fd {listen_fd}")
+    print()
+    sys.stdout.flush()
+
+    # The default ready banner advertises chat endpoints and a primary model.
+    _run_uvicorn(app, args, uvicorn_log_level, on_server_accepting=lambda: None)
     _hard_exit_after_serve()
 
 
@@ -4547,7 +4596,8 @@ def _reject_embedding_alias_serve(profile, model_name: str) -> None:
     print(
         f"error: '{model_name}' is a sentence-embedding alias and has no chat "
         "surface, so it cannot be served as the main model.\n"
-        "Serve a chat model and attach it as the embeddings backend instead:\n"
+        "Serve it as the embeddings backend instead, alone or next to a chat model:\n"
+        f"    rapid-mlx serve --embedding-model {model_name}\n"
         f"    rapid-mlx serve <chat-alias> --embedding-model {model_name}",
         file=sys.stderr,
     )
@@ -5165,6 +5215,34 @@ def _cua_only_incompatible_options(args) -> list[str]:
     return [f"--{name}" for name, value in checks.items() if value]
 
 
+def _embedding_only_incompatible_options(args) -> list[str]:
+    """Return primary-model options that cannot apply to an embeddings-only server."""
+
+    checks = {
+        "served-model-name": getattr(args, "served_model_name", None),
+        "max-tokens": getattr(args, "max_tokens", None),
+        "context-length": getattr(args, "context_length", None),
+        "max-prompt-tokens": getattr(args, "max_prompt_tokens", None),
+        "tool-call-parser": getattr(args, "tool_call_parser", None),
+        "enable-auto-tool-choice": getattr(args, "enable_auto_tool_choice", False),
+        "reasoning-parser": getattr(args, "reasoning_parser", None),
+        "enable-audio": getattr(args, "enable_audio", False),
+        "mcp-config": getattr(args, "mcp_config", None),
+        "video-output-dir": getattr(args, "video_output_dir", None),
+        "image-weight-precision": getattr(args, "image_weight_precision", None),
+        "mllm": getattr(args, "mllm", False),
+        "no-mllm": getattr(args, "no_mllm", False),
+        "lazy-load": getattr(args, "lazy_load", False),
+        "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
+        "disk-stream": getattr(args, "disk_stream", False),
+        "enable-dflash": getattr(args, "enable_dflash", False),
+        "enable-ddtree": getattr(args, "enable_ddtree", False),
+        "speculative-config": getattr(args, "speculative_config", None),
+        "mtp-sidecar": getattr(args, "mtp_sidecar", None),
+    }
+    return [f"--{name}" for name, value in checks.items() if value]
+
+
 def _serve_cua_only_mode(args) -> None:
     """Start the authenticated CUA control plane without a model engine."""
 
@@ -5353,6 +5431,25 @@ def serve_command(args):
     from ._parent_watchdog import install_parent_watchdog, resolve_expected_ppid
 
     install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
+
+    if not getattr(args, "model", None) and getattr(args, "embedding_model", None):
+        incompatible = _embedding_only_incompatible_options(args)
+        if incompatible:
+            print(
+                "rapid-mlx serve without a model (embeddings-only) cannot be "
+                "combined with " + ", ".join(incompatible),
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        args.port = _resolve_serve_port(
+            getattr(args, "host", "127.0.0.1"),
+            getattr(args, "port", None),
+            model=f"--embedding-model {args.embedding_model}",
+            port_explicit=port_explicit_for(args),
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+        _serve_embedding_only_mode(args)
+        return
 
     _arg_max_tokens = getattr(args, "max_tokens", None)
     _max_tokens_is_explicit = _arg_max_tokens is not None
@@ -14254,6 +14351,7 @@ def main():
         getattr(args, "command", None) == "serve"
         and not args.model
         and not getattr(args, "cua_only", False)
+        and not getattr(args, "embedding_model", None)
     ):
         print("rapid-mlx serve: a model is required.", file=sys.stderr)
         print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)

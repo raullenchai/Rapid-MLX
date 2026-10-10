@@ -10,8 +10,9 @@ This module exposes:
 
 The subcommand supports these lifecycle shapes:
 
-* ``rapid-mlx service install [--service-user U] [--model M] [serve options]
-  [--dry-run]`` — validate + bootstrap the daemon.
+* ``rapid-mlx service install [--service-user U] [--model M]
+  [--embedding-model E] [serve options] [--dry-run]`` — validate + bootstrap
+  the daemon.
 * ``rapid-mlx service status [--json]`` — launchd / pid / endpoint health.
 * ``rapid-mlx service logs [--follow] [--tail N]`` — tail daemon logs.
 * ``rapid-mlx service restart [--dry-run]`` — kickstart + wait health.
@@ -73,9 +74,17 @@ def register(subparsers) -> None:
     install.add_argument(
         "--model",
         type=str,
-        default="qwen3.5-4b-4bit",
+        default=None,
         help="Model alias (or HF path) to serve, downloaded once by the "
-        "service account (default: qwen3.5-4b-4bit).",
+        "service account (default: qwen3.5-4b-4bit unless only "
+        "--embedding-model is given).",
+    )
+    install.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Embedding model alias (or HF path) for /v1/embeddings. Without "
+        "--model the service runs embeddings-only.",
     )
     install.add_argument(
         "serve_args",
@@ -133,7 +142,20 @@ def register(subparsers) -> None:
         "configure",
         help="Validate and stage a candidate service definition",
     )
-    configure.add_argument("--model", default=None)
+    model_group = configure.add_mutually_exclusive_group()
+    model_group.add_argument("--model", default=None)
+    model_group.add_argument(
+        "--clear-model",
+        action="store_true",
+        help="Remove the primary model (requires an embedding model).",
+    )
+    embedding_group = configure.add_mutually_exclusive_group()
+    embedding_group.add_argument("--embedding-model", default=None)
+    embedding_group.add_argument(
+        "--clear-embedding-model",
+        action="store_true",
+        help="Remove the embedding model (requires a primary model).",
+    )
     configure.add_argument("--host", default=None)
     configure.add_argument("--port", type=_port_arg, default=None)
     configure.add_argument("--log-retention-days", type=int, default=None)
