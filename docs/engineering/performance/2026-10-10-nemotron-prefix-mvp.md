@@ -57,13 +57,13 @@ The retained [qualification artifact](fixtures/nemotron-prefix-mvp-2026-10-10.js
 
 | Case | Cache-on prefill | Cache-off prefill | Cache-on token TTFT |
 | --- | ---: | ---: | ---: |
-| initial | 13.521 s | 17.105 s | 13.558 s |
-| continue | 0.233 s | 13.785 s | 0.265 s |
-| continue_again | 0.249 s | 14.569 s | 0.283 s |
-| edit | 0.249 s | 16.265 s | 0.283 s |
-| regenerate | 0.249 s | 12.359 s | 0.281 s |
-| branch | 0.202 s | 13.466 s | 0.233 s |
-| different_inventory | 0.189 s | 0.190 s | 0.190 s |
+| initial | 16.695 s | 18.130 s | 16.729 s |
+| continue | 0.288 s | 17.214 s | 0.321 s |
+| continue_again | 0.403 s | 18.929 s | 0.437 s |
+| edit | 0.295 s | 20.259 s | 0.328 s |
+| regenerate | 0.290 s | 14.641 s | 0.324 s |
+| branch | 0.293 s | 17.023 s | 0.326 s |
+| different_inventory | 0.245 s | 0.281 s | 0.245 s |
 
 The qualification does not establish sampled, concurrent, tool-bearing,
 cross-restart, ordinary-backend or arbitrary-length behavior. The accelerated
@@ -100,4 +100,4 @@ Do not stop unrelated services or remove model caches to make a run fit.
 Regression tests exercise mismatched prompts and outputs, inadequate and invalid
 cached counts, contaminated cold controls, incomplete responses and provenance
 mismatches. The tests also verify that instrumentation restores scheduler
-submission after a request failure.
+submission after a request failure and reject stale terminal results from an earlier request.

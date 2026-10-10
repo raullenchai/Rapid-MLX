@@ -5,8 +5,8 @@
     "runtime": "0.6.6",
     "runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "mlx": "0.32.3",
-    "probe_sha256": "437be8c8d3fb13c3f1a3f71157dc61ea0f0e0a95879c9e440577bfd1f432afaa",
-    "source_commit": "2d4a07409e06dc97c7a90c8ecb3bd9d7e2284a1d",
+    "probe_sha256": "4562cf0536279898b72c3f92e1ba201b07a59798764486d0173716b6af0d980a",
+    "source_commit": "a48f7439915faa83ebdbbd37432db39068ff5812",
     "host": {
       "platform": "macOS-26.5.2-arm64-arm-64bit",
       "cpu": "Apple M3 Ultra",
@@ -53,9 +53,9 @@
           1032
         ],
         "answer": "The inventory lists 650 service workers, each with a queue capacity, retry limit, and owner team, where queue capacity and retry limit cycle through ",
-        "prefill_seconds": 13.52139500004705,
-        "ttft_seconds": 13.558110707963351,
-        "total_seconds": 13.929113499994855,
+        "prefill_seconds": 16.695039957994595,
+        "ttft_seconds": 16.729193333012518,
+        "total_seconds": 17.405368916981388,
         "case": "initial"
       },
       {
@@ -67,9 +67,9 @@
           11
         ],
         "answer": "3",
-        "prefill_seconds": 0.2329008749802597,
-        "ttft_seconds": 0.2653234580066055,
-        "total_seconds": 0.32855362503323704,
+        "prefill_seconds": 0.2882213330012746,
+        "ttft_seconds": 0.3213472919887863,
+        "total_seconds": 0.3625701669952832,
         "case": "continue"
       },
       {
@@ -81,9 +81,9 @@
           11
         ],
         "answer": "5",
-        "prefill_seconds": 0.24904987501213327,
-        "ttft_seconds": 0.2834542919881642,
-        "total_seconds": 0.34659679199103266,
+        "prefill_seconds": 0.403152915998362,
+        "ttft_seconds": 0.4365610420354642,
+        "total_seconds": 0.4704568340093829,
         "case": "continue_again"
       },
       {
@@ -95,9 +95,9 @@
           11
         ],
         "answer": "1",
-        "prefill_seconds": 0.2494170419522561,
-        "ttft_seconds": 0.2827235000440851,
-        "total_seconds": 0.3462704580160789,
+        "prefill_seconds": 0.29534687497653067,
+        "ttft_seconds": 0.3283350419951603,
+        "total_seconds": 0.38562287495005876,
         "case": "edit"
       },
       {
@@ -109,9 +109,9 @@
           11
         ],
         "answer": "1",
-        "prefill_seconds": 0.2486185830202885,
-        "ttft_seconds": 0.2811210000072606,
-        "total_seconds": 0.3373486250056885,
+        "prefill_seconds": 0.29003045795252547,
+        "ttft_seconds": 0.3235949170193635,
+        "total_seconds": 0.3763624590355903,
         "case": "regenerate"
       },
       {
@@ -123,9 +123,9 @@
           11
         ],
         "answer": "2",
-        "prefill_seconds": 0.20173416601028293,
-        "ttft_seconds": 0.23347395798191428,
-        "total_seconds": 0.2759822499938309,
+        "prefill_seconds": 0.292775415990036,
+        "ttft_seconds": 0.32638591702561826,
+        "total_seconds": 0.37068254203768447,
         "case": "branch"
       },
       {
@@ -138,9 +138,9 @@
           11
         ],
         "answer": "99",
-        "prefill_seconds": 0.1894408329972066,
-        "ttft_seconds": 0.19038525002542883,
-        "total_seconds": 0.24451783305266872,
+        "prefill_seconds": 0.24460370797896758,
+        "ttft_seconds": 0.24539358296897262,
+        "total_seconds": 0.2862380410078913,
         "case": "different_inventory"
       }
     ]
@@ -151,8 +151,8 @@
     "runtime": "0.6.6",
     "runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "mlx": "0.32.3",
-    "probe_sha256": "437be8c8d3fb13c3f1a3f71157dc61ea0f0e0a95879c9e440577bfd1f432afaa",
-    "source_commit": "2d4a07409e06dc97c7a90c8ecb3bd9d7e2284a1d",
+    "probe_sha256": "4562cf0536279898b72c3f92e1ba201b07a59798764486d0173716b6af0d980a",
+    "source_commit": "a48f7439915faa83ebdbbd37432db39068ff5812",
     "host": {
       "platform": "macOS-26.5.2-arm64-arm-64bit",
       "cpu": "Apple M3 Ultra",
@@ -199,9 +199,9 @@
           1032
         ],
         "answer": "The inventory lists 650 service workers, each with a queue capacity, retry limit, and owner team, where queue capacity and retry limit cycle through ",
-        "prefill_seconds": 17.10453533398686,
-        "ttft_seconds": 17.13722258299822,
-        "total_seconds": 17.647902124968823,
+        "prefill_seconds": 18.129537167027593,
+        "ttft_seconds": 18.162772208976094,
+        "total_seconds": 18.76053112500813,
         "case": "initial"
       },
       {
@@ -213,9 +213,9 @@
           11
         ],
         "answer": "3",
-        "prefill_seconds": 13.785429916053545,
-        "ttft_seconds": 13.817959374981001,
-        "total_seconds": 13.86899283301318,
+        "prefill_seconds": 17.213855457957834,
+        "ttft_seconds": 17.248450500017498,
+        "total_seconds": 17.30874904099619,
         "case": "continue"
       },
       {
@@ -227,9 +227,9 @@
           11
         ],
         "answer": "5",
-        "prefill_seconds": 14.569441041036043,
-        "ttft_seconds": 14.602523833047599,
-        "total_seconds": 14.656317665998358,
+        "prefill_seconds": 18.9286761659896,
+        "ttft_seconds": 18.959779958997387,
+        "total_seconds": 19.017952750029508,
         "case": "continue_again"
       },
       {
@@ -241,9 +241,9 @@
           11
         ],
         "answer": "1",
-        "prefill_seconds": 16.264894915977493,
-        "ttft_seconds": 16.298997041012626,
-        "total_seconds": 16.354845999972895,
+        "prefill_seconds": 20.25911529205041,
+        "ttft_seconds": 20.296180166013073,
+        "total_seconds": 20.35441545798676,
         "case": "edit"
       },
       {
@@ -255,9 +255,9 @@
           11
         ],
         "answer": "1",
-        "prefill_seconds": 12.358679042023141,
-        "ttft_seconds": 12.390744500036817,
-        "total_seconds": 12.433450208045542,
+        "prefill_seconds": 14.64079854200827,
+        "ttft_seconds": 14.674897624994628,
+        "total_seconds": 14.741671041992959,
         "case": "regenerate"
       },
       {
@@ -269,9 +269,9 @@
           11
         ],
         "answer": "2",
-        "prefill_seconds": 13.466207417019177,
-        "ttft_seconds": 13.498911332979333,
-        "total_seconds": 13.551545624970458,
+        "prefill_seconds": 17.022922999982256,
+        "ttft_seconds": 17.055764208023902,
+        "total_seconds": 17.126391708035953,
         "case": "branch"
       },
       {
@@ -284,9 +284,9 @@
           11
         ],
         "answer": "99",
-        "prefill_seconds": 0.18966616701800376,
-        "ttft_seconds": 0.19033666601171717,
-        "total_seconds": 0.21816387498984113,
+        "prefill_seconds": 0.2813375840196386,
+        "ttft_seconds": 0.2820022079977207,
+        "total_seconds": 0.3130162500310689,
         "case": "different_inventory"
       }
     ]
