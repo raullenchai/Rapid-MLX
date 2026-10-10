@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for model registry and multi-engine scenarios."""
+"""Offline registry and multi-engine tests using a tiny real MLX model."""
 
 import pytest
 
@@ -8,8 +8,10 @@ pytest.importorskip("mlx")
 
 import functools
 import gc
+import json
 import os
 import socket
+from dataclasses import asdict
 
 from rapid_mlx import (
     EngineConfig,
@@ -20,17 +22,55 @@ from rapid_mlx import (
     get_registry,
 )
 
-pytestmark = [pytest.mark.real_hf_cache, pytest.mark.requires_mlx]
+pytestmark = pytest.mark.requires_mlx
 
-# Use a small model for fast tests
-TEST_MODEL = "mlx-community/Qwen3-0.6B-8bit"
+
+@pytest.fixture(scope="module")
+def tiny_qwen_model_path(tmp_path_factory):
+    """Serialize real weights so loader, scheduler and cache paths stay covered."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_lm.models.qwen3 import Model, ModelArgs
+
+    from tests.tokenizer_fixtures import byte_level_tokenizer
+
+    path = tmp_path_factory.mktemp("registry-qwen")
+    tokenizer = byte_level_tokenizer()
+    tokenizer.save_pretrained(path)
+    args = ModelArgs(
+        model_type="qwen3",
+        hidden_size=32,
+        num_hidden_layers=2,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        rms_norm_eps=1e-6,
+        vocab_size=len(tokenizer),
+        max_position_embeddings=256,
+        rope_theta=10000.0,
+        tie_word_embeddings=True,
+    )
+    # Avoid perturbing random initialization in unrelated numerical tests.
+    state = mx.random.state
+    try:
+        mx.random.seed(0)
+        model = Model(args)
+        mx.eval(model.parameters())
+        mx.save_safetensors(
+            str(path / "model.safetensors"), dict(tree_flatten(model.parameters()))
+        )
+    finally:
+        mx.random.state = state
+    (path / "config.json").write_text(json.dumps(asdict(args)))
+    return path
 
 
 @functools.cache
-def _cached_model_and_tokenizer():
+def _cached_model_and_tokenizer(model_path):
     from mlx_lm import load
 
-    return load(TEST_MODEL)
+    return load(model_path)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -45,11 +85,11 @@ def _release_cached_model_and_tokenizer():
 
 
 @pytest.fixture
-def model_and_tokenizer():
+def model_and_tokenizer(tiny_qwen_model_path):
     """Load once, but only after the function-scoped hermetic guard is armed."""
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert getattr(socket.socket.connect, "_hermetic_network_guard", False)
-    return _cached_model_and_tokenizer()
+    return _cached_model_and_tokenizer(tiny_qwen_model_path)
 
 
 class TestModelRegistry:
@@ -258,12 +298,12 @@ class TestBenchmarkScenario:
         finally:
             engine.close()
 
-    def test_multiple_models_sequentially(self):
+    def test_multiple_models_sequentially(self, tiny_qwen_model_path):
         """Test benchmarking multiple models in sequence."""
         from mlx_lm import load
 
         # Use the same small model twice to simulate different models
-        models = [TEST_MODEL, TEST_MODEL]
+        models = [tiny_qwen_model_path, tiny_qwen_model_path]
         params = SamplingParams(max_tokens=10)
 
         for model_name in models:

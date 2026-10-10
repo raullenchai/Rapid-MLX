@@ -794,6 +794,9 @@ jobs:
             --cov=scripts.ci_candidate_rollout \
             --cov=scripts.sidecar_macho_inventory \
             --cov=scripts.pr_validate.steps.stress_e2e_bench \
+            --cov=scripts.pr_validate.queue_ready \
+            --cov=scripts.pr_validate.runner \
+            --cov=scripts.pr_validate.pr_validate \
             --cov=scripts.check_release_source_ref \
             --cov=scripts.check_release_environment \
             --cov=scripts.upload_release_r2 \

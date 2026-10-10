@@ -72,6 +72,15 @@ def main(argv: list[str] | None = None) -> int:
             "with no edits)."
         ),
     )
+    parser.add_argument(
+        "--queue-on-success",
+        action="store_true",
+        help=(
+            "After the complete local pipeline passes, wait for exact-head "
+            "hosted gates, authorize readiness and request normal queue once. "
+            "Never retries a previously queued PR; incompatible with partial runs."
+        ),
+    )
     args = parser.parse_args(argv)
     fail_fast = args.fail_fast or env_truthy("PR_VALIDATE_FAIL_FAST")
     skip_raw = args.skip_steps or os.environ.get("PR_VALIDATE_SKIP_STEPS", "")
@@ -83,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_steps=skip_steps,
         base=args.base,
         body_only=args.body_only,
+        queue_on_success=args.queue_on_success,
     )
 
 
