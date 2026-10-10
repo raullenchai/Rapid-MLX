@@ -604,3 +604,26 @@ rapid-mlx serve qwen3.5-27b-4bit \
   --stream-interval 5 \
   --max-num-seqs 256
 ```
+
+### Hugging Face download endpoint
+
+In Desktop, open **Settings → Model Management → Model download address**,
+enter a Hugging Face compatible base URL (for example `https://hf-mirror.com`),
+and choose **Save**. New downloads use that endpoint instead of the default
+model CDN. Restart the server to apply it to model loading; downloads already
+in progress continue with their original address. **Use default** removes the
+saved override and restores the launch environment and normal download defaults.
+The saved Desktop choice takes precedence over `HF_ENDPOINT` and
+`RAPID_MLX_MODEL_MIRROR` inherited from the launch environment. A download's
+explicit retry with the Rapid mirror can still select that source.
+
+For the CLI, set the endpoint before starting the process and disable the
+flat-file model CDN so downloads go directly through the Hub API:
+
+```sh
+HF_ENDPOINT=https://hf-mirror.com RAPID_MLX_MODEL_MIRROR= rapid-mlx pull <model>
+```
+
+The endpoint must be an HTTP or HTTPS base URL without credentials, query
+parameters, or fragments. Model identifiers and the existing model cache stay
+the same.

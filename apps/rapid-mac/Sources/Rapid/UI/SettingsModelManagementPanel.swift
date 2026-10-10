@@ -46,6 +46,9 @@ struct SettingsModelManagementPanel: View {
     @State private var lastFreed: String?
     @State private var modelsVolumeFreeBytes: Int64?
 
+    @State private var downloadEndpoint = ModelDownloadEndpointPreference.storedEndpoint() ?? ""
+    @State private var endpointFeedback: String?
+
     @State private var query: String = ""
     /// Which capability tab is showing (Chat vs Image vs Audio vs future Video). Model
     /// Management manages every kind, but never mixes them in one list.
@@ -130,6 +133,7 @@ struct SettingsModelManagementPanel: View {
             modelsFolderSection
             storageOverviewSection
             preferencesSection
+            downloadEndpointSection
             capabilityTabs
             controlsRow
             if capability == .chat {
@@ -234,6 +238,43 @@ struct SettingsModelManagementPanel: View {
             subtitle: String(localized: "Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space."),
             emphasis: .page
         )
+    }
+
+    private var downloadEndpointSection: some View {
+        SettingsSection(String(localized: "Model download address")) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                TextField("https://huggingface.co", text: $downloadEndpoint)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(String(localized: "Hugging Face endpoint"))
+                    .accessibilityIdentifier("Settings.ModelManagement.DownloadEndpoint")
+                    .onChange(of: downloadEndpoint) { _, _ in endpointFeedback = nil }
+                Text("Use a Hugging Face compatible address, such as https://hf-mirror.com. Leave blank to use the default. Applies to new downloads; restart the server for model loading. Existing downloads continue with their original address.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                HStack {
+                    Button("Save") {
+                        if ModelDownloadEndpointPreference.save(downloadEndpoint) {
+                            endpointFeedback = String(localized: "Download address saved. Restart the server to apply it to model loading.")
+                        } else {
+                            endpointFeedback = String(localized: "Enter an HTTP or HTTPS base URL without credentials, a query, or a fragment.")
+                        }
+                    }
+                    .accessibilityIdentifier("Settings.ModelManagement.SaveDownloadEndpoint")
+                    Button("Use default") {
+                        ModelDownloadEndpointPreference.save("")
+                        downloadEndpoint = ""
+                        endpointFeedback = String(localized: "Default download address restored. Restart the server to apply it to model loading.")
+                    }
+                    .accessibilityIdentifier("Settings.ModelManagement.ResetDownloadEndpoint")
+                }
+                if let endpointFeedback {
+                    Text(endpointFeedback)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                        .accessibilityIdentifier("Settings.ModelManagement.DownloadEndpointFeedback")
+                }
+            }
+        }
     }
 
     // MARK: - Models folder (issue #503)
