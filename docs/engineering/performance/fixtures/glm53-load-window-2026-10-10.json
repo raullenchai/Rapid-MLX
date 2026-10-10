@@ -33,8 +33,8 @@
   "runs": [
     {
       "mode": "ordinary-mllm",
-      "base_commit": "d2dc1a9c7510ced2c9f75c7899023f8f88bace64",
-      "source_state": "base plus this task adapter and call sites; source digests above reflect final equivalent loader behavior",
+      "base_commit": "226f6bcddfd87360def0f4c70d3f119e1697c2ea",
+      "source_state": "clean implementation commit, before documentation-only follow-up",
       "command": "python -m rapid_mlx.cli serve glm5.3-flash-4bit --host 127.0.0.1 --port 18709 --disable-model-downloads --no-spec-decode",
       "offline": true,
       "background_services_preserved": true,
@@ -52,26 +52,27 @@
       "finish_reason": "length",
       "memory_gib": {
         "File-backed pages": {
-          "baseline": 10.9591064453125,
-          "min": 10.471084594726562,
-          "max": 15.023452758789062
+          "baseline": 19.1708984375,
+          "min": 19.1708984375,
+          "max": 23.320404052734375
         },
         "Anonymous pages": {
-          "baseline": 13.987808227539062,
-          "min": 13.987808227539062,
-          "max": 182.52444458007812
+          "baseline": 14.489181518554688,
+          "min": 14.489181518554688,
+          "max": 184.24803161621094
         },
         "Pages occupied by compressor": {
-          "baseline": 30.4718017578125,
-          "min": 30.4705810546875,
-          "max": 30.4718017578125
+          "baseline": 30.46868896484375,
+          "min": 30.468124389648438,
+          "max": 30.46868896484375
         },
         "swap_used_GiB": {
           "baseline": 8.833193359375,
           "min": 8.833193359375,
           "max": 8.833193359375
         }
-      }
+      },
+      "source_commit": "4d344bbd44ef557b2f1bd1c51132b5748437544d"
     },
     {
       "mode": "native-mtp",
@@ -114,5 +115,32 @@
         }
       }
     }
-  ]
+  ],
+  "implementation_commit": "4d344bbd44ef557b2f1bd1c51132b5748437544d",
+  "source_digests_basis": "Final recorded implementation files. The first native success predates only the missing-reader diagnostic guard and docstring edits; ordinary repeat used the exact implementation commit.",
+  "additional_native_repeat": {
+    "source_commit": "4d344bbd44ef557b2f1bd1c51132b5748437544d",
+    "startup_completed": false,
+    "result": "watchdog requested termination after physical compressor grew by >12 GiB during shard 42; no OS OOM exit established",
+    "diagnostic_cleanup": "monitor encountered PermissionError during process-group cleanup escalation; subsequent process and port checks confirmed server absent",
+    "memory_gib": {
+      "File-backed pages": {
+        "baseline": 19.381820678710938,
+        "max": 33.12921142578125
+      },
+      "Anonymous pages": {
+        "baseline": 14.461639404296875,
+        "max": 192.9341583251953
+      },
+      "Pages occupied by compressor": {
+        "baseline": 30.467971801757812,
+        "max": 45.81538391113281
+      },
+      "swap_used_GiB": {
+        "baseline": 8.833193359375,
+        "max": 8.833193359375
+      }
+    },
+    "limitation": "shared-host load variability; no universal co-residency or repeated-run success claim"
+  }
 }

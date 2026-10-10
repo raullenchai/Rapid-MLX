@@ -39,9 +39,11 @@ MLX 0.32.2, mlx-lm 0.31.3, mlx-vlm 0.7.2. The existing cached target was
 43 shards, 181,709,451,790 bytes, largest shard 4,295,149,840 bytes.
 No checkpoint download or background-service shutdown was needed.
 
-For the ordinary multimodal path, the full target loaded, `/health` returned
-healthy, and a 24-token prompt generated a 32-token HTTP 200 completion. During
-the startup samples, file-backed memory peaked at 15.02 GiB, physical compressor
+At implementation commit `4d344bbd44ef557b2f1bd1c51132b5748437544d`, the ordinary
+multimodal path loaded the full target, `/v1/models` returned the served alias,
+and a 24-token prompt generated a 32-token HTTP 200 completion. The earlier
+ordinary-path run also verified `/health` returned healthy. During the final
+startup samples, file-backed memory peaked at 23.32 GiB, physical compressor
 memory stayed at approximately 30.47 GiB, and swap stayed at 8.833 GiB. These are
 whole-machine samples, not per-model allocation measurements. Existing background
 workloads remained running; there was no controlled constant-40-GB co-tenant in
@@ -58,7 +60,16 @@ returned the served alias, and the same short prompt produced a 32-token
 HTTP 200 completion. File-backed memory peaked at 18.89 GiB; compressor
 memory and swap again remained stable. The request reached its token limit
 while reasoning, so this is a generation smoke rather than an answer-quality
-assertion. The distilled samples and source digests are in
+assertion. The successful native run predates only a missing-reader diagnostic
+guard and docstring edits in the final adapter.
+
+A further native repetition at the exact implementation commit was stopped by
+the watchdog during shard 42 when physical compressor memory grew from 30.47
+to 45.82 GiB. It did not reach startup, and no OS OOM exit was established.
+The diagnostic monitor also hit a process-group cleanup error; subsequent checks
+confirmed its server had exited and the test port had no listener. This stopped
+repeat is recorded alongside the successes, not discarded as a passing rerun.
+The distilled samples, source provenance, and limitations are in
 [the verification fixture](fixtures/glm53-load-window-2026-10-10.json).
 
 These are startup and inference smoke checks, not a throughput comparison or a
