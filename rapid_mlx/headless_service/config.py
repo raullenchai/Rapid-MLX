@@ -78,11 +78,6 @@ class ServiceConfig:
             raise ServiceConfigError(
                 "embedding_model is set; remove --embedding-model from serve_args"
             )
-        # Installation temporarily removes --lazy-load to qualify resident
-        # weights. Without this guard, an embeddings-only service could pass
-        # qualification but fail to boot from the persisted definition.
-        if self.model is None and "--lazy-load" in self.serve_args:
-            raise ServiceConfigError("embeddings-only services cannot use --lazy-load")
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
                 "host must be a non-empty address without whitespace"
@@ -107,6 +102,40 @@ class ServiceConfig:
             raise ServiceConfigError(str(exc)) from None
         if any("\0" in token for token in self.serve_args):
             raise ServiceConfigError("serve_args must not contain NUL bytes")
+        if self.model is None:
+            # Validate the persisted arguments before qualification can strip
+            # flags, and before configure can stage an unbootable definition.
+            import contextlib
+            import io
+
+            from ..cli import _embedding_only_incompatible_options, build_parser
+
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                try:
+                    parsed = build_parser().parse_args(
+                        [
+                            "serve",
+                            "--embedding-model",
+                            self.embedding_model,
+                            *self.serve_args,
+                        ]
+                    )
+                except SystemExit:
+                    raise ServiceConfigError(
+                        "invalid embeddings-only serve_args"
+                    ) from None
+            if parsed.model is not None:
+                raise ServiceConfigError(
+                    "embeddings-only serve_args cannot supply a model"
+                )
+            incompatible = _embedding_only_incompatible_options(parsed)
+            if incompatible:
+                raise ServiceConfigError(
+                    "embeddings-only services cannot use " + ", ".join(incompatible)
+                )
         if self.credential_file is not None:
             credential = Path(self.credential_file)
             if not credential.is_absolute():

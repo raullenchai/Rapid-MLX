@@ -17,6 +17,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+@pytest.mark.parametrize("loaded", [False, True])
+def test_lifecycle_metrics_preserve_engine_fallback_for_legacy_configs(loaded):
+    from rapid_mlx.routes.metrics import _render_primary_lifecycle
+
+    config = SimpleNamespace(engine=object() if loaded else None)
+    body = "\n".join(_render_primary_lifecycle(config))
+    assert f"rapid_mlx_model_loaded {int(loaded)}" in body
+
+
 @pytest.fixture
 def metrics_client():
     """FastAPI TestClient mounting only the metrics router.

@@ -85,7 +85,10 @@ To clear advanced serve flags, use `service configure --clear-serve-args`.
 `--embedding-model MODEL` sets the embedding model; `--clear-model` and
 `--clear-embedding-model` remove the chat or embedding model, as long as one of
 the two remains. Embeddings-only services load their model at startup;
-`--lazy-load` is rejected when validating their configuration.
+generation-only flags (including `--lazy-load`) are rejected when validating
+their configuration. When switching a chat service to embeddings-only, remove
+its generation flags with `--clear-serve-args` or replace them with supported
+embedding and listener/security arguments.
 Definitions with `embedding_model` require a release that supports this field;
 older releases reject them. Before downgrading, use the current release's
 `service configure --model <generation-model> --clear-embedding-model` and

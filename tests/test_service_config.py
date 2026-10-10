@@ -104,7 +104,11 @@ def test_service_config_rejects_unknown_fields():
 
 def test_service_config_embeddings_only_round_trip(tmp_path):
     path = tmp_path / "service.json"
-    config = _config(model=None, embedding_model="embeddinggemma-300m-6bit")
+    config = _config(
+        model=None,
+        embedding_model="embeddinggemma-300m-6bit",
+        serve_args=("--max-request-bytes", "4096", "--embedding-max-length", "256"),
+    )
     atomic_write(path, config_bytes(config))
     assert load_config(path) == config
     raw = config.to_dict()
@@ -144,13 +148,32 @@ def test_service_config_rejects_null_model_without_embedding_model():
         ServiceConfig.from_dict(raw)
 
 
-def test_embeddings_only_service_rejects_lazy_load_before_qualification():
-    with pytest.raises(ServiceConfigError, match="embeddings-only.*--lazy-load"):
+@pytest.mark.parametrize(
+    "serve_args",
+    [
+        ("--lazy-load",),
+        ("--max-num-seqs", "4"),
+        ("--max-num-seqs=16",),
+        ("--default-temperature", "0"),
+        ("--no-think",),
+    ],
+)
+def test_embeddings_only_service_rejects_generation_flags_before_qualification(
+    serve_args,
+):
+    with pytest.raises(ServiceConfigError, match="embeddings-only.*cannot use"):
         _config(
             model=None,
             embedding_model="embeddinggemma-300m-6bit",
-            serve_args=("--lazy-load",),
+            serve_args=serve_args,
         )
+
+
+@pytest.mark.parametrize("serve_args", [("--unknown",), ("--help",), ("chat-model",)])
+def test_embeddings_only_service_rejects_invalid_serve_args(serve_args, capsys):
+    with pytest.raises(ServiceConfigError, match="embeddings-only"):
+        _config(model=None, embedding_model="embed", serve_args=serve_args)
+    assert capsys.readouterr() == ("", "")
 
 
 def test_service_config_rejects_string_serve_args():
@@ -240,7 +263,7 @@ def test_configure_cli_parses_embedding_model_fields():
             None,
             "embed",
             ["serve", "--host", "127.0.0.1", "--port", "8000"]
-            + ["--embedding-model", "embed", "--max-num-seqs", "4"],
+            + ["--embedding-model", "embed", "--embedding-max-length", "256"],
         ),
         (
             "chat",
@@ -260,6 +283,9 @@ def test_runtime_argv_carries_embedding_model(
         executable="/opt/rapid-mlx",
         model=model,
         embedding_model=embedding_model,
+        serve_args=("--max-num-seqs", "4")
+        if model
+        else ("--embedding-max-length", "256"),
     )
     config_file = tmp_path / "service.json"
     atomic_write(config_file, config_bytes(config))
@@ -963,6 +989,16 @@ def test_configure_switches_between_model_and_embedding_model(monkeypatch, tmp_p
     assert (
         configure.configure_command(
             _configure_args(clear_model=True, embedding_model="embed")
+        )
+        == 1
+    )
+    assert load_config(current_path).model is not None
+    assert not pending_config_path(home).exists()
+    assert (
+        configure.configure_command(
+            _configure_args(
+                clear_model=True, embedding_model="embed", clear_serve_args=True
+            )
         )
         == 0
     )
