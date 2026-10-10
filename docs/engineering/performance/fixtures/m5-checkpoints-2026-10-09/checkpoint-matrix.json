@@ -1740,7 +1740,26 @@
       "log": "prefill0-checkpoint0.server.log",
       "prefill": 0,
       "checkpoint_max": 0,
-      "server_exit": -15
+      "server_exit": -15,
+      "controlled_env": {
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": "0",
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE": "2048",
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "0",
+        "RAPID_MLX_DISABLE_DISK_CACHES": "1",
+        "RAPID_MLX_GDN_PREFILL": "0",
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE": "0",
+        "RAPID_MLX_COMPILED_DECODE": "0",
+        "RAPID_MLX_LANE_MATMUL": "off",
+        "RAPID_MLX_PROMPT_HOST_CACHE": "0",
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "2147483648",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "RAPID_MLX_TELEMETRY": "0"
+      },
+      "controlled_env_origin": "reconstructed from the recorded historical launcher source; not originally emitted in receipts",
+      "prefill_evidence": [
+        "INFO:rapid_mlx.gdn_prefill:[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0"
+      ]
     },
     {
       "name": "prefill0-checkpoint4",
@@ -1769,7 +1788,26 @@
       "log": "prefill0-checkpoint4.server.log",
       "prefill": 0,
       "checkpoint_max": 4,
-      "server_exit": -15
+      "server_exit": -15,
+      "controlled_env": {
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": "4",
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE": "2048",
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "0",
+        "RAPID_MLX_DISABLE_DISK_CACHES": "1",
+        "RAPID_MLX_GDN_PREFILL": "0",
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE": "0",
+        "RAPID_MLX_COMPILED_DECODE": "0",
+        "RAPID_MLX_LANE_MATMUL": "off",
+        "RAPID_MLX_PROMPT_HOST_CACHE": "0",
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "2147483648",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "RAPID_MLX_TELEMETRY": "0"
+      },
+      "controlled_env_origin": "reconstructed from the recorded historical launcher source; not originally emitted in receipts",
+      "prefill_evidence": [
+        "INFO:rapid_mlx.gdn_prefill:[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0"
+      ]
     },
     {
       "name": "prefill1-checkpoint4",
@@ -1798,7 +1836,26 @@
       "log": "prefill1-checkpoint4.server.log",
       "prefill": 1,
       "checkpoint_max": 4,
-      "server_exit": -15
+      "server_exit": -15,
+      "controlled_env": {
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": "4",
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE": "2048",
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "0",
+        "RAPID_MLX_DISABLE_DISK_CACHES": "1",
+        "RAPID_MLX_GDN_PREFILL": "1",
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE": "0",
+        "RAPID_MLX_COMPILED_DECODE": "0",
+        "RAPID_MLX_LANE_MATMUL": "off",
+        "RAPID_MLX_PROMPT_HOST_CACHE": "0",
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "2147483648",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "RAPID_MLX_TELEMETRY": "0"
+      },
+      "controlled_env_origin": "reconstructed from the recorded historical launcher source; not originally emitted in receipts",
+      "prefill_evidence": [
+        "INFO:rapid_mlx.gdn_prefill:[gdn_prefill] blocked-seq GDN prefill kernel installed (prompt>=64 tokens, Dk=128)"
+      ]
     },
     {
       "name": "prefill1-checkpoint0",
@@ -1827,7 +1884,26 @@
       "log": "prefill1-checkpoint0.server.log",
       "prefill": 1,
       "checkpoint_max": 0,
-      "server_exit": -15
+      "server_exit": -15,
+      "controlled_env": {
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": "0",
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE": "2048",
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "0",
+        "RAPID_MLX_DISABLE_DISK_CACHES": "1",
+        "RAPID_MLX_GDN_PREFILL": "1",
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE": "0",
+        "RAPID_MLX_COMPILED_DECODE": "0",
+        "RAPID_MLX_LANE_MATMUL": "off",
+        "RAPID_MLX_PROMPT_HOST_CACHE": "0",
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "2147483648",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "RAPID_MLX_TELEMETRY": "0"
+      },
+      "controlled_env_origin": "reconstructed from the recorded historical launcher source; not originally emitted in receipts",
+      "prefill_evidence": [
+        "INFO:rapid_mlx.gdn_prefill:[gdn_prefill] blocked-seq GDN prefill kernel installed (prompt>=64 tokens, Dk=128)"
+      ]
     }
   ],
   "correctness": "SHA256 of concatenated content/reasoning fields; HTTP does not expose token IDs",

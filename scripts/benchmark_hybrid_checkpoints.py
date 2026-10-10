@@ -133,6 +133,35 @@ def same_output(a: dict, b: dict) -> bool:
     )
 
 
+def controlled_environment(prefill: int, checkpoint: int) -> dict[str, str]:
+    """Only launcher-controlled flags; never retain ambient credentials."""
+    return {
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX": str(checkpoint),
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE": "2048",
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "0",
+        "RAPID_MLX_DISABLE_DISK_CACHES": "1",
+        "RAPID_MLX_GDN_PREFILL": str(prefill),
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE": "0",
+        "RAPID_MLX_COMPILED_DECODE": "0",
+        "RAPID_MLX_LANE_MATMUL": "off",
+        "RAPID_MLX_PROMPT_HOST_CACHE": "0",
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES": str(2**31),
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "RAPID_MLX_TELEMETRY": "0",
+    }
+
+
+def prefill_evidence(log_text: str, prefill: int) -> list[str]:
+    """Require the server's install/disable log, not an arm label alone."""
+    lines = [line for line in log_text.splitlines() if "[gdn_prefill]" in line]
+    installed = any("blocked-seq GDN prefill kernel installed" in x for x in lines)
+    disabled = any("disabled via RAPID_MLX_GDN_PREFILL=0" in x for x in lines)
+    if (installed, disabled) != (bool(prefill), not bool(prefill)):
+        raise ValueError("server prefill evidence disagrees with arm")
+    return lines
+
+
 def summarize(result: dict) -> dict:
     """Join by experiment identity, never by row order or saved pass booleans."""
     rounds = result["rounds"]
@@ -154,6 +183,11 @@ def summarize(result: dict) -> dict:
             raise ValueError("incomplete or unclean server arm")
         if arm["name"] != f"prefill{arm['prefill']}-checkpoint{arm['checkpoint_max']}":
             raise ValueError("arm configuration disagrees with identity")
+        if arm.get("controlled_env") != controlled_environment(
+            arm["prefill"], arm["checkpoint_max"]
+        ):
+            raise ValueError("missing or inconsistent controlled environment")
+        prefill_evidence("\n".join(arm.get("prefill_evidence", [])), arm["prefill"])
     expected = {(a, r, c) for a in ARMS for r in range(rounds) for c in CASES}
     rows = {}
     for row in result["rows"]:
@@ -321,21 +355,8 @@ def main():
             name = f"prefill{prefill}-checkpoint{checkpoint}"
             log = args.output.parent / (name + ".server.log")
             env = os.environ.copy()
-            env.update(
-                RAPID_MLX_HYBRID_CHECKPOINT_MAX=str(checkpoint),
-                RAPID_MLX_HYBRID_CHECKPOINT_STRIDE="2048",
-                RAPID_MLX_PREFIX_CACHE_AUTOLOAD="0",
-                RAPID_MLX_DISABLE_DISK_CACHES="1",
-                RAPID_MLX_GDN_PREFILL=str(prefill),
-                RAPID_MLX_QWEN35_FUSED_GDN_DECODE="0",
-                RAPID_MLX_COMPILED_DECODE="0",
-                RAPID_MLX_LANE_MATMUL="off",
-                RAPID_MLX_PROMPT_HOST_CACHE="0",
-                RAPID_MLX_PREFIX_CACHE_MAX_BYTES=str(2**31),
-                HF_HUB_OFFLINE="1",
-                TRANSFORMERS_OFFLINE="1",
-                RAPID_MLX_TELEMETRY="0",
-            )
+            controlled_env = controlled_environment(prefill, checkpoint)
+            env.update(controlled_env)
             cmd = [
                 sys.executable,
                 "-m",
@@ -365,6 +386,7 @@ def main():
                 arm = {
                     "name": name,
                     "command": cmd,
+                    "controlled_env": controlled_env,
                     "log": log.name,
                     "prefill": prefill,
                     "checkpoint_max": checkpoint,
@@ -387,6 +409,8 @@ def main():
                     else:
                         raise TimeoutError("server readiness timeout")
                     ask([{"role": "user", "content": "Say READY."}], warmup=True)
+                    arm["prefill_evidence"] = prefill_evidence(log.read_text(), prefill)
+                    save()
                     for rd in range(args.rounds):
                         rng = random.Random(7000 + rd)
                         words = [

@@ -11,6 +11,7 @@ import pytest
 from scripts.benchmark_hybrid_checkpoints import (
     ARMS,
     CASES,
+    controlled_environment,
     stream_receipt,
     summarize,
     validate_receipt,
@@ -50,6 +51,12 @@ def matrix():
                 "prefill": prefill,
                 "checkpoint_max": checkpoint,
                 "server_exit": -15,
+                "controlled_env": controlled_environment(prefill, checkpoint),
+                "prefill_evidence": [
+                    "[gdn_prefill] blocked-seq GDN prefill kernel installed"
+                    if prefill
+                    else "[gdn_prefill] disabled via RAPID_MLX_GDN_PREFILL=0"
+                ],
             }
         )
         for rd in range(2):
@@ -244,3 +251,19 @@ def test_recorded_m5_matrix_qualifies_incremental_but_rejects_cold_contract():
     assert summary["cold_exact_pairs"] == 26 and summary["cold_total_pairs"] == 36
     result["contract"] = "cold"
     assert not summarize(result)["passed"]
+
+
+@pytest.mark.parametrize("mutation", ["environment", "missing_log", "wrong_log"])
+def test_arm_requires_controlled_environment_and_effective_prefill(mutation):
+    result = matrix()
+    arm = result["arms"][0]
+    if mutation == "environment":
+        arm["controlled_env"]["RAPID_MLX_GDN_PREFILL"] = "1"
+    elif mutation == "missing_log":
+        arm.pop("prefill_evidence")
+    else:
+        arm["prefill_evidence"] = [
+            "[gdn_prefill] blocked-seq GDN prefill kernel installed"
+        ]
+    with pytest.raises(ValueError):
+        summarize(result)

@@ -74,7 +74,7 @@ and approximately 1x gain (stock 0.9998x, blocked 0.9995x).
 
 The **18/18 checkpoint-on/off warm comparisons matched**; their corresponding
 seed and cold comparisons also matched (54/54 phase comparisons). Expected
-cache receipts passed for all 36 rows. Child logs independently confirmed
+cache receipts passed for all 36 rows. Retained child-log excerpts confirm
 six snaps to 4096 and six to 2048 across the checkpoint-on arms; blocked
 prefill installation and stock disablement were also logged.
 
@@ -180,3 +180,13 @@ regression is detected. No source file was modified by the mutation run.
 Vector owns this benchmark and further segmentation investigation. Atlas
 owns any later runtime/default-policy decision. This report qualifies one
 model and workload on one M5; it makes no M3/M4 comparison or release claim.
+
+
+The normalized `*.evidence.log` excerpts were extracted from the original
+child logs after rechecking their SHA256 against `server-evidence.json`.
+They retain prefill install/disable messages, checkpoint resume positions and
+shutdown completion. The matrix's added `controlled_env` fields are reconstructed
+from the historical launcher source, as their origin field states; they were
+not originally emitted by that run. Future runs persist this allowlist directly
+and fail qualification if the server's effective prefill evidence disagrees.
+Ambient environment variables and credentials are never serialized.
