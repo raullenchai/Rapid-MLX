@@ -102,6 +102,7 @@ def run_pipeline(
     steps: Sequence[Step] | None = None,
     base: str = "",
     body_only: bool = False,
+    queue_on_success: bool = False,
 ) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
 
@@ -134,6 +135,25 @@ def run_pipeline(
     gate needs only the prod-fetched title/body, never the diff.
     When set, ``steps`` and ``skip_steps`` are ignored.
     """
+    if queue_on_success and (
+        body_only
+        or skip_steps
+        or steps is not None
+        or any(
+            env_truthy(name)
+            for name in (
+                "PR_VALIDATE_SKIP_DESC",
+                "PR_VALIDATE_NO_STRESS",
+                "PR_VALIDATE_NO_CODEX",
+                "PR_VALIDATE_NO_DEEPSEEK",
+            )
+        )
+    ):
+        print(
+            "error: --queue-on-success requires the complete default pipeline",
+            file=sys.stderr,
+        )
+        return 1
     if body_only:
         pipeline = [FetchStep(), CLDescriptionQualityStep()]
     else:
@@ -233,6 +253,15 @@ def run_pipeline(
 
     final_verdict = verdict(ctx.results)
     print(f"\nVerdict: {final_verdict}", file=sys.stderr)
+
+    if queue_on_success and final_verdict == "MERGE-SAFE":
+        from .queue_ready import queue_validated_head
+
+        try:
+            queue_validated_head(ctx, [step.name for step in STEPS])
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
+            print(f"Queue handoff stopped: {error}", file=sys.stderr)
+            return 1
 
     # Exit code: 0 only if every step is pass-or-skip (strict).
     return 0 if final_verdict == "MERGE-SAFE" else 1
