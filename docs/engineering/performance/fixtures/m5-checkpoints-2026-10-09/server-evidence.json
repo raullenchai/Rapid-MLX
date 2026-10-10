@@ -1,0 +1,104 @@
+{
+  "prefill0-checkpoint0.server": {
+    "log_sha256": "da1fdb6591196c5fd7c7feaff5b9bc13f894a6b2e11a4b54851ca60edc7d37c1",
+    "blocked_installed": false,
+    "stock_disabled": true,
+    "checkpoint_snaps": [],
+    "shutdown_complete": true
+  },
+  "prefill0-checkpoint4.server": {
+    "log_sha256": "73050c22896292a7a764151afbebdd850962b59704ce8523002ecd9e5c8ababc",
+    "blocked_installed": false,
+    "stock_disabled": true,
+    "checkpoint_snaps": [
+      {
+        "shared": 5585,
+        "entry_len": 6515,
+        "resumed_at": 4096,
+        "remaining": 2444
+      },
+      {
+        "shared": 3264,
+        "entry_len": 6515,
+        "resumed_at": 2048,
+        "remaining": 4492
+      },
+      {
+        "shared": 5555,
+        "entry_len": 6494,
+        "resumed_at": 4096,
+        "remaining": 2423
+      },
+      {
+        "shared": 3245,
+        "entry_len": 6494,
+        "resumed_at": 2048,
+        "remaining": 4471
+      },
+      {
+        "shared": 5579,
+        "entry_len": 6496,
+        "resumed_at": 4096,
+        "remaining": 2434
+      },
+      {
+        "shared": 3263,
+        "entry_len": 6496,
+        "resumed_at": 2048,
+        "remaining": 4482
+      }
+    ],
+    "shutdown_complete": true
+  },
+  "prefill1-checkpoint0.server": {
+    "log_sha256": "b23f88d46ac9f7a68772a46044cdfb4116b18c7f2f963951f043c4b4c4e484ab",
+    "blocked_installed": true,
+    "stock_disabled": false,
+    "checkpoint_snaps": [],
+    "shutdown_complete": true
+  },
+  "prefill1-checkpoint4.server": {
+    "log_sha256": "3eca02144dbc48bd6cd918b16ad428e56d64dd59a5844eb240e138bb586f634c",
+    "blocked_installed": true,
+    "stock_disabled": false,
+    "checkpoint_snaps": [
+      {
+        "shared": 5585,
+        "entry_len": 6515,
+        "resumed_at": 4096,
+        "remaining": 2444
+      },
+      {
+        "shared": 3264,
+        "entry_len": 6515,
+        "resumed_at": 2048,
+        "remaining": 4492
+      },
+      {
+        "shared": 5555,
+        "entry_len": 6494,
+        "resumed_at": 4096,
+        "remaining": 2423
+      },
+      {
+        "shared": 3245,
+        "entry_len": 6494,
+        "resumed_at": 2048,
+        "remaining": 4471
+      },
+      {
+        "shared": 5579,
+        "entry_len": 6496,
+        "resumed_at": 4096,
+        "remaining": 2434
+      },
+      {
+        "shared": 3263,
+        "entry_len": 6496,
+        "resumed_at": 2048,
+        "remaining": 4482
+      }
+    ],
+    "shutdown_complete": true
+  }
+}
