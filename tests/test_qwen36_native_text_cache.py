@@ -638,16 +638,21 @@ def test_dual_lane_does_not_enable_mllm_cache_persistence():
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._is_mllm = True
+    engine._loaded = True
     engine._engine = _Text()
 
     assert engine.save_cache_to_disk("unused") is False
     assert engine.load_cache_from_disk("unused") == 0
 
-    from rapid_mlx.cache.protocol import EngineNotReadyError
+    from rapid_mlx.cache.protocol import CachePersistenceUnsupportedError
 
-    with pytest.raises(EngineNotReadyError, match="cannot export cache"):
+    with pytest.raises(
+        CachePersistenceUnsupportedError, match="export not supported for vision models"
+    ):
         engine.save_cache_with_outcome("unused")
-    with pytest.raises(EngineNotReadyError, match="cannot import cache"):
+    with pytest.raises(
+        CachePersistenceUnsupportedError, match="import not supported for vision models"
+    ):
         engine.load_cache_with_result("unused")
 
 
