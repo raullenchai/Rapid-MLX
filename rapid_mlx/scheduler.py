@@ -9385,7 +9385,7 @@ class Scheduler:
         if (
             self.memory_aware_cache is not None
             and cached > 0
-            and 0 < caller_boundary < len(prompt_tokens)
+            and cached <= caller_boundary < len(prompt_tokens)
             and 0 < len(prompt_tokens) - cached <= _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP
             and snapshot_boundary <= cached
             and request.prompt_cache

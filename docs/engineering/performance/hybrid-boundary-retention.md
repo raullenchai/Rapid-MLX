@@ -4,8 +4,9 @@ When a non-trimmable cache restores almost the entire prompt, saving another
 prompt or completion entry can displace the boundary needed by another session.
 An exact match to the longer entry cannot restore the shorter recurrent state.
 Apply the existing boundary-retention policy to a restored, live marked entry
-after prefill split planning, provided the pending tail is at most 64 tokens
-and there is no useful new boundary ahead of it.
+after prefill split planning, provided the pending tail is at most 64 tokens,
+the current caller boundary is at or after the restored position, and there is
+no useful new boundary ahead of it.
 
 The scheduler still forwards the same cache and pending tokens. A missing
 boundary falls back to the existing cache-write policy. A rejected cached insert
@@ -49,6 +50,10 @@ warm cohorts before duplicate writes can change their cache residency.
 
 ## Results
 
+These measurements describe runtime `0f4bee5f`. A subsequent atomic-retention
+fix and narrower caller-boundary guard are undergoing fresh validation; the
+earlier measurements do not qualify those revisions.
+
 Each cell is the median of four document sets. Forward and reversed seed orders
 are reported separately; the thread-submission groups do not guarantee actual
 arrival order.
@@ -90,7 +95,7 @@ the narrower cache-residency explanation without establishing losslessness.
 
 Two earlier fetch-time prototypes failed to improve actual HTTP cache hits;
 their results are excluded from the table. A successful intermediate prototype
-was also excluded because the table qualifies the final runtime revision.
+was also excluded because the table qualifies the recorded runtime revision.
 Independent review found and fixed eviction after planning and cached-insert
 retry handling before the final experiments. The focused M4 scheduler/cache
 suite passed 155 tests; removing the restored-boundary arm made all four targeted

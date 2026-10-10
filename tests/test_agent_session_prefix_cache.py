@@ -378,7 +378,8 @@ def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail
 
 
 @pytest.mark.parametrize(
-    "case", ["long_tail", "unmarked", "dense", "new_boundary", "internal", "invalid"]
+    "case",
+    ["long_tail", "unmarked", "dense", "new_boundary", "internal", "invalid", "earlier"],
 )
 def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     sched = _scheduler(monkeypatch)
@@ -396,6 +397,8 @@ def test_restored_boundary_retention_is_narrow(monkeypatch, case):
         req.prefix_boundary = 0
     elif case == "invalid":
         req.prefix_boundary = len(req.prompt_token_ids)
+    elif case == "earlier":
+        req.prefix_boundary = 127
 
     sched._fetch_memory_aware_prefix(req)
     sched._resolve_snapshot_boundary(req)
