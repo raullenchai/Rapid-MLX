@@ -1153,13 +1153,14 @@ def _apply_request_logits_processors(
 def _enforce_preprocessed_context_window(
     requests: list[MLLMBatchRequest], context_length: int
 ) -> None:
-    """Use expanded media token counts for an explicit context window."""
+    """Use expanded media token counts for the effective context window."""
     for req in requests:
         prompt_tokens = int(req.input_ids.size) if req.input_ids is not None else 0
         if prompt_tokens >= context_length:
             raise ClientRequestError(
                 f"context_length_exceeded: prompt has {prompt_tokens} tokens "
-                f"after media expansion, exceeding --context-length {context_length}"
+                f"after media expansion, reaching or exceeding the "
+                f"context window of {context_length} tokens"
             )
         req.max_tokens = min(req.max_tokens, context_length - prompt_tokens)
 
@@ -3897,13 +3898,24 @@ class MLLMBatchGenerator:
 
         # The route-level check can count text before media preprocessing,
         # but only input_ids here includes the expanded image/video tokens.
-        # Enforce an explicit operator window before vision encoding or KV
-        # allocation, then leave enough room for the selected decode budget.
-        from .config import get_config
+        # Always enforce the native window, narrowed by an operator window,
+        # before vision encoding or KV allocation. Reserve the remaining
+        # context for decoding, including when no operator flag was set.
+        from types import SimpleNamespace
 
+        from .config import get_config
+        from .service.helpers import get_model_native_max_context
+
+        context_length = get_model_native_max_context(
+            SimpleNamespace(
+                model=self.model,
+                tokenizer=getattr(self.processor, "tokenizer", self.processor),
+            )
+        )
         configured_context = get_config().context_length
         if configured_context is not None:
-            _enforce_preprocessed_context_window(requests, configured_context)
+            context_length = min(context_length, configured_context)
+        _enforce_preprocessed_context_window(requests, context_length)
 
         # Snapshot per-request prompt-token counts BEFORE any later step
         # nulls out ``input_ids`` to release Metal buffers (line ~822 in
