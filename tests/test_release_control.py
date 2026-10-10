@@ -809,3 +809,180 @@ def test_package_cli_import_is_independent_of_prior_script_imports(monkeypatch, 
             runpy.run_path(str(script), run_name="__main__")
     assert result.value.code == 1
     assert "invalid release version" in capsys.readouterr().err
+
+
+class PollClock:
+    def __init__(self):
+        self.now = 0
+        self.sleeps = []
+        self.after_sleep = lambda: None
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, duration):
+        self.sleeps.append(duration)
+        self.now += duration
+        self.after_sleep()
+
+
+@pytest.fixture
+def poll_clock(monkeypatch):
+    clock = PollClock()
+    monkeypatch.setattr(target.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(target.time, "sleep", clock.sleep)
+    return clock
+
+
+def test_drive_real_resume_and_competing_operator_share_once_receipts(
+    plan, tmp_path, monkeypatch, poll_clock, capsys
+):
+    """A second operator advances during sleep; neither process redispatches."""
+    path = tmp_path / "0.16.1.json"
+    target.save(path, plan)
+    gh = FakeGitHub(plan)
+    monkeypatch.setattr(target, "publish_pr", lambda *args: gh.pr)
+    attached = []
+    monkeypatch.setattr(target, "attach_preflight", lambda *args: attached.append(args))
+
+    def complete_stage():
+        # The running driver must not hold the state lock while waiting.
+        with path.with_suffix(".lock").open("w") as lock:
+            target.fcntl.flock(lock, target.fcntl.LOCK_EX | target.fcntl.LOCK_NB)
+            latest = json.loads(path.read_text())
+            if len(gh.calls) == 1:
+                gh.items["auto-release.yml"] = [workflow_run()]
+                # A concurrent resume takes responsibility for the next dispatch.
+                result = target.resume(path, latest, gh)
+                assert result["state"] == "dispatched"
+                latest = json.loads(path.read_text())
+                latest["other_operator_marker"] = "preserve me"
+                target.save(path, latest)
+            else:
+                gh.items["release-preflight.yml"] = [workflow_run("preflight", id=11)]
+
+    poll_clock.after_sleep = complete_stage
+    assert target.drive(path, plan["version"], gh, 30, 300) == 0
+    assert [call[0] for call in gh.calls] == [
+        "auto-release.yml",
+        "release-preflight.yml",
+    ]
+    saved = json.loads(path.read_text())
+    assert saved["other_operator_marker"] == "preserve me"
+    assert set(saved["dispatches"]) == {"parent-dry-run", "preflight"}
+    assert len(attached) == 1
+    assert '"stage": "preparation-complete"' in capsys.readouterr().out
+
+
+def test_drive_timeout_retains_ambiguous_dispatch_without_retry(
+    plan, tmp_path, monkeypatch, poll_clock, capsys
+):
+    path = tmp_path / "0.16.1.json"
+    target.save(path, plan)
+    gh = FakeGitHub(plan)
+    # No workflow becomes visible; repeated polls only reconcile the intent.
+    assert target.drive(path, plan["version"], gh, 30, 65) == 3
+    assert len(gh.calls) == 1
+    assert poll_clock.sleeps == [30, 30, 5]
+    output = capsys.readouterr().out
+    assert output.count('"state": "dispatch-unconfirmed"') == 1
+    assert '"state": "wait-timeout"' in output
+    assert json.loads(path.read_text())["dispatches"]["parent-dry-run"]
+    gh.items["auto-release.yml"] = [workflow_run(status="in_progress", conclusion=None)]
+    assert target.drive(path, plan["version"], gh, 30, 1) == 3
+    assert len(gh.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "state", ["failed", "invalid-evidence", "approval-required", "unknown"]
+)
+def test_drive_requires_action_on_failed_or_approval_state(
+    plan, tmp_path, monkeypatch, poll_clock, capsys, state
+):
+    path = tmp_path / "0.16.1.json"
+    target.save(path, plan)
+    monkeypatch.setattr(
+        target, "resume", lambda *args: {"stage": "preflight", "state": state}
+    )
+    assert target.drive(path, plan["version"], FakeGitHub(plan), 30, 60) == 2
+    assert not poll_clock.sleeps
+    assert '"state": "operator-action-required"' in capsys.readouterr().out
+
+
+def test_drive_stale_source_stops_without_dispatch(plan, tmp_path, poll_clock):
+    path = tmp_path / "0.16.1.json"
+    target.save(path, plan)
+    gh = FakeGitHub(plan)
+    gh.source = "c" * 40
+    with pytest.raises(target.OperatorError, match="source branch advanced"):
+        target.drive(path, plan["version"], gh, 30, 60)
+    assert not gh.calls and not poll_clock.sleeps
+
+
+@pytest.mark.parametrize("interval,timeout", [(0, 1), (-1, 1), (1, 0), (1, -1)])
+def test_drive_refuses_invalid_wait_budget(plan, tmp_path, interval, timeout):
+    with pytest.raises(target.OperatorError, match="positive seconds"):
+        target.drive(
+            tmp_path / "state.json",
+            plan["version"],
+            FakeGitHub(plan),
+            interval,
+            timeout,
+        )
+
+
+def test_drive_cannot_mutate_while_another_operator_holds_lock(plan, tmp_path):
+    path = tmp_path / "0.16.1.json"
+    target.save(path, plan)
+    gh = FakeGitHub(plan)
+    with path.with_suffix(".lock").open("w") as lock:
+        target.fcntl.flock(lock, target.fcntl.LOCK_EX | target.fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            target.drive(path, plan["version"], gh, 30, 60)
+    assert not gh.calls
+
+
+def test_cli_run_routes_and_interrupt_preserves_plan(
+    plan, tmp_path, monkeypatch, capsys
+):
+    common = tmp_path / "common"
+    states = common / "release-preparation"
+    states.mkdir(parents=True)
+    path = states / "0.16.1.json"
+    target.save(path, plan)
+    monkeypatch.setattr(target, "GitHub", lambda: FakeGitHub(plan))
+    monkeypatch.setattr(
+        target,
+        "run",
+        lambda *args, **kw: (
+            f"https://github.com/{target.REPOSITORY}.git"
+            if "get-url" in args
+            else str(common)
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(target, "drive", lambda *args: calls.append(args) or 0)
+    assert (
+        target.main(
+            [
+                "run",
+                "--version",
+                "0.16.1",
+                "--poll-seconds",
+                "10",
+                "--timeout-seconds",
+                "90",
+            ]
+        )
+        == 0
+    )
+    assert calls[0][0] == path and calls[0][-2:] == (10, 90)
+    before = path.read_bytes()
+
+    def interrupt(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(target, "drive", interrupt)
+    assert target.main(["run", "--version", "0.16.1"]) == 130
+    assert path.read_bytes() == before
+    assert "interrupted" in capsys.readouterr().err

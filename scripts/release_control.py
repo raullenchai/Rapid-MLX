@@ -16,6 +16,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -510,6 +511,56 @@ def resume(path: Path, plan: dict, gh: GitHub) -> dict:
     }
 
 
+def drive(path: Path, version: str, gh: GitHub, interval: int, timeout: int) -> int:
+    """Advance the existing transaction while only ordinary asynchronous work waits.
+
+    Release the shared lock before sleeping: status and another operator may
+    inspect/reconcile the same plan. Reload on every iteration so once receipts
+    written by either process are always authoritative.
+    """
+    if interval < 1 or timeout < 1:
+        raise OperatorError("poll interval and timeout must be positive seconds")
+    deadline = time.monotonic() + timeout
+    previous = None
+    while True:
+        with path.with_suffix(".lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            plan = json.loads(path.read_text())
+            validate_plan(plan, version)
+            result = resume(path, plan, gh)
+        if result != previous:
+            print(json.dumps(result), flush=True)
+            previous = result
+        if result["stage"] == "preparation-complete":
+            return 0
+        state = result.get("state")
+        if state not in ("waiting", "dispatched", "dispatch-unconfirmed"):
+            print(
+                json.dumps(
+                    {
+                        "state": "operator-action-required",
+                        "reason": state,
+                        "next": "Inspect the reported run; no approval, rerun or publication performed",
+                    }
+                ),
+                flush=True,
+            )
+            return 2
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(
+                json.dumps(
+                    {
+                        "state": "wait-timeout",
+                        "next": f"Restart run --version {version}; existing dispatch receipts are retained",
+                    }
+                ),
+                flush=True,
+            )
+            return 3
+        time.sleep(min(interval, remaining))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -521,6 +572,10 @@ def main(argv: list[str] | None = None) -> int:
     prep.add_argument("--worktree", type=Path, required=True)
     for cmd in ("status", "resume"):
         sub.add_parser(cmd).add_argument("--version", required=True)
+    auto = sub.add_parser("run", help="advance preparation without manual polling")
+    auto.add_argument("--version", required=True)
+    auto.add_argument("--poll-seconds", type=int, default=30)
+    auto.add_argument("--timeout-seconds", type=int, default=21600)
     args = parser.parse_args(argv)
     try:
         parse_version(args.version)
@@ -542,6 +597,10 @@ def main(argv: list[str] | None = None) -> int:
         states.mkdir(exist_ok=True)
         path = states / f"{args.version}.json"
         gh = GitHub()
+        if args.command == "run":
+            return drive(
+                path, args.version, gh, args.poll_seconds, args.timeout_seconds
+            )
         with (states / f"{args.version}.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.command == "prepare":
@@ -565,6 +624,12 @@ def main(argv: list[str] | None = None) -> int:
                     }
             print(json.dumps(result, indent=2))
         return 0
+    except KeyboardInterrupt:
+        print(
+            "release preparation interrupted; restart run to reconcile saved state",
+            file=sys.stderr,
+        )
+        return 130
     except (
         OperatorError,
         OSError,
