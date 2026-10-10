@@ -67,7 +67,26 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 468 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 469 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.
+
+## Review dispositions
+
+The validator's later static review proposed descriptor-relative protection
+against concurrent ancestor replacement. The privacy boundary here is other
+local users reading snapshots under the default owner-controlled HOME/cache
+directories. Those readers cannot rename cache ancestors. Malicious same-UID
+code and deliberately writable cache ancestry require broader filesystem
+hardening and are not claimed to be contained by this change. The independent
+reviewer confirmed this disposition.
+
+A separate finding claimed an existing `.new` directory symlink reaches the
+new chmod call. The full save method already removes stale staging and checks
+for survivors before that call; a surviving symlink returns False before
+writes/chmod. Both independent reproduction and the added
+`test_snapshot_preclean_rejects_existing_staging_symlink` prove target contents
+and permissions remain unchanged. The diff-only reviewer lacked that unchanged
+pre-clean context. Concurrent malicious same-UID path replacement remains
+outside the boundary above.

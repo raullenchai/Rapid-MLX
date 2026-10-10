@@ -3556,3 +3556,17 @@ def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch):
     assert target.read_text() == "unchanged"
     assert target.stat().st_mode & 0o777 == 0o644
     assert not (tmp_path / "snapshot").exists()
+
+
+def test_snapshot_preclean_rejects_existing_staging_symlink(tmp_path):
+    target = tmp_path / "unrelated"
+    target.mkdir(mode=0o755)
+    marker = target / "keep"
+    marker.write_text("unchanged")
+    (tmp_path / "snapshot.new").symlink_to(target, target_is_directory=True)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert marker.read_text() == "unchanged"
+    assert list(target.iterdir()) == [marker]
