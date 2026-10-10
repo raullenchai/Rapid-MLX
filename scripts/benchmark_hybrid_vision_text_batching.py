@@ -52,7 +52,7 @@ async def measure(url: str, model: str, tokens: int, reps: int) -> list[dict]:
                 async for line in response.aiter_lines():
                     if line == "data: [DONE]":
                         done = True
-                        continue
+                        break
                     if not line.startswith("data: "):
                         continue
                     event = json.loads(line[6:])
@@ -93,9 +93,16 @@ async def measure(url: str, model: str, tokens: int, reps: int) -> list[dict]:
         for width in (1, 2, 4):
             for rep in range(reps):
                 started = time.perf_counter()
-                outputs = await asyncio.gather(
-                    *(request(i, tokens) for i in range(width))
-                )
+                tasks = [asyncio.create_task(request(i, tokens)) for i in range(width)]
+                try:
+                    outputs = await asyncio.gather(*tasks)
+                except BaseException:
+                    # Drain siblings before the shared HTTP client closes, including
+                    # when the caller cancels the complete measurement.
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
                 elapsed = time.perf_counter() - started
                 row = {
                     "b": width,

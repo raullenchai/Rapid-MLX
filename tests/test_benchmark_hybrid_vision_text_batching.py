@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Benchmark evidence must reject incomplete or failed SSE generations."""
 
+import asyncio
 import json
 
 import httpx
@@ -30,7 +31,8 @@ def _transport(mode, fail_request, observed):
             events.append(usage)
         if current_mode == "error":
             events.append({"error": {"message": "generation failed"}})
-        data = "".join("data: " + json.dumps(e) + "\n\n" for e in events)
+        data = "data: [DONE]\n\n" if current_mode == "early_done" else ""
+        data += "".join("data: " + json.dumps(e) + "\n\n" for e in events)
         if current_mode != "no_done":
             data += "data: [DONE]\n\n"
         return httpx.Response(200, content=data.encode())
@@ -68,6 +70,7 @@ async def test_complete_benchmark_streams_produce_each_batch_width(monkeypatch):
     [
         "no_finish",
         "no_done",
+        "early_done",
         "wrong_finish",
         "no_usage",
         "wrong_tokens",
@@ -83,3 +86,48 @@ async def test_incomplete_or_failed_stream_cannot_be_benchmark_evidence(
         await measure("http://benchmark.test", "test-model", tokens=16, reps=1)
     assert observed[0] == (8, "valid")  # Warmup must succeed before the fault.
     assert observed[fail_request - 1] == (16, mode)
+
+
+@pytest.mark.asyncio
+async def test_failed_batch_drains_siblings_before_client_closes(monkeypatch):
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+    cleanup_client_states = []
+    calls = 0
+    client_type = httpx.AsyncClient
+
+    class WaitingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            sibling_started.set()
+            try:
+                await asyncio.Event().wait()
+                yield b""
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+
+        async def aclose(self):
+            cleanup_client_states.append(client.is_closed)
+
+    valid_transport = _transport("valid", None, [])
+
+    async def handle(request):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:  # Successful warmup and B1.
+            return await valid_transport.handle_async_request(request)
+        if calls == 3:
+            await sibling_started.wait()
+            return httpx.Response(200, content=b'data: {"error": "failed"}\n\n')
+        return httpx.Response(200, stream=WaitingStream())
+
+    client = client_type(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client)
+    with pytest.raises(RuntimeError, match="failed"):
+        await asyncio.wait_for(
+            measure("http://benchmark.test", "test-model", tokens=16, reps=1),
+            timeout=2,
+        )
+    assert sibling_cancelled.is_set()
+    assert cleanup_client_states == [False]
+    assert client.is_closed
