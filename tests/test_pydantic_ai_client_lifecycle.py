@@ -29,6 +29,7 @@ def harness():
 @pytest.mark.parametrize("bad_stream", [False, True])
 def test_real_sdk_sync_stream_sync(harness, bad_stream):
     requests = []
+    connections = []
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -52,6 +53,9 @@ def test_real_sdk_sync_stream_sync(harness, bad_stream):
             assert self.path == "/v1/chat/completions"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(body)
+            # The peer port stays stable for a persistent TCP connection.
+            # A fresh socket per request would evade the original pool bug.
+            connections.append(self.client_address)
             base = {"id": "chat-test", "created": 1, "model": "test-model"}
             if body.get("stream"):
                 events = []
@@ -159,6 +163,10 @@ def test_real_sdk_sync_stream_sync(harness, bad_stream):
     assert requests[1]["stream"] is True
     assert all(not r.get("stream", False) for r in requests[2:])
     assert requests[1]["stream_options"]["include_usage"] is True
+    # The failure is reuse of the plain request's pooled connection for
+    # streaming on another loop. The SDK may discard that socket after the
+    # stream, so later synchronous calls need not keep the same peer port.
+    assert connections[0] == connections[1], connections
     assert "different event loop" not in output
     if bad_stream:
         assert "2_stream: FAIL: Too short" in output
