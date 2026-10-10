@@ -22,9 +22,13 @@ benchmark control, not a new public server flag.
 Comparison requires identical request hashes, prompt lengths, generated token
 IDs and answers for all seven cases. Every cache-off request must report zero
 cached tokens; the cache-on initial request must also be cold. Each of the five
-resumed cases must restore at least 95% of its prompt. A tiny shared system
-prefix cannot qualify. Invalid counts, empty outputs, incomplete cases,
-different source fingerprints and different hardware fail qualification.
+resumed cases must restore at least 95% of its prompt and retain at least the
+initial prompt's token count. A tiny shared system prefix or truncated history
+cannot qualify. Invalid counts, empty visible answers (including EOS-only
+outputs), incomplete cases, different source fingerprints and different
+hardware fail qualification. Checkpoint/runtime identities must match the
+qualified profile and the probe fingerprint must match the actual script,
+even if both artifacts agree on an incorrect value.
 
 The probe records its own SHA-256 before loading the model and rejects dirty
 tracked serving sources. The serving commit, runtime versions, checkpoint

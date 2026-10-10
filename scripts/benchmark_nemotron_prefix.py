@@ -19,6 +19,24 @@ PROFILE = "nemotron-3.5-lightning-tensorfold"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def qualification_identity() -> dict:
+    from rapid_mlx.speculative.tensorfold_families import PROFILES
+    from rapid_mlx.speculative.tensorfold_runtime import (
+        SUPPORTED_MLX_VERSION,
+        SUPPORTED_REVISION,
+        SUPPORTED_VERSION,
+    )
+
+    return {
+        "profile": PROFILE,
+        "revision": PROFILES[PROFILE].target_revision,
+        "runtime": SUPPORTED_VERSION,
+        "runtime_revision": SUPPORTED_REVISION,
+        "mlx": SUPPORTED_MLX_VERSION,
+        "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+
+
 def source_identity() -> dict:
     """Bind an untracked MVP probe and clean tracked serving code to a run."""
     if subprocess.run(
@@ -74,7 +92,12 @@ def measure(provider, messages: list[dict[str, str]]) -> dict:
             "request produced no tokens or did not submit exactly one job"
         )
     terminal = provider.last_outputs[-1] if provider.last_outputs else None
-    if terminal is None or not terminal.finished or not terminal.output_token_ids:
+    if (
+        terminal is None
+        or not terminal.finished
+        or not terminal.output_token_ids
+        or not terminal.output_text.strip()
+    ):
         raise RuntimeError("request ended without a completed token sequence")
     job = jobs[0]
     prefill = job.prefilled_at - job.started_at
@@ -145,6 +168,9 @@ def _question(worker: int) -> dict[str, str]:
 
 def compare(warm: dict, cold: dict) -> None:
     """Fail on mismatches or absent reuse; speed is reported, never a noisy gate."""
+    for key, expected in qualification_identity().items():
+        if warm[key] != expected or cold[key] != expected:
+            raise ValueError(f"unqualified provenance: {key}")
     for key in (
         "profile",
         "revision",
@@ -173,7 +199,11 @@ def compare(warm: dict, cold: dict) -> None:
         raise ValueError("missing or reordered cases")
     for a, b in zip(warm["rows"], cold["rows"], strict=True):
         case = a["case"]
-        if not a["token_ids"] or not 0 <= a["cached_tokens"] < a["prompt_tokens"]:
+        if (
+            not a["token_ids"]
+            or not a["answer"].strip()
+            or not 0 <= a["cached_tokens"] < a["prompt_tokens"]
+        ):
             raise ValueError(f"invalid tokens or cached-token count: {case}")
         if any(
             a[k] != b[k]
@@ -184,6 +214,8 @@ def compare(warm: dict, cold: dict) -> None:
             raise ValueError(f"cache-off run reused state: {case}")
         if case in cases[1:6] and a["cached_tokens"] / a["prompt_tokens"] < 0.95:
             raise ValueError(f"insufficient long-history reuse: {case}")
+        if case in cases[1:6] and a["prompt_tokens"] < warm["rows"][0]["prompt_tokens"]:
+            raise ValueError(f"resumed prompt lost its long history: {case}")
     if warm["rows"][0]["cached_tokens"] != 0:
         raise ValueError("initial request was not cold")
     if warm["rows"][0]["prompt_tokens"] < 19000:
@@ -222,8 +254,7 @@ def main() -> None:
     finally:
         backend.close()
     artifact = {
-        "profile": PROFILE,
-        "revision": profile.target_revision,
+        **qualification_identity(),
         "runtime": importlib.metadata.version("tensorfold"),
         "mlx": importlib.metadata.version("mlx"),
         **source,

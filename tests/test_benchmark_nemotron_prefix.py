@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.benchmark_nemotron_prefix import compare, measure
+from scripts.benchmark_nemotron_prefix import compare, measure, qualification_identity
 
 
 def artifacts():
@@ -21,12 +21,8 @@ def artifacts():
         "different_inventory",
     ]
     warm = dict(
-        profile="nemotron",
-        revision="a",
-        runtime="0.6.6",
-        mlx="0.32.3",
+        **qualification_identity(),
         source_commit="b",
-        probe_sha256="probe",
         host={"cpu": "test", "ram_bytes": 1},
         cache="on",
         rows=[
@@ -84,6 +80,33 @@ def test_small_prefix_and_invalid_counts_cannot_qualify(count):
         compare(warm, cold)
 
 
+@pytest.mark.parametrize(
+    "key", ["revision", "runtime", "runtime_revision", "probe_sha256", "profile", "mlx"]
+)
+def test_matching_unqualified_provenance_is_rejected(key):
+    warm, cold = artifacts()
+    warm[key] = cold[key] = "wrong"
+    with pytest.raises(ValueError, match="unqualified provenance"):
+        compare(warm, cold)
+
+
+def test_resumed_requests_cannot_drop_long_history():
+    warm, cold = artifacts()
+    for artifact in (warm, cold):
+        artifact["rows"][1]["prompt_tokens"] = 20
+    warm["rows"][1]["cached_tokens"] = 19
+    with pytest.raises(ValueError, match="lost its long history"):
+        compare(warm, cold)
+
+
+def test_eos_only_answer_cannot_qualify():
+    warm, cold = artifacts()
+    for artifact in (warm, cold):
+        artifact["rows"][1].update(token_ids=[11], answer="")
+    with pytest.raises(ValueError, match="invalid tokens"):
+        compare(warm, cold)
+
+
 def test_rejects_contaminated_baseline_missing_cases_and_different_runtime():
     for mutate in (
         lambda a, b: b["rows"][1].update(cached_tokens=1),
@@ -134,6 +157,10 @@ def test_measure_reads_terminal_usage_and_restores_submit_after_failure():
     provider._outputs = outputs
     assert measure(provider, [])["cached_tokens"] == 19000
     assert scheduler.submit is original
+    terminal.output_text = ""
+    with pytest.raises(RuntimeError, match="completed token sequence"):
+        measure(provider, [])
+    terminal.output_text = "ok"
 
     def broken(*args, **kwargs):
         raise RuntimeError("failed")
