@@ -4,6 +4,8 @@
 import asyncio
 import json
 import sys
+import threading
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -490,9 +492,8 @@ def test_glm_preflight_and_listen_fd_gate(monkeypatch, capsys) -> None:
         cli._reject_unsupported_listen_fd_lane(gate, owns_v41_product_download=False)
 
 
-def test_glm_loader_uses_family_memory_and_lane_contracts(
-    monkeypatch, tmp_path
-) -> None:
+@pytest.fixture
+def glm_loader_runtime(monkeypatch):
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
     seen = {}
@@ -501,7 +502,6 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
         def release_rounds(self):
             seen["released"] = True
 
-    model = Model()
     tokenizer = object()
 
     class Package:
@@ -510,6 +510,8 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
         @staticmethod
         def load(path, **kwargs):
             seen.update(load_path=path, load_kwargs=kwargs)
+            model = Model()
+            seen["model_ref"] = weakref.ref(model)
             return model, tokenizer
 
         @staticmethod
@@ -524,6 +526,7 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     mlx = ModuleType("mlx")
     mlx_core = ModuleType("mlx.core")
     mlx.core = mlx_core
+    mlx_core.clear_cache = lambda: seen.setdefault("events", []).append("clear")
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
 
@@ -545,9 +548,15 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     class ChatApp:
         def __init__(self, loaded_model, loaded_tokenizer, **kwargs):
             seen.update(
-                app_model=loaded_model, app_tokenizer=loaded_tokenizer, app=kwargs
+                app_model=weakref.ref(loaded_model),
+                app_tokenizer=loaded_tokenizer,
+                app=kwargs,
             )
-            self.scheduler = SimpleNamespace(stop=lambda: None)
+            self.model = loaded_model
+            self.scheduler = SimpleNamespace(
+                stop=lambda: seen.setdefault("events", []).append("stop")
+            )
+            seen["app_ref"] = weakref.ref(self)
 
     app_module.ChatApp = ChatApp
     monkeypatch.setitem(sys.modules, "tensorfold.server.app", app_module)
@@ -562,6 +571,21 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     monkeypatch.setattr(adapter, "require_runtime", lambda: None)
     monkeypatch.setattr(adapter, "require_environment", lambda: None)
     monkeypatch.setattr(adapter, "validate_target", lambda _path: None)
+    return SimpleNamespace(
+        adapter=adapter,
+        seen=seen,
+        family=family,
+        package=Package,
+        core=mlx_core,
+        app=ChatApp,
+    )
+
+
+def test_glm_loader_uses_family_memory_and_lane_contracts(
+    glm_loader_runtime, tmp_path
+) -> None:
+    adapter, seen = glm_loader_runtime.adapter, glm_loader_runtime.seen
+    family = glm_loader_runtime.family
     backend = adapter.TensorFoldGLM53Backend.load(
         str(tmp_path), "", served_name="glm", context_window=4096, max_tokens=256
     )
@@ -578,11 +602,144 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     engine_keywords = seen["app"]["engine_factory"].keywords
     assert engine_keywords["prefill_pass"] == 8
     assert engine_keywords["pass_cache"] == 16 * 1024**3
+    assert seen.get("events", []) == []
     backend.close()
 
     family.model_type = "wrong"
     with pytest.raises(adapter.TensorFoldUnavailable, match="did not select"):
         adapter.TensorFoldGLM53Backend.load(str(tmp_path), "", served_name="glm")
+    assert seen["events"] == ["stop"]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(
+    "stage", ["load", "settings", "app_before", "app_started", "backend"]
+)
+def test_glm_startup_failure_cleans_up_and_can_retry(
+    glm_loader_runtime, monkeypatch, tmp_path, stage, error_type
+):
+    runtime = glm_loader_runtime
+    adapter, seen = runtime.adapter, runtime.seen
+    error = error_type("startup failed")
+    backend_class = adapter.TensorFoldGLM53Backend
+    if stage == "load":
+        original = runtime.package.load
+
+        def fail_load(*args, **kwargs):
+            model, tokenizer = original(*args, **kwargs)
+            try:
+                raise ValueError("inner loading failure")
+            except ValueError as cause:
+                raise error from cause
+
+        monkeypatch.setattr(runtime.package, "load", fail_load)
+    elif stage.startswith("app_"):
+        original = runtime.app.__init__
+
+        def fail_app(self, model, tokenizer, **kwargs):
+            if stage == "app_started":
+                original(self, model, tokenizer, **kwargs)
+            raise error
+
+        monkeypatch.setattr(runtime.app, "__init__", fail_app)
+    elif stage == "settings":
+        original = runtime.package.engine_settings
+
+        def fail(model):
+            raise error
+
+        monkeypatch.setattr(runtime.package, "engine_settings", fail)
+        backend_class = adapter.TensorFoldGLM53Backend
+    else:
+
+        class FailingBackend(adapter.TensorFoldGLM53Backend):
+            def __init__(self, app):
+                raise error
+
+        backend_class = FailingBackend
+    with pytest.raises(error_type) as caught:
+        backend_class.load(str(tmp_path), served_name="glm")
+    assert caught.value is error
+    assert seen["events"] == (
+        ["stop", "clear"] if stage in {"backend", "app_started"} else ["clear"]
+    )
+    # A retained exception must not retain the failed model through its frames.
+    assert seen["model_ref"]() is None
+    if stage in {"backend", "app_started"}:
+        assert seen["app_ref"]() is None
+    if stage == "load":
+        monkeypatch.setattr(runtime.package, "load", original)
+    elif stage.startswith("app_"):
+        monkeypatch.setattr(runtime.app, "__init__", original)
+    elif stage == "settings":
+        monkeypatch.setattr(runtime.package, "engine_settings", original)
+    backend = adapter.TensorFoldGLM53Backend.load(str(tmp_path), served_name="glm")
+    assert seen["model_ref"]() is not None
+    backend.close()
+
+
+@pytest.mark.parametrize("cleanup_stage", ["stop", "clear"])
+@pytest.mark.parametrize("cleanup_error", [OSError, KeyboardInterrupt])
+def test_glm_cleanup_failure_preserves_startup_error(
+    glm_loader_runtime, monkeypatch, tmp_path, cleanup_stage, cleanup_error
+):
+    runtime = glm_loader_runtime
+    error = RuntimeError("original startup failure")
+
+    class FailingBackend(runtime.adapter.TensorFoldGLM53Backend):
+        def __init__(self, app):
+            if cleanup_stage == "stop":
+
+                def stop():
+                    runtime.seen.setdefault("events", []).append("stop")
+                    raise cleanup_error("shutdown failed")
+
+                app.scheduler.stop = stop
+            raise error
+
+    if cleanup_stage == "clear":
+
+        def clear():
+            runtime.seen.setdefault("events", []).append("clear")
+            raise cleanup_error("allocator cleanup failed")
+
+        monkeypatch.setattr(runtime.core, "clear_cache", clear)
+    with pytest.raises(RuntimeError) as caught:
+        FailingBackend.load(str(tmp_path), served_name="glm")
+    assert caught.value is error
+    assert runtime.seen["events"] == ["stop", "clear"]
+
+
+def test_glm_interrupted_app_constructor_stops_started_thread(
+    glm_loader_runtime, monkeypatch, tmp_path
+):
+    runtime = glm_loader_runtime
+    stopped = threading.Event()
+    thread = threading.Thread(target=stopped.wait, daemon=True)
+
+    def stop():
+        stopped.set()
+        thread.join(timeout=2)
+
+    def partial_init(self, model, tokenizer, **kwargs):
+        self.model = model
+        self.scheduler = SimpleNamespace(stop=stop)
+        thread.start()
+        raise KeyboardInterrupt("interrupted after engine thread startup")
+
+    monkeypatch.setattr(runtime.app, "__init__", partial_init)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runtime.adapter.TensorFoldGLM53Backend.load(
+                str(tmp_path), served_name="glm"
+            )
+        assert stopped.is_set()
+        assert not thread.is_alive()
+        assert runtime.seen["model_ref"]() is None
+        assert runtime.seen["events"] == ["clear"]
+    finally:
+        if thread.ident is not None:
+            stop()
 
 
 def test_glm_server_wrapper_declares_product_metadata(monkeypatch) -> None:
