@@ -183,6 +183,26 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
 
+### Low-memory model switching
+
+When `POST /v1/models/load` must evict the primary before loading its replacement,
+`GET /health` reports `state: "switching"` and `ready: false` until the replacement
+and audio-worker handoff commit. `GET /v1/models/residency` also exposes
+`primary_switching`. Health and residency reads do not wait for the model loader.
+
+During this interval, `/health/ready` (and `/readyz`) and requests for the absent
+primary return HTTP 503 with `error.code: "model_switching"` and `Retry-After: 5`.
+Explicit requests for an independently resident secondary remain routable.
+Audio POST routes return the same transient error while worker ownership is
+being handed off. Authentication remains required on inference routes.
+Clients can wait and poll readiness before retrying; five seconds is a retry
+hint, not a promised loading duration.
+
+A failed or cancelled destructive replacement clears the switching state and
+releases worker ownership, but cannot restore an already evicted model. Readiness
+stays false until another model is successfully loaded. Replacements that fit
+alongside the old primary retain its existing serving behavior during loading.
+
 ### Custom computer-use clients
 
 To host only the authenticated Computer Use control plane, without resolving,

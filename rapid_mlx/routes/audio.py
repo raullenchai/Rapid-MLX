@@ -34,11 +34,16 @@ from starlette.responses import PlainTextResponse, Response
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 from ..model_downloads import ModelDownloadsDisabledError
+from ..runtime.audio_worker import require_audio_worker_available
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_AUDIO_POST_DEPENDENCIES = [
+    Depends(verify_api_key),
+    Depends(require_audio_worker_available),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +254,7 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     from ..runtime.resident_models import (
         ResidentModelCapacityError,
         ResidentModelError,
+        ResidentModelSwitchingError,
     )
     from ..runtime.role_capacity import alignment_capacity
 
@@ -280,9 +286,17 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         capacity_source=capacity.source,
         replace_existing=replace_existing,
         release_exclusive_role="speech-input",
+        reject_primary_switch=True,
     )
+    # Upload/capacity resolution can yield after the HTTP entry guard. Do not
+    # queue a new admission behind the primary loader while its handoff is held.
+    await require_audio_worker_available()
     try:
         admission = await ctx.__aenter__()
+    except ResidentModelSwitchingError as exc:
+        from ..runtime.model_switching import ModelSwitchingError
+
+        raise ModelSwitchingError() from exc
     except ResidentModelCapacityError as exc:
         # The aligner was REJECTED before any load ran. ``admit_role``'s own
         # rollback has already restored the retired speech-input reservation
@@ -331,12 +345,21 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         # speech-input reservation stays retired — nothing to restore.
 
 
-async def _release_alignment_role() -> None:
+async def _release_alignment_role(*, reject_primary_switch: bool = False) -> None:
     """Stop charging the alignment role after its engine was released."""
 
     manager = _residency_manager()
     if manager is not None:
-        await manager.release_role("alignment")
+        if not reject_primary_switch:
+            await manager.release_role("alignment")
+            return
+        from ..runtime.model_switching import ModelSwitchingError
+        from ..runtime.resident_models import ResidentModelSwitchingError
+
+        try:
+            await manager.release_role("alignment", reject_primary_switch=True)
+        except ResidentModelSwitchingError as exc:
+            raise ModelSwitchingError() from exc
 
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
@@ -1946,6 +1969,9 @@ async def _evict_other_lane(keep: str) -> None:
     footprint — alternating requests would leave both models resident. MLX
     frees on refcount, so clearing the global is the release.
     """
+    # Upload and lane-lock waits can outlive the route's entry check. Recheck
+    # before changing cached engines or waiting on the residency role ledger.
+    await require_audio_worker_available()
     lane, cached = _other_stt_lane(keep)
     if cached is not None:
         logger.info(
@@ -1966,7 +1992,9 @@ async def _evict_other_lane(keep: str) -> None:
     # charging its role so the ledger never keeps a reservation for an
     # engine this process no longer holds.
     if lane == "alignment":
-        await _release_alignment_role()
+        # Before any engine was removed, a new request can leave the lock
+        # queue on switching. Actual unload cleanup must always finish.
+        await _release_alignment_role(reject_primary_switch=cached is None)
 
 
 def _evict_other_lane_sync(keep: str) -> None:
@@ -2347,7 +2375,7 @@ async def _run_alignment_request(
                 )
 
 
-@router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/transcriptions", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_transcription(
     request: Request,
     file: UploadFile,
@@ -2662,7 +2690,7 @@ async def create_transcription(
     return response
 
 
-@router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/translations", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_translation(
     file: UploadFile,
     # OpenAI's translations endpoint mirrors transcriptions but
@@ -3155,7 +3183,7 @@ def _generate_speech_blocking(
     )
 
 
-@router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/speech", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
 
@@ -3782,7 +3810,7 @@ def _resolve_music_model(model: str | None) -> tuple[str, str]:
     return MUSIC_MODEL_ALIASES[alias]
 
 
-@router.post("/v1/audio/music", dependencies=[Depends(verify_api_key)])
+@router.post("/v1/audio/music", dependencies=_AUDIO_POST_DEPENDENCIES)
 async def create_music(request: AudioMusicRequest = Body(...)):
     """Generate music / SFX from a text prompt.
 

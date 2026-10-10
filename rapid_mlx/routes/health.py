@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import get_config
 from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
+from ..runtime.model_switching import ModelSwitchingError, primary_switching
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ async def health():
         if primary_status is not None
         else engine is not None
     )
+    switching = primary_switching()
 
     if getattr(engine, "is_image_gen", False):
         model_type = "image-gen"
@@ -115,7 +117,16 @@ async def health():
 
     return {
         "status": "healthy",
-        "ready": cfg.ready,
+        "ready": cfg.ready and not switching,
+        "state": (
+            "switching"
+            if switching
+            else primary_status["state"]
+            if primary_status is not None
+            else "ready"
+            if cfg.ready
+            else "loading"
+        ),
         "model_loaded": model_loaded,
         "model_name": cfg.model_name,
         "model_type": model_type,
@@ -137,6 +148,8 @@ async def health_ready():
     (which returns 200 the moment the FastAPI app binds).
     """
     cfg = get_config()
+    if primary_switching():
+        raise ModelSwitchingError()
     if not cfg.ready:
         raise HTTPException(status_code=503, detail="model loading")
     lifecycle = cfg.primary_model_lifecycle
