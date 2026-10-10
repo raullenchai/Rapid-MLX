@@ -1285,6 +1285,11 @@ _DECODE_ERROR_HINTS: tuple[str, ...] = (
     "could not load audio",
     "header is truncated",
     "error opening",
+    # mlx-audio's ffmpeg path uses RuntimeError rather than DecodeError.
+    # ffprobe may reject malformed containers without writing stderr.
+    "ffprobe failed:",
+    "ffmpeg decoding failed:",
+    "no audio streams found in file",
     # ``LibsndfileError: ...`` only fires on libsndfile-rejected bytes
     # (truncated header, unknown subtype) — it's a strong file-shape
     # signal, NOT a generic "soundfile imported" marker. Codex r2:
@@ -1310,6 +1315,15 @@ _DECODE_SERVER_MISCONFIG_HINTS: tuple[str, ...] = (
     "command not found",
     "no module",
     "libsndfile not found",
+    "unknown encoder",
+    "unrecognized option",
+    "error while loading shared libraries",
+    "cannot open shared object file",
+    "library not loaded",
+    "symbol not found",
+    "dyld:",
+    "permission denied",
+    "operation not permitted",
 )
 
 

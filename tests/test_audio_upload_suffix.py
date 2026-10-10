@@ -54,8 +54,8 @@ def upload_client(monkeypatch):
         paths.append(path)
         assert path.read_bytes() == expected["payload"]
         assert path.suffix == expected["suffix"]
-        if expected.get("fail"):
-            raise RuntimeError("could not decode audio file")
+        if expected.get("failure_message"):
+            raise RuntimeError(expected["failure_message"])
         return SimpleNamespace(text="hello", language="en", duration=0.2, segments=[])
 
     engine = SimpleNamespace(model_name="whisper-small", transcribe=infer)
@@ -127,9 +127,20 @@ def test_upload_container_reaches_engine(
 
 
 @pytest.mark.parametrize("lane", ["transcriptions", "translations", "alignment"])
-def test_container_decode_failure_keeps_400_and_cleans_tempfile(upload_client, lane):
+@pytest.mark.parametrize(
+    "message",
+    [
+        "could not decode audio file",
+        "ffprobe failed: ",
+        "ffmpeg decoding failed: invalid data found when processing input",
+        "No audio streams found in file",
+    ],
+)
+def test_container_decode_failure_keeps_400_and_cleans_tempfile(
+    upload_client, lane, message
+):
     client, paths, expected = upload_client
-    expected.update(payload=b"corrupted webm", suffix=".webm", fail=True)
+    expected.update(payload=b"corrupted webm", suffix=".webm", failure_message=message)
     data = {"model": "whisper-small"}
     if lane == "alignment":
         lane = "transcriptions"
@@ -143,3 +154,26 @@ def test_container_decode_failure_keeps_400_and_cleans_tempfile(upload_client, l
     assert response.json()["detail"]["error"]["code"] == "invalid_audio_file"
     assert len(paths) == 1
     assert not paths[0].exists()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "ffprobe failed: executable not found",
+        "ffmpeg decoding failed: command not found",
+        "ffprobe failed: no such file or directory",
+        "ffmpeg decoding failed: Unknown encoder 'pcm_s16le'",
+        "ffmpeg decoding failed: Unrecognized option 'acodec'",
+        "ffprobe failed: error while loading shared libraries: libavcodec.so",
+        "ffprobe failed: cannot open shared object file",
+        "ffprobe failed: Library not loaded: libavcodec.dylib",
+        "ffprobe failed: Symbol not found: _avcodec_open2",
+        "ffprobe failed: dyld: incompatible library version",
+        "ffprobe failed: Permission denied",
+        "ffmpeg decoding failed: Operation not permitted",
+    ],
+)
+def test_ffmpeg_server_misconfiguration_is_not_a_client_decode_error(message):
+    from rapid_mlx.routes.audio import _is_decode_error
+
+    assert not _is_decode_error(RuntimeError(message))
