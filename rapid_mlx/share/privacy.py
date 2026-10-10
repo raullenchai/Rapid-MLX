@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,9 +37,22 @@ def clear_legacy_prompt_cache(model: str) -> int:
     safe_name = (
         model.replace("/", "--").replace("\\", "--").replace("..", "--").lstrip(".")
     ) or "default"
-    if not root.exists():
-        return 0
     known = _known_namespaces(model, safe_name)
+    # Lock before discovery, including namespaces a writer has not created yet.
+    # The existing lock protocol also creates an initially absent cache root.
+    with ExitStack() as locks:
+        for name in sorted(known):
+            acquired = locks.enter_context(
+                _exclusive_cache_lock(str(root / name), operation="pool cleanup")
+            )
+            if not acquired:
+                raise OSError(
+                    "model prompt cache is in use; stop its other server first"
+                )
+        return _clear_locked_snapshots(root, known, safe_name)
+
+
+def _clear_locked_snapshots(root: Path, known: set[str], safe_name: str) -> int:
     # Unhashed names have no recoverable ownership: even model and .model
     # collide, and model.new can name a model or an interrupted transaction.
     # Refuse every unhashed candidate rather than erase another model.
@@ -75,20 +89,11 @@ def clear_legacy_prompt_cache(model: str) -> int:
             )
     removed = 0
     for name in sorted(candidates):
-        with _exclusive_cache_lock(
-            str(root / name), operation="pool cleanup"
-        ) as acquired:
-            if not acquired:
-                raise OSError(
-                    "model prompt cache is in use; stop its other server first"
-                )
-            for suffix in ("", ".new", ".old"):
-                path = root / (name + suffix)
-                if path.is_symlink():
-                    raise OSError(
-                        "refusing a symlink in the model prompt-cache namespace"
-                    )
-                if path.exists():
-                    shutil.rmtree(path)
-                    removed += 1
+        for suffix in ("", ".new", ".old"):
+            path = root / (name + suffix)
+            if path.is_symlink():
+                raise OSError("refusing a symlink in the model prompt-cache namespace")
+            if path.exists():
+                shutil.rmtree(path)
+                removed += 1
     return removed

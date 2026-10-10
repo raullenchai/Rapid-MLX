@@ -67,7 +67,7 @@ python3.11 -m pytest -q tests/test_share_quicksilver.py tests/test_share_cli.py 
   tests/test_radix_index.py tests/test_prefix_cache_radix_e2e.py
 ```
 
-Result: 479 passed. Ruff formatting/lint and `git diff --check` passed.
+Result: 481 passed. Ruff formatting/lint and `git diff --check` passed.
 The scratch harness and logs live under `/private/tmp/compute-share-dogfood`
 and are ephemeral; this document records the conclusions and reproduction
 procedure without retaining prompts or host credentials.
@@ -112,3 +112,13 @@ before child spawn, staging protection failure/nonregular artifacts, and real
 HTTPS trust via SSL_CERT_FILE with context reuse and untrusted-peer rejection.
 The focused suite passes under coverage instrumentation; diff-cover against
 `dfaa9cc40` reports 100% changed-line coverage and zero missing lines.
+
+Cleanup now holds every known namespace transaction lock before discovery,
+including an initially absent cache root. This prevents a cooperating save
+from creating a previously absent namespace during cleanup. Contention fails
+closed and ExitStack releases earlier locks if a later acquisition fails.
+This is a cleanup transaction, not a lifetime lease over separately launched
+servers. After this fix, two additional 35B pool cycles passed four real relay
+requests, reused one registration, delivered 24 heartbeats, preserved unrelated
+data and left no prompt artifacts after either stop. Final focused coverage:
+481 passed; 100% changed-line coverage, zero missing lines.

@@ -253,3 +253,47 @@ def test_https_private_ca_verified_and_context_reused(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_cleanup_detects_writer_before_namespace_creation_and_releases_locks(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from rapid_mlx.runtime.cache import _exclusive_cache_lock
+
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    names = sorted(_known_namespaces("model", "model"))
+    with _exclusive_cache_lock(
+        str(root / names[-1]), operation="test writer"
+    ) as writer:
+        assert writer
+        assert not (root / names[-1]).exists()
+        with pytest.raises(OSError, match="in use"):
+            clear_legacy_prompt_cache("model")
+        # Failure at a later lock must release all earlier locks.
+        for name in names[:-1]:
+            with _exclusive_cache_lock(str(root / name), operation="probe") as acquired:
+                assert acquired
+    assert clear_legacy_prompt_cache("model") == 0
+
+
+def test_cleanup_locks_before_scanning_initially_missing_root(tmp_path, monkeypatch):
+    from rapid_mlx.share import privacy
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    names = _known_namespaces("model", "model")
+    assert not root.exists()
+    original = privacy._clear_locked_snapshots
+
+    def check_locks(root, known, safe_name):
+        for name in names:
+            with (
+                (root / (name + ".txlock")).open("r") as lock,
+                pytest.raises(BlockingIOError),
+            ):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return original(root, known, safe_name)
+
+    monkeypatch.setattr(privacy, "_clear_locked_snapshots", check_locks)
+    assert clear_legacy_prompt_cache("model") == 0
