@@ -340,6 +340,16 @@ class TunnelClient:
         """Chat-frontend-facing reverse-proxy URL."""
         return public_url_for(self.tunnel_id, self.relay_url)
 
+    def _verified_connect_kwargs(
+        self, uri: str, headers: dict[str, str] | None
+    ) -> dict[str, Any]:
+        from .tls import client_context
+
+        kwargs = self._connect_kwargs(headers)
+        if urllib.parse.urlsplit(uri).scheme == "wss":
+            kwargs["ssl"] = client_context()
+        return kwargs
+
     # ─────────────────────────── public API ────────────────────────────
 
     async def run(self) -> None:
@@ -468,7 +478,7 @@ class TunnelClient:
         connect AFTER the supervisor abandoned it — an untracked tunnel
         proxying requests with a stale credential state."""
         connect_task = asyncio.ensure_future(
-            websockets.connect(uri, **self._connect_kwargs(headers))
+            websockets.connect(uri, **self._verified_connect_kwargs(uri, headers))
         )
         closed_task = asyncio.ensure_future(self._closed.wait())
         try:

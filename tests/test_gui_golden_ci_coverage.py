@@ -10,6 +10,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -249,6 +250,8 @@ def test_early_precondition_failure_writes_typed_result_evidence(tmp_path: Path)
         env={
             **os.environ,
             "HOME": str(tmp_path),
+            # Exercise missing-app evidence independently of operator host admission.
+            "RAPID_HOST_PRECHECK_HELD": "1",
             "RAPID_GUI_GOLDEN_OUT": str(output),
             "RAPID_GUI_SOURCE_APP": str(missing_app),
         },
@@ -356,7 +359,8 @@ def test_persona_update_isolation_is_applied_to_launch_and_relaunch(tmp_path):
         for override in (False, True):
             capture.unlink(missing_ok=True)
             script = (
-                function
+                "begin_launch() { :; }\n"
+                + function
                 + """
 trap 'if [[ -n "${APP_PID:-}" ]]; then kill -- "-$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi' EXIT
 launch_persona_app "$MODE"
@@ -444,3 +448,180 @@ def test_busy_update_journey_requires_unobscured_model_start():
     )
     assert 'assert_fake_server_starts "$OUT/fake-events.jsonl" 1 "$FAKE_ALIAS"' in flow
     assert 'wait_identifier UpdateCard "$OUT/update-card-after-start.json"' in flow
+
+
+# Execute the real Bash evidence boundary without launching a GUI. Keep these
+# in the existing registered desktop contract suite so all GUI lanes run them.
+def run_shell(tmp_path, body):
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$HARNESS"; OUT_ROOT="$EVIDENCE"; mkdir -p "$OUT_ROOT"; cleanup_persona() { :; }; cleanup_operator_server() { :; }; cleanup_telemetry_sink() { :; }; trap finish EXIT; '
+            + body,
+        ],
+        env={
+            **os.environ,
+            "HARNESS": str(HARNESS),
+            "EVIDENCE": str(tmp_path),
+            "GUI_FLOWS": "",
+        },
+        text=True,
+        capture_output=True,
+    )
+
+
+def read_journey(tmp_path, name):
+    return json.loads((tmp_path / "journeys" / f"{name}.json").read_text())
+
+
+def test_each_journey_keeps_its_own_cost_and_artifacts(tmp_path):
+    result = run_shell(
+        tmp_path,
+        """
+        sample() { begin_launch; sleep 0.06; finish_launch; sleep 0.03; }
+        run_journey first sample
+        run_journey second sample
+    """,
+    )
+    assert result.returncode == 0, result.stderr
+    for name in ("first", "second"):
+        record = read_journey(tmp_path, name)
+        assert record["flow"] == name
+        assert record["status"] == "pass"
+        assert record["exit_code"] == 0
+        assert record["launch_count"] == 1
+        assert record["launch_duration_seconds"] >= 0.06
+        assert record["execution_duration_seconds"] >= 0.03
+        assert record["duration_seconds"] == pytest.approx(
+            record["launch_duration_seconds"] + record["execution_duration_seconds"]
+        )
+        assert record["artifact_path"] == str(tmp_path)
+
+
+@pytest.mark.parametrize("code", [1, 7, 130, 143])
+def test_failed_or_cancelled_journey_preserves_prior_pass_and_stops(tmp_path, code):
+    result = run_shell(
+        tmp_path,
+        f"""
+        good() {{ :; }}
+        broken() {{ begin_launch; sleep 0.03; exit {code}; }}
+        run_journey first good
+        run_journey broken broken
+        run_journey never good
+    """,
+    )
+    assert result.returncode == code, result.stderr
+    assert read_journey(tmp_path, "first")["status"] == "pass"
+    failed = read_journey(tmp_path, "broken")
+    assert failed["status"] == ("cancelled" if code in (130, 143) else "fail")
+    assert failed["exit_code"] == code
+    assert failed["launch_duration_seconds"] >= 0.03
+    assert not (tmp_path / "journeys" / "never.json").exists()
+
+
+def test_relaunches_are_accumulated(tmp_path):
+    result = run_shell(
+        tmp_path,
+        """
+        sample() { begin_launch; sleep 0.03; finish_launch; begin_launch; sleep 0.03; finish_launch; }
+        run_journey relaunch sample
+    """,
+    )
+    assert result.returncode == 0, result.stderr
+    record = read_journey(tmp_path, "relaunch")
+    assert record["launch_count"] == 2
+    assert record["launch_duration_seconds"] >= 0.06
+
+
+@pytest.mark.parametrize(
+    "helper", ["cleanup_persona", "cleanup_operator_server", "cleanup_telemetry_sink"]
+)
+@pytest.mark.parametrize("code", [1, 7])
+def test_cleanup_failure_cannot_leave_active_journey_green(tmp_path, helper, code):
+    result = run_shell(
+        tmp_path,
+        f"""
+        {helper}() {{ return {code}; }}
+        normal() {{ :; }}
+        run_journey cleanup normal
+        run_journey never normal
+    """,
+    )
+    assert result.returncode == code, result.stderr
+    record = read_journey(tmp_path, "cleanup")
+    assert record["status"] == "fail"
+    assert record["exit_code"] == code
+    assert not (tmp_path / "journeys/never.json").exists()
+
+
+def test_cleanup_time_is_part_of_execution_cost(tmp_path):
+    result = run_shell(
+        tmp_path,
+        """
+        cleanup_persona() { sleep 0.03; }
+        normal() { :; }
+        run_journey cleanup normal
+    """,
+    )
+    assert result.returncode == 0, result.stderr
+    record = read_journey(tmp_path, "cleanup")
+    assert record["launch_duration_seconds"] == 0
+    assert record["execution_duration_seconds"] >= 0.03
+
+
+def test_failed_assertion_aborts_the_function_before_success(tmp_path):
+    result = run_shell(
+        tmp_path,
+        """
+        broken() { false; touch "$OUT_ROOT/false-green"; }
+        run_journey assertion broken
+    """,
+    )
+    assert result.returncode == 1, result.stderr
+    assert not (tmp_path / "false-green").exists()
+    assert read_journey(tmp_path, "assertion")["status"] == "fail"
+
+
+def test_early_zero_exit_does_not_report_success(tmp_path):
+    result = run_shell(
+        tmp_path, "premature() { exit 0; }; run_journey premature premature"
+    )
+    assert result.returncode == 1, result.stderr
+    assert read_journey(tmp_path, "premature")["exit_code"] == 1
+
+
+@pytest.mark.parametrize("signal,code", [("INT", 130), ("TERM", 143)])
+def test_signal_records_interrupted_launch(tmp_path, signal, code):
+    result = run_shell(
+        tmp_path,
+        f"""
+        trap 'exit {code}' {signal}
+        interrupted() {{ begin_launch; kill -s {signal} $$; }}
+        run_journey interrupted interrupted
+    """,
+    )
+    assert result.returncode == code, result.stderr
+    record = read_journey(tmp_path, "interrupted")
+    assert record["status"] == "cancelled"
+    assert record["launch_count"] == 1
+
+
+def test_real_all_dispatcher_emits_independent_records(tmp_path):
+    # Run the actual dispatch table with tiny journey bodies; assertions and
+    # evidence handling remain real. This catches a forgotten wrapper in all.
+    dispatcher = HARNESS.read_text().rsplit('case "$FLOW" in', 1)[1].split("esac", 1)[0]
+    names = re.findall(r"^    ([a-z][a-z0-9-]+)\)", dispatcher, re.M)
+    functions = set(re.findall(r"\bflow_[a-z0-9_]+", dispatcher))
+    definitions = "\n".join(f"{name}() {{ :; }}" for name in functions)
+    result = run_shell(
+        tmp_path, definitions + '\nFLOW=all\ncase "$FLOW" in' + dispatcher + "esac"
+    )
+    assert result.returncode == 0, result.stderr
+    all_block = dispatcher.split("    all)", 1)[1].split(";;", 1)[0]
+    expected = set(re.findall(r"\bflow_([a-z0-9_]+)", all_block))
+    assert {p.stem for p in (tmp_path / "journeys").glob("*.json")} == {
+        name.replace("_", "-") for name in expected
+    }
+    for name in set(names) - {"all"}:
+        assert f"{name}) run_journey {name} flow_" in dispatcher

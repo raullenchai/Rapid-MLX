@@ -49,7 +49,18 @@ def _isolate(tmp_path, monkeypatch):
     state.mkdir()
     monkeypatch.setattr(share_cli, "_state_dir", lambda: state)
     qs._SECRETS.clear()
-    yield tmp_path
+    real_run = subprocess.run
+
+    def isolated_run(argv, *args, **kwargs):
+        if argv[0] == "launchctl":
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, *args, **kwargs)
+
+    with (
+        patch.object(qs.shutil, "which", return_value="/usr/local/bin/rapid-mlx"),
+        patch.object(qs.subprocess, "run", side_effect=isolated_run),
+    ):
+        yield tmp_path
     qs._SECRETS.clear()
 
 
@@ -1740,7 +1751,7 @@ def test_run_share_serves_with_max_seqs_2_and_no_rate_limit():
     with _enter(*ctxs, patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn)):
         qs.run_share(_make_args(provider_key=PROVIDER_KEY))
     extra = spawned["extra_args"]
-    assert extra[:2] == ["--max-num-seqs", "2"]
+    assert extra[:3] == ["--disable-disk-caches", "--max-num-seqs", "2"]
     assert "--rate-limit" not in extra
     assert "--no-thinking" in extra
 
@@ -1794,6 +1805,7 @@ def test_run_share_respects_user_max_seqs_override():
     # Injection skipped — the user's own --max-num-seqs passthrough wins; the
     # catalog-id --served-model-name is still added (pool addresses by catalog id).
     assert spawned["extra_args"] == [
+        "--disable-disk-caches",
         "--no-thinking",
         "--served-model-name",
         "qwen3.6-35b",
@@ -2125,7 +2137,7 @@ def test_install_service_writes_keyless_plist(capsys, tmp_path):
     assert b"--quicksilver" in data
     assert SHARE_KEY.encode() not in data and b"--provider-key" not in data
     out = capsys.readouterr().out
-    assert "launchctl bootstrap" in out
+    assert "Started com.quicksilver.node" in out
 
 
 def test_install_service_plist_keeps_registration_origin(capsys):
@@ -2355,7 +2367,7 @@ def test_run_share_forwards_explicit_rate_limit_but_never_injects_default():
         return spawned["extra_args"]
 
     extra = run_with(None)
-    assert extra[:2] == ["--max-num-seqs", "2"]
+    assert extra[:3] == ["--disable-disk-caches", "--max-num-seqs", "2"]
     assert "--rate-limit" not in extra
 
     extra = run_with(60)
@@ -3037,6 +3049,7 @@ def test_glm_flash_never_gets_no_thinking_injected():
     extra = _run_share_capture_extra(model="glm-5.3-flash")
     assert "--no-thinking" not in extra
     assert extra == [
+        "--disable-disk-caches",
         "--max-num-seqs",
         "2",
         "--default-reasoning-effort",
@@ -3272,3 +3285,207 @@ def test_rejected_no_thinking_never_registers():
             )
         )
     assert calls == []
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_register_certificate_failure_is_terminal(wrapped):
+    import ssl
+
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    if wrapped:
+        error = urllib.error.URLError(error)
+    with (
+        patch.object(qs, "_open", side_effect=error) as opened,
+        patch.object(qs, "_register_retry_sleep") as sleep,
+        pytest.raises(qs.QuickSilverError, match="SSL_CERT_FILE"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
+    assert opened.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_run_share_certificate_failure_stops_and_reaps_child():
+    import ssl
+
+    tunnel = _fake_tunnel(
+        ready=False, closed=True, error=ssl.SSLCertVerificationError(1, "untrusted")
+    )
+    serve, ctrl_c = _patched_run_env(None)
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        _enter(
+            *_run_patches(serve, lambda **kw: tunnel, ctrl_c),
+            patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+        ),
+        pytest.raises(SystemExit) as exc,
+    ):
+        qs.run_share(_make_args())
+    assert exc.value.code == 2
+    serve.terminate.assert_called_once()
+    tunnel.stop.assert_called()
+
+
+def test_install_service_starts_stable_launcher():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with patch.object(qs.subprocess, "run") as run:
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    argv = plistlib.loads(path.read_bytes())["ProgramArguments"]
+    assert argv[:2] == ["/usr/local/bin/rapid-mlx", "share"]
+    assert run.call_args.args[0] == [
+        "launchctl",
+        "bootstrap",
+        f"gui/{os.getuid()}",
+        str(path),
+    ]
+
+
+def test_install_service_reports_bootstrap_failure():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        patch.object(
+            qs.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(5, "launchctl"),
+            ],
+        ),
+        pytest.raises(qs.QuickSilverError, match="bootstrap failed"),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_heartbeat_certificate_failure_stops_without_retry(wrapped):
+    import ssl
+
+    error = ssl.SSLCertVerificationError(1, "untrusted heartbeat certificate")
+    if wrapped:
+        error = urllib.error.URLError(error)
+    beat = qs._Heartbeat("https://pay.test/hb", SHARE_KEY, 1, lambda: 0)
+    with patch.object(qs, "_open", side_effect=error) as opened:
+        beat.beat_now()
+        beat.beat_now()
+    assert beat.fatal.is_set()
+    assert beat.fatal_message == qs.tls.CERTIFICATE_HINT
+    assert opened.call_count == 1
+
+
+def test_heartbeat_certificate_failure_supervisor_reports_ca_repair(capsys):
+    beat = _fake_heartbeat_class()
+    beat.fatal.set()
+    beat.fatal_message = qs.tls.CERTIFICATE_HINT
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        _enter(*_run_patches(serve, lambda **kw: tunnel, ctrl_c)),
+        patch.object(qs, "_Heartbeat", return_value=beat),
+        pytest.raises(SystemExit) as exc,
+    ):
+        qs.run_share(_make_args())
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "SSL_CERT_FILE" in err
+    assert "revoked" not in err
+    serve.terminate.assert_called_once()
+    tunnel.stop.assert_called()
+
+
+def test_service_reinstall_restores_previous_job_on_bootstrap_failure():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    path.parent.mkdir(parents=True)
+    previous = plistlib.dumps(
+        {"Label": "old-job", "ProgramArguments": ["/stable/rapid-mlx"]}
+    )
+    path.write_bytes(previous)
+    with (
+        patch.object(
+            qs.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(5, "launchctl"),
+                subprocess.CompletedProcess([], 0),
+            ],
+        ) as run,
+        pytest.raises(
+            qs.QuickSilverError, match="previous service configuration restored"
+        ),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    assert path.read_bytes() == previous
+    assert run.call_count == 3
+    assert run.call_args.args[0] == [
+        "launchctl",
+        "bootstrap",
+        f"gui/{os.getuid()}",
+        str(path),
+    ]
+
+
+def test_service_reinstall_reports_failed_recovery():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    path.parent.mkdir(parents=True)
+    previous = plistlib.dumps({"Label": "old-job"})
+    path.write_bytes(previous)
+    with (
+        patch.object(
+            qs.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0),
+                subprocess.CalledProcessError(5, "new bootstrap"),
+                subprocess.CalledProcessError(5, "old bootstrap"),
+            ],
+        ),
+        pytest.raises(qs.QuickSilverError, match="previous service recovery failed"),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    assert path.read_bytes() == previous
+
+
+def test_https_trust_setup_is_lazy_and_terminal():
+    import ssl
+
+    with patch.object(
+        qs.tls,
+        "client_context",
+        side_effect=ssl.SSLCertVerificationError(qs.tls.CERTIFICATE_HINT),
+    ) as context:
+        handler = qs._VerifiedHTTPSHandler()
+        context.assert_not_called()
+        with pytest.raises(ssl.SSLCertVerificationError, match="SSL_CERT_FILE"):
+            handler.https_open(urllib.request.Request("https://localhost/register"))
+    context.assert_called_once()
+
+
+def test_install_service_requires_stable_launcher():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        patch.object(qs.shutil, "which", return_value=None),
+        pytest.raises(qs.QuickSilverError, match="installed rapid-mlx command on PATH"),
+    ):
+        qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+
+
+def test_pool_cleanup_failure_prevents_serve_spawn(capsys):
+    from rapid_mlx.share import privacy
+
+    serve, ctrl_c = _patched_run_env(None)
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        _enter(*_run_patches(serve, lambda **kw: _fake_tunnel(), ctrl_c)),
+        patch.object(
+            privacy, "clear_legacy_prompt_cache", side_effect=OSError("busy cache")
+        ),
+        patch.object(share_cli, "_spawn_serve") as spawn,
+        pytest.raises(SystemExit) as error,
+    ):
+        qs.run_share(_make_args())
+    assert error.value.code == 2
+    assert "could not retire legacy model prompt cache" in capsys.readouterr().err
+    spawn.assert_not_called()

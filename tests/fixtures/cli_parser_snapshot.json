@@ -5964,7 +5964,7 @@
        "const": null,
        "default": null,
        "dest": "embedding_model",
-       "help": "Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit). Requires the [embeddings] extra. Install the optional runtime with:\n    python -m pip install 'rapid-mlx[embeddings]==<version>'",
+       "help": "Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit). Without a positional model, the server runs embeddings-only. Requires the [embeddings] extra. Install the optional runtime with:\n    python -m pip install 'rapid-mlx[embeddings]==<version>'",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -6552,6 +6552,51 @@
            "type": null
           },
           {
+           "class": "argparse._StoreTrueAction",
+           "completer": null,
+           "const": true,
+           "default": false,
+           "dest": "clear_model",
+           "help": "Remove the primary model (requires an embedding model).",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "--clear-model"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "embedding_model",
+           "help": null,
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--embedding-model"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreTrueAction",
+           "completer": null,
+           "const": true,
+           "default": false,
+           "dest": "clear_embedding_model",
+           "help": "Remove the embedding model (requires a primary model).",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "--clear-embedding-model"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
            "class": "argparse._StoreAction",
            "completer": null,
            "const": null,
@@ -6703,6 +6748,9 @@
            "dests": [
             "help",
             "model",
+            "clear_model",
+            "embedding_model",
+            "clear_embedding_model",
             "host",
             "port",
             "log_retention_days",
@@ -6715,7 +6763,22 @@
            "title": "options"
           }
          ],
-         "mutually_exclusive": [],
+         "mutually_exclusive": [
+          {
+           "dests": [
+            "model",
+            "clear_model"
+           ],
+           "required": false
+          },
+          {
+           "dests": [
+            "embedding_model",
+            "clear_embedding_model"
+           ],
+           "required": false
+          }
+         ],
          "prog": "rapid-mlx service configure"
         },
         "credential": {
@@ -6990,13 +7053,28 @@
            "class": "argparse._StoreAction",
            "completer": null,
            "const": null,
-           "default": "qwen3.5-4b-4bit",
+           "default": null,
            "dest": "model",
-           "help": "Model alias (or HF path) to serve, downloaded once by the service account (default: qwen3.5-4b-4bit).",
+           "help": "Model alias (or HF path) to serve, downloaded once by the service account (default: qwen3.5-4b-4bit unless only --embedding-model is given).",
            "metavar": null,
            "nargs": null,
            "option_strings": [
             "--model"
+           ],
+           "required": false,
+           "type": "builtins.str"
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "embedding_model",
+           "help": "Embedding model alias (or HF path) for /v1/embeddings. Without --model the service runs embeddings-only.",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--embedding-model"
            ],
            "required": false,
            "type": "builtins.str"
@@ -7066,6 +7144,7 @@
             "host",
             "port",
             "model",
+            "embedding_model",
             "dry_run",
             "label"
            ],

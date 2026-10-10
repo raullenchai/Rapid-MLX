@@ -124,10 +124,12 @@ class TestAnthropicToolDef:
     """Tests for AnthropicToolDef model."""
 
     def test_minimal(self):
-        tool = AnthropicToolDef(name="get_weather")
+        tool = AnthropicToolDef(
+            name="get_weather", input_schema={"type": "object", "properties": {}}
+        )
         assert tool.name == "get_weather"
         assert tool.description is None
-        assert tool.input_schema is None
+        assert tool.input_schema == {"type": "object", "properties": {}}
 
     def test_full(self):
         tool = AnthropicToolDef(
@@ -188,7 +190,11 @@ class TestAnthropicRequest:
             model="default",
             messages=[AnthropicMessage(role="user", content="hi")],
             max_tokens=100,
-            tools=[AnthropicToolDef(name="search")],
+            tools=[
+                AnthropicToolDef(
+                    name="search", input_schema={"type": "object", "properties": {}}
+                )
+            ],
         )
         assert len(req.tools) == 1
         assert req.tools[0].name == "search"

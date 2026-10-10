@@ -2586,9 +2586,7 @@ def test_server_main_no_mllm_skips_routing_config_fail_fast(monkeypatch):
     monkeypatch.setattr(server, "load_model", _stub_load_model)
     monkeypatch.setattr(_cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
 
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", lambda *_a, **_kw: None)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )

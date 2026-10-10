@@ -1062,7 +1062,8 @@ def test_product_server_reuses_guarded_serial_boundary(monkeypatch):
         lambda **kwargs: calls.setdefault("app", kwargs) or object(),
     )
     monkeypatch.setattr(
-        "uvicorn.run", lambda app, **kwargs: calls.update(uvicorn=(app, kwargs))
+        "rapid_mlx._uvicorn._run_server",
+        lambda app, **kwargs: calls.update(uvicorn=(app, kwargs)),
     )
 
     server.run_server(

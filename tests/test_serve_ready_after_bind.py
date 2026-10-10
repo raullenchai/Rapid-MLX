@@ -396,17 +396,18 @@ def test_cli_preserves_already_reported_uvicorn_exit(monkeypatch):
     assert raised.value is error
 
 
-def test_shared_runner_injects_server_subclass_and_restores_uvicorn(monkeypatch):
+def test_shared_runner_constructs_subclass_without_mutating_uvicorn(monkeypatch):
     uvicorn_main = importlib.import_module("uvicorn.main")
     original_server = uvicorn_main.Server
     observed: list[AcceptingConnectionsServer] = []
 
-    def fake_uvicorn_run(app, **kwargs):
-        config = uvicorn.Config(app, **kwargs)
-        observed.append(uvicorn_main.Server(config))
+    def fake_server_run(instance):
+        assert uvicorn_main.Server is original_server
+        observed.append(instance)
+        instance.started = True
 
     callback = lambda: None
-    monkeypatch.setattr(uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(AcceptingConnectionsServer, "run", fake_server_run)
     run_uvicorn(_asgi_app, host="127.0.0.1", port=0, on_server_accepting=callback)
 
     assert isinstance(observed[0], AcceptingConnectionsServer)
@@ -415,10 +416,10 @@ def test_shared_runner_injects_server_subclass_and_restores_uvicorn(monkeypatch)
 
 
 def _real_listener_runner(observations: list[int]):
-    def run(app, **kwargs):
-        uvicorn_main = importlib.import_module("uvicorn.main")
-        instance = uvicorn_main.Server(uvicorn.Config(app, **kwargs))
-        assert isinstance(instance, AcceptingConnectionsServer)
+    def run(app, *, on_server_accepting=None, **kwargs):
+        instance = AcceptingConnectionsServer(
+            uvicorn.Config(app, **kwargs), on_server_accepting=on_server_accepting
+        )
 
         async def serve_once() -> None:
             serve_task = asyncio.create_task(instance.serve())
@@ -480,7 +481,9 @@ def test_standalone_entrypoint_stashes_endpoint_and_runs_real_seam(
     monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *_a, **_kw: None)
     monkeypatch.setattr(server, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr(server, "app", _asgi_app)
-    monkeypatch.setattr(uvicorn, "run", _real_listener_runner(observations))
+    monkeypatch.setattr(
+        "rapid_mlx._uvicorn._run_server", _real_listener_runner(observations)
+    )
     monkeypatch.setattr(
         "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
@@ -531,7 +534,9 @@ def test_ddtree_runner_uses_shared_seam_without_false_ready(monkeypatch, capsys)
         SimpleNamespace(submit=lambda *_args, **_kwargs: pending),
     )
     monkeypatch.setattr(ddtree_server, "_build_app", lambda **_kwargs: _asgi_app)
-    monkeypatch.setattr(uvicorn, "run", _real_listener_runner(observations))
+    monkeypatch.setattr(
+        "rapid_mlx._uvicorn._run_server", _real_listener_runner(observations)
+    )
 
     ddtree_server.run_ddtree_server(
         main_model_repo="target",
@@ -634,7 +639,7 @@ def test_native_mtp_runner_defers_its_existing_banner_to_callback(monkeypatch, c
     app, kwargs = calls[0]
     assert app == "mtp-app"
     callback = kwargs.pop("on_server_accepting")
-    assert kwargs["uvicorn_runner"] is uvicorn.run
+    assert "uvicorn_runner" not in kwargs
     assert kwargs["host"] == "0.0.0.0"
     assert kwargs["port"] == 8103
     callback()
@@ -1017,7 +1022,7 @@ def test_listen_fd_bind_failure_omits_port_context(monkeypatch, port_argv):
     def fail_runner(*_args, **_kwargs):
         raise SystemExit(STARTUP_FAILURE)
 
-    monkeypatch.setattr("rapid_mlx._uvicorn.uvicorn.run", fail_runner)
+    monkeypatch.setattr("rapid_mlx._uvicorn._run_server", fail_runner)
     args = cli.build_parser().parse_args(
         ["serve", "qwen3.5-4b-4bit", "--listen-fd", "7", *port_argv]
     )

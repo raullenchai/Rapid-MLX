@@ -251,6 +251,15 @@ class ServerConfig:
     # frequently scrapes within milliseconds of server start).
     kv_cache_dtype: str | None = None
 
+    @property
+    def embeddings_only(self) -> bool:
+        # ``serve --embedding-model X`` without a primary model.
+        return self.model_name is None and self.embedding_engine is not None
+
+    @property
+    def model_loaded(self) -> bool:
+        return self.engine is not None or self.embeddings_only
+
 
 # Singleton instance
 _config = ServerConfig()

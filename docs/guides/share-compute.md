@@ -39,3 +39,29 @@ Enter the `qsppk-` key when prompted. Later runs reuse the local node
 registration. Choose a different `--worker` on each Mac. Stop with Ctrl-C.
 Only models enabled in QuickSilver's current pool can receive requests; the
 Desktop **Live Pool** view shows the current availability.
+
+Pool mode always disables optional disk caches. Before starting the local
+server, it removes the selected model's old automatic prompt snapshots,
+including interrupted saves, from `~/.cache/rapid-mlx/prefix_cache/`. Other
+models and downloaded weights are preserved. Stop any other server using that
+model before sharing; a busy cache, ambiguous legacy ownership, or failed cleanup prevents the node from
+joining the pool. Local serving outside pool mode can still persist prompt
+caches; new snapshots use private directories and files (0700 and 0600).
+Snapshots whose model ownership cannot be established from their full
+fingerprint require manual review and removal before sharing can start.
+
+The API and relay use verified TLS with system roots and the bundled CA list.
+Certificate verification failures stop registration or relay connection
+immediately. Update Python's CA certificates and `certifi`, or use
+`SSL_CERT_FILE` for a trusted private CA bundle, then restart sharing.
+
+After registering once, install and start a per-user macOS background service:
+
+```bash
+rapid-mlx share qwen3.8-27b --quicksilver --worker "$(hostname -s)" --install-service
+```
+
+The job uses the installed `rapid-mlx` launcher, reuses the private node
+registration, and starts automatically. Reinstalling replaces and restarts the
+job. A failed `launchctl bootstrap` is reported as an error; the written plist
+remains available for diagnosis. The command prints how to stop the job.

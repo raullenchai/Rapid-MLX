@@ -56,6 +56,12 @@ AX_DRIVER=""
 RESULT_WRITTEN=0
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_STARTED_EPOCH="$(date +%s)"
+JOURNEY=""
+JOURNEY_STARTED_MS=0
+JOURNEY_STARTED_AT=""
+LAUNCH_STARTED_MS=0
+LAUNCH_DURATION_MS=0
+LAUNCH_COUNT=0
 PERSONA_ENV=()
 
 usage() {
@@ -389,6 +395,65 @@ stop_app() {
     APP_PID=""
 }
 
+monotonic_ms() {
+    # macOS's system Python 3.9 gives monotonic() a per-process origin.
+    # clock_gettime uses the same system clock across these short processes.
+    python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1_000_000)'
+}
+
+begin_launch() {
+    LAUNCH_STARTED_MS="$(monotonic_ms)"
+    LAUNCH_COUNT=$((LAUNCH_COUNT + 1))
+}
+
+finish_launch() {
+    if [[ "$LAUNCH_STARTED_MS" -ne 0 ]]; then
+        local now
+        now="$(monotonic_ms)"
+        LAUNCH_DURATION_MS=$((LAUNCH_DURATION_MS + now - LAUNCH_STARTED_MS))
+        LAUNCH_STARTED_MS=0
+    fi
+}
+
+write_journey_result() {
+    [[ -n "$JOURNEY" ]] || return 0
+    local status="$1" exit_code="$2" now duration_ms
+    finish_launch
+    now="$(monotonic_ms)"
+    duration_ms=$((now - JOURNEY_STARTED_MS))
+    mkdir -p "$OUT_ROOT/journeys"
+    jq -n --arg flow "$JOURNEY" --arg status "$status" \
+        --arg started_at "$JOURNEY_STARTED_AT" --arg artifact_path "$OUT_ROOT" \
+        --argjson duration_ms "$duration_ms" --argjson launch_ms "$LAUNCH_DURATION_MS" \
+        --argjson launch_count "$LAUNCH_COUNT" --argjson exit_code "$exit_code" \
+        '{flow: $flow, status: $status, started_at: $started_at,
+          duration_seconds: ($duration_ms / 1000),
+          launch_duration_seconds: ($launch_ms / 1000),
+          execution_duration_seconds: (($duration_ms - $launch_ms) / 1000),
+          launch_count: $launch_count, exit_code: $exit_code,
+          artifact_path: $artifact_path}' > "$OUT_ROOT/journeys/$JOURNEY.json"
+}
+
+# Invoke as a plain command, never as an if/|| condition: Bash must keep
+# errexit enabled INSIDE the journey so failed assertions cannot become PASS.
+run_journey() {
+    JOURNEY="$1"
+    shift
+    JOURNEY_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    JOURNEY_STARTED_MS="$(monotonic_ms)"
+    LAUNCH_STARTED_MS=0
+    LAUNCH_DURATION_MS=0
+    LAUNCH_COUNT=0
+    "$@"
+    # Publish success only after all owned fixtures have stopped. These
+    # helpers are idempotent (journeys and EXIT already share them).
+    cleanup_persona
+    cleanup_operator_server
+    cleanup_telemetry_sink
+    write_journey_result pass 0
+    JOURNEY=""
+}
+
 write_result() {
     local status="$1" exit_code="$2" finished_epoch duration_seconds
     finished_epoch="$(date +%s)"
@@ -405,11 +470,22 @@ write_result() {
 finish() {
     local status=$? cleanup_failed=0
     set +e
+    finish_launch || cleanup_failed=1
     cleanup_persona || cleanup_failed=1
     cleanup_operator_server || cleanup_failed=1
     cleanup_telemetry_sink || cleanup_failed=1
     if [[ "$status" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
         status=1
+    fi
+    if [[ -n "$JOURNEY" ]]; then
+        # A journey that exits before returning to its wrapper did not finish,
+        # even if that premature exit selected zero.
+        [[ "$status" -ne 0 ]] || status=1
+        local journey_status=fail
+        if [[ "$status" -eq 130 || "$status" -eq 143 ]]; then
+            journey_status=cancelled
+        fi
+        write_journey_result "$journey_status" "$status" || status=1
     fi
     if [[ "$status" -ne 0 ]]; then
         mkdir -p "$OUT_ROOT" 2>/dev/null || true
@@ -811,6 +887,7 @@ require_tools() {
 }
 
 launch_persona_app() {
+    begin_launch
     local log_mode="$1"
     shift
     if [[ "$log_mode" == "append" ]]; then
@@ -936,6 +1013,7 @@ wait_for_window() {
                     continue
                 fi
             fi
+            finish_launch
             return
         fi
         sleep 0.25
@@ -5879,60 +5957,60 @@ fi
 mkdir -p "$OUT_ROOT"
 require_tools
 case "$FLOW" in
-    fresh-install) flow_fresh_install ;;
-    cached-quickstart) flow_cached_quickstart ;;
-    cached-curated-tradeup) flow_cached_curated_tradeup ;;
-    cached-variant-collapse) flow_cached_variant_collapse ;;
-    download-progress) flow_download_progress ;;
-    settings-persistence) flow_settings_persistence ;;
-    settings-mtp) flow_settings_mtp ;;
-    chat-restore) flow_chat_restore ;;
-    chat-depth) flow_chat_depth ;;
-    model-switch-active-request) flow_model_switch_active_request ;;
-    model-crash-recovery) flow_model_crash_recovery ;;
-    low-memory-choice) flow_low_memory_choice ;;
-    update-state) flow_update_state ;;
-    update-busy) flow_update_busy ;;
-    campaign-banner) flow_campaign_banner ;;
-    window-close-prompt) flow_window_close_prompt ;;
-    no-dead-controls) flow_no_dead_controls ;;
-    catalog-integrity) flow_catalog_integrity ;;
-    browse-all-destination) flow_browse_all_destination ;;
-    chat-document-attachment) flow_chat_document_attachment ;;
-    chat-multimodal-attachments) flow_chat_multimodal_attachments ;;
-    image-generation) flow_image_generation ;;
-    dictation) flow_dictation ;;
-    dictation-rc2-upgrade) flow_dictation_rc2_upgrade ;;
-    audio-readiness) flow_audio_readiness ;;
-    resident-load-rejected) flow_resident_load_rejected ;;
-    launch-integrations) flow_launch_integrations ;;
+    fresh-install) run_journey fresh-install flow_fresh_install ;;
+    cached-quickstart) run_journey cached-quickstart flow_cached_quickstart ;;
+    cached-curated-tradeup) run_journey cached-curated-tradeup flow_cached_curated_tradeup ;;
+    cached-variant-collapse) run_journey cached-variant-collapse flow_cached_variant_collapse ;;
+    download-progress) run_journey download-progress flow_download_progress ;;
+    settings-persistence) run_journey settings-persistence flow_settings_persistence ;;
+    settings-mtp) run_journey settings-mtp flow_settings_mtp ;;
+    chat-restore) run_journey chat-restore flow_chat_restore ;;
+    chat-depth) run_journey chat-depth flow_chat_depth ;;
+    model-switch-active-request) run_journey model-switch-active-request flow_model_switch_active_request ;;
+    model-crash-recovery) run_journey model-crash-recovery flow_model_crash_recovery ;;
+    low-memory-choice) run_journey low-memory-choice flow_low_memory_choice ;;
+    update-state) run_journey update-state flow_update_state ;;
+    update-busy) run_journey update-busy flow_update_busy ;;
+    campaign-banner) run_journey campaign-banner flow_campaign_banner ;;
+    window-close-prompt) run_journey window-close-prompt flow_window_close_prompt ;;
+    no-dead-controls) run_journey no-dead-controls flow_no_dead_controls ;;
+    catalog-integrity) run_journey catalog-integrity flow_catalog_integrity ;;
+    browse-all-destination) run_journey browse-all-destination flow_browse_all_destination ;;
+    chat-document-attachment) run_journey chat-document-attachment flow_chat_document_attachment ;;
+    chat-multimodal-attachments) run_journey chat-multimodal-attachments flow_chat_multimodal_attachments ;;
+    image-generation) run_journey image-generation flow_image_generation ;;
+    dictation) run_journey dictation flow_dictation ;;
+    dictation-rc2-upgrade) run_journey dictation-rc2-upgrade flow_dictation_rc2_upgrade ;;
+    audio-readiness) run_journey audio-readiness flow_audio_readiness ;;
+    resident-load-rejected) run_journey resident-load-rejected flow_resident_load_rejected ;;
+    launch-integrations) run_journey launch-integrations flow_launch_integrations ;;
     all)
-        flow_fresh_install
-        flow_cached_quickstart
-        flow_cached_curated_tradeup
-        flow_cached_variant_collapse
-        flow_download_progress
-        flow_settings_persistence
-        flow_settings_mtp
-        flow_chat_restore
-        flow_chat_depth
-        flow_model_switch_active_request
-        flow_model_crash_recovery
-        flow_low_memory_choice
-        flow_update_state
-        flow_update_busy
-        flow_campaign_banner
-        flow_window_close_prompt
-        flow_no_dead_controls
-        flow_catalog_integrity
-        flow_browse_all_destination
-        flow_chat_document_attachment
-        flow_chat_multimodal_attachments
-        flow_image_generation
-        flow_dictation
-        flow_audio_readiness
-        flow_resident_load_rejected
-        flow_launch_integrations
+        run_journey fresh-install flow_fresh_install
+        run_journey cached-quickstart flow_cached_quickstart
+        run_journey cached-curated-tradeup flow_cached_curated_tradeup
+        run_journey cached-variant-collapse flow_cached_variant_collapse
+        run_journey download-progress flow_download_progress
+        run_journey settings-persistence flow_settings_persistence
+        run_journey settings-mtp flow_settings_mtp
+        run_journey chat-restore flow_chat_restore
+        run_journey chat-depth flow_chat_depth
+        run_journey model-switch-active-request flow_model_switch_active_request
+        run_journey model-crash-recovery flow_model_crash_recovery
+        run_journey low-memory-choice flow_low_memory_choice
+        run_journey update-state flow_update_state
+        run_journey update-busy flow_update_busy
+        run_journey campaign-banner flow_campaign_banner
+        run_journey window-close-prompt flow_window_close_prompt
+        run_journey no-dead-controls flow_no_dead_controls
+        run_journey catalog-integrity flow_catalog_integrity
+        run_journey browse-all-destination flow_browse_all_destination
+        run_journey chat-document-attachment flow_chat_document_attachment
+        run_journey chat-multimodal-attachments flow_chat_multimodal_attachments
+        run_journey image-generation flow_image_generation
+        run_journey dictation flow_dictation
+        run_journey audio-readiness flow_audio_readiness
+        run_journey resident-load-rejected flow_resident_load_rejected
+        run_journey launch-integrations flow_launch_integrations
         ;;
     *) die "unknown flow: $FLOW" ;;
 esac

@@ -3516,3 +3516,78 @@ def test_kv_checkpoint_hook_returns_early_when_disk_caches_are_disabled():
         assert scheduler.Scheduler._maybe_disk_checkpoint(fake, object(), None) is None
     finally:
         disk_caches.configure(False)
+
+
+def test_snapshot_is_private_even_with_permissive_umask(tmp_path):
+    import stat
+
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    old_umask = os.umask(0)
+    try:
+        assert cache.save_to_disk(str(tmp_path / "snapshot"))
+    finally:
+        os.umask(old_umask)
+    snapshot = tmp_path / "snapshot"
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o700
+    for path in snapshot.iterdir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("artifact", ["symlink", "directory"])
+def test_snapshot_rejects_symlink_before_chmod(tmp_path, monkeypatch, artifact):
+    import rapid_mlx.memory_cache as mc
+
+    target = tmp_path / "unrelated"
+    target.write_text("unchanged")
+    target.chmod(0o644)
+    original = mc._fsync_dir
+
+    def inject_link(directory):
+        if str(directory).endswith(".new"):
+            from pathlib import Path
+
+            if artifact == "symlink":
+                (Path(directory) / "injected").symlink_to(target)
+            else:
+                (Path(directory) / "injected").mkdir()
+        return original(directory)
+
+    monkeypatch.setattr(mc, "_fsync_dir", inject_link)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert target.read_text() == "unchanged"
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / "snapshot").exists()
+
+
+def test_snapshot_preclean_rejects_existing_staging_symlink(tmp_path):
+    target = tmp_path / "unrelated"
+    target.mkdir(mode=0o755)
+    marker = target / "keep"
+    marker.write_text("unchanged")
+    (tmp_path / "snapshot.new").symlink_to(target, target_is_directory=True)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert marker.read_text() == "unchanged"
+    assert list(target.iterdir()) == [marker]
+
+
+def test_snapshot_aborts_when_staging_cannot_be_protected(tmp_path, monkeypatch):
+    import rapid_mlx.memory_cache as mc
+
+    original = mc.os.chmod
+
+    def deny(path, mode, *args, **kwargs):
+        if str(path).endswith(".new"):
+            raise PermissionError("permission denied")
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(mc.os, "chmod", deny)
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert not cache.save_to_disk(str(tmp_path / "snapshot"))
+    assert not list(tmp_path.rglob("*_tokens.bin"))

@@ -228,9 +228,10 @@ def test_legacy_server_main_hard_exits_after_uvicorn(monkeypatch):
     monkeypatch.setattr(server_mod, "_ensure_routing_config", lambda *_a, **_kw: None)
     monkeypatch.setattr(server_mod, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr("rapid_mlx.cli._port_preflight_or_die", lambda *_a, **_kw: None)
-    import uvicorn as _uvicorn
 
-    monkeypatch.setattr(_uvicorn, "run", lambda *_a, **_kw: events.append("uvicorn"))
+    monkeypatch.setattr(
+        "rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: events.append("uvicorn")
+    )
     monkeypatch.setattr(
         "rapid_mlx.cli._hard_exit_after_serve",
         lambda: events.append("hard_exit"),
@@ -351,8 +352,8 @@ def _entrypoint_call_sequence(entrypoint_name: str) -> list[str]:
 
 @pytest.mark.parametrize(
     "entrypoint",
-    ["serve_command", "_serve_audio_mode"],
-    ids=["serve_command", "serve_audio_mode"],
+    ["serve_command", "_serve_audio_mode", "_serve_embedding_only_mode"],
+    ids=["serve_command", "serve_audio_mode", "serve_embedding_only_mode"],
 )
 def test_serve_entrypoints_call_hard_exit_immediately_after_uvicorn(entrypoint):
     """Both serve entrypoints MUST dispatch uvicorn and then IMMEDIATELY

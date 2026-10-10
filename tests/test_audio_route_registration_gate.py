@@ -543,9 +543,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *a, **k: None)
         # ``uvicorn.run`` is imported as a top-level name in server.main;
         # patch through the module attr to dodge the real network bind.
-        import uvicorn
 
-        monkeypatch.setattr(uvicorn, "run", _stub_uvicorn)
+        monkeypatch.setattr("rapid_mlx._uvicorn._run_server", _stub_uvicorn)
         # Pre-zero the global so we observe the boot path setting it.
         monkeypatch.setattr(server, "_enable_audio_lane", False)
 
