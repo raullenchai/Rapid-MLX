@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field, replace
+from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass
@@ -162,6 +163,41 @@ class AgentProfile:
                         return vs.testing
         return self.testing
 
+    def normalize_base_url(self, base_url: str) -> str:
+        """Accept a server root for Codex while preserving explicit API paths.
+
+        Codex appends ``/responses`` to its provider URL, so a bare Rapid-MLX
+        server address needs the OpenAI API prefix. Other agents may require
+        a server root (e.g. Anthropic clients); their contracts are unchanged.
+        """
+        if self.name == "codex":
+            try:
+                parsed = urlsplit(base_url)
+                if parsed.scheme in {"http", "https"}:
+                    if not parsed.hostname:
+                        raise ValueError("missing hostname")
+                    # urlsplit defers port validation until this property is read.
+                    if parsed.port == 0:
+                        raise ValueError("port must be in 1..65535")
+            except ValueError:
+                # Parser errors may include credential-bearing netloc text.
+                raise ValueError(
+                    "Invalid Codex base URL; use a valid HTTP(S) server address "
+                    "or explicit API path."
+                ) from None
+            if (
+                parsed.scheme in {"http", "https"}
+                and parsed.netloc
+                and parsed.path in {"", "/"}
+            ):
+                if "?" in base_url or "#" in base_url:
+                    raise ValueError(
+                        "Codex server-root URLs must not contain a query or fragment; "
+                        "use the server address and RAPID_MLX_API_KEY for authentication."
+                    )
+                return urlunsplit(parsed._replace(path="/v1"))
+        return base_url
+
     def render_config(
         self,
         base_url: str,
@@ -182,6 +218,7 @@ class AgentProfile:
             dict for env-based configs
         """
         cfg = self.get_config_for_version(agent_version)
+        base_url = self.normalize_base_url(base_url)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
         ctx_str = str(context_length if context_length is not None else 32768)
         has_rapid_key = bool(os.environ.get("RAPID_MLX_API_KEY"))
