@@ -65,6 +65,22 @@ runs for every pull request, passing quickly when the version is unchanged.
 
 ### Type-error budget
 
+The existing source-preflight route also accepts the exact
+`config/mypy-error-baseline.txt` debt file and ordinary direct
+`tests/headless_mlx/test_*.py` regression files alongside eligible engine
+changes. This does not bypass the type-error ratchet: the same pinned type job
+and its shrink-only budget remain required. Headless CPU contracts still run
+once each across all three Python 3.11 shards in their separate pytest process;
+fake MLX modules do not leak into ordinary collection.
+
+Collection support (`conftest.py`, package initializers and nested fixtures),
+headless control/workflow tests, interpreter/dependency pins and unknown mixed
+paths keep full source checks. Source preflight is only earlier feedback; the
+combined queue candidate retains complete applicable compatibility, Apple/model
+and changed-line coverage gates. Disable `RAPID_MLX_SOURCE_PREFLIGHT` to restore
+the previous full source behavior. Neither eligibility nor fewer allocated jobs
+alone proves shorter push-to-merge time; record actual hosted timings.
+
 Engine changes run a shrink-only mypy debt ratchet. The checked-in
 `config/mypy-error-baseline.txt` records the current error count for each dirty
 file under the fully pinned Python 3.11 environment in

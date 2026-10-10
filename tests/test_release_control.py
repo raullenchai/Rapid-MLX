@@ -462,7 +462,8 @@ def git_case(tmp_path):
     git("tag", "rapid-mac-v0.16.0")
     git("checkout", "-b", "main", source)
     remote = tmp_path / "remote.git"
-    git("clone", "--bare", str(root), str(remote))
+    # Avoid copying loose objects while background Git maintenance repacks them.
+    git("clone", "--bare", "--no-local", str(root), str(remote))
     git("remote", "add", "origin", str(remote))
     args = argparse.Namespace(
         source=source,
