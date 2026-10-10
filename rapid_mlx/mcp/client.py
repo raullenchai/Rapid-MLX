@@ -7,6 +7,7 @@ import asyncio
 import logging
 import tempfile
 import time
+from contextlib import AsyncExitStack
 from typing import Any
 
 from .types import (
@@ -63,6 +64,9 @@ class MCPClient:
         self._error: str | None = None
         self._last_connected: float | None = None
         self._lock = asyncio.Lock()
+        self._lifecycle_task: asyncio.Task | None = None
+        self._stop_requested: asyncio.Event | None = None
+        self._exit_stack: AsyncExitStack | None = None
         # Issue #1716: the stdio child's stderr. The MCP SDK's ``stdio_client``
         # defaults ``errlog`` to our own stderr, so a server that dies on
         # startup wrote its traceback somewhere the user never sees and the
@@ -124,40 +128,86 @@ class MCPClient:
             self._state = MCPServerState.CONNECTING
             self._error = None
 
+            ready = asyncio.get_running_loop().create_future()
+            self._stop_requested = asyncio.Event()
+            self._lifecycle_task = asyncio.create_task(
+                self._run_connection(ready), name=f"mcp-lifecycle:{self.name}"
+            )
             try:
-                if self.config.transport == MCPTransport.STDIO:
-                    await self._connect_stdio()
-                elif self.config.transport == MCPTransport.SSE:
-                    await self._connect_sse()
-                else:
-                    raise ValueError(f"Unknown transport: {self.config.transport}")
+                return await asyncio.shield(ready)
+            except asyncio.CancelledError:
+                # Interrupt a blocked handshake, then let its owning task unwind
+                # every entered SDK context before releasing the client lock.
+                self._lifecycle_task.cancel()
+                await self._wait_for_cleanup(self._lifecycle_task)
+                raise
 
-                # Initialize session
-                await self._initialize_session()
+    @staticmethod
+    async def _wait_for_cleanup(task: asyncio.Future) -> None:
+        """Drain an owner even if the requesting task is cancelled repeatedly."""
+        cancelled = False
+        waiter = asyncio.gather(task, return_exceptions=True)
+        while not waiter.done():
+            try:
+                await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = waiter.result()[0]
+        if isinstance(result, BaseException) and not isinstance(
+            result, asyncio.CancelledError
+        ):
+            raise result
+        if cancelled:
+            raise asyncio.CancelledError
 
-                # Discover tools
-                await self._discover_tools()
+    async def _run_connection(self, ready: asyncio.Future) -> None:
+        """Enter, serve and exit SDK scopes in one task (#4466).
 
-                self._state = MCPServerState.CONNECTED
-                self._last_connected = time.time()
-                logger.info(
-                    f"Connected to MCP server '{self.name}' "
-                    f"({len(self._tools)} tools available)"
-                )
-                return True
-
-            except Exception as e:
-                self._state = MCPServerState.ERROR
-                # ``_describe_failure`` reads the captured stderr, so close it
-                # only after. A failed connect never reaches ``disconnect`` on
-                # its own (the manager just sees ``False``), so without this the
-                # temp file's descriptor leaks on every startup failure.
-                self._error = self._describe_failure(e)
-                self._close_stderr_file()
-                logger.error(
-                    f"Failed to connect to MCP server '{self.name}': {self._error}"
-                )
-                return False
+        Only this task owns the exit stack. Callers may use the session from
+        other tasks, but shutdown signals this owner instead of moving aclose()
+        to a gather/shield task. The stack also unwinds partial startup failures.
+        """
+        try:
+            async with AsyncExitStack() as stack:
+                self._exit_stack = stack
+                try:
+                    if self.config.transport == MCPTransport.STDIO:
+                        await self._connect_stdio()
+                    elif self.config.transport == MCPTransport.SSE:
+                        await self._connect_sse()
+                    else:
+                        raise ValueError(f"Unknown transport: {self.config.transport}")
+                    await self._initialize_session()
+                    await self._discover_tools()
+                    self._state = MCPServerState.CONNECTED
+                    self._last_connected = time.time()
+                    logger.info(
+                        f"Connected to MCP server '{self.name}' "
+                        f"({len(self._tools)} tools available)"
+                    )
+                    ready.set_result(True)
+                    await self._stop_requested.wait()
+                except Exception as exc:
+                    self._state = MCPServerState.ERROR
+                    # Read stderr while the transport still owns its file.
+                    self._error = self._describe_failure(exc)
+                    logger.error(
+                        f"Failed to connect to MCP server '{self.name}': {self._error}"
+                    )
+        except Exception as exc:
+            self._state = MCPServerState.ERROR
+            self._error = self._describe_failure(exc)
+            logger.warning(f"Error closing MCP server '{self.name}': {self._error}")
+        finally:
+            self._exit_stack = None
+            self._session = self._read = self._write = None
+            self._stdio_client = self._sse_client = None
+            self._close_stderr_file()
+            self._tools = []
+            if self._state != MCPServerState.ERROR:
+                self._state = MCPServerState.DISCONNECTED
+            if not ready.done():
+                ready.set_result(False)
 
     #: How much of the child's stderr to append to a connection error. Enough
     #: for a Python traceback's final line, short enough for a settings row.
@@ -221,11 +271,13 @@ class MCPClient:
         self._close_stderr_file()
         self._stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         self._stdio_client = stdio_client(server_params, errlog=self._stderr_file)
-        self._read, self._write = await self._stdio_client.__aenter__()
+        self._read, self._write = await self._exit_stack.enter_async_context(
+            self._stdio_client
+        )
 
         # Create session
         self._session = ClientSession(self._read, self._write)
-        await self._session.__aenter__()
+        await self._exit_stack.enter_async_context(self._session)
 
     async def _connect_sse(self):
         """Connect via SSE transport."""
@@ -239,11 +291,13 @@ class MCPClient:
 
         # Create SSE client context
         self._sse_client = sse_client(self.config.url)
-        self._read, self._write = await self._sse_client.__aenter__()
+        self._read, self._write = await self._exit_stack.enter_async_context(
+            self._sse_client
+        )
 
         # Create session
         self._session = ClientSession(self._read, self._write)
-        await self._session.__aenter__()
+        await self._exit_stack.enter_async_context(self._session)
 
     async def _initialize_session(self):
         """Initialize the MCP session."""
@@ -285,28 +339,20 @@ class MCPClient:
     async def disconnect(self):
         """Disconnect from the MCP server."""
         async with self._lock:
-            if self._state == MCPServerState.DISCONNECTED:
+            if (
+                self._state == MCPServerState.DISCONNECTED
+                and self._lifecycle_task is None
+            ):
                 return
 
             try:
-                if self._session:
-                    await self._session.__aexit__(None, None, None)
-                    self._session = None
-
-                if hasattr(self, "_stdio_client") and self._stdio_client:
-                    await self._stdio_client.__aexit__(None, None, None)
-                    self._stdio_client = None
-
-                if hasattr(self, "_sse_client") and self._sse_client:
-                    await self._sse_client.__aexit__(None, None, None)
-                    self._sse_client = None
-
-            except Exception as e:
-                logger.warning(f"Error disconnecting from '{self.name}': {e}")
-
+                if self._lifecycle_task is not None:
+                    self._stop_requested.set()
+                    await self._wait_for_cleanup(self._lifecycle_task)
             finally:
-                # Close the captured-stderr temp file, or each reload
-                # (disconnect + reconnect every client) leaks one fd until GC.
+                self._lifecycle_task = None
+                self._stop_requested = None
+                self._stdio_client = self._sse_client = None
                 self._close_stderr_file()
                 self._state = MCPServerState.DISCONNECTED
                 self._tools = []
