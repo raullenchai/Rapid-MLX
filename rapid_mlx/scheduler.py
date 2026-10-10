@@ -5429,21 +5429,14 @@ class Scheduler:
 
         return _prompt_cache_save
 
-    def _has_retained_boundary(self, request: Any) -> bool:
-        """A restored boundary must still exist when its retention is used."""
-        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
-            request, "_cache_snapshot_is_internal", False
-        ):
-            return False
-        if not getattr(request, "_cache_snapshot_restored", False):
-            return True
+    def _restored_boundary_live_locked(self, request: Any) -> bool:
+        """Check restored entry liveness while the caller holds the cache lock."""
         boundary = int(getattr(request, "_cache_snapshot_boundary", 0) or 0)
         store = self.memory_aware_cache
         if store is None or boundary <= 0:
             return False
-        with store._lock:
-            entry = store._entries.get(tuple(request.prompt_token_ids[:boundary]))
-            return entry is not None and entry.message_boundary
+        entry = store._entries.get(tuple(request.prompt_token_ids[:boundary]))
+        return entry is not None and entry.message_boundary
 
     def _boundary_snapshot_supersedes(
         self, request: Any, cache: list[Any], entry_len: int
@@ -5456,7 +5449,9 @@ class Scheduler:
         would add at most ``_BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP`` tokens of
         reuse beyond the boundary. Internal N-1 snapshots keep their own rule.
         """
-        if not self._has_retained_boundary(request):
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
             return False
         boundary = int(
             getattr(
@@ -5468,7 +5463,15 @@ class Scheduler:
         )
         if boundary <= 0 or entry_len - boundary > _BOUNDARY_SUPERSEDES_PROMPT_MAX_GAP:
             return False
-        return _cache_has_non_trimmable(cache)
+        if not _cache_has_non_trimmable(cache):
+            return False
+        if getattr(request, "_cache_snapshot_restored", False):
+            store = self.memory_aware_cache
+            if store is None:
+                return False
+            with store._lock:
+                return self._restored_boundary_live_locked(request)
+        return True
 
     def _protect_boundary_behind_completion(
         self, request: Any, cache: list[Any]
@@ -5483,20 +5486,26 @@ class Scheduler:
         Otherwise the caller stores it and :meth:`_touch_boundary_entry` moves
         the boundary back to most-recently-used.
         """
-        if not self._has_retained_boundary(request):
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
             return True
         if not _cache_has_non_trimmable(cache):
             return True
         # Only reached from the memory-aware store paths.
         mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
-        with mac._lock:  # noqa: SLF001 — budget read coordinated with store
+        with mac._lock:  # noqa: SLF001 — liveness and decision share one lock
+            if getattr(request, "_cache_snapshot_restored", False) and not (
+                self._restored_boundary_live_locked(request)
+            ):
+                return True
             used = mac._current_memory  # noqa: SLF001
-        # Both the byte budget and the hybrid entry-count bound must leave
-        # room for the boundary entry next to this one.
-        fits = (
-            used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
-            and mac._config.hybrid_reuse_max_entries >= 2  # noqa: SLF001
-        )
+            # Decide while the restored entry is still live. Concurrent
+            # admission reclamation must not invalidate the skip predicate.
+            fits = (
+                used + estimate_kv_cache_memory(cache) <= mac._max_memory  # noqa: SLF001
+                and mac._config.hybrid_reuse_max_entries >= 2  # noqa: SLF001
+            )
         if not fits:
             logger.debug(
                 "[cache_store] request=%s skipped hybrid completion entry: it "
@@ -5507,7 +5516,9 @@ class Scheduler:
 
     def _touch_boundary_entry(self, request: Any) -> None:
         """Mark this request's stored boundary entry most-recently-used."""
-        if not self._has_retained_boundary(request):
+        if not getattr(request, "_cache_snapshot_stored", False) or getattr(
+            request, "_cache_snapshot_is_internal", False
+        ):
             return
         boundary = int(
             getattr(
@@ -5521,6 +5532,10 @@ class Scheduler:
         # Only reached from the memory-aware store paths.
         mac = cast(MemoryAwarePrefixCache, self.memory_aware_cache)
         with mac._lock:  # noqa: SLF001
+            if getattr(request, "_cache_snapshot_restored", False) and not (
+                self._restored_boundary_live_locked(request)
+            ):
+                return
             if key in mac._entries:  # noqa: SLF001
                 mac._entries.move_to_end(key)  # noqa: SLF001
 

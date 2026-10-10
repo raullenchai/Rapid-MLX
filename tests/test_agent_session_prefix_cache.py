@@ -22,6 +22,7 @@ Each test below pins one of those policies.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -494,6 +495,48 @@ def test_restored_boundary_insert_failure_rearms_cold_snapshot(monkeypatch):
     assert not req._cache_snapshot_stored
     assert not req._boundary_snapshot_taken
     assert req._cache_snapshot_boundary == 128
+
+
+def test_restored_boundary_completion_decision_blocks_concurrent_eviction(monkeypatch):
+    from rapid_mlx import scheduler as scheduler_module
+
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    key = tuple(range(128))
+    assert cache.store(list(key), _hybrid_cache(4 * MB), message_boundary=True)
+    assert cache.store(list(range(500, 628)), _hybrid_cache(4 * MB))
+    req = _register(sched, 77, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    attempted = threading.Event()
+    outcome = {}
+
+    def evict_if_possible():
+        acquired = cache._lock.acquire(blocking=False)
+        outcome["evicted"] = acquired
+        if acquired:
+            try:
+                cache._evict_entry_locked(key, "pressure")
+            finally:
+                cache._lock.release()
+        attempted.set()
+
+    def estimate_with_concurrent_pressure(_layers):
+        worker = threading.Thread(target=evict_if_possible)
+        worker.start()
+        worker.join(timeout=2)
+        assert attempted.is_set(), "eviction attempt did not finish"
+        return 4 * MB
+
+    monkeypatch.setattr(
+        scheduler_module, "estimate_kv_cache_memory", estimate_with_concurrent_pressure
+    )
+
+    assert not sched._protect_boundary_behind_completion(req, _hybrid_cache(4 * MB))
+    assert not outcome["evicted"]
+    assert key in cache._entries
 
 
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
