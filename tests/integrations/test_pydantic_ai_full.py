@@ -11,7 +11,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 
-def run_tests(model, runner):
+def run_tests(model, loop):
     results = {}
 
     # === 1. Plain completion ===
@@ -40,7 +40,7 @@ def run_tests(model, runner):
                     chunks.append(delta)
             return "".join(chunks)
 
-        out = runner.run(stream_test())
+        out = loop.run_until_complete(stream_test())
         assert len(out) > 5, f"Too short: {out}"
         assert any(d in out for d in ["1", "2", "3"]), out
         print(f"PASS: chunks={len(out)} chars, output={out[:80]}")
@@ -166,20 +166,24 @@ def main():
     except Exception:
         model_id = "default"
 
-    # run_sync uses the current event loop. Runner installs that same loop
-    # for streaming and closes it only after the shared HTTP pool is closed.
-    # Supplying our own client also avoids the SDK's cached default pool.
-    with asyncio.Runner() as runner:
-        runner.get_loop()
+    # run_sync uses the current event loop. Drive streaming and close the
+    # shared SDK pool on that same loop. Explicit ownership avoids the SDK's
+    # cached default pool and works on Python 3.10 as well as newer versions.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
         client = AsyncOpenAI(base_url=base_url, api_key="not-needed")
         try:
             model = OpenAIChatModel(
                 model_name=model_id,
                 provider=OpenAIProvider(openai_client=client),
             )
-            return run_tests(model, runner)
+            return run_tests(model, loop)
         finally:
-            runner.run(client.close())
+            loop.run_until_complete(client.close())
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 if __name__ == "__main__":

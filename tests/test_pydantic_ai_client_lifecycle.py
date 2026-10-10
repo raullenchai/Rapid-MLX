@@ -165,7 +165,7 @@ def test_real_sdk_sync_stream_sync(harness, bad_stream):
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_client_closed_on_own_loop_before_runner_exit(harness, monkeypatch, fail):
+def test_client_closed_on_own_loop_before_loop_exit(harness, monkeypatch, fail):
     clients = []
     loops = []
 
@@ -179,8 +179,7 @@ def test_client_closed_on_own_loop_before_runner_exit(harness, monkeypatch, fail
         clients.append(client)
         return client
 
-    def run_tests(model, runner):
-        loop = runner.get_loop()
+    def run_tests(model, loop):
         loops.append(loop)
         assert asyncio.get_event_loop() is loop
         assert model.provider.client is clients[-1]
