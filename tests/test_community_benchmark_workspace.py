@@ -4104,6 +4104,8 @@ def test_archive_limit_keeps_latest_regardless_of_scan_order(
         (RuntimeError("Metal buffer alloc failed"), "runtime_oom"),
         (RuntimeError("unsupported benchmark task"), "unsupported_task"),
         (TimeoutError("probe timed out"), "timeout"),
+        (TimeoutError(), "timeout"),
+        (asyncio.TimeoutError(), "timeout"),
         (RuntimeError("model repo not found"), "invalid_model"),
         (RuntimeError("something else"), "runtime_error"),
     ],
@@ -4112,6 +4114,41 @@ def test_failure_codes_classify_without_leaking_text(
     error: Exception, code: str
 ) -> None:
     assert local_runner._failure_code(error) == code
+
+
+@pytest.mark.parametrize("received", [0, 1])
+@pytest.mark.parametrize("error_type", [TimeoutError, asyncio.TimeoutError])
+def test_text_round_timeout_reports_case_and_progress(received, error_type) -> None:
+    class Engine:
+        async def add_request(self, prompt, params):
+            return "request"
+
+        async def stream_outputs(self, request_id, timeout):
+            assert timeout == 180
+            if received:
+                yield SimpleNamespace(new_token_ids=[7], output_token_ids=[7])
+            raise error_type()
+
+    with pytest.raises(TimeoutError, match=f"received {received}/512") as error:
+        asyncio.run(bench_runner._run_one_round(Engine(), [1], None, 2048, 512))
+    assert "pp2048-tg512" in str(error.value)
+    assert "180 s" in str(error.value)
+    assert local_runner._failure_code(error.value) == "timeout"
+    assert isinstance(error.value.__cause__, error_type)
+
+
+def test_run_local_archives_empty_timeout_as_timeout(monkeypatch, tmp_path) -> None:
+    _mock_local_context(monkeypatch, "text_generation", "mlx-community/example")
+
+    async def measurements(*args, **kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr(local_runner, "_text_measurements", measurements)
+    archive = LocalRunArchive(tmp_path)
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example", archive=archive)
+    assert error.value.saved
+    assert error.value.run["outcome"] == {"status": "failed", "failure_code": "timeout"}
 
 
 def test_image_artifact_response_shape_is_validated() -> None:

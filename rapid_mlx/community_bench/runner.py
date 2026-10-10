@@ -28,6 +28,7 @@ Hardcoded:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import random
 import statistics
@@ -263,10 +264,18 @@ async def _run_one_round(
     # ``stream_outputs`` exits cleanly after yielding the finished
     # output (its own internal ``break`` on the finished sentinel
     # routes through ``finally``).
-    async for out in engine.stream_outputs(rid, timeout=180):
-        if t_first_token is None and out.new_token_ids:
-            t_first_token = time.perf_counter()
-        last_output = out
+    try:
+        async for out in engine.stream_outputs(rid, timeout=180):
+            if t_first_token is None and out.new_token_ids:
+                t_first_token = time.perf_counter()
+            last_output = out
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        received = len(last_output.output_token_ids) if last_output is not None else 0
+        raise TimeoutError(
+            f"benchmark pp{target_prompt_tokens}-tg{expected_completion_tokens} "
+            f"timed out waiting for model output (stream timeout: 180 s; "
+            f"received {received}/{expected_completion_tokens} output tokens)"
+        ) from exc
 
     t_end = time.perf_counter()
 
