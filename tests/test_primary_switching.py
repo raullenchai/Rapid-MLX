@@ -244,7 +244,9 @@ async def test_blocked_low_memory_switch_has_typed_http_contract(
 
 
 @pytest.mark.asyncio
-async def test_switch_preserves_explicit_secondary_routing(switching_server):
+async def test_switch_preserves_explicit_secondary_routing(
+    switching_server, monkeypatch
+):
     from rapid_mlx.service.helpers import _validate_model_name, get_engine
 
     env = switching_server
@@ -264,6 +266,14 @@ async def test_switch_preserves_explicit_secondary_routing(switching_server):
         for name in (None, "default", "chat-old", "chat-new", "unknown"):
             with pytest.raises(HTTPException) as error:
                 get_engine(name)
+            assert error.value.detail["error"]["code"] == "model_switching"
+        # Legacy/single-model config must not expose a cached primary when
+        # the registry is absent during the same transition.
+        with monkeypatch.context() as patch:
+            patch.setattr(env.cfg, "model_registry", None)
+            patch.setattr(env.cfg, "engine", env.old.engine)
+            with pytest.raises(HTTPException) as error:
+                get_engine("chat-old")
             assert error.value.detail["error"]["code"] == "model_switching"
     finally:
         env.release.set()
@@ -481,6 +491,39 @@ async def wait_for_lock_waiters(lock, count):
             await asyncio.sleep(0)
 
     await asyncio.wait_for(wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admit", [False, True])
+async def test_role_request_rejects_already_started_switch(switching_server, admit):
+    from rapid_mlx.runtime.resident_models import ResidentModelSwitchingError
+
+    env = switching_server
+    task = start_switch(env)
+
+    async def request():
+        if admit:
+            async with env.manager.admit_role(
+                role="alignment",
+                model_id="aligner",
+                requested_bytes=GIB,
+                capacity_source="test",
+                reject_primary_switch=True,
+            ):
+                pytest.fail("request must not acquire a role during switching")
+        else:
+            await env.manager.release_role("alignment", reject_primary_switch=True)
+
+    try:
+        await asyncio.wait_for(env.started.wait(), timeout=2)
+        with pytest.raises(ResidentModelSwitchingError):
+            await asyncio.wait_for(request(), timeout=1)
+        assert env.manager._roles == {}
+        assert env.manager._lock.locked()  # The loader still owns its lock.
+        assert not task.done()
+    finally:
+        env.release.set()
+        await task
 
 
 @pytest.mark.asyncio
