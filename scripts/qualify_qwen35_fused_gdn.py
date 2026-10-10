@@ -131,9 +131,11 @@ def qualify(model_path: Path, histories: list[int], steps: int, out: Path) -> di
 
     def counted_kernel(*a, **kw):
         nonlocal calls
-        result = kernel(*a, **kw)
+        # Production catches an unpacking failure and falls back to native.
+        # Count only the exact return contract that it can consume.
+        output, conv, state = kernel(*a, **kw)
         calls += 1
-        return result
+        return output, conv, state
 
     class Capture(nn.Module):
         def __init__(self, inner):
@@ -153,19 +155,20 @@ def qualify(model_path: Path, histories: list[int], steps: int, out: Path) -> di
         layer.out_proj = Capture(projection)
 
     def storage(array):
-        if array.dtype not in (mx.bfloat16, mx.float16, mx.float32):
-            raise ValueError(f"unexpected tensor dtype {array.dtype}")
-        bits = np.array(
-            array.view(mx.uint32 if array.dtype == mx.float32 else mx.uint16)
-        )
+        width = {
+            mx.bfloat16: mx.uint16,
+            mx.float16: mx.uint16,
+            mx.float32: mx.uint32,
+        }.get(array.dtype, mx.uint8)
+        return np.array(array.view(width))
+
+    def finite(array, bits):
         exponent = {
             mx.bfloat16: 0x7F80,
             mx.float16: 0x7C00,
             mx.float32: 0x7F800000,
-        }[array.dtype]
-        if np.any((bits & exponent) == exponent):
-            raise ValueError("non-finite oracle/candidate tensor")
-        return bits
+        }.get(array.dtype)
+        return exponent is not None and not bool(np.any((bits & exponent) == exponent))
 
     trajectories = []
     shadow = {}
@@ -205,17 +208,36 @@ def qualify(model_path: Path, histories: list[int], steps: int, out: Path) -> di
                 "state": (caches["stock"][1], caches["fused"][1]),
             }
             metrics = {}
+            differing_indices = {}
             for name, (a, b) in tensors.items():
-                if a.dtype != b.dtype:
-                    raise ValueError(f"oracle/candidate dtype disagreement: {name}")
-                metrics[name] = {
-                    "dtype": str(a.dtype),
-                    **compare_bits(storage(a), storage(b)),
+                a_bits, b_bits = storage(a), storage(b)
+                metric = {
+                    "stock_dtype": str(a.dtype),
+                    "fused_dtype": str(b.dtype),
+                    "stock_shape": list(a.shape),
+                    "fused_shape": list(b.shape),
+                    "stock_sha256": digest(a_bits.tobytes()),
+                    "fused_sha256": digest(b_bits.tobytes()),
+                    "finite": finite(a, a_bits) and finite(b, b_bits),
+                    "error": None,
                 }
+                if a.dtype != b.dtype or a.shape != b.shape:
+                    metric["error"] = "oracle/candidate shape/dtype disagreement"
+                else:
+                    metric.update(compare_bits(a_bits, b_bits))
+                    differing_indices[name] = np.flatnonzero(
+                        a_bits.reshape(-1) != b_bits.reshape(-1)
+                    )
+                metric["exact"] = bool(
+                    metric["error"] is None
+                    and metric["finite"]
+                    and metric.get("differing_elements") == 0
+                )
+                metrics[name] = metric
             row = {**context, "layer": layers[id(layer)], "metrics": metrics}
             rows.write(json.dumps(row, sort_keys=True) + "\n")
             row_count += 1
-            if any(m["differing_elements"] for m in metrics.values()):
+            if not all(m["exact"] for m in metrics.values()):
                 witness = {
                     f"{arm}_{name}": pair[i]
                     for name, pair in tensors.items()
@@ -225,12 +247,10 @@ def qualify(model_path: Path, histories: list[int], steps: int, out: Path) -> di
                 mx.save_safetensors(
                     str(out / f"mismatch-{len(trajectories)}.safetensors"), witness
                 )
-                for name, (a, b) in tensors.items():
+                for name, indices in differing_indices.items():
                     np.save(
                         out / f"mismatch-{len(trajectories)}-{name}-indices.npy",
-                        np.flatnonzero(
-                            storage(a).reshape(-1) != storage(b).reshape(-1)
-                        ),
+                        indices,
                     )
                 raise ValueError(
                     f"native mismatch at {layers[id(layer)]} step {context['step']}"

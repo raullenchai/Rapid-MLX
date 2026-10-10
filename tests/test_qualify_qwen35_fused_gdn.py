@@ -171,3 +171,61 @@ def test_state_only_corruption_is_red_and_retains_indices(tiny_real_model, monke
         assert row["metrics"]["normalized_output"]["differing_elements"] == 0
     assert np.load(out / "mismatch-0-state-indices.npy").tolist() == [0]
     assert (out / "mismatch-0.safetensors").is_file()
+
+
+def test_invalid_kernel_return_contract_cannot_false_green(
+    tiny_real_model, monkeypatch
+):
+    from rapid_mlx import qwen35_fused_gdn_decode as fused
+    from scripts.qualify_qwen35_fused_gdn import qualify
+
+    _, snapshot, out = tiny_real_model
+    kernel = fused.fused_gdn_decode
+    monkeypatch.setattr(
+        fused, "fused_gdn_decode", lambda *a, **kw: (*kernel(*a, **kw), None)
+    )
+    report = qualify(snapshot, [8], 2, out)
+    assert report["status"] == "mismatch"
+    assert all("silently fell back" in t["error"] for t in report["trajectories"])
+    assert all(t["steps_completed"] == 0 for t in report["trajectories"])
+
+
+@pytest.mark.parametrize("defect", ["nan", "dtype", "shape"])
+def test_invalid_state_retains_failed_row_and_witness(
+    tiny_real_model, monkeypatch, defect
+):
+    import gzip
+    import json
+
+    import mlx.core as mx
+
+    from rapid_mlx import qwen35_fused_gdn_decode as fused
+    from scripts.qualify_qwen35_fused_gdn import qualify
+
+    _, snapshot, out = tiny_real_model
+    kernel = fused.fused_gdn_decode
+
+    def invalid(*a, **kw):
+        output, conv, state = kernel(*a, **kw)
+        if defect == "nan":
+            state = state.at[0, 0, 0, 0].add(float("nan"))
+        elif defect == "dtype":
+            state = state.astype(mx.bfloat16)
+        else:
+            state = state[..., :-1]
+        return output, conv, state
+
+    monkeypatch.setattr(fused, "fused_gdn_decode", invalid)
+    report = qualify(snapshot, [8], 2, out)
+    assert report["status"] == "mismatch"
+    assert report["rows"] == 2
+    rows = [json.loads(line) for line in gzip.open(out / "rows.jsonl.gz", "rt")]
+    for row in rows:
+        assert row["metrics"]["normalized_output"]["exact"] is True
+        state = row["metrics"]["state"]
+        assert state["exact"] is False
+        assert state["stock_sha256"] and state["fused_sha256"]
+        assert state["error"] if defect != "nan" else not state["finite"]
+    assert (out / "mismatch-0.safetensors").is_file()
+    if defect == "nan":
+        assert np.load(out / "mismatch-0-state-indices.npy").tolist() == [0]
