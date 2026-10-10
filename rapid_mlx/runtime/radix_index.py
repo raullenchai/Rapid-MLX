@@ -442,9 +442,9 @@ class RadixPrefixIndex:
     def save(self, path: str) -> None:
         """Atomically write the radix index to ``path``.
 
-        Atomicity is via the ``<path>.tmp`` → rename pattern that every
-        other on-disk artefact in rapid-mlx uses. A partial write leaves
-        the ``.tmp`` orphan and the previous ``radix.index`` intact —
+        Atomicity is via an exclusively created private temporary file
+        in the destination directory followed by rename. A partial write
+        leaves the previous ``radix.index`` intact —
         next boot loads the old one and reinserts any drift.
         """
         with self._lock:
@@ -459,12 +459,25 @@ class RadixPrefixIndex:
             "keys": keys,
         }
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
+        import tempfile
+
+        tmp = None
+        fd = None
         try:
-            with open(tmp, "w") as f:
+            fd, tmp = tempfile.mkstemp(
+                prefix=os.path.basename(path) + ".",
+                suffix=".tmp",
+                dir=os.path.dirname(path),
+            )
+            f = os.fdopen(fd, "w")
+            fd = None  # The file object now owns the descriptor.
+            with f:
+                os.fchmod(f.fileno(), 0o600)
                 json.dump(payload, f)
             os.replace(tmp, path)
         except Exception as e:
+            if fd is not None:
+                os.close(fd)
             # Best-effort: if we can't write the index file the only cost
             # is a rebuild from cache._entries on next boot.
             logger.warning(
@@ -472,7 +485,8 @@ class RadixPrefixIndex:
                 exc_info=True,
             )
             try:
-                os.unlink(tmp)
+                if tmp is not None:
+                    os.unlink(tmp)
             except OSError:
                 pass
 
