@@ -23,8 +23,16 @@ request's valid caller boundary.
   transformers 5.15.1.
 - `mlx-community/Qwen3.6-35B-A3B-4bit`, immutable snapshot
   `38740b847e4cb78f352aba30aa41c76e08e6eb46`.
-- Baseline engine `dfaa9cc407a0abb80dd0b5aa0afd46c6d249c47b`; candidate runtime
-  `0f4bee5fbb184e925355c57ae253e47ce39ab519`.
+- Baseline engine `dfaa9cc407a0abb80dd0b5aa0afd46c6d249c47b`.
+- Candidate HTTP forward source `9b906fd0a4b29ce5b1245cacd035af14be8c8800`;
+  reversed source `32c670b7e6821297e0d3765ec77eb6ea5e0dfa1e` differs only
+  by test formatting. Both include the atomic retention decision and narrow
+  caller-boundary guard.
+- Final implementation `ce1b7299b0706a0b2a99e7517d6b81e24781339c` adds two
+  local aliases for dynamically attached request metadata. Independent review
+  verified that removing only those identity aliases produces the same scheduler
+  AST as the measured revision. Final focused tests and type checks ran on this
+  implementation; the HTTP timings retain their actual source revisions.
 - Ordinary text HTTP route, FCFS, four sequences, completion batch four,
   prefill step 2048, decode stall target 500 ms, eight hybrid entries.
 - Prefix budget 2 GiB; additional unmodified-server capacity control at 4 GiB.
@@ -50,23 +58,19 @@ warm cohorts before duplicate writes can change their cache residency.
 
 ## Results
 
-These measurements describe runtime `0f4bee5f`. A subsequent atomic-retention
-fix and narrower caller-boundary guard are undergoing fresh validation; the
-earlier measurements do not qualify those revisions.
-
 Each cell is the median of four document sets. Forward and reversed seed orders
 are reported separately; the thread-submission groups do not guarantee actual
 arrival order.
 
 | Measurement | Baseline, forward | Candidate, forward | Baseline, reversed | Candidate, reversed |
 | --- | ---: | ---: | ---: | ---: |
-| Solo A TTFT (s) | 0.245 | 0.239 | 0.247 | 0.240 |
-| Solo B TTFT (s) | 9.527 | 0.239 | 9.533 | 0.238 |
-| Cohort A TTFT (s) | 33.201 | 4.855 | 33.120 | 4.868 |
-| Cohort B TTFT (s) | 5.405 | 4.855 | 5.398 | 4.869 |
-| Cohort C TTFT (s) | 33.201 | 24.181 | 33.121 | 24.159 |
-| Cohort D TTFT (s) | 33.201 | 24.181 | 33.120 | 24.160 |
-| Cohort makespan (s) | 33.779 | 24.629 | 33.703 | 24.609 |
+| Solo A TTFT (s) | 0.245 | 0.238 | 0.247 | 0.238 |
+| Solo B TTFT (s) | 9.527 | 0.236 | 9.533 | 0.237 |
+| Cohort A TTFT (s) | 33.201 | 4.826 | 33.120 | 4.828 |
+| Cohort B TTFT (s) | 5.405 | 4.826 | 5.398 | 4.828 |
+| Cohort C TTFT (s) | 33.201 | 24.107 | 33.121 | 24.085 |
+| Cohort D TTFT (s) | 33.201 | 24.108 | 33.120 | 24.086 |
+| Cohort makespan (s) | 33.779 | 24.558 | 33.703 | 24.534 |
 
 Baseline solo B missed in all eight sets; the candidate's solo A/B and cohort
 A/B each reused 32,736 tokens in all eight sets. Every measured long response
@@ -74,7 +78,7 @@ finished with 32 output tokens and a complete terminal stream, with identical
 prompt/completion/total usage across paired requests. Both candidate passes
 retained full text: all 64 responses returned their document's code within the
 first 100 characters. The 32 paired seed/solo output hashes matched exactly.
-Cohort hashes matched in 11/16 and 13/16 comparisons respectively; changing cache
+Cohort hashes matched in 10/16 and 12/16 comparisons respectively; changing cache
 residency changes batch execution, so these results do not claim numerical
 losslessness. The reversed baseline also retained text and answered all 32 codes
 correctly; the original baseline retained hashes rather than full text.
@@ -89,17 +93,21 @@ did not reproduce the candidate's cache residency in this workload.
 The unmodified 2 GiB native warm control skipped individual repeats, retaining
 both seeded boundaries until the cohort. Its median makespan was 24.666 seconds;
 all 24 measured responses returned the correct code. All eight warm cohort
-output hashes matched each candidate pass. Cohort totals matched 15/16 in each
-comparison, with one cold-lane disagreement per pass; these controls support
-the narrower cache-residency explanation without establishing losslessness.
+output hashes matched each candidate pass. All 16 cohort hashes, including the
+cold lanes, matched in each comparison. These controls support the narrower
+cache-residency explanation without establishing general losslessness.
 
 Two earlier fetch-time prototypes failed to improve actual HTTP cache hits;
 their results are excluded from the table. A successful intermediate prototype
 was also excluded because the table qualifies the recorded runtime revision.
-Independent review found and fixed eviction after planning and cached-insert
-retry handling before the final experiments. The focused M4 scheduler/cache
-suite passed 155 tests; removing the restored-boundary arm made all four targeted
-retention/alignment regressions fail.
+Independent review found and fixed eviction after planning, cached-insert retry
+handling and a concurrent-eviction window before the reported experiments.
+The final M5 scheduler/cache suite passed 157 tests; removing the restored-boundary
+arm made all four targeted retention/alignment regressions fail. Replacing the
+atomic implementation with the earlier split-lock implementation made the
+deterministic concurrent-eviction regression fail. The pinned Python 3.11 type
+budget passed without growth or new suppressions. These focused tests and HTTP
+experiments are distinct from the repository's complete unit and CI gates.
 
 ## Reproduction
 
@@ -192,8 +200,8 @@ be retained when checking the secret-code task.
 
 ## Limits
 
-These results qualify one hybrid model and one M5 configuration. M4 focused
-tests validate scheduler contracts but do not establish an M4 speedup. No M3
+These results qualify one hybrid model and one M5 configuration. M4 contract
+tests do not establish an M4 speedup. No M3
 performance claim follows. Cohort outputs may change when cold/warm residency
 changes batch execution; report hash disagreement rather than calling the
 optimization numerically lossless. The secret-code task is a narrow correctness
