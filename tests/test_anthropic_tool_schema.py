@@ -6,9 +6,7 @@ from pydantic import ValidationError
 
 from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
 from rapid_mlx.api.anthropic_models import AnthropicRequest
-
-pytest_plugins = ("tests.test_anthropic_output_config",)
-
+from tests.test_anthropic_output_config import anthropic_client as anthropic_client
 
 SCHEMA = {
     "type": "object",
