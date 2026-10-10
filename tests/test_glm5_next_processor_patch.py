@@ -529,7 +529,7 @@ def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch) -> None:
     import mlx_vlm.utils
 
     from rapid_mlx import moe_fusion
-    from rapid_mlx.models import mllm
+    from rapid_mlx.models import glm5_shardwise_load, mllm
     from rapid_mlx.utils import tokenizer as tokenizer_utils
 
     model = SimpleNamespace(config=SimpleNamespace())
@@ -537,6 +537,11 @@ def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch) -> None:
     fused = []
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
+    monkeypatch.setattr(
+        glm5_shardwise_load,
+        "load_glm5_shardwise",
+        lambda *args, **kwargs: (model, processor),
+    )
     monkeypatch.setattr(
         mlx_vlm.utils,
         "load_config",
