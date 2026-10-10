@@ -12,6 +12,11 @@ subprocess CLI checks find its installed entry points instead of another
 checkout's executables. Use the existing default Hugging Face cache; do not
 create another model cache or fetch weights to make unit tests pass.
 
+Keep a resolvable `origin/main` ref and enough commit history for
+`git merge-base origin/main HEAD` in the checkout. Development-tool contract
+tests exercise that real Git boundary; an archive-only or shallow detached
+checkout without the base ref is insufficient.
+
 The canonical suite also executes JavaScript workflow harnesses and validates
 MCP command discovery. Put a real Node.js installation (including `npx`) on
 the noninteractive runner's `PATH`; a Python environment alone is insufficient.
@@ -63,6 +68,11 @@ supplied profile instead of an installed-version override. The interactive
 preflight golden-output test uses the existing uncached fixture to clear both
 offline environment flags while its Hub calls remain mocked and the shared
 network guard remains active.
+
+The golden-harness missing-app evidence test isolates operator host admission
+so screen-lock and screensaver preferences cannot prevent it from reaching
+the intended app-precondition failure. Real GUI runs retain their host guard;
+its locked-host and screensaver contracts have separate tests.
 
 ## Glimmer cache-parity precision
 
