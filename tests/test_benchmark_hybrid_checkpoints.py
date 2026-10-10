@@ -39,7 +39,17 @@ def receipt(cached=0, ttft=1.0, text="warm"):
 def matrix():
     result = {
         "schema_version": 2,
-        "model": "/cached/snapshot",
+        "model": "/cached/snapshots/" + "a" * 40,
+        "provenance": {
+            "engine_commit": "b" * 40,
+            "harness_sha256": "c" * 64,
+            "worktree_status": "",
+            "python": "3.12.13",
+            "packages": {
+                k: "test-version"
+                for k in ("mlx", "mlx-lm", "mlx-vlm", "transformers", "numpy", "httpx")
+            },
+        },
         "port": 8617,
         "rounds": 2,
         "contract": "cold",
@@ -376,4 +386,44 @@ def test_noncanonical_launch_cannot_qualify(mutation):
     else:
         cmd.extend(["--temperature", "1"])
     with pytest.raises(ValueError, match="noncanonical"):
+        summarize(result)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "absent",
+        "dirty",
+        "commit",
+        "harness",
+        "python",
+        "packages",
+        "model",
+        "port",
+        "schema",
+    ],
+)
+def test_provenance_must_be_complete_without_claiming_authentication(mutation):
+    result = matrix()
+    if mutation == "absent":
+        result.pop("provenance")
+    elif mutation == "dirty":
+        result["provenance"]["worktree_status"] = (
+            " M scripts/benchmark_hybrid_checkpoints.py"
+        )
+    elif mutation in ("commit", "harness"):
+        result["provenance"][
+            "engine_commit" if mutation == "commit" else "harness_sha256"
+        ] = "invalid"
+    elif mutation == "python":
+        result["provenance"]["python"] = ""
+    elif mutation == "packages":
+        result["provenance"]["packages"].pop("mlx")
+    elif mutation == "model":
+        result["model"] = "/cached/mutable-main"
+    elif mutation == "port":
+        result["port"] = 0
+    else:
+        result["schema_version"] = True
+    with pytest.raises(ValueError):
         summarize(result)

@@ -219,7 +219,33 @@ def summarize(result: dict) -> dict:
         or threshold <= 1
     ):
         raise ValueError("invalid qualification contract or speed threshold")
+    if type(result.get("schema_version", 1)) is not int or result.get(
+        "schema_version", 1
+    ) not in (1, 2):
+        raise ValueError("unsupported receipt schema")
     balanced = result.get("schema_version", 1) == 2
+    if balanced:
+        provenance = result.get("provenance", {})
+        if not isinstance(provenance, dict) or (
+            not re.fullmatch(r"[0-9a-f]{40}", str(provenance.get("engine_commit", "")))
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(provenance.get("harness_sha256", ""))
+            )
+            or provenance.get("worktree_status") != ""
+            or not isinstance(provenance.get("python"), str)
+            or not provenance["python"].strip()
+        ):
+            raise ValueError("missing, dirty or invalid source provenance")
+        packages = provenance.get("packages", {})
+        if not isinstance(packages, dict) or any(
+            not isinstance(packages.get(name), str) or not packages[name].strip()
+            for name in ("mlx", "mlx-lm", "mlx-vlm", "transformers", "numpy", "httpx")
+        ):
+            raise ValueError("missing dependency provenance")
+        if not re.fullmatch(r"[0-9a-f]{40}", Path(result.get("model", "")).name):
+            raise ValueError("model must identify an immutable snapshot")
+        if type(result.get("port")) is not int or not 1 <= result["port"] <= 65535:
+            raise ValueError("invalid server port")
     orders = tuple(ORDERS) if balanced else ("historical",)
 
     def identity(order, prefill, checkpoint):
@@ -366,6 +392,8 @@ def main():
     ap.add_argument("--contract", choices=("cold", "incremental"), default="cold")
     ap.add_argument("--min-speedup", type=float, default=1.1)
     args = ap.parse_args()
+    if not 1 <= args.port <= 65535:
+        ap.error("--port must be in 1..65535")
     if not args.model.is_dir() or args.rounds < 2:
         ap.error("local snapshot and >=2 rounds required")
     if not math.isfinite(args.min_speedup) or args.min_speedup <= 1:
