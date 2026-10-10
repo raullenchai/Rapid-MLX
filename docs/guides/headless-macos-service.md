@@ -40,8 +40,20 @@ rapid-mlx service install --service-user serveuser \
 
 Pass advanced non-secret server options after a `--` separator, for example
 `-- --max-num-seqs 4`. Use the service command's own `--host` and `--port`
-options for binding; secret-bearing flags are intentionally rejected. The
-installed plist contains only a stable `service run --config ...` invocation.
+options for binding; secret-bearing flags are intentionally rejected.
+
+`--embedding-model MODEL` adds an embedding model for `/v1/embeddings`. Without
+`--model`, the service runs embeddings-only, without a chat model, which suits
+dedicated embedding replicas behind a load balancer:
+
+```bash
+sudo rapid-mlx service install \
+  --service-user serveuser \
+  --embedding-model embeddinggemma-300m-6bit \
+  --host 127.0.0.1 --port 8001
+```
+
+The installed plist contains only a stable `service run --config ...` invocation.
 The versioned, root-owned JSON definition under
 `/Library/Application Support/Rapid-MLX/Services/` is the effective source of
 truth. It is readable for diagnostics but not writable without root and is
@@ -70,6 +82,17 @@ rapid-mlx service config
 ```
 
 To clear advanced serve flags, use `service configure --clear-serve-args`.
+`--embedding-model MODEL` sets the embedding model; `--clear-model` and
+`--clear-embedding-model` remove the chat or embedding model, as long as one of
+the two remains. Embeddings-only services load their model at startup;
+`--lazy-load` is rejected when validating their configuration.
+Definitions with `embedding_model` require a release that supports this field;
+older releases reject them. Before downgrading, use the current release's
+`service configure --model <generation-model> --clear-embedding-model` and
+`service apply` to restore a primary-only definition, then downgrade. If no
+generation service is needed, uninstall the dedicated embedding service before
+downgrading. Primary-only definitions retain their existing schema and omit the
+unset embedding field, so existing services remain readable by older releases.
 Changing the service account or executable still requires uninstall/install,
 because those are security boundaries rather than runtime preferences.
 

@@ -79,7 +79,7 @@ def build_plist_dict(
     label: str,
     user: str,
     executable: str,
-    model: str,
+    model: str | None,
     home: Path,
     log_dir: Path,
     host: str = "127.0.0.1",
@@ -94,6 +94,15 @@ def build_plist_dict(
     log directory. All paths are absolute — launchd does not expand ``$HOME``
     or ``~`` in plist values.
     """
+    if config_path is not None:
+        program_arguments = [executable, "service", "run", "--config", str(config_path)]
+    else:
+        if model is None:
+            raise ValueError("model is required without a service config path")
+        program_arguments = serve_argv(
+            executable, model, host=host, port=port, serve_args=serve_args
+        )
+
     environment: dict[str, str] = {
         # Mandatory in the system launchd domain: without HOME, Hugging
         # Face cannot resolve the service account's model cache.
@@ -103,13 +112,7 @@ def build_plist_dict(
     return {
         "Label": label,
         "UserName": user,
-        "ProgramArguments": (
-            [executable, "service", "run", "--config", str(config_path)]
-            if config_path is not None
-            else serve_argv(
-                executable, model, host=host, port=port, serve_args=serve_args
-            )
-        ),
+        "ProgramArguments": program_arguments,
         "WorkingDirectory": str(home),
         "EnvironmentVariables": environment,
         # Unconditional KeepAlive = continuously enabled appliance. Use

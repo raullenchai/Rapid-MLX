@@ -103,6 +103,16 @@ def test_metrics_exposes_primary_model_lifecycle(metrics_client):
     assert 'rapid_mlx_model_unload_total{reason="idle"} 2' in body
 
 
+def test_metrics_reports_embeddings_only_model_loaded(metrics_client):
+    metrics_client.cfg.model_name = None
+    metrics_client.cfg.embedding_engine = object()
+
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_model_loaded 1" in body
+    assert 'rapid_mlx_model_lifecycle_state{state="ready"} 1' in body
+
+
 def test_metrics_lifecycle_snapshot_failure_and_unknown_state_are_safe(
     metrics_client,
 ):

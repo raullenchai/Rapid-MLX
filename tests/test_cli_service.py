@@ -55,6 +55,11 @@ def test_plist_is_deterministic(plist_kwargs):
     assert a == b
 
 
+def test_legacy_plist_requires_primary_model(plist_kwargs):
+    with pytest.raises(ValueError, match="model is required"):
+        build_plist_dict(**{**plist_kwargs, "model": None})
+
+
 def test_plist_matches_documented_safety_contract(plist_kwargs):
     """Same safety assertions as the static-template test
     ``test_headless_service_assets`` but for the generated plist."""
@@ -295,6 +300,39 @@ def test_install_without_service_user_errors(monkeypatch):
     _valid_user_monkeypatch(monkeypatch)
     code = ins_mod.install_command(_ns(service_user=None))
     assert code == 1
+
+
+# Only --embedding-model installs an embeddings-only service, no default model.
+def test_install_dry_run_embeddings_only(monkeypatch, capsys):
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins_mod, "_port_busy", staticmethod(lambda h, p: False))
+    code = ins_mod.install_command(
+        _ns(model=None, embedding_model="embeddinggemma-300m-6bit")
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "  model: (none)" in out
+    assert "  embedding model: embeddinggemma-300m-6bit" in out
+
+
+# Neither --model nor --embedding-model keeps the documented default model.
+def test_install_dry_run_defaults_model_without_embedding_model(monkeypatch, capsys):
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins_mod, "_port_busy", staticmethod(lambda h, p: False))
+    assert ins_mod.install_command(_ns(model=None)) == 0
+    out = capsys.readouterr().out
+    assert "  model: qwen3.5-4b-4bit" in out
+    assert "embedding model" not in out
+
+
+@pytest.mark.parametrize("flag", ["--model", "--embedding-model"])
+def test_install_rejects_explicit_empty_model(monkeypatch, capsys, flag):
+    _valid_user_monkeypatch(monkeypatch)
+    args = build_parser().parse_args(
+        ["service", "install", "--service-user", "serveuser", flag, "", "--dry-run"]
+    )
+    assert ins_mod.install_command(args) == 1
+    assert "invalid service configuration" in capsys.readouterr().err
 
 
 def test_install_refuses_admin_user(monkeypatch, capsys):
@@ -1272,6 +1310,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
     effective = types.SimpleNamespace(
         executable="/opt/rapid/bin/rapid-mlx",
         model="model-from-config",
+        embedding_model="embed-from-config",
         host="127.0.0.1",
         port=8123,
         credential_file=None,
@@ -1297,6 +1336,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
     assert status["config_valid"] is True
     assert status["pending_config"] is True
     assert status["model"] == "model-from-config"
+    assert status["embedding_model"] == "embed-from-config"
     assert status["port"] == 8123
     assert status["config_sha256"] == "digest"
 
@@ -2939,7 +2979,10 @@ def test_stage_plist_write_failure_closes_and_cleans(
         assert not raw_path.exists()
 
 
-def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("embedding_only", [False, True])
+def test_install_success_cleans_secure_staging_file(
+    monkeypatch, tmp_path, capsys, embedding_only
+):
     import shutil
 
     import rapid_mlx.headless_service.install as ins
@@ -2948,7 +2991,10 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
     monkeypatch.setattr(ins, "is_root", lambda: True)
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
-    monkeypatch.setattr(ins, "_wait_qualified", lambda _config: True)
+    qualified = []
+    monkeypatch.setattr(
+        ins, "_wait_qualified", lambda config: qualified.append(config) or True
+    )
     monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
     config_writes = []
     monkeypatch.setattr(
@@ -2966,12 +3012,25 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     code = ins.install_command(
         _ns(
             dry_run=False,
-            serve_args=["--", "--lazy-load", "--max-num-seqs", "4"],
+            model=None if embedding_only else "qwen3.5-4b-4bit",
+            embedding_model="embeddinggemma-300m-6bit" if embedding_only else None,
+            serve_args=(
+                [] if embedding_only else ["--", "--lazy-load", "--max-num-seqs", "4"]
+            ),
         )
     )
     assert code == 0
     assert "Installed and running" in capsys.readouterr().out
     assert not list(tmp_path.glob("rapid-mlx-service-*.plist"))
+    if embedding_only:
+        assert len(config_writes) == 2
+        assert config_writes[0] == config_writes[1]
+        assert config_writes[0]["model"] is None
+        assert config_writes[0]["embedding_model"] == "embeddinggemma-300m-6bit"
+        assert qualified[0].embedding_model == "embeddinggemma-300m-6bit"
+        plist = parse_plist((tmp_path / "com.rapidmlx.server.plist").read_bytes())
+        assert plist["ProgramArguments"][1:4] == ["service", "run", "--config"]
+        return
     assert config_writes[0]["serve_args"] == ["--max-num-seqs", "4"]
     assert config_writes[1]["serve_args"] == [
         "--lazy-load",
