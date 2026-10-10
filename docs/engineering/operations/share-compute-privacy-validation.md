@@ -101,3 +101,8 @@ Trust roots are initialized lazily inside the HTTPS request error boundary.
 Invalid CA bundles raise the same terminal certificate error as an untrusted
 peer, preserving supervisor cleanup and repair guidance. A real malformed
 bundle and lazy handler initialization have regression coverage.
+
+Python 3.12 compatibility: HTTPSHandler eagerly creates a context during its
+constructor on newer Python versions. The verified handler initializes the HTTP
+base directly and owns a separate lazy context, so malformed-bundle guidance
+works consistently. Python 3.12 verification: 238 related tests passed.

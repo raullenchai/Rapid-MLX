@@ -792,11 +792,21 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class _VerifiedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self):
+        # Python 3.12+ eagerly creates a context in HTTPSHandler.__init__.
+        # Initialize its HTTP base directly so all supported versions stay lazy.
+        urllib.request.AbstractHTTPHandler.__init__(self)
+        self._verified_context: ssl.SSLContext | None = None
+
     def https_open(self, req):
+        import http.client
+
         # Load trust roots inside the request error boundary, not module import.
-        if self._context is None:
-            self._context = tls.client_context()
-        return super().https_open(req)
+        if self._verified_context is None:
+            self._verified_context = tls.client_context()
+        return self.do_open(
+            http.client.HTTPSConnection, req, context=self._verified_context
+        )
 
 
 _URL_OPENER = urllib.request.build_opener(_NoRedirectHandler, _VerifiedHTTPSHandler)
