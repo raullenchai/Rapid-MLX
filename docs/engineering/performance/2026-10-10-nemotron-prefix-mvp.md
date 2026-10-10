@@ -57,13 +57,13 @@ The retained [qualification artifact](fixtures/nemotron-prefix-mvp-2026-10-10.js
 
 | Case | Cache-on prefill | Cache-off prefill | Cache-on token TTFT |
 | --- | ---: | ---: | ---: |
-| initial | 13.454 s | 13.549 s | 13.490 s |
-| continue | 0.180 s | 13.512 s | 0.215 s |
-| continue_again | 0.273 s | 12.879 s | 0.306 s |
-| edit | 0.238 s | 11.223 s | 0.271 s |
-| regenerate | 0.245 s | 13.726 s | 0.277 s |
-| branch | 0.230 s | 13.646 s | 0.263 s |
-| different_inventory | 0.189 s | 0.191 s | 0.190 s |
+| initial | 13.521 s | 17.105 s | 13.558 s |
+| continue | 0.233 s | 13.785 s | 0.265 s |
+| continue_again | 0.249 s | 14.569 s | 0.283 s |
+| edit | 0.249 s | 16.265 s | 0.283 s |
+| regenerate | 0.249 s | 12.359 s | 0.281 s |
+| branch | 0.202 s | 13.466 s | 0.233 s |
+| different_inventory | 0.189 s | 0.190 s | 0.190 s |
 
 The qualification does not establish sampled, concurrent, tool-bearing,
 cross-restart, ordinary-backend or arbitrary-length behavior. The accelerated
