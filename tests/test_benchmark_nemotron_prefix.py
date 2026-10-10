@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.benchmark_nemotron_prefix import compare, measure, qualification_identity
+from scripts.benchmark_nemotron_prefix import (
+    compare,
+    measure,
+    qualification_identity,
+    source_identity,
+)
 
 
 def artifacts():
@@ -22,7 +27,7 @@ def artifacts():
     ]
     warm = dict(
         **qualification_identity(),
-        source_commit="b",
+        source_commit=source_identity()["source_commit"],
         host={"cpu": "test", "ram_bytes": 1},
         cache="on",
         rows=[
@@ -44,8 +49,26 @@ def artifacts():
     return warm, cold
 
 
-def test_matching_sequences_with_resumed_prefixes_pass():
+def test_matching_sequences_at_95_percent_reuse_with_full_history_pass():
     compare(*artifacts())
+
+
+def test_matching_unresolvable_source_commits_cannot_qualify():
+    warm, cold = artifacts()
+    warm["source_commit"] = cold["source_commit"] = "0" * 40
+    with pytest.raises(ValueError, match="unresolvable serving source"):
+        compare(warm, cold)
+
+
+def test_matching_stale_serving_trees_cannot_qualify(monkeypatch):
+    warm, cold = artifacts()
+    monkeypatch.setattr(
+        "scripts.benchmark_nemotron_prefix.serving_tree",
+        lambda commit: "old" if commit == "stale" else "current",
+    )
+    warm["source_commit"] = cold["source_commit"] = "stale"
+    with pytest.raises(ValueError, match="current serving sources"):
+        compare(warm, cold)
 
 
 @pytest.mark.parametrize(

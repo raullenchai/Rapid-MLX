@@ -57,6 +57,18 @@ def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def serving_tree(commit: str) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--verify", "--end-of-options", f"{commit}:rapid_mlx"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("unresolvable serving source commit") from exc
+
+
 def measure(provider, messages: list[dict[str, str]]) -> dict:
     """Measure one fully drained provider request, including its terminal usage."""
     app = provider.backend._app
@@ -172,6 +184,11 @@ def compare(warm: dict, cold: dict) -> None:
     for key, expected in qualification_identity().items():
         if warm[key] != expected or cold[key] != expected:
             raise ValueError(f"unqualified provenance: {key}")
+    # Evidence survives docs-only commits, but cannot qualify changed serving code.
+    expected_tree = serving_tree(source_identity()["source_commit"])
+    for artifact in (warm, cold):
+        if serving_tree(artifact["source_commit"]) != expected_tree:
+            raise ValueError("artifact does not qualify current serving sources")
     for key in (
         "profile",
         "revision",
@@ -215,6 +232,7 @@ def compare(warm: dict, cold: dict) -> None:
             raise ValueError(f"cache-off run reused state: {case}")
         if case in cases[1:6] and a["cached_tokens"] / a["prompt_tokens"] < 0.95:
             raise ValueError(f"insufficient long-history reuse: {case}")
+        # Retain the long input; checkpoint boundaries may exclude a few tokens.
         if case in cases[1:6] and a["prompt_tokens"] < warm["rows"][0]["prompt_tokens"]:
             raise ValueError(f"resumed prompt lost its long history: {case}")
     if warm["rows"][0]["cached_tokens"] != 0:

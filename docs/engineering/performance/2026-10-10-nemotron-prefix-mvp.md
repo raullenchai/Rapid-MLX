@@ -22,8 +22,9 @@ benchmark control, not a new public server flag.
 Comparison requires identical request hashes, prompt lengths, generated token
 IDs and answers for all seven cases. Every cache-off request must report zero
 cached tokens; the cache-on initial request must also be cold. Each of the five
-resumed cases must restore at least 95% of its prompt and retain at least the
-initial prompt's token count. A tiny shared system prefix or truncated history
+resumed cases must restore at least 95% of its prompt. Each resumed input
+prompt must contain at least as many tokens as the initial input prompt.
+Checkpoint boundaries can leave a few initial tokens to recompute. A tiny shared system prefix or truncated history
 cannot qualify. Invalid counts, empty visible answers (including EOS-only
 outputs), incomplete cases, different source fingerprints and different
 hardware fail qualification. Checkpoint/runtime identities must match the
@@ -31,7 +32,9 @@ qualified profile and the probe fingerprint must match the actual script,
 even if both artifacts agree on an incorrect value.
 
 The probe records its own SHA-256 before loading the model and rejects dirty
-tracked serving sources. The serving commit, runtime versions, checkpoint
+tracked serving sources. Comparison resolves the recorded commit and requires its `rapid_mlx` Git tree
+to match the current clean serving tree; documentation-only commits remain
+compatible with retained evidence. The serving commit, runtime versions, checkpoint
 revision, CPU and RAM accompany each artifact. The initial MVP probe can be
 untracked because its exact bytes are independently fingerprinted.
 
