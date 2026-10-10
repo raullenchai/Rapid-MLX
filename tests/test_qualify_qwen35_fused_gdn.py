@@ -8,6 +8,13 @@ import pytest
 from scripts.qualify_qwen35_fused_gdn import compare_bits, snapshot_identity
 
 
+def cached_weight(snapshot, name, data):
+    blob = snapshot.parent.parent / "blobs" / hashlib.sha256(data).hexdigest()
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(data)
+    (snapshot / name).symlink_to(blob)
+
+
 def test_storage_comparison_catches_signed_zero_and_one_ulp():
     stock = np.array([0.0, 1.0, -2.0], dtype=np.float32).view(np.uint32)
     candidate = np.array(
@@ -43,11 +50,17 @@ def test_snapshot_rejects_mutable_refs_and_missing_weights(tmp_path):
     (path / "config.json").write_text("{}")
     with pytest.raises(ValueError, match="complete local weights"):
         snapshot_identity(path)
-    (path / "model.safetensors").write_bytes(b"local-weight-fixture")
+    cached_weight(path, "model.safetensors", b"local-weight-fixture")
     identity = snapshot_identity(path)
     assert identity["revision"] == "a" * 40
     assert identity["repository"] == "owner/model"
-    assert identity["weights"] == [{"name": "model.safetensors", "size": 20}]
+    assert identity["weights"] == [
+        {
+            "name": "model.safetensors",
+            "size": 20,
+            "sha256": hashlib.sha256(b"local-weight-fixture").hexdigest(),
+        }
+    ]
 
 
 @pytest.fixture
@@ -100,7 +113,7 @@ def tiny_real_model(monkeypatch, tmp_path):
     snapshot = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents=True)
     (snapshot / "config.json").write_text("{}")
-    (snapshot / "model.safetensors").write_bytes(b"local-weight-fixture")
+    cached_weight(snapshot, "model.safetensors", b"local-weight-fixture")
     out = tmp_path / "evidence"
     out.mkdir()
     return model, snapshot, out
@@ -243,7 +256,7 @@ def test_sharded_snapshot_requires_all_indexed_files(tmp_path):
     path = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
     path.mkdir(parents=True)
     (path / "config.json").write_text("{}")
-    (path / "model-1.safetensors").write_bytes(b"cached")
+    cached_weight(path, "model-1.safetensors", b"cached")
     index = path / "model.safetensors.index.json"
     index.write_text(
         json.dumps(
@@ -252,7 +265,7 @@ def test_sharded_snapshot_requires_all_indexed_files(tmp_path):
     )
     with pytest.raises(ValueError, match="missing or invalid shards"):
         snapshot_identity(path)
-    (path / "model-2.safetensors").write_bytes(b"cached")
+    cached_weight(path, "model-2.safetensors", b"cached")
     assert len(snapshot_identity(path)["weights"]) == 2
     index.unlink()
     with pytest.raises(ValueError, match="requires a complete weight index"):
@@ -301,3 +314,26 @@ def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
         report["results"][0]["error"] == "FileNotFoundError: missing checkpoint shard"
     )
     assert report["results"][1]["status"] == "not_admitted"
+
+
+def test_cached_weight_corruption_is_rejected_even_at_same_size(tmp_path):
+    path = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    cached_weight(path, "model.safetensors", b"original")
+    assert (
+        snapshot_identity(path)["weights"][0]["sha256"]
+        == hashlib.sha256(b"original").hexdigest()
+    )
+    (path / "model.safetensors").resolve().write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        snapshot_identity(path)
+
+
+def test_revision_label_without_content_addressed_weights_is_rejected(tmp_path):
+    path = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    (path / "model.safetensors").write_bytes(b"unverified")
+    with pytest.raises(ValueError, match="content-addressed cached blobs"):
+        snapshot_identity(path)

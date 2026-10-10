@@ -47,6 +47,21 @@ def compare_bits(left: np.ndarray, right: np.ndarray) -> dict:
     }
 
 
+def weight_identity(path: Path) -> dict:
+    """Verify cached content-addressed bytes, rather than trusting file sizes."""
+    blob = path.resolve()
+    if blob.parent.name != "blobs" or not re.fullmatch(r"[0-9a-f]{64}", blob.name):
+        raise ValueError("weights must reference content-addressed cached blobs")
+    hasher = hashlib.sha256()
+    with path.open("rb") as shard:
+        for chunk in iter(lambda: shard.read(8 * 1024 * 1024), b""):
+            hasher.update(chunk)
+    actual = hasher.hexdigest()
+    if actual != blob.name or path.resolve() != blob:
+        raise ValueError(f"cached weight SHA-256 mismatch: {path.name}")
+    return {"name": path.name, "size": path.stat().st_size, "sha256": actual}
+
+
 def snapshot_identity(path: Path) -> dict:
     # Check before resolve(): symlinked cold-cache snapshots retain their HF SHA.
     if path.parent.name != "snapshots" or not re.fullmatch(r"[0-9a-f]{40}", path.name):
@@ -76,7 +91,8 @@ def snapshot_identity(path: Path) -> dict:
         ),
         "revision": path.name,
         "config_sha256": digest((path / "config.json").read_bytes()),
-        "weights": [{"name": p.name, "size": p.stat().st_size} for p in files],
+        "index_sha256": digest(index.read_bytes()) if index.is_file() else None,
+        "weights": [weight_identity(p) for p in files],
     }
 
 
