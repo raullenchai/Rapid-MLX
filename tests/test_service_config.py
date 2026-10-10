@@ -40,6 +40,23 @@ def _config(**updates) -> ServiceConfig:
     return ServiceConfig(**values).validated()
 
 
+def test_service_config_preserves_positional_field_order():
+    config = ServiceConfig(
+        SCHEMA_VERSION,
+        "com.rapidmlx.server",
+        "serveuser",
+        "/Users/serveuser/.local/bin/rapid-mlx",
+        "qwen3.5-4b-4bit",
+        "127.0.0.1",
+        8123,
+        ("--max-num-seqs", "4"),
+    ).validated()
+    assert config.host == "127.0.0.1"
+    assert config.port == 8123
+    assert config.serve_args == ("--max-num-seqs", "4")
+    assert config.embedding_model is None
+
+
 def test_service_config_round_trip_and_digest(tmp_path):
     path = tmp_path / "service.json"
     config = _config()

@@ -40,7 +40,6 @@ class ServiceConfig:
     service_user: str
     executable: str
     model: str | None
-    embedding_model: str | None = None
     host: str = "127.0.0.1"
     port: int = 8000
     serve_args: tuple[str, ...] = ()
@@ -48,6 +47,7 @@ class ServiceConfig:
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS
     log_max_mb: int = DEFAULT_LOG_MAX_MB
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
+    embedding_model: str | None = None
 
     def validated(self) -> ServiceConfig:
         from .common import is_loopback_host, validate_label
