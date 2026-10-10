@@ -360,6 +360,7 @@ def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail
     req.prompt_token_ids = first + list(range(1000, 1000 + tail))
 
     sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
 
     assert req.cached_tokens == 128
     assert req._cache_snapshot_boundary == 128
@@ -404,6 +405,7 @@ def test_restored_boundary_retention_uses_prefill_tile_alignment(monkeypatch):
     req.prefix_boundary = 129
 
     sched._fetch_memory_aware_prefix(req)
+    assert sched._resolve_snapshot_boundary(req) == 0
 
     assert req.cached_tokens == 128
     assert req.prefix_boundary == 129

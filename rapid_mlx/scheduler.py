@@ -9367,7 +9367,14 @@ class Scheduler:
                 snapshot_boundary,
                 len(prompt_tokens),
             )
-        if override_boundary:
+        restored_boundary = int(getattr(request, "_cache_snapshot_boundary", 0) or 0)
+        preserve_restored = (
+            snapshot_boundary <= 0
+            and getattr(request, "_cache_snapshot_stored", False)
+            and not getattr(request, "_cache_snapshot_is_internal", False)
+            and 0 < restored_boundary <= int(request.cached_tokens or 0)
+        )
+        if override_boundary and not preserve_restored:
             request._cache_snapshot_boundary = snapshot_boundary
         return snapshot_boundary
 
