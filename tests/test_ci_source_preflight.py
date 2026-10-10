@@ -524,3 +524,16 @@ def test_release_preparation_exact_source_scope_and_documentation():
     ).source_preflight
     docs = classify_policy(["RELEASE.md"], source_preflight=True)
     assert docs.lanes.docs_only and not docs.lanes.engine and not docs.lanes.desktop
+
+
+def test_classifier_changes_have_real_hosted_coverage_in_existing_shards():
+    steps = jobs()["test-matrix"]["steps"]
+    ordinary = next(
+        s["run"] for s in steps if "--cov=scripts.release_control" in s.get("run", "")
+    )
+    assert "--cov=scripts.classify_ci_changes" in ordinary
+    assert "tests" in ordinary
+    # Keep the combined coverage and mandatory diff gate; enrollment is not a waiver.
+    gate = jobs()["changed-lines-coverage"]["steps"][-1]["run"]
+    assert "--fail-under 100" in gate
+    assert "coverage-data/linux/coverage-linux-3.11.data" in gate
