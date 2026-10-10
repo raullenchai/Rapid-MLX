@@ -986,6 +986,7 @@ jobs:
             tests/test_gemma4_unified_routing.py \
             tests/test_gemma4_kv_share.py \
             tests/test_quantized_batch_cache.py \
+            tests/test_quantized_recurrent_cache.py \
             tests/test_prefix_cache_eviction.py \
             tests/test_optimizations.py \
             tests/test_batching.py \

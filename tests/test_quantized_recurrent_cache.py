@@ -16,8 +16,17 @@ from rapid_mlx.quantized_batch_cache import (
     _QuantizableKVCache,
     install_quantized_batch_cache,
     normalize_caches_for_quantization,
+    supported_recurrent_cache_types,
 )
 from tests.test_kv_cache_gemma4_gate import _scheduler_stub
+
+
+def test_recurrent_types_without_optional_vlm(monkeypatch):
+    import sys
+
+    # Installed and absent optional dependencies must expose the same core types.
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
+    assert supported_recurrent_cache_types() == (ArraysCache, VendoredArraysCache)
 
 
 @pytest.mark.parametrize("state_type", [ArraysCache, VendoredArraysCache])
