@@ -3001,6 +3001,24 @@ flow_update_state() {
 # background. Sparkle rejects a second foreground check in this state. The UI
 # must expose the real busy state instead of leaving an enabled orange button
 # whose click is silently ignored.
+# The offered update and the model action must occupy disjoint screen regions.
+# Missing/empty AX geometry is not evidence that a control is unobscured.
+assert_update_does_not_cover_readiness() {
+    jq -e '
+      def box($id): [.data.ui_elements[]? | select(.identifier == $id)]
+        | if length == 1 then .[0].bounds else null end;
+      def valid: . != null and (.x | type) == "number"
+        and (.y | type) == "number" and (.width | type) == "number"
+        and (.height | type) == "number" and .width > 0 and .height > 0;
+      box("UpdateCard") as $card | box("Readiness.Action") as $action
+      | ($card | valid) and ($action | valid)
+        and ($card.x + $card.width <= $action.x
+          or $action.x + $action.width <= $card.x
+          or $card.y + $card.height <= $action.y
+          or $action.y + $action.height <= $card.y)
+    ' "$1" >/dev/null || die "update offer covers model readiness or has missing geometry"
+}
+
 flow_update_busy() {
     start_persona update-busy \
         RAPID_GUI_GOLDEN_MODE=1 \
@@ -3023,6 +3041,21 @@ flow_update_busy() {
     fi
     baseline "update-busy.app-panel" "$OUT/app-panel.json"
     log "  background update replaces the no-op CTA with truthful progress"
+    # Preserve the existing idle-state snapshot, then exercise the user path.
+    "$AX_DRIVER" close-window "$APP_PID" Settings > "$OUT/close-settings.json"
+    wait_identifier UpdateCard "$OUT/update-card.json"
+    wait_identifier_enabled Readiness.Action "$OUT/update-card-readiness.json"
+    assert_update_does_not_cover_readiness "$OUT/update-card-readiness.json"
+    local original_size
+    original_size="$(jq -er '.data.ui_elements[] | select(.identifier == "main" and .role == "AXWindow")
+        | (.bounds.width | tostring) + "x" + (.bounds.height | tostring)' "$OUT/update-card-readiness.json")"
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 720x700 > "$OUT/update-card-compact-size.json"
+    wait_identifier_enabled Readiness.Action "$OUT/update-card-compact.json"
+    assert_update_does_not_cover_readiness "$OUT/update-card-compact.json"
+    start_model
+    assert_fake_server_starts "$OUT/fake-events.jsonl" 1 "$FAKE_ALIAS" update-card-readiness
+    wait_identifier UpdateCard "$OUT/update-card-after-start.json"
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX "$original_size" > "$OUT/update-card-restored-size.json"
     cleanup_persona
 }
 

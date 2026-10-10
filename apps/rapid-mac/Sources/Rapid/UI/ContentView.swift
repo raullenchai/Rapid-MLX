@@ -328,26 +328,6 @@ struct ContentView: View {
                 commandPaletteOverlay
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            if let release = presentedUpdateRelease {
-                UpdateDiscoveryCard(
-                    release: release,
-                    sparkleEnabled: sparkleUpdater.isEnabled,
-                    sparkleCanCheck: sparkleUpdater.canCheckForUpdates,
-                    releaseURL: Self.missingOverlayDownloadURL(for: release),
-                    onUpdate: {
-                        Self.handOffUpdate(
-                            version: release.version,
-                            start: sparkleUpdater.checkForUpdates
-                        ) { updateHandedOffVersion = $0 }
-                    },
-                    onDismiss: {
-                        dismissedUpdateVersion = release.version
-                    }
-                )
-                .padding(16)
-            }
-        }
         .animation(
             reduceMotion ? nil : .easeOut(duration: 0.15),
             value: presentedUpdateRelease?.version
@@ -810,10 +790,33 @@ struct ContentView: View {
                     .accessibilityIdentifier("ContentView.LogDrawer")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // Reserve space for the update offer; it must never cover model
+            // readiness, the composer, or another workspace action.
+            if let release = presentedUpdateRelease {
+                HStack {
+                    Spacer(minLength: 0)
+                    UpdateDiscoveryCard(
+                        release: release,
+                        sparkleEnabled: sparkleUpdater.isEnabled,
+                        sparkleCanCheck: sparkleUpdater.canCheckForUpdates,
+                        releaseURL: Self.missingOverlayDownloadURL(for: release),
+                        onUpdate: {
+                            Self.handOffUpdate(
+                                version: release.version,
+                                start: sparkleUpdater.checkForUpdates
+                            ) { updateHandedOffVersion = $0 }
+                        },
+                        onDismiss: {
+                            dismissedUpdateVersion = release.version
+                        }
+                    )
+                }
+                .padding(16)
+            }
             statusFooter
         }
         .overlay(alignment: .bottomTrailing) {
-            // Same gate as the update card: the star prompt is the other
+            // Same suppression gate as the update card: the star prompt is a
             // bottom-trailing overlay that can land on the surface under
             // review.
             if githubStarPrompt.isPresented, !Self.suppressesReviewChrome() {
