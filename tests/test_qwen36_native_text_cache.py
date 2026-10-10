@@ -699,6 +699,14 @@ def _dense_27b_model():
     )
 
 
+@pytest.mark.parametrize("index", [0, 3], ids=["linear", "attention"])
+@pytest.mark.parametrize("value", ["false", "true", 1, 0, None, [], {}])
+def test_dense_qualification_rejects_non_boolean_layer_flags(index, value):
+    model = _dense_27b_model()
+    model.layers[index].is_linear = value
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
 def test_dense_27b_uses_shared_weight_text_scheduler():
     model = _dense_27b_model()
     assert _supports_qwen38_dense_native_text_cache(model)

@@ -1069,7 +1069,7 @@ def _supports_qwen38_dense_native_text_cache(language_model: Any) -> bool:
             return False
         layers = list(language_model.layers)
         return len(layers) == 64 and all(
-            bool(layer.is_linear) == ((index + 1) % 4 != 0)
+            layer.is_linear is ((index + 1) % 4 != 0)
             for index, layer in enumerate(layers)
         )
     except (AttributeError, TypeError):
