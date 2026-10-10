@@ -11,8 +11,8 @@ knows is schema-invalid.
 
 Fix (``routes/chat._forced_synth_schema_error`` + call sites in chat.py /
 responses.py): when the synthesised arguments don't provide every ``required``
-property, fail EXPLICITLY — 422 on the non-stream paths, drop-the-synth
-(``finish_reason="stop"``) on the streaming chat surface, ``response.failed``
+property, fail EXPLICITLY — 422 on the non-stream paths, an SSE error on
+non-truncated streaming chat turns (#4428), ``response.failed``
 on the streaming responses surface — instead of shipping the bad call. A tool
 with NO required fields still synthesises ``"{}"`` as before.
 """
@@ -403,7 +403,7 @@ def _emitted_tool_calls(chunks) -> list[dict]:
 def test_stream_required_missing_args_does_not_fabricate_call(_qwen_hermes_cfg):
     """Streaming ``required`` + required-field schema the model didn't fill →
     NO synthesised ``delta.tool_calls`` (headers are out so we can't 422);
-    finish is ``stop``, never ``tool_calls`` with ``{}``."""
+    emits an explicit SSE error instead of a successful stop (#4428)."""
     # Plain prose — the parser detects no call and cannot recover arguments.
     deltas = ["The ", "sum ", "is ", "15."]
     chunks, finish = _drive_stream(
@@ -412,7 +412,10 @@ def test_stream_required_missing_args_does_not_fabricate_call(_qwen_hermes_cfg):
     assert _emitted_tool_calls(chunks) == [], (
         "streaming forced synth must not fabricate a schema-invalid empty call"
     )
-    assert finish != "tool_calls"
+    assert finish is None
+    assert any(
+        c.get("error", {}).get("code") == "tool_choice_violation" for c in chunks
+    )
 
 
 def test_stream_no_required_still_synthesizes(_qwen_hermes_cfg):
