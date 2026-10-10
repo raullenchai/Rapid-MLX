@@ -396,23 +396,32 @@ def main() -> int:
     (args.output / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
     results = []
     # Cooperative process exclusion only; unrelated GPU jobs are not stopped.
-    with open("/private/tmp/rapid-mlx-qwen35-qualification.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        for index, model in enumerate(args.model):
-            out = args.output / str(index)
-            out.mkdir()
-            try:
-                result = qualify(
-                    model.expanduser().absolute(), args.histories, args.steps, out
-                )
-            except Exception as exc:
-                result = {
-                    "model": str(model),
-                    "status": "error",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "trajectories": [],
-                }
-            results.append(result)
+    try:
+        with open("/private/tmp/rapid-mlx-qwen35-qualification.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for index, model in enumerate(args.model):
+                out = args.output / str(index)
+                out.mkdir()
+                try:
+                    result = qualify(
+                        model.expanduser().absolute(), args.histories, args.steps, out
+                    )
+                except Exception as exc:
+                    result = {
+                        "model": str(model),
+                        "status": "error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "trajectories": [],
+                    }
+                results.append(result)
+    except OSError as exc:
+        results.append(
+            {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "trajectories": [],
+            }
+        )
     report = {
         "inventory": inventory,
         "histories": args.histories,

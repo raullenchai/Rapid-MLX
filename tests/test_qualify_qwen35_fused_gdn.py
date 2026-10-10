@@ -316,6 +316,45 @@ def test_checkpoint_load_error_still_writes_report_and_runs_next_model(
     assert report["results"][1]["status"] == "not_admitted"
 
 
+@pytest.mark.parametrize("failure", ["contended", "unwritable"])
+def test_cli_lock_failure_retains_report(tmp_path, monkeypatch, failure):
+    import fcntl
+    import json
+    import sys
+
+    from scripts import qualify_qwen35_fused_gdn as qualification
+
+    output = tmp_path / "output"
+    lock_path = tmp_path / "qualification.lock"
+    monkeypatch.setattr(
+        sys, "argv", ["qualify", "--model", "unused", "--output", str(output)]
+    )
+    monkeypatch.setattr(qualification, "source_inventory", lambda: {"head": "test"})
+
+    def isolated_open(path, *args, **kwargs):
+        if failure == "unwritable":
+            raise PermissionError("lock unavailable")
+        return open(lock_path, *args, **kwargs)
+
+    monkeypatch.setattr(qualification, "open", isolated_open, raising=False)
+    monkeypatch.setattr(
+        qualification, "qualify", lambda *a: pytest.fail("model ran without lock")
+    )
+    with open(lock_path, "w") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert qualification.main() == 1
+    report = json.loads((output / "report.json").read_text())
+    assert report["exact"] is False
+    assert report["inventory"]["head"] == "test"
+    assert len(report["results"]) == 1
+    result = report["results"][0]
+    assert result["status"] == "error"
+    assert result["trajectories"] == []
+    expected = "BlockingIOError" if failure == "contended" else "PermissionError"
+    assert result["error"].startswith(expected + ":")
+    assert not (output / "0").exists()
+
+
 def test_cached_weight_corruption_is_rejected_even_at_same_size(tmp_path):
     path = tmp_path / "models--test--gdn" / "snapshots" / ("a" * 40)
     path.mkdir(parents=True)
