@@ -25,7 +25,7 @@ threadgroup geometry; this run does not force otherwise unselected geometries.
 
 - Apple M3 Ultra, macOS 26.5.2, Python 3.12.14.
 - MLX and Metal 0.32.3, native model package 0.31.3, NumPy 2.4.4.
-- Clean source commit: `12b9cf476` (source hashes in the evidence inventory).
+- Clean source commit: `ed25e6fda` (source hashes in the evidence inventory).
 - Stock system MLX 0.32.2 is kept unchanged. Its failed admission uses native
   decode; that runtime is not counted as a passing fused qualification.
 
@@ -73,16 +73,16 @@ elements. Generated token sequences agreed between both orders for each history.
 [Machine-readable provenance and trajectory digests](2026-10-10-qwen35-native-gdn-qualification.json)
 records source/runtime identities and the hashes of the complete gzip row streams.
 Raw inventory, every row and generated continuations are retained on Studio under
-`/Volumes/RTL-2T/scratch-archive/rapid-mlx-4448/12b9cf476/`; the reproduction command
+`/Volumes/RTL-2T/scratch-archive/rapid-mlx-4448/ed25e6fda/`; the reproduction command
 creates the same artifact structure. The result is bound to this source, runtime,
 geometry and checkpoint matrix, with the execution limitation described above.
 
-79 focused tests passed, including 17 qualification contracts. Ruff check and
+81 focused tests passed, including 19 qualification contracts. Ruff check and
 format passed. Independent adversarial findings were fixed and re-reviewed to
 LGTM: prefill-tail/error accounting, malformed-return fallback detection,
 failed-row retention, shard completeness, and typed operational receipts.
 Four tensor/return failure injections fail on the earlier harness and pass on
-the fix. The same numerical matrix passed four complete runs; the final run
+the fix. The same numerical matrix passed five complete runs; the final run
 reproduced every earlier tensor hash.
 
 Every referenced weight shard is streamed through SHA-256 and checked against
@@ -99,3 +99,8 @@ tensor hashes; equal gzip artifact hashes across reruns are not claimed.
 The remote review host could not authenticate; that attempt is not counted as a
 passing review. Independent local review returned LGTM, and the complete PR
 validation pipeline retains its separate Codex review gate.
+
+Lock contention and lock-file access errors produce typed failing reports with
+`exact=false` before any model runs. Real contention and denied-open regression
+tests pass; independent review of this final fix returned LGTM. The clean source
+above reproduced every numerical tensor hash from the earlier complete runs.
