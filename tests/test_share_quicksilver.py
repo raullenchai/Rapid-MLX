@@ -3354,3 +3354,40 @@ def test_install_service_reports_bootstrap_failure():
         pytest.raises(qs.QuickSilverError, match="bootstrap failed"),
     ):
         qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_heartbeat_certificate_failure_stops_without_retry(wrapped):
+    import ssl
+
+    error = ssl.SSLCertVerificationError(1, "untrusted heartbeat certificate")
+    if wrapped:
+        error = urllib.error.URLError(error)
+    beat = qs._Heartbeat("https://pay.test/hb", SHARE_KEY, 1, lambda: 0)
+    with patch.object(qs, "_open", side_effect=error) as opened:
+        beat.beat_now()
+        beat.beat_now()
+    assert beat.fatal.is_set()
+    assert beat.fatal_message == qs.tls.CERTIFICATE_HINT
+    assert opened.call_count == 1
+
+
+def test_heartbeat_certificate_failure_supervisor_reports_ca_repair(capsys):
+    beat = _fake_heartbeat_class()
+    beat.fatal.set()
+    beat.fatal_message = qs.tls.CERTIFICATE_HINT
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        _enter(*_run_patches(serve, lambda **kw: tunnel, ctrl_c)),
+        patch.object(qs, "_Heartbeat", return_value=beat),
+        pytest.raises(SystemExit) as exc,
+    ):
+        qs.run_share(_make_args())
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "SSL_CERT_FILE" in err
+    assert "revoked" not in err
+    serve.terminate.assert_called_once()
+    tunnel.stop.assert_called()

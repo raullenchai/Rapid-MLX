@@ -1030,6 +1030,7 @@ class _Heartbeat:
         self._inflight_fn = inflight_fn
         self.enabled = threading.Event()
         self.fatal = threading.Event()
+        self.fatal_message: str | None = None
         self._stop = threading.Event()
         self._logged_404 = False
         self._thread: threading.Thread | None = None
@@ -1116,7 +1117,17 @@ class _Heartbeat:
             finally:
                 with contextlib.suppress(Exception):
                     exc.close()
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            ssl.SSLCertVerificationError,
+        ) as exc:
+            if tls.certificate_error(exc):
+                self.fatal_message = tls.CERTIFICATE_HINT
+                self.fatal.set()
+                log.error("QuickSilver heartbeat: %s", tls.CERTIFICATE_HINT)
+                return
             log.debug("QuickSilver heartbeat unreachable: %s", _redact(str(exc)))
 
 
@@ -1745,6 +1756,9 @@ def _run_share(
                     )
                     break
                 if heartbeat.fatal.is_set():
+                    fatal_message = getattr(heartbeat, "fatal_message", None)
+                    if isinstance(fatal_message, str) and fatal_message:
+                        raise QuickSilverError(fatal_message)
                     exit_code = 1
                     if desktop_status is not None:
                         desktop_status.publish(
