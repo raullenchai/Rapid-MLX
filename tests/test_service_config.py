@@ -40,6 +40,23 @@ def _config(**updates) -> ServiceConfig:
     return ServiceConfig(**values).validated()
 
 
+def test_service_config_preserves_positional_field_order():
+    config = ServiceConfig(
+        SCHEMA_VERSION,
+        "com.rapidmlx.server",
+        "serveuser",
+        "/Users/serveuser/.local/bin/rapid-mlx",
+        "qwen3.5-4b-4bit",
+        "127.0.0.1",
+        8123,
+        ("--max-num-seqs", "4"),
+    ).validated()
+    assert config.host == "127.0.0.1"
+    assert config.port == 8123
+    assert config.serve_args == ("--max-num-seqs", "4")
+    assert config.embedding_model is None
+
+
 def test_service_config_round_trip_and_digest(tmp_path):
     path = tmp_path / "service.json"
     config = _config()
@@ -83,6 +100,80 @@ def test_service_config_rejects_unknown_fields():
     raw["typo_port"] = 9000
     with pytest.raises(ServiceConfigError, match="unknown"):
         ServiceConfig.from_dict(raw)
+
+
+def test_service_config_embeddings_only_round_trip(tmp_path):
+    path = tmp_path / "service.json"
+    config = _config(
+        model=None,
+        embedding_model="embeddinggemma-300m-6bit",
+        serve_args=("--max-request-bytes", "4096", "--embedding-max-length", "256"),
+    )
+    atomic_write(path, config_bytes(config))
+    assert load_config(path) == config
+    raw = config.to_dict()
+    assert raw["model"] is None
+    assert raw["embedding_model"] == "embeddinggemma-300m-6bit"
+
+
+# Older releases reject unknown fields, so an unset embedding model is omitted.
+def test_service_config_omits_unset_embedding_model():
+    assert "embedding_model" not in _config().to_dict()
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"model": None}, "model or embedding_model"),
+        ({"model": ""}, "model or embedding_model"),
+        ({"embedding_model": ""}, "embedding_model must not be empty"),
+        (
+            {
+                "embedding_model": "embed",
+                "serve_args": ("--embedding-model=other",),
+            },
+            "remove --embedding-model",
+        ),
+    ],
+)
+def test_service_config_validates_model_fields(updates, message):
+    with pytest.raises(ServiceConfigError, match=message):
+        _config(**updates)
+
+
+def test_service_config_rejects_null_model_without_embedding_model():
+    raw = _config().to_dict()
+    raw["model"] = None
+    with pytest.raises(ServiceConfigError, match="model or embedding_model"):
+        ServiceConfig.from_dict(raw)
+
+
+@pytest.mark.parametrize(
+    "serve_args",
+    [
+        ("--lazy-load",),
+        ("--max-num-seqs", "4"),
+        ("--max-num-seqs=16",),
+        ("--default-temperature", "0"),
+        ("--no-think",),
+    ],
+)
+def test_embeddings_only_service_rejects_generation_flags_before_qualification(
+    serve_args,
+):
+    with pytest.raises(ServiceConfigError, match="embeddings-only.*cannot use"):
+        _config(
+            model=None,
+            embedding_model="embeddinggemma-300m-6bit",
+            serve_args=serve_args,
+        )
+
+
+@pytest.mark.parametrize("serve_args", [("--unknown",), ("--help",), ("chat-model",)])
+def test_embeddings_only_service_rejects_invalid_serve_args(serve_args, capsys):
+    with pytest.raises(ServiceConfigError, match="embeddings-only"):
+        _config(model=None, embedding_model="embed", serve_args=serve_args)
+    assert capsys.readouterr() == ("", "")
 
 
 def test_service_config_rejects_string_serve_args():
@@ -150,6 +241,65 @@ def test_configure_cli_parses_candidate_fields():
     assert args.model == "mlx-community/new-model"
     assert args.port == 9000
     assert args.serve_args == ["--", "--max-num-seqs", "8"]
+
+
+def test_configure_cli_parses_embedding_model_fields():
+    args = build_parser().parse_args(
+        ["service", "configure", "--clear-model", "--embedding-model", "embed"]
+    )
+    assert args.clear_model is True
+    assert args.embedding_model == "embed"
+    assert args.clear_embedding_model is False
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["service", "configure", "--model", "m", "--clear-model"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("model", "embedding_model", "expected"),
+    [
+        (
+            None,
+            "embed",
+            ["serve", "--host", "127.0.0.1", "--port", "8000"]
+            + ["--embedding-model", "embed", "--embedding-max-length", "256"],
+        ),
+        (
+            "chat",
+            "embed",
+            ["serve", "chat", "--host", "127.0.0.1", "--port", "8000"]
+            + ["--embedding-model", "embed", "--max-num-seqs", "4"],
+        ),
+    ],
+)
+def test_runtime_argv_carries_embedding_model(
+    monkeypatch, tmp_path, model, embedding_model, expected
+):
+    from rapid_mlx.headless_service import runtime
+
+    config = _config(
+        service_user="runner",
+        executable="/opt/rapid-mlx",
+        model=model,
+        embedding_model=embedding_model,
+        serve_args=("--max-num-seqs", "4")
+        if model
+        else ("--embedding-max-length", "256"),
+    )
+    config_file = tmp_path / "service.json"
+    atomic_write(config_file, config_bytes(config))
+    monkeypatch.setattr(
+        runtime.pwd,
+        "getpwnam",
+        lambda _user: types.SimpleNamespace(pw_uid=os.getuid()),
+    )
+    observed = {}
+    monkeypatch.setattr(
+        runtime, "_supervise", lambda argv, *_a: observed.update(argv=argv) or 0
+    )
+    assert runtime.run_command(types.SimpleNamespace(config=str(config_file))) == 0
+    assert observed["argv"] == ["/opt/rapid-mlx", *expected]
 
 
 def test_runtime_loads_private_credential_and_supervises(monkeypatch, tmp_path):
@@ -830,6 +980,44 @@ def test_configure_dry_run_clear_and_error_paths(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(configure, "installed_identity", lambda _label: None)
     assert configure.configure_command(_configure_args()) == 1
+
+
+# A chat service can be switched to embeddings-only; clearing its only model fails.
+def test_configure_switches_between_model_and_embedding_model(monkeypatch, tmp_path):
+    configure, home, current_path, _ = _installed_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(configure, "is_root", lambda: True)
+    assert (
+        configure.configure_command(
+            _configure_args(clear_model=True, embedding_model="embed")
+        )
+        == 1
+    )
+    assert load_config(current_path).model is not None
+    assert not pending_config_path(home).exists()
+    assert (
+        configure.configure_command(
+            _configure_args(
+                clear_model=True, embedding_model="embed", clear_serve_args=True
+            )
+        )
+        == 0
+    )
+    candidate = load_config(pending_config_path(home))
+    assert (candidate.model, candidate.embedding_model) == (None, "embed")
+
+    assert configure.configure_command(_configure_args(clear_model=True)) == 1
+
+    # A persisted embedding-only service can be staged back to the legacy schema.
+    atomic_write(current_path, config_bytes(candidate))
+    assert (
+        configure.configure_command(
+            _configure_args(model="chat-model", clear_embedding_model=True)
+        )
+        == 0
+    )
+    restored = load_config(pending_config_path(home))
+    assert (restored.model, restored.embedding_model) == ("chat-model", None)
+    assert b'"embedding_model"' not in config_bytes(restored)
 
 
 def test_configure_launchctl_wrappers(monkeypatch):

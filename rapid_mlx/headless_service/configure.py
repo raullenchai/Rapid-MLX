@@ -61,6 +61,7 @@ def configure_command(args) -> int:
         updates = {}
         for arg_name in (
             "model",
+            "embedding_model",
             "host",
             "port",
             "log_retention_days",
@@ -70,6 +71,10 @@ def configure_command(args) -> int:
             value = getattr(args, arg_name, None)
             if value is not None:
                 updates[arg_name] = value
+        if getattr(args, "clear_model", False):
+            updates["model"] = None
+        if getattr(args, "clear_embedding_model", False):
+            updates["embedding_model"] = None
         raw_serve_args = getattr(args, "serve_args", None)
         if getattr(args, "clear_serve_args", False):
             updates["serve_args"] = ()

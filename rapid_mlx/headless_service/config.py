@@ -39,7 +39,7 @@ class ServiceConfig:
     label: str
     service_user: str
     executable: str
-    model: str
+    model: str | None
     host: str = "127.0.0.1"
     port: int = 8000
     serve_args: tuple[str, ...] = ()
@@ -47,6 +47,7 @@ class ServiceConfig:
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS
     log_max_mb: int = DEFAULT_LOG_MAX_MB
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
+    embedding_model: str | None = None
 
     def validated(self) -> ServiceConfig:
         from .common import is_loopback_host, validate_label
@@ -63,8 +64,20 @@ class ServiceConfig:
         executable = Path(self.executable)
         if not executable.is_absolute():
             raise ServiceConfigError("executable must be an absolute path")
-        if not self.model or "\0" in self.model:
-            raise ServiceConfigError("model must not be empty")
+        if not self.model and not self.embedding_model:
+            raise ServiceConfigError("model or embedding_model must be set")
+        for name, value in (
+            ("model", self.model),
+            ("embedding_model", self.embedding_model),
+        ):
+            if value is not None and (not value or "\0" in value):
+                raise ServiceConfigError(f"{name} must not be empty")
+        if self.embedding_model and any(
+            token.split("=", 1)[0] == "--embedding-model" for token in self.serve_args
+        ):
+            raise ServiceConfigError(
+                "embedding_model is set; remove --embedding-model from serve_args"
+            )
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
                 "host must be a non-empty address without whitespace"
@@ -89,6 +102,40 @@ class ServiceConfig:
             raise ServiceConfigError(str(exc)) from None
         if any("\0" in token for token in self.serve_args):
             raise ServiceConfigError("serve_args must not contain NUL bytes")
+        if self.model is None and self.embedding_model is not None:
+            # Validate the persisted arguments before qualification can strip
+            # flags, and before configure can stage an unbootable definition.
+            import contextlib
+            import io
+
+            from ..cli import _embedding_only_incompatible_options, build_parser
+
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                try:
+                    parsed = build_parser().parse_args(
+                        [
+                            "serve",
+                            "--embedding-model",
+                            self.embedding_model,
+                            *self.serve_args,
+                        ]
+                    )
+                except SystemExit:
+                    raise ServiceConfigError(
+                        "invalid embeddings-only serve_args"
+                    ) from None
+            if parsed.model is not None:
+                raise ServiceConfigError(
+                    "embeddings-only serve_args cannot supply a model"
+                )
+            incompatible = _embedding_only_incompatible_options(parsed)
+            if incompatible:
+                raise ServiceConfigError(
+                    "embeddings-only services cannot use " + ", ".join(incompatible)
+                )
         if self.credential_file is not None:
             credential = Path(self.credential_file)
             if not credential.is_absolute():
@@ -99,7 +146,7 @@ class ServiceConfig:
         return replace(self, **changes).validated()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        raw: dict[str, Any] = {
             "schema_version": self.schema_version,
             "label": self.label,
             "service_user": self.service_user,
@@ -113,6 +160,10 @@ class ServiceConfig:
             "log_max_mb": self.log_max_mb,
             "log_backup_count": self.log_backup_count,
         }
+        # Omitted when unset so older releases can still read the definition.
+        if self.embedding_model is not None:
+            raw["embedding_model"] = self.embedding_model
+        return raw
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ServiceConfig:
@@ -122,6 +173,7 @@ class ServiceConfig:
             "service_user",
             "executable",
             "model",
+            "embedding_model",
             "host",
             "port",
             "serve_args",
@@ -146,7 +198,12 @@ class ServiceConfig:
                 label=str(raw["label"]),
                 service_user=str(raw["service_user"]),
                 executable=str(raw["executable"]),
-                model=str(raw["model"]),
+                model=str(raw["model"]) if raw["model"] is not None else None,
+                embedding_model=(
+                    str(raw["embedding_model"])
+                    if raw.get("embedding_model") is not None
+                    else None
+                ),
                 host=str(raw.get("host", "127.0.0.1")),
                 port=int(raw.get("port", 8000)),
                 serve_args=tuple(raw_serve_args),

@@ -17,6 +17,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+@pytest.mark.parametrize("loaded", [False, True])
+def test_lifecycle_metrics_preserve_engine_fallback_for_legacy_configs(loaded):
+    from rapid_mlx.routes.metrics import _render_primary_lifecycle
+
+    config = SimpleNamespace(engine=object() if loaded else None)
+    body = "\n".join(_render_primary_lifecycle(config))
+    assert f"rapid_mlx_model_loaded {int(loaded)}" in body
+
+
 @pytest.fixture
 def metrics_client():
     """FastAPI TestClient mounting only the metrics router.
@@ -101,6 +110,16 @@ def test_metrics_exposes_primary_model_lifecycle(metrics_client):
     assert "rapid_mlx_model_load_failures_total 1" in body
     assert "rapid_mlx_model_load_duration_seconds 8.4" in body
     assert 'rapid_mlx_model_unload_total{reason="idle"} 2' in body
+
+
+def test_metrics_reports_embeddings_only_model_loaded(metrics_client):
+    metrics_client.cfg.model_name = None
+    metrics_client.cfg.embedding_engine = object()
+
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_model_loaded 1" in body
+    assert 'rapid_mlx_model_lifecycle_state{state="ready"} 1' in body
 
 
 def test_metrics_lifecycle_snapshot_failure_and_unknown_state_are_safe(

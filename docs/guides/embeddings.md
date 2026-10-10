@@ -71,7 +71,12 @@ inputs. Queries and documents must use the same dimension.
 ```bash
 # Pre-load a specific embedding model at startup
 rapid-mlx serve my-llm-model --embedding-model mlx-community/all-MiniLM-L6-v2-4bit
+
+# Embeddings-only: no chat model is loaded or downloaded
+rapid-mlx serve --embedding-model mlx-community/all-MiniLM-L6-v2-4bit
 ```
+
+The embeddings-only form suits dedicated embedding replicas behind a load balancer. Chat and completion routes return `503` on such a server, flags that only apply to a chat model (for example `--served-model-name` or `--lazy-load`) are rejected at startup, and the health probes report `model_loaded: true` once the embedding backend is resident. The primary-model name remains `null`; `/v1/models` identifies the embedding model.
 
 `--embedding-model` is **required** to enable the `/v1/embeddings` endpoint. Without it, every `POST /v1/embeddings` request returns `503 Service Unavailable` with `code: "no_embedding_model"` — the server will NOT silently re-route the request to the chat model (which would produce shape-valid but semantically meaningless vectors).
 
