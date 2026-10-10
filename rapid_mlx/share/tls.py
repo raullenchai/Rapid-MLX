@@ -18,7 +18,7 @@ def client_context() -> ssl.SSLContext:
 
 def certificate_error(exc: BaseException | None) -> bool:
     if isinstance(exc, urllib.error.URLError):
-        exc = exc.reason
+        return isinstance(exc.reason, ssl.SSLCertVerificationError)
     return isinstance(exc, ssl.SSLCertVerificationError)
 
 
