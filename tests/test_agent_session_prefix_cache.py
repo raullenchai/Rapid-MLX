@@ -379,7 +379,15 @@ def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail
 
 @pytest.mark.parametrize(
     "case",
-    ["long_tail", "unmarked", "dense", "new_boundary", "internal", "invalid", "earlier"],
+    [
+        "long_tail",
+        "unmarked",
+        "dense",
+        "new_boundary",
+        "internal",
+        "invalid",
+        "earlier",
+    ],
 )
 def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     sched = _scheduler(monkeypatch)
