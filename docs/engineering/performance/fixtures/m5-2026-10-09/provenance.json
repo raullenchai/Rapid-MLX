@@ -1,0 +1,23 @@
+{
+  "source_commit": "5c843788007f91431321fb6953688a2fe44ca10b",
+  "python": "3.12.13",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "device": {
+    "device_name": "Apple M5 Max",
+    "max_recommended_working_set_size": 30150672384,
+    "memory_size": 38654705664,
+    "architecture": "applegpu_g17s",
+    "max_buffer_length": 22613000192,
+    "resource_limit": 499000
+  },
+  "versions": {
+    "mlx": "0.32.3",
+    "mlx-metal": "0.32.3",
+    "mlx-lm": "0.31.3",
+    "mlx-vlm": "0.7.2",
+    "transformers": "5.15.1",
+    "numpy": "2.5.3",
+    "huggingface-hub": "1.33.0",
+    "tokenizers": "0.22.2"
+  }
+}

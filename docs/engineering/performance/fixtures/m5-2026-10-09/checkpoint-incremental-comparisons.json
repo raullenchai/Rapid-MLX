@@ -1,0 +1,150 @@
+{
+  "derivation": "Join checkpoint-matrix.json rows by prefill, round and case; compare warm outputs with checkpoints 0 versus 4.",
+  "pairs": [
+    {
+      "prefill": 0,
+      "round": 0,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.2743716727491545,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 0,
+      "round": 0,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.3844912480286713,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 0,
+      "round": 0,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.001289327182074,
+      "resumed_tokens": 0
+    },
+    {
+      "prefill": 0,
+      "round": 1,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.5090345371365497,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 0,
+      "round": 1,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.3878891854667352,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 0,
+      "round": 1,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.000615912785634,
+      "resumed_tokens": 0
+    },
+    {
+      "prefill": 0,
+      "round": 2,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.2725934505981327,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 0,
+      "round": 2,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.3828950361510486,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 0,
+      "round": 2,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.002196507008739,
+      "resumed_tokens": 0
+    },
+    {
+      "prefill": 1,
+      "round": 0,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.2350434214995722,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 1,
+      "round": 0,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.376860852511051,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 1,
+      "round": 0,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 0.9998893971081638,
+      "resumed_tokens": 0
+    },
+    {
+      "prefill": 1,
+      "round": 1,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.232128276686556,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 1,
+      "round": 1,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.3752207965208372,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 1,
+      "round": 1,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 0.9983194632388441,
+      "resumed_tokens": 0
+    },
+    {
+      "prefill": 1,
+      "round": 2,
+      "case": "late_edit",
+      "output_exact": true,
+      "ttft_speedup": 2.236082684382174,
+      "resumed_tokens": 4096
+    },
+    {
+      "prefill": 1,
+      "round": 2,
+      "case": "mid_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.3708202497794064,
+      "resumed_tokens": 2048
+    },
+    {
+      "prefill": 1,
+      "round": 2,
+      "case": "head_edit",
+      "output_exact": true,
+      "ttft_speedup": 1.0016670540736525,
+      "resumed_tokens": 0
+    }
+  ],
+  "all_outputs_exact": true
+}

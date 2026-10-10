@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "phase": "fresh-process vendored drafter load",
+  "error": "AttributeError: module 'mlx_vlm.models.qwen3_5_mtp' has no attribute 'TextConfig'",
+  "source_commit": "5c843788007f91431321fb6953688a2fe44ca10b"
+}

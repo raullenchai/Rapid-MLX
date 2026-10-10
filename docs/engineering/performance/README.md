@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Existing acceleration paths on M5 Max (2026-10-09)](2026-10-09-m5-acceleration-qualification.md)
 - [Mac mini model matrix: Qwen3.5 4B, Gemma 4 26B, and Qwen3.8 27B](2026-08-21-mac-mini-model-matrix.md)
 - [Long-context and service-prefill study (M2 Pro, 2026-08-22)](2026-08-22-long-context-service-prefill.md)
 - [Targeted validation of the August prefill changes](2026-08-23-prefill-pr-targeted-validation.md)

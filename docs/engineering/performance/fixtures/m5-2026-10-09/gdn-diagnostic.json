@@ -1,0 +1,1461 @@
+{
+  "fusion": {
+    "gate_up": 40,
+    "input": 30,
+    "router": 40,
+    "decode": 30
+  },
+  "comparisons": [
+    {
+      "layer": "language_model.model.layers.0.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.1.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.2.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.4.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.5.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.6.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.8.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.9.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.10.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.12.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.13.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.14.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.16.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.17.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.18.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.20.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.21.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.22.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.24.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.25.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.26.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.28.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.29.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.30.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.32.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.33.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.34.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.36.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.37.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.38.linear_attn",
+      "step": 0,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.0.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.1.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.2.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.4.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.5.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.6.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.8.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.9.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.10.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.12.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.13.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.14.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.16.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.17.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": false,
+        "max_abs": 1.0952353477478027e-05
+      }
+    },
+    {
+      "layer": "language_model.model.layers.18.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.20.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": false,
+        "max_abs": 0.0001220703125
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": false,
+        "max_abs": 1.1294614523649216e-05
+      }
+    },
+    {
+      "layer": "language_model.model.layers.21.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.22.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.24.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.25.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.26.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.28.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.29.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.30.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.32.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.33.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.34.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.36.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.37.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.38.linear_attn",
+      "step": 1,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.0.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.1.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.2.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.4.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": false,
+        "max_abs": 5.342066287994385e-06
+      }
+    },
+    {
+      "layer": "language_model.model.layers.5.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.6.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.8.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.9.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.10.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.12.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.13.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.14.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.16.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.17.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.18.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.20.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.21.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.22.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.24.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.25.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.26.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.28.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.29.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.30.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.32.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.33.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.34.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.36.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.37.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    },
+    {
+      "layer": "language_model.model.layers.38.linear_attn",
+      "step": 2,
+      "output": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "conv": {
+        "exact": true,
+        "max_abs": 0.0
+      },
+      "state": {
+        "exact": true,
+        "max_abs": 0.0
+      }
+    }
+  ],
+  "tokens": [
+    71093,
+    12305,
+    198,
+    12237,
+    198,
+    19504,
+    52,
+    18887
+  ],
+  "all_exact": false
+}

@@ -1,0 +1,85 @@
+{
+  "existing_fusions": {
+    "gate_up": 40,
+    "gdn_projection": 30,
+    "moe_router": 40
+  },
+  "gdn_layers": 30,
+  "machine": "arm64",
+  "max_tokens": 128,
+  "model": "$HF_CACHE/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "pairs": [
+    {
+      "fused_tps": 150.29854951602303,
+      "speedup": 1.0447639665310988,
+      "stock_tps": 143.858856479378
+    },
+    {
+      "fused_tps": 149.6417438700639,
+      "speedup": 1.0526679502592908,
+      "stock_tps": 142.15474483972318
+    },
+    {
+      "fused_tps": 150.37192828255678,
+      "speedup": 1.0637238744794881,
+      "stock_tps": 141.3636864699857
+    },
+    {
+      "fused_tps": 150.36319907708514,
+      "speedup": 1.0481886153644215,
+      "stock_tps": 143.45051727623343
+    },
+    {
+      "fused_tps": 150.40839410083143,
+      "speedup": 1.0455894599150055,
+      "stock_tps": 143.8503350187347
+    },
+    {
+      "fused_tps": 150.23456545219227,
+      "speedup": 1.0451775185702779,
+      "stock_tps": 143.7407165604763
+    }
+  ],
+  "quality": {
+    "coding": {
+      "fused_hash": "2cd18fcf21dd89702622c7f85dd7af18eb83131db35637ca5ae40e05f3de04c1",
+      "same_tokens": false,
+      "stock_hash": "daf83972e94250d9ef228cbf6b34293243f40eb611f6eb182d4be5526edc9f26",
+      "tokens": 256
+    },
+    "creative": {
+      "fused_hash": "23b033dda81804f3c9975bebbda897e0a7bea274a9e225193acb013ca34638c0",
+      "same_tokens": false,
+      "stock_hash": "8f3a1e0e6e5245e38230828929c014b57f7ab42a4736281d48a1a7a0cf916b32",
+      "tokens": 256
+    },
+    "json": {
+      "fused_hash": "90c5cfe49bb376902dfbc517bb120998f3571d852b98c340b7ee41e3706b810e",
+      "same_tokens": false,
+      "stock_hash": "852f012dd64c72667dd0322286506a66f2d48752ce9153454daacd9670ecfeb1",
+      "tokens": 256
+    },
+    "reasoning": {
+      "fused_hash": "947be15b106007c1ca7c4b5e4c219f67d479b9b9390869470136e8ef73c98781",
+      "same_tokens": false,
+      "stock_hash": "b799a546fe73ae528e85e0101a7f3bf08911028ac02a7060d2356c5749cc4b61",
+      "tokens": 256
+    },
+    "tool": {
+      "fused_hash": "956684d7803dc1bcc4435d3f74c8bd4c8de2e90e6a6edcdeb598ab38e9a17239",
+      "same_tokens": false,
+      "stock_hash": "686900329aa242629149138f7a17cace4fe7c3687008affd4a827551b8bdd255",
+      "tokens": 256
+    }
+  },
+  "quality_max_tokens": 256,
+  "summary": {
+    "fused_tps_cv": 0.0017609237480501446,
+    "mean_speedup": 1.0500185641865971,
+    "median_speedup": 1.0468890376397135,
+    "performance_valid": true,
+    "positive_pairs": 6,
+    "quality_cases_exact": 0,
+    "stock_tps_cv": 0.006737542242964138
+  }
+}
