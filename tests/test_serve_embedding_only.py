@@ -148,6 +148,38 @@ def test_health_probes_report_embedding_model_loaded(embeddings_only_config):
     assert json.loads(body)["model_loaded"] is True
 
 
+@pytest.mark.requires_mlx
+@pytest.mark.asyncio
+async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import audio, video
+
+    cfg = reset_config()
+    cfg.embedding_engine = object()
+    cfg.embedding_model_locked = EMBED_ID
+    monkeypatch.setattr(server, "_engine", None)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_mcp_manager", None)
+    monkeypatch.setattr(
+        server,
+        "_residency_manager",
+        types.SimpleNamespace(start=mock.AsyncMock(), shutdown=mock.AsyncMock()),
+    )
+    monkeypatch.setattr(video, "start_video_jobs", mock.Mock())
+    monkeypatch.setattr(video, "shutdown_video_jobs", mock.AsyncMock())
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", mock.AsyncMock())
+    assert cfg.ready is False
+    try:
+        async with server.lifespan(server.app):
+            assert cfg.ready is True
+            assert cfg.model_loaded is True
+        assert cfg.ready is False
+        assert cfg.draining is True
+    finally:
+        reset_config()
+
+
 # An audio server with an embedding sidecar keeps reporting its lazy primary.
 def test_embedding_sidecar_does_not_mark_primary_loaded(embeddings_only_config):
     embeddings_only_config.model_name = "mlx-community/Kokoro-82M-bf16"

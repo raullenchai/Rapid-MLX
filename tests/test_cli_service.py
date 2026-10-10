@@ -320,6 +320,16 @@ def test_install_dry_run_defaults_model_without_embedding_model(monkeypatch, cap
     assert "embedding model" not in out
 
 
+@pytest.mark.parametrize("flag", ["--model", "--embedding-model"])
+def test_install_rejects_explicit_empty_model(monkeypatch, capsys, flag):
+    _valid_user_monkeypatch(monkeypatch)
+    args = build_parser().parse_args(
+        ["service", "install", "--service-user", "serveuser", flag, "", "--dry-run"]
+    )
+    assert ins_mod.install_command(args) == 1
+    assert "invalid service configuration" in capsys.readouterr().err
+
+
 def test_install_refuses_admin_user(monkeypatch, capsys):
     _valid_user_monkeypatch(monkeypatch)
     monkeypatch.setattr(ins_mod, "is_admin_user", staticmethod(lambda u: True))

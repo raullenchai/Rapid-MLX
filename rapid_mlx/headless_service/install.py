@@ -478,7 +478,7 @@ def install_command(args) -> int:
     label = getattr(args, "label", None) or DEFAULT_LABEL
     model = getattr(args, "model", None)
     embedding_model = getattr(args, "embedding_model", None)
-    if not model and not embedding_model:
+    if model is None and embedding_model is None:
         model = "qwen3.5-4b-4bit"
     user = getattr(args, "service_user", None)
     host = getattr(args, "host", None) or "127.0.0.1"
