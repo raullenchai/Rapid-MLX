@@ -118,6 +118,10 @@ def _probe_candidate(threadgroup_y: int) -> bool:
     conv.weight = (
         mx.random.normal((_CONV_DIM, _CONV_KERNEL, 1), key=mx.random.key(3501)) * 0.1
     ).astype(dtype)
+    # Exercise the sigmoid rounding edge in the convolution's SiLU too.
+    # A unit last tap makes the value channel independent of prior history.
+    edge_channel = 2 * _KEY_DIM
+    conv.weight[edge_channel, :, 0] = mx.array([0, 0, 0, 1], dtype=dtype)
     a_log = mx.random.normal((_NUM_VALUE_HEADS,), key=mx.random.key(3502)).astype(dtype)
     dt_bias = mx.random.normal((_NUM_VALUE_HEADS,), key=mx.random.key(3503)).astype(
         dtype
@@ -136,6 +140,7 @@ def _probe_candidate(threadgroup_y: int) -> bool:
         qkv = (
             mx.random.normal((1, 1, _CONV_DIM), key=mx.random.key(3600 + step)) * 0.3
         ).astype(dtype)
+        qkv[0, 0, edge_channel] = -6.84375
         z = (
             mx.random.normal((1, 1, _VALUE_DIM), key=mx.random.key(3700 + step)) * 2.0
         ).astype(dtype)
