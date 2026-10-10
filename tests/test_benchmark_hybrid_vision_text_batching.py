@@ -9,40 +9,46 @@ import pytest
 from scripts.benchmark_hybrid_vision_text_batching import measure
 
 
-def _transport(mode):
+def _transport(mode, fail_request, observed):
     async def handle(request):
         limit = json.loads(request.content)["max_tokens"]
+        current_mode = mode if len(observed) + 1 == fail_request else "valid"
+        observed.append((limit, current_mode))
         content = {"choices": [{"delta": {"content": "ok"}}]}
         finish = {"choices": [{"delta": {}, "finish_reason": "length"}]}
         usage = {"choices": [], "usage": {"completion_tokens": limit}}
-        if mode == "wrong_finish":
+        if current_mode == "wrong_finish":
             finish["choices"][0]["finish_reason"] = "stop"
-        if mode == "wrong_tokens":
+        if current_mode == "wrong_tokens":
             usage["usage"]["completion_tokens"] = limit - 1
         events = []
-        if mode != "no_content":
+        if current_mode != "no_content":
             events.append(content)
-        if mode != "no_finish":
+        if current_mode != "no_finish":
             events.append(finish)
-        if mode != "no_usage":
+        if current_mode != "no_usage":
             events.append(usage)
-        if mode == "error":
+        if current_mode == "error":
             events.append({"error": {"message": "generation failed"}})
         data = "".join("data: " + json.dumps(e) + "\n\n" for e in events)
-        if mode != "no_done":
+        if current_mode != "no_done":
             data += "data: [DONE]\n\n"
         return httpx.Response(200, content=data.encode())
 
     return httpx.MockTransport(handle)
 
 
-def _install_client(monkeypatch, mode):
+def _install_client(monkeypatch, mode, fail_request=None):
     client = httpx.AsyncClient
+    observed = []
     monkeypatch.setattr(
         httpx,
         "AsyncClient",
-        lambda **kwargs: client(transport=_transport(mode), **kwargs),
+        lambda **kwargs: client(
+            transport=_transport(mode, fail_request, observed), **kwargs
+        ),
     )
+    return observed
 
 
 @pytest.mark.asyncio
@@ -56,6 +62,7 @@ async def test_complete_benchmark_streams_produce_each_batch_width(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail_request", [2, 3, 5], ids=["B1", "B2", "B4"])
 @pytest.mark.parametrize(
     "mode",
     [
@@ -69,8 +76,10 @@ async def test_complete_benchmark_streams_produce_each_batch_width(monkeypatch):
     ],
 )
 async def test_incomplete_or_failed_stream_cannot_be_benchmark_evidence(
-    monkeypatch, mode
+    monkeypatch, mode, fail_request
 ):
-    _install_client(monkeypatch, mode)
+    observed = _install_client(monkeypatch, mode, fail_request)
     with pytest.raises(RuntimeError):
         await measure("http://benchmark.test", "test-model", tokens=16, reps=1)
+    assert observed[0] == (8, "valid")  # Warmup must succeed before the fault.
+    assert observed[fail_request - 1] == (16, mode)
