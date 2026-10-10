@@ -247,4 +247,71 @@ def test_stream_missing_call_error_and_length_boundary(finish, choice, monkeypat
         assert not errors
         if finish == "length":
             assert terminal == ["length"]
+        elif finish == "stop":
+            assert terminal == ["stop"]
     assert response.text.count("data: [DONE]") == 1
+
+
+def test_named_stream_wrong_function_cannot_satisfy_choice(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "0")
+
+    class WrongNameEngine(TemplateEngine):
+        async def stream_chat(self, messages, **kwargs):
+            text = '<tool_call>\n{"name":"other","arguments":{"city":"Paris"}}\n</tool_call>'
+            yield GenerationOutput(
+                text=text,
+                new_text=text,
+                finished=False,
+                prompt_tokens=10,
+                completion_tokens=20,
+            )
+            yield GenerationOutput(
+                text=text,
+                new_text="",
+                finished=True,
+                finish_reason="stop",
+                prompt_tokens=10,
+                completion_tokens=20,
+            )
+
+    cfg = reset_config()
+    cfg.engine = WrongNameEngine()
+    cfg.model_name = "test"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [tool(), tool("other")],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "get_weather"},
+                },
+                "stream": True,
+            },
+        )
+    assert response.status_code == 200
+    chunks = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert [ch["error"]["code"] for ch in chunks if "error" in ch] == [
+        "tool_choice_violation"
+    ]
+    assert not [
+        tc
+        for ch in chunks
+        for c in ch.get("choices", [])
+        for tc in c.get("delta", {}).get("tool_calls", [])
+    ]
+    assert not [
+        c for ch in chunks for c in ch.get("choices", []) if c.get("finish_reason")
+    ]
