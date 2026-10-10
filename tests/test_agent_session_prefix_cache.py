@@ -477,7 +477,7 @@ def test_restored_boundary_insert_failure_rearms_cold_snapshot(monkeypatch):
     generator.insert.side_effect = RuntimeError("cached insert rejected")
     generator.insert_segments.return_value = [101]
     sched.batch_generator = generator
-    monkeypatch.setattr(sched, "_ensure_batch_generator", lambda: True)
+    monkeypatch.setattr(sched, "_ensure_batch_generator", MagicMock(return_value=True))
     monkeypatch.setattr(sched, "_get_request_sampler", lambda _r: MagicMock())
     monkeypatch.setattr(sched, "_register_uid_processors", MagicMock())
     monkeypatch.setattr(sched, "_validate_cache", lambda _c: True)
