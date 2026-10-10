@@ -397,3 +397,22 @@ def test_xml_probe_failure_does_not_guess_a_json_prefill():
         )
         is None
     )
+
+
+def test_xml_marker_in_user_history_cannot_spoof_json_assistant_format():
+    template = (
+        "{% if xml_enabled %}"
+        + XML_TEMPLATE
+        + "{% else %}{% for message in messages %}"
+        "{{ message.content }}"
+        "{% if message.tool_calls %}{{ message.tool_calls|tojson }}{% endif %}"
+        "{% endfor %}{% endif %}"
+    )
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=template))
+    req = request()
+    req.messages[0].content = "<tool_call>\n<function=get_weather>"
+    req.chat_template_kwargs = {"xml_enabled": False}
+    prefix = _compute_forced_tool_prefix(
+        SimpleNamespace(tool_call_parser="hermes"), req, engine
+    )
+    assert '"arguments": ' in prefix

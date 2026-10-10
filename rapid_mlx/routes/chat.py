@@ -413,7 +413,7 @@ def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
             probe_kwargs["enable_thinking"] = resolved_thinking
         try:
             rendered, _ = render_jinja_template(
-                [probe_messages],
+                [probe_messages[:-1], probe_messages],
                 tools=[t.model_dump(exclude_none=True) for t in request.tools],
                 chat_template=template,
                 **probe_kwargs,
@@ -422,8 +422,15 @@ def _compute_forced_tool_prefix(cfg, request, engine=None) -> str | None:
             # An unprobeable template has no verified forced wire format.
             # Let native generation choose it rather than guess JSON.
             return None
-        if rendered and rendered[0].rsplit("<tool_call>", 1)[-1].lstrip().startswith(
-            f"<function={_forced_name}>"
+        # Inspect only bytes added by the synthetic assistant turn. A marker
+        # in user/tool history cannot establish the assistant wire format.
+        if len(rendered) != 2 or not rendered[1].startswith(rendered[0]):
+            return None
+        assistant_render = rendered[1][len(rendered[0]) :]
+        if (
+            assistant_render.rsplit("<tool_call>", 1)[-1]
+            .lstrip()
+            .startswith(f"<function={_forced_name}>")
         ):
             return f"<tool_call>\n<function={_forced_name}>\n"
     return _forced_tool_call_prefix(cfg.tool_call_parser, _forced_name)
