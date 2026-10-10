@@ -2973,3 +2973,172 @@ def test_text_prefill_shared_prefix_position_alone_selects_the_chunked_path(
     model.calls.clear()
     gen._run_vision_encoding(same, cache=[ArraysCache(1)])
     assert [seqlen for seqlen, _ in model.calls] == [24, 15, 1]
+
+
+@pytest.mark.parametrize("metadata_key", ["mm_token_type_ids", "token_type_ids"])
+@pytest.mark.parametrize("with_cache", [False, True])
+def test_gemma4_unified_image_prefill_preserves_modality_metadata(
+    metadata_key, with_cache
+):
+    """The unified wrapper drops token types; prefill must reach the LM directly."""
+    from types import SimpleNamespace
+
+    model = _RecordingModel()
+    model.config = SimpleNamespace(model_type="gemma4_unified")
+    embeds = mx.ones((1, 3, 4))
+    per_layer = mx.ones((1, 3, 2, 4))
+    model.get_input_embeddings = MagicMock(
+        return_value=SimpleNamespace(
+            to_dict=lambda: {
+                "inputs_embeds": embeds,
+                "per_layer_inputs": per_layer,
+                "mask": None,
+            }
+        )
+    )
+    model.language_model = MagicMock(return_value=mx.zeros((1, 3, 8)))
+    gen = _make_generator(model)
+    gen.prefill_step_size = 1  # Must not split a bidirectional image span.
+    metadata = mx.array([[0, 1, 1]])
+    positions = mx.array([[[0, 0], [0, 1]]])
+    pixels = mx.ones((1, 2, 4))
+    request = _make_request(
+        pixel_values=pixels,
+        extra_kwargs={metadata_key: metadata, "image_position_ids": positions},
+    )
+    cache = [] if with_cache else None
+    logits = gen._run_vision_encoding(request, cache=cache)
+
+    assert logits.shape == (1, 3, 8)
+    assert model.last_call_kwargs is None  # The lossy wrapper was bypassed.
+    model.get_input_embeddings.assert_called_once()
+    merge = model.get_input_embeddings.call_args.kwargs
+    assert merge["pixel_values"] is pixels
+    assert merge["image_position_ids"] is positions
+    model.language_model.assert_called_once()
+    call = model.language_model.call_args
+    assert call.args[0].shape == (1, 3)
+    assert call.kwargs[metadata_key] is metadata
+    assert call.kwargs["inputs_embeds"] is embeds
+    assert call.kwargs["per_layer_inputs"] is per_layer
+    assert call.kwargs["cache"] is cache
+    assert "pixel_values" not in call.kwargs
+    assert "image_position_ids" not in call.kwargs
+    assert request.vision_encoded and request.pixel_values is None
+    assert request.extra_kwargs == {}
+
+
+def test_gemma4_unified_text_keeps_wrapper_path():
+    from types import SimpleNamespace
+
+    model = _RecordingModel()
+    model.config = SimpleNamespace(model_type="gemma4_unified")
+    model.get_input_embeddings = MagicMock()
+    gen = _make_generator(model)
+    gen._run_vision_encoding(_make_request(pixel_values=None))
+    assert model.last_call_kwargs == {"pixel_values": None}
+    model.get_input_embeddings.assert_not_called()
+
+
+def test_gemma4_unified_prefill_uses_bidirectional_image_attention(monkeypatch):
+    """Exercise real attention masks: future pixels attend, future text does not."""
+    from types import SimpleNamespace
+
+    from rapid_mlx.models.gemma4_vendored.config import TextConfig
+    from rapid_mlx.models.gemma4_vendored.language import LanguageModel
+
+    config = TextConfig(
+        hidden_size=16,
+        num_hidden_layers=2,
+        intermediate_size=32,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        global_head_dim=8,
+        vocab_size=16,
+        vocab_size_per_layer_input=16,
+        hidden_size_per_layer_input=0,
+        num_kv_shared_layers=0,
+        use_bidirectional_attention="vision",
+        layer_types=["sliding_attention", "full_attention"],
+    )
+    lm = LanguageModel(config)
+    ids = mx.array([[2, 3, 4, 5, 6]])
+    types = mx.array([[0, 1, 1, 0, 0]])
+    embeddings = lm.model.embed_tokens(ids) * lm.model.embed_scale
+    observed = []
+    original = type(lm.model)._make_masks
+
+    def record_masks(self, h, cache, mm_token_type_ids=None):
+        masks = original(self, h, cache, mm_token_type_ids)
+        observed.extend(masks)
+        return masks
+
+    monkeypatch.setattr(type(lm.model), "_make_masks", record_masks)
+    wrapper = _RecordingModel()
+    wrapper.config = SimpleNamespace(model_type="gemma4_unified")
+    wrapper.language_model = lm
+    wrapper.get_input_embeddings = MagicMock(
+        return_value=SimpleNamespace(
+            to_dict=lambda: {"inputs_embeds": embeddings, "per_layer_inputs": None}
+        )
+    )
+    generator = _make_generator(wrapper)
+    generator.prefill_step_size = 1
+    request = _make_request(
+        pixel_values=mx.ones((1, 2, 4)),
+        extra_kwargs={"mm_token_type_ids": types},
+    )
+    request.input_ids = ids
+    output = generator._run_vision_encoding(request, cache=lm.make_cache())
+    mx.eval(output)
+
+    assert output.shape == (1, 5, 16)
+    assert len(observed) == 2
+    for mask in observed:
+        assert bool(mask[..., 1, 2].item())  # Same-image future token.
+        assert not bool(mask[..., 0, 1].item())  # Text stays causal.
+        assert not bool(mask[..., 1, 3].item())  # No access to future text.
+    assert wrapper.last_call_kwargs is None
+
+
+def test_image_prefill_cleanup_preserves_cached_modality_metadata(tmp_path):
+    from types import SimpleNamespace
+
+    from rapid_mlx.vision_embedding_cache import VisionEmbeddingCache
+
+    model = _RecordingModel()
+    model.config = SimpleNamespace(model_type="gemma4_unified")
+    model.get_input_embeddings = MagicMock(
+        return_value=SimpleNamespace(
+            to_dict=lambda: {"inputs_embeds": mx.ones((1, 3, 4))}
+        )
+    )
+    model.language_model = MagicMock(return_value=mx.zeros((1, 3, 8)))
+    generator = _make_generator(model)
+    pixels = mx.ones((1, 2, 4))
+    types = mx.array([[0, 1, 1]])
+    positions = mx.array([[[0, 0], [0, 1]]])
+    cold = _make_request(
+        pixel_values=pixels,
+        extra_kwargs={"mm_token_type_ids": types, "image_position_ids": positions},
+    )
+    image = tmp_path / "image.png"
+    image.write_bytes(b"cache-key-image-content")
+    images = [str(image)]
+    cache = VisionEmbeddingCache()
+    cache.set_pixel_cache(
+        images, cold.prompt, pixels, cold.input_ids, extra_kwargs=cold.extra_kwargs
+    )
+    generator._run_vision_encoding(cold)
+    assert cold.extra_kwargs == {}
+    cached = cache.get_pixel_cache(images, cold.prompt)
+    assert cached.extra_kwargs["mm_token_type_ids"] is types
+    assert cached.extra_kwargs["image_position_ids"] is positions
+    warm = _make_request(
+        pixel_values=cached.pixel_values, extra_kwargs=dict(cached.extra_kwargs)
+    )
+    generator._run_vision_encoding(warm)
+    assert model.language_model.call_count == 2
+    assert model.language_model.call_args.kwargs["mm_token_type_ids"] is types
+    assert cached.extra_kwargs["mm_token_type_ids"] is types
