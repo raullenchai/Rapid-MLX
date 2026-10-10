@@ -393,6 +393,24 @@ def test_restored_boundary_retention_is_narrow(monkeypatch, case):
     assert not getattr(req, "_cache_snapshot_stored", False)
 
 
+def test_restored_boundary_retention_uses_prefill_tile_alignment(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    sched._prefill_tile_rows_cached = 32
+    boundary = list(range(128))
+    assert sched.memory_aware_cache.store(
+        boundary, _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 73, 144)
+    req.prefix_boundary = 129
+
+    sched._fetch_memory_aware_prefix(req)
+
+    assert req.cached_tokens == 128
+    assert req.prefix_boundary == 129
+    assert req._cache_snapshot_boundary == 128
+    assert req._cache_snapshot_stored
+
+
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
     sched = _scheduler(monkeypatch)
     req = _register(sched, 7, 40)
