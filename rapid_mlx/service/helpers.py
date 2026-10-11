@@ -3416,6 +3416,27 @@ def _validate_model_name(request_model: str) -> None:
     if cfg.model_registry and request_model == "default":
         return
 
+    manager = getattr(cfg, "residency_manager", None)
+    if manager is not None and manager.was_evicted(request_model):
+        # Preserve the status/type/code consumed by existing clients. Echo only
+        # the requested id, never historical paths, aliases or loader settings.
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "message": (
+                        f"The model `{request_model}` was previously loaded but is "
+                        "no longer resident. Reload it with POST /v1/models/load "
+                        "using its original load settings before retrying, or "
+                        "choose a loaded model from GET /v1/models."
+                    ),
+                    "type": "not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
+
     if not cfg.model_name:
         return
     accepted = {cfg.model_name}

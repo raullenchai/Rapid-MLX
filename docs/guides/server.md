@@ -203,6 +203,38 @@ releases worker ownership, but cannot restore an already evicted model. Readines
 stays false until another model is successfully loaded. Replacements that fit
 alongside the old primary retain its existing serving behavior during loading.
 
+### Recovery after resident eviction
+
+An estimated admission that cannot fit even after eligible idle models are
+removed fails before eviction. A feasible admission can still evict idle models
+and then fail during loading, cancellation, or cleanup. Those evictions are
+committed: the server does not automatically restore the old engines or reload
+them on an inference request. Restoration would require another load that can
+itself fail or exceed the process memory ceiling. Primary, pinned, leased, and
+engine-busy residents retain their existing eviction protection.
+
+`keep_then_commit` protects the replacement group until the incoming model can
+commit; it does not roll back unrelated idle residents evicted for capacity.
+`evict_first_if_needed` can deliberately remove the replacement group before
+loading. Neither policy promises restoration after that removal.
+
+Inspect `GET /v1/models/residency` after a failed load. An engine whose cleanup
+fails remains visible with `cleanup_failed` and its bytes remain charged; it is
+not routable and its memory is not treated as free. Resolve that cleanup failure
+before retrying a load that needs the capacity; if cleanup cannot complete, an
+operator may need to restart the server. Successfully removed models can be
+loaded again with `POST /v1/models/load`, using their original model identity,
+path, and performance settings, subject to normal admission checks.
+
+Conversation inference requests for recently removed residents return HTTP 404
+with the existing `not_found_error` type and `model_not_found` code. The message
+says the requested model was previously loaded, gives the reload endpoint, and
+offers `GET /v1/models` to choose a currently loaded model. Unknown ids retain
+their existing error. This diagnostic history covers the last 256 resident
+retirements in the current process, including request aliases; it retains no
+engines, survives neither restart nor history overflow, and adds no new wire
+fields or automatic reload behavior. Live routes take precedence over history.
+
 ### Custom computer-use clients
 
 To host only the authenticated Computer Use control plane, without resolving,

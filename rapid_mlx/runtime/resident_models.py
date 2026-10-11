@@ -8,6 +8,7 @@ import gc
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -751,6 +752,9 @@ class ResidentModelManager:
         # charged to _accounted_usage() and visible in snapshot() until the
         # offline cleanup task completes or fails truthfully.
         self._retiring: dict[int, _Retirement] = {}
+        # Diagnostic history only: never retain engines or promise restoration.
+        # Bound by retirement events, including all request aliases per event.
+        self._evicted_names: deque[frozenset[str]] = deque(maxlen=256)
         self._lock = asyncio.Lock()
         self._ttl_task: asyncio.Task | None = None
         self.evictions_total = 0
@@ -817,6 +821,24 @@ class ResidentModelManager:
         if not name or name == "default":
             return self.registry.default_name
         return self._index.get(name, name if name in self._records else None)
+
+    def was_evicted(self, name: str) -> bool:
+        """Whether a missing request id belonged to a recent retired resident.
+
+        Live routing always wins over history, including alias reassignment.
+        This process-local hint neither reloads models nor bypasses admission.
+        """
+        return name not in self.registry and any(
+            name in names for names in self._evicted_names
+        )
+
+    def _remember_eviction(self, record: ResidencyRecord, reason: str) -> None:
+        if reason not in {"load_rollback", "shutdown"}:
+            self._evicted_names.append(
+                frozenset(
+                    {record.model_id, record.entry.model_path, *record.entry.aliases}
+                )
+            )
 
     def _index_record(self, record: ResidencyRecord) -> None:
         canonical = record.model_id
@@ -2287,7 +2309,8 @@ class ResidentModelManager:
             # Idempotent retirement: an overlapping caller wants the same
             # engine gone. Unroute this (possibly sibling) record's alias, but
             # join the existing cleanup -- never double-stop the engine.
-            self.registry.remove_if_entry(record.model_id, record.entry)
+            if self.registry.remove_if_entry(record.model_id, record.entry) is not None:
+                self._remember_eviction(record, reason)
             self._drop_record_if_same(record)
             if (
                 existing.state == "failed"
@@ -2306,7 +2329,8 @@ class ResidentModelManager:
             assert existing.task is not None
             return asyncio.shield(existing.task)
         record.state = "retiring"
-        self.registry.remove_if_entry(record.model_id, record.entry)
+        if self.registry.remove_if_entry(record.model_id, record.entry) is not None:
+            self._remember_eviction(record, reason)
         self._drop_record_if_same(record)
         retirement = _Retirement(record=record, reason=reason, count=count)
         task = asyncio.create_task(self._cleanup_retired(identity, retirement))

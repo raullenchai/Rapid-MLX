@@ -818,6 +818,169 @@ async def test_impossible_load_preserves_idle_residents(incoming_gib):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["loader", "cleanup", "cancelled"])
+async def test_feasible_eviction_failure_requires_explicit_recovery(failure):
+    manager, registry, loaded, _ = manager_fixture(limit_gib=10)
+    secondary = await manager.load("secondary", estimated_bytes=2 * GIB)
+    if failure == "cleanup":
+        secondary.entry.engine.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+    original_loader = manager.loader
+    manager.loader = AsyncMock(
+        side_effect=(
+            asyncio.CancelledError()
+            if failure == "cancelled"
+            else RuntimeError("load failed")
+        )
+    )
+    with pytest.raises(
+        asyncio.CancelledError if failure == "cancelled" else RuntimeError
+    ):
+        await manager.load("incoming", estimated_bytes=6 * GIB)
+    assert "secondary" not in registry
+    assert "incoming" not in registry
+    assert not registry.get_engine("chat").stopped
+    assert manager.loads_total == 1
+    assert (
+        manager.snapshot()["memory_used_bytes"]
+        == (6 if failure == "cleanup" else 4) * GIB
+    )
+    if failure == "cleanup":
+        manager.loader.assert_not_called()
+        row = next(
+            item for item in manager.snapshot()["models"] if item["id"] == "secondary"
+        )
+        assert row["cleanup_failed"] == "stop failed"
+        with pytest.raises(ResidentModelCapacityError):
+            await manager.load("another", estimated_bytes=6 * GIB)
+        manager.loader.assert_not_called()
+    else:
+        assert loaded["secondary"].stopped
+        assert manager.evictions_total == 1
+        manager.loader = original_loader
+        await manager.load("secondary", estimated_bytes=2 * GIB)
+        async with manager.lease("secondary") as engine:
+            assert not engine.stopped
+
+
+@pytest.mark.asyncio
+async def test_evicted_request_hint_preserves_error_contract_and_privacy(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service import helpers
+
+    manager, registry, _, _ = manager_fixture(limit_gib=10)
+    secondary = await manager.load("secondary", estimated_bytes=2 * GIB)
+    secondary.entry.aliases.add("friendly")
+    registry.add(secondary.entry)
+    monkeypatch.setattr(
+        helpers,
+        "get_config",
+        lambda: SimpleNamespace(
+            model_registry=registry,
+            residency_manager=manager,
+            model_name="chat",
+            model_alias=None,
+            model_path="private-primary-path",
+        ),
+    )
+    await manager.load("incoming", estimated_bytes=6 * GIB)
+    for name in ("secondary", "repo/secondary", "friendly"):
+        with pytest.raises(HTTPException) as caught:
+            helpers._validate_model_name(name)
+        assert caught.value.status_code == 404
+        error = caught.value.detail["error"]
+        assert error["code"] == "model_not_found"
+        assert error["type"] == "not_found_error"
+        assert error["param"] == "model"
+        assert "previously loaded" in error["message"]
+        assert "POST /v1/models/load" in error["message"]
+        assert "private-primary-path" not in error["message"]
+    with pytest.raises(HTTPException) as caught:
+        helpers._validate_model_name("unknown")
+    assert (
+        caught.value.detail["error"]["message"] == "The model `unknown` does not exist."
+    )
+    await manager.load("secondary", estimated_bytes=2 * GIB)
+    helpers._validate_model_name("secondary")
+
+
+@pytest.mark.asyncio
+async def test_eviction_history_is_bounded_and_live_alias_wins(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
+    manager, registry, _, _ = manager_fixture(ttl=1)
+    for index in range(257):
+        name = f"secondary-{index}"
+        record = await manager.load(name, estimated_bytes=GIB)
+        record.entry.aliases.add("shared")
+        registry.add(record.entry)
+        await manager.unload(name)
+    assert not manager.was_evicted("secondary-0")
+    assert manager.was_evicted("secondary-1")
+    assert manager.was_evicted("shared")
+    live = await manager.load("live", estimated_bytes=GIB)
+    live.entry.aliases.add("shared")
+    registry.add(live.entry)
+    assert not manager.was_evicted("shared")
+    manager._clock.now += 2
+    await manager.evict_expired()
+    assert manager.was_evicted("live")
+    assert manager.was_evicted("shared")
+
+
+@pytest.mark.asyncio
+async def test_shared_engine_retirement_remembers_each_evicted_name(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
+    registry = ModelRegistry()
+    engine = BlockingStopLifecycleEngine()
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    records = []
+    for name in ("first", "sibling"):
+        model = entry(name, engine)
+        registry.add(model)
+        record = ResidencyRecord(
+            entry=model, estimated_bytes=GIB, loaded_at=0, last_used_at=0
+        )
+        manager._index_record(record)
+        records.append(record)
+
+    async with manager._lock:
+        first = manager._begin_evict_locked(records[0], reason="explicit")
+        sibling = manager._begin_evict_locked(records[1], reason="explicit")
+    await engine.stop_started.wait()
+    try:
+        for name in ("first", "sibling"):
+            assert name not in registry
+            assert manager.was_evicted(name)
+            assert manager.was_evicted(f"repo/{name}")
+        assert engine.stop_calls == 1
+    finally:
+        engine.stop_release.set()
+        await asyncio.gather(first, sibling)
+    assert not manager._retiring
+
+
+@pytest.mark.asyncio
+async def test_rejected_load_is_not_a_previously_served_model():
+    manager, registry, _, _ = manager_fixture(limit_gib=10)
+    original_loader = manager.loader
+
+    async def oversized_loader(*args):
+        result = await original_loader(*args)
+        manager._memory_reader = lambda: 11 * GIB
+        return result
+
+    manager.loader = oversized_loader
+    with pytest.raises(ResidentModelCapacityError):
+        await manager.load("rejected", estimated_bytes=GIB)
+    assert "rejected" not in registry
+    assert not manager.was_evicted("rejected")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("protected", ["pinned", "leased", "busy"])
 async def test_impossible_load_counts_only_eligible_residents(protected):
     manager, registry, loaded, _ = manager_fixture(limit_gib=10)

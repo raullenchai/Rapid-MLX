@@ -145,6 +145,43 @@ def start_switch(env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_evicted_secondary_http_errors_offer_reload(switching_server, stream):
+    env = switching_server
+    env.release.set()
+    await env.manager.load("secondary", estimated_bytes=2 * GIB)
+    env.outcome.error = RuntimeError("incoming loader failed")
+    with pytest.raises(RuntimeError, match="incoming loader failed"):
+        await env.manager.load("incoming", estimated_bytes=2 * GIB)
+    assert not env.old.engine.stopped
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app), base_url="http://test"
+    ) as client:
+        for path, body in (
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/completions", {"prompt": "hi"}),
+            ("/v1/responses", {"input": "hi"}),
+            (
+                "/v1/messages",
+                {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+            ),
+        ):
+            response = await client.post(
+                path, json={"model": "secondary", "stream": stream, **body}
+            )
+            assert response.status_code == 404, (path, response.text)
+            error = response.json()["error"]
+            assert "previously loaded" in error["message"]
+            assert "POST /v1/models/load" in error["message"]
+            assert error["code"] == "model_not_found"
+            assert error["type"] == "not_found_error"
+            assert error["param"] == "model"
+            if path == "/v1/messages":
+                assert response.json()["type"] == "error"
+        assert (await client.get("/health/ready")).status_code == 200
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
 async def test_blocked_low_memory_switch_has_typed_http_contract(
     switching_server, outcome
