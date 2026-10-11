@@ -533,7 +533,7 @@ class TestF10RoleBlockCompatibility:
                     "source": {
                         "type": "base64",
                         "media_type": "image/png",
-                        "data": "x",
+                        "data": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAIklEQVR4nGNkaGAgCTCRppxhVANRgIk4ZQgwqoEYQHIoAQC7HwCg8pZY7gAAAABJRU5ErkJggg==",
                     },
                 },
             ),

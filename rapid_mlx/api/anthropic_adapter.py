@@ -12,9 +12,13 @@ import json
 import re
 import secrets
 import uuid
+from urllib.parse import urlsplit
+
+from pydantic import ValidationError
 
 from .anthropic_models import (
     ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
+    AnthropicContentBlock,
     AnthropicMessage,
     AnthropicOutputConfig,
     AnthropicRequest,
@@ -816,6 +820,21 @@ def openai_to_anthropic(
     )
 
 
+class AnthropicContentError(ValueError):
+    """Content that cannot be preserved by the Anthropic adapter."""
+
+
+def _image_content_part(block: AnthropicContentBlock) -> dict:
+    """Translate a validated Anthropic image into the shared image URL shape."""
+    source = block.source
+    assert source is not None  # Guaranteed by AnthropicContentBlock validation.
+    if source["type"] == "url":
+        url = urlsplit(source["url"]).geturl()
+    else:
+        url = f"data:{source['media_type']};base64,{source['data']}"
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
 def _convert_message(msg: AnthropicMessage) -> list[Message]:
     """
     Convert an Anthropic message to one or more OpenAI messages.
@@ -836,12 +855,22 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
     # Content is a list of blocks
     messages = []
     text_parts = []
+    content_parts = []
     tool_calls_for_assistant = []
     tool_results = []
 
     for block in msg.content:
         if block.type == "text":
             text_parts.append(block.text or "")
+            content_parts.append({"type": "text", "text": block.text or ""})
+
+        elif block.type == "image":
+            content_parts.append(_image_content_part(block))
+
+        elif block.type == "document":
+            raise AnthropicContentError(
+                "document inputs are not supported on /v1/messages"
+            )
 
         elif block.type == "tool_use":
             # Assistant message with tool calls
@@ -860,18 +889,48 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
         elif block.type == "tool_result":
             # Tool result → OpenAI tool message
             result_content = block.content
+            result_images = []
+            result_parts = []
             if isinstance(result_content, list):
                 # Extract text from content blocks
                 parts = []
                 for item in result_content:
                     if isinstance(item, dict) and item.get("type") == "text":
                         parts.append(item.get("text", ""))
+                        result_parts.append(
+                            {"type": "text", "text": item.get("text", "")}
+                        )
+                    elif isinstance(item, dict) and item.get("type") == "image":
+                        try:
+                            nested_image = AnthropicContentBlock(**item)
+                        except ValidationError as error:
+                            raise AnthropicContentError(
+                                "Invalid image source in tool_result content"
+                            ) from error
+                        image_part = _image_content_part(nested_image)
+                        result_images.append(image_part)
+                        result_parts.append(image_part)
+                    elif isinstance(item, dict) and item.get("type") == "document":
+                        raise AnthropicContentError(
+                            "document inputs are not supported in tool_result content"
+                        )
                     elif isinstance(item, str):
                         parts.append(item)
+                        result_parts.append({"type": "text", "text": item})
                 result_content = "\n".join(parts)
             elif result_content is None:
                 result_content = ""
 
+            if result_images:
+                content_parts.append(
+                    {
+                        "type": "text",
+                        "text": f"Images from tool_result {block.tool_use_id}:",
+                    }
+                )
+                # Keep captions next to their images in the vision turn. The
+                # correlated tool reply above retains its text-only contract.
+                content_parts.extend(result_parts)
             tool_results.append(
                 Message(
                     role="tool",
@@ -896,17 +955,19 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
         else:
             messages.append(Message(role="assistant", content=""))
     elif msg.role == "user":
-        # User messages: collect text parts, then add tool results separately
-        if text_parts:
-            combined_text = "\n".join(text_parts)
-            messages.append(Message(role="user", content=combined_text))
-
-        # Tool results become separate tool messages
-        messages.extend(tool_results)
-
-        # If no text and no tool results, add empty user message
-        if not text_parts and not tool_results:
-            messages.append(Message(role="user", content=""))
+        if any(part["type"] == "image_url" for part in content_parts):
+            # Keep all tool replies adjacent to the assistant tool calls.
+            # Image/text parts retain their relative input order afterwards;
+            # nested screenshots carry their originating tool_use_id labels.
+            messages.extend(tool_results)
+            messages.append(Message(role="user", content=content_parts))
+        else:
+            # Preserve the established text-only conversion contract.
+            if text_parts:
+                messages.append(Message(role="user", content="\n".join(text_parts)))
+            messages.extend(tool_results)
+            if not text_parts and not tool_results:
+                messages.append(Message(role="user", content=""))
     else:
         # Other roles
         combined_text = "\n".join(text_parts) if text_parts else ""

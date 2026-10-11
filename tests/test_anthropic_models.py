@@ -62,7 +62,11 @@ class TestAnthropicContentBlock:
     def test_image_block(self):
         block = AnthropicContentBlock(
             type="image",
-            source={"type": "base64", "media_type": "image/png", "data": "abc"},
+            source={
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAIklEQVR4nGNkaGAgCTCRppxhVANRgIk4ZQgwqoEYQHIoAQC7HwCg8pZY7gAAAABJRU5ErkJggg==",
+            },
         )
         assert block.type == "image"
         assert block.source["type"] == "base64"
@@ -99,7 +103,11 @@ class TestAnthropicMessage:
             AnthropicContentBlock(type="text", text="look at this"),
             AnthropicContentBlock(
                 type="image",
-                source={"type": "base64", "media_type": "image/png", "data": "abc"},
+                source={
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAIklEQVR4nGNkaGAgCTCRppxhVANRgIk4ZQgwqoEYQHIoAQC7HwCg8pZY7gAAAABJRU5ErkJggg==",
+                },
             ),
         ]
         msg = AnthropicMessage(role="user", content=blocks)

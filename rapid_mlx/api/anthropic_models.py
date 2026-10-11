@@ -7,8 +7,11 @@ Anthropic-compatible /v1/messages endpoint, enabling clients like
 Claude Code to communicate with rapid-mlx.
 """
 
+import base64
+import binascii
 import uuid
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -178,6 +181,50 @@ class AnthropicContentBlock(BaseModel):
                             f"image source.{key} must be a string "
                             f"(got {type(val).__name__})"
                         )
+            source_type = self.source.get("type")
+            if source_type not in ("base64", "url"):
+                raise ValueError("image source.type must be 'base64' or 'url'")
+            required = ("data", "media_type") if source_type == "base64" else ("url",)
+            for key in required:
+                value = self.source.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"image source.{key} must be a non-empty string")
+            if source_type == "base64" and self.source["media_type"] not in {
+                "image/jpeg",
+                "image/png",
+                "image/gif",
+                "image/webp",
+            }:
+                raise ValueError(
+                    "image source.media_type must be a supported image MIME type"
+                )
+            if source_type == "base64":
+                # Validate encoding here; image-format decoding stays in the
+                # engine. Its ClientRequestError is mapped to HTTP 400 or an
+                # invalid_request_error SSE event by the route/disconnect guard.
+                try:
+                    data = self.source["data"]
+                    # 64 KiB is divisible by four, so each non-final chunk
+                    # contains complete base64 groups. Never allocate a second
+                    # full decoded image during request validation.
+                    chunk_size = 64 * 1024
+                    for start in range(0, len(data), chunk_size):
+                        chunk = data[start : start + chunk_size]
+                        if start + len(chunk) < len(data) and "=" in chunk:
+                            raise ValueError("base64 padding before final chunk")
+                        base64.b64decode(chunk, validate=True)
+                except (binascii.Error, ValueError) as error:
+                    raise ValueError(
+                        "image source.data must be valid base64"
+                    ) from error
+            else:
+                url = self.source["url"]
+                parsed = urlsplit(url)
+                # Network destinations and redirects are subsequently checked
+                # by the existing pinned-address remote-media fetch guard.
+                # Reject local paths/data/file URIs at this protocol boundary.
+                if parsed.scheme not in ("https", "http") or not parsed.hostname:
+                    raise ValueError("image source.url must be an HTTP(S) URL")
         return self
 
 
