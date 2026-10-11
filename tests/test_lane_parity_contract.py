@@ -521,6 +521,7 @@ def _request_semantics() -> tuple[dict[str, Any], tuple[object, object, object]]
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
         "reasoning_stop_scope": _STOP_SCOPE,
+        "ignore_eos": True,
         "grammar_logits_processor": processors[0],
         "reasoning_budget_logits_processor": processors[1],
         "suppressed_tokens_logits_processor": processors[2],
@@ -543,6 +544,7 @@ def _assert_shared_semantics(
             "presence_penalty": 0.3,
             "frequency_penalty": -0.2,
             "reasoning_stop_scope": _STOP_SCOPE,
+            "ignore_eos": True,
         }
         assert {key: captured[key] for key in _TEXT_ONLY_SAMPLING_KEYS} == {
             "top_k": 17,
@@ -558,6 +560,7 @@ def _assert_shared_semantics(
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
         "reasoning_stop_scope": _STOP_SCOPE,
+        "ignore_eos": True,
     }
     assert {key: getattr(params, key) for key in _TEXT_ONLY_SAMPLING_KEYS} == {
         "top_k": 17,

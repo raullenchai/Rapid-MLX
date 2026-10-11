@@ -43,6 +43,72 @@ QWEN36_CODING_PAYLOAD = {
 }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize("ignore_eos", [None, False, True])
+async def test_text_engine_preserves_ignore_eos(streaming, hybrid, ignore_eos):
+    """Fixed-length benchmarks must retain EOS policy on the native text lane.
+
+    A hybrid model can have both schedulers loaded while routing a text-only
+    benchmark to the native engine. Exercise the real public methods rather
+    than reconstructing their SamplingParams assembly in the test.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.request import RequestOutput
+
+    engine = BatchedEngine("test-model")
+    engine._loaded = True
+    engine._is_mllm = hybrid
+    engine._mllm_scheduler = MagicMock() if hybrid else None
+    if hybrid:
+        engine._mllm_scheduler.config.max_concurrent_requests = 1
+    engine._engine = MagicMock()
+    engine._engine.engine.scheduler.config.max_concurrent_requests = 1
+    output = RequestOutput(
+        request_id="bench",
+        output_token_ids=[42],
+        new_token_ids=[42],
+        output_text="ok",
+        new_text="ok",
+        finished=True,
+        finish_reason="length",
+        prompt_tokens=1,
+        completion_tokens=1,
+    )
+    captured = []
+
+    async def generate(**kwargs):
+        captured.append(kwargs["sampling_params"])
+        kwargs["on_request_committed"]()
+        return output
+
+    async def add_request(**kwargs):
+        await generate(**kwargs)
+        return "bench"
+
+    async def stream_outputs(request_id):
+        yield output
+
+    engine._engine.generate = generate
+    engine._engine.add_request = add_request
+    engine._engine.stream_outputs = stream_outputs
+    engine._engine.abort_request = AsyncMock()
+    kwargs = {} if ignore_eos is None else {"ignore_eos": ignore_eos}
+    if streaming:
+        results = [out async for out in engine.stream_generate([1], **kwargs)]
+        assert results[-1].finished
+    else:
+        await engine.generate([1], **kwargs)
+
+    assert len(captured) == 1
+    assert captured[0].ignore_eos is (ignore_eos is True)
+    if hybrid:
+        engine._mllm_scheduler.add_request_async.assert_not_called()
+
+
 # =============================================================================
 # Layer 1 — Pydantic models preserve the fields
 # =============================================================================

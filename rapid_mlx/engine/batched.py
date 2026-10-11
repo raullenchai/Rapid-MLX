@@ -163,6 +163,8 @@ _LANE_PARITY_SAMPLING_KEYS = (
     "presence_penalty",
     "frequency_penalty",
     "reasoning_stop_scope",
+    # Fixed-length benchmarks also use the shared-weight native text lane.
+    "ignore_eos",
 )
 _TEXT_ONLY_SAMPLING_KEYS = ("top_k", "min_p", "seed")
 _LANE_PARITY_PROCESSOR_KEYS = (
@@ -2879,7 +2881,6 @@ class BatchedEngine(BaseEngine):
                 for key in (
                     *_LANE_PARITY_SAMPLING_KEYS,
                     *_TEXT_ONLY_SAMPLING_KEYS,
-                    "ignore_eos",
                 )
                 if key in kwargs
             }
@@ -3137,7 +3138,6 @@ class BatchedEngine(BaseEngine):
                 for key in (
                     *_LANE_PARITY_SAMPLING_KEYS,
                     *_TEXT_ONLY_SAMPLING_KEYS,
-                    "ignore_eos",
                 )
                 if key in kwargs
             }
