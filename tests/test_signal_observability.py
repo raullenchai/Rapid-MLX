@@ -820,6 +820,135 @@ input()
         first.communicate(timeout=10)
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS psutil clock correction")
+@pytest.mark.parametrize("offset", [-2.0, 2.0])
+def test_live_child_remains_live_after_parent_clock_baseline_changes(
+    tmp_path, capsys, monkeypatch, offset
+):
+    psosx = pytest.importorskip("psutil._psosx")
+    if not hasattr(psosx, "INIT_BOOT_TIME"):
+        pytest.skip("psutil version has no import-time clock correction")
+    # A fresh child imports psutil after the clock change, while a long-lived
+    # parent keeps its earlier baseline. Change only Python state, not the clock.
+    monkeypatch.setattr(psosx, "INIT_BOOT_TIME", psosx.boot_time() + offset)
+    test_second_server_does_not_acknowledge_live_server_crash_file(tmp_path, capsys)
+
+
+@pytest.mark.parametrize(
+    "kind,expected",
+    [
+        ("same", True),
+        ("reused", False),
+        ("legacy", False),
+        ("missing", False),
+        ("dead", False),
+        ("denied", True),
+        ("access-denied", True),
+        ("broken", False),
+        ("invalid", False),
+    ],
+)
+def test_raw_creation_time_probe_keeps_identity_boundaries(monkeypatch, kind, expected):
+    from rapid_mlx import _process_identity as identity
+
+    marker = {"pid": 123, "create_time": 100.0, "boot_time": 50.0, "app_version": "1"}
+    no_such_process = type("NoSuchProcess", (Exception,), {})
+    access_denied = type("AccessDenied", (Exception,), {})
+    calls = []
+
+    def raw_time(*, monotonic):
+        assert monotonic is True
+        calls.append("raw")
+        if kind == "dead":
+            raise no_such_process()
+        if kind == "denied":
+            raise PermissionError("denied")
+        if kind == "access-denied":
+            raise access_denied()
+        if kind == "broken":
+            raise ValueError("malformed backend data")
+        return {"same": 100.0, "reused": 101.0, "invalid": float("nan")}[kind]
+
+    if kind == "missing":
+        backend = None
+    elif kind == "legacy":
+        backend = SimpleNamespace(create_time=lambda: 100.0)
+    else:
+        backend = SimpleNamespace(create_time=raw_time)
+    fake = SimpleNamespace(
+        Process=lambda _pid: SimpleNamespace(_proc=backend),
+        NoSuchProcess=no_such_process,
+        AccessDenied=access_denied,
+    )
+    monkeypatch.setattr(identity, "psutil", fake)
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        identity,
+        "process_identity",
+        lambda _pid: identity.ProcessIdentity(123, 102.0, 50.0),
+    )
+    assert identity.is_same_process(marker) is expected
+    calls.clear()
+    assert identity.is_same_process({**marker, "boot_time": 49.0}) is False
+    assert calls == []  # boot mismatch never consults the extra timestamp
+    assert identity.is_same_process({**marker, "create_time": 102.0}) is True
+    assert calls == []  # ordinary identity matches need no private capability
+    monkeypatch.setattr(identity.sys, "platform", "linux")
+    assert identity.is_same_process(marker) is False
+    assert calls == []
+
+
+@pytest.mark.parametrize("denied", ["permission", "access-denied"])
+@pytest.mark.parametrize(
+    "after", ["same", "jitter", "dead", "reused", "rebooted", "unknown", "error"]
+)
+def test_denied_raw_probe_revalidates_observed_process(monkeypatch, denied, after):
+    from rapid_mlx import _process_identity as identity
+
+    access_denied = type("AccessDenied", (Exception,), {})
+    error = PermissionError() if denied == "permission" else access_denied()
+    observed = identity.ProcessIdentity(123, 102.0, 50.0)
+    refreshed = {
+        "same": identity.ProcessIdentity(123, 102.0, 50.0),
+        "jitter": identity.ProcessIdentity(123, 102.005, 49.995),
+        "dead": None,
+        "reused": identity.ProcessIdentity(123, 103.0, 50.0),
+        "rebooted": identity.ProcessIdentity(123, 102.0, 51.0),
+        "unknown": identity.ProcessIdentity(123, 0.0, 0.0),
+        "error": PermissionError(),
+    }[after]
+    probes = []
+
+    def probe(pid):
+        assert pid == 123
+        probes.append(pid)
+        result = observed if len(probes) == 1 else refreshed
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def raw_time(*, monotonic):
+        assert monotonic is True
+        raise error
+
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity, "process_identity", probe)
+    monkeypatch.setattr(
+        identity,
+        "psutil",
+        SimpleNamespace(
+            Process=lambda _pid: SimpleNamespace(
+                _proc=SimpleNamespace(create_time=raw_time)
+            ),
+            NoSuchProcess=type("NoSuchProcess", (Exception,), {}),
+            AccessDenied=access_denied,
+        ),
+    )
+    marker = {"pid": 123, "create_time": 100.0, "boot_time": 50.0, "app_version": "1"}
+    assert identity.is_same_process(marker) is (after in {"same", "jitter"})
+    assert probes == [123, 123]
+
+
 def test_reported_suffix_collision_is_acknowledged_once(tmp_path, capsys):
     from rapid_mlx import _signal_observability as so
 

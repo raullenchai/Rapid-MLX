@@ -149,6 +149,65 @@ def is_same_process(marker: object) -> bool:
         return False
     if current.create_time == 0.0 and current.boot_time == 0.0:
         return True
-    return math.isclose(
+    if not math.isclose(
+        current.boot_time, expected.boot_time, rel_tol=0.0, abs_tol=0.01
+    ):
+        return False
+    if math.isclose(
         current.create_time, expected.create_time, rel_tol=0.0, abs_tol=0.01
-    ) and math.isclose(current.boot_time, expected.boot_time, rel_tol=0.0, abs_tol=0.01)
+    ):
+        return True
+    if sys.platform != "darwin":
+        return False
+    # Recent psutil macOS backends adjust create_time against an import-time
+    # clock baseline. A long-lived parent can therefore disagree with a fresh
+    # child about the same kernel timestamp after clock synchronization. Keep
+    # the existing marker/boot checks, then compare the unadjusted timestamp
+    # when this backend exposes it. Older backends need no such correction.
+    try:
+        backend = getattr(psutil.Process(expected.pid), "_proc", None)
+        raw_create_time = getattr(backend, "create_time", None)
+        if not callable(raw_create_time):
+            return False
+        raw = raw_create_time(monotonic=True)
+    except (AttributeError, TypeError):
+        return False  # backend has no raw-time capability
+    except (psutil.NoSuchProcess, ProcessLookupError):
+        return False
+    except (psutil.AccessDenied, PermissionError):
+        # Retain diagnostics only while the observed process identity remains
+        # stable. It may have exited or its PID may have been reused since the
+        # first probe; a permission denial supplies no evidence of liveness.
+        try:
+            refreshed = process_identity(expected.pid)
+            return (
+                refreshed is not None
+                and refreshed.pid == current.pid
+                and math.isclose(
+                    refreshed.create_time,
+                    current.create_time,
+                    rel_tol=0.0,
+                    abs_tol=0.01,
+                )
+                and math.isclose(
+                    refreshed.boot_time,
+                    current.boot_time,
+                    rel_tol=0.0,
+                    abs_tol=0.01,
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "could not revalidate denied process identity for pid %s: %r",
+                expected.pid,
+                exc,
+            )
+            return False
+    except Exception as exc:
+        logger.debug(
+            "could not probe raw creation time for pid %s: %r", expected.pid, exc
+        )
+        return False  # an unexpected failure cannot override a known mismatch
+    return _valid_time(raw) and math.isclose(
+        float(raw), expected.create_time, rel_tol=0.0, abs_tol=0.01
+    )
