@@ -805,7 +805,7 @@ def test_tensorfold_rejects_second_in_flight_request_with_retry_after() -> None:
     )
     first_request = app.state.dflash_admission.reserve()
     try:
-        response = TestClient(app).post(
+        response = TestClient(app, base_url="http://127.0.0.1").post(
             "/v1/chat/completions",
             json={
                 "model": "qwen27-tf",
@@ -855,7 +855,7 @@ def test_nonstream_answer_stays_content_when_thinking_is_off() -> None:
             render_prompt_fn=lambda _p, _m, request, **_kw: "prompt",
             generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
         )
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
 
         def ask(**extra):
             response = client.post(
@@ -925,7 +925,7 @@ def test_http_refuses_a_prompt_past_the_model_window() -> None:
         generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
         enforce_model_window=True,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     def post(content: str, max_tokens: int):
         return client.post(
@@ -1005,7 +1005,7 @@ def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
         render_prompt_fn=lambda _p, _m, request, **_kw: request.messages[-1].content,
         generation_kwargs_fn=lambda **kw: {"max_tokens": kw["max_tokens"]},
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
     first = client.post("/v1/chat/completions", json=body)
     assert first.status_code == 400
@@ -1061,7 +1061,7 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         backend_name="TensorFold Qwen3.8-27B",
         runtime_status_extra={"profile": {"mode": "accelerated"}},
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     assert client.get("/healthz").json()["profile"]["mode"] == "accelerated"
     assert client.get("/v1/status").json()["profile"]["mode"] == "accelerated"
     body = {"model": "qwen27-tf", "messages": [{"role": "user", "content": "hi"}]}
@@ -1142,7 +1142,7 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
         ),
         backend_name="TensorFold GLM-5.3",
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     desktop_body = {
         "model": "glm5.3-flash-tensorfold",
         "messages": [{"role": "user", "content": "hi"}],

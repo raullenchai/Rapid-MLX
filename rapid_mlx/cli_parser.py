@@ -1371,7 +1371,7 @@ def _add_serve_parser(
         default=None,
         metavar="ORIGIN",
         help=(
-            "Allowed CORS origins (default: * for all origins). "
+            "Allowed CORS origins (default: cross-origin browser access disabled). "
             "Example: --cors-origins http://localhost:3000 https://myapp.com"
         ),
     )
@@ -1382,10 +1382,11 @@ def _add_serve_parser(
         default=None,
         metavar="HOST",
         help=(
-            "OPT-IN Host-header allowlist (DNS-rebinding hardening): only "
+            "Host-header allowlist (DNS-rebinding protection): only "
             "requests whose Host header matches one of these values are "
-            "accepted; everything else gets 400. Off by default so "
-            "rapid-mlx share and LAN access keep working. Values may be "
+            "accepted; everything else gets 400. Default: localhost, "
+            "127.0.0.1, [::1], *.localhost. For LAN/proxy access set the "
+            "expected hostname explicitly. Values replace defaults and may be "
             "space- or comma-separated. Example: --trusted-hosts localhost "
             "127.0.0.1 (also settable via "
             "RAPID_MLX_TRUSTED_HOSTS)."

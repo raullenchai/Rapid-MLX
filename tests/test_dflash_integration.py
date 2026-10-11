@@ -572,7 +572,7 @@ def test_healthz_and_models_routes() -> None:
         default_max_tokens=512,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -620,12 +620,13 @@ def test_explicit_context_is_reported_by_dflash_model_routes() -> None:
         _build_app(
             **options,
             model_info=ModelInfo(id="test-model", context_window=8192),
-        )
+        ),
+        base_url="http://127.0.0.1",
     )
     assert detailed.get("/v1/models").json()["data"][0]["max_model_len"] == 4096
     assert detailed.get("/v1/models/test-model").json()["max_model_len"] == 4096
 
-    fallback = TestClient(_build_app(**options))
+    fallback = TestClient(_build_app(**options), base_url="http://127.0.0.1")
     assert fallback.get("/v1/models").json()["data"][0]["max_model_len"] == 4096
 
 
@@ -682,7 +683,7 @@ def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
     )
 
     app = captured["app"]
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     auth = {"Authorization": "Bearer dflash-secret"}
 
     # Probe routes remain available to load balancers, but every /v1 route
@@ -791,7 +792,7 @@ def test_dflash_admission_cap_rejects_before_prompt_rendering() -> None:
     )
     reservation = app.state.dflash_admission.reserve()
     try:
-        response = TestClient(app).post(
+        response = TestClient(app, base_url="http://127.0.0.1").post(
             "/v1/chat/completions",
             json={
                 "model": "qwen3.5-27b-8bit",
@@ -1453,7 +1454,7 @@ def test_dflash_inherits_explicit_cors_policy(monkeypatch) -> None:
         cors_origins=list(policy.origins),
         cors_policy=policy,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     allowed = {
         "Origin": "https://console.example",
         "Access-Control-Request-Method": "POST",
@@ -1497,7 +1498,7 @@ def test_dflash_cors_wildcard_forces_credentials_off(monkeypatch) -> None:
         cors_origins=list(policy.origins),
         cors_policy=policy,
     )
-    response = TestClient(app).options(
+    response = TestClient(app, base_url="http://127.0.0.1").options(
         "/v1/chat/completions",
         headers={
             "Origin": "https://evil.example",
@@ -1563,7 +1564,7 @@ def test_chat_completions_rejects_unparsed_structured_output(
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    response = TestClient(app).post(
+    response = TestClient(app, base_url="http://127.0.0.1").post(
         "/v1/chat/completions",
         json={
             "model": "qwen3.5-27b-8bit",
@@ -1603,7 +1604,7 @@ def test_chat_completions_rejects_unsupported_tool_choice(tool_choice) -> None:
         cors_origins=["*"],
         tool_call_parser="hermes",
     )
-    response = TestClient(app).post(
+    response = TestClient(app, base_url="http://127.0.0.1").post(
         "/v1/chat/completions",
         json={
             "model": "qwen3.5-27b-8bit",
@@ -1666,7 +1667,7 @@ def test_chat_completions_parses_tool_calls(monkeypatch) -> None:
         tool_call_parser="hermes",
         reasoning_parser_name="qwen3",
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.post(
         "/v1/chat/completions",
@@ -1746,7 +1747,7 @@ def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
         reasoning_parser_name="qwen3",
     )
 
-    with TestClient(app).stream(
+    with TestClient(app, base_url="http://127.0.0.1").stream(
         "POST",
         "/v1/chat/completions",
         json={
@@ -1807,7 +1808,7 @@ def test_chat_completions_rejects_empty_messages() -> None:
         default_max_tokens=512,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     r = client.post(
         "/v1/chat/completions",
         json={"model": "qwen3.5-27b-8bit", "messages": []},
@@ -1836,7 +1837,7 @@ def test_chat_completions_rejects_logprobs() -> None:
         default_max_tokens=512,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     r = client.post(
         "/v1/chat/completions",
         json={
@@ -1872,7 +1873,7 @@ def test_chat_completions_rejects_response_format() -> None:
         default_max_tokens=512,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     r = client.post(
         "/v1/chat/completions",
         json={
@@ -1949,7 +1950,7 @@ def _capture_enable_thinking(
         reasoning_parser_name="qwen3",
         default_reasoning_effort=default_reasoning_effort,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     # Stream=True so the request reaches _render_prompt then exits via
     # the (now-empty) generator without needing a real mlx_vlm runtime.
     with client.stream("POST", "/v1/chat/completions", json=request_body) as resp:
@@ -2271,7 +2272,7 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
     }
 
     if not stream:
-        response = TestClient(app).post(
+        response = TestClient(app, base_url="http://127.0.0.1").post(
             "/v1/chat/completions",
             json=request_body,
         )
@@ -2283,7 +2284,7 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         assert generation_calls[-1]["thinking_budget"] == 23
         return
 
-    with TestClient(app).stream(
+    with TestClient(app, base_url="http://127.0.0.1").stream(
         "POST", "/v1/chat/completions", json=request_body
     ) as response:
         assert response.status_code == 200
@@ -2376,7 +2377,7 @@ def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     with client.stream(
         "POST",
@@ -3511,7 +3512,7 @@ def test_dflash_admission_reserved_before_body_parse(monkeypatch) -> None:
     # Occupy the only slot so the incoming request must be rejected.
     reservation = app.state.dflash_admission.reserve()
     try:
-        response = TestClient(app).post(
+        response = TestClient(app, base_url="http://127.0.0.1").post(
             "/v1/chat/completions",
             headers={"Content-Type": "application/json"},
             content=b'{"model": "x", "messages": [ THIS IS NOT VALID JSON',
@@ -3620,7 +3621,7 @@ def test_dflash_slow_prompt_render_is_charged_against_deadline(
         cors_origins=[],
         max_concurrent_requests=1,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     admission = app.state.dflash_admission
 
     try:
@@ -3682,7 +3683,7 @@ def test_dflash_unauthenticated_request_does_not_reserve_slot() -> None:
         api_key="secret",
         max_concurrent_requests=1,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
     admission = app.state.dflash_admission
 
     body = {
@@ -3760,7 +3761,7 @@ def test_dflash_rate_limited_request_does_not_reserve_slot() -> None:
         max_concurrent_requests=1,
     )
     try:
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
         admission = app.state.dflash_admission
 
         # Empty messages → 400, but the request still counts as the single
@@ -3927,7 +3928,7 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.post(
         "/v1/chat/completions",

@@ -126,7 +126,7 @@ def _companion_client(
         default_timeout=default_timeout,
         telemetry_model=telemetry_model,
     )
-    return TestClient(app), render_calls, generation_calls
+    return TestClient(app, base_url="http://127.0.0.1"), render_calls, generation_calls
 
 
 def test_exact_pair_is_the_only_qualified_companion() -> None:
@@ -922,7 +922,7 @@ def test_dflash_shell_preserves_media_and_surfaces_runtime_status() -> None:
             draft_block_size=8,
         ),
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     health = client.get("/healthz")
     assert health.status_code == 200
@@ -1547,7 +1547,7 @@ def test_dflash_shell_detail_attaches_speculative_info_without_model_card() -> N
         cors_origins=[],
         speculative_info=info,
     )
-    detailed = TestClient(app).get("/v1/models/lfm-vl")
+    detailed = TestClient(app, base_url="http://127.0.0.1").get("/v1/models/lfm-vl")
     assert detailed.status_code == 200
     assert detailed.json()["speculative_decoding"] == info.model_dump()
 
@@ -1795,7 +1795,7 @@ def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:
         validate_request_fn=_validate_greedy_request,
         backend_name="LFM DSpark",
     )
-    response = TestClient(app).post(
+    response = TestClient(app, base_url="http://127.0.0.1").post(
         "/v1/chat/completions",
         json={
             "model": "lfm-vl",

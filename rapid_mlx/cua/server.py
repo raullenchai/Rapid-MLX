@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rapid_mlx.config import get_config
 from rapid_mlx.cua.service import close_cua_service
@@ -70,7 +69,10 @@ def configure_cua_server(
             allow_credentials="*" not in resolved_origins,
             max_age=3600,
         )
-    if trusted_hosts:
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+    from rapid_mlx.middleware.browser_security import install_browser_security
+
+    install_browser_security(
+        app, origins=list(resolved_origins or []), hosts=trusted_hosts
+    )
     _configured = True
     return list(resolved_origins or [])

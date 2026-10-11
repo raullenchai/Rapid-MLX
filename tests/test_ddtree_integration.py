@@ -278,7 +278,7 @@ def test_ddtree_model_card_reports_explicit_context(monkeypatch) -> None:
         default_max_tokens=64,
         cors_origins=[],
     )
-    response = TestClient(app).get("/v1/models")
+    response = TestClient(app, base_url="http://127.0.0.1").get("/v1/models")
     assert response.status_code == 200
     assert response.json()["data"][0]["max_model_len"] == 4096
 
@@ -295,7 +295,7 @@ def test_build_app_healthz_models_and_completion_explicit_context() -> None:
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -375,7 +375,7 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
         speculative_tokens=16,
         tree_budget=24,
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -415,7 +415,7 @@ def test_build_app_honors_api_key_and_model_name() -> None:
             cors_origins=["*"],
             api_key="secret",
         )
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
 
         r = client.post(
             "/v1/chat/completions",
@@ -458,7 +458,7 @@ def test_build_app_honors_api_key_and_model_name() -> None:
             default_max_tokens=64,
             cors_origins=["*"],
         )
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
 
         r = client.get("/healthz")
         assert r.status_code == 401
@@ -481,7 +481,7 @@ def test_build_app_runtime_load_failure_is_sanitized() -> None:
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -510,7 +510,7 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
         default_max_tokens=64,
         cors_origins=["*"],
     )
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     r = client.post(
         "/v1/chat/completions",

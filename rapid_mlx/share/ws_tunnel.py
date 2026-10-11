@@ -679,7 +679,15 @@ class TunnelClient:
             # actually minted, or serve's auth gate 401s it.
             # Case-insensitive replace: the relay may forward any
             # casing of the inbound header name.
-            headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+            # Pool browser Origin belongs to the gateway, which already owns
+            # browser access policy. This hop translates authenticated pool
+            # traffic to a native loopback request. Plain share retains Origin
+            # so its explicitly configured CORS allowlist still applies.
+            headers = {
+                k: v
+                for k, v in headers.items()
+                if k.lower() not in {"authorization", "origin"}
+            }
             headers["Authorization"] = f"Bearer {self._override_authorization}"
 
         if self._inject_stream_usage and method == "POST":
@@ -746,7 +754,10 @@ class TunnelClient:
                 return
             self._active[req_id] = conn
         try:
-            conn.request(method, path, body=body, headers=headers)
+            # The relay authority is public; the backend authority is loopback.
+            # Let HTTPConnection generate Host for the actual local destination.
+            local_headers = {k: v for k, v in headers.items() if k.lower() != "host"}
+            conn.request(method, path, body=body, headers=local_headers)
             resp = conn.getresponse()
             self._sync_send(
                 {

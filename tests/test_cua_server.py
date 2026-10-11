@@ -155,7 +155,9 @@ def client(monkeypatch, tmp_path, authorized):
     monkeypatch.setattr(cua_routes, "get_config", get_config, raising=False)
     app = FastAPI()
     app.include_router(cua_routes.router)
-    with TestClient(app, client=("127.0.0.1", 50_000)) as test_client:
+    with TestClient(
+        app, base_url="http://127.0.0.1", client=("127.0.0.1", 50_000)
+    ) as test_client:
         test_client.fresh_service = fresh  # type: ignore[attr-defined]
         yield test_client
 
@@ -1031,7 +1033,9 @@ def test_permission_request_rejects_authenticated_non_loopback_client(
     )
     app = FastAPI()
     app.include_router(cua_routes.router)
-    with TestClient(app, client=("192.0.2.10", 50_000)) as remote:
+    with TestClient(
+        app, base_url="http://127.0.0.1", client=("192.0.2.10", 50_000)
+    ) as remote:
         response = remote.post(
             "/v1/cua/permissions/request",
             json={"permission": "accessibility"},

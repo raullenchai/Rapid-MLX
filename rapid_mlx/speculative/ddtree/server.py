@@ -91,6 +91,10 @@ def _build_app(
             max_age=3600,
         )
 
+    from rapid_mlx.middleware.browser_security import install_browser_security
+
+    install_browser_security(app, origins=cors_origins)
+
     def get_ready_runtime() -> DDTreeRuntime:
         if runtime is not None:
             return runtime

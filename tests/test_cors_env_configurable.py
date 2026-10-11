@@ -75,78 +75,34 @@ def _server_mod():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Default: wildcard ``*`` for friendly single-machine UX. Operators on
-# multi-tenant deployments lock down via RAPID_MLX_CORS_ALLOW_ORIGINS.
+# Default: no cross-origin browser access.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_default_wildcard_cors_registered(fresh_app: FastAPI) -> None:
-    """No env, no CLI flag → CORSMiddleware with ``*``. Cross-origin POST
-    returns 200 + ``Access-Control-Allow-Origin: *`` so a local browser
-    frontend (e.g. ``http://localhost:3000``) can call the API without
-    extra config."""
-    origins = _server_mod().configure_cors_from_env(cli_origins=None)
-    assert origins == ["*"]
-
+def test_default_blocks_cross_origin_before_route(fresh_app: FastAPI) -> None:
+    assert _server_mod().configure_cors_from_env(cli_origins=None) == []
     client = TestClient(fresh_app)
     r = client.post(
         "/v1/chat/completions",
         json={"messages": []},
         headers={"Origin": "https://anywhere.example"},
     )
-    assert r.status_code == 200
-    assert r.headers.get("access-control-allow-origin") == "*"
+    assert r.status_code == 403
+    assert "access-control-allow-origin" not in r.headers
+    assert client.post("/v1/chat/completions").status_code == 200
 
 
-def test_default_preflight_returns_200_with_wildcard(fresh_app: FastAPI) -> None:
-    """Default-wildcard preflight returns 200 with ``ACAO: *`` so the
-    browser proceeds to the real POST."""
+def test_default_preflight_denied(fresh_app: FastAPI) -> None:
     _server_mod().configure_cors_from_env(cli_origins=None)
-
-    client = TestClient(fresh_app)
-    r = client.options(
+    r = TestClient(fresh_app).options(
         "/v1/chat/completions",
         headers={
             "Origin": "https://anywhere.example",
             "Access-Control-Request-Method": "POST",
         },
     )
-    assert r.status_code == 200
-    assert r.headers.get("access-control-allow-origin") == "*"
-
-
-def test_default_wildcard_forces_credentials_false(fresh_app: FastAPI) -> None:
-    """Fetch spec: ``Access-Control-Allow-Origin: *`` is incompatible with
-    ``Access-Control-Allow-Credentials: true``. The resolver MUST force
-    ``allow_credentials=False`` when the default wildcard is in play.
-    Otherwise browsers reject every cookie-bearing response."""
-    _server_mod().configure_cors_from_env(cli_origins=None)
-
-    client = TestClient(fresh_app)
-    r = client.options(
-        "/v1/chat/completions",
-        headers={
-            "Origin": "https://anywhere.example",
-            "Access-Control-Request-Method": "POST",
-        },
-    )
-    assert r.status_code == 200
-    assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}
-
-
-def test_default_does_not_log_wildcard_warning(
-    fresh_app: FastAPI, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The wildcard-warning is meaningful ONLY when the operator opts in
-    explicitly. With the default ``*`` we log an INFO line; no WARNING."""
-    import logging
-
-    caplog.set_level(logging.INFO, logger="rapid_mlx.server")
-    _server_mod().configure_cors_from_env(cli_origins=None)
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert not warnings, (
-        f"Default wildcard should not log WARNING; got {[r.message for r in warnings]!r}"
-    )
+    assert r.status_code == 403
+    assert "access-control-allow-origin" not in r.headers
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -369,7 +325,7 @@ def test_empty_csv_origin_value_fails_closed_with_warning(
         },
     )
     # Fail-closed: no CORS middleware, so the OPTIONS verb returns 405.
-    assert r.status_code == 405
+    assert r.status_code == 403
 
 
 # ──────────────────────────────────────────────────────────────────────

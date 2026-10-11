@@ -237,12 +237,7 @@ def test_failclosed_empty_csv_path_unaffected(
             "Access-Control-Request-Method": "POST",
         },
     )
-    # 405 — no CORS middleware → OPTIONS hits the route handler which
-    # only declares POST. NOT 200 (would be the L-02 rejection envelope
-    # if middleware were registered) and NOT 400 (would be the upstream
-    # Starlette envelope L-02 is replacing).
-    assert r.status_code == 405, (
-        f"Fail-closed branch must still 405 (no CORS middleware "
-        f"registered). L-02 must not weaken the operator-visible "
-        f"signal from #758 ``3da8230``. Got {r.status_code}."
-    )
+    # Default browser security rejects foreign Origins before route dispatch,
+    # including the explicitly empty environment allowlist.
+    assert r.status_code == 403
+    assert "access-control-allow-origin" not in r.headers
