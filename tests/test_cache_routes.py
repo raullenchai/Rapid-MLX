@@ -3336,3 +3336,39 @@ def test_export_import_503_when_inner_engine_not_ready(cache_client):
         "/v1/cache/import", json={"source": "nr-src"}, headers=_auth()
     )
     assert imp.status_code == 503, imp.text
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+@pytest.mark.parametrize("has_text_engine", [False, True])
+def test_vision_persistence_distinguishes_capability_from_readiness(
+    cache_client, loaded, has_text_engine
+):
+    """A loaded vision backend is unsupported, including dual-lane engines."""
+    from rapid_mlx.engine.batched import BatchedEngine
+
+    engine = BatchedEngine("fake-model", force_mllm=True)
+    engine._loaded = loaded
+    # A dual-lane vision server must never export its text subset as a full cache.
+    engine._engine = cache_client.FakeEngine() if has_text_engine else None
+    cache_client.cfg.engine = engine
+    cache_client.cfg.model_name = "test-model"
+    _write_export_root(
+        cache_client.sandbox,
+        "vision-source",
+        Manifest(protocol_version=PROTOCOL_VERSION, model_id="test-model", entries=0),
+    )
+    for operation, payload in (
+        ("export", {"destination": "vision-dest"}),
+        ("import", {"source": "vision-source"}),
+    ):
+        response = cache_client.client.post(
+            f"/v1/cache/{operation}", json=payload, headers=_auth()
+        )
+        assert response.status_code == (501 if loaded else 503), response.text
+        if loaded:
+            error = response.json()["detail"]["error"]
+            assert error["code"] == "cache_persistence_unsupported"
+            assert error["message"] == (
+                f"prompt-cache {operation} not supported for vision models"
+            )
+    assert not (cache_client.sandbox / "vision-dest" / "manifest.json").exists()

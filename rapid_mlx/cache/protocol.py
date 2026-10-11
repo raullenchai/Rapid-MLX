@@ -113,6 +113,10 @@ class CommittedIndexUnreadableError(RuntimeError):
     """
 
 
+class CachePersistenceUnsupportedError(RuntimeError):
+    """The active serving backend does not implement cache persistence."""
+
+
 class EngineNotReadyError(RuntimeError):
     """Raised by a cache op when the engine exists but isn't fully loaded.
 

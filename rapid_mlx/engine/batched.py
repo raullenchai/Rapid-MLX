@@ -4646,7 +4646,9 @@ class BatchedEngine(BaseEngine):
         lying empty manifest. (The bare ``save_cache_to_disk`` keeps its
         no-op-False for lifespan persistence, where "no engine, nothing to
         persist" is legitimate — only the export/import outcome path must fail
-        loudly.)
+        loudly.) A loaded vision backend instead raises
+        ``CachePersistenceUnsupportedError``: its in-memory cache has no
+        persistence implementation, even when a text lane is also loaded.
         """
         if self._engine and not self._is_mllm:
             return self._engine.save_cache_with_outcome(
@@ -4654,6 +4656,12 @@ class BatchedEngine(BaseEngine):
             )
         from ..cache.protocol import EngineNotReadyError
 
+        if self._is_mllm and self._loaded:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "prompt-cache export not supported for vision models"
+            )
         raise EngineNotReadyError("cannot export cache: inner engine is not loaded")
 
     def load_cache_with_result(
@@ -4675,6 +4683,12 @@ class BatchedEngine(BaseEngine):
             )
         from ..cache.protocol import EngineNotReadyError
 
+        if self._is_mllm and self._loaded:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "prompt-cache import not supported for vision models"
+            )
         raise EngineNotReadyError("cannot import cache: inner engine is not loaded")
 
     # ------------------------------------------------------------------
