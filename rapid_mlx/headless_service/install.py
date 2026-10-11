@@ -36,6 +36,7 @@ from .common import (
     DEFAULT_DOMAIN,
     DEFAULT_LABEL,
     LAUNCH_DAEMONS_DIR,
+    http_probe_authority,
     log_dir_for,
     user_uid,
 )
@@ -344,9 +345,13 @@ def _readyz_ready(
     import socket
 
     try:
-        with socket.create_connection((_probe_host(host), port), timeout=1.0) as sock:
+        probe_host = _probe_host(host)
+        with socket.create_connection((probe_host, port), timeout=1.0) as sock:
             sock.settimeout(1.0)
-            sock.sendall(b"GET /readyz HTTP/1.1\r\nHost: x\r\n\r\n")
+            authority = http_probe_authority(probe_host, port)
+            sock.sendall(
+                f"GET /readyz HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii")
+            )
             data = sock.recv(4096)
     except OSError:
         return False

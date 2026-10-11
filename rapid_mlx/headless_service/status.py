@@ -32,6 +32,7 @@ from pathlib import Path
 from .common import (
     DEFAULT_DOMAIN,
     DEFAULT_LABEL,
+    http_probe_authority,
     log_dir_for,
 )
 from .install import _plist_path, _port_busy
@@ -201,7 +202,10 @@ def _endpoint_health(
             ) as sock:
                 sock.settimeout(remaining(deadline))
                 sock.sendall(
-                    b"GET /livez HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                    (
+                        f"GET /livez HTTP/1.1\r\nHost: {http_probe_authority(host, port)}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("ascii")
                 )
                 status_data = bytearray()
                 while len(status_data) < 8192 and b"\r\n\r\n" not in status_data:
@@ -228,7 +232,10 @@ def _endpoint_health(
             ) as sock:
                 sock.settimeout(remaining(deadline))
                 sock.sendall(
-                    b"GET /readyz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                    (
+                        f"GET /readyz HTTP/1.1\r\nHost: {http_probe_authority(host, port)}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("ascii")
                 )
                 data = bytearray()
                 content_length: int | None = None
