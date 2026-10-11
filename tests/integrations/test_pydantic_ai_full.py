@@ -125,7 +125,9 @@ def run_tests(model, loop):
         # Sequential tool calls accumulate output across two tool-call round trips;
         # PydanticAI's default max_tokens ceiling kicks in before the final answer
         # on small models. Same fix as test 5.
-        agent = Agent(model, model_settings={"max_tokens": 2048})
+        # This checks sequential tool transport, so keep sampling deterministic
+        # across the warmed PR server and the fresh base confirmation server.
+        agent = Agent(model, model_settings={"temperature": 0.0, "max_tokens": 2048})
 
         @agent.tool_plain
         def add(a: int, b: int) -> int:

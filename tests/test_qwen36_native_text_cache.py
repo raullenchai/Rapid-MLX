@@ -20,6 +20,7 @@ from rapid_mlx.engine.batched import (
     _qwen36_text_arrays_cache_type,
     _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
+    _supports_qwen38_dense_native_text_cache,
 )
 from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 
@@ -306,6 +307,131 @@ def test_request_routing_keeps_media_on_mllm_and_text_on_native_engine():
     assert engine._uses_mllm_request_path(None, None) is True
 
 
+def _dense_routing_engine():
+    engine = BatchedEngine("fake/dense")
+    engine._loaded = True
+    engine._is_mllm = True
+    engine._mllm_dense_singleton_fastpath = True
+    media_requests = {}
+    text_requests = {}
+    engine._mllm_scheduler = SimpleNamespace(
+        config=SimpleNamespace(max_concurrent_requests=16),
+        requests=media_requests,
+        request_ids_snapshot=lambda: tuple(media_requests),
+    )
+    text_scheduler = SimpleNamespace(
+        requests=text_requests,
+        request_ids_snapshot=lambda: tuple(text_requests),
+    )
+    engine._engine = SimpleNamespace(engine=SimpleNamespace(scheduler=text_scheduler))
+    return engine, media_requests, text_requests
+
+
+def test_dense_singleton_selection_requires_owned_admission():
+    engine, _, _ = _dense_routing_engine()
+    assert not engine._select_mllm_request_path(None, None, "unowned")
+    token, _ = engine._ensure_generation_admission()
+    try:
+        assert engine._select_mllm_request_path(None, None, token)
+        assert engine._select_mllm_request_path(None, None, token)
+        assert engine._admission_tokens == {token}  # selector has no side effects
+    finally:
+        engine.release_admission_reservation()
+
+
+def test_dense_concurrent_route_admissions_use_native_before_insertion():
+    engine, _, _ = _dense_routing_engine()
+    first, _ = engine._ensure_generation_admission()
+    assert engine._select_mllm_request_path(None, None, first)
+    engine.check_admission()
+    second = engine._current_admission_token()
+    try:
+        assert not engine._select_mllm_request_path(None, None, second)
+        assert not engine._select_mllm_request_path(None, None, first)
+    finally:
+        engine.release_admission_reservation()
+        engine.release_admission_reservation()
+
+
+@pytest.mark.parametrize("lane", ["media", "text"])
+def test_dense_handoff_and_deferred_abort_keep_singleton_lane_occupied(lane):
+    engine, media, text = _dense_routing_engine()
+    requests = media if lane == "media" else text
+    first, _ = engine._ensure_generation_admission()
+    requests["first"] = object()  # insertion precedes the commit callback
+    assert not engine._select_mllm_request_path(None, None, first)
+    engine._transfer_admission_to_scheduler(first, clear_context=True)
+    assert engine._admission_tokens == set()
+    next_token, _ = engine._ensure_generation_admission()
+    try:
+        # A deferred abort retains scheduler ownership until actual removal.
+        assert not engine._select_mllm_request_path(None, None, next_token)
+        requests.clear()
+        assert engine._select_mllm_request_path(None, None, next_token)
+    finally:
+        engine.release_admission_reservation()
+
+
+def test_dense_cancelled_preparation_releases_existing_admission():
+    engine, _, _ = _dense_routing_engine()
+    token, _ = engine._ensure_generation_admission()
+    assert engine._select_mllm_request_path(None, None, token)
+    engine.release_admission_reservation()
+    replacement, _ = engine._ensure_generation_admission()
+    try:
+        assert replacement != token
+        assert engine._select_mllm_request_path(None, None, replacement)
+        engine._mllm_dense_singleton_fastpath = False
+        assert not engine._select_mllm_request_path(None, None, replacement)
+        assert engine._select_mllm_request_path(["image"], None, replacement)
+        assert engine._select_mllm_request_path(None, ["video"], replacement)
+    finally:
+        engine.release_admission_reservation()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("busy", [False, True])
+async def test_dense_entrypoints_pin_lane_and_release_failed_submission(
+    streaming, busy, monkeypatch
+):
+    engine, _, text = _dense_routing_engine()
+    if busy:
+        text["running"] = object()
+    selected = []
+    selector = engine._select_mllm_request_path
+
+    def select(*args):
+        decision = selector(*args)
+        selected.append(decision)
+        return decision
+
+    class SubmissionFailedError(Exception):
+        pass
+
+    async def media_submit(**_kwargs):
+        assert not busy
+        raise SubmissionFailedError("media")
+
+    async def text_submit(**_kwargs):
+        assert busy
+        raise SubmissionFailedError("text")
+
+    monkeypatch.setattr(engine, "_select_mllm_request_path", select)
+    engine._mllm_scheduler.generate = media_submit
+    engine._mllm_scheduler.add_request_async = media_submit
+    engine._engine.generate = text_submit
+    engine._engine.add_request = text_submit
+    with pytest.raises(SubmissionFailedError, match="text" if busy else "media"):
+        if streaming:
+            await anext(engine.stream_generate("prompt"))
+        else:
+            await engine.generate("prompt")
+    assert selected == [not busy]
+    assert engine._admission_tokens == set()
+    assert engine._admission_reservations == 0
+
+
 @pytest.mark.asyncio
 async def test_native_text_engine_reuses_model_and_executor(monkeypatch):
     import rapid_mlx.engine_core as engine_core
@@ -431,8 +557,10 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backbone", ["moe", "dense27b", "unqualified_dense"])
 async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     monkeypatch,
+    backbone,
 ):
     from rapid_mlx import mllm_scheduler as mllm_scheduler_module
     from rapid_mlx.engine import batched as batched_module
@@ -456,11 +584,18 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         layers=[SimpleNamespace(is_linear=(index + 1) % 4 != 0) for index in range(40)],
     )
 
+    config_model_type = "qwen3_5_moe"
+    if backbone != "moe":
+        language_model = _dense_27b_model()
+        config_model_type = "qwen3_5"
+        if backbone == "unqualified_dense":
+            language_model.args.hidden_size = 4096
+
     class _FakeMultimodalLM:
         def __init__(self, *_args, **_kwargs):
             self.model = SimpleNamespace(language_model=language_model)
             self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
-            self.config = {"model_type": "qwen3_5_moe"}
+            self.config = {"model_type": config_model_type}
 
         def load(self):
             return None
@@ -486,6 +621,7 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
 
     async def _activate(model):
         activated.append(model)
+        engine._mllm_native_text_engine = True
 
     monkeypatch.setattr(engine, "_start_qwen36_native_text_engine", _activate)
     try:
@@ -495,8 +631,9 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         engine._model_load_executor.shutdown(wait=True)
         engine._model_load_executor = None
 
-    assert activated == [language_model]
+    assert activated == ([] if backbone == "unqualified_dense" else [language_model])
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
+    assert engine._mllm_dense_singleton_fastpath is (backbone == "dense27b")
 
 
 @pytest.mark.asyncio
@@ -663,3 +800,91 @@ def test_dual_lane_cache_stats_preserve_mllm_shape_and_expose_text_lane():
         "entries": 1,
         "text_scheduler": {"hits": 5, "entries": 3},
     }
+
+
+_DENSE_27B_GEOMETRY = {
+    "model_type": "qwen3_5_text",
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "num_hidden_layers": 64,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "full_attention_interval": 4,
+    "linear_conv_kernel_dim": 4,
+    "linear_num_value_heads": 48,
+    "linear_num_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_value_head_dim": 128,
+}
+
+
+def _dense_27b_model():
+    return SimpleNamespace(
+        args=SimpleNamespace(**_DENSE_27B_GEOMETRY),
+        layers=[SimpleNamespace(is_linear=(i + 1) % 4 != 0) for i in range(64)],
+    )
+
+
+@pytest.mark.parametrize("index", [0, 3], ids=["linear", "attention"])
+@pytest.mark.parametrize("value", ["false", "true", 1, 0, None, [], {}])
+def test_dense_qualification_rejects_non_boolean_layer_flags(index, value):
+    model = _dense_27b_model()
+    model.layers[index].is_linear = value
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
+def test_dense_27b_uses_shared_weight_text_scheduler():
+    model = _dense_27b_model()
+    assert _supports_qwen38_dense_native_text_cache(model)
+    assert _should_start_qwen36_native_text_cache(
+        model, config_model_type="qwen3_5", arrays_cache_compat=True, spec_decode="none"
+    )
+    wrapper = Qwen36NativeCacheTextWrapper(model)
+    assert wrapper.layers is model.layers
+    caches = wrapper.make_cache()
+    assert len(caches) == 64
+    assert all(
+        isinstance(c, ArraysCache if i % 4 != 3 else KVCache)
+        for i, c in enumerate(caches)
+    )
+
+
+@pytest.mark.parametrize("field", list(_DENSE_27B_GEOMETRY))
+def test_dense_qualification_rejects_unqualified_geometry(field):
+    model = _dense_27b_model()
+    delattr(model.args, field)
+    assert not _supports_qwen38_dense_native_text_cache(model)
+    setattr(model.args, field, "unknown" if field == "model_type" else -1)
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
+@pytest.mark.parametrize("change", ["missing_layer", "wrong_kind", "malformed_layers"])
+def test_dense_qualification_rejects_unqualified_layers(change):
+    model = _dense_27b_model()
+    if change == "missing_layer":
+        model.layers.pop()
+    elif change == "wrong_kind":
+        model.layers[0].is_linear = False
+    else:
+        model.layers = None
+    assert not _supports_qwen38_dense_native_text_cache(model)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"config_model_type": "qwen3_5_moe"},
+        {"config_model_type": None},
+        {"arrays_cache_compat": False},
+        {"spec_decode": "mtp"},
+        {"spec_decode": "dflash"},
+        {"no_hybrid": True},
+    ],
+)
+def test_dense_start_gate_respects_architecture_and_operator_overrides(overrides):
+    kwargs = dict(
+        config_model_type="qwen3_5", arrays_cache_compat=True, spec_decode="none"
+    )
+    kwargs.update(overrides)
+    assert not _should_start_qwen36_native_text_cache(_dense_27b_model(), **kwargs)

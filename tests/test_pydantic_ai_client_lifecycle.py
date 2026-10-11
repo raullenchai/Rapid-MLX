@@ -163,6 +163,16 @@ def test_real_sdk_sync_stream_sync(harness, bad_stream):
     assert requests[1]["stream"] is True
     assert all(not r.get("stream", False) for r in requests[2:])
     assert requests[1]["stream_options"]["include_usage"] is True
+    sequential = [
+        r
+        for r in requests
+        if {t["function"]["name"] for t in r.get("tools", [])} == {"add", "multiply"}
+    ]
+    assert len(sequential) == 3
+    assert all(r["temperature"] == 0.0 for r in sequential)
+    assert all(
+        r.get("max_completion_tokens", r.get("max_tokens")) == 2048 for r in sequential
+    )
     # The failure is reuse of the plain request's pooled connection for
     # streaming on another loop. The SDK may discard that socket after the
     # stream, so later synchronous calls need not keep the same peer port.

@@ -944,7 +944,7 @@ def _qwen36_text_arrays_cache_type() -> type:
 
 
 class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
-    """Expose MLX-LM caches for qualified Qwen3.6 text-only scheduling.
+    """Expose MLX-LM caches for qualified Qwen hybrid text-only scheduling.
 
     The vision runtime's language module and the text runtime share the same
     cache semantics, but their cache container classes take materially
@@ -1032,10 +1032,50 @@ def _should_start_qwen36_native_text_cache(
     return bool(
         arrays_cache_compat
         and not no_hybrid
-        and config_model_type == "qwen3_5_moe"
         and spec_decode == "none"
-        and _supports_qwen36_native_text_cache(language_model)
+        and (
+            config_model_type == "qwen3_5_moe"
+            and _supports_qwen36_native_text_cache(language_model)
+            or config_model_type == "qwen3_5"
+            and _supports_qwen38_dense_native_text_cache(language_model)
+        )
     )
+
+
+def _supports_qwen38_dense_native_text_cache(language_model: Any) -> bool:
+    """Qualify the dense 27B geometry without enabling unknown hybrid models.
+
+    Reuse the shared-weight/cache-namespace bridge already qualified for the
+    MoE backbone. Media retains the serialized vision scheduler and its cache
+    snapshots; only text uses native batching. Marketing versions share this
+    architecture, so eligibility depends on loaded geometry, not repo names.
+    """
+    expected = {
+        "model_type": "qwen3_5_text",
+        "hidden_size": 5120,
+        "intermediate_size": 17408,
+        "num_hidden_layers": 64,
+        "num_attention_heads": 24,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "full_attention_interval": 4,
+        "linear_conv_kernel_dim": 4,
+        "linear_num_value_heads": 48,
+        "linear_num_key_heads": 16,
+        "linear_key_head_dim": 128,
+        "linear_value_head_dim": 128,
+    }
+    try:
+        args = language_model.args
+        if any(getattr(args, key, None) != value for key, value in expected.items()):
+            return False
+        layers = list(language_model.layers)
+        return len(layers) == 64 and all(
+            layer.is_linear is ((index + 1) % 4 != 0)
+            for index, layer in enumerate(layers)
+        )
+    except (AttributeError, TypeError):
+        return False
 
 
 class BatchedEngine(BaseEngine):
@@ -1171,6 +1211,7 @@ class BatchedEngine(BaseEngine):
         self._engine = None  # AsyncEngineCore for LLM
         self._mllm_scheduler = None  # MLLMScheduler for MLLM
         self._mllm_native_text_engine = False
+        self._mllm_dense_singleton_fastpath = False
         self._model_load_executor = None  # mlx-step worker (#170)
         self._mllm_instance = None  # MLXMultimodalLM instance
         # The MLLM lane has no text EngineCore/model_config to query. Set this
@@ -1897,7 +1938,8 @@ class BatchedEngine(BaseEngine):
         if arrays_cache_compat:
             logger.warning(
                 "Model '%s' uses ArraysCache; enabling serialized hybrid MLLM "
-                "compatibility (one active request, additional requests queued).",
+                "compatibility (one active media request; qualified text requests "
+                "may use the shared-weight text scheduler).",
                 self._model_name,
             )
         # ``prefill_step_size`` for MLLM is the per-request budget that
@@ -1982,6 +2024,7 @@ class BatchedEngine(BaseEngine):
             else getattr(config, "model_type", None)
         )
         spec_decode = getattr(self._scheduler_config, "spec_decode", "none")
+        self._mllm_dense_singleton_fastpath = False
         if _should_start_qwen36_native_text_cache(
             language_model,
             config_model_type=config_model_type,
@@ -1990,6 +2033,9 @@ class BatchedEngine(BaseEngine):
             no_hybrid=getattr(self, "_no_hybrid", False),
         ):
             await self._start_qwen36_native_text_engine(language_model)
+            self._mllm_dense_singleton_fastpath = bool(
+                config_model_type == "qwen3_5" and self._mllm_native_text_engine
+            )
 
         logger.info(
             f"MLLM Scheduler started with continuous batching: "
@@ -2003,7 +2049,7 @@ class BatchedEngine(BaseEngine):
         )
 
     async def _start_qwen36_native_text_engine(self, language_model: Any) -> None:
-        """Share qualified Qwen3.6 weights with a native-cache text scheduler.
+        """Share qualified Qwen hybrid weights with a native-cache text scheduler.
 
         This is an optional optimization. Any dependency or scheduler drift
         leaves the already-started MLLM scheduler authoritative for every
@@ -2046,7 +2092,7 @@ class BatchedEngine(BaseEngine):
             await candidate.engine.start(executor=self._model_load_executor)
         except Exception:
             logger.warning(
-                "Qwen3.6 native-cache text lane unavailable; "
+                "Qwen hybrid native-cache text lane unavailable; "
                 "keeping all requests on the MLLM scheduler",
                 exc_info=True,
             )
@@ -2072,7 +2118,7 @@ class BatchedEngine(BaseEngine):
         self._mllm_native_text_engine = True
         self._engine_started = True
         logger.info(
-            "Qwen3.6 text-only requests will use native caches with "
+            "Qwen hybrid text-only requests will use native caches with "
             "the already-loaded MLLM language weights"
         )
 
@@ -2513,6 +2559,7 @@ class BatchedEngine(BaseEngine):
         self._loaded = False
         self._engine_started = False
         self._mllm_native_text_engine = False
+        self._mllm_dense_singleton_fastpath = False
         logger.info("BatchedEngine stopped")
 
     def _prepare_harmony_no_thinking_prompt(
@@ -2816,6 +2863,34 @@ class BatchedEngine(BaseEngine):
             and (getattr(self, "_engine", None) is None or images or videos)
         )
 
+    def _select_mllm_request_path(
+        self,
+        images: list[str] | None,
+        videos: list[str] | None,
+        admission_token: str,
+    ) -> bool:
+        """Pin dense singleton routing using existing request ownership.
+
+        A sole admitted dense text request retains the vision scheduler's
+        singleton fast path. Concurrent text uses the shared native-cache
+        scheduler. The admission token covers preparation until scheduler
+        insertion; scheduler IDs cover committed and deferred-abort work.
+        No request cache moves between lanes.
+        """
+        if self._uses_mllm_request_path(images, videos):
+            return True
+        if not getattr(self, "_mllm_dense_singleton_fastpath", False):
+            return False
+        # Same lock order as pause_generation(). Both schedulers publish
+        # ownership before on_request_committed consumes the admission token.
+        with self._admission_lock:
+            tokens = self._admission_tokens
+            return bool(
+                admission_token in tokens
+                and tokens == {admission_token}
+                and not self._lifecycle_request_ids()
+            )
+
     async def generate(
         self,
         prompt: str | list[int],
@@ -2852,7 +2927,7 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
-        if self._uses_mllm_request_path(images, videos):
+        if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
             assert mllm_scheduler is not None
             # Media requests always use the MLLM scheduler. Qualified hybrid
@@ -3126,7 +3201,7 @@ class BatchedEngine(BaseEngine):
             if owns_admission and not request_committed:
                 self.release_admission_reservation()
 
-        if self._uses_mllm_request_path(images, videos):
+        if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
             assert mllm_scheduler is not None
             # Media always stays on MLLMScheduler; only qualified text-only
