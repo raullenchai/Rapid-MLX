@@ -11,6 +11,7 @@ receipt, the environment switch and the engine wiring.
 from __future__ import annotations
 
 import asyncio
+import math
 from types import SimpleNamespace
 
 import numpy as np
@@ -113,6 +114,100 @@ def test_simd_backend_rows_equal_the_row_alone(bits, gs):
 def test_this_gpus_backend_rows_equal_the_row_alone(bits, gs):
     assert lane.backend() in ("mpp", "simd")
     _assert_row_invariant(_quantized(512, 256, bits, gs, seed=bits))
+
+
+@metal
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16])
+@pytest.mark.parametrize(
+    "bits,gs", [(bits, gs) for bits in lm.QUANT_BITS for gs in lm.GROUP_SIZES]
+)
+def test_mpp_formats_compile_and_preserve_rows(bits, gs, dtype):
+    if lane.backend() != "mpp":
+        pytest.skip("requires M5 tensor units")
+    module = _quantized(1024, 36, bits, gs, seed=bits)
+    module.scales = module.scales.astype(dtype)
+    module.biases = module.biases.astype(dtype)
+    _assert_mpp_projection(module, dtype)
+
+
+@metal
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16])
+@pytest.mark.parametrize("weight_dtype", [mx.bfloat16, mx.float16])
+def test_mpp_unquantized_formats_compile_and_preserve_rows(dtype, weight_dtype):
+    if lane.backend() != "mpp":
+        pytest.skip("requires M5 tensor units")
+    module = nn.Linear(1024, 36, bias=False)
+    module.weight = (mx.random.normal((36, 1024), key=mx.random.key(16)) * 0.02).astype(
+        weight_dtype
+    )
+    _assert_mpp_projection(module, dtype)
+
+
+def _assert_mpp_projection(module, dtype):
+    # Cover native, unpacked and plain kernels, split-K reductions, partial
+    # output tiles and both fragment counts on the actual compiler/GPU.
+    lw = lm.prepare(module)
+    assert lw.backend == "mpp"
+    x = mx.random.normal((48, lw.k), key=mx.random.key(27)).astype(dtype)
+    alone = mx.concatenate([lm.lane_matmul(x[i : i + 1], lw) for i in range(48)])
+    for rows in (1, 3, 16, 17, 32, 33, 48):
+        together = lm.lane_matmul(mx.contiguous(x[:rows]), lw)
+        assert together.dtype == dtype
+        assert mx.array_equal(together, alone[:rows]).item(), (lw.format, rows)
+    if isinstance(module, nn.QuantizedLinear):
+        weight = mx.dequantize(
+            module.weight,
+            module.scales,
+            module.biases,
+            group_size=module.group_size,
+            bits=module.bits,
+        )
+    else:
+        weight = module.weight
+    reference = x[:8].astype(mx.float32) @ weight.astype(mx.float32).T
+    assert mx.all(mx.isfinite(reference)).item(), "non-finite reference projection"
+    stock_error = mx.max(mx.abs(module(x[:8]).astype(mx.float32) - reference)).item()
+    lane_error = mx.max(mx.abs(alone[:8].astype(mx.float32) - reference)).item()
+    assert math.isfinite(stock_error), "non-finite stock projection error"
+    assert math.isfinite(lane_error), "non-finite lane projection error"
+    epsilon = 2.0 ** (-7 if dtype == mx.bfloat16 else -10)
+    assert lane_error <= 2 * stock_error + mx.max(mx.abs(reference)).item() * epsilon
+
+
+@pytest.mark.parametrize(
+    "broken, rejected",
+    [
+        ("reference", "reference"),
+        ("stock", "stock"),
+        ("lane", "lane"),
+        ("both", "stock"),
+    ],
+)
+def test_mpp_projection_rejects_nonfinite_results(monkeypatch, broken, rejected):
+    class Projection:
+        weight = mx.full((36, 1024), float("inf") if broken == "reference" else 0)
+
+        def __call__(self, x):
+            return mx.full(
+                (x.shape[0], 36),
+                float("inf") if broken in ("stock", "both") else 0,
+                dtype=x.dtype,
+            )
+
+    monkeypatch.setattr(
+        lm, "prepare", lambda _: SimpleNamespace(backend="mpp", k=1024, format="test")
+    )
+    monkeypatch.setattr(
+        lm,
+        "lane_matmul",
+        lambda x, _: mx.full(
+            (x.shape[0], 36),
+            float("inf") if broken in ("lane", "both") else 0,
+            dtype=x.dtype,
+        ),
+    )
+    with pytest.raises(AssertionError, match=f"non-finite {rejected}"):
+        _assert_mpp_projection(Projection(), mx.bfloat16)
 
 
 def test_off_is_the_default_and_bad_values_fail(monkeypatch):
