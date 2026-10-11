@@ -5,16 +5,22 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from huggingface_hub.errors import (
+    GatedRepoError,
+    HfHubHTTPError,
+    RepositoryNotFoundError,
+)
 from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from ..config import get_config
 from ..kv_cache_dtype import KVCacheQuantizationUnsupportedError
+from ..local_model_path import local_model_failure_message, raise_if_missing_local_model
 from ..middleware.auth import verify_api_key
 from ..middleware.exception_handlers import (
     register_request_model,
     register_request_path,
 )
-from ..model_aliases import resolve_profile
+from ..model_aliases import resolve_model, resolve_profile
 from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.resident_models import (
     ResidentModelBusyError,
@@ -127,6 +133,57 @@ def _resolved_group_for_profile(modality: str) -> str:
     return "assistant" if modality in {"text", "vision", "text-diffusion"} else modality
 
 
+def _load_failure(exc: Exception, model_ref: str) -> HTTPException:
+    """Render expected load failures without reflecting upstream secrets/paths.
+
+    Check local existence only after a failed load: a resident model can still
+    be reused successfully after its checkpoint has been moved on disk.
+    """
+    try:
+        raise_if_missing_local_model(model_ref)
+    except FileNotFoundError:
+        return HTTPException(404, "The local model path does not exist.")
+    except (OSError, ValueError):
+        pass
+    try:
+        message = local_model_failure_message(model_ref, exc)
+    except (OSError, ValueError):
+        message = None
+    if message is not None:
+        return HTTPException(400, message)
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(32):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        # GatedRepoError is a RepositoryNotFoundError subclass; test it first.
+        if isinstance(current, GatedRepoError):
+            return HTTPException(
+                403,
+                "Model access is gated on Hugging Face. Request access or accept "
+                "the licence, then sign in or set HF_TOKEN and retry.",
+            )
+        if isinstance(current, RepositoryNotFoundError):
+            return HTTPException(
+                404,
+                "Model repository not found on Hugging Face; it may be private "
+                "or gated. Check the model name, or sign in / set HF_TOKEN "
+                "with an account that has access.",
+            )
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in {401, 403}:
+            return HTTPException(
+                403,
+                "Hugging Face denied model access. Request access or accept the "
+                "licence, then sign in or set HF_TOKEN and retry.",
+            )
+        current = current.__cause__
+    return HTTPException(500, f"Failed to load resident model: {type(exc).__name__}")
+
+
 @router.post("/v1/models/load")
 async def load_resident_model(request: ModelLoadRequest):
     """Load a model into the current process, evicting idle LRU entries first."""
@@ -137,7 +194,9 @@ async def load_resident_model(request: ModelLoadRequest):
         if request.estimated_size_gb is not None
         else None
     )
+    load_ref = request.model_path or request.model
     try:
+        load_ref = resolve_model(load_ref)
         performance = (
             request.performance.runtime_value() if request.performance else None
         )
@@ -228,10 +287,7 @@ async def load_resident_model(request: ModelLoadRequest):
     except ResidentModelError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load resident model: {type(exc).__name__}",
-        ) from exc
+        raise _load_failure(exc, load_ref) from exc
     return _record_payload(record)
 
 
