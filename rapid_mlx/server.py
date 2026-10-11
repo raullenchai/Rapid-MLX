@@ -1470,40 +1470,17 @@ def _parse_csv(value: str) -> list[str]:
 
 
 def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
-    """OPT-IN Host-header allowlist (DNS-rebinding / Host-header-spoofing
-    hardening) via Starlette's ``TrustedHostMiddleware``.
-
-    Resolution:
-      1. ``--trusted-hosts`` CLI flag (comma-separated) — takes precedence.
-      2. ``RAPID_MLX_TRUSTED_HOSTS`` env var (comma-separated).
-      3. Unset / empty → middleware is NOT registered. This is the default:
-         restricting the Host header would break ``rapid-mlx share`` (which
-         forwards the public-facing Host header into the local server) and
-         LAN access via machine hostname, so an operator opts in deliberately.
-
-    ``allowed_hosts`` (Starlette) values cross-match the request ``Host``
-    header against glob patterns; ``*`` and ``localhost``/``127.0.0.1`` are
-    typical. A request whose Host matches nothing is rejected with 400.
-    """
-    hosts: list[str] = []
-    if cli_hosts is not None:
-        # argparse's nargs="+" accepts both ``a b`` and values users commonly
-        # write as ``a,b``. Normalize each entry so CLI and env semantics match.
-        hosts = [host for entry in cli_hosts for host in _parse_csv(entry)]
-    else:
-        env_raw = os.environ.get("RAPID_MLX_TRUSTED_HOSTS")
-        if env_raw:
-            hosts = _parse_csv(env_raw)
-    if not hosts:
-        return []
-    from starlette.middleware.trustedhost import TrustedHostMiddleware
-
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
-    logger.info(
-        "TrustedHostMiddleware enabled (allowed_hosts=%s): requests with a "
-        "non-matching Host header are rejected.",
-        hosts,
+    """Enforce local-only Hosts by default; explicit CLI/env values override."""
+    from .middleware import browser_security
+    from .middleware.browser_security import (
+        BrowserSecurityMiddleware,
+        resolve_trusted_hosts,
     )
+
+    hosts = resolve_trusted_hosts(cli_hosts)
+    browser_security._configured_hosts = hosts
+    app.add_middleware(BrowserSecurityMiddleware, hosts=hosts)
+    logger.info("Host-header allowlist enabled (allowed_hosts=%s)", hosts)
     return hosts
 
 
@@ -1511,7 +1488,7 @@ def configure_cors_from_env(
     cli_origins: list[str] | None = None,
 ) -> list[str]:
     """Resolve CORS configuration from CLI args + env vars and conditionally
-    register the middleware.
+    register browser transport middleware.
 
     Resolution order:
       1. ``cli_origins`` (CLI ``--cors-origins`` flag) — when supplied,
@@ -1520,7 +1497,7 @@ def configure_cors_from_env(
       2. ``RAPID_MLX_CORS_ALLOW_ORIGINS`` env var (comma-separated).
       3. Unset / empty → CORS middleware is NOT registered. Cross-origin
          requests get no ``Access-Control-Allow-Origin`` header and the
-         preflight ``OPTIONS`` returns 405 (no leak of allowed methods).
+         foreign Origin requests are rejected with 403 before route dispatch.
          This is the production-friendly default (F-090).
 
     Method / header / max-age / credentials overrides come from the rest
@@ -1542,28 +1519,18 @@ def configure_cors_from_env(
     # ``RAPID_MLX_CORS_ALLOW_METHODS`` / ``_HEADERS``.
     origins: list[str] = []
     came_from_cli = False
-    came_from_default = False
-    env_present_but_empty = False
-    if cli_origins:
+    if cli_origins is not None:
         origins = list(cli_origins)
         came_from_cli = True
     else:
-        # Codex round-2 BLOCKING (#758): distinguish "env var absent" from
-        # "env var present but parsed empty". The friendly default-wildcard
-        # is for operators who never set the var (single-machine local
-        # dev). An operator who DID set the var to a templating-broken
-        # value like ``" , ,, "`` clearly intended a real allowlist — the
-        # safest interpretation is the literal empty list (no CORS, fail
-        # closed) plus a startup WARNING so the typo is visible. Falling
-        # through to wildcard would silently fail open for a deployment
-        # bug, which is the failure mode codex was flagging.
+        # An explicitly empty environment allowlist stays closed and logs
+        # a warning, making broken deployment templates visible.
         env_raw = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS")
         if env_raw is not None:
             parsed = _parse_csv(env_raw)
             if parsed:
                 origins = parsed
             else:
-                env_present_but_empty = True
                 # Format via %s/%r placeholders so the env-var name only
                 # appears in the args tuple (test_no_out_of_band_routing
                 # treats inline ``RAPID_MLX_<X>=...`` literals as routing
@@ -1573,32 +1540,13 @@ def configure_cors_from_env(
                     "%s=%r parsed to an empty list (whitespace / "
                     "trailing commas only). Treating as fail-closed "
                     "(no CORS middleware) so a deployment templating "
-                    "bug is visible. Unset the env var entirely to use "
-                    "the friendly default wildcard, or set it to a real "
+                    "bug is visible. Set the env var to a real "
                     "comma-separated origin list.",
                     "RAPID_MLX_CORS_ALLOW_ORIGINS",
                     env_raw,
                 )
 
-    if not origins and not env_present_but_empty:
-        # Default-allow wildcard for friendly single-machine UX. rapid-mlx
-        # is primarily run locally — defaulting to deny would break any
-        # browser-based frontend ("CORS error" in the console) without an
-        # obvious server-side signal. Operators on multi-tenant or
-        # production deployments lock down via
-        # ``RAPID_MLX_CORS_ALLOW_ORIGINS=https://your.app`` (the existing
-        # env-var family still applies).
-        origins = ["*"]
-        came_from_default = True
-        logger.info(
-            "CORS allow-origin defaulting to wildcard '*' (no "
-            "RAPID_MLX_CORS_ALLOW_ORIGINS set). Set the env var to an "
-            "explicit origin list (e.g. "
-            "'https://chat.openai.com,https://claude.ai') to lock down "
-            "for production / multi-tenant deployments."
-        )
-
-    if "*" in origins and not came_from_default:
+    if "*" in origins:
         logger.warning(
             "CORS allow-origin set to wildcard '*' — any origin can call this "
             "server from a browser. Set RAPID_MLX_CORS_ALLOW_ORIGINS to an "
@@ -1715,6 +1663,9 @@ def configure_cors_from_env(
     # lambda — we never call ``configure_cors(...)`` on the fail-closed
     # path, so the stub's signature doesn't matter.
     if not origins:
+        from .middleware.browser_security import BrowserSecurityMiddleware
+
+        app.add_middleware(BrowserSecurityMiddleware, deny_cross_origin=True)
         _last_resolved_cors_policy = None
         return []
 

@@ -65,8 +65,8 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
-| `--cors-origins` | Allowed CORS origins (also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | `*` (all origins) |
-| `--trusted-hosts` | Opt-in Host-header allowlist; non-matching requests get HTTP 400 | None (not enforced) |
+| `--cors-origins` | Allowed CORS origins (also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | Disabled (explicit opt-in) |
+| `--trusted-hosts` | Host-header allowlist; non-matching requests get HTTP 400 | `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
 | `--max-request-bytes` | Max HTTP request body size; oversized requests get HTTP 413 before parsing (0 disables) | 8 MiB (8388608) |
 | `--timeout` | Default request timeout in seconds; per-request `timeout: null` or `timeout: 0` uses this value | 1800 |
@@ -1190,3 +1190,30 @@ rapid-mlx serve qwen3.5-27b-4bit \
   --timeout 120 \
   --port 8000
 ```
+
+### Browser access and Host validation
+
+A default server accepts native clients on `localhost`, `127.0.0.1`, `[::1]`,
+and `*.localhost`. It rejects foreign browser Origins before executing routes,
+including simple POST requests, and rejects unexpected Host headers to prevent
+DNS rebinding. Same-origin browser clients remain supported.
+
+For a browser frontend, explicitly allow its origin:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --cors-origins http://localhost:3000
+```
+
+For LAN or reverse-proxy access, set the expected Host names explicitly; this
+replaces the local defaults, so include loopback names if they are also needed:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --host 0.0.0.0 --api-key "$RAPID_MLX_API_KEY" \
+  --trusted-hosts localhost 127.0.0.1 workstation.local 192.168.1.10
+```
+
+`--cors-origins '*'` and `--trusted-hosts '*'` explicitly opt out of their
+respective boundaries. Allow only required origins/hosts and authenticate shared
+servers. `rapid-mlx share` retains its origin allowlist and bearer authentication;
+the relay rewrites Host to the local destination. These defaults also apply to
+dedicated speculative decoding and model-free Computer Use servers.

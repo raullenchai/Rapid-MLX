@@ -826,8 +826,8 @@ def _build_app(
     # F-090/F-091: register CORS only when an explicit origin allowlist is
     # configured. ``cors_origins=[]`` (the new default — see
     # ``rapid_mlx/server.py::configure_cors_from_env``) skips the middleware
-    # entirely so preflight returns 405 and no ``Access-Control-*`` header
-    # leaks. The dflash path mirrors the main server's stance.
+    # entirely; the browser security middleware below rejects foreign
+    # Origins before route dispatch. The dflash path mirrors the main server's stance.
     if cors_policy is not None:
         app.add_middleware(
             CORSMiddleware,
@@ -853,6 +853,13 @@ def _build_app(
             allow_headers=["Content-Type", "Authorization", "X-Rapid-MLX-Internal"],
             max_age=3600,
         )
+
+    from rapid_mlx.middleware.browser_security import install_browser_security
+
+    install_browser_security(
+        app,
+        origins=list(cors_policy.origins) if cors_policy is not None else cors_origins,
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:

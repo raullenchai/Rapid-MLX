@@ -502,7 +502,7 @@ def test_ordinary_dflash_refuses_unimplemented_samplers(field, value):
         default_max_tokens=64,
         cors_origins=[],
     )
-    response = TestClient(app).post(
+    response = TestClient(app, base_url="http://127.0.0.1").post(
         "/v1/chat/completions",
         json={
             "model": "qwen3.5-27b-8bit",

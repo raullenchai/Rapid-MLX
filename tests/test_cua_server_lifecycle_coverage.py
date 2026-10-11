@@ -7,10 +7,10 @@ import asyncio
 import pytest
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.cua import server
+from rapid_mlx.middleware.browser_security import BrowserSecurityMiddleware
 
 
 def test_lifespan_sets_readiness_and_drains_even_after_error(monkeypatch):
@@ -47,6 +47,6 @@ def test_transport_config_reads_environment_once_and_enforces_hosts(monkeypatch)
     )
     assert origins == ["https://desk.example", "http://127.0.0.1"]
     assert any(m.cls is CORSMiddleware for m in isolated_app.user_middleware)
-    assert any(m.cls is TrustedHostMiddleware for m in isolated_app.user_middleware)
+    assert any(m.cls is BrowserSecurityMiddleware for m in isolated_app.user_middleware)
     with pytest.raises(RuntimeError, match="already configured"):
         server.configure_cua_server(cors_origins=[], trusted_hosts=None)

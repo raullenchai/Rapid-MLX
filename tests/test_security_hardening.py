@@ -13,6 +13,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def isolated_host_snapshot(monkeypatch):
+    from rapid_mlx.middleware import browser_security
+
+    monkeypatch.setattr(browser_security, "_configured_hosts", None)
+
+
 def test_remote_code_policy_preserves_historical_unset_default(monkeypatch):
     from rapid_mlx.utils.tokenizer import apply_remote_code_policy
 
@@ -99,7 +106,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
     assert calls["config"] == ("org/model", {"trust_remote_code": False})
 
 
-def test_trusted_hosts_default_off_and_cli_comma_normalization(monkeypatch):
+def test_trusted_hosts_default_on_and_cli_comma_normalization(monkeypatch):
     import rapid_mlx.server as server
 
     monkeypatch.delenv("RAPID_MLX_TRUSTED_HOSTS", raising=False)
@@ -110,10 +117,15 @@ def test_trusted_hosts_default_off_and_cli_comma_normalization(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(server, "app", app)
-    assert server.configure_trusted_hosts(None) == []
+    assert server.configure_trusted_hosts(None) == [
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "*.localhost",
+    ]
     assert (
         TestClient(app).get("/health", headers={"host": "anything.test"}).status_code
-        == 200
+        == 400
     )
 
     app = FastAPI()

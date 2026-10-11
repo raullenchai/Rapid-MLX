@@ -26,9 +26,10 @@ import threading
 import urllib.error
 import urllib.parse
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from starlette.requests import Request
 
 from rapid_mlx.share import cli as share_cli
 from rapid_mlx.share import quicksilver as qs
@@ -3489,3 +3490,88 @@ def test_pool_cleanup_failure_prevents_serve_spawn(capsys):
     assert error.value.code == 2
     assert "could not retire legacy model prompt cache" in capsys.readouterr().err
     spawn.assert_not_called()
+
+
+def test_local_fetch_rewrites_public_host_without_dropping_bearer():
+    client = ws_tunnel.TunnelClient(local_port=8898)
+    conn = MagicMock()
+    conn.getresponse.return_value.read1.return_value = b""
+    conn.getresponse.return_value.getheaders.return_value = []
+    conn.getresponse.return_value.status = 200
+    client._sync_send = MagicMock()
+    with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn):
+        client._perform_local_fetch(
+            "local",
+            "POST",
+            "/v1/chat/completions",
+            {
+                "hOsT": "public.example",
+                "Authorization": "Bearer test-only",
+                "Origin": "https://frontend.example",
+            },
+            b"{}",
+        )
+    assert conn.request.call_args.kwargs["headers"] == {
+        "Authorization": "Bearer test-only",
+        "Origin": "https://frontend.example",
+    }
+
+
+def test_pool_browser_request_reaches_default_protected_backend(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.middleware import browser_security
+
+    monkeypatch.setattr(browser_security, "_configured_hosts", None)
+    monkeypatch.delenv("RAPID_MLX_TRUSTED_HOSTS", raising=False)
+    app = FastAPI()
+    seen = []
+
+    @app.post("/v1/chat/completions")
+    async def chat(request: Request):
+        seen.append(dict(request.headers))
+        assert request.headers["authorization"] == "Bearer local-only"
+        return {"ok": True}
+
+    browser_security.install_browser_security(app, origins=[])
+    backend = TestClient(app, base_url="http://127.0.0.1:8898")
+    tunnel = ws_tunnel.TunnelClient(
+        local_port=8898, override_authorization="local-only"
+    )
+    tunnel._send = AsyncMock()
+
+    def forward(_function, req_id, method, path, headers, body):
+        # Exercise the real local-fetch Host rewrite and ASGI security stack.
+        conn = MagicMock()
+
+        def request(method, path, *, body, headers):
+            response = backend.request(method, path, content=body, headers=headers)
+            assert response.status_code == 200
+
+        conn.request.side_effect = request
+        conn.getresponse.return_value.read1.return_value = b""
+        conn.getresponse.return_value.getheaders.return_value = []
+        conn.getresponse.return_value.status = 200
+        with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn):
+            tunnel._perform_local_fetch(req_id, method, path, headers, body)
+
+    with patch.object(asyncio, "to_thread", new=AsyncMock(side_effect=forward)):
+        asyncio.run(
+            tunnel._serve_request(
+                {
+                    "method": "POST",
+                    "path": "/v1/chat/completions",
+                    "headers": {
+                        "Host": "public.example",
+                        "oRiGiN": "https://public.example",
+                        "Authorization": "Bearer pool-only",
+                    },
+                },
+                "browser",
+            )
+        )
+    assert not tunnel._send.call_args_list, tunnel._send.call_args_list
+    assert len(seen) == 1
+    assert "origin" not in seen[0]
+    assert seen[0]["host"] == "127.0.0.1:8898"
