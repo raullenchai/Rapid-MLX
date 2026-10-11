@@ -41,6 +41,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -268,7 +269,12 @@ def _resolve_served_model_name(port: int, api_key: str) -> str | None:
     return None
 
 
-def _wait_for_healthz(port: int, serve_proc: subprocess.Popen[bytes]) -> bool:
+def _wait_for_healthz(
+    port: int,
+    serve_proc: subprocess.Popen[bytes],
+    *,
+    progress: _DownloadProgress | None = None,
+) -> bool:
     """Poll /healthz until the child serve reports ready or exits.
 
     No fixed timeout: a cold first-time pull of a 70B model legitimately
@@ -286,6 +292,8 @@ def _wait_for_healthz(port: int, serve_proc: subprocess.Popen[bytes]) -> bool:
     while True:
         if serve_proc.poll() is not None:
             return False
+        if progress is not None:
+            progress.poll()
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
@@ -446,7 +454,123 @@ def _state_dir() -> Path:
     return d
 
 
-def _maybe_confirm_download(alias: str) -> None:
+class _DownloadProgress:
+    """Report cache occupancy while preparing an uncached pool model."""
+
+    def __init__(self, repo: str, estimated: int | None) -> None:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        self.cache_dir = Path(HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}"
+        self.estimated = estimated if estimated is not None and estimated > 0 else None
+        self._scan_thread: threading.Thread | None = None
+        self._last_size: int | None = None
+        self.started = time.monotonic()
+        self.next_poll = self.started + 30
+        size = (
+            f"approximately {self.estimated / 1024**3:.1f} GiB in total"
+            if self.estimated is not None
+            else "estimated size unknown"
+        )
+        if self.estimated is not None:
+            try:
+                self._refresh_cache_size()
+            except Exception:  # noqa: BLE001 — unavailable cache must keep the notice
+                pass
+            if self._last_size is not None and self._last_size > 0:
+                size += f" ({self._last_size / 1024**3:.1f} GiB already in the cache)"
+        try:
+            print(
+                f"Model download: {size}. Cache size every 30s until ready.",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — progress must never abort preparation
+            pass
+
+    def _cache_size(self) -> int | None:
+        # Blobs may be relocated through a directory symlink. Walk both resolved
+        # roots without following further directory links, and only count file
+        # symlink targets inside those roots. De-duplicate snapshots/hardlinks.
+        seen: set[tuple[int, int]] = set()
+        size = 0
+
+        def raise_walk_error(error: OSError) -> None:
+            if not isinstance(error, FileNotFoundError):
+                raise error
+
+        try:
+            repo_dir = self.cache_dir.resolve()
+            blob_dir = (repo_dir / "blobs").resolve()
+            roots = {repo_dir, blob_dir}
+            # A blobs directory inside the repository is reached by the
+            # repository walk already; only a relocated one needs its own.
+            walk_roots = (
+                [repo_dir]
+                if blob_dir.is_relative_to(repo_dir)
+                else [repo_dir, blob_dir]
+            )
+            for directory in walk_roots:
+                for root, _, files in os.walk(directory, onerror=raise_walk_error):
+                    for name in files:
+                        try:
+                            path = (Path(root) / name).resolve()
+                            if not any(path.is_relative_to(base) for base in roots):
+                                continue
+                            stat = path.stat()
+                        except FileNotFoundError:
+                            # Downloads rename .incomplete blobs while we scan.
+                            continue
+                        identity = (stat.st_dev, stat.st_ino)
+                        if identity not in seen:
+                            seen.add(identity)
+                            size += stat.st_size
+        except (OSError, RuntimeError):
+            return None
+        return size
+
+    def poll(self) -> None:
+        try:
+            self._poll()
+        except Exception:  # noqa: BLE001 — no endpoint/path/exception text
+            pass
+
+    def _poll(self) -> None:
+        now = time.monotonic()
+        if now < self.next_poll:
+            return
+        self.next_poll = now + 30
+        self._refresh_cache_size()
+        size = self._last_size
+        cached = f"{size / 1024**3:.1f} GiB" if size is not None else "unavailable"
+        print(
+            f"Preparing model: {int(now - self.started)}s elapsed, "
+            f"model cache size {cached} (downloading or loading)…",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _refresh_cache_size(self) -> None:
+        # Filesystem calls on a disconnected/external volume can block in the
+        # kernel. Never run them on the child/signal supervisor or pile up
+        # scanners when a volume hangs. Only this supervisor prints progress.
+        if self._scan_thread is None or not self._scan_thread.is_alive():
+
+            def scan() -> None:
+                try:
+                    self._last_size = self._cache_size()
+                except BaseException:  # optional daemon; never print a traceback
+                    self._last_size = None
+
+            self._scan_thread = threading.Thread(
+                target=scan, name="rapid-mlx-download-progress", daemon=True
+            )
+            self._scan_thread.start()
+            self._scan_thread.join(timeout=0.1)
+
+
+def _maybe_confirm_download(
+    alias: str, *, pool_mode: bool = False
+) -> _DownloadProgress | None:
     """Replicate the top-level B2 auto-pull gate for share.
 
     ``rapid_mlx/cli.py`` runs a confirmation prompt for chat/run/serve/pull/bench
@@ -458,28 +582,52 @@ def _maybe_confirm_download(alias: str) -> None:
     confirmation. Codex round-1 BLOCKING: replicate the same check here
     so the share entrypoint enforces the policy too.
 
-    Mirrors the logic at ``cli.py:4322`` — env override / non-TTY both
-    short-circuit before any HF API round-trip.
+    Plain share preserves the existing env / non-TTY short circuits. Pool
+    mode also estimates uncached models and returns a non-TTY reporter.
     """
+    if pool_mode:
+        from ..model_aliases import resolve_profile
+
+        profile = resolve_profile(alias)
+        if profile is not None:
+            alias = profile.hf_path
     if "/" not in alias or os.path.exists(alias):
         # Not an HF-style repo id, or a local path — nothing to prompt for.
-        return
+        return None
+    progress = None
+    if pool_mode:
+        from .._download_gate import estimate_download_size_bytes, is_repo_cached
+
+        try:
+            cached = is_repo_cached(alias)
+        except Exception:  # noqa: BLE001 — an unreadable cache must not abort share
+            cached = False  # Let the downloader decide; report progress meanwhile.
+        if cached:
+            return None
+        try:
+            estimated = estimate_download_size_bytes(alias)
+        except Exception:  # noqa: BLE001 — a failed estimate must not abort share
+            estimated = None
+        progress = _DownloadProgress(alias, estimated)
     if os.environ.get("RAPID_MLX_CHAT_SPAWN", "") == "1":
         # Grandchild safety: a parent ``rapid-mlx`` invocation already
         # gated and set this marker. Don't re-prompt.
-        return
+        return progress
     if env_truthy("RAPID_MLX_AUTO_PULL"):
-        return
+        return progress
     if not sys.stdin.isatty():
-        return
+        return progress
     from rapid_mlx._download_gate import (
         confirm_or_abort,
         estimate_download_size_bytes,
         is_repo_cached,
     )
 
-    if not is_repo_cached(alias):
+    if progress is not None:
+        confirm_or_abort(alias, progress.estimated)
+    elif not is_repo_cached(alias):
         confirm_or_abort(alias, estimate_download_size_bytes(alias))
+    return progress
 
 
 def share_command(args: argparse.Namespace) -> None:

@@ -35,10 +35,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import getpass
+import http.client
 import json
 import logging
 import math
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -121,6 +123,7 @@ _supervisor_sleep = time.sleep
 # on healthy hardware. 300 s is the ceiling for a cold, contended
 # disk; past that it's a warning, not an abort.
 _WARMUP_TIMEOUT_SECONDS = 300.0
+_WARMUP_ACCOUNTING_WAIT_SECONDS = 10.0
 
 # §3.2/§5.5: a rejected keyed claim must never be retried — the key is
 # revoked/rotated server-side and spinning just hammers the relay.
@@ -1020,6 +1023,340 @@ def register_node(
 # ───────────────────────────── heartbeat (§3.3) ─────────────────────────────
 
 
+class _PoolStatus:
+    """Count-only telemetry; refresh the baseline until pool traffic arrives.
+
+    The scheduler's performance ledger accounts terminal requests, including
+    batched MTP, for both chat response modes. Decode sum/count is the mean
+    per-request post-first-token rate, excluding unmeasurable one-token runs.
+    Relay readiness probes are ordinary requests to the node and are counted.
+    This status is informational; payouts are metered by QuickSilver, not by
+    this line. If a timed-out warm-up is accounted only after pool traffic
+    starts, totals may include one warm-up request and its few output tokens.
+    After the first served request, changed totals or connection state may emit
+    a line, even when totals are unchanged, at most once per 60 seconds. Shutdown
+    may emit one final line with changed totals, within the scrape timeout.
+    """
+
+    _METRICS = (
+        "rapid_mlx_model_requests_total",
+        "rapid_mlx_model_completion_tokens_total",
+        "rapid_mlx_model_decode_tokens_per_second_sum",
+        "rapid_mlx_model_decode_tokens_per_second_count",
+    )
+    _SAMPLE = re.compile(
+        r'^(\w+)(\{(?:[^"{}]|"(?:\\.|[^"\\])*")*\})?\s+(\S+)(?:\s+\d+)?\s*$'
+    )
+
+    def __init__(
+        self,
+        port: int,
+        connected_fn: Callable[[], bool],
+        *,
+        requests_started_fn: Callable[[], bool] = lambda: True,
+        api_key: str = "",
+    ) -> None:
+        self.port = port
+        self._connected_fn = connected_fn
+        self._requests_started_fn = requests_started_fn
+        self._api_key = api_key
+        self._scrape_thread: threading.Thread | None = None
+        self._scrape_result: tuple[float, ...] | None = None
+        self.baseline = self._read()
+        self._previous = self.baseline
+        self._totals: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+        self.baseline_at_start = self.baseline is not None
+        self.next_poll = 0.0
+        self.last_print: float | None = None
+        self.last_counts = (0, 0, True)
+        self._stop: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+        self._poll_lock = threading.Lock()
+
+    @classmethod
+    def _parse(cls, raw: str) -> tuple[float, ...] | None:
+        values = [0.0] * len(cls._METRICS)
+        found: set[str] = set()
+        for line in raw.splitlines():
+            match = cls._SAMPLE.fullmatch(line.strip())
+            if match is None:
+                if line.strip().split("{", 1)[0].split(" ", 1)[0] in cls._METRICS:
+                    return None
+                continue
+            name, labels, value = match.groups()
+            if name not in cls._METRICS:
+                continue
+            if name == cls._METRICS[0] and not re.search(
+                r'(?:\{|,)\s*outcome="succeeded"\s*(?:,|\})', labels or ""
+            ):
+                continue
+            try:
+                number = float(value)
+            except ValueError:
+                return None
+            if not math.isfinite(number) or number < 0:
+                return None
+            if name != cls._METRICS[2] and not number.is_integer():
+                return None
+            values[cls._METRICS.index(name)] += number
+            if not math.isfinite(values[cls._METRICS.index(name)]):
+                return None
+            found.add(name)
+        return tuple(values) if found == set(cls._METRICS) else None
+
+    def _read(
+        self, *, timeout: float = 1.0, stop: threading.Event | None = None
+    ) -> tuple[float, ...] | None:
+        # A socket timeout only limits inactivity. A peer dripping headers or
+        # body bytes can otherwise hold the initial baseline forever. Permit
+        # only one outstanding daemon scrape, including after a deadline.
+        if self._scrape_thread is not None and self._scrape_thread.is_alive():
+            return None
+        self._scrape_result = None
+
+        def scrape() -> None:
+            try:
+                self._scrape_result = self._scrape()
+            except BaseException:  # optional daemon; never log endpoint data/errors
+                pass
+
+        try:
+            self._scrape_thread = threading.Thread(
+                target=scrape, name="rapid-mlx-qs-metrics", daemon=True
+            )
+            self._scrape_thread.start()
+            if stop is None:
+                self._scrape_thread.join(timeout=timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                while self._scrape_thread.is_alive():
+                    remaining = deadline - time.monotonic()
+                    if stop.is_set() or remaining <= 0:
+                        return None
+                    self._scrape_thread.join(timeout=min(0.05, remaining))
+            return self._scrape_result
+        except Exception:  # noqa: BLE001 — observation must be fail-open
+            return None
+
+    def wait_for_warmup(
+        self,
+        stop: threading.Event | None = None,
+        *,
+        serve_proc: subprocess.Popen[bytes] | None = None,
+    ) -> None:
+        """Bound preparation accounting before the relay can dispatch work.
+
+        Every wait is short and signal-interruptible: on the main thread a
+        SIGINT/SIGTERM handler that raises aborts it immediately.
+        Serve exit also ends retries, spending at most one second in a scrape.
+
+        A counter increment is attributed to the warm-up because nothing else
+        can reach serve at this point: it listens on loopback only, requires
+        this run's random bearer key, and the relay tunnel is created only
+        after this method returns (pinned by the lifecycle test). The aggregate
+        ledger has no per-request identity, so stricter correlation would need
+        a server-side change, which is out of scope here.
+        """
+        stop = stop if stop is not None else threading.Event()
+        pre_warmup = self.baseline
+        if pre_warmup is None:
+            return  # Unavailable metrics must not add an accounting wait.
+        deadline = time.monotonic() + _WARMUP_ACCOUNTING_WAIT_SECONDS
+        scraped = False
+        while not stop.is_set():
+            if serve_proc is not None and serve_proc.poll() is not None:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            values = self._read(timeout=min(1.0, remaining), stop=stop)
+            if stop.is_set() or (
+                serve_proc is not None and serve_proc.poll() is not None
+            ):
+                return
+            if values is not None:
+                scraped = True
+                self.baseline = values
+                self._previous = values
+                if values[0] > pre_warmup[0]:
+                    return
+            # A failed scrape is retried until the bound: returning early would
+            # keep the pre-warm-up baseline and count the warm-up as pool work.
+            # [NIT] A timed-out warm-up accounted after this bound and first
+            # relay dispatch can still add one request and a few tokens. Keep
+            # re-baselining before dispatch; this is informational, not payout
+            # accounting, and must not hold startup indefinitely.
+            if stop.wait(min(0.5, max(0.0, deadline - time.monotonic()))):
+                return
+        if not scraped and not stop.is_set():
+            # Metrics went away for the whole wait. Drop the pre-warm-up sample
+            # so the next successful scrape becomes a late, labelled baseline.
+            self.baseline = None
+            self._previous = None
+            self.baseline_at_start = False
+
+    def _scrape(self) -> tuple[float, ...] | None:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/metrics",
+            headers={"Authorization": f"Bearer {self._api_key}"},
+        )
+        try:
+            with _open(req, timeout=1) as response:
+                if response.status != 200:
+                    return None
+                content_type = (
+                    response.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                )
+                if content_type not in ("text/plain", "application/openmetrics-text"):
+                    return None
+                body = _bounded_read(response, 256 * 1024)
+                length = response.headers.get("Content-Length")
+                if length is not None and int(length) != len(body):
+                    return None
+                raw = body.decode("utf-8")
+            return self._parse(raw)
+        except urllib.error.HTTPError as exc:
+            with contextlib.suppress(OSError):
+                exc.close()
+            return None
+        except (OSError, ValueError, http.client.HTTPException, _ResponseTooLargeError):
+            return None
+
+    def start(self, stop: threading.Event) -> None:
+        # Share the heartbeat's cancellation event. Scrapes run separately so
+        # neither the beat interval nor a stalled scrape delays the supervisor.
+        with self._start_lock:
+            if self._thread is not None or stop.is_set():
+                return
+            self._stop = stop
+            self._thread = threading.Thread(
+                target=self._run, name="rapid-mlx-qs-status", daemon=True
+            )
+            self._thread.start()
+
+    def _run(self) -> None:
+        assert self._stop is not None
+        while not self._stop.wait(10):
+            try:
+                self.poll(self._connected_fn())
+            except Exception:  # noqa: BLE001 — no traceback or remote text
+                continue
+            except BaseException:  # daemon callbacks must never emit a traceback
+                return
+
+    def poll(self, connected: bool) -> None:
+        try:
+            with self._poll_lock:
+                self._poll(connected)
+        except Exception:  # noqa: BLE001 — includes broken/closed stderr
+            pass
+
+    def stop(self, serve_proc: subprocess.Popen[bytes]) -> None:
+        """Flush changed totals while serve is alive, spending at most one second."""
+        acquired = False
+        try:
+            if self._stop is not None:
+                self._stop.set()
+            if serve_proc.poll() is not None:
+                return
+            deadline = time.monotonic() + 1.0
+            # Include an in-flight poll in the same bound; never race its accounting.
+            acquired = self._poll_lock.acquire(timeout=1.0)
+            if not acquired:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            requests_started = self._requests_started_fn()
+            values = self._read(timeout=remaining)
+            if values is not None and serve_proc.poll() is None:
+                self._update(values, requests_started, self._connected_fn(), final=True)
+        except Exception:  # noqa: BLE001 — shutdown observation is optional
+            pass
+        finally:
+            if acquired:
+                self._poll_lock.release()
+
+    def _poll(self, connected: bool) -> None:
+        now = time.monotonic()
+        if now < self.next_poll or (self._stop is not None and self._stop.is_set()):
+            return
+        self.next_poll = now + 10
+        requests_started = self._requests_started_fn()
+        values = self._read()
+        if values is None or (self._stop is not None and self._stop.is_set()):
+            return
+        self._update(values, requests_started, connected)
+
+    def _update(
+        self,
+        values: tuple[float, ...],
+        requests_started: bool,
+        connected: bool,
+        *,
+        final: bool = False,
+    ) -> None:
+        # Throttle from emission time, including the scrape's latency.
+        now = time.monotonic()
+        if not requests_started:
+            # A timed-out warm-up can be accounted after _warmup returns.
+            # Until the relay delivers traffic, all metrics still belong to
+            # local preparation. Do not absorb traffic arriving during a scrape.
+            if not self._requests_started_fn():
+                self.baseline = values
+                self._previous = values
+                self.baseline_at_start = True
+            return
+        if self.baseline is None:
+            # Do not count warm-up if the initial scrape failed. A late
+            # baseline also omits traffic before metrics recovered; label it.
+            self.baseline = values
+            self._previous = values
+            return
+        assert self._previous is not None
+        totals = tuple(
+            total + (value - previous if value >= previous else value)
+            for total, value, previous in zip(
+                self._totals, values, self._previous, strict=True
+            )
+        )
+        if not all(math.isfinite(total) for total in totals):
+            return
+        self._totals = totals
+        self._previous = values
+        requests, tokens, speed_sum, speed_count = self._totals
+        counts = (int(requests), int(tokens), connected)
+        if final and counts[:2] == self.last_counts[:2]:
+            return
+        if counts == self.last_counts or (not requests and self.last_print is None):
+            return
+        # Totals and connection-state changes share the 60-second throttle,
+        # including connected ↔ reconnecting with unchanged totals. Only an
+        # emitted line advances it; idle/failed scrapes never postpone output.
+        if not final and self.last_print is not None and now - self.last_print < 60:
+            return
+        average = speed_sum / speed_count if speed_count else 0.0
+        rate = f"{average:.1f}"
+        speed = f"average {rate} tok/s, " if speed_count and rate != "0.0" else ""
+        window = (
+            "since start"
+            if self.baseline_at_start
+            else "since metrics became available"
+        )
+        print(
+            f"QuickSilver status: {int(requests):,} "
+            f"{'request' if requests == 1 else 'requests'} served, "
+            f"{int(tokens):,} output {'token' if tokens == 1 else 'tokens'} "
+            f"{window}, {speed}"
+            f"{'connected' if connected else 'disconnected, reconnecting'}.",
+            file=sys.stderr,
+            flush=True,
+        )
+        self.last_counts = counts
+        self.last_print = now
+
+
 class _Heartbeat:
     """POST the §3.3 beat every ``interval`` while the tunnel is up.
 
@@ -1038,7 +1375,13 @@ class _Heartbeat:
     """
 
     def __init__(
-        self, url: str, share_key: str, interval: float, inflight_fn: Callable[[], int]
+        self,
+        url: str,
+        share_key: str,
+        interval: float,
+        inflight_fn: Callable[[], int],
+        *,
+        status: _PoolStatus | None = None,
     ) -> None:
         self._url = url
         self._share_key = share_key
@@ -1050,12 +1393,22 @@ class _Heartbeat:
         self._stop = threading.Event()
         self._logged_404 = False
         self._thread: threading.Thread | None = None
+        self._status = status
+        self._start_lock = threading.Lock()
 
     def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._run, name="rapid-mlx-qs-heartbeat", daemon=True
-        )
-        self._thread.start()
+        with self._start_lock:
+            if self._thread is not None or self._stop.is_set():
+                return
+            if self._status is not None:
+                try:
+                    self._status.start(self._stop)
+                except Exception:  # noqa: BLE001 — status is optional
+                    pass
+            self._thread = threading.Thread(
+                target=self._run, name="rapid-mlx-qs-heartbeat", daemon=True
+            )
+            self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -1085,6 +1438,7 @@ class _Heartbeat:
                 continue
             self._beat_once()
             if self.fatal.is_set():
+                self._stop.set()
                 return
 
     def _beat_once(self) -> None:
@@ -1567,7 +1921,7 @@ def _run_share(
     # B2 download gate (share is not on the top-level gated-command
     # list — same replication cli.py's plain path does, on the RESOLVED
     # hf path since the cache lookup keys the repo id).
-    _maybe_confirm_download(_resolve_serve_hf_path(serve_alias))
+    download_progress = _maybe_confirm_download(serve_alias, pool_mode=True)
 
     print(
         "warning: `rapid-mlx share --quicksilver` serves QuickSilver pool "
@@ -1654,6 +2008,7 @@ def _run_share(
     tunnel: ws_tunnel.TunnelClient | None = None
     tunnel_thread: threading.Thread | None = None
     heartbeat: _Heartbeat | None = None
+    status: _PoolStatus | None = None
     exit_code = 0
     # Keep the websockets library at WARNING for the session: its
     # client logger prints connect URIs, and any future credential that
@@ -1673,7 +2028,7 @@ def _run_share(
             log_path=serve_log,
             extra_args=extra,
         )
-        if not _wait_for_healthz(port, serve_proc):
+        if not _wait_for_healthz(port, serve_proc, progress=download_progress):
             print(
                 f"serve exited before becoming ready — see {serve_log}",
                 file=sys.stderr,
@@ -1692,7 +2047,40 @@ def _run_share(
         if desktop_status is not None:
             desktop_status.publish("warming", **desktop_fields)
         print("Warming up (pages weights into Metal)…", file=sys.stderr)
+        # Shared across reconnects: once any relay has delivered a request,
+        # subsequent idle connections must not reset contributor totals.
+        requests_started = threading.Event()
+        status = _PoolStatus(
+            port,
+            api_key=api_key,
+            connected_fn=lambda: (
+                tunnel is not None
+                and tunnel.ready_event.is_set()
+                and not tunnel.closed_event.is_set()
+                and tunnel.error is None
+            ),
+            requests_started_fn=requests_started.is_set,
+        )
+        # The constructor samples before warm-up. Wait for its terminal ledger
+        # update before any relay request can arrive, with a hard startup bound.
         _warmup(port, api_key, display_model)
+        # Main thread: SIGINT and SIGTERM (``_term_handler``) raise
+        # KeyboardInterrupt here, which interrupts the bounded waits below, so
+        # this never delays shutdown. The event only serves in-process callers.
+        status.wait_for_warmup(serve_proc=serve_proc)
+        serve_rc = serve_proc.poll()
+        if serve_rc is not None:
+            if desktop_status is not None:
+                desktop_status.publish(
+                    "error",
+                    **desktop_fields,
+                    message="The local model server stopped unexpectedly.",
+                )
+            print(
+                f"share: serve process exited — leaving the pool. See {serve_log}.",
+                file=sys.stderr,
+            )
+            sys.exit(serve_rc if serve_rc != 0 else 1)
 
         # ``interval`` was validated (finite, 1..3600) before serve
         # booted — the beat thread can never be born frozen or dead.
@@ -1703,6 +2091,7 @@ def _run_share(
             # Bound to the SLOW-BIND of ``tunnel``: between reconnects
             # there is no live tunnel and the beat pauses anyway.
             inflight_fn=lambda: tunnel.inflight if tunnel is not None else 0,
+            status=status,
         )
         heartbeat.start()
 
@@ -1721,6 +2110,7 @@ def _run_share(
                 share_key=cache["share_key"],
                 override_authorization=api_key,
                 inject_stream_usage=True,
+                requests_started_event=requests_started,
             )
             print(
                 _redact(
@@ -1912,6 +2302,8 @@ def _run_share(
             pass
         if heartbeat is not None:
             heartbeat.stop()
+        if status is not None and serve_proc is not None:
+            status.stop(serve_proc)
         if tunnel is not None:
             tunnel.stop()
         if tunnel_thread is not None and tunnel_thread.is_alive():
