@@ -13349,6 +13349,13 @@ def agents_command(args):
         print("  Run 'rapid-mlx agents' to see available agents.")
         sys.exit(1)  # pragma: no cover - CLI error path
 
+    # Share Codex's API base across discovery, setup, and integration tests.
+    try:
+        base_url = profile.normalize_base_url(base_url)
+    except ValueError as exc:
+        print(f"  Invalid base URL: {exc}")
+        sys.exit(1)
+
     # --test: run integration tests
     if args.test:
         from rapid_mlx.agents.testing import AgentTestRunner  # pragma: no cover
