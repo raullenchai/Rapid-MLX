@@ -471,6 +471,8 @@ matrix below.
 
 Also compatible with OpenAI-compatible clients that allow direct local endpoints via `http://localhost:8000/v1` — LibreChat, Open WebUI, and more plug in with a single URL change.
 
+Goose and Crush have setup profiles for a local server. After `rapid-mlx serve qwen3.5-4b-4bit`, run `rapid-mlx agents goose --setup` or `rapid-mlx agents crush --setup` in another terminal. See the [Goose](docs/agents/goose.md) and [Crush](docs/agents/crush.md) guides for the config paths and launch commands. These are separate from the 12-agent release matrix above.
+
 → [Full 12-agent + 3-framework matrix (test cells + xfail reasons)](https://rapidmlx.com/docs/matrix.html)
 → [Codex CLI](https://rapidmlx.com/docs/matrix.html#agent-codex-cli) · [Claude Code](https://rapidmlx.com/docs/matrix.html#agent-claude-code) · [OpenCode](https://rapidmlx.com/docs/matrix.html#agent-opencode) · [Qwen Code](https://rapidmlx.com/docs/matrix.html#agent-qwen-code) · [OpenHands](https://rapidmlx.com/docs/matrix.html#agent-openhands) · [Hermes](https://rapidmlx.com/docs/matrix.html#agent-hermes-agent) · [Aider](https://rapidmlx.com/docs/matrix.html#agent-aider) · [Kilo Code](https://rapidmlx.com/docs/matrix.html#agent-kilo-code) · [DeepSeek Harness](https://rapidmlx.com/docs/matrix.html#agent-deepseek-harness) · [Copilot](https://rapidmlx.com/docs/matrix.html#agent-copilot) · [Droid](https://rapidmlx.com/docs/matrix.html#agent-droid) · [Kimi Code](https://rapidmlx.com/docs/matrix.html#agent-kimi-code)
 

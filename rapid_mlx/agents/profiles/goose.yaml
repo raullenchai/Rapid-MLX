@@ -1,0 +1,43 @@
+name: goose
+display_name: Goose
+repo: aaif-goose/goose
+
+# Goose 1.54.0 loads declarative provider files from its XDG config dir.
+# The OpenAI engine accepts the full chat-completions URL.
+config:
+  type: json
+  path: "~/.config/goose/custom_providers/custom_rapid_mlx.json"
+  template: |
+    {
+      "name": "custom_rapid_mlx",
+      "engine": "openai",
+      "display_name": "Rapid-MLX",
+      "description": "Local OpenAI-compatible server",
+      "api_key_env": "{goose_api_key_env}",
+      "base_url": "{base_url}/chat/completions",
+      "models": [{"name": "{model_id}", "context_limit": {context_length}}],
+      "supports_streaming": true,
+      "requires_auth": {goose_requires_auth},
+      "dynamic_models": false
+    }
+
+models:
+  recommended:
+    - qwen3.5-4b-4bit
+
+streaming:
+  max_tools: 20
+
+testing:
+  binary: goose
+  query_cmd: "goose run --provider custom_rapid_mlx --model {model_id} --no-session --quiet --text '{query}'"
+  query_timeout: 180
+  install_cmd: "brew install --cask block-goose"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "Goose's provider file lives under the XDG config directory; set XDG_CONFIG_HOME before setup and Goose if you use a non-default location."
+  - "A keyed server requires RAPID_MLX_API_KEY in the environment for both setup and Goose."

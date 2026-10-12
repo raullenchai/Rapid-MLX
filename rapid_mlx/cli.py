@@ -13323,6 +13323,12 @@ def agents_command(args):
 
     agent_name = args.agent_name
     base_url = args.base_url
+    # The CLI's shared alias resolver replaces --model with its HF repository
+    # before dispatch. Agent configs and commands must use the server's public
+    # alias when one was supplied, especially clients that validate model IDs.
+    requested_model = getattr(args, "_original_alias", None) or getattr(
+        args, "model", None
+    )
 
     # No agent specified → list all profiles
     if not agent_name:
@@ -13396,7 +13402,7 @@ def agents_command(args):
     if args.test:
         from rapid_mlx.agents.testing import AgentTestRunner  # pragma: no cover
 
-        model_id = args.model or None
+        model_id = requested_model or None
         runner = AgentTestRunner(
             profile,
             base_url=base_url,
@@ -13423,7 +13429,7 @@ def agents_command(args):
         # Only query the server when the profile template uses
         # {context_length} — avoids a 2-second timeout regression
         # for profiles that don't need it.
-        model_id = args.model or "default"
+        model_id = requested_model or "default"
         context_length = None
         cfg = profile.get_config_for_version(args.agent_version)
         needs_ctx = bool(cfg.template and "{context_length}" in cfg.template)

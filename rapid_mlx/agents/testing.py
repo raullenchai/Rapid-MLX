@@ -1606,6 +1606,11 @@ class AgentTestRunner:
             context_length = fetch_context_window(self.base_url, self.model_id)
 
             redirected = {"HOME": isolated_config_home.name}
+            if self.profile.name == "goose":
+                redirected["XDG_CONFIG_HOME"] = str(
+                    Path(isolated_config_home.name) / ".config"
+                )
+                redirected["GOOSE_PATH_ROOT"] = ""
             if config_home_env:
                 redirected[config_home_env] = isolated_config_home.name
             previous = {key: os.environ.get(key) for key in redirected}
@@ -1666,6 +1671,13 @@ class AgentTestRunner:
         isolated_root = Path(isolated_config_home.name)
         for xdg_key, xdg_rel in _XDG_BASE_DIRS:
             env_overrides[xdg_key] = str(isolated_root / xdg_rel)
+        if self.profile.name == "goose":
+            env_overrides["GOOSE_PATH_ROOT"] = ""
+            env_overrides["GOOSE_ADDITIONAL_CONFIG_FILES"] = ""
+        if self.profile.name == "crush":
+            env_overrides["CRUSH_GLOBAL_DATA"] = str(
+                isolated_root / ".local/share/crush"
+            )
         # OpenCode also honours explicit config relocations; an inherited
         # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR would bypass the redirected
         # XDG tree, so point both at the file this sweep just generated.

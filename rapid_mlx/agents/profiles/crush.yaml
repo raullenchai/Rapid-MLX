@@ -1,0 +1,57 @@
+name: crush
+display_name: Crush
+repo: charmbracelet/crush
+
+# Crush 0.98.1 accepts global crush.json, though crushrc is its newer format.
+# Its openai-compat provider uses the /v1 base URL.
+config:
+  type: json
+  path: "~/.config/crush/crush.json"
+  home_env: CRUSH_GLOBAL_CONFIG
+  template: |
+    {
+      "providers": {
+        "rapid-mlx": {
+          "id": "rapid-mlx",
+          "name": "Rapid-MLX",
+          "type": "openai-compat",
+          "base_url": "{base_url}",
+          "api_key": "{crush_api_key}",
+          "models": [{
+            "id": "{model_id}",
+            "name": "{model_id}",
+            "context_window": {context_length},
+            "default_max_tokens": 4096,
+            "cost_per_1m_in": 0,
+            "cost_per_1m_out": 0,
+            "cost_per_1m_in_cached": 0,
+            "cost_per_1m_out_cached": 0,
+            "can_reason": false,
+            "supports_attachments": false
+          }]
+        }
+      },
+      "models": {"large": {"provider": "rapid-mlx", "model": "{model_id}"}},
+      "options": {"request_timeout": 300}
+    }
+
+models:
+  recommended:
+    - qwen3.5-4b-4bit
+
+streaming:
+  max_tools: 20
+
+testing:
+  binary: crush
+  query_cmd: "crush run --model rapid-mlx/{model_id} --quiet '{query}'"
+  query_timeout: 360
+  install_cmd: "brew install charmbracelet/tap/crush"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "Crush 0.98.1 prefers crushrc. A project crushrc or global crushrc can override this supported JSON configuration; run from a clean project for the first check."
+  - "For a keyed server, export RAPID_MLX_API_KEY before setup and before starting Crush."
