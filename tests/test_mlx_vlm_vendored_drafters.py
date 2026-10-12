@@ -2867,6 +2867,28 @@ def test_binding_peek_resolves_backbone_declared_dflash2(tmp_path):
     assert _peek_drafter_model_type(declared) == "qwen3_dflash"
 
 
+# These are loader contracts, so use a complete miniature architecture rather
+# than the production defaults (over 2 GiB per unquantized checkpoint). Keep
+# input widths divisible by 64 to exercise the real group-64 quantization path.
+_DFLASH_SIDECAR_TEST_CONFIG = {
+    "model_type": "qwen3",
+    "hidden_size": 64,
+    "intermediate_size": 128,
+    "num_hidden_layers": 1,
+    "num_attention_heads": 4,
+    "num_key_value_heads": 2,
+    "head_dim": 16,
+    "vocab_size": 256,
+    "max_position_embeddings": 64,
+    "dflash_config": {
+        "mask_token_id": 1,
+        "causal": False,
+        "target_layer_ids": [0],
+        "num_target_layers": 1,
+    },
+}
+
+
 def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     """A backbone-declared sidecar must construct the vendored family
     directly: pinned load_model would dispatch on the raw backbone type
@@ -2893,14 +2915,7 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
 
     repo = tmp_path / "sidecar"
     repo.mkdir()
-    (repo / "config.json").write_text(
-        json.dumps(
-            {
-                "model_type": "qwen3",
-                "dflash_config": {"mask_token_id": 1, "causal": False},
-            }
-        )
-    )
+    (repo / "config.json").write_text(json.dumps(_DFLASH_SIDECAR_TEST_CONFIG))
     # save a known parameter set: the loaded drafter must carry these
     # weights, proving the direct branch loads the checkpoint instead of
     # serving randomly initialized parameters.
@@ -2911,12 +2926,13 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
         DFlashDraftModel,
     )
 
-    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    reference = DFlashDraftModel(DFlashConfig.from_dict(_DFLASH_SIDECAR_TEST_CONFIG))
     mx.eval(reference.parameters())
     mx.save_safetensors(
         str(repo / "model.safetensors"),
         dict(tree_flatten(reference.parameters())),
     )
+    assert (repo / "model.safetensors").stat().st_size < 1024**2
     flat = dict(tree_flatten(reference.parameters()))
     del reference
     drafter, resolved = load_drafter(str(repo), kind="dflash")
@@ -2936,13 +2952,12 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     (repo_q / "config.json").write_text(
         json.dumps(
             {
-                "model_type": "qwen3",
+                **_DFLASH_SIDECAR_TEST_CONFIG,
                 "quantization_config": {"group_size": 64, "bits": 4},
-                "dflash_config": {"mask_token_id": 1, "causal": False},
             }
         )
     )
-    quant_ref = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    quant_ref = DFlashDraftModel(DFlashConfig.from_dict(_DFLASH_SIDECAR_TEST_CONFIG))
     import mlx.nn as nn
 
     nn.quantize(quant_ref, group_size=64, bits=4)
@@ -2960,9 +2975,8 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     (repo_bad / "config.json").write_text(
         json.dumps(
             {
-                "model_type": "qwen3",
+                **_DFLASH_SIDECAR_TEST_CONFIG,
                 "quantization_config": {"group_size": 64},
-                "dflash_config": {"mask_token_id": 1, "causal": False},
             }
         )
     )
@@ -2971,9 +2985,8 @@ def test_binding_sidecar_loads_vendored_family_directly(monkeypatch, tmp_path):
     (repo_bad / "config.json").write_text(
         json.dumps(
             {
-                "model_type": "qwen3",
+                **_DFLASH_SIDECAR_TEST_CONFIG,
                 "quantization_config": 17,
-                "dflash_config": {"mask_token_id": 1, "causal": False},
             }
         )
     )
@@ -3040,19 +3053,13 @@ def test_binding_sidecar_index_validation(monkeypatch, tmp_path):
 
     repo = tmp_path / "sidecar"
     repo.mkdir()
-    (repo / "config.json").write_text(
-        json.dumps(
-            {
-                "model_type": "qwen3",
-                "dflash_config": {"mask_token_id": 1, "causal": False},
-            }
-        )
-    )
-    reference = DFlashDraftModel(DFlashConfig(mask_token_id=1))
+    (repo / "config.json").write_text(json.dumps(_DFLASH_SIDECAR_TEST_CONFIG))
+    reference = DFlashDraftModel(DFlashConfig.from_dict(_DFLASH_SIDECAR_TEST_CONFIG))
     mx.eval(reference.parameters())
     flat = dict(tree_flatten(reference.parameters()))
     del flat["layers.0.self_attn.q_proj.weight"]
     mx.save_safetensors(str(repo / "shard-a.safetensors"), flat)
+    assert (repo / "shard-a.safetensors").stat().st_size < 1024**2
 
     (repo / "model.safetensors.index.json").write_text("[]")
     with pytest.raises(ValueError, match="weight_map must be an object"):
