@@ -234,9 +234,9 @@ _SOURCE = r"""
       acc += float(conv_state[(size_t)tap * CD + c]) * float(wc[tap]);
     acc += float(qkv[c]) * float(wc[K - 1]);
     T xb = static_cast<T>(acc);
-    // Qwen3.5's stock SiLU uses the precise bf16 sigmoid. The fast
-    // exponential differs at x=-6.84375 and corrupts a recurrent-state row.
-    T sig = Q35 ? mlx_sigmoid_precise(xb) : mlx_sigmoid_fast(xb);
+    // Qwen3.5 qualifies the convolution SiLU against the installed MLX.
+    // Qwen4 retains its original fast law and separate admission gate.
+    T sig = CONV_PRECISE ? mlx_sigmoid_precise(xb) : mlx_sigmoid_fast(xb);
     T sl = xb * sig;
     if (part == 0u) sq[d] = float(sl);
     else if (part == 1u) sk[d] = float(sl);
@@ -456,6 +456,7 @@ def fused_gdn_decode(
             ("TY", threadgroup_y),
             ("RATIO", num_value_heads // num_key_heads),
             ("Q35", qwen35_semantics),
+            ("CONV_PRECISE", qwen35_semantics and _qwen35_conv_silu_precise()),
         ],
         grid=(32, threadgroup_y, num_value_heads),
         threadgroup=(32, threadgroup_y, 1),
@@ -512,13 +513,8 @@ def fused_gdn_runtime_supported() -> bool:
     )
 
 
-def _qwen4_conv_silu_matches_stock() -> bool:
-    """Qualify the shipped fast SiLU over every finite bf16 bit pattern.
-
-    MLX compilation and Metal's fast exp can change with the runtime/device.
-    Keep this out of structural admission and never substitute a different
-    sigmoid form based on an isolated sweep. A mismatch only disables fusion.
-    """
+def _conv_silu_matches_stock(*, precise: bool) -> bool:
+    """Compare one convolution law with native SiLU over all finite bf16."""
     import mlx.nn as nn
 
     bits = mx.concatenate(
@@ -529,20 +525,20 @@ def _qwen4_conv_silu_matches_stock() -> bool:
     )
     values = bits.view(mx.bfloat16)
     kernel = mx.fast.metal_kernel(
-        name="rapid_qwen4_conv_silu_qualification",
+        name=f"rapid_gdn_conv_silu_qualification_{'precise' if precise else 'fast'}",
         input_names=["x"],
         output_names=["out"],
         header=_HEADER,
         source="""
             uint i = thread_position_in_grid.x;
             T xb = x[i];
-            T sig = mlx_sigmoid_fast(xb);
+            T sig = PRECISE ? mlx_sigmoid_precise(xb) : mlx_sigmoid_fast(xb);
             out[i] = xb * sig;
         """,
     )
     (actual,) = kernel(
         inputs=[values],
-        template=[("T", mx.bfloat16)],
+        template=[("T", mx.bfloat16), ("PRECISE", precise)],
         grid=(values.size, 1, 1),
         threadgroup=(256, 1, 1),
         output_shapes=[values.shape],
@@ -550,6 +546,25 @@ def _qwen4_conv_silu_matches_stock() -> bool:
     )
     expected = nn.silu(values)
     return bool(mx.array_equal(actual.view(mx.uint16), expected.view(mx.uint16)).item())
+
+
+def _qwen4_conv_silu_matches_stock() -> bool:
+    """Qualify Qwen4's unchanged fast law; a mismatch only disables fusion."""
+    return _conv_silu_matches_stock(precise=False)
+
+
+@cache
+def _qwen35_conv_silu_precise() -> bool:
+    """Select only a native-bit-exact law before Qwen3.5's full state probe.
+
+    MLX 0.32.2 and 0.32.3 compile native bf16 SiLU differently. Never choose
+    by version or accept a near match. The caller's eight-step parity probe
+    still gates enrollment, including output and both recurrent caches.
+    """
+    for precise in (True, False):
+        if _conv_silu_matches_stock(precise=precise):
+            return precise
+    raise RuntimeError("no bit-exact Qwen3.5 convolution SiLU on this runtime")
 
 
 _PROBED_THREADGROUP_Y: int | None = None
