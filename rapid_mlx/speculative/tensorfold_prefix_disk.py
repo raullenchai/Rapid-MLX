@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import stat
 import struct
@@ -74,12 +75,59 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _artifact(path: Path | None) -> Any:
-    """Hash contents, including quantized weights and tokenizer/template assets.
+def _generation(path: Path, *, follow: bool = True) -> tuple[int, ...]:
+    info = path.stat() if follow else path.lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
-    No stat-only memoization: replacing a checkpoint in place must invalidate it.
-    This intentionally adds startup I/O, outside request TTFT.
+
+def _hf_lfs_identity(path: Path) -> Any:
+    """Use HF content addresses only for snapshot-linked LFS safetensors.
+
+    Generation metadata additionally invalidates ordinary writes/replacements
+    under an unchanged blob name, even when size and mtime are preserved. The
+    process-birth guards still reject changes across model loading/identity.
+    This relies on the same local ctime semantics as those guards, not persisted
+    stat-keyed digest memoization. All other layouts retain full content hashing.
     """
+    if path.suffix != ".safetensors" or not path.is_symlink():
+        return None
+    for snapshot in path.parents:
+        if (
+            snapshot.parent.name != "snapshots"
+            or not snapshot.parent.parent.name.startswith("models--")
+            or re.fullmatch(r"[0-9a-f]{40}", snapshot.name) is None
+        ):
+            continue
+        blobs = snapshot.parent.parent / "blobs"
+        direct = path.parent / path.readlink()
+        resolved = path.resolve(strict=True)
+        if (
+            blobs.is_symlink()
+            or direct.is_symlink()
+            or resolved.parent != blobs.resolve(strict=True)
+            or re.fullmatch(r"[0-9a-f]{64}", resolved.name) is None
+            or not stat.S_ISREG(resolved.lstat().st_mode)
+        ):
+            return None
+        return {
+            "source": "hf-lfs-sha256-generation",
+            "revision": snapshot.name,
+            "blob": str(resolved),
+            "sha256": resolved.name,
+            "generation": _generation(resolved),
+            "link_generation": _generation(path, follow=False),
+        }
+    return None
+
+
+def _artifact(path: Path | None) -> Any:
+    """Identify immutable HF LFS generations; fully hash every other file."""
     if path is None:
         return None
     files = (
@@ -90,7 +138,10 @@ def _artifact(path: Path | None) -> Any:
     return {
         "path": str(path.resolve()),
         "contents": [
-            (str(p.relative_to(path)) if p != path else p.name, _digest(p))
+            (
+                str(p.relative_to(path)) if p != path else p.name,
+                _hf_lfs_identity(p) or _digest(p),
+            )
             for p in files
         ],
     }
@@ -107,8 +158,8 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
             raise ValueError("unidentified MTP head")
     return json.dumps(
         {
-            "format": 3,
-            "asset_policy": "unchanged-before-process-start",
+            "format": 4,
+            "asset_policy": "hf-lfs-generation-or-content-unchanged-before-start",
             "target": _artifact(target),
             "drafter": _artifact(drafter),
             "mtp": mtp,
@@ -163,6 +214,13 @@ def _assets_unchanged(
         if root.is_dir():
             entries.extend(root.rglob("*"))
         for entry in entries:
+            if entry.is_symlink():
+                direct = entry.parent / entry.readlink()
+                # A blob replaced by another symlink must not hide its new
+                # status time behind an older resolved file. Chained links are
+                # conservatively unqualified rather than chasing mutable hops.
+                if direct.is_symlink() or direct.lstat().st_ctime >= started_at:
+                    return False
             # lstat sees replacement of a link; stat sees changes to its blob.
             if (
                 entry.lstat().st_ctime >= started_at

@@ -658,3 +658,103 @@ def test_asset_guard_rejects_changed_symlink_even_to_old_blob(tmp_path):
 
     os.utime(blob, (started_at - 60, started_at - 60))
     assert not _assets_unchanged(target, None, app, started_at)
+
+
+def hf_artifact(tmp_path, *, digest="a" * 64, revision="b" * 40):
+    repo = tmp_path / "models--pilot--model"
+    blob = repo / "blobs" / digest
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"original")
+    snapshot = repo / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    link = snapshot / "model.safetensors"
+    link.symlink_to(blob)
+    return snapshot, blob, link
+
+
+def test_hf_lfs_identity_does_not_read_weights(tmp_path, monkeypatch):
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    snapshot, blob, _ = hf_artifact(tmp_path)
+    monkeypatch.setattr(module, "_digest", lambda _: pytest.fail("weight read"))
+    identity = module._artifact(snapshot)
+    source = identity["contents"][0][1]
+    assert source["sha256"] == blob.name
+    assert source["revision"] == snapshot.name
+    assert source["generation"][2] == len(b"original")
+    assert source["source"] == "hf-lfs-sha256-generation"
+    assert identity == module._artifact(snapshot)
+
+
+@pytest.mark.parametrize("kind", ["overwrite", "replace", "relink"])
+def test_hf_generation_invalidates_same_name_size_and_mtime(tmp_path, kind):
+    import os
+
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _artifact
+
+    snapshot, blob, link = hf_artifact(tmp_path)
+    before = _artifact(snapshot)
+    info = blob.stat()
+    if kind == "overwrite":
+        blob.write_bytes(b"modified")
+    elif kind == "replace":
+        replacement = blob.with_name("replacement")
+        replacement.write_bytes(b"modified")
+        replacement.replace(blob)
+    else:
+        link.unlink()
+        link.symlink_to(blob)
+    os.utime(blob, ns=(info.st_atime_ns, info.st_mtime_ns))
+    assert blob.stat().st_size == info.st_size
+    assert blob.stat().st_mtime_ns == info.st_mtime_ns
+    assert _artifact(snapshot) != before
+
+
+@pytest.mark.parametrize(
+    "kind", ["local", "git-sha1", "bad-revision", "outside", "blob-link", "config"]
+)
+def test_non_lfs_layouts_always_hash_contents(tmp_path, kind, monkeypatch):
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    snapshot, blob, link = hf_artifact(
+        tmp_path,
+        digest="a" * (40 if kind == "git-sha1" else 64),
+        revision="not-a-commit" if kind == "bad-revision" else "b" * 40,
+    )
+    if kind == "local":
+        link.unlink()
+        link.write_bytes(b"original")
+    elif kind in ("outside", "blob-link"):
+        outside = tmp_path / ("c" * 64)
+        outside.write_bytes(b"original")
+        if kind == "outside":
+            link.unlink()
+            link.symlink_to(outside)
+        else:
+            blob.unlink()
+            blob.symlink_to(outside)
+    elif kind == "config":
+        link.rename(link.with_suffix(".json"))
+    calls = []
+    original = module._digest
+    monkeypatch.setattr(module, "_digest", lambda p: (calls.append(p), original(p))[1])
+    before = module._artifact(snapshot)
+    assert len(calls) == 1
+    assert before["contents"][0][1] == hashlib.sha256(b"original").hexdigest()
+    next(snapshot.iterdir()).write_bytes(b"modified")
+    assert module._artifact(snapshot) != before
+    assert len(calls) == 2
+
+
+def test_asset_guard_rejects_indirect_blob_symlink(tmp_path):
+    import time
+
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _assets_unchanged
+
+    snapshot, blob, _ = hf_artifact(tmp_path)
+    other = tmp_path / "old-blob"
+    other.write_bytes(b"old")
+    blob.unlink()
+    blob.symlink_to(other)
+    app = SimpleNamespace(_model=SimpleNamespace(mtp=None))
+    assert not _assets_unchanged(snapshot, None, app, time.time() + 60)
