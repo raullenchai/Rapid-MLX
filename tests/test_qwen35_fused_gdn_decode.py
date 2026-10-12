@@ -469,3 +469,126 @@ def test_mllm_loader_installs_qwen35_fused_gdn_decode():
     source = inspect.getsource(MLXMultimodalLM.load)
     assert source.count("install_qwen35_moe_router") == 2
     assert source.count("install_qwen35_fused_gdn_decode") == 2
+
+
+@pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+def test_other_convolution_law_full_state_probe_uses_native_witness(monkeypatch):
+    selected = shared_kernel._qwen35_conv_silu_precise()
+    assert fused._probe_candidate(4)
+
+    # Reuse the selector's exhaustive finite-bf16 domain and helper body.
+    # The other law may be equivalent on this GPU, and the fixed -6.84375
+    # edge need not distinguish it even when it differs elsewhere.
+    bits = mx.concatenate(
+        [
+            mx.arange(0x7F80, dtype=mx.uint16),
+            mx.arange(0x8000, 0xFF80, dtype=mx.uint16),
+        ]
+    )
+    values = bits.view(mx.bfloat16)
+    kernel = mx.fast.metal_kernel(
+        name="qwen35_other_conv_silu_witness",
+        input_names=["x"],
+        output_names=["out"],
+        header=shared_kernel._HEADER,
+        source="""
+            uint i = thread_position_in_grid.x;
+            T xb = x[i];
+            T sig = PRECISE ? mlx_sigmoid_precise(xb) : mlx_sigmoid_fast(xb);
+            out[i] = xb * sig;
+        """,
+    )
+    (actual,) = kernel(
+        inputs=[values],
+        template=[("T", mx.bfloat16), ("PRECISE", not selected)],
+        grid=(values.size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[values.shape],
+        output_dtypes=[mx.bfloat16],
+    )
+    expected = nn.silu(values)
+    mismatches = actual.view(mx.uint16) != expected.view(mx.uint16)
+    count = int(mx.sum(mismatches).item())
+    print(f"alternate convolution law precise={not selected}: {count} bf16 mismatches")
+    if not count:
+        monkeypatch.setattr(
+            shared_kernel, "_qwen35_conv_silu_precise", lambda: not selected
+        )
+        assert fused._probe_candidate(4)
+        return
+
+    # Use the largest actual activation difference, not a hardware-specific
+    # constant or random chance. A one-hot key and beta=0 (sigmoid=0.5)
+    # preserve that difference in the FP32 state, before output bf16 rounding.
+    delta = mx.abs(actual.astype(mx.float32) - expected.astype(mx.float32))
+    index = int(mx.argmax(mx.where(mismatches, delta, 0)).item())
+    assert float(delta[index].item()) > 0
+    witness = float(values[index].item())
+    print(f"native convolution witness: {witness}")
+    stock_step = fused._stock_step
+    stock_states = []
+
+    def distinguishing_step(**kwargs):
+        qkv = kwargs["qkv"]
+        conv = kwargs["conv"]
+        # Only the first key head and first value channel need the fixture.
+        conv.weight[fused._KEY_DIM : fused._KEY_DIM + fused._KEY_HEAD_DIM, :, 0] = (
+            mx.array([0, 0, 0, 1], dtype=mx.bfloat16)
+        )
+        qkv[0, 0, fused._KEY_DIM : fused._KEY_DIM + fused._KEY_HEAD_DIM] = 0
+        qkv[0, 0, fused._KEY_DIM] = 1
+        qkv[0, 0, 2 * fused._KEY_DIM] = witness
+        kwargs["beta"][0, 0, 0] = 0
+        result = stock_step(**kwargs)
+        stock_states.append(result[2])
+        return result
+
+    monkeypatch.setattr(fused, "_stock_step", distinguishing_step)
+    assert fused._probe_candidate(4), "correct law must pass the witness fixture"
+    monkeypatch.setattr(
+        shared_kernel, "_qwen35_conv_silu_precise", lambda: not selected
+    )
+    decode = fused.fused_gdn_decode
+    actual_states = []
+
+    def other_law_decode(*args, **kwargs):
+        result = decode(*args, **kwargs)
+        actual_states.append(result[2])
+        return result
+
+    monkeypatch.setattr(fused, "fused_gdn_decode", other_law_decode)
+    assert not fused._probe_candidate(4)
+    assert not fused._bytes_equal(stock_states[-1], actual_states[-1])
+
+
+@pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+@pytest.mark.parametrize("state_index", (1, 2), ids=("convolution", "recurrent"))
+def test_full_state_probe_rejects_corrupted_native_state(monkeypatch, state_index):
+    assert fused._probe_candidate(4)
+    decode = fused.fused_gdn_decode
+
+    def corrupted_state(*args, **kwargs):
+        results = list(decode(*args, **kwargs))
+        original = results[state_index]
+        corrupted = mx.array(original)
+        index = (0,) * original.ndim
+        corrupted[index] = original[index] + 1
+        assert not fused._bytes_equal(original, corrupted)
+        # Keep the genuine native output and the other cache untouched.
+        results[state_index] = corrupted
+        return tuple(results)
+
+    monkeypatch.setattr(fused, "fused_gdn_decode", corrupted_state)
+    assert not fused._probe_candidate(4)
+
+
+def test_unsupported_convolution_law_keeps_enrollment_fail_closed(monkeypatch):
+    monkeypatch.setattr(fused, "_PROBE_COMPLETE", False)
+    monkeypatch.setattr(fused, "_PROBED_THREADGROUP_Y", None)
+    monkeypatch.setattr(fused, "fused_gdn_runtime_supported", lambda: True)
+    monkeypatch.setattr(
+        shared_kernel,
+        "_qwen35_conv_silu_precise",
+        lambda: (_ for _ in ()).throw(RuntimeError("unsupported native SiLU")),
+    )
+    assert fused.probe_qwen35_fused_gdn_decode() is None
