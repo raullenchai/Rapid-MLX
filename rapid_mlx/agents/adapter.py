@@ -278,6 +278,11 @@ def setup_agent_config(
             + "\n".join(lines)
             + "\n\n  (env vars are not persistent — add to your .zshrc/.bashrc for permanent setup)"
         )
+        if profile.name == "openhands":
+            summary += (
+                "\n\n  Then run: openhands --override-with-envs"
+                " (required for OpenHands CLI 1.x to use these variables)"
+            )
         if not dry_run:
             track_agent_configured(profile.name)
         return summary
@@ -828,6 +833,11 @@ def get_setup_instructions(
         for key, val in rendered.items():
             lines.append(f"export {key}={val}")
         lines.append("```")
+        if profile.name == "openhands":
+            lines.append("")
+            lines.append(
+                "Run `openhands --override-with-envs` so the 1.x CLI applies these exports."
+            )
     elif cfg.path:
         ext = Path(cfg.path).suffix.lstrip(".")
         lines.append(f"Write to `{cfg.path}`:")

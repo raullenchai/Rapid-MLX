@@ -72,9 +72,9 @@ Source: `tests/integrations/README.md` "Current cell status" (pilot run
 | <a id="agent-claude-code"></a>[claude-code](claude-code.md) | `/v1/messages` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 | <a id="agent-opencode"></a>[opencode](opencode.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-qwen-code"></a>[qwen-code](qwen-code.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
-| <a id="agent-openhands"></a>[openhands](openhands.md) | Docker → `/v1/chat/completions` | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
+| <a id="agent-openhands"></a>[openhands](openhands.md) | pinned 0.9.0 Docker → `/v1/chat/completions` | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
 | <a id="agent-hermes-agent"></a>[hermes-agent](hermes-agent.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
-| <a id="agent-aider"></a>aider | bash CLI → `/v1/chat/completions` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
+| <a id="agent-aider"></a>[aider](aider.md) | bash CLI → `/v1/chat/completions` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 | <a id="agent-kilo-code"></a>kilo-code | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-deepseek-harness"></a>[deepseek-harness](deepseek-harness.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-copilot"></a>copilot | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |

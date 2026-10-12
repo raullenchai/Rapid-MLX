@@ -8,7 +8,7 @@ config:
   env_vars:
     LLM_BASE_URL: "{base_url}"
     LLM_API_KEY: "not-needed"
-    LLM_MODEL: "{model_id}"
+    LLM_MODEL: "openai/{model_id}"
 
 models:
   recommended:
@@ -18,21 +18,20 @@ models:
 
 streaming:
   extra_tool_tags: []
-  max_tools: 0  # uses text action format, not FC
+  max_tools: 16
 
 testing:
-  binary: null
-  query_cmd: null  # requires Docker, not simple CLI
+  binary: openhands
+  query_cmd: "openhands --override-with-envs --headless --always-approve -t '{query}'"
   query_timeout: 300
-  install_cmd: "pip install openhands"
+  install_cmd: "uv tool install openhands --python 3.12"
 
 capabilities:
-  function_calling: false  # text action format
+  function_calling: true
   streaming: true
 
 known_issues:
-  - "Requires Docker for sandbox execution"
-  - "Uses text-based action format, not OpenAI function calling"
-  - "Uses LiteLLM under the hood — supports LLM_BASE_URL"
-  - "Small local models struggle with the complex action format"
-  - "SWE-bench score 77.6% — research-grade agent"
+  - "OpenHands CLI 1.x applies LLM_* only with --override-with-envs"
+  - "The CLI can run local tools without Docker; the full GUI server needs Docker"
+  - "Uses LiteLLM under the hood — prefix the local model with openai/"
+  - "The CLI sends a large system prompt and several tool definitions; small local models may struggle with file edits"

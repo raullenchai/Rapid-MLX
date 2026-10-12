@@ -474,6 +474,10 @@ Also compatible with OpenAI-compatible clients that allow direct local endpoints
 → [Full 12-agent + 3-framework matrix (test cells + xfail reasons)](https://rapidmlx.com/docs/matrix.html)
 → [Codex CLI](https://rapidmlx.com/docs/matrix.html#agent-codex-cli) · [Claude Code](https://rapidmlx.com/docs/matrix.html#agent-claude-code) · [OpenCode](https://rapidmlx.com/docs/matrix.html#agent-opencode) · [Qwen Code](https://rapidmlx.com/docs/matrix.html#agent-qwen-code) · [OpenHands](https://rapidmlx.com/docs/matrix.html#agent-openhands) · [Hermes](https://rapidmlx.com/docs/matrix.html#agent-hermes-agent) · [Aider](https://rapidmlx.com/docs/matrix.html#agent-aider) · [Kilo Code](https://rapidmlx.com/docs/matrix.html#agent-kilo-code) · [DeepSeek Harness](https://rapidmlx.com/docs/matrix.html#agent-deepseek-harness) · [Copilot](https://rapidmlx.com/docs/matrix.html#agent-copilot) · [Droid](https://rapidmlx.com/docs/matrix.html#agent-droid) · [Kimi Code](https://rapidmlx.com/docs/matrix.html#agent-kimi-code)
 
+For OpenHands CLI 1.x, run `rapid-mlx agents openhands --setup`, export the printed values, then use `openhands --override-with-envs`. The flag is required for the CLI to use those values; see the [OpenHands guide](docs/agents/openhands.md). The published matrix's OpenHands cells use a pinned 0.9.0 Docker image.
+
+For Aider, `rapid-mlx agents aider --setup` prints `OPENAI_API_BASE`, `OPENAI_API_KEY`, and an `openai/`-prefixed `AIDER_MODEL`; see the [Aider guide](docs/agents/aider.md). DeepSeek Harness uses the [Cordis patch setup](docs/agents/deepseek-harness.md).
+
 ---
 
 ## Latest Large-Model Benchmarks

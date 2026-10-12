@@ -1,47 +1,49 @@
 # OpenHands
 
-Point [OpenHands](https://github.com/All-Hands-AI/OpenHands) (formerly
-OpenDevin) at a local rapid-mlx server. OpenHands drives its `CodeActAgent`
-inside a Docker sandbox and reaches the model over the **OpenAI-compatible
-chat completions API** (`POST /v1/chat/completions`) via LiteLLM.
+Point [OpenHands CLI](https://github.com/OpenHands/OpenHands-CLI) at a local
+rapid-mlx server. OpenHands 1.x reaches the model over the **OpenAI-compatible
+chat completions API** (`POST /v1/chat/completions`) via LiteLLM. The CLI can
+run local tools without Docker; its full GUI server uses Docker. The current
+CLI sends OpenAI-shaped tool calls for file and shell actions.
 
-Unlike the OpenAI-tool-calling agents, OpenHands uses a **text-action
-format** — the CodeActAgent parses the model's plaintext reply for
-`<execute_bash>` / `<execute_ipython>` action tags and file edits, so the
-correctness signal is "did OpenHands rewrite the file", not "did tool_calls
-fire". Verified via the real Docker E2E harness
-(`tests/integrations/test_agents_matrix.py::TestOpenHands`, which shells out
-to `test_openhands.sh`). See the [support matrix](matrix.md) for status.
+The existing [support matrix](matrix.md) exercises a pinned OpenHands 0.9.0
+Docker image with its older CodeAct text-action format. Those historical
+results do not verify the current 1.x CLI. Use `rapid-mlx agents openhands
+--test` to exercise the installed CLI against your running model.
 
 ## How OpenHands reaches rapid-mlx
 
 | Item | Value |
 |---|---|
-| Wire | `POST /v1/chat/completions` (via LiteLLM, inside Docker) |
-| Base URL | `http://localhost:8000/v1` (host) — the sandbox rewrites the host to `host.docker.internal` internally |
-| Config | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` env vars |
+| Wire | `POST /v1/chat/completions` (via LiteLLM) |
+| Base URL | `http://localhost:8000/v1` for the host CLI |
+| Config | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` env vars, applied with `--override-with-envs`; saved CLI settings live at `~/.openhands/agent_settings.json` |
 | Auto-setup | `rapid-mlx agents openhands --setup` |
-| Prereq | Docker daemon running (sandbox runtime) |
+| Prereq | Python 3.12+ and `uv` for the CLI; Docker for `openhands serve` |
 
 ## TL;DR
 
 ```bash
-# 1. Install OpenHands (needs Docker for the sandbox)
-pip install openhands
+# 1. Install the current OpenHands CLI
+uv tool install openhands --python 3.12
 
 # 2. Start rapid-mlx
 rapid-mlx serve qwen3.6-35b-4bit --port 8000
 
-# 3. Export the LiteLLM env vars OpenHands reads
+# 3. Run setup and paste its three export lines into this shell
+rapid-mlx agents openhands --setup
 export LLM_BASE_URL=http://localhost:8000/v1
 export LLM_API_KEY=not-needed
-export LLM_MODEL=qwen3.6-35b-4bit
+export LLM_MODEL=openai/qwen3.6-35b-4bit
 
-# 4. Run OpenHands (or `rapid-mlx agents openhands --setup`)
-python -m openhands.core.main -t "Fix the bug in add.py"
+# 4. Apply those env vars explicitly (required by OpenHands 1.x)
+openhands --override-with-envs --headless --always-approve -t "Fix the bug in add.py"
 ```
 
 If you started the server with `--api-key`, set `LLM_API_KEY` to that key.
+Without `--override-with-envs`, OpenHands ignores these exports and uses its
+saved settings instead. `rapid-mlx agents openhands --test` now drives the
+current CLI in a temporary HOME.
 
 ## Per-family setup
 
@@ -52,7 +54,7 @@ alias; the parser column documents what the matrix test exercises.
 
 ```bash
 rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB
-export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=qwen3.6-35b-4bit
+export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=openai/qwen3.6-35b-4bit
 ```
 
 - tool-call parser: `qwen3_coder_xml` · reasoning parser: `qwen3`
@@ -62,7 +64,7 @@ export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=qw
 
 ```bash
 rapid-mlx serve gemma-4-12b-4bit --port 8000   # ~7 GB at 4-bit
-export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=gemma-4-12b-4bit
+export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=openai/gemma-4-12b-4bit
 ```
 
 - tool-call parser: `gemma4` · reasoning parser: `gemma4`
@@ -72,7 +74,7 @@ export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=ge
 
 ```bash
 rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
-export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=gpt-oss-20b
+export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=openai/gpt-oss-20b
 ```
 
 - tool-call parser: `harmony` · reasoning parser: `harmony`
@@ -91,13 +93,10 @@ export LLM_BASE_URL=http://localhost:8000/v1 LLM_API_KEY=not-needed LLM_MODEL=gp
 
 ## Troubleshooting
 
-- **"Cannot connect to Docker daemon"** — OpenHands needs Docker for its
-  sandbox runtime. Start Docker Desktop / `dockerd` first.
-- **Small local models struggle** — the CodeActAgent text-action format is
-  demanding; prefer the 27–35B tier (`qwen3.6-35b-4bit`).
-- **First cold-cache run is slow** — OpenHands pulls two sandbox images
-  (~3.4 GB + ~9 GB uncompressed) and builds a runtime layer; subsequent runs
-  reuse the hash-tagged image (30–75 s per task).
+- **Small local models struggle** — OpenHands sends a large system prompt and
+  multiple tool definitions; prefer a larger model for file edits.
+- **Full GUI server needs Docker** — start Docker Desktop / `dockerd` before
+  running `openhands serve`. The host CLI quick start above does not need it.
 
 ## See also
 

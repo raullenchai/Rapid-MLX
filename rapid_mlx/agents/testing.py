@@ -998,6 +998,16 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+    # OpenHands 1.x resolves these explicit paths before HOME and cwd. An
+    # inherited value would let an auto-approved test read the operator's
+    # settings/MCP servers or run tools in their real workspace.
+    if Path(binary_path).name == "openhands" and cwd:
+        persistence_dir = str(Path(child_env["HOME"]) / ".openhands")
+        child_env["OPENHANDS_PERSISTENCE_DIR"] = persistence_dir
+        child_env["OPENHANDS_CONVERSATIONS_DIR"] = str(
+            Path(persistence_dir) / "conversations"
+        )
+        child_env["OPENHANDS_WORK_DIR"] = cwd
     # OpenCode 2.x resolves its workspace from PWD before falling back to the
     # process cwd. subprocess.run(cwd=...) alone therefore sends its tools to
     # the caller's repo instead of the fresh E2E workspace.
