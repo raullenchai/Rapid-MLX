@@ -325,6 +325,10 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
                 model_dir=target,
             )
+            if profile.model_type == "nemotron_h":
+                from .tensorfold_prefix_disk import install_prefix_disk
+
+                install_prefix_disk(app, target, drafter)
             backend = cls(app)
             hook = getattr(package, "setup", None)
             if hook is not None:
