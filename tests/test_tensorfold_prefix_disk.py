@@ -553,3 +553,36 @@ for i in range(12):
     assert len(list(disk.directory.glob("*.sha256"))) == len(files)
     assert all(disk.load(p) is not None for p in files)
     assert not list(disk.directory.glob(".stage-*"))
+
+
+def test_writer_removes_kv_capacity_beyond_system_prefix(tmp_path, runtime):
+    disk, item = make_disk(tmp_path, runtime)
+    mx, _ = runtime
+    item.keys = mx.concatenate([item.keys, mx.full((1, 2, 3, 8), 99.0)], axis=2)
+    item.values = mx.concatenate([item.values, mx.full((1, 2, 3, 8), 99.0)], axis=2)
+    path = stored(disk, item)
+    tokens, restored = disk.load(path)
+    assert tokens == [1, 2, 3, 4]
+    assert restored[0].keys.shape == (1, 2, 4, 8)
+    assert restored[0].values.shape == (1, 2, 4, 8)
+    assert mx.all(restored[0].keys == 1).item()
+    assert mx.all(restored[0].values == 2).item()
+    # Trimming a serialization copy must not mutate the live inference cache.
+    assert item.keys.shape[2] == item.values.shape[2] == 7
+    assert item.offset == 4
+
+
+def test_write_validation_does_not_allocate_another_mlx_cache(
+    tmp_path, runtime, monkeypatch
+):
+    disk, item = make_disk(tmp_path, runtime)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("writer allocated a second MLX cache")
+
+    import numpy as np
+
+    with monkeypatch.context() as patch:
+        patch.setattr(np, "frombuffer", unexpected)
+        path = stored(disk, item)
+    assert disk.load(path) is not None

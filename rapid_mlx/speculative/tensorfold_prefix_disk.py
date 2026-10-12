@@ -184,7 +184,7 @@ def _read_file(path: Path, limit: int) -> bytes:
             or info.st_size <= 0
         ):
             raise ValueError("unsafe snapshot file")
-        data = stream.read(limit + 1)
+        data = stream.read(info.st_size + 1)
         if len(data) != info.st_size or len(data) > limit:
             raise ValueError("snapshot changed or oversized")
         return data
@@ -250,7 +250,9 @@ class PrefixDisk:
             header, _ = _header(stream, info.st_size)
         return header["__metadata__"]
 
-    def _decode(self, data: bytes) -> tuple[list[int], list[Any]]:
+    def _decode(
+        self, data: bytes, *, validate_only: bool = False
+    ) -> tuple[list[int], list[Any]]:
         """Validate all tensor geometry before constructing any MLX array.
 
         Converting from verified bytes avoids a pathname/checksum race and keeps
@@ -365,6 +367,8 @@ class PrefixDisk:
             cursor = end
         if start + cursor != len(data):
             raise ValueError("trailing tensor bytes")
+        if validate_only:
+            return tokens, []
         for key, (item, name, slot, live, _) in specs.items():
             spec = header[key]
             _, numpy_dtype = DTYPES[str(live.dtype).removeprefix("mlx.core.")]
@@ -474,13 +478,33 @@ class PrefixDisk:
                 with tempfile.TemporaryDirectory(
                     prefix=".stage-", dir=self.directory
                 ) as staging:
-                    staged = save_snapshot(Path(staging), self.model_id, tokens, cache)
+                    # The pinned writer stores allocated KV capacity, not just
+                    # valid rows. Serialize copies sliced at the system boundary;
+                    # spare rows must never carry later prompt/reply state.
+                    snapshot = []
+                    for live in cache:
+                        if not getattr(live, "stored", True):
+                            continue
+                        item = copy.copy(live)
+                        if hasattr(item, "keys") and hasattr(item, "values"):
+                            if item.offset != len(tokens):
+                                raise ValueError(
+                                    "live cache is not at the system boundary"
+                                )
+                            item.keys = item.keys[..., : len(tokens), :]
+                            item.values = item.values[..., : len(tokens), :]
+                        snapshot.append(item)
+                    staged = save_snapshot(
+                        Path(staging), self.model_id, tokens, snapshot
+                    )
                     if staged is None or staged.stat().st_size + 64 > estimate:
                         return
                     # Also validate our writer's actual output against the live
                     # schema. Unqualified runtime cache changes cannot publish.
                     data = _read_file(staged, self.budget)
-                    self._decode(data)
+                    # Validate geometry without allocating a second MLX cache
+                    # beside the live inference state during persistence.
+                    self._decode(data, validate_only=True)
                     os.chmod(staged, 0o600)
                     with staged.open("rb") as stream:
                         os.fsync(stream.fileno())
