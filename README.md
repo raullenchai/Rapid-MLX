@@ -12,6 +12,23 @@
   <em>Decode speed, Qwen3.5-9B 4-bit on a Mac mini M4 Pro, greedy decoding, both servers at their defaults — <a href="https://rapidmlx.com/compare/mlx-lm">per-task results, method, and raw data</a>.</em>
 </p>
 
+**Faster decode than oMLX and LM Studio on Qwen3.5-9B, Qwen3.8-27B, and Qwen3.6-35B**
+
+Measured speed on a Mac Studio M5 Max (36 GB) — Rapid-MLX 0.16.1 vs
+oMLX 0.7.0 and LM Studio, using the same base 4-bit weights for each model.
+
+| Model | Metric | Rapid-MLX | oMLX | LM Studio |
+|---|---|---:|---:|---:|
+| Qwen3.5-9B | Decode (tok/s) | **115.5** | 77.9 | 81.0 |
+| Qwen3.5-9B | 4 streams (tok/s) | **248.2** | 224.6 | 230.0 |
+| Qwen3.8-27B | Decode (tok/s) | **37.9** | 25.3 | 26.0 |
+| Qwen3.8-27B | 4 streams (tok/s) | **82.8** | 75.3 | 69.7 |
+| Qwen3.6-35B | Decode (tok/s) | **173.4** | 145.8 | 124.5 |
+| Qwen3.6-35B | 4 streams (tok/s) | **293.9** | 281.9 | 265.6 |
+| Qwen3.6-35B | 2K-prompt first token (s, lower is better) | **0.55** | 1.14 | 1.49 |
+
+<sub>Single run per engine; default serving modes with Rapid's MTP text mode, oMLX's SSD cache, and LM Studio's configured context and four parallel slots. [Full results and raw data](https://rapidmlx.com/compare).</sub>
+
 <p align="center">
   <a href="https://pypi.org/project/rapid-mlx/"><img src="https://img.shields.io/pypi/v/rapid-mlx?color=blue&label=PyPI" alt="PyPI"></a>
   <a href="https://formulae.brew.sh/formula/rapid-mlx"><img src="https://img.shields.io/badge/Homebrew-core-orange?logo=homebrew" alt="Homebrew core"></a>
@@ -44,8 +61,7 @@
 ## How it compares
 
 Feature facts only, taken mostly from each project's own documentation as of
-2026-09-26 (sources below). For speed, see the measured results below the
-table.
+2026-09-26 (sources below). For speed, see the measured results above.
 
 | | Rapid-MLX | [oMLX](https://github.com/jundot/omlx) | [Ollama](https://github.com/ollama/ollama) | [LM Studio](https://lmstudio.ai) | [mlx-lm](https://github.com/ml-explore/mlx-lm) (`mlx_lm.server`) |
 |---|---|---|---|---|---|
@@ -64,24 +80,7 @@ LM Studio [Anthropic compatibility](https://lmstudio.ai/docs/developer/anthropic
 Ollama prompt-cache reuse is from our [benchmark notes](https://rapidmlx.com/blog/assets/engine-bench-2026-08/results.json).
 — = not verified for this table. Spot an error? Please [open an issue](https://github.com/raullenchai/Rapid-MLX/issues).</sub>
 
-**Measured speed vs mlx-lm:** Rapid-MLX 0.15.6 against mlx-lm 0.32.0
-(`mlx_lm.server`) on a 48 GB M4 Pro Mac mini, Qwen3.5-9B 4-bit, same weights,
-greedy decoding, both at defaults (measured 2026-10-04). Decode was 1.50× at
-the median of 18 streaming tasks (lowest 1.28×) and up to 4.27× on a
-whole-file code edit (46.4 → 198.4 tok/s; 4.00× against `mlx_lm.generate`,
-hence "4×"). The gain is speculative decoding (MTP plus prompt lookup), on by
-default for this model; a long-prompt agent turn was close to a tie (1.05× end
-to end), and Qwen3.5-4B, where it is off by default, was 1.12× at the median
-([per-task results and raw data](https://rapidmlx.com/compare/mlx-lm)).
-
-**Measured speed vs Ollama** (published 2026-08-11): at 8 concurrent streams on
-Qwen3.6-35B-A3B, aggregate decode was 3.0× Ollama's, 82.9 vs 27.2 tok/s
-(32 GB M2 Pro Mac mini, Rapid-MLX 0.12.11 vs Ollama 0.32.7). Including
-prefill, whole-batch throughput was 1.6×; single-stream decode was about 1.5×;
-a dense 12B model was no faster; and llama.cpp-family engines prefilled cold
-prompts faster ([method and raw data](https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark)).
-
-**Head-to-head with oMLX and Ollama** on the same Macs (18 GB and 48 GB) — decode, agent sessions, restart, concurrency, and where Rapid-MLX is slower, with raw data: [rapidmlx.com/compare](https://rapidmlx.com/compare).
+vs Apple's mlx-lm: per-task results and raw data at https://rapidmlx.com/compare/mlx-lm.
 
 ---
 
