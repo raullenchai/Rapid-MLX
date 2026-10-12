@@ -1045,14 +1045,14 @@ def _should_start_qwen36_native_text_cache(
 
 
 def _supports_qwen38_dense_native_text_cache(language_model: Any) -> bool:
-    """Qualify the dense 27B geometry without enabling unknown hybrid models.
+    """Qualify known dense Qwen3.5 geometries without enabling unknown models.
 
     Reuse the shared-weight/cache-namespace bridge already qualified for the
     MoE backbone. Media retains the serialized vision scheduler and its cache
     snapshots; only text uses native batching. Marketing versions share this
     architecture, so eligibility depends on loaded geometry, not repo names.
     """
-    expected = {
+    expected_27b = {
         "model_type": "qwen3_5_text",
         "hidden_size": 5120,
         "intermediate_size": 17408,
@@ -1067,12 +1067,30 @@ def _supports_qwen38_dense_native_text_cache(language_model: Any) -> bool:
         "linear_key_head_dim": 128,
         "linear_value_head_dim": 128,
     }
+    expected_9b = {
+        **expected_27b,
+        "hidden_size": 4096,
+        "intermediate_size": 12288,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 16,
+        "linear_num_value_heads": 32,
+    }
     try:
         args = language_model.args
-        if any(getattr(args, key, None) != value for key, value in expected.items()):
+        geometry = next(
+            (
+                expected
+                for expected in (expected_27b, expected_9b)
+                if all(
+                    getattr(args, key, None) == value for key, value in expected.items()
+                )
+            ),
+            None,
+        )
+        if geometry is None:
             return False
         layers = list(language_model.layers)
-        return len(layers) == 64 and all(
+        return len(layers) == geometry["num_hidden_layers"] and all(
             layer.is_linear is ((index + 1) % 4 != 0)
             for index, layer in enumerate(layers)
         )

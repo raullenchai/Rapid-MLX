@@ -823,11 +823,43 @@ _DENSE_27B_GEOMETRY = {
     "linear_value_head_dim": 128,
 }
 
+_DENSE_9B_GEOMETRY = {
+    **_DENSE_27B_GEOMETRY,
+    "hidden_size": 4096,
+    "intermediate_size": 12288,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 16,
+    "linear_num_value_heads": 32,
+}
+
 
 def _dense_27b_model():
     return SimpleNamespace(
         args=SimpleNamespace(**_DENSE_27B_GEOMETRY),
         layers=[SimpleNamespace(is_linear=(i + 1) % 4 != 0) for i in range(64)],
+    )
+
+
+def _dense_9b_model():
+    return SimpleNamespace(
+        args=SimpleNamespace(**_DENSE_9B_GEOMETRY),
+        layers=[SimpleNamespace(is_linear=(i + 1) % 4 != 0) for i in range(32)],
+    )
+
+
+def test_dense_9b_uses_shared_weight_text_scheduler():
+    model = _dense_9b_model()
+    assert _supports_qwen38_dense_native_text_cache(model)
+    assert _should_start_qwen36_native_text_cache(
+        model, config_model_type="qwen3_5", arrays_cache_compat=True, spec_decode="none"
+    )
+    wrapper = Qwen36NativeCacheTextWrapper(model)
+    assert wrapper.layers is model.layers
+    caches = wrapper.make_cache()
+    assert len(caches) == 32
+    assert all(
+        isinstance(c, ArraysCache if i % 4 != 3 else KVCache)
+        for i, c in enumerate(caches)
     )
 
 
