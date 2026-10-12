@@ -941,6 +941,7 @@ def test_background_slow_fsync_drops_busy_and_close_is_bounded(
     assert accepted == [True]
     assert time.monotonic() - started < 0.2
     assert blocked.wait(2)
+    assert disk.reserved_bytes > 0
     assert not disk.submit([1, 2, 3, 4], [item])
     entries = []
     scheduler = SimpleNamespace(
@@ -956,6 +957,7 @@ def test_background_slow_fsync_drops_busy_and_close_is_bounded(
     assert time.monotonic() - started < 0.2
     release.set()
     assert disk.wait(5)
+    assert disk.reserved_bytes == 0
     assert not list(disk.directory.glob("*.safetensors"))
 
 
@@ -1021,3 +1023,14 @@ def test_install_real_pinned_qualification_identity_and_engine(
     assert app._rapid_prefix_disk.wait(5)
     assert app._rapid_prefix_disk.load(next(disk.directory.glob("*.safetensors")))
     app.close()
+
+
+def test_copy_admission_refuses_before_materialization(tmp_path, runtime, monkeypatch):
+    disk, item = make_disk(tmp_path, runtime)
+    admitted = []
+    memory = SimpleNamespace(allow_load=lambda size: admitted.append(size) or False)
+    monkeypatch.setattr(disk, "_capture", lambda *a: pytest.fail("unadmitted copy"))
+    assert not disk.submit([1, 2, 3, 4], [item], memory=memory)
+    assert admitted and admitted[0] >= 3 * (item.keys.nbytes + item.values.nbytes)
+    assert disk.reserved_bytes == 0
+    assert not disk.directory.exists()
