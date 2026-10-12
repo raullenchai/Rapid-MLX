@@ -973,8 +973,6 @@ async def lifespan(app: FastAPI):
                 ),
             )
     await _residency_manager.start()
-    if _primary_model_lifecycle is not None:
-        await _primary_model_lifecycle.start()
 
     # Tool-grammar warmup (#558): the FIRST grammar-constrained tool call
     # otherwise pays a one-time ~1s llguidance ``LLTokenizer`` build on the
@@ -988,6 +986,11 @@ async def lifespan(app: FastAPI):
             await _warmup_tool_grammar(_engine)
         except Exception as _e:
             logger.debug(f"Tool-grammar warmup failed (non-fatal): {_e}")
+    # An already-loaded primary can reach this warmup without going through
+    # ensure_loaded(). Do not let its idle monitor unload the tokenizer while
+    # the off-thread grammar build is still using it.
+    if _primary_model_lifecycle is not None:
+        await _primary_model_lifecycle.start()
 
     # Prefix-cache load is deferred OFF the readiness path (#1359 follow-up
     # #1350): a large persisted cache used to block here — between engine

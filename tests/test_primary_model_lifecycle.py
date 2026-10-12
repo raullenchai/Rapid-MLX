@@ -1194,6 +1194,67 @@ async def test_lifespan_primary_lifecycle_modes(
 
 
 @pytest.mark.asyncio
+async def test_already_loaded_primary_finishes_grammar_warmup_before_idle_monitor(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import audio, video
+    from rapid_mlx.runtime import audio_worker
+
+    engine = FakeEngine(loaded=True)
+    manager = SimpleNamespace(
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+        contains=Mock(return_value=False),
+        register_primary=Mock(),
+        set_primary_lifecycle_state=Mock(),
+    )
+    cfg = reset_config()
+    cfg.bind_host = None
+    cfg.bind_port = None
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(
+        server, "_model_registry", SimpleNamespace(list_entries=Mock(return_value=[]))
+    )
+    monkeypatch.setattr(server, "_residency_manager", manager)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_primary_lazy_load", False)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 1.0)
+    monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", AsyncMock())
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", AsyncMock())
+    monkeypatch.setattr(audio, "audio_routes_should_register", Mock(return_value=False))
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", AsyncMock())
+    monkeypatch.setattr(video, "start_video_jobs", Mock())
+    monkeypatch.setattr(video, "shutdown_video_jobs", AsyncMock())
+    monkeypatch.setattr(audio_worker, "bind_audio_worker", Mock())
+
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    monitor_start = AsyncMock()
+
+    async def slow_grammar_warmup(_engine):
+        entered.set()
+        await resume.wait()
+
+    monkeypatch.setattr(server, "_warmup_tool_grammar", slow_grammar_warmup)
+    monkeypatch.setattr(PrimaryModelLifecycle, "start", monitor_start)
+
+    lifespan = server.lifespan(server.app)
+    starting = asyncio.create_task(lifespan.__anext__())
+    await asyncio.wait_for(entered.wait(), 2)
+    assert monitor_start.await_count == 0
+    resume.set()
+    await starting
+    monitor_start.assert_awaited_once()
+    with pytest.raises(StopAsyncIteration):
+        await lifespan.__anext__()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lazy_load", [False, True], ids=["eager", "lazy"])
 async def test_real_lifespan_emits_model_served_after_completed_load_once(
     monkeypatch, lazy_load

@@ -409,7 +409,9 @@ class PrimaryModelLifecycle:
                         "Primary model pre-unload hook failed; continuing unload"
                     )
 
-                stop = getattr(self.engine, "stop", None)
+                stop = getattr(self.engine, "idle_stop", None)
+                if not callable(stop):
+                    stop = getattr(self.engine, "stop", None)
                 if not callable(stop):
                     self._set_state("ready")
                     self.touch()

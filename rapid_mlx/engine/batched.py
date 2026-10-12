@@ -23,6 +23,7 @@ import time
 import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -41,6 +42,7 @@ from ..utils.chat_template import apply_chat_template as shared_apply_chat_templ
 from .base import BaseEngine, GenerationOutput
 
 ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
+TOOL_GRAMMAR_DRAIN_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -1251,6 +1253,45 @@ class BatchedEngine(BaseEngine):
         self._guided_abort_events: dict[str, threading.Event] = {}
         self._guided_owner_tasks: dict[str, asyncio.Task] = {}
         self._guided_stopping = False
+        self._tool_grammar_futures_lock = threading.Lock()
+        self._tool_grammar_futures: set[Future] = set()
+
+    def track_tool_grammar_build(self, future: Future) -> None:
+        """Keep a shielded grammar build visible to model teardown."""
+        with self._tool_grammar_futures_lock:
+            self._tool_grammar_futures.add(future)
+
+        def forget(done: Future) -> None:
+            with self._tool_grammar_futures_lock:
+                self._tool_grammar_futures.discard(done)
+
+        future.add_done_callback(forget)
+
+    async def _drain_tool_grammar_builds(self) -> tuple[Future, ...]:
+        """Bound unload waiting without cancelling native compilation/admission."""
+        lock = getattr(self, "_tool_grammar_futures_lock", None)
+        if lock is None:
+            return ()
+        deadline = asyncio.get_running_loop().time() + TOOL_GRAMMAR_DRAIN_SECONDS
+        while True:
+            with lock:
+                pending = tuple(self._tool_grammar_futures)
+            if not pending:
+                return ()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return pending
+            # wait_for would cancel wrapped futures and release compile admission
+            # while a native build still runs. Keep the group alive on timeout;
+            # return_exceptions also consumes errors from late completions.
+            group = asyncio.gather(
+                *(asyncio.wrap_future(future) for future in pending),
+                return_exceptions=True,
+            )
+            done, _ = await asyncio.wait((group,), timeout=remaining)
+            if not done:
+                with lock:
+                    return tuple(self._tool_grammar_futures)
 
     def _bind_prompt_host_cache(self, async_engine: Any) -> None:
         """Share the host cache with a concrete scheduler when one exists."""
@@ -1797,11 +1838,12 @@ class BatchedEngine(BaseEngine):
         # "There is no Stream(gpu, N) in current thread" on the first request.
         # The same executor is then handed to MLLMScheduler so step calls
         # land on the model-owning thread.
-        self._model_load_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="mllm-step",
-            initializer=_init_mlx_step_thread,
-        )
+        if self._model_load_executor is None:
+            self._model_load_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="mllm-step",
+                initializer=_init_mlx_step_thread,
+            )
 
         def _load_mllm() -> MLXMultimodalLM:
             instance = MLXMultimodalLM(
@@ -1809,6 +1851,18 @@ class BatchedEngine(BaseEngine):
                 trust_remote_code=self._trust_remote_code,
             )
             instance.load()
+            # Model constructors create random, lazy placeholder weights
+            # before checkpoint tensors replace them. The process-global RNG
+            # key otherwise retains their Split/RandomBits graph across every
+            # idle reload, even after the model and Metal buffers are gone.
+            try:
+                import mlx.core as mx
+            except ModuleNotFoundError as exc:
+                if exc.name != "mlx":
+                    raise
+                # CPU-only tests substitute a fake loader without MLX.
+            else:
+                mx.eval(mx.random.state)
             return instance
 
         # Reason string for the text-only degrade, set only when we intend to
@@ -2522,7 +2576,11 @@ class BatchedEngine(BaseEngine):
             raise RuntimeError("model worker is not running")
         return executor.submit(func, *args, **kwargs).result()
 
-    async def stop(self) -> None:
+    async def idle_stop(self) -> None:
+        """Unload weights while retaining the MLLM model-owning stream thread."""
+        await self.stop(preserve_model_worker=self._is_mllm)
+
+    async def stop(self, *, preserve_model_worker: bool = False) -> None:
         """Stop the engine and cleanup resources."""
         # Scheduler shutdown queues work on the same single model executor
         # used by guided decoding. Signal guided jobs first so a long schema
@@ -2540,13 +2598,46 @@ class BatchedEngine(BaseEngine):
             await self._mllm_scheduler.stop()
             self._mllm_scheduler = None
 
-        if self._is_mllm and self._model_load_executor is not None:
+        late_grammar_builds = await self._drain_tool_grammar_builds()
+
+        # Startup's tool-grammar warmup pins a native matcher template in a
+        # process-wide cache. Release this model's templates before dropping
+        # its tokenizer; the automaton is much larger than the grammar string.
+        from ..api.tool_grammar import release_model_matchers
+
+        if self._is_mllm:
+            processor = getattr(self, "_processor", None)
+            tokenizer = (
+                getattr(processor, "tokenizer", processor)
+                if processor is not None
+                else None
+            )
+        else:
+            tokenizer = getattr(self, "_tokenizer", None)
+        if tokenizer is not None:
+            # A native compiler cannot be killed safely. Clear cached state now
+            # and again after each unfinished build completes, including queued
+            # work that has not reached matcher construction yet. Its existing
+            # future retains admission until genuine completion.
+            def release_after_build(_done: Future, tokenizer: Any = tokenizer) -> None:
+                release_model_matchers(tokenizer)
+
+            for future in late_grammar_builds:
+                future.add_done_callback(release_after_build)
+            release_model_matchers(tokenizer)
+
+        if (
+            self._is_mllm
+            and self._model_load_executor is not None
+            and not preserve_model_worker
+        ):
             self._model_load_executor.shutdown(wait=False)
 
-        # _engine.stop() already shutdown the shared mlx-step executor
-        # (handed off in start()). Drop our reference so __del__ doesn't
-        # double-shutdown.
-        self._model_load_executor = None
+        # The dual text engine borrows this worker and never shuts it down.
+        # Idle unload preserves it; final MLLM shutdown above releases it.
+        # Text-only engines own and shut down their separate step executor.
+        if not preserve_model_worker or not self._is_mllm:
+            self._model_load_executor = None
         self._start_time = None
 
         self._model = None
