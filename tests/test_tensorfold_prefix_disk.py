@@ -833,7 +833,7 @@ def test_interim_hf_identity_snapshot_is_a_miss(tmp_path, runtime):
     assert fresh.load(path) is None
 
 
-def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime):
+def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime, monkeypatch):
     import types
 
     from tensorfold.engine.family_prefill import FamilyPrefill
@@ -894,6 +894,15 @@ def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime):
     assert len(entries) == 1
     entries.clear()
     disk.restore(scheduler, [7] * 512 + [998, 4])
+    assert entries == []
+    original = disk.load
+
+    def replaced(path, **kwargs):
+        rewrite(path, runtime, lambda meta, arrays: meta.update(lookahead="998"))
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(disk, "load", replaced)
+    disk.restore(scheduler, prompt)
     assert entries == []
 
 

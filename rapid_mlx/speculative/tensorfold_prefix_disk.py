@@ -45,6 +45,7 @@ HEADER_LIMIT = 1024**2
 QUALIFIED = ("0.6.6", "cb2ebf0540f42604e2759b2ddef497861e928248", "0.32.3")
 SEAMS = {
     "server/scheduler.py": "07ae6d1b214789a450163b54c8e734d64b20be324147938f9c9a69eee453ad2d",
+    "server/prompt_memory.py": "c63a3ed69c75cac641171f6242d37b8804870e3e7e348ddf61b4ce92f58b4248",
     "server/prompt_fill.py": "f9e5fd8fef71885505ded377405e9d6e428ae063db4882024d856ff89ba5b079",
     "server/app.py": "3f47ab553c35f72001127ea89801f567885a58ca6bfa65d2ae40498041d7b5e3",
     "server/checkpoints.py": "f1868970b7c93f365c212bf6c6591774486df5e6a1adeb0e9b373a5afdbd2bbb",
@@ -258,6 +259,8 @@ def _qualified(scheduler: Any) -> bool:
         tuple(inspect.signature(scheduler._persist).parameters) == ("tokens", "cache")
         and tuple(inspect.signature(scheduler._read_disk_block).parameters)
         == ("prompt", "usable")
+        and tuple(inspect.signature(scheduler._keep_checkpoints).parameters)
+        == ("job", "shared_at")
         and scheduler.snapshot_dir is None
         and scheduler.session_dir is None
         and scheduler.disk_blocks is None
@@ -363,7 +366,7 @@ class PrefixDisk:
         return header["__metadata__"]
 
     def _decode(
-        self, data: bytes, *, validate_only: bool = False
+        self, data: bytes, *, validate_only: bool = False, prompt=None
     ) -> tuple[list[int], list[Any]]:
         """Validate all tensor geometry before constructing any MLX array.
 
@@ -392,6 +395,17 @@ class PrefixDisk:
             lookahead = _json(meta["lookahead"])
             if type(lookahead) is not int or lookahead < 0:
                 raise ValueError("missing MTP lookahead")
+        if prompt is not None and (
+            prompt[: len(tokens)] != tokens
+            or (
+                "lookahead" in meta
+                and (
+                    len(tokens) >= len(prompt)
+                    or prompt[len(tokens)] != _json(meta["lookahead"])
+                )
+            )
+        ):
+            raise ValueError("verified snapshot lookahead does not match prompt")
         specs, restored = {}, []
         for i, (entry, (clsname, fields), template) in enumerate(
             zip(layers, self.schema, self.templates, strict=True)
@@ -509,7 +523,7 @@ class PrefixDisk:
         )
         return tokens, restored
 
-    def load(self, path: Path) -> tuple[list[int], list[Any]] | None:
+    def load(self, path: Path, *, prompt=None) -> tuple[list[int], list[Any]] | None:
         if disk_caches.disabled():
             return None
         try:
@@ -519,7 +533,7 @@ class PrefixDisk:
             checksum = _read_file(path.with_suffix(".sha256"), 64).decode("ascii")
             if checksum != hashlib.sha256(data).hexdigest():
                 return None
-            return self._decode(data)
+            return self._decode(data, prompt=prompt)
         except Exception:
             logger.debug("Unusable disk prefix; using normal prefill", exc_info=True)
             return None
@@ -810,7 +824,7 @@ class PrefixDisk:
                         stream.write(hashlib.sha256(data).hexdigest())
                         stream.flush()
                         os.fsync(stream.fileno())
-                    if self._closed.is_set():
+                    if self._closed.is_set() or disk_caches.disabled():
                         return
                     staged.replace(path)
                     checksum.replace(path.with_suffix(".sha256"))
@@ -876,7 +890,7 @@ class PrefixDisk:
                         3 * path.stat().st_size
                     ):
                         continue
-                    loaded = self.load(path)
+                    loaded = self.load(path, prompt=prompt)
                     if loaded is None:
                         continue
                     tokens, cache = loaded
