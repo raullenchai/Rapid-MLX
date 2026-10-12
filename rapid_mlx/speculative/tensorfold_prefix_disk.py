@@ -158,7 +158,9 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
             raise ValueError("unidentified MTP head")
     return json.dumps(
         {
-            "format": 4,
+            # Invalidate files from the interim HF identity implementation,
+            # before container/ancestor replacements were guarded as well.
+            "format": 5,
             "asset_policy": "hf-lfs-generation-or-content-unchanged-before-start",
             "target": _artifact(target),
             "drafter": _artifact(drafter),
@@ -211,6 +213,16 @@ def _assets_unchanged(
         roots.append(head)
     for root in roots:
         entries = [root.parent, root]
+        for ancestor in (root, *root.parents):
+            if ancestor.is_symlink():
+                entries.append(ancestor)
+            if ancestor.parent.name == "snapshots" and (
+                ancestor.parent.parent.name.startswith("models--")
+            ):
+                # A whole repo/blob-directory swap can preserve every child
+                # status time. Check the mutable HF containers as well.
+                repo = ancestor.parent.parent
+                entries.extend((repo, repo / "blobs"))
         if root.is_dir():
             entries.extend(root.rglob("*"))
         for entry in entries:

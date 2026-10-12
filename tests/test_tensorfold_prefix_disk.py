@@ -758,3 +758,59 @@ def test_asset_guard_rejects_indirect_blob_symlink(tmp_path):
     blob.symlink_to(other)
     app = SimpleNamespace(_model=SimpleNamespace(mtp=None))
     assert not _assets_unchanged(snapshot, None, app, time.time() + 60)
+
+
+def test_asset_guard_rejects_hf_blob_directory_swap(tmp_path):
+    import time
+
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _assets_unchanged
+
+    snapshot, blob, _ = hf_artifact(tmp_path)
+    replacement = blob.parent.with_name("replacement-blobs")
+    replacement.mkdir()
+    (replacement / blob.name).write_bytes(b"modified")
+    time.sleep(0.01)
+    started_at = time.time()
+    blob.parent.rename(blob.parent.with_name("original-blobs"))
+    replacement.rename(blob.parent)
+    app = SimpleNamespace(_model=SimpleNamespace(mtp=None))
+    assert not _assets_unchanged(snapshot, None, app, started_at)
+
+
+def test_asset_guard_rejects_replaced_parent_alias(tmp_path):
+    import time
+
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _assets_unchanged
+
+    for name in ("original", "replacement"):
+        model = tmp_path / name / "model"
+        model.mkdir(parents=True)
+        (model / "weights.safetensors").write_bytes(name.encode())
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path / "original")
+    time.sleep(0.01)
+    started_at = time.time()
+    alias.unlink()
+    alias.symlink_to(tmp_path / "replacement")
+    app = SimpleNamespace(_model=SimpleNamespace(mtp=None))
+    assert not _assets_unchanged(alias / "model", None, app, started_at)
+
+
+def test_interim_hf_identity_snapshot_is_a_miss(tmp_path, runtime):
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _identity
+
+    target, _, _ = hf_artifact(tmp_path)
+    app = SimpleNamespace(
+        _model=SimpleNamespace(mtp=None),
+        engine=SimpleNamespace(prefill_plan=SimpleNamespace(step=2048)),
+        tokenizer=SimpleNamespace(chat_template="template"),
+    )
+    current = _identity(target, None, app)
+    legacy = json.loads(current)
+    legacy["format"] = 4  # Interim policy lacked the container/ancestor guard.
+    disk, item = make_disk(tmp_path, runtime)
+    disk.model_id = json.dumps(legacy, sort_keys=True)
+    path = stored(disk, item)
+    assert disk.load(path) is not None
+    fresh = PrefixDisk(disk.directory, current, [item], disk.budget)
+    assert fresh.load(path) is None
