@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Durable adapter prefixes are optional, isolated and disposable."""
+
 import hashlib
 import json
 from pathlib import Path
@@ -9,7 +10,10 @@ import pytest
 
 from rapid_mlx import disk_caches
 from rapid_mlx.speculative.tensorfold_prefix_disk import (
-    BUDGET_ENV, ENABLE_ENV, PrefixDisk, install_prefix_disk,
+    BUDGET_ENV,
+    ENABLE_ENV,
+    PrefixDisk,
+    install_prefix_disk,
 )
 
 
@@ -18,6 +22,7 @@ def runtime():
     mx = pytest.importorskip("mlx.core")
     pytest.importorskip("tensorfold.engine.prefix_snapshots")
     from tensorfold.engine.alternating_kv import AlternatingKVCache
+
     return mx, AlternatingKVCache
 
 
@@ -32,11 +37,11 @@ def enabled(monkeypatch):
 
 def make_disk(tmp_path, runtime, budget=4 * 1024**2):
     mx, cls = runtime
-    template, item = cls(), cls()
+    item = cls()
     item.keys = mx.ones((1, 2, 4, 8))
     item.values = mx.full((1, 2, 4, 8), 2.0)
     item.offset = 4
-    disk = PrefixDisk(tmp_path / "prefixes", "qualified-model", [template], budget)
+    disk = PrefixDisk(tmp_path / "prefixes", "qualified-model", [item], budget)
     return disk, item
 
 
@@ -52,14 +57,16 @@ def rewrite(path, runtime, mutation):
     arrays, meta = mx.load(str(path), return_metadata=True)
     mutation(meta, arrays)
     mx.save_safetensors(str(path), arrays, metadata=meta)
-    path.with_suffix(".sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".sha256").write_text(
+        hashlib.sha256(path.read_bytes()).hexdigest()
+    )
 
 
 def test_real_snapshot_restart_roundtrip(tmp_path, runtime):
     disk, item = make_disk(tmp_path, runtime)
     path = stored(disk, item)
     # A new adapter instance knows only the live model's empty cache schema.
-    fresh = PrefixDisk(disk.directory, disk.model_id, [runtime[1]()], disk.budget)
+    fresh = PrefixDisk(disk.directory, disk.model_id, [item], disk.budget)
     tokens, cache = fresh.load(path)
     assert tokens == [1, 2, 3, 4]
     assert type(cache[0]) is type(item)
@@ -70,8 +77,21 @@ def test_real_snapshot_restart_roundtrip(tmp_path, runtime):
     assert cache[0].spare_keys is None
 
 
-@pytest.mark.parametrize("kind", ["checksum", "missing-checksum", "layers-json", "missing-layers",
-                                  "class", "fields", "offset", "extra-array", "wrong-model", "tokens"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "checksum",
+        "missing-checksum",
+        "layers-json",
+        "missing-layers",
+        "class",
+        "fields",
+        "offset",
+        "extra-array",
+        "wrong-model",
+        "tokens",
+    ],
+)
 def test_bad_snapshot_is_a_cache_miss(tmp_path, runtime, kind):
     disk, item = make_disk(tmp_path, runtime)
     path = stored(disk, item)
@@ -80,18 +100,28 @@ def test_bad_snapshot_is_a_cache_miss(tmp_path, runtime, kind):
     elif kind == "missing-checksum":
         path.with_suffix(".sha256").unlink()
     else:
+
         def corrupt(meta, arrays):
             layers = json.loads(meta["layers"])
-            if kind == "layers-json": meta["layers"] = "{"
-            elif kind == "missing-layers": del meta["layers"]
-            elif kind == "wrong-model": meta["model"] = "another-model"
-            elif kind == "tokens": meta["tokens"] = "[true, 2, 3, 4]"
-            elif kind == "extra-array": arrays["unknown"] = runtime[0].zeros((1,))
+            if kind == "layers-json":
+                meta["layers"] = "{"
+            elif kind == "missing-layers":
+                del meta["layers"]
+            elif kind == "wrong-model":
+                meta["model"] = "another-model"
+            elif kind == "tokens":
+                meta["tokens"] = "[true, 2, 3, 4]"
+            elif kind == "extra-array":
+                arrays["unknown"] = runtime[0].zeros((1,))
             else:
-                if kind == "class": layers[0]["class"] = "os:system"
-                elif kind == "fields": layers[0]["plain"]["__class__"] = "untrusted"
-                elif kind == "offset": layers[0]["plain"]["offset"] = 999
+                if kind == "class":
+                    layers[0]["class"] = "os:system"
+                elif kind == "fields":
+                    layers[0]["plain"]["__class__"] = "untrusted"
+                elif kind == "offset":
+                    layers[0]["plain"]["offset"] = 999
                 meta["layers"] = json.dumps(layers)
+
         rewrite(path, runtime, corrupt)
     assert disk.load(path) is None
 
@@ -99,9 +129,12 @@ def test_bad_snapshot_is_a_cache_miss(tmp_path, runtime, kind):
 @pytest.mark.parametrize("policy", ["cli", "env", "budget", "free-space"])
 def test_policy_prevents_writes(tmp_path, runtime, monkeypatch, policy):
     disk, item = make_disk(tmp_path, runtime)
-    if policy == "cli": disk_caches.configure(True)
-    elif policy == "env": monkeypatch.setenv(disk_caches.ENV_VAR, "1")
-    elif policy == "budget": disk.budget = 1
+    if policy == "cli":
+        disk_caches.configure(True)
+    elif policy == "env":
+        monkeypatch.setenv(disk_caches.ENV_VAR, "1")
+    elif policy == "budget":
+        disk.budget = 1
     else:
         monkeypatch.setattr("rapid_mlx.memory_cache._free_disk_bytes", lambda _: 0)
     disk.save([1, 2, 3, 4], [item])
@@ -119,9 +152,13 @@ def test_restore_requires_strict_matching_prefix(tmp_path, runtime):
     disk, item = make_disk(tmp_path, runtime)
     stored(disk, item)
     inserted = []
-    scheduler = SimpleNamespace(checkpoints=SimpleNamespace(
-        longest=lambda prompt, usable: 0,
-        insert=lambda *args, **kw: inserted.append(args)), prompt_memory=None)
+    scheduler = SimpleNamespace(
+        checkpoints=SimpleNamespace(
+            longest=lambda prompt, usable: 0,
+            insert=lambda *args, **kw: inserted.append(args),
+        ),
+        prompt_memory=None,
+    )
     disk.restore(scheduler, [1, 2, 3, 4])
     disk.restore(scheduler, [1, 2, 99, 4, 5])
     disk.restore(scheduler, [1, 2, 3, 4, 5], usable=lambda _: False)
@@ -138,3 +175,295 @@ def test_default_off_does_not_touch_app(monkeypatch):
 def test_bad_budget_disables_persistence(monkeypatch):
     monkeypatch.setenv(BUDGET_ENV, "not-an-integer")
     install_prefix_disk(object(), Path("unused"))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "shape",
+        "dtype",
+        "truncated",
+        "flipped",
+        "oversize",
+        "symlink",
+        "checksum-symlink",
+    ],
+)
+def test_unsafe_tensor_is_a_miss(tmp_path, runtime, kind):
+    disk, item = make_disk(tmp_path, runtime)
+    # Geometry must come from live state, independently of the file under test.
+    disk = PrefixDisk(disk.directory, disk.model_id, [item], disk.budget)
+    path = stored(disk, item)
+    if kind in ("shape", "dtype"):
+
+        def mutate(meta, arrays):
+            arrays["0.keys"] = (
+                runtime[0].ones((1, 3, 4, 8))
+                if kind == "shape"
+                else arrays["0.keys"].astype(runtime[0].int32)
+            )
+
+        rewrite(path, runtime, mutate)
+    elif kind == "truncated":
+        path.write_bytes(path.read_bytes()[:20])
+    elif kind == "flipped":
+        data = bytearray(path.read_bytes())
+        data[-1] ^= 1
+        path.write_bytes(data)
+    elif kind == "oversize":
+        with path.open("ab") as f:
+            f.truncate(disk.budget + 1)
+    else:
+        victim = path if kind == "symlink" else path.with_suffix(".sha256")
+        other = tmp_path / "outside"
+        victim.rename(other)
+        victim.symlink_to(other)
+    assert disk.load(path) is None
+
+
+def test_identity_changes_when_contents_change(tmp_path):
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _identity
+
+    target = tmp_path / "model"
+    target.mkdir()
+    weights = target / "weights.safetensors"
+    weights.write_bytes(b"original")
+    template = target / "chat_template.jinja"
+    template.write_text("first")
+    app = SimpleNamespace(
+        _model=SimpleNamespace(prefill_key="same"),
+        engine=SimpleNamespace(
+            prefill_plan=SimpleNamespace(step=2048, name="grid2048")
+        ),
+        tokenizer=SimpleNamespace(chat_template="first"),
+    )
+    first = _identity(target, None, app)
+    weights.write_bytes(b"replaced")
+    second = _identity(target, None, app)
+    assert first != second
+    template.write_text("second")
+    assert second != _identity(target, None, app)
+
+
+def test_row_state_geometry_and_bfloat16_roundtrip(tmp_path, runtime):
+    from tensorfold.families.nemotron_h.state_cache import RowStateCache
+
+    mx, _ = runtime
+    item = RowStateCache(2)
+    item.cache = [mx.ones((1, 3, 8), dtype=mx.bfloat16), mx.ones((1, 2, 4, 8))]
+    disk = PrefixDisk(tmp_path / "states", "model", [item], 4 * 1024**2)
+    path = stored(disk, item)
+    loaded = disk.load(path)
+    assert loaded is not None
+    assert mx.array_equal(loaded[1][0].cache[0], item.cache[0]).item()
+    assert loaded[1][0].cache[0].dtype == mx.bfloat16
+
+    def mutate(meta, arrays):
+        arrays["0._cache.1"] = mx.ones((1, 2, 4, 9))
+
+    rewrite(path, runtime, mutate)
+    assert disk.load(path) is None
+
+
+def test_unknown_live_class_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="live cache class"):
+        PrefixDisk(tmp_path, "model", [SimpleNamespace()], 1024)
+
+
+def test_global_disable_does_no_io(tmp_path, runtime, monkeypatch):
+    disk, item = make_disk(tmp_path, runtime)
+    path = stored(disk, item)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("disk I/O attempted while globally disabled")
+
+    monkeypatch.setattr(disk, "_files", unexpected)
+    monkeypatch.setattr(disk, "_private_directory", unexpected)
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_prefix_disk._read_file", unexpected
+    )
+    monkeypatch.setenv(disk_caches.ENV_VAR, "1")
+    disk.save([1, 2, 3, 4], [item])
+    disk.restore(SimpleNamespace(checkpoints=object()), [1, 2, 3, 4, 5])
+    assert disk.load(path) is None
+    install_prefix_disk(object(), Path("unused"))
+
+
+def test_lock_contention_skips_entire_write(tmp_path, runtime):
+    from rapid_mlx.runtime.cache import _exclusive_cache_lock
+
+    disk, item = make_disk(tmp_path, runtime)
+    disk.directory.mkdir(mode=0o700)
+    with _exclusive_cache_lock(str(disk.directory), operation="test") as locked:
+        assert locked
+        disk.save([1, 2, 3, 4], [item])
+        assert list(disk.directory.iterdir()) == []
+    stored(disk, item)
+
+
+def test_interrupted_publication_is_a_miss_and_recoverable(
+    tmp_path, runtime, monkeypatch
+):
+    disk, item = make_disk(tmp_path, runtime)
+    original = Path.replace
+
+    def interrupt(path, target):
+        if path.name == "digest":
+            raise OSError("simulated crash before checksum publication")
+        return original(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", interrupt)
+        disk.save([1, 2, 3, 4], [item])
+    path = next(disk.directory.glob("*.safetensors"))
+    assert disk.load(path) is None
+    disk.save([1, 2, 3, 4], [item])
+    assert disk.load(path) is not None
+    assert not list(disk.directory.glob(".stage-*"))
+
+
+def test_budget_eviction_and_abandoned_stage(tmp_path, runtime):
+    disk, item = make_disk(tmp_path, runtime, budget=1024**2 + 1500)
+    # The conservative header allowance leaves room for only one entry's
+    # reservation before publication. Any previous entry must be evicted.
+    first = stored(disk, item)
+    abandoned = disk.directory / ".stage-abandoned"
+    abandoned.mkdir()
+    (abandoned / "partial").write_bytes(b"interrupted")
+    disk.save([5, 6, 7, 8], [item])
+    assert not first.exists()
+    assert not abandoned.exists()
+    files = list(disk.directory.glob("*.safetensors"))
+    assert len(files) == 1
+    assert sum(p.stat().st_size for p in disk.directory.iterdir()) <= disk.budget
+    assert files[0].stat().st_mode & 0o777 == 0o600
+    assert files[0].with_suffix(".sha256").stat().st_mode & 0o777 == 0o600
+    assert disk.directory.stat().st_mode & 0o777 == 0o700
+
+
+def test_symlink_directory_does_not_write(tmp_path, runtime):
+    disk, item = make_disk(tmp_path, runtime)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    disk.directory.symlink_to(outside, target_is_directory=True)
+    disk.save([1, 2, 3, 4], [item])
+    assert list(outside.iterdir()) == []
+
+
+def test_seam_drift_fails_closed(tmp_path, monkeypatch):
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    scheduler = SimpleNamespace(
+        _persist="original", _read_disk_block="original", snapshot_dir=None
+    )
+    app = SimpleNamespace(scheduler=scheduler, checkpoints=object())
+    monkeypatch.setattr(module, "SUPPORTED_REVISION", "next-revision")
+    install_prefix_disk(app, tmp_path)
+    assert scheduler._persist == "original"
+    assert scheduler._read_disk_block == "original"
+    assert scheduler.snapshot_dir is None
+    assert not hasattr(app, "_rapid_prefix_disk")
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "huge-header",
+        "bad-header-json",
+        "huge-shape",
+        "overlap",
+        "trailing",
+        "nonfinite",
+        "empty-slots",
+    ],
+)
+def test_structural_corruption_never_calls_native_loader(
+    tmp_path, runtime, monkeypatch, kind
+):
+    import struct
+
+    disk, item = make_disk(tmp_path, runtime)
+    path = stored(disk, item)
+    data = path.read_bytes()
+    length = struct.unpack("<Q", data[:8])[0]
+    header = json.loads(data[8 : 8 + length])
+    if kind == "huge-header":
+        data = struct.pack("<Q", 2**63) + data[8:]
+    elif kind == "bad-header-json":
+        data = data[:8] + b"!" + data[9:]
+    elif kind in ("huge-shape", "overlap", "empty-slots"):
+        if kind == "huge-shape":
+            header["0.keys"]["shape"][2] = 2**60
+        elif kind == "overlap":
+            header["0.keys"]["data_offsets"] = header["0.values"]["data_offsets"]
+        else:
+            layers = json.loads(header["__metadata__"]["layers"])
+            layers[0]["arrays"] = []
+            layers[0]["plain"].update(keys=None, values=None)
+            header["__metadata__"]["layers"] = json.dumps(layers)
+        raw = json.dumps(header).encode()
+        data = struct.pack("<Q", len(raw)) + raw + data[8 + length :]
+    elif kind == "trailing":
+        data += b"trailing"
+    else:
+        rewrite(
+            path,
+            runtime,
+            lambda meta, arrays: arrays.update(
+                {"0.keys": runtime[0].full((1, 2, 4, 8), float("nan"))}
+            ),
+        )
+        data = path.read_bytes()
+    path.write_bytes(data)
+    path.with_suffix(".sha256").write_text(hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(
+        runtime[0], "load", lambda *a, **kw: pytest.fail("native file loader invoked")
+    )
+    assert disk.load(path) is None
+
+
+def test_successful_install_uses_override_and_never_enables_sessions(
+    tmp_path, runtime, monkeypatch
+):
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    disk, item = make_disk(tmp_path, runtime)
+    scheduler = SimpleNamespace(
+        snapshot_dir=None,
+        session_dir=None,
+        disk_blocks=None,
+        session_blocks=None,
+        _thread=SimpleNamespace(is_alive=lambda: False),
+    )
+    app = SimpleNamespace(
+        scheduler=scheduler,
+        checkpoints=object(),
+        context_window=32768,
+        _model=SimpleNamespace(),
+        tokenizer=SimpleNamespace(encode=lambda *a, **kw: [10]),
+        engine=SimpleNamespace(prefill_prefix=lambda ids: [item]),
+    )
+    scheduler.on_engine = lambda fn: fn(app.engine)
+    monkeypatch.setattr(module, "_qualified", lambda _: True)
+    monkeypatch.setattr(module, "_identity", lambda *a: "qualified")
+    monkeypatch.setenv(module.DIRECTORY_ENV, str(disk.directory))
+    install_prefix_disk(app, tmp_path)
+    assert scheduler.snapshot_dir == disk.directory
+    assert (
+        scheduler.session_dir
+        is scheduler.disk_blocks
+        is scheduler.session_blocks
+        is None
+    )
+    scheduler._persist([1, 2, 3, 4], [item])
+    assert (
+        app._rapid_prefix_disk.load(next(disk.directory.glob("*.safetensors")))
+        is not None
+    )
+
+
+def test_changed_seam_source_disables_feature(monkeypatch, runtime):
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    monkeypatch.setattr(module, "_digest", lambda _: "changed-source")
+    assert not module._qualified(SimpleNamespace())

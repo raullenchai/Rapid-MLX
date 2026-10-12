@@ -325,7 +325,7 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
                 model_dir=target,
             )
-            if profile.model_type == "nemotron_h":
+            if profile.profile_id == "nemotron-3.5-lightning-tensorfold":
                 from .tensorfold_prefix_disk import install_prefix_disk
 
                 install_prefix_disk(app, target, drafter)
