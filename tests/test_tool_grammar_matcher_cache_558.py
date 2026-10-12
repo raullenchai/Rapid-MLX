@@ -72,14 +72,82 @@ def _isolate_cache(monkeypatch):
     monkeypatch.setattr(tg, "LLMatcher", _FakeMatcher)
     tg._compiled_matcher_cache.clear()
     tg._compiled_matcher_building.clear()
+    tg._compiled_matcher_invalidated.clear()
+    tg._compiled_matcher_callers.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.builds = 0
     _FakeMatcher.proceed.set()
     yield
     tg._compiled_matcher_cache.clear()
     tg._compiled_matcher_building.clear()
+    tg._compiled_matcher_invalidated.clear()
+    tg._compiled_matcher_callers.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.proceed.set()
+
+
+def test_release_model_matchers_drops_only_unloaded_tokenizer():
+    class Tokenizer:
+        pass
+
+    first = Tokenizer()
+    second = Tokenizer()
+    first_lltok = object()
+    second_lltok = object()
+    setattr(first, tg._LLTOKENIZER_ATTR, first_lltok)
+    setattr(second, tg._LLTOKENIZER_ATTR, second_lltok)
+    tg.get_request_matcher(first_lltok, "first-a")
+    tg.get_request_matcher(first_lltok, "first-b")
+    tg.get_request_matcher(second_lltok, "second")
+
+    tg.release_model_matchers(first)
+
+    assert {key[0] for key in tg._compiled_matcher_cache} == {id(second_lltok)}
+    assert tg._compiled_matcher_cache_bytes == len("second")
+    tg.release_model_matchers(first)  # Repeated unload is harmless.
+    tg.release_model_matchers(Tokenizer())  # A model without grammar has no cache.
+    assert len(tg._compiled_matcher_cache) == 1
+
+
+def test_release_model_matchers_invalidates_inflight_build(monkeypatch):
+    class Tokenizer:
+        pass
+
+    tokenizer = Tokenizer()
+    lltok = object()
+    setattr(tokenizer, tg._LLTOKENIZER_ATTR, lltok)
+    entered = threading.Event()
+    resume = threading.Event()
+
+    class DelayedMatcher(_FakeMatcher):
+        def __init__(self, lltokenizer, grammar):
+            entered.set()
+            assert resume.wait(5)
+            super().__init__(lltokenizer, grammar)
+
+    monkeypatch.setattr(tg, "LLMatcher", DelayedMatcher)
+    errors = []
+
+    def build():
+        try:
+            tg.get_request_matcher(lltok, "schema")
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=build)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        tg.release_model_matchers(tokenizer)
+    finally:
+        resume.set()
+        worker.join(5)
+
+    assert not worker.is_alive()
+    assert not errors
+    assert not tg._compiled_matcher_cache
+    assert tg._compiled_matcher_cache_bytes == 0
+    assert not tg._compiled_matcher_invalidated
 
 
 @contextmanager
@@ -313,3 +381,80 @@ def test_byte_budget_evicts_before_count_cap(monkeypatch):
         tg.get_request_matcher(lltok, f"g{i}:" + ("y" * 40))  # ~44 bytes each
     assert tg._compiled_matcher_cache_bytes <= 120
     assert len(tg._compiled_matcher_cache) < 6  # byte budget bound before count
+
+
+def test_unload_invalidation_covers_waiter_retry_after_builder_crashes(monkeypatch):
+    class Tokenizer:
+        pass
+
+    tokenizer = Tokenizer()
+    lltok = object()
+    setattr(tokenizer, tg._LLTOKENIZER_ATTR, lltok)
+    builder_entered = threading.Event()
+    waiter_entered = threading.Event()
+    finish_builder = threading.Event()
+    resume_waiter = threading.Event()
+
+    class DelayedEvent:
+        def __init__(self):
+            self.ready = threading.Event()
+
+        def set(self):
+            self.ready.set()
+
+        def wait(self):
+            waiter_entered.set()
+            assert self.ready.wait(5)
+            assert resume_waiter.wait(5)
+
+    original_slot = tg._BuildSlot
+
+    def slot():
+        value = original_slot()
+        value.event = DelayedEvent()
+        return value
+
+    class CrashOnceMatcher(_FakeMatcher):
+        def __init__(self, lltokenizer, grammar):
+            if threading.current_thread().name == "failed-builder":
+                builder_entered.set()
+                assert finish_builder.wait(5)
+                raise RuntimeError("native compiler failed")
+            super().__init__(lltokenizer, grammar)
+
+    monkeypatch.setattr(tg, "_BuildSlot", slot)
+    monkeypatch.setattr(tg, "LLMatcher", CrashOnceMatcher)
+    errors = []
+    results = []
+
+    def build():
+        try:
+            results.append(tg.get_request_matcher(lltok, "schema"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    builder = threading.Thread(target=build, name="failed-builder")
+    waiter = threading.Thread(target=build, name="waiting-caller")
+    builder.start()
+    try:
+        assert builder_entered.wait(5)
+        waiter.start()
+        assert waiter_entered.wait(5)
+        tg.release_model_matchers(tokenizer)
+        finish_builder.set()
+        builder.join(5)
+        assert not builder.is_alive()
+        resume_waiter.set()
+        waiter.join(5)
+        assert not waiter.is_alive()
+        assert len(errors) == 1 and str(errors[0]) == "native compiler failed"
+        assert len(results) == 1
+        assert not tg._compiled_matcher_cache
+        assert tg._compiled_matcher_cache_bytes == 0
+        assert not tg._compiled_matcher_invalidated
+    finally:
+        finish_builder.set()
+        resume_waiter.set()
+        builder.join(5)
+        if waiter.ident is not None:
+            waiter.join(5)
