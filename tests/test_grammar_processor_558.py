@@ -1320,6 +1320,8 @@ def test_admission_slot_not_released_until_compile_finishes_on_cancel():
     async def _drive():
         cfg = _CfgStub("hermes")
         engine = _EngineStub(tokenizer=object())
+        tracked = []
+        engine.track_tool_grammar_build = tracked.append
         request = _RequestStub([_FunctionTool("get_time")], "required")
         # Launch the REAL helper as a task, then cancel it mid-compile.
         task = asyncio.ensure_future(
@@ -1330,6 +1332,7 @@ def test_admission_slot_not_released_until_compile_finishes_on_cancel():
                 break
             await asyncio.sleep(0.005)
         assert started.is_set(), "the real helper never submitted the compile"
+        assert len(tracked) == 1 and not tracked[0].done()
         # A slot is reserved for the in-flight compile.
         assert chat_mod._tool_grammar_inflight == 1
         # Cancel the helper coroutine (client disconnect) WHILE the compile runs.
@@ -1346,6 +1349,7 @@ def test_admission_slot_not_released_until_compile_finishes_on_cancel():
             "running — production must release via the future's done-callback, "
             "not an await-level try/finally"
         )
+        assert not tracked[0].done()
         # Let the compile finish; the done-callback releases the slot.
         release_gate.set()
         for _ in range(600):

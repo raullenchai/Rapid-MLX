@@ -72,14 +72,80 @@ def _isolate_cache(monkeypatch):
     monkeypatch.setattr(tg, "LLMatcher", _FakeMatcher)
     tg._compiled_matcher_cache.clear()
     tg._compiled_matcher_building.clear()
+    tg._compiled_matcher_invalidated.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.builds = 0
     _FakeMatcher.proceed.set()
     yield
     tg._compiled_matcher_cache.clear()
     tg._compiled_matcher_building.clear()
+    tg._compiled_matcher_invalidated.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.proceed.set()
+
+
+def test_release_model_matchers_drops_only_unloaded_tokenizer():
+    class Tokenizer:
+        pass
+
+    first = Tokenizer()
+    second = Tokenizer()
+    first_lltok = object()
+    second_lltok = object()
+    setattr(first, tg._LLTOKENIZER_ATTR, first_lltok)
+    setattr(second, tg._LLTOKENIZER_ATTR, second_lltok)
+    tg.get_request_matcher(first_lltok, "first-a")
+    tg.get_request_matcher(first_lltok, "first-b")
+    tg.get_request_matcher(second_lltok, "second")
+
+    tg.release_model_matchers(first)
+
+    assert {key[0] for key in tg._compiled_matcher_cache} == {id(second_lltok)}
+    assert tg._compiled_matcher_cache_bytes == len("second")
+    tg.release_model_matchers(first)  # Repeated unload is harmless.
+    tg.release_model_matchers(Tokenizer())  # A model without grammar has no cache.
+    assert len(tg._compiled_matcher_cache) == 1
+
+
+def test_release_model_matchers_invalidates_inflight_build(monkeypatch):
+    class Tokenizer:
+        pass
+
+    tokenizer = Tokenizer()
+    lltok = object()
+    setattr(tokenizer, tg._LLTOKENIZER_ATTR, lltok)
+    entered = threading.Event()
+    resume = threading.Event()
+
+    class DelayedMatcher(_FakeMatcher):
+        def __init__(self, lltokenizer, grammar):
+            entered.set()
+            assert resume.wait(5)
+            super().__init__(lltokenizer, grammar)
+
+    monkeypatch.setattr(tg, "LLMatcher", DelayedMatcher)
+    errors = []
+
+    def build():
+        try:
+            tg.get_request_matcher(lltok, "schema")
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=build)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        tg.release_model_matchers(tokenizer)
+    finally:
+        resume.set()
+        worker.join(5)
+
+    assert not worker.is_alive()
+    assert not errors
+    assert not tg._compiled_matcher_cache
+    assert tg._compiled_matcher_cache_bytes == 0
+    assert not tg._compiled_matcher_invalidated
 
 
 @contextmanager

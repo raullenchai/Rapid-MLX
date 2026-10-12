@@ -2041,6 +2041,9 @@ async def _offload_tool_grammar_build(
         _release_tool_grammar_build()
         logger.exception("tool-grammar: compile submission failed; free-form")
         return None
+    track_build = getattr(engine, "track_tool_grammar_build", None)
+    if callable(track_build):
+        track_build(fut)
     fut.add_done_callback(lambda _f: _release_tool_grammar_build())
     try:
         # ``asyncio.shield`` wraps the ``wrap_future`` await so a CANCELLED caller
