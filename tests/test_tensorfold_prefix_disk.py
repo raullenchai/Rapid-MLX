@@ -924,7 +924,21 @@ def test_background_slow_fsync_drops_busy_and_close_is_bounded(
 
     monkeypatch.setattr(os, "fsync", slow)
     started = time.monotonic()
-    assert disk.submit([1, 2, 3, 4], [item])
+    from tensorfold.server.scheduler import Scheduler
+
+    accepted = []
+    scheduler = SimpleNamespace(
+        snapshot_dir=disk.directory,
+        checkpoints=SimpleNamespace(insert=lambda *a, **kw: None),
+        _persist=lambda tokens, cache: accepted.append(disk.submit(tokens, cache)),
+    )
+    job = SimpleNamespace(
+        vision=None,
+        prompt_ids=[1, 2, 3, 4, 5],
+        stream=SimpleNamespace(history_checkpoints=[([1, 2, 3, 4], [item])]),
+    )
+    Scheduler._keep_checkpoints(scheduler, job, {4})
+    assert accepted == [True]
     assert time.monotonic() - started < 0.2
     assert blocked.wait(2)
     assert not disk.submit([1, 2, 3, 4], [item])
