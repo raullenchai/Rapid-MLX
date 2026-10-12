@@ -522,6 +522,19 @@ def _locked_embedding_id() -> str | None:
         return None
 
 
+def _locked_rerank_id() -> str | None:
+    """Return the configured ``--rerank-model`` id, if any."""
+    locked = get_config().rerank_model_locked
+    if locked is not None:
+        return locked
+    try:
+        from ..server import _rerank_model_locked
+
+        return _rerank_model_locked
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _is_vlm(
     model_id: str, profile_modality: str | None, is_text_only: bool = False
 ) -> bool:
@@ -1159,6 +1172,16 @@ def _build_model_info(model_id: str) -> ModelInfo:
             personal_intelligence_qualification=personal_intelligence_qualification_id,
         )
 
+    rerank_locked = _locked_rerank_id()
+    if rerank_locked is not None and model_id == rerank_locked:
+        # Served by /v1/rerank only; no chat surface, so no "text" capability.
+        return ModelInfo(
+            id=model_id,
+            modality="text",
+            capabilities=["rerank"],
+            audio_lanes=audio_lanes,
+        )
+
     if profile is None:
         # Preserve the prior unknown-id wire shape (``ModelInfo(id=model_id)``
         # with the schema-default ``modality``) and only override when the
@@ -1323,6 +1346,9 @@ async def list_models() -> ModelsResponse:
     locked = _locked_embedding_id()
     if locked:
         _append(_build_model_info(locked))
+    rerank_locked = _locked_rerank_id()
+    if rerank_locked:
+        _append(_build_model_info(rerank_locked))
 
     codex_models = [
         _build_codex_model_info(info) for info in models if "text" in info.capabilities
@@ -1357,5 +1383,8 @@ async def retrieve_model(model_id: str) -> ModelInfo:
     # extra wire heuristics.
     locked = _locked_embedding_id()
     if locked and model_id == locked:
+        return _build_model_info(model_id)
+    rerank_locked = _locked_rerank_id()
+    if rerank_locked and model_id == rerank_locked:
         return _build_model_info(model_id)
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")

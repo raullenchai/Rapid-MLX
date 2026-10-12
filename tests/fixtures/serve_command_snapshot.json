@@ -205,6 +205,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -460,6 +463,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -713,6 +719,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -967,6 +976,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -1221,6 +1233,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -1478,6 +1493,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -1728,6 +1746,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",
@@ -1984,6 +2005,9 @@
     "reasoning_parser": null,
     "reasoning_parser_name": null,
     "relocate_mid_conversation_system": false,
+    "rerank_engine": null,
+    "rerank_max_documents": 0,
+    "rerank_model_locked": null,
     "residency_manager": {
      "__type__": "ResidentModelManager",
      "_baseline_memory_bytes": "<volatile>",

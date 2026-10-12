@@ -3208,7 +3208,7 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
         * len(enums["caller"]["values"])
         * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 32 * 11  # 32 callers after #4041 added 5 harnesses
+    assert keys_per_model == 9 * 32 * 11  # 9 endpoints after /v1/rerank
     assert store.MAX_KEYS // keys_per_model == 28
 
 

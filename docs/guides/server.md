@@ -97,6 +97,13 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--enable-local-search` | Enable [local folder search](local-search.md) for documents, images and sampled video frames; no automatic model downloads | Off |
 | `--local-search-dir` | Local-search SQLite index directory | State directory / local-search |
 | `--embedding-model` | Pre-load an embedding model at startup; without a positional model the server runs embeddings-only (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
+| `--rerank-model` | Pre-load a reranker for `/v1/rerank` (see the [Rerank Guide](rerank.md) for the supported families); without a positional model the server runs without a chat model | None |
+| `--rerank-model-family` | Family of `--rerank-model` when its name does not reveal it (see the [Rerank Guide](rerank.md)) | detected |
+| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request (excess handled per `--rerank-overflow-policy`); `0` or negative disables the limit | 0 |
+| `--rerank-max-length` | Max tokens per query/document pair (`auto`: the family's default, capped at the model maximum) | auto |
+| `--rerank-overflow-policy` | `truncate` or `error` for requests over `--rerank-max-documents` and documents over `--rerank-max-length` | truncate |
+| `--rerank-instruction` | Task description for requests without an `instruction` field | family default |
+| `--rerank-prompt` | Judging prompt that replaces the family's own (see the [Rerank Guide](rerank.md)) | family default |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 | `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |
@@ -135,6 +142,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/messages` | POST | Anthropic Messages API — Claude Code / OpenCode compatible (detailed below) |
 | `/v1/messages/count_tokens` | POST | Count input tokens for an Anthropic-format request (detailed below) |
 | `/v1/embeddings` | POST | Text embeddings — see the [Embeddings Guide](embeddings.md) |
+| `/v1/rerank` | POST | Document reranking for `--rerank-model` — see the [Rerank Guide](rerank.md) |
 | `/v1/models` | GET | List available models (detailed below) |
 | `/v1/models/{id}` | GET | Metadata for a single model |
 | `/v1/models/residency` | GET | Residency status of every model loaded in the process |
@@ -514,6 +522,20 @@ print(response.data[0].embedding[:5])  # First 5 dimensions
 
 See [Embeddings Guide](embeddings.md) for details. For folder indexing and
 hybrid retrieval, see [Local folder search](local-search.md).
+
+### Rerank
+
+```bash
+POST /v1/rerank
+```
+
+```bash
+curl http://localhost:8000/v1/rerank \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "capital of China", "documents": ["Beijing is the capital.", "Cookies were invented in 1938."], "top_n": 1}'
+```
+
+See [Rerank Guide](rerank.md) for details.
 
 ### Health Check
 

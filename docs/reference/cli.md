@@ -401,6 +401,49 @@ binary auto-routing decision has a force-on and force-off pair.
 | `--embedding-max-length` | Max input length (tokens) for the embedding model; `auto` derives it from the model's declared maximum, or pass a positive integer for a lower operational ceiling. Inputs above the limit follow `--embedding-overflow-policy` (never truncated silently). | auto |
 | `--embedding-overflow-policy` | Overflow handling: `truncate` (discards the tail, logs a warning, increments the `rapid_mlx_embedding_truncations_total` metric) or `error` (HTTP 400 with observed and allowed token counts) | truncate |
 
+#### Reranking
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--rerank-model` | Pre-load a reranker for `/v1/rerank` at startup (see the supported rerankers below); without a positional model the server runs without a chat model | None |
+| `--rerank-model-family` | Reranker family of `--rerank-model` (see below); only needed when the model name does not reveal it, e.g. a fine-tune or a renamed local copy | None (auto-detected) |
+| `--rerank-instruction` | Default task description for requests without an `instruction` field (e.g. `Given a GitHub issue, retrieve code that fixes it`) | None (model default) |
+| `--rerank-prompt` | Judging prompt that replaces the model's own | None (model default) |
+| `--rerank-max-documents` | Max documents per `/v1/rerank` request; requests above the limit follow `--rerank-overflow-policy`. 0 or a negative value disables. | 0 |
+| `--rerank-max-length` | Max input length (tokens) per query/document pair; `auto` uses the model family's default, or pass a positive integer. Both are capped at the model's declared maximum. Pairs above the limit follow `--rerank-overflow-policy`. | auto |
+| `--rerank-overflow-policy` | Overflow handling: `truncate` (scores only the first `--rerank-max-documents` documents or shortens the document, logs a warning) or `error` (HTTP 400 `too_many_documents` or `input_too_long`) | truncate |
+
+A reranker's input is built from up to three texts besides the document:
+
+- **Query**: the search text to rank documents against, e.g. `capital of China`.
+  Always sent per request in the `query` field of `/v1/rerank`, as in the
+  Cohere API.
+- **Instruction**: the retrieval task the query belongs to, e.g. `Given a web
+  search query, retrieve relevant passages that answer the query`. Set
+  per request with the optional `instruction` field (a Rapid-MLX extension);
+  requests without it use `--rerank-instruction`, or the family default.
+  Instruction-aware rerankers are trained with varied instructions and rank
+  best with one written for the task and language at hand.
+- **Prompt**: the fixed text that tells the model how to rate relevance, e.g.
+  `Judge whether the Document meets the requirements based on the Query and
+  the Instruct provided`. Rerankers are trained with one fixed prompt, given
+  in their reference code, and changing it moves the input away from what the
+  model saw in training. It is therefore server-wide only: `--rerank-prompt`
+  replaces the family default for all requests.
+
+Supported rerankers:
+
+| `--rerank-model-family` | Reranker | Example | `--rerank-instruction` | `--rerank-prompt` |
+|-------------------------|----------|---------|------------------------|-------------------|
+| `bge2` | BGE reranker v2 Gemma | `BAAI/bge-reranker-v2-gemma` | yes | no |
+| `jina3` | jina-reranker-v3 (non-commercial use only) | `mlx-community/jina-reranker-v3-4bit-mxfp4` | yes | yes |
+| `mxbai2` | mxbai-rerank-v2 | `mlx-community/mxbai-rerank-large-v2` | yes | yes |
+| `qwen3` | Qwen3-Reranker | `mlx-community/Qwen3-Reranker-0.6B-mxfp8` | yes | yes |
+| `roberta` | XLM-RoBERTa cross-encoders (need the `[embeddings]` extra) | `BAAI/bge-reranker-v2-m3` | no | no |
+
+See the [Rerank Guide](../guides/rerank.md) for how each model is detected and
+its defaults.
+
 #### PFlash long-prompt compression
 
 | Option | Description | Default |
@@ -798,8 +841,8 @@ existing non-administrator service account and (for `install`/`uninstall`/
 
 ```bash
 rapid-mlx service install --service-user USER [--model MODEL] \
-  [--embedding-model MODEL] [--host HOST] [--port PORT] [--dry-run] \
-  [-- SERVE_OPTIONS...]
+  [--embedding-model MODEL] [--rerank-model MODEL] [--host HOST] \
+  [--port PORT] [--dry-run] [-- SERVE_OPTIONS...]
 rapid-mlx service status [--json]
 rapid-mlx service logs [--follow] [--tail N]
 rapid-mlx service restart [--dry-run]
@@ -815,10 +858,11 @@ rapid-mlx service uninstall [--dry-run]
   installation while its weights are unusable. The requested lazy policy is
   persisted only after that qualification succeeds.
   `--dry-run` prints every step without changing anything.
-- `--model` defaults to `qwen3.5-4b-4bit` unless only `--embedding-model` is
-  given; then the service runs embeddings-only. `configure` accepts
-  `--embedding-model`, `--clear-model` and `--clear-embedding-model`; at least
-  one of the two models must remain.
+- `--model` defaults to `qwen3.5-4b-4bit` unless `--embedding-model` or
+  `--rerank-model` is given; without `--model` the service runs without a chat
+  model. `configure` accepts `--embedding-model`, `--rerank-model`,
+  `--clear-model`, `--clear-embedding-model` and `--clear-rerank-model`; at
+  least one model must remain.
 - Additional `serve` options must follow a `--` separator, for example
   `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
   rejected; use the service command's own `--host` and `--port` flags.

@@ -11,8 +11,8 @@ This module exposes:
 The subcommand supports these lifecycle shapes:
 
 * ``rapid-mlx service install [--service-user U] [--model M]
-  [--embedding-model E] [serve options] [--dry-run]`` — validate + bootstrap
-  the daemon.
+  [--embedding-model E] [--rerank-model R] [serve options] [--dry-run]`` —
+  validate + bootstrap the daemon.
 * ``rapid-mlx service status [--json]`` — launchd / pid / endpoint health.
 * ``rapid-mlx service logs [--follow] [--tail N]`` — tail daemon logs.
 * ``rapid-mlx service restart [--dry-run]`` — kickstart + wait health.
@@ -76,15 +76,22 @@ def register(subparsers) -> None:
         type=str,
         default=None,
         help="Model alias (or HF path) to serve, downloaded once by the "
-        "service account (default: qwen3.5-4b-4bit unless only "
-        "--embedding-model is given).",
+        "service account (default: qwen3.5-4b-4bit unless --embedding-model "
+        "or --rerank-model is given).",
     )
     install.add_argument(
         "--embedding-model",
         type=str,
         default=None,
         help="Embedding model alias (or HF path) for /v1/embeddings. Without "
-        "--model the service runs embeddings-only.",
+        "--model the service runs without a chat model.",
+    )
+    install.add_argument(
+        "--rerank-model",
+        type=str,
+        default=None,
+        help="Reranker (HF path) for /v1/rerank. Without --model "
+        "the service runs without a chat model.",
     )
     install.add_argument(
         "serve_args",
@@ -147,14 +154,21 @@ def register(subparsers) -> None:
     model_group.add_argument(
         "--clear-model",
         action="store_true",
-        help="Remove the primary model (requires an embedding model).",
+        help="Remove the primary model (requires an embedding or rerank model).",
     )
     embedding_group = configure.add_mutually_exclusive_group()
     embedding_group.add_argument("--embedding-model", default=None)
     embedding_group.add_argument(
         "--clear-embedding-model",
         action="store_true",
-        help="Remove the embedding model (requires a primary model).",
+        help="Remove the embedding model (requires another model).",
+    )
+    rerank_group = configure.add_mutually_exclusive_group()
+    rerank_group.add_argument("--rerank-model", default=None)
+    rerank_group.add_argument(
+        "--clear-rerank-model",
+        action="store_true",
+        help="Remove the rerank model (requires another model).",
     )
     configure.add_argument("--host", default=None)
     configure.add_argument("--port", type=_port_arg, default=None)

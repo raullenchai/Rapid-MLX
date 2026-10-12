@@ -535,6 +535,7 @@ def collect_status(
 
     model = port_declared = host_declared = executable = declared_user = None
     embedding_model = None
+    rerank_model = None
     config_file = config_sha256 = config_error = None
     config_valid = False
     endpoint_configured = False
@@ -575,6 +576,7 @@ def collect_status(
                 executable = effective.executable
                 model = effective.model
                 embedding_model = effective.embedding_model
+                rerank_model = effective.rerank_model
                 host_declared = effective.host
                 port_declared = effective.port
                 config_sha256 = config_digest(effective)
@@ -684,6 +686,7 @@ def collect_status(
         ),
         "model": model,
         "embedding_model": embedding_model,
+        "rerank_model": rerank_model,
         "host": effective_host,
         "port": effective_port,
         "livez": live,
@@ -764,6 +767,8 @@ def _render_human(s: dict) -> str:
         lines.append(f"  model:                 {s['model']}")
     if s.get("embedding_model"):
         lines.append(f"  embedding model:       {s['embedding_model']}")
+    if s.get("rerank_model"):
+        lines.append(f"  rerank model:          {s['rerank_model']}")
     if s.get("config_file"):
         digest = (s.get("config_sha256") or "invalid")[:12]
         staged = " (PENDING changes)" if s.get("pending_config") else ""

@@ -48,6 +48,7 @@ class ServiceConfig:
     log_max_mb: int = DEFAULT_LOG_MAX_MB
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
     embedding_model: str | None = None
+    rerank_model: str | None = None
 
     def validated(self) -> ServiceConfig:
         from .common import is_loopback_host, validate_label
@@ -64,20 +65,27 @@ class ServiceConfig:
         executable = Path(self.executable)
         if not executable.is_absolute():
             raise ServiceConfigError("executable must be an absolute path")
-        if not self.model and not self.embedding_model:
-            raise ServiceConfigError("model or embedding_model must be set")
+        if not self.model and not self.embedding_model and not self.rerank_model:
+            raise ServiceConfigError(
+                "model, embedding_model or rerank_model must be set"
+            )
         for name, value in (
             ("model", self.model),
             ("embedding_model", self.embedding_model),
+            ("rerank_model", self.rerank_model),
         ):
             if value is not None and (not value or "\0" in value):
                 raise ServiceConfigError(f"{name} must not be empty")
-        if self.embedding_model and any(
-            token.split("=", 1)[0] == "--embedding-model" for token in self.serve_args
+        for name, flag, value in (
+            ("embedding_model", "--embedding-model", self.embedding_model),
+            ("rerank_model", "--rerank-model", self.rerank_model),
         ):
-            raise ServiceConfigError(
-                "embedding_model is set; remove --embedding-model from serve_args"
-            )
+            if value and any(
+                token.split("=", 1)[0] == flag for token in self.serve_args
+            ):
+                raise ServiceConfigError(
+                    f"{name} is set; remove {flag} from serve_args"
+                )
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
                 "host must be a non-empty address without whitespace"
@@ -102,13 +110,13 @@ class ServiceConfig:
             raise ServiceConfigError(str(exc)) from None
         if any("\0" in token for token in self.serve_args):
             raise ServiceConfigError("serve_args must not contain NUL bytes")
-        if self.model is None and self.embedding_model is not None:
+        if self.model is None:
             # Validate the persisted arguments before qualification can strip
             # flags, and before configure can stage an unbootable definition.
             import contextlib
             import io
 
-            from ..cli import _embedding_only_incompatible_options, build_parser
+            from ..cli import _retrieval_only_incompatible_options, build_parser
 
             with (
                 contextlib.redirect_stdout(io.StringIO()),
@@ -116,25 +124,20 @@ class ServiceConfig:
             ):
                 try:
                     parsed = build_parser().parse_args(
-                        [
-                            "serve",
-                            "--embedding-model",
-                            self.embedding_model,
-                            *self.serve_args,
-                        ]
+                        ["serve", *self.retrieval_argv(), *self.serve_args]
                     )
                 except SystemExit:
                     raise ServiceConfigError(
-                        "invalid embeddings-only serve_args"
+                        "invalid retrieval-only serve_args"
                     ) from None
             if parsed.model is not None:
                 raise ServiceConfigError(
-                    "embeddings-only serve_args cannot supply a model"
+                    "retrieval-only serve_args cannot supply a model"
                 )
-            incompatible = _embedding_only_incompatible_options(parsed)
+            incompatible = _retrieval_only_incompatible_options(parsed)
             if incompatible:
                 raise ServiceConfigError(
-                    "embeddings-only services cannot use " + ", ".join(incompatible)
+                    "retrieval-only services cannot use " + ", ".join(incompatible)
                 )
         if self.credential_file is not None:
             credential = Path(self.credential_file)
@@ -144,6 +147,15 @@ class ServiceConfig:
 
     def updated(self, **changes: Any) -> ServiceConfig:
         return replace(self, **changes).validated()
+
+    def retrieval_argv(self) -> list[str]:
+        """``serve`` flags for the configured embedding and rerank models."""
+        argv: list[str] = []
+        if self.embedding_model:
+            argv += ["--embedding-model", self.embedding_model]
+        if self.rerank_model:
+            argv += ["--rerank-model", self.rerank_model]
+        return argv
 
     def to_dict(self) -> dict[str, Any]:
         raw: dict[str, Any] = {
@@ -163,6 +175,8 @@ class ServiceConfig:
         # Omitted when unset so older releases can still read the definition.
         if self.embedding_model is not None:
             raw["embedding_model"] = self.embedding_model
+        if self.rerank_model is not None:
+            raw["rerank_model"] = self.rerank_model
         return raw
 
     @classmethod
@@ -174,6 +188,7 @@ class ServiceConfig:
             "executable",
             "model",
             "embedding_model",
+            "rerank_model",
             "host",
             "port",
             "serve_args",
@@ -202,6 +217,11 @@ class ServiceConfig:
                 embedding_model=(
                     str(raw["embedding_model"])
                     if raw.get("embedding_model") is not None
+                    else None
+                ),
+                rerank_model=(
+                    str(raw["rerank_model"])
+                    if raw.get("rerank_model") is not None
                     else None
                 ),
                 host=str(raw.get("host", "127.0.0.1")),
