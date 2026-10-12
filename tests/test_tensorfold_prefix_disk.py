@@ -467,3 +467,89 @@ def test_changed_seam_source_disables_feature(monkeypatch, runtime):
 
     monkeypatch.setattr(module, "_digest", lambda _: "changed-source")
     assert not module._qualified(SimpleNamespace())
+
+
+@pytest.mark.parametrize("phase", ["before-tensor", "before-checksum"])
+def test_process_crash_releases_lock_and_leaves_only_a_miss(tmp_path, runtime, phase):
+    import subprocess
+    import sys
+
+    disk, item = make_disk(tmp_path, runtime)
+    script = r"""
+import os, sys
+from pathlib import Path
+import mlx.core as mx
+from tensorfold.engine.alternating_kv import AlternatingKVCache
+from rapid_mlx.speculative.tensorfold_prefix_disk import PrefixDisk
+c = AlternatingKVCache()
+c.keys = mx.ones((1, 2, 4, 8))
+c.values = mx.full((1, 2, 4, 8), 2.0)
+c.offset = 4
+disk = PrefixDisk(Path(sys.argv[1]), 'qualified-model', [c], 4 * 1024**2)
+original = Path.replace
+def crash(path, target):
+    if (sys.argv[2] == 'before-checksum' and path.name == 'digest') or (
+            sys.argv[2] == 'before-tensor' and path.suffix == '.safetensors'):
+        os._exit(51)
+    return original(path, target)
+Path.replace = crash
+disk.save([1, 2, 3, 4], [c])
+raise RuntimeError('crash point not reached')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(disk.directory), phase],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 51, result.stdout + result.stderr
+    assert list(disk.directory.glob(".stage-*"))
+    for path in disk.directory.glob("*.safetensors"):
+        assert disk.load(path) is None
+    # The OS released the permanent transaction lock. A new writer cleans the
+    # abandoned staging tree and replaces an incomplete publication safely.
+    disk.save([1, 2, 3, 4], [item])
+    assert not list(disk.directory.glob(".stage-*"))
+    assert disk.load(next(disk.directory.glob("*.safetensors"))) is not None
+
+
+def test_two_processes_share_one_budget_and_publish_valid_pairs(tmp_path, runtime):
+    import subprocess
+    import sys
+
+    disk, _ = make_disk(tmp_path, runtime)
+    script = r"""
+import sys
+from pathlib import Path
+import mlx.core as mx
+from tensorfold.engine.alternating_kv import AlternatingKVCache
+from rapid_mlx.speculative.tensorfold_prefix_disk import PrefixDisk
+c = AlternatingKVCache()
+c.keys = mx.ones((1, 2, 4, 8))
+c.values = mx.full((1, 2, 4, 8), 2.0)
+c.offset = 4
+disk = PrefixDisk(Path(sys.argv[1]), 'qualified-model', [c], 4 * 1024**2)
+for i in range(12):
+    disk.save([int(sys.argv[2]), i, 3, 4], [c])
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(disk.directory), str(i)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for i in (1, 2)
+    ]
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=30)
+        assert process.returncode == 0, stdout + stderr
+    files = list(disk.directory.glob("*.safetensors"))
+    assert 0 < len(files) <= 8
+    assert (
+        sum(p.stat().st_size for p in disk.directory.iterdir() if p.is_file())
+        <= disk.budget
+    )
+    assert len(list(disk.directory.glob("*.sha256"))) == len(files)
+    assert all(disk.load(p) is not None for p in files)
+    assert not list(disk.directory.glob(".stage-*"))
