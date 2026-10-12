@@ -1075,12 +1075,17 @@ def _supports_qwen38_dense_native_text_cache(language_model: Any) -> bool:
         "num_attention_heads": 16,
         "linear_num_value_heads": 32,
     }
+    expected_4b = {
+        **expected_9b,
+        "hidden_size": 2560,
+        "intermediate_size": 9216,
+    }
     try:
         args = language_model.args
         geometry = next(
             (
                 expected
-                for expected in (expected_27b, expected_9b)
+                for expected in (expected_27b, expected_9b, expected_4b)
                 if all(
                     getattr(args, key, None) == value for key, value in expected.items()
                 )
