@@ -53,6 +53,18 @@ sudo rapid-mlx service install \
   --host 127.0.0.1 --port 8001
 ```
 
+`--rerank-model MODEL` adds a reranker for `/v1/rerank` (see the supported
+families in the [Rerank Guide](rerank.md)). Without
+`--model`, the service runs without a chat model, which suits dedicated rerank
+replicas behind a load balancer:
+
+```bash
+sudo rapid-mlx service install \
+  --service-user serveuser \
+  --rerank-model mlx-community/Qwen3-Reranker-0.6B-mxfp8 \
+  --host 127.0.0.1 --port 8002
+```
+
 The installed plist contains only a stable `service run --config ...` invocation.
 The versioned, root-owned JSON definition under
 `/Library/Application Support/Rapid-MLX/Services/` is the effective source of
@@ -83,8 +95,8 @@ rapid-mlx service config
 
 To clear advanced serve flags, use `service configure --clear-serve-args`.
 `--embedding-model MODEL` sets the embedding model; `--clear-model` and
-`--clear-embedding-model` remove the chat or embedding model, as long as one of
-the two remains. Embeddings-only services load their model at startup;
+`--clear-embedding-model` remove the chat or embedding model, as long as
+another model remains. Embeddings-only services load their model at startup;
 generation-only flags (including `--lazy-load`) are rejected when validating
 their configuration. When switching a chat service to embeddings-only, remove
 its generation flags with `--clear-serve-args` or replace them with supported
@@ -96,6 +108,14 @@ older releases reject them. Before downgrading, use the current release's
 generation service is needed, uninstall the dedicated embedding service before
 downgrading. Primary-only definitions retain their existing schema and omit the
 unset embedding field, so existing services remain readable by older releases.
+
+`--rerank-model MODEL` sets the rerank model and `--clear-rerank-model` removes
+it, as long as another model remains. Rerank-only services also load their
+model at startup and reject generation-only flags. Definitions with
+`rerank_model` require a release that supports this field; before downgrading,
+remove it with `service configure --clear-rerank-model` (plus
+`--model <generation-model>` if no other model remains) and `service apply`.
+
 Changing the service account or executable still requires uninstall/install,
 because those are security boundaries rather than runtime preferences.
 

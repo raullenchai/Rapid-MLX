@@ -239,10 +239,12 @@ _telemetry_auto_selected: bool = False
 _telemetry_model_served_state = "idle"
 _telemetry_audio_model_served_state = "idle"
 _telemetry_embedding_model_served_state = "idle"
+_telemetry_rerank_model_served_state = "idle"
 _telemetry_model_served_locks = {
     "_telemetry_model_served_state": threading.Lock(),
     "_telemetry_audio_model_served_state": threading.Lock(),
     "_telemetry_embedding_model_served_state": threading.Lock(),
+    "_telemetry_rerank_model_served_state": threading.Lock(),
 }
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
 # text-only server. Set to True by ``--enable-audio`` (text mode) or by
@@ -330,6 +332,11 @@ _embedding_model_locked: str | None = None  # Set when --embedding-model is used
 # the engine with the same limits.
 _embedding_max_length: int | str = "auto"
 _embedding_overflow_policy: str = "truncate"
+
+# Global rerank engine, loaded once from --rerank-model
+_rerank_engine = None
+_rerank_model_locked: str | None = None
+_rerank_max_documents: int = 0
 
 # API key authentication
 _api_key: str | None = None
@@ -785,6 +792,12 @@ def _emit_embedding_model_served_once(engine: object, model_name: str) -> None:
     del engine
     _enqueue_model_served_once(
         "_telemetry_embedding_model_served_state", None, model_name, False
+    )
+
+
+def _emit_rerank_model_served_once(model_name: str) -> None:
+    _enqueue_model_served_once(
+        "_telemetry_rerank_model_served_state", None, model_name, False
     )
 
 
@@ -1839,6 +1852,41 @@ def load_embedding_model(
     cfg = get_config()
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
+
+
+def load_rerank_model(
+    model_name: str,
+    *,
+    max_documents: int = 0,
+    max_length: int | str = "auto",
+    overflow_policy: str = "truncate",
+    instruction: str | None = None,
+    prompt: str | None = None,
+    model_family: str | None = None,
+) -> None:
+    """Load the rerank engine for ``model_name`` and lock ``/v1/rerank`` to it."""
+    global _rerank_engine, _rerank_model_locked, _rerank_max_documents
+
+    from .rerank import RerankEngine
+
+    engine = RerankEngine(
+        model_name,
+        max_length=max_length,
+        overflow_policy=overflow_policy,
+        instruction=instruction,
+        prompt=prompt,
+        model_family=model_family,
+    )
+    engine.load()
+    _rerank_engine = engine
+    _rerank_model_locked = model_name
+    _rerank_max_documents = max_documents
+    _emit_rerank_model_served_once(model_name)
+
+    cfg = get_config()
+    cfg.rerank_engine = _rerank_engine
+    cfg.rerank_model_locked = _rerank_model_locked
+    cfg.rerank_max_documents = _rerank_max_documents
 
 
 def _ensure_routing_config(model_name: str) -> None:
@@ -3186,6 +3234,7 @@ def configure_primary_model_lifecycle(
     global _primary_model_lifecycle
     global _telemetry_audio_model_served_state
     global _telemetry_embedding_model_served_state
+    global _telemetry_rerank_model_served_state
     global _telemetry_model_served_state
 
     _primary_lazy_load = bool(lazy_load)
@@ -3194,6 +3243,7 @@ def configure_primary_model_lifecycle(
     _telemetry_model_served_state = "idle"
     _telemetry_audio_model_served_state = "idle"
     _telemetry_embedding_model_served_state = "idle"
+    _telemetry_rerank_model_served_state = "idle"
     get_config().primary_model_lifecycle = None
 
 
@@ -3351,6 +3401,9 @@ def _sync_config() -> None:
     cfg.mcp_manager = _mcp_manager
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
+    cfg.rerank_engine = _rerank_engine
+    cfg.rerank_model_locked = _rerank_model_locked
+    cfg.rerank_max_documents = _rerank_max_documents
     cfg.api_key = _api_key
     cfg.max_request_bytes = _max_request_bytes
     cfg.sse_keepalive_seconds = _sse_keepalive_seconds
@@ -3548,6 +3601,7 @@ from .routes.mcp_routes import admin_router as _mcp_admin_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
+from .routes.rerank import router as _rerank_router
 from .routes.residency import router as _residency_router
 from .routes.responses import router as _responses_router
 from .routes.runtime_config import router as _runtime_config_router
@@ -3577,6 +3631,7 @@ app.include_router(_video_router)
 # envelope (the router's own gate), never a stray 404.
 app.include_router(_images_router)
 app.include_router(_embeddings_router)
+app.include_router(_rerank_router)
 app.include_router(_mcp_router)
 # ``/v1/mcp/reload`` — separate router so the Bearer-OR-x-api-key gate applies
 # even when ``--api-key`` is unset (mirrors ``_health_admin_router``).
@@ -3930,6 +3985,78 @@ Examples:
             "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
             "[embeddings] extra. "
             + optional_extra_install_hint("embeddings", include_paths=False)
+        ),
+    )
+    parser.add_argument(
+        "--rerank-model",
+        type=str,
+        default=None,
+        help=(
+            "Pre-load a reranker for /v1/rerank at startup (Qwen3-Reranker, "
+            "BGE reranker v2 Gemma, mxbai-rerank-v2, jina-reranker-v3 or an "
+            "XLM-RoBERTa "
+            "cross-encoder such as BAAI/bge-reranker-v2-m3)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-model-family",
+        type=str,
+        choices=["bge2", "jina3", "mxbai2", "qwen3", "roberta"],
+        default=None,
+        help=(
+            "Reranker family of --rerank-model when its name does not reveal "
+            "it (default: detect from the model name and config)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-max-documents",
+        type=int,
+        default=0,
+        help=(
+            "Maximum documents per /v1/rerank request; larger requests are "
+            "handled per --rerank-overflow-policy. 0 or a negative value "
+            "disables the limit (default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-max-length",
+        type=str,
+        default="auto",
+        help=(
+            "Max tokens per query/document pair for --rerank-model. 'auto' "
+            "(default) uses the model family's default pair length, capped at "
+            "the model's maximum; an integer sets the limit explicitly (capped "
+            "at the model's maximum)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-overflow-policy",
+        type=str,
+        choices=["truncate", "error"],
+        default="truncate",
+        help=(
+            "How to handle /v1/rerank requests over --rerank-max-documents or "
+            "documents over --rerank-max-length: 'truncate' (default) scores "
+            "only the first documents / shortens the document and logs a "
+            "warning; 'error' rejects the request with a 400."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-instruction",
+        type=str,
+        default=None,
+        help=(
+            "Task description for /v1/rerank requests without an 'instruction' "
+            "field (default: the model family's own default)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-prompt",
+        type=str,
+        default=None,
+        help=(
+            "Judging prompt of the reranker, replacing the model family's own "
+            "(Qwen3-Reranker, mxbai-rerank-v2 and jina-reranker-v3 only)."
         ),
     )
     parser.add_argument(
@@ -4320,6 +4447,10 @@ def main():
         from .cli import _load_embedding_model_or_exit
 
         _load_embedding_model_or_exit(args, load_embedding_model)
+    if args.rerank_model:
+        from .cli import _load_rerank_model_or_exit
+
+        _load_rerank_model_or_exit(args, load_rerank_model)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m rapid_mlx.server` / `mise run`) reach the engine. Pre-0.6.52

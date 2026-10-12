@@ -97,6 +97,7 @@
         "/v1/chat/completions",
         "/v1/completions",
         "/v1/embeddings",
+        "/v1/rerank",
         "/v1/audio/transcriptions",
         "/v1/messages",
         "/v1/images/generations",
@@ -133,10 +134,11 @@
         "supports_image_input splitting 'text' into llm vs vlm — the loader",
         "comment at model_aliases.py:183 states exactly that a VLM checkpoint",
         "keeps modality='text'. 'vision' is in _RESERVED_MODALITIES (no dispatch",
-        "path yet) and is therefore NOT a separate value here."
+        "path yet) and is therefore NOT a separate value here. 'rerank' has no",
+        "alias modality: it labels the --rerank-model lane (routes/rerank.py)."
       ],
       "values": [
-        "llm", "vlm", "embedding", "image-gen", "video-gen",
+        "llm", "vlm", "embedding", "rerank", "image-gen", "video-gen",
         "text-diffusion", "audio", "other"
       ]
     },
@@ -367,6 +369,7 @@
         "video_input_unsupported        -> api/utils.py:1810",
         "audio_input_unsupported        -> api/utils.py:1810/1848/2068",
         "embeddings_unavailable         -> routes/embeddings.py:68/108, cli.py:3506",
+        "rerank_unavailable             -> routes/rerank.py (no or other --rerank-model)",
         "image_generation_unavailable   -> routes/images.py:194/308/551",
         "video_generation_unavailable   -> routes/video.py:680/1107",
         "multi_sample_unsupported       -> routes/chat.py:4275, routes/completions.py:104/113",
@@ -393,6 +396,7 @@
         "video_input_unsupported",
         "audio_input_unsupported",
         "embeddings_unavailable",
+        "rerank_unavailable",
         "image_generation_unavailable",
         "video_generation_unavailable",
         "multi_sample_unsupported",

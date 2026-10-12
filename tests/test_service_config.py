@@ -116,23 +116,44 @@ def test_service_config_embeddings_only_round_trip(tmp_path):
     assert raw["embedding_model"] == "embeddinggemma-300m-6bit"
 
 
-# Older releases reject unknown fields, so an unset embedding model is omitted.
+# Older releases reject unknown fields, so unset retrieval models are omitted.
 def test_service_config_omits_unset_embedding_model():
-    assert "embedding_model" not in _config().to_dict()
+    raw = _config().to_dict()
+    assert "embedding_model" not in raw
+    assert "rerank_model" not in raw
+
+
+def test_service_config_rerank_only_round_trip(tmp_path):
+    path = tmp_path / "service.json"
+    config = _config(
+        model=None,
+        rerank_model="mlx-community/Qwen3-Reranker-0.6B-mxfp8",
+        serve_args=("--max-request-bytes", "4096"),
+    )
+    atomic_write(path, config_bytes(config))
+    assert load_config(path) == config
+    raw = config.to_dict()
+    assert raw["model"] is None
+    assert raw["rerank_model"] == "mlx-community/Qwen3-Reranker-0.6B-mxfp8"
 
 
 @pytest.mark.parametrize(
     ("updates", "message"),
     [
-        ({"model": None}, "model or embedding_model"),
-        ({"model": ""}, "model or embedding_model"),
+        ({"model": None}, "model, embedding_model or rerank_model"),
+        ({"model": ""}, "model, embedding_model or rerank_model"),
         ({"embedding_model": ""}, "embedding_model must not be empty"),
+        ({"rerank_model": ""}, "rerank_model must not be empty"),
         (
             {
                 "embedding_model": "embed",
                 "serve_args": ("--embedding-model=other",),
             },
             "remove --embedding-model",
+        ),
+        (
+            {"rerank_model": "rerank", "serve_args": ("--rerank-model", "other")},
+            "remove --rerank-model",
         ),
     ],
 )
@@ -144,7 +165,9 @@ def test_service_config_validates_model_fields(updates, message):
 def test_service_config_rejects_null_model_without_embedding_model():
     raw = _config().to_dict()
     raw["model"] = None
-    with pytest.raises(ServiceConfigError, match="model or embedding_model"):
+    with pytest.raises(
+        ServiceConfigError, match="model, embedding_model or rerank_model"
+    ):
         ServiceConfig.from_dict(raw)
 
 
@@ -161,17 +184,19 @@ def test_service_config_rejects_null_model_without_embedding_model():
 def test_embeddings_only_service_rejects_generation_flags_before_qualification(
     serve_args,
 ):
-    with pytest.raises(ServiceConfigError, match="embeddings-only.*cannot use"):
+    with pytest.raises(ServiceConfigError, match="retrieval-only.*cannot use"):
         _config(
             model=None,
             embedding_model="embeddinggemma-300m-6bit",
             serve_args=serve_args,
         )
+    with pytest.raises(ServiceConfigError, match="retrieval-only.*cannot use"):
+        _config(model=None, rerank_model="rerank", serve_args=serve_args)
 
 
 @pytest.mark.parametrize("serve_args", [("--unknown",), ("--help",), ("chat-model",)])
 def test_embeddings_only_service_rejects_invalid_serve_args(serve_args, capsys):
-    with pytest.raises(ServiceConfigError, match="embeddings-only"):
+    with pytest.raises(ServiceConfigError, match="retrieval-only"):
         _config(model=None, embedding_model="embed", serve_args=serve_args)
     assert capsys.readouterr() == ("", "")
 
@@ -254,6 +279,69 @@ def test_configure_cli_parses_embedding_model_fields():
         build_parser().parse_args(
             ["service", "configure", "--model", "m", "--clear-model"]
         )
+
+
+def test_service_cli_parses_rerank_model_fields():
+    args = build_parser().parse_args(
+        ["service", "configure", "--clear-model", "--rerank-model", "rerank"]
+    )
+    assert (args.rerank_model, args.clear_rerank_model) == ("rerank", False)
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["service", "configure", "--rerank-model", "r", "--clear-rerank-model"]
+        )
+    install = build_parser().parse_args(
+        ["service", "install", "--service-user", "u", "--rerank-model", "rerank"]
+    )
+    assert (install.model, install.rerank_model) == (None, "rerank")
+
+
+@pytest.mark.parametrize(
+    ("model", "embedding_model", "rerank_model", "expected"),
+    [
+        (
+            None,
+            None,
+            "rerank",
+            ["serve", "--host", "127.0.0.1", "--port", "8000"]
+            + ["--rerank-model", "rerank", "--max-request-bytes", "4096"],
+        ),
+        (
+            "chat",
+            "embed",
+            "rerank",
+            ["serve", "chat", "--host", "127.0.0.1", "--port", "8000"]
+            + ["--embedding-model", "embed", "--rerank-model", "rerank"]
+            + ["--max-request-bytes", "4096"],
+        ),
+    ],
+)
+def test_runtime_argv_carries_rerank_model(
+    monkeypatch, tmp_path, model, embedding_model, rerank_model, expected
+):
+    from rapid_mlx.headless_service import runtime
+
+    config = _config(
+        service_user="runner",
+        executable="/opt/rapid-mlx",
+        model=model,
+        embedding_model=embedding_model,
+        rerank_model=rerank_model,
+        serve_args=("--max-request-bytes", "4096"),
+    )
+    config_file = tmp_path / "service.json"
+    atomic_write(config_file, config_bytes(config))
+    monkeypatch.setattr(
+        runtime.pwd,
+        "getpwnam",
+        lambda _user: types.SimpleNamespace(pw_uid=os.getuid()),
+    )
+    observed = {}
+    monkeypatch.setattr(
+        runtime, "_supervise", lambda argv, *_a: observed.update(argv=argv) or 0
+    )
+    assert runtime.run_command(types.SimpleNamespace(config=str(config_file))) == 0
+    assert observed["argv"] == ["/opt/rapid-mlx", *expected]
 
 
 @pytest.mark.parametrize(
@@ -1018,6 +1106,34 @@ def test_configure_switches_between_model_and_embedding_model(monkeypatch, tmp_p
     restored = load_config(pending_config_path(home))
     assert (restored.model, restored.embedding_model) == ("chat-model", None)
     assert b'"embedding_model"' not in config_bytes(restored)
+
+
+# A chat service can be switched to rerank-only and back.
+def test_configure_switches_between_model_and_rerank_model(monkeypatch, tmp_path):
+    configure, home, current_path, _ = _installed_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(configure, "is_root", lambda: True)
+    assert (
+        configure.configure_command(
+            _configure_args(
+                clear_model=True, rerank_model="rerank", clear_serve_args=True
+            )
+        )
+        == 0
+    )
+    candidate = load_config(pending_config_path(home))
+    assert (candidate.model, candidate.rerank_model) == (None, "rerank")
+
+    atomic_write(current_path, config_bytes(candidate))
+    assert configure.configure_command(_configure_args(clear_rerank_model=True)) == 1
+    assert (
+        configure.configure_command(
+            _configure_args(model="chat-model", clear_rerank_model=True)
+        )
+        == 0
+    )
+    restored = load_config(pending_config_path(home))
+    assert (restored.model, restored.rerank_model) == ("chat-model", None)
+    assert b'"rerank_model"' not in config_bytes(restored)
 
 
 def test_configure_launchctl_wrappers(monkeypatch):

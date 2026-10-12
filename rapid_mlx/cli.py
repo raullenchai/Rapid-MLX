@@ -1292,6 +1292,8 @@ def _serve_audio_mode(args, entry) -> None:
     # ``Model:`` line prints before ``Pre-loading embedding model:``).
     if getattr(args, "embedding_model", None):
         _load_embedding_model_or_exit(args, server.load_embedding_model)
+    if getattr(args, "rerank_model", None):
+        _load_rerank_model_or_exit(args, server.load_rerank_model)
 
     # Stamp the bind source-of-truth so the post-bind "Ready:" banner
     # prints the right URL. Mirrors the text-path block.
@@ -1339,7 +1341,7 @@ def _serve_audio_mode(args, entry) -> None:
 
 
 # Auth, body-size, CORS, trusted-host and rate-limit setup for serve modes
-# that skip ``server.load_model`` (audio-only, embeddings-only).
+# that skip ``server.load_model`` (audio-only, retrieval-only).
 def _configure_engineless_server_security(args, server) -> None:
     import os
 
@@ -1370,12 +1372,12 @@ def _configure_engineless_server_security(args, server) -> None:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
 
-def _serve_embedding_only_mode(args) -> None:
-    """Serve ``/v1/embeddings`` for ``--embedding-model`` without a primary model.
+def _serve_retrieval_only_mode(args) -> None:
+    """Serve ``/v1/embeddings`` and/or ``/v1/rerank`` without a primary model.
 
-    Lets scaled deployments run dedicated embedding replicas without a chat
-    model on disk. Chat/completion routes answer 503 because no engine is
-    loaded.
+    Lets scaled deployments run dedicated embedding or rerank replicas without
+    a chat model on disk. Chat/completion routes answer 503 because no engine
+    is loaded.
     """
     import sys
 
@@ -1386,10 +1388,13 @@ def _serve_embedding_only_mode(args) -> None:
     uvicorn_log_level = server.configure_logging(args.log_level)
     _configure_engineless_server_security(args, server)
     server._sync_config()
-    _load_embedding_model_or_exit(args, server.load_embedding_model)
+    if getattr(args, "embedding_model", None):
+        _load_embedding_model_or_exit(args, server.load_embedding_model)
+    if getattr(args, "rerank_model", None):
+        _load_rerank_model_or_exit(args, server.load_rerank_model)
 
     print()
-    print("  Embeddings-only mode: no primary model loaded.")
+    print("  Retrieval-only mode: no primary model loaded.")
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
     cfg = get_config()
@@ -1506,6 +1511,54 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         )
         sys.exit(1)
     print(f"Embedding model loaded: {args.embedding_model}")
+
+
+def _load_rerank_model_or_exit(args, load_fn) -> None:
+    """Pre-load ``--rerank-model`` (alias-resolved) or exit with a clean error.
+
+    ``load_fn`` is ``rapid_mlx.server.load_rerank_model``, passed in so tests
+    can substitute it.
+    """
+    from .model_aliases import resolve_model
+    from .rerank import UnsupportedRerankModelError, normalize_max_length
+
+    try:
+        max_length = normalize_max_length(getattr(args, "rerank_max_length", "auto"))
+    except ValueError as exc:
+        print(f"error: --rerank-max-length {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    original = args.rerank_model
+    resolved = resolve_model(original)
+    if resolved != original:
+        print(f"  Rerank alias: {original} → {resolved}")
+        args.rerank_model = resolved
+    print(f"Pre-loading rerank model: {args.rerank_model}")
+    try:
+        load_fn(
+            args.rerank_model,
+            max_documents=getattr(args, "rerank_max_documents", 0) or 0,
+            max_length=max_length,
+            overflow_policy=getattr(args, "rerank_overflow_policy", "truncate"),
+            instruction=getattr(args, "rerank_instruction", None),
+            prompt=getattr(args, "rerank_prompt", None),
+            model_family=getattr(args, "rerank_model_family", None),
+        )
+    except UnsupportedRerankModelError as exc:
+        print(f"\n  Error: --rerank-model {exc}\n")
+        sys.exit(1)
+    except _embedding_not_found_exception_classes() as exc:
+        print(
+            f"\n  Error: --rerank-model '{original}' could not be loaded "
+            f"({type(exc).__name__}: {exc})."
+        )
+        print(
+            "  Tip: pass the full HuggingFace id of a supported reranker "
+            "(e.g. ``mlx-community/Qwen3-Reranker-0.6B-mxfp8``) or a local "
+            "model directory.\n"
+        )
+        sys.exit(1)
+    print(f"Rerank model loaded: {args.rerank_model}")
 
 
 def _check_disk_space(
@@ -3233,6 +3286,7 @@ def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
         getattr(args, "_original_alias", None)
         or getattr(args, "model", None)
         or getattr(args, "embedding_model", None)
+        or getattr(args, "rerank_model", None)
     )
     value = os.environ.get(LANES_ENV, "1")
     profiles = ", ".join(sorted(QUALIFIED_PROFILES))
@@ -3820,6 +3874,8 @@ def _preflight_native_mtp_or_exit(args):
         unsupported.append("--mcp-config")
     if getattr(args, "embedding_model", None):
         unsupported.append("--embedding-model")
+    if getattr(args, "rerank_model", None):
+        unsupported.append("--rerank-model")
     if getattr(args, "enable_disk_stream", False):
         unsupported.append("--disk-stream")
     if getattr(args, "mllm", False):
@@ -4048,6 +4104,8 @@ def _preflight_companion_dspark_or_exit(args):
         unsupported.append("--mcp-config")
     if getattr(args, "embedding_model", None):
         unsupported.append("--embedding-model")
+    if getattr(args, "rerank_model", None):
+        unsupported.append("--rerank-model")
     if getattr(args, "enable_auto_tool_choice", False):
         unsupported.append("--enable-auto-tool-choice")
     if unsupported:
@@ -5438,6 +5496,7 @@ def _cua_only_incompatible_options(args) -> list[str]:
         "model": getattr(args, "model", None),
         "served-model-name": getattr(args, "served_model_name", None),
         "embedding-model": getattr(args, "embedding_model", None),
+        "rerank-model": getattr(args, "rerank_model", None),
         "enable-audio": getattr(args, "enable_audio", False),
         "mcp-config": getattr(args, "mcp_config", None),
         "video-output-dir": getattr(args, "video_output_dir", None),
@@ -5455,8 +5514,8 @@ def _cua_only_incompatible_options(args) -> list[str]:
     return [f"--{name}" for name, value in checks.items() if value]
 
 
-def _embedding_only_incompatible_options(args) -> list[str]:
-    """Return primary-model options that cannot apply to an embeddings-only server."""
+def _retrieval_only_incompatible_options(args) -> list[str]:
+    """Return primary-model options that cannot apply to a retrieval-only server."""
 
     explicit = getattr(args, "_serve_explicit_options", None)
     if explicit is not None:
@@ -5477,6 +5536,13 @@ def _embedding_only_incompatible_options(args) -> list[str]:
             "--embedding-model",
             "--embedding-max-length",
             "--embedding-overflow-policy",
+            "--rerank-model",
+            "--rerank-model-family",
+            "--rerank-max-documents",
+            "--rerank-max-length",
+            "--rerank-overflow-policy",
+            "--rerank-instruction",
+            "--rerank-prompt",
             "--disable-disk-caches",
             "--disable-model-downloads",
         }
@@ -5683,14 +5749,14 @@ def serve_command(args):
         _serve_cua_only_mode(args)
         return
 
-    embeddings_only = not getattr(args, "model", None) and bool(
-        getattr(args, "embedding_model", None)
+    retrieval_only = not getattr(args, "model", None) and bool(
+        getattr(args, "embedding_model", None) or getattr(args, "rerank_model", None)
     )
-    if embeddings_only:
-        incompatible = _embedding_only_incompatible_options(args)
+    if retrieval_only:
+        incompatible = _retrieval_only_incompatible_options(args)
         if incompatible:
             print(
-                "rapid-mlx serve without a model (embeddings-only) cannot be "
+                "rapid-mlx serve without a model (retrieval-only) cannot be "
                 "combined with " + ", ".join(incompatible),
                 file=sys.stderr,
             )
@@ -5737,16 +5803,24 @@ def serve_command(args):
 
     install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
 
-    if embeddings_only:
+    if retrieval_only:
         _reject_tensorfold_lanes_off_lane_or_exit(args)
+        served = " ".join(
+            f"--{flag} {value}"
+            for flag, value in (
+                ("embedding-model", getattr(args, "embedding_model", None)),
+                ("rerank-model", getattr(args, "rerank_model", None)),
+            )
+            if value
+        )
         args.port = _resolve_serve_port(
             getattr(args, "host", "127.0.0.1"),
             getattr(args, "port", None),
-            model=f"--embedding-model {args.embedding_model}",
+            model=served,
             port_explicit=port_explicit_for(args),
             listen_fd=getattr(args, "listen_fd", None),
         )
-        _serve_embedding_only_mode(args)
+        _serve_retrieval_only_mode(args)
         return
 
     _arg_max_tokens = getattr(args, "max_tokens", None)
@@ -6874,6 +6948,8 @@ def serve_command(args):
             _dflash_ignored.append("--enable-tool-logits-bias")
         if getattr(args, "embedding_model", None):
             _dflash_ignored.append("--embedding-model")
+        if getattr(args, "rerank_model", None):
+            _dflash_ignored.append("--rerank-model")
         if getattr(args, "mcp_config", None):
             _dflash_ignored.append("--mcp-config")
         if _dflash_ignored:
@@ -6906,6 +6982,8 @@ def serve_command(args):
             _ddtree_ignored.append("--reasoning-parser")
         if getattr(args, "embedding_model", None):
             _ddtree_ignored.append("--embedding-model")
+        if getattr(args, "rerank_model", None):
+            _ddtree_ignored.append("--rerank-model")
         if getattr(args, "mcp_config", None):
             _ddtree_ignored.append("--mcp-config")
         if _ddtree_ignored:
@@ -7161,6 +7239,8 @@ def serve_command(args):
     # ``ModuleNotFoundError``.
     if args.embedding_model:
         _load_embedding_model_or_exit(args, server.load_embedding_model)
+    if getattr(args, "rerank_model", None):
+        _load_rerank_model_or_exit(args, server.load_rerank_model)
 
     # Resolve per-alias TurboQuant default before the mutual-exclusion
     # check below — operator-explicit values still win. The
@@ -14746,6 +14826,7 @@ def main():
         and not args.model
         and not getattr(args, "cua_only", False)
         and not getattr(args, "embedding_model", None)
+        and not getattr(args, "rerank_model", None)
     ):
         print("rapid-mlx serve: a model is required.", file=sys.stderr)
         print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)

@@ -20,6 +20,7 @@ _MODEL_TYPES = frozenset(
         "llm",
         "vlm",
         "embedding",
+        "rerank",
         "image-gen",
         "video-gen",
         "text-diffusion",

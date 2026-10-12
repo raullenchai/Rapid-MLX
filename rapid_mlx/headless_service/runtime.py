@@ -120,11 +120,7 @@ def run_command(args) -> int:
             config.host,
             "--port",
             str(config.port),
-            *(
-                ["--embedding-model", config.embedding_model]
-                if config.embedding_model
-                else []
-            ),
+            *config.retrieval_argv(),
             *config.serve_args,
         ]
         return _supervise(argv, env, config)

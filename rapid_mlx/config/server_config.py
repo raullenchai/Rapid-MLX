@@ -156,6 +156,12 @@ class ServerConfig:
     embedding_engine: Any = None
     embedding_model_locked: str | None = None
 
+    # --- Reranking ---
+    rerank_engine: Any = None
+    rerank_model_locked: str | None = None
+    # ``--rerank-max-documents``; 0 or negative disables the limit.
+    rerank_max_documents: int = 0
+
     # --- Auth ---
     api_key: str | None = None
 
@@ -252,15 +258,17 @@ class ServerConfig:
     kv_cache_dtype: str | None = None
 
     @property
-    def embeddings_only(self) -> bool:
-        # ``serve --embedding-model X`` without a primary model.
-        return self.model_name is None and self.embedding_engine is not None
+    def retrieval_only(self) -> bool:
+        # ``serve --embedding-model``/``--rerank-model`` without a primary model.
+        return self.model_name is None and (
+            self.embedding_engine is not None or self.rerank_engine is not None
+        )
 
     @property
     def model_loaded(self) -> bool:
         if self.primary_model_lifecycle is not None:
             return bool(self.primary_model_lifecycle.model_loaded)
-        return self.engine is not None or self.embeddings_only
+        return self.engine is not None or self.retrieval_only
 
 
 # Singleton instance

@@ -315,6 +315,17 @@ def test_install_dry_run_embeddings_only(monkeypatch, capsys):
     assert "  embedding model: embeddinggemma-300m-6bit" in out
 
 
+# Only --rerank-model installs a rerank-only service, no default model.
+def test_install_dry_run_rerank_only(monkeypatch, capsys):
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins_mod, "_port_busy", staticmethod(lambda h, p: False))
+    code = ins_mod.install_command(_ns(model=None, rerank_model="rerank-model"))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "  model: (none)" in out
+    assert "  rerank model: rerank-model" in out
+
+
 # Neither --model nor --embedding-model keeps the documented default model.
 def test_install_dry_run_defaults_model_without_embedding_model(monkeypatch, capsys):
     _valid_user_monkeypatch(monkeypatch)
@@ -325,7 +336,7 @@ def test_install_dry_run_defaults_model_without_embedding_model(monkeypatch, cap
     assert "embedding model" not in out
 
 
-@pytest.mark.parametrize("flag", ["--model", "--embedding-model"])
+@pytest.mark.parametrize("flag", ["--model", "--embedding-model", "--rerank-model"])
 def test_install_rejects_explicit_empty_model(monkeypatch, capsys, flag):
     _valid_user_monkeypatch(monkeypatch)
     args = build_parser().parse_args(
@@ -1311,6 +1322,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
         executable="/opt/rapid/bin/rapid-mlx",
         model="model-from-config",
         embedding_model="embed-from-config",
+        rerank_model="rerank-from-config",
         host="127.0.0.1",
         port=8123,
         credential_file=None,
@@ -1337,6 +1349,7 @@ def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_pa
     assert status["pending_config"] is True
     assert status["model"] == "model-from-config"
     assert status["embedding_model"] == "embed-from-config"
+    assert status["rerank_model"] == "rerank-from-config"
     assert status["port"] == 8123
     assert status["config_sha256"] == "digest"
 
@@ -1409,6 +1422,8 @@ def test_render_human_lines():
     embedding_text = st._render_human(dict(s, model=None, embedding_model="embed"))
     assert "embedding model:       embed" in embedding_text
     assert "  model:" not in embedding_text
+    rerank_text = st._render_human(dict(s, model=None, rerank_model="rerank"))
+    assert "rerank model:          rerank" in rerank_text
 
     lifecycle_status = dict(
         s,

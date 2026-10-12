@@ -1020,6 +1020,7 @@ def _register_canonical_request_models() -> None:
             ChatCompletionRequest,
             CompletionRequest,
             EmbeddingRequest,
+            RerankRequest,
         )
         from ..api.responses_models import ResponsesRequest
     except Exception:  # pragma: no cover — defensive
@@ -1033,6 +1034,7 @@ def _register_canonical_request_models() -> None:
         ChatCompletionRequest,
         CompletionRequest,
         EmbeddingRequest,
+        RerankRequest,
         AnthropicRequest,
         ResponsesRequest,
         # R7-M8: AudioSpeechRequest binds the TTS request body and
@@ -1052,6 +1054,7 @@ def _register_canonical_request_models() -> None:
     register_request_path("/v1/chat/completions", ChatCompletionRequest)
     register_request_path("/v1/completions", CompletionRequest)
     register_request_path("/v1/embeddings", EmbeddingRequest)
+    register_request_path("/v1/rerank", RerankRequest)
     register_request_path("/v1/messages", AnthropicRequest)
     register_request_path("/v1/responses", ResponsesRequest)
     # R7-M8: ``input`` lives on three different request models
