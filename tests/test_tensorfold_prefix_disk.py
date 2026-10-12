@@ -445,6 +445,7 @@ def test_successful_install_uses_override_and_never_enables_sessions(
     )
     scheduler.on_engine = lambda fn: fn(app.engine)
     monkeypatch.setattr(module, "_qualified", lambda _: True)
+    monkeypatch.setattr(module, "_assets_unchanged", lambda *a: True)
     monkeypatch.setattr(module, "_identity", lambda *a: "qualified")
     monkeypatch.setenv(module.DIRECTORY_ENV, str(disk.directory))
     install_prefix_disk(app, tmp_path)
@@ -586,3 +587,74 @@ def test_write_validation_does_not_allocate_another_mlx_cache(
         patch.setattr(np, "frombuffer", unexpected)
         path = stored(disk, item)
     assert disk.load(path) is not None
+
+
+def test_checkpoint_replacement_during_identity_hash_disables_install(
+    tmp_path, runtime
+):
+    import subprocess
+    import sys
+
+    target = tmp_path / "model"
+    target.mkdir()
+    (target / "weights.safetensors").write_bytes(b"old")
+    script = r"""
+import os, sys
+from pathlib import Path
+from types import SimpleNamespace
+import mlx.core as mx
+from tensorfold.engine.alternating_kv import AlternatingKVCache
+from rapid_mlx.speculative import tensorfold_prefix_disk as module
+c = AlternatingKVCache()
+c.keys = c.values = mx.ones((1, 2, 4, 8))
+c.offset = 4
+scheduler = SimpleNamespace(snapshot_dir=None, _persist='original', _read_disk_block='original')
+engine = SimpleNamespace(prefill_prefix=lambda ids: [c])
+scheduler.on_engine = lambda fn: fn(engine)
+app = SimpleNamespace(scheduler=scheduler, checkpoints=object(), context_window=32768,
+                      _model=SimpleNamespace(mtp=None), engine=engine,
+                      tokenizer=SimpleNamespace(encode=lambda *a, **kw: [10]))
+module._qualified = lambda _: True
+os.environ[module.ENABLE_ENV] = '1'
+os.environ[module.DIRECTORY_ENV] = sys.argv[2]
+def changed_identity(*args):
+    (Path(sys.argv[1]) / 'weights.safetensors').write_bytes(b'new')
+    return 'new-contents-for-already-loaded-old-model'
+module._identity = changed_identity
+module.install_prefix_disk(app, Path(sys.argv[1]))
+assert not hasattr(app, '_rapid_prefix_disk')
+assert scheduler._persist == scheduler._read_disk_block == 'original'
+assert scheduler.snapshot_dir is None
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(target), str(tmp_path / "snapshots")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (target / "weights.safetensors").read_bytes() == b"new"
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_asset_guard_rejects_changed_symlink_even_to_old_blob(tmp_path):
+    import time
+
+    from rapid_mlx.speculative.tensorfold_prefix_disk import _assets_unchanged
+
+    target = tmp_path / "model"
+    target.mkdir()
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"old")
+    link = target / "weights.safetensors"
+    link.symlink_to(blob)
+    app = SimpleNamespace(_model=SimpleNamespace(mtp=None))
+    # All assets predate a hypothetical future process birth.
+    assert _assets_unchanged(target, None, app, time.time() + 60)
+    started_at = time.time() - 60
+    assert not _assets_unchanged(target, None, app, started_at)
+    # An old blob mtime cannot hide a fresh link status-change time.
+    import os
+
+    os.utime(blob, (started_at - 60, started_at - 60))
+    assert not _assets_unchanged(target, None, app, started_at)

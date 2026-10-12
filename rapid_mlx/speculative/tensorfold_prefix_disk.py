@@ -107,7 +107,8 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
             raise ValueError("unidentified MTP head")
     return json.dumps(
         {
-            "format": 2,
+            "format": 3,
+            "asset_policy": "unchanged-before-process-start",
             "target": _artifact(target),
             "drafter": _artifact(drafter),
             "mtp": mtp,
@@ -133,6 +134,42 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
         },
         sort_keys=True,
     )
+
+
+def _assets_unchanged(
+    target: Path, drafter: Path | None, app: Any, started_at: float
+) -> bool:
+    """Fail closed if model assets changed since this process was created.
+
+    The runtime has already loaded its weights when this hook runs. Comparing
+    only post-load hashes could label old live weights with replacement files.
+    Checking status-change times both before and after hashing conservatively
+    rejects ordinary writes/replacements during initialization, including a
+    symlink switched to an older blob. Process-birth time is a safe lower bound
+    on any model load; freshly downloaded assets require another process.
+    This relies on local filesystem ctime and clock semantics, not an atomic
+    parameter digest or protection against privileged timestamp manipulation.
+    """
+    roots = [target, *([drafter] if drafter is not None else [])]
+    if getattr(app._model, "mtp", None) is not None:
+        from tensorfold.families.nemotron_h.model import find_mtp_head
+
+        head = find_mtp_head(target)
+        if head is None:
+            return False
+        roots.append(head)
+    for root in roots:
+        entries = [root.parent, root]
+        if root.is_dir():
+            entries.extend(root.rglob("*"))
+        for entry in entries:
+            # lstat sees replacement of a link; stat sees changes to its blob.
+            if (
+                entry.lstat().st_ctime >= started_at
+                or entry.stat().st_ctime >= started_at
+            ):
+                return False
+    return True
 
 
 def _qualified(scheduler: Any) -> bool:
@@ -601,7 +638,20 @@ def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> 
         scheduler = app.scheduler
         if app.checkpoints is None or not _qualified(scheduler):
             return
+        import psutil
+
+        started_at = psutil.Process().create_time()
+        if not _assets_unchanged(target, drafter, app, started_at):
+            logger.warning(
+                "TensorFold model assets changed since process start; disk prefixes off"
+            )
+            return
         model_id = _identity(target, drafter, app)
+        if not _assets_unchanged(target, drafter, app, started_at):
+            logger.warning(
+                "TensorFold model assets changed during hashing; disk prefixes off"
+            )
+            return
         directory = Path(
             os.environ.get(
                 DIRECTORY_ENV,
