@@ -837,6 +837,7 @@ def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime, monkeypa
     import types
 
     from tensorfold.engine.family_prefill import FamilyPrefill
+    from tensorfold.engine.prefix_snapshots import load_snapshot, save_snapshot
     from tensorfold.families.nemotron_h.model import NemotronH
     from tensorfold.families.nemotron_h.mtp import MTPCache
 
@@ -882,7 +883,16 @@ def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime, monkeypa
     disk.save(prompt[:512], [checkpoint], prompt=prompt, shared_prefix_len=513)
     path = next(disk.directory.glob("*.safetensors"))
     assert json.loads(disk._metadata(path)["lookahead"]) == 999
-    assert disk.load(path)[1][0].keys[0, 0, 511, 0].item() == 999
+    restored = disk.load(path)[1][0]
+    assert restored.keys[0, 0, 511, 0].item() == 999
+    # Trusted synthetic reference only: exercise the pinned writer/reader too.
+    # Production never invokes this import-by-name native loader.
+    native = save_snapshot(
+        tmp_path / "native-reference", "review", prompt[:512], [checkpoint]
+    )
+    native_tokens, native_cache = load_snapshot(native, "review")
+    assert native_tokens == prompt[:512]
+    assert mx.array_equal(native_cache[0].keys[..., :512, :], restored.keys).item()
     entries = []
     scheduler = SimpleNamespace(
         checkpoints=SimpleNamespace(
