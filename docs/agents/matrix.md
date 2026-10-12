@@ -1,5 +1,7 @@
 # Agent × Family support matrix
 
+Goose and Crush have separate current setup guides: [Goose](goose.md) and [Crush](crush.md). They are not cells in this historical family matrix.
+
 This page renders the **agent × model-family** integration matrix
 truthfully from the authoritative test suite in
 `tests/integrations/` — the matrix cells

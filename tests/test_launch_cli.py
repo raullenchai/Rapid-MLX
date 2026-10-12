@@ -962,7 +962,7 @@ class TestLaunchCommand:
         assert excinfo.value.code == 0
         targets = json.loads(capsys.readouterr().out)
         ids = [target["id"] for target in targets]
-        assert len(ids) == len(set(ids)) == 16
+        assert len(ids) == len(set(ids)) == 18
         assert "deepseek-harness" in ids
         # The launch registry's four config writers lead in display order;
         # pi is the highest-starred agents profile not already covered.

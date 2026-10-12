@@ -241,6 +241,15 @@ class AgentProfile:
                     "{pi_api_key}",
                     "$RAPID_MLX_API_KEY" if has_rapid_key else "not-needed",
                 )
+                .replace(
+                    "{crush_api_key}",
+                    "$RAPID_MLX_API_KEY" if has_rapid_key else "not-needed",
+                )
+                .replace(
+                    "{goose_api_key_env}",
+                    "RAPID_MLX_API_KEY" if has_rapid_key else "",
+                )
+                .replace("{goose_requires_auth}", "true" if has_rapid_key else "false")
             )
 
         if cfg.type == "env":

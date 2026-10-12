@@ -165,6 +165,23 @@ def _resolve_config_path(cfg) -> Path:
     """
     assert cfg.path
     default = Path(os.path.expanduser(cfg.path))
+    if cfg.path == "~/.config/goose/custom_providers/custom_rapid_mlx.json":
+        goose_root = os.environ.get("GOOSE_PATH_ROOT", "").strip()
+        if goose_root and Path(goose_root).is_absolute():
+            return Path(goose_root) / "config/custom_providers/custom_rapid_mlx.json"
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if xdg_config:
+            return (
+                Path(os.path.expanduser(xdg_config))
+                / "goose/custom_providers/custom_rapid_mlx.json"
+            )
+    if (
+        cfg.path == "~/.config/crush/crush.json"
+        and not os.environ.get("CRUSH_GLOBAL_CONFIG", "").strip()
+    ):
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if xdg_config:
+            return Path(os.path.expanduser(xdg_config)) / "crush/crush.json"
     home_env = getattr(cfg, "home_env", None)
     if not home_env:
         return default
@@ -330,6 +347,7 @@ def setup_agent_config(
                 rendered,
                 cfg.type,
                 hermes_supported_toolsets=hermes_supported_toolsets,
+                preserve_goose_models=profile.name == "goose",
             )
         except OSError as exc:
             track_failure("other")
@@ -475,6 +493,7 @@ def _merge_file_config(
     config_type: str,
     *,
     hermes_supported_toolsets: set[str] | None = None,
+    preserve_goose_models: bool = False,
 ) -> str:
     """Merge *rendered* template into an existing config file.
 
@@ -501,7 +520,9 @@ def _merge_file_config(
         )
     if config_type == "toml":
         return _merge_toml(existing_text, rendered)
-    return _merge_json(existing_text, rendered)
+    return _merge_json(
+        existing_text, rendered, preserve_goose_models=preserve_goose_models
+    )
 
 
 def _merge_toml(existing_text: str, rendered: str) -> str:
@@ -619,7 +640,9 @@ def _merge_yaml(
     return yaml.dump(merged, default_flow_style=False, sort_keys=False)
 
 
-def _merge_json(existing_text: str, rendered: str) -> str:
+def _merge_json(
+    existing_text: str, rendered: str, *, preserve_goose_models: bool = False
+) -> str:
     """Parse both JSON strings, deep-merge, and re-serialize.
 
     Same error semantics as ``_merge_yaml``.
@@ -641,6 +664,26 @@ def _merge_json(existing_text: str, rendered: str) -> str:
     if not isinstance(template, dict):
         raise _MergeParseError("rendered template is not a JSON object")
     merged = _deep_merge(existing, template)
+    if (
+        preserve_goose_models
+        and isinstance(existing.get("models"), list)
+        and isinstance(template.get("models"), list)
+    ):
+        # Goose's provider catalog identifies models by name, not id. Refresh
+        # only the selected entries, preserving user models and their order.
+        # Keep this root-level rule local to Goose; other lists still replace.
+        models = list(existing["models"])
+        for entry in template["models"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                raise _MergeParseError("rendered Goose model must have a name")
+            matched = False
+            for index, current in enumerate(models):
+                if isinstance(current, dict) and current.get("name") == entry["name"]:
+                    models[index] = _deep_merge(current, entry)
+                    matched = True
+            if not matched:
+                models.append(entry)
+        merged["models"] = models
     if merged == existing:
         return existing_text
     return json.dumps(merged, indent=2, ensure_ascii=False) + "\n"

@@ -998,14 +998,14 @@ def test_agents_footer_counts_agents_and_frameworks_separately(
     builtin_profiles, monkeypatch, capsys
 ):
     """The ``rapid-mlx agents`` footer must not count frameworks as
-    agents: 15 rows are 12 agents + 3 frameworks (#2082)."""
+    agents: 17 rows are 14 agents + 3 frameworks (#2082)."""
     import rapid_mlx.cli as cli
 
     monkeypatch.setattr("sys.argv", ["rapid-mlx", "agents"])
     cli.main()
     out = capsys.readouterr().out
-    assert "12 agents + 3 frameworks supported" in out
-    assert "14 agents supported" not in out
+    assert "14 agents + 3 frameworks supported" in out
+    assert "17 agents supported" not in out
     assert "GitHub" in out
     assert "tools" in out
     assert "FC = function calling" in out

@@ -318,8 +318,9 @@
         "profiles, so they are not here."
       ],
       "values": [
-        "aider", "claude-code", "codex", "continue", "deepseek-harness",
-        "hermes", "kilo-code", "langchain", "opencode", "openhands",
+        "aider", "claude-code", "codex", "continue", "crush",
+        "deepseek-harness", "goose", "hermes", "kilo-code", "langchain",
+        "opencode", "openhands",
         "pi", "pydanticai", "qwen-code", "smolagents", "other"
       ]
     },
