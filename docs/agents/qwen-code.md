@@ -6,7 +6,7 @@ it speaks the **OpenAI-compatible chat completions API**
 (`POST /v1/chat/completions`) via an OpenAI entry in `modelProviders` that
 maps 1:1 onto rapid-mlx's default endpoint.
 
-Verified via wire smoke against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-1
+Verified via wire smoke against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-2
 agent matrix (`tests/integrations/test_agents_matrix.py::TestQwenCode`). See
 the [support matrix](matrix.md) for the current per-family status.
 
@@ -16,7 +16,7 @@ the [support matrix](matrix.md) for the current per-family status.
 |---|---|
 | Wire | `POST /v1/chat/completions` (OpenAI-compatible) |
 | Base URL | `http://localhost:8000/v1` — **must include `/v1`** |
-| Config file | `~/.qwen/settings.json` (or `./qwen.json`) |
+| Config file | `~/.qwen/settings.json` (or project `.qwen/settings.json`) |
 | Auto-setup | `rapid-mlx agents qwen-code --setup` |
 
 ## TL;DR
@@ -63,8 +63,8 @@ schema below (the older `openaiCompatible` object is no longer recognized):
 }
 ```
 
-> **Note:** Qwen Code hardcodes the OpenAI-compat `/v1` suffix expectation —
-> set `baseUrl` to `http://localhost:8000/v1`, **not** the root URL.
+> **Note:** The OpenAI-compatible provider sends chat completions relative to
+> `baseUrl`. Set it to `http://localhost:8000/v1`.
 
 ## Per-family setup
 
@@ -113,8 +113,8 @@ Then run `rapid-mlx agents qwen-code --setup`.
 
 ## Troubleshooting
 
-- **`<think>` traces leaking into content on Qwen 3.6** — upgrade Qwen Code
-  to >= 1.2; older releases stripped `chat_template_kwargs` before sending.
+- **A reply without the requested tool result** — confirm the tool actually
+  ran. A reply alone does not prove a coding task completed.
 - **404 / connection issues** — confirm `baseUrl` ends in `/v1`, not the
   root host.
 

@@ -9,9 +9,9 @@ stars: 25700
 # baseUrl config that maps 1:1 onto rapid-mlx's default endpoint. No
 # response transform needed — plain OpenAI wire.
 #
-# Config lives at ~/.qwen/settings.json (project-level ./qwen.json also
-# supported). Three env vars OR the settings.json block below — env
-# always wins.
+# Config lives at ~/.qwen/settings.json (project-level .qwen/settings.json
+# is also supported). A selected modelProviders entry supplies its endpoint
+# and reads its credential from the named envKey.
 config:
   type: json
   path: "~/.qwen/settings.json"
@@ -69,6 +69,4 @@ capabilities:
   streaming: true
 
 known_issues:
-  - "Set the OpenAI provider baseUrl to the full `http://localhost:8000/v1` endpoint, not the server root."
-  - "Older releases (< 1.2) had an issue where `chat_template_kwargs` was stripped before send; upgrade if you see `<think>` traces leaking into `content` on Qwen3.6."
-  - "Alibaba banned Claude Code internally over alleged backdoor risks (2026-07-03) — qwen-code + rapid-mlx is the local, source-visible alternative."
+  - "Set the OpenAI provider baseUrl to the full `http://localhost:8000/v1` endpoint; Qwen Code sends chat completions relative to that URL."

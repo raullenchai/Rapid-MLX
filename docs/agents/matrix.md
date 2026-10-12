@@ -1,6 +1,6 @@
 # Agent × Family support matrix
 
-This page renders the Tier-1 **agent × model-family** integration matrix
+This page renders the **agent × model-family** integration matrix
 truthfully from the authoritative test suite in
 `tests/integrations/` — the matrix cells
 (`test_agents_matrix.py`), the family aliases and strict-xfail rules
