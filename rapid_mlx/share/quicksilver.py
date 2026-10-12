@@ -485,7 +485,7 @@ def resolve_catalog(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def _resolve_serve_hf_path(serve_alias: str) -> str:
-    """HF repo for the download-confirmation gate; falls back to the
+    """HF repo for download confirmation and legacy cache cleanup; falls back to the
     alias itself when it is not a registered alias (local path / raw HF
     repo id passed by hand)."""
     try:
@@ -494,6 +494,7 @@ def _resolve_serve_hf_path(serve_alias: str) -> str:
         profile = resolve_profile(serve_alias)
         if isinstance(profile, dict):
             return str(profile.get("hf_path") or serve_alias)
+        return str(getattr(profile, "hf_path", None) or serve_alias)
     except Exception:  # pragma: no cover — the gate must never crash share
         pass
     return serve_alias

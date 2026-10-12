@@ -297,3 +297,39 @@ def test_cleanup_locks_before_scanning_initially_missing_root(tmp_path, monkeypa
 
     monkeypatch.setattr(privacy, "_clear_locked_snapshots", check_locks)
     assert clear_legacy_prompt_cache("model") == 0
+
+
+@pytest.mark.parametrize("contended", [False, True])
+def test_pool_real_alias_cleans_repository_namespace(tmp_path, monkeypatch, contended):
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.share.quicksilver import _resolve_serve_hf_path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    alias = "qwen3.8-27b-4bit"
+    repository = resolve_profile(alias).hf_path
+    assert repository != alias
+    safe = repository.replace("/", "--")
+    fingerprint = sorted(_known_namespaces(repository, safe))[0]
+    root = tmp_path / ".cache/rapid-mlx/prefix_cache"
+    snapshots = [root / (fingerprint + suffix) for suffix in ("", ".new", ".old")]
+    unrelated = root / "unrelated"
+    for snapshot in [*snapshots, unrelated]:
+        snapshot.mkdir(parents=True)
+        (snapshot / "tokens.bin").write_bytes(b"synthetic")
+
+    def cleanup():
+        return sum(
+            clear_legacy_prompt_cache(model)
+            for model in {alias, _resolve_serve_hf_path(alias)}
+        )
+
+    if contended:
+        with (root / (fingerprint + ".txlock")).open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with pytest.raises(OSError, match="in use"):
+                cleanup()
+        assert all(snapshot.exists() for snapshot in snapshots)
+    else:
+        assert cleanup() == 3
+        assert all(not snapshot.exists() for snapshot in snapshots)
+    assert (unrelated / "tokens.bin").read_bytes() == b"synthetic"
