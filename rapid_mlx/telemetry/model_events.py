@@ -286,6 +286,14 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
             if isinstance(current, TokenizerLoadFailed):
                 return "tokenizer_load_failed"
             if isinstance(current, IncompatibleWeights):
+                from rapid_mlx.local_serve_diagnostics import local_serve_diagnostic
+
+                local_detail = local_serve_diagnostic(exc, model_ref)
+                if (
+                    local_detail is not None
+                    and local_detail[0] == "quantization_mismatch"
+                ):
+                    return "quantization_mismatch"
                 return "incompatible_weights"
             if isinstance(current, QuantizationMismatch):
                 return "quantization_mismatch"
@@ -363,6 +371,11 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
                 for marker in ("safetensor", "corrupt", "checksum", "size mismatch")
             ):
                 return "corrupt_weights"
+        from rapid_mlx.local_serve_diagnostics import local_serve_diagnostic
+
+        local_detail = local_serve_diagnostic(exc, model_ref)
+        if local_detail is not None:
+            return local_detail[0]
     except BaseException:
         return "other"
     return "other"

@@ -40,6 +40,7 @@ import functools
 import gc
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -919,6 +920,11 @@ async def lifespan(app: FastAPI):
                 auto_selected=_telemetry_auto_selected,
                 failure_stage="engine_start",
             )
+            from rapid_mlx.local_serve_diagnostics import startup_error_lines
+
+            if detail := startup_error_lines(_start_exc, _model_alias or _model_path):
+                print(f"  Cause: {detail[0]}", file=sys.stderr)
+                print(f"  Next step: {detail[1]}", file=sys.stderr)
             raise
 
     if _engine is not None and getattr(_engine, "is_text_diffusion", False):
