@@ -13570,7 +13570,7 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
+        # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
         # flows. They preview an exact diff, require consent, back up existing config,
         # write atomically, and verify the server afterwards. The generic
         # profile writer below still lacks the diff/consent/backup half, but
@@ -13659,6 +13659,15 @@ def agents_command(args):
                 # verification passed, was skipped with --no-check, or was
                 # deferred because no server was running yet.
                 track_agent_configured(plan.agent)
+            if profile.name == "cline":
+                from rapid_mlx.launch import cline
+
+                for note in cline.post_setup_notes(
+                    base_url,
+                    model_id,
+                    os.environ.get("RAPID_MLX_API_KEY"),
+                ):
+                    print(f"  {note}")
             print()
             return
 

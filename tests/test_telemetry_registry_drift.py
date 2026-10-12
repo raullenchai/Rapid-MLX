@@ -427,7 +427,9 @@ def test_agent_enum_matches_the_shipped_agent_profiles(registry):
     import rapid_mlx.agents as agents
 
     declared = set(registry["enums"]["agent"]["values"]) - {"other"}
-    assert declared == {profile.name for profile in agents.list_profiles()}
+    # Cline uses the registry's existing "other" fallback until the site
+    # updates its pinned event schema in a coordinated change.
+    assert declared == {profile.name for profile in agents.list_profiles()} - {"cline"}
 
 
 def test_caller_enum_matches_the_user_agent_marker_table(registry):

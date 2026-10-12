@@ -10,11 +10,18 @@ stars: 30000
 config:
   type: yaml
   path: "~/.continue/config.yaml"
+  home_env: CONTINUE_GLOBAL_DIR
 
 models:
   recommended:
     - "qwen3.6-35b-4bit"
     - "qwen3.5-9b-4bit"
+
+testing:
+  binary: cn
+  query_cmd: "cn --auto -p '{query}'"
+  query_timeout: 180
+  install_cmd: "npm install -g @continuedev/cli"
 
 capabilities:
   function_calling: true

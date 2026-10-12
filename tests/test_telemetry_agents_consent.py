@@ -363,12 +363,18 @@ def test_every_agent_profile_emits_one_configured_event(
 ):
     profile = get_profile(agent_name)
     assert profile is not None
-    if agent_name in {"claude-code", "continue", "deepseek-harness"}:
+    if agent_name in {"claude-code", "cline", "continue", "deepseek-harness"}:
         if agent_name == "claude-code":
             monkeypatch.setattr(
                 setup.claude_code,
                 "current_config_path",
                 lambda: tmp_path / "claude-code.json",
+            )
+        elif agent_name == "cline":
+            monkeypatch.setattr(
+                setup.cline,
+                "current_config_path",
+                lambda: tmp_path / "providers.json",
             )
         elif agent_name == "continue":
             monkeypatch.setattr(
@@ -393,7 +399,10 @@ def test_every_agent_profile_emits_one_configured_event(
 
     posthog_sender.get_sender().flush(2.0)
     assert [_event_view(item) for item in _items(loopback_telemetry)] == [
-        {"event": "agent_configured", "properties": {"agent": agent_name}}
+        {
+            "event": "agent_configured",
+            "properties": {"agent": "other" if agent_name == "cline" else agent_name},
+        }
     ]
 
 

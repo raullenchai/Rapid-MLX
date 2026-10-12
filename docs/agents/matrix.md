@@ -75,11 +75,14 @@ Source: `tests/integrations/README.md` "Current cell status" (pilot run
 | <a id="agent-openhands"></a>[openhands](openhands.md) | pinned 0.9.0 Docker → `/v1/chat/completions` | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
 | <a id="agent-hermes-agent"></a>[hermes-agent](hermes-agent.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-aider"></a>[aider](aider.md) | bash CLI → `/v1/chat/completions` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
-| <a id="agent-kilo-code"></a>kilo-code | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| <a id="agent-kilo-code"></a>[kilo-code](kilo-code.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-deepseek-harness"></a>[deepseek-harness](deepseek-harness.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-copilot"></a>copilot | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-droid"></a>droid | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-kimi-code"></a>kimi-code | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+
+[Cline](cline.md) and [Continue](continue.md) have local setup guides but no
+dedicated family matrix rows here.
 
 Notes on cell shape:
 

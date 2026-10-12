@@ -1,0 +1,32 @@
+name: cline
+display_name: "Cline"
+repo: "cline/cline"
+
+# The CLI and VS Code extension share this provider store. The setup plan
+# uses Cline's versioned schema and preserves other providers; the extension
+# may still need its selected provider changed in the settings panel.
+config:
+  type: json
+  path: "~/.cline/data/settings/providers.json"
+  home_env: CLINE_DATA_DIR
+
+models:
+  recommended:
+    - "qwen3.5-9b-4bit"
+    - "qwen3-coder-30b-4bit"
+
+streaming:
+  max_tools: 25
+
+testing:
+  binary: cline
+  query_cmd: "cline --yolo --json '{query}'"
+  query_timeout: 180
+  install_cmd: "npm install -g cline"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "A VS Code session with another provider already selected must switch to OpenAI Compatible in Cline's API Configuration panel."

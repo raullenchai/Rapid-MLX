@@ -100,7 +100,10 @@ def detect() -> bool:
 
 
 def current_config_path() -> Path | None:
-    """Return ``<cline data dir>/settings/providers.json``."""
+    """Return Cline's provider store, honoring its explicit path override."""
+    override = os.environ.get("CLINE_PROVIDER_SETTINGS_PATH", "").strip()
+    if override:
+        return Path(override).expanduser().absolute()
     return _cline_data_dir() / "settings" / "providers.json"
 
 

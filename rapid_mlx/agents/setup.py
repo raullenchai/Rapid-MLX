@@ -29,13 +29,13 @@ from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
 from rapid_mlx.launch import _common as launch_common
-from rapid_mlx.launch import claude_code, continue_dev
+from rapid_mlx.launch import claude_code, cline, continue_dev
 
 # Agents whose ``--setup`` goes through the plan/apply flow below: an exact
 # diff preview, consent (or --yes), a timestamped backup of the existing file
 # and an atomic write. Every CLI entry point routes on this one set.
 FIRST_CLASS_SETUP_AGENTS = frozenset(
-    {"claude-code", "continue", "deepseek-harness", "pi", "qwen-code"}
+    {"claude-code", "cline", "continue", "deepseek-harness", "pi", "qwen-code"}
 )
 
 
@@ -81,7 +81,7 @@ class SetupPlan:
             return "\n".join([diff, *(f"  Note: {note}" for note in self.notes)])
         before_data = self.before
         after_data = self.after
-        if self.agent == "qwen-code":
+        if self.agent in {"cline", "qwen-code"}:
             # Preserved provider credentials belong in the file, never in
             # the preview printed before consent or during a dry run.
             before_data = launch_common.redact_secrets(self.before)
@@ -321,6 +321,25 @@ def build_setup_plan(
     agent_version: str | None = None,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
+    if agent == "cline":
+        path = cline.current_config_path()
+        assert path is not None
+        path = path.resolve()
+        try:
+            cline_before = cline.load_providers(path)
+        except ValueError:
+            if emit_telemetry:
+                track_agent_configure_failed("config_invalid", agent)
+            raise
+        cline_after = cline.patched_config(
+            cline_before,
+            base_url,
+            model,
+            api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+        )
+        return SetupPlan(
+            "cline", "Cline", path, cline_before, cline_after, base_url, model
+        )
     if agent in {"claude", "claude-code"}:
         path = claude_code.current_config_path()
         assert path is not None

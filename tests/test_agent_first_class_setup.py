@@ -14,7 +14,92 @@ from rapid_mlx.agents.setup import (
     build_setup_plan,
     verify_server,
 )
-from rapid_mlx.launch import claude_code, continue_dev
+from rapid_mlx.launch import claude_code, cline, continue_dev
+
+
+def test_cline_setup_plan_preserves_other_providers_and_hides_keys(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "settings" / "providers.json"
+    monkeypatch.setattr(cline, "current_config_path", lambda: path)
+    path.parent.mkdir()
+    original = cline.patched_config(
+        {}, "http://old:8000", "old-model", now="2026-10-06T18:08:54.038Z"
+    )
+    original["providers"]["other"] = {
+        "settings": {"provider": "other", "apiKey": "private-secret"},
+        "updatedAt": "2026-10-06T18:08:54.038Z",
+        "tokenSource": "manual",
+    }
+    path.write_text(json.dumps(original))
+
+    plan = build_setup_plan("cline", "http://127.0.0.1:18730/v1", "local-model")
+
+    assert json.loads(path.read_text()) == original
+    assert "private-secret" not in plan.diff()
+    assert plan.after["providers"]["other"] == original["providers"]["other"]
+    assert (
+        plan.after["providers"]["openai-compatible"]["settings"]["model"]
+        == "local-model"
+    )
+    apply_setup_plan(plan)
+    assert json.loads(path.read_text()) == plan.after
+    assert list(path.parent.glob("providers.json.bak.*"))
+    assert not build_setup_plan(
+        "cline", "http://127.0.0.1:18730/v1", "local-model"
+    ).changed
+
+
+def test_cline_agent_cli_previews_then_configures(tmp_path, monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    monkeypatch.setenv("CLINE_DATA_DIR", str(tmp_path / "cline-data"))
+    monkeypatch.delenv("CLINE_PROVIDER_SETTINGS_PATH", raising=False)
+    args = SimpleNamespace(
+        agent_name="cline",
+        base_url="http://127.0.0.1:18730/v1",
+        test=False,
+        setup=True,
+        model="local-model",
+        agent_version=None,
+        dry_run=True,
+        yes=True,
+        no_check=True,
+    )
+
+    cli.agents_command(args)
+    assert "Cline configuration" in capsys.readouterr().out
+    path = cline.current_config_path()
+    assert path is not None and not path.exists()
+
+    args.dry_run = False
+    cli.agents_command(args)
+    output = capsys.readouterr().out
+    assert "Cline CLI: ready" in output
+    assert "API Provider: OpenAI Compatible" in output
+    assert (
+        json.loads(path.read_text())["providers"]["openai-compatible"]["settings"][
+            "model"
+        ]
+        == "local-model"
+    )
+
+
+def test_cline_setup_rejects_invalid_provider_store_without_rewriting_it(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "providers.json"
+    path.write_text('{"version": 2, "providers": {}}')
+    monkeypatch.setattr(cline, "current_config_path", lambda: path)
+
+    with (
+        patch("rapid_mlx.agents.setup.track_agent_configure_failed") as track,
+        pytest.raises(ValueError, match="not a Cline providers file"),
+    ):
+        build_setup_plan("cline", "http://127.0.0.1:18730/v1", "local-model")
+
+    track.assert_called_once_with("config_invalid", "cline")
+    assert path.read_text() == '{"version": 2, "providers": {}}'
 
 
 @pytest.fixture
@@ -913,13 +998,13 @@ def test_agents_footer_counts_agents_and_frameworks_separately(
     builtin_profiles, monkeypatch, capsys
 ):
     """The ``rapid-mlx agents`` footer must not count frameworks as
-    agents: 14 rows are 11 agents + 3 frameworks (#2082)."""
+    agents: 15 rows are 12 agents + 3 frameworks (#2082)."""
     import rapid_mlx.cli as cli
 
     monkeypatch.setattr("sys.argv", ["rapid-mlx", "agents"])
     cli.main()
     out = capsys.readouterr().out
-    assert "11 agents + 3 frameworks supported" in out
+    assert "12 agents + 3 frameworks supported" in out
     assert "14 agents supported" not in out
     assert "GitHub" in out
     assert "tools" in out

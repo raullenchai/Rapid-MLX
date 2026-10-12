@@ -1608,16 +1608,37 @@ class AgentTestRunner:
             redirected = {"HOME": isolated_config_home.name}
             if config_home_env:
                 redirected[config_home_env] = isolated_config_home.name
+            if self.profile.name == "cline":
+                redirected["CLINE_PROVIDER_SETTINGS_PATH"] = str(
+                    Path(isolated_config_home.name) / "settings" / "providers.json"
+                )
             previous = {key: os.environ.get(key) for key in redirected}
             os.environ.update(redirected)
             try:
-                setup_agent_config(
-                    self.profile,
-                    base_url=self.base_url,
-                    model_id=self.model_id,
-                    agent_version=self.agent_version,
-                    context_length=context_length,
-                )
+                if self.profile.name == "cline":
+                    from rapid_mlx.launch import cline
+
+                    cline.write_or_patch_config(
+                        self.base_url,
+                        self.model_id,
+                        api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+                    )
+                elif self.profile.name == "continue":
+                    from rapid_mlx.launch import continue_dev
+
+                    continue_dev.write_or_patch_config(
+                        self.base_url,
+                        self.model_id,
+                        api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
+                    )
+                else:
+                    setup_agent_config(
+                        self.profile,
+                        base_url=self.base_url,
+                        model_id=self.model_id,
+                        agent_version=self.agent_version,
+                        context_length=context_length,
+                    )
             finally:
                 for key, value in previous.items():
                     if value is None:
@@ -1704,6 +1725,17 @@ class AgentTestRunner:
             env_overrides["RAPID_MLX_API_KEY"] = "not-needed"
         if config_home_env:
             env_overrides[config_home_env] = isolated_config_home.name
+        if self.profile.name == "cline":
+            # Cline has overrides for providers, MCP, state, hooks and DBs.
+            # An inherited override must never escape the throwaway home.
+            for key in os.environ:
+                if key.startswith("CLINE_"):
+                    env_overrides[key] = ""
+            env_overrides["CLINE_DIR"] = isolated_config_home.name
+            env_overrides["CLINE_DATA_DIR"] = isolated_config_home.name
+            env_overrides["CLINE_PROVIDER_SETTINGS_PATH"] = str(
+                Path(isolated_config_home.name) / "settings" / "providers.json"
+            )
 
         # --- API tests ---
         report.results.append(_test_plain_chat(self.base_url, self.model_id))

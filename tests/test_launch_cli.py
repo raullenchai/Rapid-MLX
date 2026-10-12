@@ -53,7 +53,12 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     """
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     # The clients' own relocation variables must not leak in from the host.
-    for name in ("CLINE_DIR", "CLINE_DATA_DIR", "CONTINUE_GLOBAL_DIR"):
+    for name in (
+        "CLINE_DIR",
+        "CLINE_DATA_DIR",
+        "CLINE_PROVIDER_SETTINGS_PATH",
+        "CONTINUE_GLOBAL_DIR",
+    ):
         monkeypatch.delenv(name, raising=False)
 
     # cline: Cline's data dir and the VS Code globalStorage roots both
@@ -141,6 +146,11 @@ class TestCline:
         monkeypatch.delenv("CLINE_DIR")
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         assert cline._cline_data_dir() == tmp_path / "home" / ".cline" / "data"
+
+    def test_provider_settings_path_override(self, tmp_path, monkeypatch):
+        path = tmp_path / "custom" / "providers.json"
+        monkeypatch.setenv("CLINE_PROVIDER_SETTINGS_PATH", str(path))
+        assert cline.current_config_path() == path
 
     def test_new_file_matches_what_cline_auth_writes(self, fake_home, monkeypatch):
         """Golden: byte-for-byte what ``cline auth -p openai -b … -k sk-noop

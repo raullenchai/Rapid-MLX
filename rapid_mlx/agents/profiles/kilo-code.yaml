@@ -3,15 +3,13 @@ display_name: "Kilo Code"
 repo: "Kilo-Org/kilocode"
 stars: 25500
 
-# Kilo Code (https://github.com/Kilo-Org/kilocode) is a VS Code + JetBrains
-# + CLI coding agent forked from Cline. Fresh $8M seed (2025-12), weekly
-# releases, positioned as the active-maintenance successor to Continue.dev
-# (which went read-only 2026-06-19).
+# Kilo Code (https://github.com/Kilo-Org/kilocode) has a VS Code extension,
+# JetBrains plugin, and standalone CLI. CLI 1.x and later uses Kilo's own
+# config root; the 7.x CLI still reads this file.
 #
 # Kilo speaks the OpenAI-compatible /v1/chat/completions API through the
-# "OpenAI Compatible" provider. Config lives in the VS Code settings JSON
-# (`kilo-code.apiProvider = "openai"` + baseUrl) or in Kilo's own settings
-# file when running as the standalone CLI.
+# OpenAI-compatible provider. The CLI reads the Kilo JSON config below.
+# The extension has its own provider selection in its settings panel.
 config:
   type: json
   path: "~/.config/kilo/kilo.json"
@@ -56,13 +54,12 @@ streaming:
 
 testing:
   binary: kilo
-  # Kilo CLI has a one-shot mode via `kilo run '<prompt>'` on 0.3.0+;
-  # older builds are interactive-only.
+  # The current CLI supports one-shot mode and auto approval for tool calls.
   # Pin the throwaway test workspace explicitly: Kilo otherwise reuses its
   # last project root and can read the caller's real checkout despite the
   # child process cwd. `--pure` also prevents user-installed plugins from
   # entering a compatibility/supply-chain test.
-  query_cmd: "kilo run --dir '{cwd}' --pure '{query}'"
+  query_cmd: "kilo run --dir '{cwd}' --pure --auto '{query}'"
   query_timeout: 180
   install_cmd: "npm install -g @kilocode/cli"
 
@@ -72,5 +69,4 @@ capabilities:
 
 known_issues:
   - "Kilo Code is a Cline fork with independent maintenance — do not point Kilo at a Cline config; the schema drifted after the split."
-  - "First run may prompt for an Anthropic / OpenAI API key — choose the OpenAI Compatible provider and paste `not-needed` as the key."
-  - "Continue.dev users migrating in: Kilo's YAML config schema is stricter — quote all API base URLs."
+  - "Kilo CLI 1.0 and later use ~/.config/kilo/kilo.json[c]; older OpenCode config directories are no longer a fallback."

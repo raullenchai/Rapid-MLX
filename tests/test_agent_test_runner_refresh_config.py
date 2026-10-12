@@ -31,6 +31,90 @@ from rapid_mlx.agents.base import (
 from rapid_mlx.agents.testing import AgentTestRunner, TestStatus
 
 
+def test_continue_harness_refreshes_yaml_in_isolated_home(monkeypatch):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.testing import TestResult
+
+    profile = replace(
+        get_profile("continue"),
+        needs_function_calling=False,
+        needs_streaming=False,
+    )
+    assert profile.config.home_env == "CONTINUE_GLOBAL_DIR"
+    seen = []
+
+    def record_setup(base_url, model_id, api_key):
+        seen.append((base_url, model_id, os.environ["CONTINUE_GLOBAL_DIR"]))
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
+        patch("rapid_mlx.agents.adapter.fetch_context_window", return_value=32768),
+        patch(
+            "rapid_mlx.launch.continue_dev.write_or_patch_config",
+            side_effect=record_setup,
+        ),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+    ):
+        AgentTestRunner(
+            profile,
+            base_url="http://127.0.0.1:18730/v1",
+            model_id="local-model",
+        ).run()
+
+    assert len(seen) == 1
+    assert seen[0][:2] == ("http://127.0.0.1:18730/v1", "local-model")
+    assert seen[0][2] != os.environ.get("CONTINUE_GLOBAL_DIR")
+
+
+def test_cline_harness_clears_inherited_config_overrides(monkeypatch, tmp_path):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.testing import TestResult
+
+    for key in (
+        "CLINE_PROVIDER_SETTINGS_PATH",
+        "CLINE_MCP_SETTINGS_PATH",
+        "CLINE_DB_DATA_DIR",
+        "CLINE_DIR",
+    ):
+        monkeypatch.setenv(key, str(tmp_path / key))
+    profile = replace(
+        get_profile("cline"),
+        needs_function_calling=False,
+        needs_streaming=False,
+        streaming=AgentStreamingSpec(),
+    )
+    seen = []
+
+    def record_e2e(binary, query_cmd, timeout, **kwargs):
+        seen.append(kwargs["env_overrides"])
+        return TestResult("e2e_chat", TestStatus.PASS)
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
+        patch("rapid_mlx.agents.adapter.fetch_context_window", return_value=32768),
+        patch("rapid_mlx.launch.cline.write_or_patch_config"),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+        patch("rapid_mlx.agents.testing._test_e2e_chat", side_effect=record_e2e),
+    ):
+        AgentTestRunner(profile, model_id="local-model").run()
+
+    assert len(seen) == 1
+    child = seen[0]
+    assert child["CLINE_MCP_SETTINGS_PATH"] == ""
+    assert child["CLINE_DB_DATA_DIR"] == ""
+    assert child["CLINE_DIR"] == child["HOME"]
+    assert child["CLINE_DATA_DIR"] == child["HOME"]
+    assert child["CLINE_PROVIDER_SETTINGS_PATH"].startswith(child["HOME"])
+
+
 def _make_profile(name: str, config_type: str) -> AgentProfile:
     """Build a minimal AgentProfile good enough for AgentTestRunner.run()."""
     return AgentProfile(
