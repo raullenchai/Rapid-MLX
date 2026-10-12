@@ -3172,6 +3172,9 @@ def test_reap_removes_only_stale_incomplete_scratch_files(tmp_path, monkeypatch)
         blobs, f"{'a' * 64}.deadbeef.incomplete", size=2048, age_seconds=99999
     )
     fresh = _seed_blob(blobs, f"{'b' * 64}.cafebabe.incomplete", size=99)
+    resumable = _seed_blob(
+        blobs, f"{'d' * 64}.incomplete", size=4096, age_seconds=99999
+    )
     real = _seed_blob(blobs, "c" * 64, size=10)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
@@ -3179,7 +3182,34 @@ def test_reap_removes_only_stale_incomplete_scratch_files(tmp_path, monkeypatch)
     assert gate.reap_orphan_incomplete_blobs("org/repo") == (1, 2048)
     assert not stale.exists()
     assert fresh.exists()  # a live download's scratch file is untouchable
+    assert resumable.exists()  # current Hub resumes this even after a long pause
     assert real.exists()  # and a finished blob is not scratch at all
+
+
+@pytest.mark.parametrize(
+    "unowned_name",
+    [
+        "etag.notours.incomplete",
+        "etag.123.incomplete",
+        "etag.012345678.incomplete",
+        "etag.0123456g.incomplete",
+        "etag..incomplete",
+        ".0123abcd.incomplete",
+        "etag.part.0123abcd.incomplete",
+    ],
+)
+def test_reap_preserves_names_outside_attempt_contract(
+    tmp_path, monkeypatch, unowned_name
+):
+    """Old bytes are insufficient proof that an unknown filename is ours."""
+    blobs = tmp_path / "models--org--repo" / "blobs"
+    owned = _seed_blob(blobs, "owned.deadbeef.incomplete", size=2048, age_seconds=99999)
+    unowned = _seed_blob(blobs, unowned_name, size=4096, age_seconds=99999)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.reap_orphan_incomplete_blobs("org/repo") == (1, 2048)
+    assert not owned.exists()
+    assert unowned.read_bytes() == b"x" * 4096
 
 
 def test_reap_is_quiet_when_there_is_nothing_to_collect(tmp_path, monkeypatch):

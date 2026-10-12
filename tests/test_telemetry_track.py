@@ -1439,7 +1439,7 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
         sink.server_close()
 
     assert proc.returncode == 1
-    assert "huggingface-cli login" in proc.stderr
+    assert "hf auth login" in proc.stderr
     payload = b"\n".join(sink.bodies).decode()  # type: ignore[attr-defined]
     assert "wire-secret" not in payload
     items = [

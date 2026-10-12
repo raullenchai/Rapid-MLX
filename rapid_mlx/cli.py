@@ -2420,6 +2420,87 @@ def _safe_hub_model_id(model_id: str) -> str:
     ]
 
 
+def _is_transient_hub_error(exc: BaseException) -> bool:
+    """Recognize recoverable transport failures on an explicit cause chain."""
+    import httpx
+    from huggingface_hub.errors import (
+        HfHubHTTPError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+    from requests.exceptions import ChunkedEncodingError
+
+    from rapid_mlx.telemetry.model_events import pull_error_class
+
+    transient = pull_error_class(exc) == "network"
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (OfflineModeIsEnabled, RepositoryNotFoundError)):
+            return False
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (401, 403, 404):
+            return False
+        if isinstance(current, (httpx.RemoteProtocolError, ChunkedEncodingError)):
+            transient = True
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (429, 500, 502, 503, 504):
+            transient = True
+        current = current.__cause__
+    return transient
+
+
+def _retry_hub_download(operation, model_id: str):
+    """Retry transient Hub transfers against the same on-disk cache.
+
+    Completed Hub files and mirror partials survive each attempt. Some Hub
+    versions also resume their ``.incomplete`` blob; others use per-attempt
+    scratch files, so an in-flight file can restart.
+    """
+    import time
+
+    for attempt in range(3):
+        try:
+            return operation()
+        except Exception as exc:
+            if not _is_transient_hub_error(exc) or attempt == 2:
+                raise
+            delay = 2**attempt
+            print(
+                f"  Download interrupted for {_safe_hub_model_id(model_id)}; "
+                f"retrying in {delay}s ({attempt + 2}/3), keeping cached files.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
+
+def _hub_not_found_hint(model_id: str) -> str:
+    """Suggest catalog names near either an alias or a full Hub ID."""
+    import difflib
+
+    from rapid_mlx.model_aliases import list_builtin_aliases, suggest_similar
+
+    aliases = list_builtin_aliases()
+    suggestions = suggest_similar(model_id)
+    if not suggestions and "/" in model_id:
+        close_ids = difflib.get_close_matches(
+            model_id.lower(),
+            sorted({repo.lower() for repo in aliases.values()}),
+            n=3,
+            cutoff=0.6,
+        )
+        suggestions = [
+            next(alias for alias, repo in aliases.items() if repo.lower() == repo_id)
+            for repo_id in close_ids
+        ]
+    if suggestions:
+        return f"  Closest catalog aliases: {', '.join(suggestions)}.\n"
+    return "  See catalog aliases with `rapid-mlx models`.\n"
+
+
 def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     """Render an actionable Hub failure found on an explicit cause chain.
 
@@ -2452,11 +2533,12 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             and getattr(current.response, "status_code", None) == 401
         ):
             return (
-                f"Hugging Face returned 401 for {rendered_model_id}: the model is "
-                "private, gated, or does not exist. If you have access, accept the "
-                f"licence at https://huggingface.co/{rendered_model_id} and sign in "
-                "(huggingface-cli login or HF_TOKEN); otherwise check the name "
-                "with rapid-mlx models."
+                f"  Error: Hugging Face returned 401 for '{rendered_model_id}'. "
+                "The repo may be private, gated, or misspelled.\n"
+                f"  If you have access, accept the licence or request access at "
+                f"https://huggingface.co/{rendered_model_id}, then run "
+                "`hf auth login` or set `HF_TOKEN`.\n"
+                + _hub_not_found_hint(rendered_model_id)
             )
         if (
             (
@@ -2473,7 +2555,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
                 f"  Accept the licence or request access at "
                 f"https://huggingface.co/{rendered_model_id}\n"
-                "  Then run `huggingface-cli login` or set `HF_TOKEN`, "
+                "  Then run `hf auth login` or set `HF_TOKEN`, "
                 "and try again."
             )
         if isinstance(current, RepositoryNotFoundError) or (
@@ -2482,10 +2564,18 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: model repository '{rendered_model_id}' was not found on "
                 "Hugging Face.\n"
-                "  Check available aliases with `rapid-mlx models`, or use a "
-                "full repository ID.\n"
-                "  Example: `rapid-mlx serve "
-                "mlx-community/Qwen3.5-9B-4bit`."
+                + _hub_not_found_hint(rendered_model_id)
+                + "  Use an exact `namespace/repository-name` ID, for example "
+                "`mlx-community/Qwen3.5-9B-4bit`."
+            )
+        if isinstance(current, HfHubHTTPError) and getattr(
+            current.response, "status_code", None
+        ) in (429, 500, 502, 503, 504):
+            return (
+                f"  Error: Hugging Face is temporarily unavailable for "
+                f"'{rendered_model_id}'.\n"
+                "  Try `rapid-mlx pull` again when the service recovers; "
+                "completed cached files will be reused."
             )
         if isinstance(current, urllib.error.HTTPError):
             return None
@@ -2496,8 +2586,10 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.Timeout,
+                requests_exceptions.ChunkedEncodingError,
                 httpx.NetworkError,
                 httpx.TimeoutException,
+                httpx.RemoteProtocolError,
                 socket.gaierror,
                 TimeoutError,
                 urllib.error.URLError,
@@ -2656,10 +2748,14 @@ def _ensure_model_downloaded(
         except Exception as exc:
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-            emit_model_pull_failed(
-                exc, model_ref=model_name, source=mirror_out.get("source")
-            )
-            raise
+            if _is_transient_hub_error(exc):
+                mirror_ok = False
+                print("  Mirror connection interrupted; trying Hugging Face.")
+            else:
+                emit_model_pull_failed(
+                    exc, model_ref=model_name, source=mirror_out.get("source")
+                )
+                raise
     if mirror_ok:
         if pinned_image_revision is not None:
             # Same ref transaction as the pinned HF download below: the
@@ -2711,11 +2807,14 @@ def _ensure_model_downloaded(
             metadata_kwargs: dict[str, object] = {"files_metadata": True}
             if pinned_image_revision is not None:
                 metadata_kwargs["revision"] = pinned_image_revision
-            info = call_with_deadline(
-                model_info,
-                _HF_RESOLVE_TIMEOUT_SECONDS,
+            info = _retry_hub_download(
+                lambda: call_with_deadline(
+                    model_info,
+                    _HF_RESOLVE_TIMEOUT_SECONDS,
+                    model_name,
+                    **metadata_kwargs,
+                ),
                 model_name,
-                **metadata_kwargs,
             )
             resolved_sha = getattr(info, "sha", None)
             if not resolved_sha:
@@ -2771,14 +2870,12 @@ def _ensure_model_downloaded(
 
         download_revision = pinned_image_revision or resolved_sha
         before = _model_pull_blob_identifier(model_name)
+        download_kwargs: dict[str, object] = {"revision": download_revision}
         if allow_patterns:
-            snapshot_dir = snapshot_download(
-                model_name,
-                allow_patterns=allow_patterns,
-                revision=download_revision,
-            )
-        else:
-            snapshot_dir = snapshot_download(model_name, revision=download_revision)
+            download_kwargs["allow_patterns"] = allow_patterns
+        snapshot_dir = _retry_hub_download(
+            lambda: snapshot_download(model_name, **download_kwargs), model_name
+        )
         after = _model_pull_blob_identifier(model_name)
         if download_revision:
             pin_main_ref(model_name, download_revision)
@@ -10552,7 +10649,10 @@ def _pull_repository(
         variant_allow = (
             list(allow_patterns_override)
             if allow_patterns_override is not None
-            else _resolve_variant_allow_patterns(repo_id, _bits, _fmt)
+            else _retry_hub_download(
+                lambda: _resolve_variant_allow_patterns(repo_id, _bits, _fmt),
+                repo_id,
+            )
         )
     except ValueError as e:
         print(f"\n  Error: {e}")
@@ -10570,6 +10670,12 @@ def _pull_repository(
             "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector."
         )
         sys.exit(1)
+    except Exception as exc:
+        rendered = render_hub_error(exc, repo_id)
+        if rendered is not None:
+            print(f"\n{rendered}\n", file=sys.stderr)
+            raise SystemExit(1) from None
+        raise
 
     # Only a primary model pull owns serving-choice metadata. Runtime asset
     # allow-pattern overrides select dependency files, not a checkpoint, and
@@ -10585,12 +10691,8 @@ def _pull_repository(
     _was_cached: bool | None = None
     _mirror_out: dict = {}
 
-    # Reclaim scratch files stranded by earlier interrupted pulls of THIS repo
-    # before adding more. huggingface_hub gives each attempt a uniquely-named
-    # ``.incomplete`` blob and removes it while unwinding, which a killed
-    # process never gets to do — so a cancel, quit or crash leaves one behind
-    # every time and nothing else ever collects them. Best-effort and
-    # age-gated; see the helper for why it cannot disturb a live download.
+    # Reclaim abandoned per-attempt scratch files for this repo. The helper
+    # keeps resumable ``<etag>.incomplete`` files, regardless of age.
     try:
         from rapid_mlx._download_gate import _format_size, reap_orphan_incomplete_blobs
 
@@ -10623,13 +10725,17 @@ def _pull_repository(
             )
         )
     except Exception as exc:
-        if emit_lifecycle_event:
-            from rapid_mlx.telemetry.model_events import emit_model_pull_failed
+        from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-            emit_model_pull_failed(
-                exc, model_ref=repo_id, source=_mirror_out.get("source")
-            )
-        raise
+        if _is_transient_hub_error(exc):
+            mirror_ok = False
+            print("  Mirror connection interrupted; trying Hugging Face.")
+        else:
+            if emit_lifecycle_event:
+                emit_model_pull_failed(
+                    exc, model_ref=repo_id, source=_mirror_out.get("source")
+                )
+            raise
     if mirror_ok:
         from pathlib import Path
 
@@ -10677,16 +10783,10 @@ def _pull_repository(
     # or one or more files failed both R2 and HF in the per-file pool.
     # snapshot_download will retry from HF with its own (more robust)
     # error reporting.
-    # Say plainly that this path does not resume. The mirror completes a
-    # partial ``.part`` with a ranged request, so an interrupted mirror pull
-    # picks up where it left off; huggingface_hub gives each attempt its own
-    # scratch file and never reuses one, so an interrupted HF pull starts the
-    # affected files over from zero. Silently switching between "resumes" and
-    # "restarts" is what makes a flaky connection read as "the download is
-    # stuck" — the bytes really do go back to the beginning each time.
+    # The Hub reuses completed blobs. In-flight files may resume or restart,
+    # depending on the installed Hub version and server Range support.
     print(f"\n  Pulling {repo_id} from HuggingFace ...")
-    print("  Note: this path does not resume — interrupting it restarts the")
-    print("  files still in flight from the beginning.")
+    print("  Completed files stay cached; an in-flight file may restart.")
     try:
         from rapid_mlx.model_aliases import resolve_subfolder
 
@@ -10758,11 +10858,13 @@ def _pull_repository(
         _mirror_fetched = _mirror_out.get("network_fetch", False)
         _cache_root = _hf_cache_root(repo_id)
         _before = _blob_identifier(_cache_root)
-        download_kwargs = {"revision": revision_override} if revision_override else {}
-        path = (
-            snapshot_download(repo_id, allow_patterns=_allow, **download_kwargs)
-            if _allow
-            else snapshot_download(repo_id, **download_kwargs)
+        download_kwargs: dict[str, object] = (
+            {"revision": revision_override} if revision_override else {}
+        )
+        if _allow:
+            download_kwargs["allow_patterns"] = _allow
+        path = _retry_hub_download(
+            lambda: snapshot_download(repo_id, **download_kwargs), repo_id
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched
@@ -10796,14 +10898,23 @@ def _pull_repository(
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
             emit_model_pull_failed(e, model_ref=repo_id, source="hf")
+        from rapid_mlx.telemetry.model_events import pull_error_class
+
+        error_class = pull_error_class(e)
+        rendered = render_hub_error(e, repo_id)
+        if rendered is not None and error_class != "not_found":
+            print(f"\n{rendered}\n", file=sys.stderr)
+            raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
         )
         if is_404:
             shown = getattr(args, "_original_alias", repo_id)
             print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-            _print_unknown_model_help(
-                shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+            print(_hub_not_found_hint(shown), end="")
+            print(
+                "  Use an exact `namespace/repository-name` ID, for example "
+                "`mlx-community/Qwen3.5-9B-4bit`."
             )
             sys.exit(1)
         raise

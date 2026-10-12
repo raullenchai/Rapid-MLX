@@ -1302,13 +1302,9 @@ def test_repository_not_found_401_is_ambiguous_but_keeps_gated_marker(
     rendered = cli.render_hub_error(failure, "owner/private-model")
 
     assert rendered is not None
-    assert rendered == (
-        "Hugging Face returned 401 for owner/private-model: the model is "
-        "private, gated, or does not exist. If you have access, accept the licence "
-        "at https://huggingface.co/owner/private-model and sign in "
-        "(huggingface-cli login or HF_TOKEN); otherwise check the name with "
-        "rapid-mlx models."
-    )
+    assert "Hugging Face returned 401" in rendered
+    assert "https://huggingface.co/owner/private-model" in rendered
+    assert "hf auth login" in rendered
     assert "is gated" not in rendered.lower()
     assert model_events.pull_error_class(failure) == "gated"
 
@@ -1341,7 +1337,7 @@ def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
 
     assert rendered is not None
     assert "https://huggingface.co/owner/model" in rendered
-    assert "huggingface-cli login" in rendered
+    assert "hf auth login" in rendered
     assert "HF_TOKEN" in rendered
     assert "private raw detail" not in rendered
 
@@ -1563,7 +1559,7 @@ def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys
     captured = capsys.readouterr()
     assert caught.value.code == 1
     assert "https://huggingface.co/owner/model" in captured.err
-    assert "huggingface-cli login" in captured.err
+    assert "hf auth login" in captured.err
     assert "server will retry" not in captured.out + captured.err
     _assert_exact_startup_marker(captured.err, "model_gated")
 
