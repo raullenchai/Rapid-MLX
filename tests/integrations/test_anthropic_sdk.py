@@ -169,4 +169,6 @@ if __name__ == "__main__":
     print(f"Anthropic SDK: {passed}/{len(results)} passed")
     for k, v in results.items():
         print(f"  {k}: {v[:120]}")
+    client.close()
+    print("PR_VALIDATE_SDK_READY: Anthropic SDK", flush=True)
     exit(0 if passed == len(results) else 1)

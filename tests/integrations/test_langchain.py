@@ -228,4 +228,5 @@ def _should_run_tests() -> bool:
 if _should_run_tests():
     _run_tests()
     if __name__ == "__main__":
+        print("PR_VALIDATE_SDK_READY: LangChain", flush=True)
         exit(0 if all(_is_ok_result(v) for v in results.values()) else 1)

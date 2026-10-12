@@ -909,14 +909,16 @@ class TestStressPreexistingClassification:
         assert any("[PRE-EXISTING] stress on toy/model" in f for f in result.findings)
         assert any("[BLOCKING] bench on toy/model" in f for f in result.findings)
 
-    def test_agent_skip_is_not_sent_to_base_check(self, tmp_path, monkeypatch):
+    def test_missing_agent_script_blocks_without_base_check(
+        self, tmp_path, monkeypatch
+    ):
         from scripts.pr_validate.steps import stress_e2e_bench as step_mod
 
         registry = self._registry()
         registry["agents"] = [{"name": "missing", "script": "missing.py"}]
 
         def fail_if_called(*_args, **_kwargs):
-            raise AssertionError("skip must not trigger base check")
+            raise AssertionError("startup failure must not trigger base check")
 
         monkeypatch.setattr(step_mod, "_load_registry", lambda: registry)
         monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
@@ -943,7 +945,8 @@ class TestStressPreexistingClassification:
 
         result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
 
-        assert result.status == "pass"
+        assert result.status == "fail"
+        assert any("script missing" in finding for finding in result.findings)
 
     def test_run_base_check_uses_base_worktree_cwd_and_pythonpath(
         self, tmp_path, monkeypatch

@@ -320,6 +320,15 @@ class StressE2EBenchStep(Step):
                             f"[{tag}] bench on {choice.model_id}: {result['summary']}"
                         )
                     continue
+                # Startup failures provide no test evidence and must never be
+                # waived by reproducing the same broken environment on base.
+                if kind == "agent" and not pr_result.get("executed"):
+                    any_fail = True
+                    all_findings.append(
+                        f"[BLOCKING] {_failure_label(kind, agent)} on {choice.model_id}: "
+                        f"{pr_result['summary']} (integration results not recorded)"
+                    )
+                    continue
                 base_result = _run_base_check(ctx, choice, kind, agent)
                 _record_manifest(
                     manifest,
@@ -747,6 +756,64 @@ def _run_stress(
     }
 
 
+# Separate the SDK battery outcome from interpreter shutdown. A completed failed
+# battery exits the child with 0; only the supervisor restores its outcome after
+# shutdown succeeds. An atexit os._exit(1) cannot masquerade as a test failure.
+_SDK_CHILD = """
+import runpy, sys
+from pathlib import Path
+script = sys.argv[1]
+sys.argv = [script]
+sys.path.insert(0, str(Path(script).parent))
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as exc:
+    code = 0 if exc.code is None else exc.code
+    if not isinstance(code, int) or code not in (0, 1):
+        raise
+else:
+    code = 0
+print(f"PR_VALIDATE_SDK_OUTCOME: {code}", flush=True)
+"""
+
+
+def _supervise_sdk(
+    script: Path, prefix: str | None, **kwargs
+) -> subprocess.CompletedProcess:
+    proc = subprocess.run(  # noqa: S603
+        ["python3.12", "-c", _SDK_CHILD, str(script)], **kwargs
+    )
+    stdout = proc.stdout or ""
+    outcomes = list(
+        re.finditer(r"^PR_VALIDATE_SDK_OUTCOME: ([01])$", stdout, re.MULTILINE)
+    )
+    ready = (
+        list(
+            re.finditer(
+                rf"^PR_VALIDATE_SDK_READY: {re.escape(prefix)}$", stdout, re.MULTILINE
+            )
+        )
+        if isinstance(prefix, str) and prefix
+        else []
+    )
+    # The child can only announce readiness. Completion is issued here after
+    # the entire interpreter has exited, including atexit and stream flushing.
+    if (
+        proc.returncode == 0
+        and len(outcomes) == len(ready) == 1
+        and outcomes[0].start() > ready[0].end()
+        and "PR_VALIDATE_SDK_COMPLETE:" not in stdout
+        and "Traceback (most recent call last)" not in (proc.stderr or "")
+    ):
+        return subprocess.CompletedProcess(
+            proc.args,
+            int(outcomes[0].group(1)),
+            stdout + f"PR_VALIDATE_SDK_COMPLETE: {prefix}\n",
+            proc.stderr,
+        )
+    return subprocess.CompletedProcess(proc.args, 125, stdout, proc.stderr)
+
+
 def _run_agent(
     ctx: Context,
     choice: ModelChoice,
@@ -763,7 +830,7 @@ def _run_agent(
     script = run_root / agent["script"]
     if not script.exists():
         return {
-            "status": "skip",
+            "status": "fail",
             "summary": f"script missing: {agent['script']}",
             "executed": False,
         }
@@ -783,8 +850,9 @@ def _run_agent(
     # MLLMModel decode overhead); 1800s gives both that and pydantic_ai
     # on qwen3.6 reasonable headroom without inflating the per-agent
     # ceiling beyond what a stuck process would justify.
-    proc = subprocess.run(  # noqa: S603
-        ["python3.12", str(script)],
+    proc = _supervise_sdk(
+        script,
+        agent.get("result_prefix"),
         capture_output=True,
         text=True,
         env=env,
@@ -792,12 +860,54 @@ def _run_agent(
         timeout=1800,
     )
     log.write_text((proc.stdout or "") + (proc.stderr or ""))
-    summary = _grep_last(proc.stdout, "passed") or _grep_last(proc.stdout, "FAIL")
+    # A launched interpreter is not evidence that the SDK battery ran.
+    # All registered scripts report a nonempty final count after collecting
+    # their test outcomes. Missing imports, setup errors, silent exits, and
+    # teardown crashes must block even if base has the same environment.
+    prefix = agent.get("result_prefix")
+    matches = (
+        list(
+            re.finditer(
+                rf"^{re.escape(prefix)}: (\d+)/(\d+) passed(?:, (\d+) skipped)?$",
+                proc.stdout or "",
+                re.MULTILINE,
+            )
+        )
+        if isinstance(prefix, str) and prefix
+        else []
+    )
+    executed = False
+    completions = (
+        list(
+            re.finditer(
+                rf"^PR_VALIDATE_SDK_COMPLETE: {re.escape(prefix)}$",
+                proc.stdout or "",
+                re.MULTILINE,
+            )
+        )
+        if isinstance(prefix, str) and prefix
+        else []
+    )
+    if len(matches) == 1 and len(completions) == 1:
+        passed, total, skipped = (int(value or 0) for value in matches[0].groups())
+        expected_exit = 0 if passed + skipped == total else 1
+        # Zero passed can be a real all-failed battery too; zero executed
+        # (all skipped) is never adequate integration evidence.
+        valid_counts = total > 0 and passed + skipped <= total and skipped < total
+        executed = (
+            valid_counts
+            and completions[0].start() > matches[0].end()
+            and proc.returncode == expected_exit
+            and "Traceback (most recent call last)" not in (proc.stderr or "")
+        )
+    summary = _grep_last(proc.stdout, "passed") or f"exit {proc.returncode}"
     return {
-        "status": "pass" if proc.returncode == 0 else "fail",
-        "summary": summary or f"exit {proc.returncode}",
+        "status": "pass" if proc.returncode == 0 and executed else "fail",
+        "summary": summary
+        if executed
+        else f"SDK startup/results incomplete: {summary}",
         "artifact": str(log),
-        "executed": True,
+        "executed": executed,
     }
 
 

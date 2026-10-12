@@ -26,6 +26,7 @@ from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
 from .steps.lint import LintStep
 from .steps.review_vocabulary import ReviewVocabularyStep
+from .steps.sdk_env_check import SDKEnvCheckStep
 from .steps.stress_e2e_bench import StressE2EBenchStep
 from .steps.supply_chain import SupplyChainStep
 from .steps.targeted_tests import TargetedTestsStep
@@ -66,6 +67,7 @@ STEPS: list[Step] = [
     # when the diff touches dep-declaration files — see ``_test_env.py``
     # for the gate.
     TestEnvCheckStep(),
+    SDKEnvCheckStep(),  # registered SDK imports before full unit/model costs
     ReviewVocabularyStep(),  # reject diff text that can steer that reviewer (#1528)
     CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.6-sol)
     LintStep(),  # 2 — ruff check + format
@@ -90,7 +92,9 @@ STEPS: list[Step] = [
 # surfaces the FULL picture rather than only the first bug — the user
 # opts in to the "stop at first fail" behaviour with ``--fail-fast`` /
 # ``PR_VALIDATE_FAIL_FAST=1`` (typical for CI / incoming-PR gating).
-FAIL_FAST_STEPS = {"fetch"}
+# Missing SDK prerequisites invalidate the matrix and stop before costly tests,
+# even when the caller wants the full picture for ordinary product failures.
+FAIL_FAST_STEPS = {"fetch", "sdk_env_check"}
 
 
 def run_pipeline(
@@ -161,6 +165,12 @@ def run_pipeline(
         pipeline = STEPS if steps is None else steps
         if skip_steps:
             dropped = set(skip_steps)
+            # The SDK prerequisite check belongs to the model matrix. CI's
+            # documented CPU-only partial pipeline omits that matrix and does
+            # not need its SDK environment. Such partial runs still cannot
+            # use --queue-on-success (checked above).
+            if "stress_e2e_bench" in dropped:
+                dropped.add("sdk_env_check")
             pipeline = [s for s in pipeline if s.name not in dropped]
 
     ctx = Context(pr_number=pr_number, verbose=verbose, base_override=base)
