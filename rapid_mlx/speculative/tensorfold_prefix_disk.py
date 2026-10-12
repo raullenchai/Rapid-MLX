@@ -40,10 +40,13 @@ BUDGET_ENV = "RAPID_MLX_TENSORFOLD_PREFIX_DISK_BYTES"
 DIRECTORY_ENV = "RAPID_MLX_TENSORFOLD_PREFIX_DISK_DIR"
 DEFAULT_BUDGET = 2 * 1024**3
 HEADER_LIMIT = 1024**2
+READ_TIMEOUT = 2.0  # Healthy full restores measured <= 0.309 s, including MLX.
 # Deliberately independent of the adapter's mutable pin: moving it requires a
 # new seam audit and parity qualification, not merely changing an import.
 QUALIFIED = ("0.6.6", "cb2ebf0540f42604e2759b2ddef497861e928248", "0.32.3")
 SEAMS = {
+    "server/text.py": "c07b60d17e966e5d568f87dcc7d85e532d553089a23e6580e5982cce8c4c58ad",
+    "server/prompt_blocks.py": "e8b5e11f3b7eb5159360df5ec8446f8d544561384ecaa231ed969402cba401e5",
     "server/scheduler.py": "07ae6d1b214789a450163b54c8e734d64b20be324147938f9c9a69eee453ad2d",
     "server/prompt_memory.py": "c63a3ed69c75cac641171f6242d37b8804870e3e7e348ddf61b4ce92f58b4248",
     "server/prompt_fill.py": "f9e5fd8fef71885505ded377405e9d6e428ae063db4882024d856ff89ba5b079",
@@ -90,14 +93,7 @@ def _generation(path: Path, *, follow: bool = True) -> tuple[int, ...]:
 
 
 def _hf_lfs_identity(path: Path) -> Any:
-    """Use HF content addresses only for snapshot-linked LFS safetensors.
-
-    Generation metadata additionally invalidates ordinary writes/replacements
-    under an unchanged blob name, even when size and mtime are preserved. The
-    process-birth guards still reject changes across model loading/identity.
-    This relies on the same local ctime semantics as those guards, not persisted
-    stat-keyed digest memoization. All other layouts retain full content hashing.
-    """
+    """HF LFS content address plus mutable generation; other layouts hash fully."""
     if path.suffix != ".safetensors" or not path.is_symlink():
         return None
     for snapshot in path.parents:
@@ -161,8 +157,8 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
             raise ValueError("unidentified MTP head")
     return json.dumps(
         {
-            # Older namespaces did not authenticate MTP lookahead tokens.
-            "format": 6,
+            # Older namespaces trusted a shared prefix that could include replies.
+            "format": 7,
             "asset_policy": "hf-lfs-generation-or-content-unchanged-before-start",
             "target": _artifact(target),
             "drafter": _artifact(drafter),
@@ -194,17 +190,7 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
 def _assets_unchanged(
     target: Path, drafter: Path | None, app: Any, started_at: float
 ) -> bool:
-    """Fail closed if model assets changed since this process was created.
-
-    The runtime has already loaded its weights when this hook runs. Comparing
-    only post-load hashes could label old live weights with replacement files.
-    Checking status-change times both before and after hashing conservatively
-    rejects ordinary writes/replacements during initialization, including a
-    symlink switched to an older blob. Process-birth time is a safe lower bound
-    on any model load; freshly downloaded assets require another process.
-    This relies on local filesystem ctime and clock semantics, not an atomic
-    parameter digest or protection against privileged timestamp manipulation.
-    """
+    """Reject local ctime changes across loading; process birth precedes loading."""
     roots = [target, *([drafter] if drafter is not None else [])]
     if getattr(app._model, "mtp", None) is not None:
         from tensorfold.families.nemotron_h.model import find_mtp_head
@@ -261,6 +247,8 @@ def _qualified(scheduler: Any) -> bool:
         == ("prompt", "usable")
         and tuple(inspect.signature(scheduler._keep_checkpoints).parameters)
         == ("job", "shared_at")
+        and tuple(inspect.signature(scheduler._open_job).parameters) == ("job",)
+        and tuple(inspect.signature(scheduler.submit).parameters) == ("job",)
         and scheduler.snapshot_dir is None
         and scheduler.session_dir is None
         and scheduler.disk_blocks is None
@@ -327,6 +315,8 @@ class PrefixDisk:
         self._closed = threading.Event()
         self._worker = None
         self.reserved_bytes = 0
+        self.read_reserved_bytes = 0
+        self._reading = threading.Lock()
         self.schema = []
         for template in self.templates:
             cls = type(template)
@@ -368,11 +358,7 @@ class PrefixDisk:
     def _decode(
         self, data: bytes, *, validate_only: bool = False, prompt=None
     ) -> tuple[list[int], list[Any]]:
-        """Validate all tensor geometry before constructing any MLX array.
-
-        Converting from verified bytes avoids a pathname/checksum race and keeps
-        damaged headers out of MLX's native file loader entirely.
-        """
+        """Validate verified bytes against live geometry before any MLX allocation."""
         import io
 
         import mlx.core as mx
@@ -523,19 +509,23 @@ class PrefixDisk:
         )
         return tokens, restored
 
+    def _verified_bytes(self, path):
+        if path.parent != self.directory or self.directory.is_symlink():
+            raise ValueError("unsafe snapshot path")
+        data = _read_file(path, self.budget)
+        if (
+            _read_file(path.with_suffix(".sha256"), 64).decode("ascii")
+            != hashlib.sha256(data).hexdigest()
+        ):
+            raise ValueError("bad checksum")
+        return data
+
     def load(self, path: Path, *, prompt=None) -> tuple[list[int], list[Any]] | None:
         if disk_caches.disabled():
             return None
         try:
-            if path.parent != self.directory or self.directory.is_symlink():
-                return None
-            data = _read_file(path, self.budget)
-            checksum = _read_file(path.with_suffix(".sha256"), 64).decode("ascii")
-            if checksum != hashlib.sha256(data).hexdigest():
-                return None
-            return self._decode(data, prompt=prompt)
+            return self._decode(self._verified_bytes(path), prompt=prompt)
         except Exception:
-            logger.debug("Unusable disk prefix; using normal prefill", exc_info=True)
             return None
 
     def _private_directory(self) -> None:
@@ -566,11 +556,7 @@ class PrefixDisk:
         return int(prompt[n])
 
     def submit(self, tokens, cache, *, prompt=None, shared_prefix_len=0, memory=None):
-        """One in-flight host copy; busy submissions are dropped, never queued.
-
-        Only evaluated, owned host bytes cross the scheduler-thread boundary.
-        Charge copy + conversion + verification buffer to prompt admission.
-        """
+        """Admit/copy owned host bytes; one in-flight write, drop when busy."""
         if disk_caches.disabled() or self._closed.is_set() or not self.budget:
             return False
         if not self._busy.acquire(blocking=False):
@@ -707,8 +693,7 @@ class PrefixDisk:
         if disk_caches.disabled() or not self.budget:
             return
         try:
-            from tensorfold.engine.prefix_snapshots import save_snapshot, snapshot_key
-            from tensorfold.server.memory_budget import cache_nbytes
+            from tensorfold.engine.prefix_snapshots import snapshot_key
 
             from ..memory_cache import (
                 _free_disk_bytes,
@@ -716,17 +701,12 @@ class PrefixDisk:
             )
             from ..runtime.cache import _exclusive_cache_lock
 
-            lookahead = (
-                self._lookahead(tokens, prompt, shared_prefix_len)
-                if _payload is None
-                else None
-            )
-            estimate = (
-                (
-                    cache_nbytes(cache)
-                    if _payload is None
-                    else sum(len(data) for _, _, data in _payload[0].values())
+            if _payload is None:
+                _payload = self._capture(
+                    tokens, cache, self._lookahead(tokens, prompt, shared_prefix_len)
                 )
+            estimate = (
+                sum(len(data) for _, _, data in _payload[0].values())
                 + 12 * len(tokens)
                 + HEADER_LIMIT
             )
@@ -752,12 +732,7 @@ class PrefixDisk:
                 )
                 if path.exists():
                     try:
-                        data = _read_file(path, self.budget)
-                        if (
-                            _read_file(path.with_suffix(".sha256"), 64).decode("ascii")
-                            != hashlib.sha256(data).hexdigest()
-                        ):
-                            raise ValueError("bad checksum")
+                        data = self._verified_bytes(path)
                         self._decode(data, validate_only=True)
                         os.utime(path, follow_symlinks=False)
                         return
@@ -781,39 +756,12 @@ class PrefixDisk:
                 with tempfile.TemporaryDirectory(
                     prefix=".stage-", dir=self.directory
                 ) as staging:
-                    # The pinned writer stores allocated KV capacity, not just
-                    # valid rows. Serialize copies sliced at the system boundary;
-                    # spare rows must never carry later prompt/reply state.
-                    snapshot = []
-                    for live in cache:
-                        if not getattr(live, "stored", True):
-                            continue
-                        item = copy.copy(live)
-                        if hasattr(item, "keys") and hasattr(item, "values"):
-                            if item.offset != len(tokens):
-                                raise ValueError(
-                                    "live cache is not at the system boundary"
-                                )
-                            item.keys = item.keys[..., : len(tokens), :]
-                            item.values = item.values[..., : len(tokens), :]
-                        snapshot.append(item)
-                    if _payload is not None or lookahead is not None:
-                        staged = Path(staging) / "snapshot.safetensors"
-                        self._write_host(
-                            staged,
-                            _payload or self._capture(tokens, snapshot, lookahead),
-                        )
-                    else:
-                        staged = save_snapshot(
-                            Path(staging), self.model_id, tokens, snapshot
-                        )
-                    if staged is None or staged.stat().st_size + 64 > estimate:
+                    staged = Path(staging) / "snapshot.safetensors"
+                    self._write_host(staged, _payload)
+                    if staged.stat().st_size + 64 > estimate:
                         return
-                    # Also validate our writer's actual output against the live
-                    # schema. Unqualified runtime cache changes cannot publish.
                     data = _read_file(staged, self.budget)
-                    # Validate geometry without allocating a second MLX cache
-                    # beside the live inference state during persistence.
+                    # Geometry check only: no MLX allocation on the I/O worker.
                     self._decode(data, validate_only=True)
                     os.chmod(staged, 0o600)
                     with staged.open("rb") as stream:
@@ -840,76 +788,113 @@ class PrefixDisk:
                 "Disk prefix write failed; keeping memory prefix", exc_info=True
             )
 
-    def restore(self, scheduler: Any, prompt: list[int], usable: Any = None) -> None:
-        if (
-            disk_caches.disabled()
-            or scheduler.checkpoints is None
-            or not self.directory.exists()
-        ):
-            return
-        try:
-            from ..runtime.cache import _exclusive_cache_lock
+    def _read_prefix(self, prompt, have, usable, system_len):
+        from ..runtime.cache import _exclusive_cache_lock
 
-            self._private_directory()
-            with _exclusive_cache_lock(
-                str(self.directory), operation="TensorFold load"
-            ) as locked:
-                if not locked or disk_caches.disabled():
-                    return
-                have = scheduler.checkpoints.longest(prompt, usable)
-                candidates = []
-                for path in self._files():
-                    try:
-                        meta = self._metadata(path)
-                        if meta.get("model") != self.model_id:
-                            continue
-                        tokens = _json(meta["tokens"])
-                        n = len(tokens)
-                        if (
-                            have < n < len(prompt)
-                            and prompt[:n] == tokens
-                            and (
-                                "lookahead" not in meta
-                                or (
-                                    n < len(prompt)
-                                    and prompt[n] == _json(meta["lookahead"])
-                                )
-                            )
-                            and (usable is None or usable(n))
-                        ):
-                            candidates.append((n, path))
-                    except Exception:
-                        continue
-                for _, path in sorted(
-                    candidates, key=lambda pair: pair[0], reverse=True
-                ):
-                    memory = scheduler.prompt_memory
-                    # Verified bytes + host conversion + MLX arrays are admitted
-                    # conservatively, rather than charging just the final cache.
-                    if memory is not None and not memory.allow_load(
-                        3 * path.stat().st_size
-                    ):
-                        continue
-                    loaded = self.load(path, prompt=prompt)
-                    if loaded is None:
-                        continue
-                    tokens, cache = loaded
+        if not self.directory.exists():
+            return None
+        self._private_directory()
+        with _exclusive_cache_lock(
+            str(self.directory), operation="TensorFold load"
+        ) as locked:
+            if not locked or disk_caches.disabled() or self._closed.is_set():
+                return None
+            candidates = []
+            for path in self._files():
+                try:
+                    meta = self._metadata(path)
+                    tokens = _json(meta["tokens"])
                     n = len(tokens)
-                    if not (
-                        have < n < len(prompt)
+                    if (
+                        meta.get("model") == self.model_id
+                        and have < n < system_len
                         and prompt[:n] == tokens
                         and (usable is None or usable(n))
                     ):
-                        continue
-                    scheduler.checkpoints.insert(
-                        tokens, cache, last_prompt=tokens, pinned=True
-                    )
+                        candidates.append((n, path))
+                except Exception:
+                    continue
+            for _, path in sorted(candidates, reverse=True):
+                try:
+                    data = self._verified_bytes(path)
                     os.utime(path, follow_symlinks=False)
+                    return data
+                except Exception:
+                    continue
+        return None
+
+    def restore(
+        self, scheduler: Any, prompt: list[int], usable: Any = None, *, system_len=None
+    ) -> None:
+        acquired = transferred = False
+        try:
+            if (
+                disk_caches.disabled()
+                or self._closed.is_set()
+                or scheduler.checkpoints is None
+            ):
+                return
+            acquired = self._reading.acquire(blocking=False)
+            if not acquired:
+                return
+            memory = scheduler.prompt_memory
+            # No stat/read on the owner: admit the maximum bounded read first.
+            if memory is not None and not memory.allow_load(3 * self.budget):
+                return
+            self.read_reserved_bytes = 3 * self.budget
+            have = scheduler.checkpoints.longest(prompt, usable)
+            done, abandoned, result = threading.Event(), threading.Event(), []
+
+            def read():
+                try:
+                    data = self._read_prefix(
+                        prompt, have, usable, system_len or len(prompt)
+                    )
+                    if (
+                        data is not None
+                        and not abandoned.is_set()
+                        and not self._closed.is_set()
+                    ):
+                        result.append(data)
+                except Exception:
+                    logger.debug("Disk prefix read missed", exc_info=True)
+                finally:
+                    self.read_reserved_bytes = 0
+                    done.set()
+                    self._reading.release()
+
+            deadline = time.monotonic() + READ_TIMEOUT
+            threading.Thread(
+                target=read, name="tensorfold-prefix-reader", daemon=True
+            ).start()
+            transferred = True
+            while not done.wait(0.01):
+                if self._closed.is_set() or time.monotonic() >= deadline:
+                    abandoned.set()
                     return
+            if (
+                not result
+                or self._closed.is_set()
+                or disk_caches.disabled()
+                or time.monotonic() >= deadline
+            ):
+                return
+            tokens, cache = self._decode(result[0], prompt=prompt)
+            n = len(tokens)
+            if (
+                not self._closed.is_set()
+                and have < n < (system_len or len(prompt))
+                and (usable is None or usable(n))
+            ):
+                scheduler.checkpoints.insert(
+                    tokens, cache, last_prompt=tokens, pinned=True
+                )
         except Exception:
-            logger.debug(
-                "Disk prefix restore failed; using normal prefill", exc_info=True
-            )
+            logger.debug("Disk prefix restore missed", exc_info=True)
+        finally:
+            if acquired and not transferred:
+                self.read_reserved_bytes = 0
+                self._reading.release()
 
 
 def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> None:
@@ -943,8 +928,7 @@ def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> 
             )
         ).expanduser()
 
-        # Populate a tiny live template once during initialization, not from
-        # disk metadata. No generated tokens or checkpoint entries are created.
+        # Live owner-thread schema, never a class/schema from disk.
         def prepare(engine):
             templates = engine.prefill_prefix(
                 [int(app.tokenizer.encode("\n", add_special_tokens=False)[-1])] * 16
@@ -962,15 +946,83 @@ def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> 
             projected = memory.projected
 
             def with_pending_copy(*args, **kwargs):
-                return projected(*args, **kwargs) + disk.reserved_bytes
+                return (
+                    projected(*args, **kwargs)
+                    + disk.reserved_bytes
+                    + disk.read_reserved_bytes
+                )
 
             memory.projected = with_pending_copy
+        # Carry request provenance by object identity, once, on the submitting thread.
+        from tensorfold.server.checkpoints import longest_common_prefix
+        from tensorfold.server.text import render_prompt_ids
+
+        original_boundary, original_submit = app.system_prefix_len, scheduler.submit
+        request = threading.local()
+
+        def boundary(self, messages, tools, prompt_ids, thinking=None):
+            request.fact = None
+            shared = original_boundary(messages, tools, prompt_ids, thinking=thinking)
+            try:
+                first = next(
+                    i for i, m in enumerate(messages) if m.get("role") == "user"
+                )
+                if first and all(m.get("role") == "system" for m in messages[:first]):
+                    with self.tokenizer_lock:
+                        probes = [
+                            render_prompt_ids(
+                                self.tokenizer,
+                                [*messages[:first], {"role": "user", "content": word}],
+                                tools=tools,
+                                enable_thinking=self.enable_thinking
+                                if thinking is None
+                                else thinking,
+                                late_system=self.late_system,
+                            )
+                            for word in ("Alpha", "Beta")
+                        ]
+                    request.fact = (
+                        prompt_ids,
+                        min(
+                            shared,
+                            longest_common_prefix(prompt_ids, probes[0]),
+                            longest_common_prefix(prompt_ids, probes[1]),
+                        ),
+                    )
+            except Exception:
+                pass  # Unknown message/template shape must not authorize disk I/O.
+            return shared
+
+        def submit_job(self, job):
+            fact, request.fact = getattr(request, "fact", None), None
+            job._rapid_disk_system_len = (
+                fact[1] if fact is not None and fact[0] is job.prompt_ids else 0
+            )
+            return original_submit(job)
+
+        app.system_prefix_len = types.MethodType(boundary, app)
+        scheduler.submit = types.MethodType(submit_job, scheduler)
+        original_open = scheduler._open_job
+        reading_boundary = 0
+
+        def open_job(self, job):
+            nonlocal reading_boundary
+            reading_boundary = getattr(job, "_rapid_disk_system_len", 0)
+            try:
+                return original_open(job)
+            finally:
+                reading_boundary = 0
+
+        scheduler._open_job = types.MethodType(open_job, scheduler)
         original_keep = scheduler._keep_checkpoints
         context = None
 
         def keep(self, job, shared_at):
             nonlocal context
-            shared = max(job.shared_prefix_lens, default=0)
+            shared = min(
+                max(job.shared_prefix_lens, default=0),
+                getattr(job, "_rapid_disk_system_len", 0),
+            )
             eligible = [
                 len(t)
                 for t, _ in getattr(job.stream, "history_checkpoints", ())
@@ -1002,7 +1054,11 @@ def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> 
 
         app.close = types.MethodType(close, app)
         scheduler._read_disk_block = types.MethodType(
-            lambda self, prompt, usable=None: disk.restore(self, prompt, usable),
+            lambda self, prompt, usable=None: (
+                disk.restore(self, prompt, usable, system_len=reading_boundary)
+                if reading_boundary
+                else None
+            ),
             scheduler,
         )
         scheduler.snapshot_dir = directory

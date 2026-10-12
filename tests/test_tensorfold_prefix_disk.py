@@ -453,6 +453,9 @@ def test_successful_install_uses_override_and_never_enables_sessions(
     scheduler.prompt_memory = None
     scheduler.checkpoints = SimpleNamespace(insert=lambda *a, **kw: None)
     app.close = lambda: None
+    app.system_prefix_len = lambda messages, tools, prompt_ids, thinking=None: 0
+    scheduler._open_job = lambda job: None
+    scheduler.submit = lambda job: None
     scheduler.on_engine = lambda fn: fn(app.engine)
     monkeypatch.setattr(module, "_qualified", lambda _: True)
     monkeypatch.setattr(module, "_assets_unchanged", lambda *a: True)
@@ -468,6 +471,7 @@ def test_successful_install_uses_override_and_never_enables_sessions(
     )
     job = SimpleNamespace(
         vision=None,
+        _rapid_disk_system_len=5,
         prompt_ids=[1, 2, 3, 4, 5],
         shared_prefix_lens=(5,),
         stream=SimpleNamespace(history_checkpoints=[([1, 2, 3, 4], [item])]),
@@ -905,13 +909,13 @@ def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime, monkeypa
     entries.clear()
     disk.restore(scheduler, [7] * 512 + [998, 4])
     assert entries == []
-    original = disk.load
+    original = disk._verified_bytes
 
-    def replaced(path, **kwargs):
+    def replaced(path):
         rewrite(path, runtime, lambda meta, arrays: meta.update(lookahead="998"))
-        return original(path, **kwargs)
+        return original(path)
 
-    monkeypatch.setattr(disk, "load", replaced)
+    monkeypatch.setattr(disk, "_verified_bytes", replaced)
     disk.restore(scheduler, prompt)
     assert entries == []
 
@@ -1015,6 +1019,7 @@ def test_install_real_pinned_qualification_identity_and_engine(
         ),
         close=lambda: None,
     )
+    app.system_prefix_len = lambda messages, tools, prompt_ids, thinking=None: 0
     scheduler.on_engine = lambda fn: fn(app.engine)
     monkeypatch.setenv(module.DIRECTORY_ENV, str(disk.directory))
     assert module._qualified(scheduler)
@@ -1025,6 +1030,7 @@ def test_install_real_pinned_qualification_identity_and_engine(
     assert scheduler.session_dir is None
     job = SimpleNamespace(
         vision=None,
+        _rapid_disk_system_len=5,
         prompt_ids=[1, 2, 3, 4, 5],
         shared_prefix_lens=(5,),
         stream=SimpleNamespace(history_checkpoints=[([1, 2, 3, 4], [item])]),
@@ -1044,3 +1050,210 @@ def test_copy_admission_refuses_before_materialization(tmp_path, runtime, monkey
     assert admitted and admitted[0] >= 3 * (item.keys.nbytes + item.values.nbytes)
     assert disk.reserved_bytes == 0
     assert not disk.directory.exists()
+
+
+@pytest.fixture
+def profile_disk_app(tmp_path, runtime, monkeypatch):
+    import queue
+    import threading
+    import types
+
+    import tensorfold
+    from mlx_lm.tokenizer_utils import load
+    from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
+    from tensorfold.families.nemotron_h.mtp import MTPCache
+    from tensorfold.server.app import ChatApp
+    from tensorfold.server.prompt_blocks import PromptBlocks
+    from tensorfold.server.scheduler import Scheduler
+
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    target = (
+        Path.home()
+        / ".cache/huggingface/hub/models--TensorFold--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit/snapshots/d9d758fb83953437f7263256b0d96157e2a348b8"
+    )
+    tokenizer = load(target, {"local_files_only": True})
+    plan = PrefillPlan(
+        2048, *message_markers(tokenizer)[:1], assistant=message_markers(tokenizer)[1]
+    )
+
+    def cache(size):
+        items = []
+        for cls in (runtime[1], MTPCache):
+            item = cls()
+            item.keys = runtime[0].ones((1, 1, size, 1))
+            item.values = item.keys
+            item.offset = size
+            items.append(item)
+        return items
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.snapshot_dir = scheduler.session_dir = scheduler.disk_blocks = (
+        scheduler.session_blocks
+    ) = None
+    inserted = []
+    scheduler.checkpoints = SimpleNamespace(
+        insert=lambda *a, **kw: inserted.append(a), longest=lambda *a: 0
+    )
+    scheduler.prompt_memory = None
+    scheduler._stop = threading.Event()
+    scheduler._queue = queue.Queue()
+    scheduler._thread = SimpleNamespace(is_alive=lambda: False)
+    app = SimpleNamespace(
+        scheduler=scheduler,
+        checkpoints=scheduler.checkpoints,
+        context_window=32768,
+        _model=SimpleNamespace(mtp=None),
+        tokenizer=tokenizer,
+        tokenizer_lock=threading.Lock(),
+        enable_thinking=True,
+        late_system="system",
+        effort_for=lambda _: None,
+        engine=SimpleNamespace(prefill_plan=plan, prefill_prefix=lambda ids: cache(16)),
+    )
+    app.system_prefix_len = types.MethodType(PromptBlocks.system_prefix_len, app)
+    app.close = types.MethodType(ChatApp.close, app)
+    app.save_sessions = types.MethodType(ChatApp.save_sessions, app)
+    scheduler.on_engine = lambda fn: fn(app.engine)
+    monkeypatch.setenv(module.DIRECTORY_ENV, str(tmp_path / "profile-cache"))
+    # Keep the pinned read call site but omit inference for this fixture.
+    scheduler._open_job = types.MethodType(
+        lambda self, job: self._read_disk_block(job.prompt_ids), scheduler
+    )
+    module.install_prefix_disk(app, Path(tensorfold.__file__))
+    assert hasattr(app, "_rapid_prefix_disk")
+    yield app, cache, inserted
+    app.close()
+
+
+def test_actual_profile_rejects_assistant_prefix_and_accepts_system(
+    profile_disk_app, monkeypatch
+):
+    from tensorfold.server.prompt_blocks import PromptBlocks
+    from tensorfold.server.text import render_prompt_ids
+
+    app, cache, inserted = profile_disk_app
+    disk = app._rapid_prefix_disk
+
+    def job(messages):
+        prompt = render_prompt_ids(
+            app.tokenizer, messages, enable_thinking=True, late_system=app.late_system
+        )
+        shared = app.system_prefix_len(messages, None, prompt, thinking=True)
+        lens = tuple(n for n in (shared - 2048, shared - 512, shared) if n >= 512)
+        points = {app.engine.prefill_plan.chunks(prompt).floor(n) for n in lens} - {0}
+        n = max(x for x in points if x < shared)
+        j = SimpleNamespace(
+            prompt_ids=prompt,
+            shared_prefix_lens=lens,
+            vision=None,
+            stream=SimpleNamespace(history_checkpoints=[(prompt[:n], cache(n))]),
+        )
+        app.scheduler.submit(j)
+        return j, points, n
+
+    system = {"role": "system", "content": "Shared instructions. " * 600}
+    bad = [
+        system,
+        {"role": "assistant", "content": "PRIVATE_REPLY_MARKER " * 1800},
+        {"role": "user", "content": "Continue please."},
+    ]
+    j, points, n = job(bad)
+    assert "PRIVATE_REPLY_MARKER" in app.tokenizer.decode(j.prompt_ids[:n])
+    app.scheduler._keep_checkpoints(j, points)
+    assert disk.wait(5)
+    assert not list(disk.directory.glob("*.safetensors"))
+    good = [system, {"role": "user", "content": "Question?"}]
+    j, points, n = job(good)
+    app.scheduler._keep_checkpoints(j, points)
+    assert disk.wait(5)
+    assert list(disk.directory.glob("*.safetensors"))
+    inserted.clear()
+    app.scheduler._open_job(j)
+    assert inserted and len(inserted[0][0]) == n
+    j, _, _ = job(bad)
+    inserted.clear()
+    monkeypatch.setattr(
+        disk, "_read_prefix", lambda *a: pytest.fail("ineligible disk read")
+    )
+    app.scheduler._open_job(j)
+    assert inserted == []
+    # The independent two-probe cap cannot include user text matching the runtime probe.
+    probe_user = [system, {"role": "user", "content": "⁣probe PRIVATE_USER"}]
+    j, _, _ = job(probe_user)
+    raw = PromptBlocks.system_prefix_len(app, probe_user, None, j.prompt_ids, True)
+    assert j._rapid_disk_system_len < raw
+
+
+def test_inaccessible_directory_and_other_fs_errors_are_misses(
+    tmp_path, runtime, monkeypatch
+):
+    import os
+
+    disk, item = make_disk(tmp_path, runtime)
+    parent = tmp_path / "restricted"
+    parent.mkdir()
+    disk.directory = parent / "cache"
+    disk.directory.mkdir()
+    scheduler = SimpleNamespace(
+        checkpoints=SimpleNamespace(longest=lambda *a: 0), prompt_memory=None
+    )
+    os.chmod(parent, 0)
+    try:
+        disk.restore(scheduler, [1, 2, 3, 4, 5])
+    finally:
+        os.chmod(parent, 0o700)
+    assert disk.read_reserved_bytes == 0
+
+    def inaccessible(*args, **kwargs):
+        raise PermissionError("injected directory error")
+
+    monkeypatch.setattr(disk, "_private_directory", inaccessible)
+    disk.restore(scheduler, [1, 2, 3, 4, 5])
+    assert disk.read_reserved_bytes == 0
+    disk.submit([1, 2, 3, 4], [item])
+    assert disk.wait(5)
+
+
+@pytest.mark.parametrize("closing", [False, True])
+def test_stalled_read_bounds_request_and_real_app_shutdown(
+    profile_disk_app, runtime, monkeypatch, closing
+):
+    import threading
+    import time
+
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    app, cache, inserted = profile_disk_app
+    disk = app._rapid_prefix_disk
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(module, "READ_TIMEOUT", 0.1)
+
+    def stalled(*args):
+        entered.set()
+        assert release.wait(3)
+        return b"late discarded bytes"
+
+    monkeypatch.setattr(disk, "_read_prefix", stalled)
+    owner = threading.Thread(target=lambda: disk.restore(app.scheduler, [1, 2, 3]))
+    app.scheduler._thread = owner
+    owner.start()
+    assert entered.wait(2)
+    assert disk.read_reserved_bytes == 3 * disk.budget
+    start = time.monotonic()
+    if closing:
+        app.close()  # real pinned ChatApp.close -> Scheduler.stop
+    else:
+        owner.join(0.4)
+    assert not owner.is_alive() and time.monotonic() - start < 0.4
+    assert not disk._reading.acquire(blocking=False)
+    assert disk.read_reserved_bytes > 0
+    release.set()
+    deadline = time.monotonic() + 2
+    while (
+        disk.read_reserved_bytes or disk._reading.locked()
+    ) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert disk.read_reserved_bytes == 0 and inserted == []
+    assert disk._reading.acquire(blocking=False)
+    disk._reading.release()
