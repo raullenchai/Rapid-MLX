@@ -3,12 +3,45 @@
 
 from __future__ import annotations
 
+import difflib
 import errno
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 
 MAX_MISSING_LOCAL_MODEL_FILES = 5
+_HF_REPO_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _typed_ref(model_ref: str) -> str:
+    """Remove shell quotes accidentally passed literally and surrounding space."""
+    if os.path.exists(os.path.expanduser(model_ref)):
+        return model_ref
+    value = model_ref.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        inside = value[1:-1]
+        value = inside if os.path.exists(os.path.expanduser(inside)) else inside.strip()
+    return value
+
+
+def resolved_model_ref(model_ref: str) -> str:
+    """Use an absolute path for local input, preserving Hub repo ids."""
+    # A literal existing directory can legitimately end in a space. Only
+    # repair whitespace/quotes when that exact spelling does not resolve.
+    value = _typed_ref(model_ref)
+    # An unprefixed org/name is a Hub id when the whole path is missing,
+    # regardless of whether an unrelated local org directory exists.
+    if _HF_REPO_ID.fullmatch(value) and not os.path.exists(value):
+        return value
+    if is_local_model_ref(value) or ("/" in value and Path(value).parent.is_dir()):
+        if "/" not in value and not value.startswith(("~", ".")):
+            from .model_aliases import local_dir_shadows_alias
+
+            if local_dir_shadows_alias(value) or os.path.exists(value):
+                return value
+        return str(Path(value).expanduser().absolute())
+    return value
 
 
 def _exception_chain(exc: BaseException | None) -> tuple[BaseException, ...]:
@@ -150,9 +183,14 @@ def local_model_failure_message(
     """Render a local-model failure without exposing paths to HTTP clients."""
     if _has_authoritative_load_failure(exc):
         return None
-    if not is_local_model_ref(model_ref) or not isinstance(model_ref, str):
+    if not isinstance(model_ref, str):
         return None
-    expanded = Path(model_ref).expanduser().absolute()
+    typed = _typed_ref(model_ref) if include_supplied_path else model_ref
+    if not is_local_model_ref(typed) and not (
+        include_supplied_path and "/" in typed and Path(typed).parent.is_dir()
+    ):
+        return None
+    expanded = Path(typed).expanduser().absolute()
     try:
         exists = expanded.exists()
     except OSError:
@@ -166,7 +204,25 @@ def local_model_failure_message(
                 missing_path = True
                 break
         if missing_path:
-            return f"The local model path{shown} does not exist."
+            message = f"The local model path{shown} does not exist."
+            if not include_supplied_path:
+                return message
+            message += f" Resolved path: {expanded}."
+            try:
+                siblings = [p.name for p in expanded.parent.iterdir() if p.is_dir()]
+            except OSError:
+                siblings = []
+            matches = difflib.get_close_matches(
+                expanded.name, siblings, n=3, cutoff=0.0
+            )
+            if matches:
+                message += " Nearby model folders: " + ", ".join(matches) + "."
+            repo_id = typed.removeprefix("./")
+            if typed.startswith("./") and _HF_REPO_ID.fullmatch(repo_id):
+                message += f" If you meant a Hugging Face repo, use {repo_id}."
+            elif typed.startswith("~/") or typed.startswith(("./", "../", "/")):
+                message += " If you meant a Hugging Face repo, use org/model without a path prefix."
+            return message
         return None
     missing = missing_local_model_files(model_ref, exc)
     if missing:

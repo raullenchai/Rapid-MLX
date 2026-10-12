@@ -29,7 +29,7 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,7 @@ _COMFORTABLE_FRACTION = 0.75
 
 _GIB = float(1 << 30)
 _MAX_QUANTS_SHOWN = 4
+BYOM_DOCS_URL = "https://rapidmlx.com/docs/byom"
 
 
 class PreflightRejectedError(Exception):
@@ -600,6 +601,58 @@ def _hf_search_url(ref: str) -> str:
     return f"https://huggingface.co/models?search={quote(name)}%20mlx"
 
 
+def _family_size(ref: str) -> tuple[str, str] | None:
+    """Match an explicit family and parameter size, without guessing from architecture."""
+    name = ref.rstrip("/").rsplit("/", 1)[-1].lower()
+    match = re.search(r"^(.+?)[-_](\d+(?:\.\d+)?[bm])(?:[-_]|$)", name)
+    if match is None:
+        return None
+    return re.sub(r"[^a-z0-9]", "", match[1]), match[2]
+
+
+def _same_family_size_aliases(ref: str) -> list[str]:
+    identity = _family_size(ref)
+    if identity is None:
+        return []
+    try:
+        from rapid_mlx.model_aliases import (
+            draft_only_conflict,
+            list_builtin_aliases,
+        )
+
+        aliases = list_builtin_aliases()
+        return [
+            alias
+            for alias in aliases
+            if _family_size(alias) == identity and draft_only_conflict(alias) is None
+        ][:3]
+    except Exception:
+        return []
+
+
+def render_architecture_guidance(
+    ref: str, config: dict[str, Any], model_type: str | None
+) -> list[str]:
+    """Local-only help shared by preflight and a later loader failure."""
+    architecture = config.get("architectures")
+    names = (
+        [name for name in architecture if isinstance(name, str)]
+        if isinstance(architecture, (list, tuple))
+        else []
+    )
+    identity = model_type or (names[0] if names else "unknown")
+    lines = [f"✗ Architecture {identity} is not supported yet."]
+    if names:
+        lines.append(f"  config architectures: {', '.join(names[:3])}")
+    aliases = _same_family_size_aliases(ref)
+    if aliases:
+        lines.append("  Supported catalog aliases in the same family and size:")
+        lines.extend(f"    rapid-mlx serve {alias}" for alias in aliases)
+    else:
+        lines.append(f"  Bring your own model guide: {BYOM_DOCS_URL}")
+    return lines
+
+
 def render_failure(
     inspection: Inspection, verdict: Verdict, *, search_hint: bool = True
 ) -> list[str]:
@@ -629,11 +682,13 @@ def render_failure(
     if verdict.failure == UNSUPPORTED_ARCHITECTURE:
         version = _mlx_lm_version()
         runtime = f" (mlx-lm {version})" if version else ""
-        return [
-            f"✗ Architecture {verdict.model_type} is not supported yet.",
-            f"  This Rapid-MLX install{runtime} has no loader for it.{nothing}",
-            "  Models that run here: rapid-mlx models",
-        ]
+        lines = render_architecture_guidance(
+            shown, inspection.config, verdict.model_type
+        )
+        lines.insert(
+            1, f"  This Rapid-MLX install{runtime} has no loader for it.{nothing}"
+        )
+        return lines
     assert verdict.est_memory_bytes is not None and verdict.ram_bytes is not None
     return [
         f"✗ {shown} needs ~{_gb(verdict.est_memory_bytes)} of memory; "
@@ -803,6 +858,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         supported=supported,
         ram_bytes=physical_ram_bytes(),
     )
+    display_inspection, display_verdict = inspection, verdict
     if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
         # The Hub's config summary omits fields that route a model to other
         # loaders; confirm against the real config.json before refusing.
@@ -818,21 +874,31 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             if confirmed is True:
                 funnel.set_preflight("passed")
             return
+        assert full is not None
+        display_inspection = replace(inspection, config=full)
+        full_type = full.get("model_type")
+        if isinstance(full_type, str) and full_type:
+            display_verdict = replace(verdict, model_type=full_type)
     if verdict.failure is not None:
         from rapid_mlx.byom.alternatives import suggest
 
         suggested: list[str] = []
-        with spinner_factory("Looking for a model that runs here …"):
-            hints, found_build = suggest(
-                inspection,
-                verdict,
-                command=args.command,
-                supported=supported,
-                ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
-                targets=suggested,
-            )
+        if verdict.failure != UNSUPPORTED_ARCHITECTURE:
+            with spinner_factory("Looking for a model that runs here …"):
+                hints, found_build = suggest(
+                    inspection,
+                    verdict,
+                    command=args.command,
+                    supported=supported,
+                    ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
+                    targets=suggested,
+                )
+        else:
+            hints, found_build = [], False
         print("", file=sys.stderr)
-        lines = render_failure(inspection, verdict, search_hint=not found_build)
+        lines = render_failure(
+            display_inspection, display_verdict, search_hint=not found_build
+        )
         for line in lines + hints:
             print(f"  {line}", file=sys.stderr)
         print(

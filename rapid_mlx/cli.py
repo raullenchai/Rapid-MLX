@@ -1006,6 +1006,22 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         # repository. Keep that typed failure instead of blaming the checkpoint.
         print(f"\n  Error loading model: {exc}")
         return
+    from rapid_mlx.telemetry.model_events import serve_error_class
+
+    if serve_error_class(exc, model_ref=args.model) == "unsupported_architecture":
+        from rapid_mlx.byom.preflight import render_architecture_guidance
+
+        try:
+            config = _resolve_checkpoint_config(args.model, None) or {}
+        except Exception:
+            config = {}
+        model_type = config.get("model_type")
+        if not isinstance(model_type, str):
+            model_type = None
+        print(f"\n  Error loading model: {exc}", file=sys.stderr)
+        for line in render_architecture_guidance(model_ref, config, model_type):
+            print(f"  {line}", file=sys.stderr)
+        return
     if (
         isinstance(exc, RepositoryNotFoundError)
         or "404" in str(exc)
@@ -14713,11 +14729,15 @@ def main():
         from rapid_mlx.local_model_path import (
             local_model_failure_message,
             raise_if_missing_local_model,
+            resolved_model_ref,
         )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
 
         try:
+            supplied_model = args.model
+            if getattr(args, "command", None) == "serve":
+                args.model = resolved_model_ref(args.model)
             raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
         except FileNotFoundError as exc:
@@ -14728,7 +14748,7 @@ def main():
                     exc, alias_or_path=args.model, failure_stage="resolve"
                 )
             message = local_model_failure_message(
-                args.model, exc, include_supplied_path=True
+                supplied_model, exc, include_supplied_path=True
             )
             print(f"\n  Error: {message}", file=sys.stderr)
             raise SystemExit(1) from None

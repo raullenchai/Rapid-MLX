@@ -36,6 +36,114 @@ def test_nonexistent_local_path_has_honest_class_and_messages(tmp_path):
         str(model_dir), exc, include_supplied_path=True
     )
     assert str(model_dir) in cli_message
+    assert f"Resolved path: {model_dir}" in cli_message
+
+
+@pytest.mark.parametrize(
+    "spelling", ["~/models/target ", "'~/models/target '", '"~/models/target "']
+)
+def test_typed_home_path_quotes_and_trailing_space(monkeypatch, tmp_path, spelling):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "models").mkdir()
+    target = tmp_path / "models" / "target"
+    assert local_paths.resolved_model_ref(spelling) == str(target)
+    with pytest.raises(FileNotFoundError) as raised:
+        local_paths.raise_if_missing_local_model(
+            local_paths.resolved_model_ref(spelling)
+        )
+    assert (
+        serve_error_class(raised.value, model_ref=str(target)) == "local_path_missing"
+    )
+    assert f"Resolved path: {target}" in local_model_failure_message(
+        spelling, raised.value, include_supplied_path=True
+    )
+
+
+def test_relative_path_nearby_directory_and_repo_hint(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "qwen3.5-4b-4bit").mkdir()
+    spelling = "./models/qwen3.5-4b-4bi"
+    with pytest.raises(FileNotFoundError) as raised:
+        local_paths.raise_if_missing_local_model(
+            local_paths.resolved_model_ref(spelling)
+        )
+    message = local_model_failure_message(
+        spelling, raised.value, include_supplied_path=True
+    )
+    assert f"Resolved path: {tmp_path / spelling}" in message
+    assert "Nearby model folders: qwen3.5-4b-4bit" in message
+    assert "If you meant a Hugging Face repo, use models/qwen3.5-4b-4bi" in message
+
+
+def test_existing_parent_does_not_turn_hub_id_into_local_path(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mlx-community").mkdir()
+    repo_id = "mlx-community/Qwen3.5-4B-4bit"
+    assert local_paths.resolved_model_ref(repo_id) == repo_id
+
+
+def test_existing_folder_with_trailing_space_is_preserved(tmp_path):
+    model = tmp_path / "literal space "
+    model.mkdir()
+    assert local_paths.resolved_model_ref(str(model)) == str(model)
+
+
+def test_existing_home_folder_with_trailing_space_is_preserved(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    model = tmp_path / "literal space "
+    model.mkdir()
+    assert local_paths.resolved_model_ref("~/literal space ") == str(model)
+    assert local_paths.resolved_model_ref("'~/literal space '") == str(model)
+
+
+def test_existing_folder_with_trailing_space_keeps_missing_file_diagnostic(tmp_path):
+    model = tmp_path / "literal space "
+    model.mkdir()
+    missing = model / "model.safetensors"
+    failure = FileNotFoundError(2, "missing", str(missing))
+    message = local_model_failure_message(
+        str(model), failure, include_supplied_path=True
+    )
+    assert message == (
+        f"The local model directory {str(model)!r} is missing required files: "
+        "model.safetensors."
+    )
+
+
+def test_nearest_child_directories_are_bounded_even_without_close_match(tmp_path):
+    parent = tmp_path / "models"
+    parent.mkdir()
+    for name in ("alpha", "beta", "gamma", "delta"):
+        (parent / name).mkdir()
+    (parent / "not-a-dir").write_text("x")
+    missing = parent / "zzz"
+    failure = FileNotFoundError(2, "missing", str(missing))
+    message = local_model_failure_message(
+        str(missing), failure, include_supplied_path=True
+    )
+    nearby = message.split("Nearby model folders: ", 1)[1].split(".", 1)[0]
+    assert len(nearby.split(", ")) == 3
+    assert "not-a-dir" not in nearby
+
+
+def test_hub_repo_id_spelled_as_path_gets_repo_hint(tmp_path):
+    spelling = f"{tmp_path}/owner/model"
+    with pytest.raises(FileNotFoundError) as raised:
+        local_paths.raise_if_missing_local_model(spelling)
+    message = local_model_failure_message(
+        spelling, raised.value, include_supplied_path=True
+    )
+    assert "use org/model without a path prefix" in message
+    assert local_paths.resolved_model_ref("owner/model") == "owner/model"
+
+
+def test_absolute_two_component_path_does_not_invent_repo_id():
+    spelling = "/tmp/path-arch-absent-model"
+    failure = FileNotFoundError(2, "missing", spelling)
+    message = local_model_failure_message(spelling, failure, include_supplied_path=True)
+    assert "use org/model without a path prefix" in message
+    assert "use tmp/path-arch-absent-model" not in message
 
 
 def test_nonexistent_local_path_without_attributable_file_failure_is_generic(tmp_path):

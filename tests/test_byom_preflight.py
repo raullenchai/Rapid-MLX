@@ -621,8 +621,94 @@ def test_render_architecture(monkeypatch):
     lines = pf.render_failure(insp, verdict)
     assert lines[0] == "✗ Architecture spark_x is not supported yet."
     assert "(mlx-lm 0.31.3)" in lines[1]
+    assert "SForCausalLM" in lines[2]
+    assert pf.BYOM_DOCS_URL in lines[-1]
     monkeypatch.setattr(pf, "_mlx_lm_version", lambda: None)
     assert "mlx-lm" not in pf.render_failure(insp, verdict)[1]
+
+
+def test_render_architecture_suggests_same_family_and_size(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.list_builtin_aliases",
+        lambda: {
+            "qwen3.5-4b-4bit": "publisher/one",
+            "qwen3.5-4b-8bit": "publisher/two",
+            "qwen3.5-4b-6bit": "publisher/three",
+            "qwen3.5-4b-bf16": "publisher/four",
+            "qwen3.5-9b-4bit": "publisher/five",
+            "qwen3-4b-4bit": "publisher/six",
+        },
+    )
+    monkeypatch.setattr("rapid_mlx.model_aliases.draft_only_conflict", lambda _: None)
+    insp = _insp(
+        ref="owner/Qwen3.5-4B-NewArch",
+        config={"model_type": "new_qwen", "architectures": ["NewQwenForCausalLM"]},
+    )
+    lines = pf.render_failure(insp, _evaluate(insp))
+    assert "new_qwen" in lines[0]
+    assert "NewQwenForCausalLM" in lines[2]
+    assert [line.strip() for line in lines if "rapid-mlx serve" in line] == [
+        "rapid-mlx serve qwen3.5-4b-4bit",
+        "rapid-mlx serve qwen3.5-4b-8bit",
+        "rapid-mlx serve qwen3.5-4b-6bit",
+    ]
+    assert pf.BYOM_DOCS_URL not in " ".join(lines)
+
+
+def test_loader_architecture_failure_has_same_guidance(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "_resolve_checkpoint_config",
+        lambda model, profile: {
+            "model_type": "spark_x",
+            "architectures": ["SparkXForCausalLM"],
+        },
+    )
+    cli._print_model_load_error(
+        types.SimpleNamespace(model="owner/SparkX-4B"),
+        ValueError("Model type spark_x not supported."),
+    )
+    err = capsys.readouterr().err
+    assert "Architecture spark_x is not supported yet" in err
+    assert "config architectures: SparkXForCausalLM" in err
+    assert pf.BYOM_DOCS_URL in err
+
+
+def test_architecture_guidance_falls_back_when_catalog_is_unreadable(monkeypatch):
+    def unreadable():
+        raise OSError("catalog unavailable")
+
+    monkeypatch.setattr("rapid_mlx.model_aliases.list_builtin_aliases", unreadable)
+    lines = pf.render_architecture_guidance(
+        "owner/Qwen3.5-4B-NewArch", {"architectures": ["NewForCausalLM"]}, None
+    )
+    assert "Architecture NewForCausalLM" in lines[0]
+    assert pf.BYOM_DOCS_URL in lines[-1]
+
+
+def test_loader_architecture_guidance_survives_unreadable_config(monkeypatch, capsys):
+    def unreadable(*args):
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(cli, "_resolve_checkpoint_config", unreadable)
+    cli._print_model_load_error(
+        types.SimpleNamespace(model="owner/Custom-4B"),
+        ValueError("Model type custom_x not supported."),
+    )
+    assert pf.BYOM_DOCS_URL in capsys.readouterr().err
+
+
+def test_loader_architecture_guidance_handles_nonstring_model_type(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "_resolve_checkpoint_config",
+        lambda *args: {"model_type": 123, "architectures": ["CustomForCausalLM"]},
+    )
+    cli._print_model_load_error(
+        types.SimpleNamespace(model="owner/Custom-4B"),
+        ValueError("Model type custom_x not supported."),
+    )
+    assert "Architecture CustomForCausalLM" in capsys.readouterr().err
 
 
 def test_render_memory():
@@ -809,6 +895,16 @@ def test_hook_confirms_architecture_against_full_config(hook, capsys):
         hook(info, full_config=config)
     assert "Architecture spark_x is not supported yet." in capsys.readouterr().err
     assert [e.failure_class for e in hook.emitted] == [pf.UNSUPPORTED_ARCHITECTURE]
+
+
+def test_hook_reports_architecture_from_confirmed_config(hook, capsys):
+    summary = {"model_type": "spark_x", "architectures": ["OldForCausalLM"]}
+    full = {"model_type": "spark_new", "architectures": ["NewForCausalLM"]}
+    with pytest.raises(SystemExit):
+        hook(_info({"model.safetensors": GIB}, config=summary), full_config=full)
+    err = capsys.readouterr().err
+    assert "Architecture spark_new is not supported yet" in err
+    assert "config architectures: NewForCausalLM" in err
 
 
 def test_hook_refuses_oversize_serve_but_not_pull_or_disk_stream(hook, capsys):
@@ -998,6 +1094,25 @@ def test_golden_working_paths_are_unchanged(
     assert seen == [dispatched]
     assert out == expected_out
     assert err == ""
+
+
+def test_serve_dispatches_typed_local_path_as_absolute(monkeypatch, capsys, tmp_path):
+    model = tmp_path / "my model"
+    model.mkdir()
+    monkeypatch.setattr(pf, "run_cli_preflight", lambda args, **kwargs: None)
+    seen, out, err = _run_main_golden(
+        monkeypatch, capsys, ["serve", f"'{model}  '"], GOLDEN_PASSING
+    )
+    assert seen == [("serve", str(model))]
+    assert err == ""
+
+
+def test_bare_alias_shadow_retains_catalog_resolution(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3.5-4b-4bit").mkdir()
+    from rapid_mlx.local_model_path import resolved_model_ref
+
+    assert resolved_model_ref("qwen3.5-4b-4bit") == "qwen3.5-4b-4bit"
 
 
 def test_fetch_hub_config_timeout_is_no_verdict(monkeypatch):
