@@ -443,6 +443,16 @@ def test_successful_install_uses_override_and_never_enables_sessions(
         tokenizer=SimpleNamespace(encode=lambda *a, **kw: [10]),
         engine=SimpleNamespace(prefill_prefix=lambda ids: [item]),
     )
+    import types
+
+    from tensorfold.server.scheduler import Scheduler
+
+    scheduler._keep_checkpoints = types.MethodType(
+        Scheduler._keep_checkpoints, scheduler
+    )
+    scheduler.prompt_memory = None
+    scheduler.checkpoints = SimpleNamespace(insert=lambda *a, **kw: None)
+    app.close = lambda: None
     scheduler.on_engine = lambda fn: fn(app.engine)
     monkeypatch.setattr(module, "_qualified", lambda _: True)
     monkeypatch.setattr(module, "_assets_unchanged", lambda *a: True)
@@ -456,7 +466,14 @@ def test_successful_install_uses_override_and_never_enables_sessions(
         is scheduler.session_blocks
         is None
     )
-    scheduler._persist([1, 2, 3, 4], [item])
+    job = SimpleNamespace(
+        vision=None,
+        prompt_ids=[1, 2, 3, 4, 5],
+        shared_prefix_lens=(5,),
+        stream=SimpleNamespace(history_checkpoints=[([1, 2, 3, 4], [item])]),
+    )
+    scheduler._keep_checkpoints(job, {4})
+    assert app._rapid_prefix_disk.wait(5)
     assert (
         app._rapid_prefix_disk.load(next(disk.directory.glob("*.safetensors")))
         is not None
@@ -814,3 +831,170 @@ def test_interim_hf_identity_snapshot_is_a_miss(tmp_path, runtime):
     assert disk.load(path) is not None
     fresh = PrefixDisk(disk.directory, current, [item], disk.budget)
     assert fresh.load(path) is None
+
+
+def test_pinned_mtp_lookahead_is_refused_or_recorded(tmp_path, runtime):
+    import types
+
+    from tensorfold.engine.family_prefill import FamilyPrefill
+    from tensorfold.families.nemotron_h.model import NemotronH
+    from tensorfold.families.nemotron_h.mtp import MTPCache
+
+    mx = runtime[0]
+
+    class Feed(FamilyPrefill):
+        prefill_guard = None
+        prefill_chunks = 0
+
+        def __init__(self):
+            # No weights or model are loaded. Tiny deterministic tensors isolate
+            # the pinned prefill + absorb_draft_context data flow.
+            model = SimpleNamespace(mtp=object(), prompt_pass=False)
+            model.prefill = lambda inputs, cache: mx.zeros((1, inputs.shape[1], 1))
+            model.model = SimpleNamespace(
+                backbone=SimpleNamespace(
+                    embeddings=lambda ids: ids.astype(mx.float32)[..., None]
+                )
+            )
+            model._trim_chained = NemotronH._trim_chained
+
+            def head(hidden, embeddings, cache, tail):
+                rows = embeddings.reshape(1, 1, -1, 1)
+                cache.update_and_fetch(rows, rows)
+
+            model._head_step = head
+            model.absorb_draft_context = types.MethodType(
+                NemotronH.absorb_draft_context, model
+            )
+            self.model = model
+
+    feed = Feed()
+    template, checkpoint = MTPCache(), MTPCache()
+    feed._family_feed([7] * 16, [template], [(0, 16)])
+    prompt = [7] * 512 + [999, 4]
+    feed._family_feed(prompt, [checkpoint], [(0, 512)])
+    assert checkpoint.keys[0, 0, 511, 0].item() == 999
+    disk = PrefixDisk(tmp_path / "mtp", "review", [template], 4 * 1024**2)
+    disk.save(prompt[:512], [checkpoint])
+    assert not list(disk.directory.glob("*.safetensors"))
+    disk.save(prompt[:512], [checkpoint], prompt=prompt, shared_prefix_len=512)
+    assert not list(disk.directory.glob("*.safetensors"))
+    disk.save(prompt[:512], [checkpoint], prompt=prompt, shared_prefix_len=513)
+    path = next(disk.directory.glob("*.safetensors"))
+    assert json.loads(disk._metadata(path)["lookahead"]) == 999
+    assert disk.load(path)[1][0].keys[0, 0, 511, 0].item() == 999
+    entries = []
+    scheduler = SimpleNamespace(
+        checkpoints=SimpleNamespace(
+            longest=lambda *a: 0, insert=lambda *a, **kw: entries.append(a)
+        ),
+        prompt_memory=None,
+    )
+    disk.restore(scheduler, prompt)
+    assert len(entries) == 1
+    entries.clear()
+    disk.restore(scheduler, [7] * 512 + [998, 4])
+    assert entries == []
+
+
+def test_background_slow_fsync_drops_busy_and_close_is_bounded(
+    tmp_path, runtime, monkeypatch
+):
+    import os
+    import threading
+    import time
+
+    disk, item = make_disk(tmp_path, runtime)
+    blocked, release = threading.Event(), threading.Event()
+    original = os.fsync
+
+    def slow(fd):
+        blocked.set()
+        assert release.wait(5)
+        return original(fd)
+
+    monkeypatch.setattr(os, "fsync", slow)
+    started = time.monotonic()
+    assert disk.submit([1, 2, 3, 4], [item])
+    assert time.monotonic() - started < 0.2
+    assert blocked.wait(2)
+    assert not disk.submit([1, 2, 3, 4], [item])
+    entries = []
+    scheduler = SimpleNamespace(
+        checkpoints=SimpleNamespace(
+            longest=lambda *a: 0, insert=lambda *a, **kw: entries.append(a)
+        ),
+        prompt_memory=None,
+    )
+    disk.restore(scheduler, [1, 2, 3, 4, 5])
+    assert entries == []
+    started = time.monotonic()
+    disk.close()
+    assert time.monotonic() - started < 0.2
+    release.set()
+    assert disk.wait(5)
+    assert not list(disk.directory.glob("*.safetensors"))
+
+
+def test_actual_mid_write_enospc_is_a_miss(tmp_path, runtime, monkeypatch):
+    import errno
+
+    disk, item = make_disk(tmp_path, runtime)
+
+    def fail(path, payload):
+        path.write_bytes(b"half-written tensor")
+        raise OSError(errno.ENOSPC, "injected disk full after write")
+
+    monkeypatch.setattr(disk, "_write_host", fail)
+    assert disk.submit([1, 2, 3, 4], [item])
+    assert disk.wait(5)
+    assert list(disk.directory.glob("*.safetensors")) == []
+    assert list(disk.directory.glob(".stage-*")) == []
+
+
+def test_install_real_pinned_qualification_identity_and_engine(
+    runtime, monkeypatch, tmp_path
+):
+    import tensorfold
+    from tensorfold.server.scheduler import Scheduler
+
+    from rapid_mlx.speculative import tensorfold_prefix_disk as module
+
+    disk, item = make_disk(tmp_path, runtime)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.snapshot_dir = scheduler.session_dir = scheduler.disk_blocks = (
+        scheduler.session_blocks
+    ) = None
+    scheduler.checkpoints = SimpleNamespace(insert=lambda *a, **kw: None)
+    scheduler.prompt_memory = None
+    app = SimpleNamespace(
+        scheduler=scheduler,
+        checkpoints=scheduler.checkpoints,
+        context_window=32768,
+        _model=SimpleNamespace(mtp=None),
+        tokenizer=SimpleNamespace(
+            encode=lambda *a, **kw: [10], chat_template="model-free"
+        ),
+        engine=SimpleNamespace(
+            prefill_prefix=lambda ids: [item], prefill_plan=SimpleNamespace(step=512)
+        ),
+        close=lambda: None,
+    )
+    scheduler.on_engine = lambda fn: fn(app.engine)
+    monkeypatch.setenv(module.DIRECTORY_ENV, str(disk.directory))
+    assert module._qualified(scheduler)
+    target = Path(tensorfold.__file__)
+    module.install_prefix_disk(app, target)
+    assert scheduler.snapshot_dir == disk.directory
+    assert json.loads(app._rapid_prefix_disk.model_id)["target"]["contents"]
+    assert scheduler.session_dir is None
+    job = SimpleNamespace(
+        vision=None,
+        prompt_ids=[1, 2, 3, 4, 5],
+        shared_prefix_lens=(5,),
+        stream=SimpleNamespace(history_checkpoints=[([1, 2, 3, 4], [item])]),
+    )
+    scheduler._keep_checkpoints(job, {4})
+    assert app._rapid_prefix_disk.wait(5)
+    assert app._rapid_prefix_disk.load(next(disk.directory.glob("*.safetensors")))
+    app.close()

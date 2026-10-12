@@ -20,6 +20,8 @@ import shutil
 import stat
 import struct
 import tempfile
+import threading
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -158,9 +160,8 @@ def _identity(target: Path, drafter: Path | None, app: Any) -> str:
             raise ValueError("unidentified MTP head")
     return json.dumps(
         {
-            # Invalidate files from the interim HF identity implementation,
-            # before container/ancestor replacements were guarded as well.
-            "format": 5,
+            # Older namespaces did not authenticate MTP lookahead tokens.
+            "format": 6,
             "asset_policy": "hf-lfs-generation-or-content-unchanged-before-start",
             "target": _artifact(target),
             "drafter": _artifact(drafter),
@@ -319,6 +320,10 @@ class PrefixDisk:
         self.directory, self.model_id, self.budget = directory, model_id, budget
         self.max_tokens = max_tokens
         self.templates = [c for c in templates if getattr(c, "stored", True)]
+        self._busy = threading.Lock()
+        self._closed = threading.Event()
+        self._worker = None
+        self.reserved_bytes = 0
         self.schema = []
         for template in self.templates:
             cls = type(template)
@@ -383,6 +388,10 @@ class PrefixDisk:
             or len(layers) != len(self.schema)
         ):
             raise ValueError("invalid tokens/layers")
+        if any(name.endswith(":MTPCache") for name, _ in self.schema):
+            lookahead = _json(meta["lookahead"])
+            if type(lookahead) is not int or lookahead < 0:
+                raise ValueError("missing MTP lookahead")
         specs, restored = {}, []
         for i, (entry, (clsname, fields), template) in enumerate(
             zip(layers, self.schema, self.templates, strict=True)
@@ -530,7 +539,157 @@ class PrefixDisk:
         if lock.is_symlink():
             raise ValueError("unsafe lock path")
 
-    def save(self, tokens: list[int], cache: list[Any]) -> None:
+    def _lookahead(self, tokens, prompt, shared_prefix_len):
+        if not any(name.endswith(":MTPCache") for name, _ in self.schema):
+            return None
+        n = len(tokens)
+        if (
+            prompt is None
+            or not n < shared_prefix_len <= len(prompt)
+            or prompt[:n] != tokens
+        ):
+            raise ValueError("MTP lookahead is not inside the shared system prefix")
+        return int(prompt[n])
+
+    def submit(self, tokens, cache, *, prompt=None, shared_prefix_len=0, memory=None):
+        """One in-flight host copy; busy submissions are dropped, never queued.
+
+        Only evaluated, owned host bytes cross the scheduler-thread boundary.
+        Charge copy + conversion + verification buffer to prompt admission.
+        """
+        if disk_caches.disabled() or self._closed.is_set() or not self.budget:
+            return False
+        if not self._busy.acquire(blocking=False):
+            return False
+        transferred = False
+        try:
+            from tensorfold.server.memory_budget import cache_nbytes
+
+            tokens = list(tokens)
+            size = cache_nbytes(cache)
+            if size + HEADER_LIMIT > self.budget or (
+                memory is not None and not memory.allow_load(3 * size + HEADER_LIMIT)
+            ):
+                return False
+            lookahead = self._lookahead(tokens, prompt, shared_prefix_len)
+            payload = self._capture(tokens, cache, lookahead)
+            self.reserved_bytes = 3 * size + HEADER_LIMIT
+
+            def publish():
+                try:
+                    self.save(tokens, [], _payload=payload)
+                finally:
+                    self.reserved_bytes = 0
+                    self._busy.release()
+
+            self._worker = threading.Thread(
+                target=publish, name="tensorfold-prefix-writer", daemon=True
+            )
+            self._worker.start()
+            transferred = True
+            return True
+        except Exception:
+            logger.debug("Disk prefix copy refused", exc_info=True)
+            return False
+        finally:
+            # The worker owns the reservation only after a successful start.
+            if not transferred:
+                self.reserved_bytes = 0
+                self._busy.release()
+
+    def wait(self, timeout=0.05):
+        """Bounded diagnostic drain; production close never waits past 50 ms."""
+        worker = self._worker
+        if worker is not None:
+            worker.join(timeout)
+        return worker is None or not worker.is_alive()
+
+    def close(self):
+        self._closed.set()
+        self.wait(0.05)
+
+    def _capture(self, tokens, cache, lookahead):
+        import mlx.core as mx
+        import numpy as np
+
+        arrays, layers = {}, []
+        for index, live in enumerate(c for c in cache if getattr(c, "stored", True)):
+            getattr(live, "materialize", lambda: None)()
+            entry = {
+                "class": f"{type(live).__module__}:{type(live).__qualname__}",
+                "plain": {},
+                "arrays": [],
+                "lists": {},
+                "numpy": [],
+            }
+            for name, value in vars(live).items():
+                if name in getattr(type(live), "transient", ()):
+                    continue
+
+                def capture(key, value, name=name, live=live):
+                    if name in ("keys", "values"):
+                        if live.offset != len(tokens):
+                            raise ValueError("cache not at boundary")
+                        value = value[..., : len(tokens), :]
+                    mx.eval(value)
+                    dtype, _ = DTYPES[str(value.dtype).removeprefix("mlx.core.")]
+                    host = np.array(value.view(mx.uint16) if dtype == "BF16" else value)
+                    arrays[key] = (dtype, list(value.shape), host.tobytes())
+
+                if isinstance(value, mx.array):
+                    capture(f"{index}.{name}", value)
+                    entry["arrays"].append(name)
+                elif isinstance(value, list):
+                    for slot, element in enumerate(value):
+                        capture(f"{index}.{name}.{slot}", element)
+                    entry["lists"][name] = {
+                        "length": len(value),
+                        "slots": list(range(len(value))),
+                    }
+                elif value is None or type(value) in (bool, int, float, str):
+                    entry["plain"][name] = value
+                else:
+                    raise ValueError("unqualified host field")
+            layers.append(entry)
+        meta = {
+            "format": "1",
+            "model": self.model_id,
+            "tokens": json.dumps(tokens),
+            "layers": json.dumps(layers),
+            "saved": str(time.time()),
+        }
+        if lookahead is not None:
+            meta["lookahead"] = json.dumps(lookahead)
+        return arrays, meta
+
+    def _write_host(self, path, payload):
+        # Standard safetensors wire format; no MLX work on the I/O worker.
+        arrays, meta = payload
+        header, offset = {"__metadata__": meta}, 0
+        for key, (dtype, shape, data) in arrays.items():
+            header[key] = {
+                "dtype": dtype,
+                "shape": shape,
+                "data_offsets": [offset, offset + len(data)],
+            }
+            offset += len(data)
+        encoded = json.dumps(header, separators=(",", ":")).encode()
+        encoded += b" " * (-len(encoded) % 8)
+        with path.open("xb") as stream:
+            stream.write(struct.pack("<Q", len(encoded)))
+            stream.write(encoded)
+            for _, _, data in arrays.values():
+                stream.write(data)
+
+    def save(
+        self,
+        tokens: list[int],
+        cache: list[Any],
+        *,
+        prompt=None,
+        shared_prefix_len=0,
+        _payload=None,
+    ) -> None:
         if disk_caches.disabled() or not self.budget:
             return
         try:
@@ -543,7 +702,20 @@ class PrefixDisk:
             )
             from ..runtime.cache import _exclusive_cache_lock
 
-            estimate = cache_nbytes(cache) + 12 * len(tokens) + HEADER_LIMIT
+            lookahead = (
+                self._lookahead(tokens, prompt, shared_prefix_len)
+                if _payload is None
+                else None
+            )
+            estimate = (
+                (
+                    cache_nbytes(cache)
+                    if _payload is None
+                    else sum(len(data) for _, _, data in _payload[0].values())
+                )
+                + 12 * len(tokens)
+                + HEADER_LIMIT
+            )
             if estimate > self.budget or not 0 < len(tokens) <= self.max_tokens:
                 return
             self._private_directory()
@@ -564,9 +736,19 @@ class PrefixDisk:
                     self.directory
                     / f"{snapshot_key(self.model_id, tokens)}.safetensors"
                 )
-                if self.load(path) is not None:
-                    os.utime(path, follow_symlinks=False)
-                    return
+                if path.exists():
+                    try:
+                        data = _read_file(path, self.budget)
+                        if (
+                            _read_file(path.with_suffix(".sha256"), 64).decode("ascii")
+                            != hashlib.sha256(data).hexdigest()
+                        ):
+                            raise ValueError("bad checksum")
+                        self._decode(data, validate_only=True)
+                        os.utime(path, follow_symlinks=False)
+                        return
+                    except Exception:
+                        pass
                 path.unlink(missing_ok=True)
                 path.with_suffix(".sha256").unlink(missing_ok=True)
                 files = self._files()
@@ -601,9 +783,16 @@ class PrefixDisk:
                             item.keys = item.keys[..., : len(tokens), :]
                             item.values = item.values[..., : len(tokens), :]
                         snapshot.append(item)
-                    staged = save_snapshot(
-                        Path(staging), self.model_id, tokens, snapshot
-                    )
+                    if _payload is not None or lookahead is not None:
+                        staged = Path(staging) / "snapshot.safetensors"
+                        self._write_host(
+                            staged,
+                            _payload or self._capture(tokens, snapshot, lookahead),
+                        )
+                    else:
+                        staged = save_snapshot(
+                            Path(staging), self.model_id, tokens, snapshot
+                        )
                     if staged is None or staged.stat().st_size + 64 > estimate:
                         return
                     # Also validate our writer's actual output against the live
@@ -621,6 +810,8 @@ class PrefixDisk:
                         stream.write(hashlib.sha256(data).hexdigest())
                         stream.flush()
                         os.fsync(stream.fileno())
+                    if self._closed.is_set():
+                        return
                     staged.replace(path)
                     checksum.replace(path.with_suffix(".sha256"))
                 fd = os.open(
@@ -663,6 +854,13 @@ class PrefixDisk:
                         if (
                             have < n < len(prompt)
                             and prompt[:n] == tokens
+                            and (
+                                "lookahead" not in meta
+                                or (
+                                    n < len(prompt)
+                                    and prompt[n] == _json(meta["lookahead"])
+                                )
+                            )
                             and (usable is None or usable(n))
                         ):
                             candidates.append((n, path))
@@ -745,9 +943,50 @@ def install_prefix_disk(app: Any, target: Path, drafter: Path | None = None) -> 
                 getattr(app._model, "release_rounds", lambda: None)()
 
         disk = scheduler.on_engine(prepare)
-        scheduler._persist = types.MethodType(
-            lambda _self, tokens, cache: disk.save(tokens, cache), scheduler
-        )
+        memory = scheduler.prompt_memory
+        if memory is not None:
+            projected = memory.projected
+
+            def with_pending_copy(*args, **kwargs):
+                return projected(*args, **kwargs) + disk.reserved_bytes
+
+            memory.projected = with_pending_copy
+        original_keep = scheduler._keep_checkpoints
+        context = None
+
+        def keep(self, job, shared_at):
+            nonlocal context
+            shared = max(job.shared_prefix_lens, default=0)
+            eligible = [
+                len(t)
+                for t, _ in getattr(job.stream, "history_checkpoints", ())
+                if len(t) in shared_at and len(t) < shared
+            ]
+            context = (job.prompt_ids, shared, max(eligible, default=0))
+            try:
+                return original_keep(job, shared_at)
+            finally:
+                context = None
+
+        def persist(self, tokens, cache):
+            if context is not None and len(tokens) == context[2]:
+                disk.submit(
+                    tokens,
+                    cache,
+                    prompt=context[0],
+                    shared_prefix_len=context[1],
+                    memory=self.prompt_memory,
+                )
+
+        scheduler._keep_checkpoints = types.MethodType(keep, scheduler)
+        scheduler._persist = types.MethodType(persist, scheduler)
+        original_close = app.close
+
+        def close(self):
+            disk.close()
+            original_close()
+
+        app.close = types.MethodType(close, app)
         scheduler._read_disk_block = types.MethodType(
             lambda self, prompt, usable=None: disk.restore(self, prompt, usable),
             scheduler,

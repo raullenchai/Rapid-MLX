@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import disk_caches
+from .._env import env_truthy
 from .tensorfold_qwen27 import (
     TensorFoldQwen27Backend,
     TensorFoldUnavailable,
@@ -325,7 +327,11 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
                 model_dir=target,
             )
-            if profile.profile_id == "nemotron-3.5-lightning-tensorfold":
+            if (
+                profile.profile_id == "nemotron-3.5-lightning-tensorfold"
+                and env_truthy("RAPID_MLX_TENSORFOLD_PREFIX_DISK")
+                and not disk_caches.disabled()
+            ):
                 from .tensorfold_prefix_disk import install_prefix_disk
 
                 install_prefix_disk(app, target, drafter)
