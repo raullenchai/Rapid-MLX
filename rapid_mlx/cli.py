@@ -3491,8 +3491,25 @@ def _normalize_speculative_config_or_exit(args):
             # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
             # the single source of truth, and --no-spec-decode stays the
             # explicit user escape hatch on every surface.
-            raw_config = '{"method":"mtp"}'
-            args.speculative_config = raw_config
+            from .spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+
+            # The catalog qualifies a preset, but the local target config is
+            # authoritative for this particular checkpoint. A missing config
+            # must also fail closed: explicit MTP requests still reach the
+            # serve-time validator and retain its error.
+            hf_cfg, _ = _gather_kv_cache_dtype_inputs(args.model)
+            if (
+                detect_mtp_eligibility(hf_cfg, has_external_sidecar=True)
+                is MTPEligibility.NONE
+            ):
+                print(
+                    "Automatic MTP sidecar skipped: target config is unavailable "
+                    "or does not qualify; using plain decode.",
+                    file=sys.stderr,
+                )
+            else:
+                raw_config = '{"method":"mtp"}'
+                args.speculative_config = raw_config
 
     if raw_config is None:
         _fill_runtime_defaults(overwrite=False)

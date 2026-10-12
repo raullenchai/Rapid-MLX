@@ -34,14 +34,16 @@ def _parsed_serve_args(*argv: str):
 
 
 @contextmanager
-def _serve_cache_policy_context(cli, *, stop_at_scheduler: bool):
+def _serve_cache_policy_context(cli, *, stop_at_scheduler: bool, hf_config=None):
     """Patch only external boundaries before the cache-policy serve block."""
     patches = [
         mock.patch.object(cli, "_check_disk_space", lambda *a, **k: None),
         mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
         mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
         mock.patch.object(
-            cli, "_gather_kv_cache_dtype_inputs", lambda *a, **k: ({}, None)
+            cli,
+            "_gather_kv_cache_dtype_inputs",
+            lambda *a, **k: ({} if hf_config is None else hf_config, None),
         ),
         mock.patch(
             "rapid_mlx._version_check.prompt_upgrade_if_available",
@@ -133,9 +135,17 @@ def test_alias_qualification_fails_closed_when_registry_raises(monkeypatch) -> N
     assert cli._alias_continuous_mtp_tier("qwen3.5-9b-4bit") == "unknown"
 
 
-def test_qwen36_35b_qualified_mtp_is_the_text_server_default() -> None:
+def test_qwen36_35b_qualified_mtp_is_the_text_server_default(monkeypatch) -> None:
     from rapid_mlx import cli
 
+    monkeypatch.setattr(
+        cli,
+        "_gather_kv_cache_dtype_inputs",
+        lambda _model: (
+            {"model_type": "qwen3_5_moe", "mtp_num_hidden_layers": 1},
+            None,
+        ),
+    )
     args = _args("qwen3.6-35b-4bit", None)
     args.mllm = False
     cli._normalize_speculative_config_or_exit(args)
@@ -193,7 +203,11 @@ def test_reasoning_continuous_mtp_logs_bf16_cache_policy(
     args = _parsed_serve_args("qwen3.5-9b-4bit", "--reasoning")
     caplog.set_level(logging.INFO, logger="rapid_mlx.cli")
     with (
-        _serve_cache_policy_context(cli, stop_at_scheduler=True),
+        _serve_cache_policy_context(
+            cli,
+            stop_at_scheduler=True,
+            hf_config={"model_type": "qwen3_5", "mtp_num_hidden_layers": 1},
+        ),
         pytest.raises(_StopServeError),
     ):
         cli.serve_command(args)
@@ -332,12 +346,19 @@ def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
     ],
 )
 def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
-    alias: str,
+    alias: str, monkeypatch
 ) -> None:
-    from rapid_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx import cli
+
+    model_type = "qwen4_exp" if alias.startswith("qwen3.8") else "qwen3_5"
+    monkeypatch.setattr(
+        cli,
+        "_gather_kv_cache_dtype_inputs",
+        lambda _model: ({"model_type": model_type, "mtp_num_hidden_layers": 1}, None),
+    )
 
     args = _args(alias, None)
-    _normalize_speculative_config_or_exit(args)
+    cli._normalize_speculative_config_or_exit(args)
 
     assert args.spec_decode == "mtp"
     assert args.mtp_continuous_batching is False

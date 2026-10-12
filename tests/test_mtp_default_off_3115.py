@@ -95,13 +95,53 @@ def test_serve_4b_without_flags_stays_on_plain_decode() -> None:
     assert args.spec_decode == "none"
 
 
-def test_serve_9b_without_flags_still_auto_selects_mtp() -> None:
+def test_serve_9b_with_eligible_cached_config_auto_selects_mtp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_gather_kv_cache_dtype_inputs",
+        lambda _model: ({"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}, None),
+    )
     args = _args("qwen3.5-9b-4bit")
     cli._normalize_speculative_config_or_exit(args)
     assert args._speculative_config is not None
     assert args._speculative_config.method == "mtp"
     assert args.mtp_continuous_batching is False
     assert args.mtp_unquantized_cache is True
+
+
+@pytest.mark.parametrize(
+    "hf_config",
+    [None, {"model_type": "qwen3_5", "mtp_num_hidden_layers": 0}],
+)
+def test_serve_9b_without_eligible_cached_config_uses_plain_decode(
+    monkeypatch, capsys, hf_config
+) -> None:
+    monkeypatch.setattr(
+        cli, "_gather_kv_cache_dtype_inputs", lambda _model: (hf_config, None)
+    )
+    args = _args("qwen3.5-9b-4bit")
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args.speculative_config is None
+    assert args._speculative_config is None
+    assert args.spec_decode == "none"
+    assert capsys.readouterr().err == (
+        "Automatic MTP sidecar skipped: target config is unavailable "
+        "or does not qualify; using plain decode.\n"
+    )
+
+
+def test_explicit_mtp_still_reaches_eligibility_validator(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli, "_gather_kv_cache_dtype_inputs", lambda _model: (None, None)
+    )
+    args = _args("qwen3.5-9b-4bit", '{"method":"mtp"}')
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config.method == "mtp"
+    assert args.spec_decode == "mtp"
 
 
 def test_glm53_without_flags_selects_native_mtp_pair(monkeypatch) -> None:
