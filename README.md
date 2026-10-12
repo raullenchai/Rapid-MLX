@@ -444,7 +444,7 @@ PyTorch or vLLM while serving.
 |---|---|---|
 | **Chat in the terminal** | `rapid-mlx chat qwen3.5-9b-4bit` | Streaming REPL, `/help` for slash commands, `--think` / `--no-think` to control CoT. |
 | **OpenAI server for your apps** | `rapid-mlx serve qwen3.5-9b-4bit` | Point Aider, LibreChat, Open WebUI, or LangChain at `http://localhost:8000/v1`. |
-| **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 10 agents auto-configure via `agents <name> --setup` once the server is up (12 wire-verified total, 5 Tier-1) — see [Agent support](#agent-support). |
+| **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 11 clients auto-configure via `agents <name> --setup` once the server is up (12 in the family matrix, 5 Tier-1) — see [Agent support](#agent-support). |
 | **Benchmark your Mac** | `rapid-mlx benchmark run qwen3.5-9b-4bit` | Reproducible model-first benchmark; saves privately, with a separate consent-gated `benchmark share RUN_ID`. |
 
 → [One-shot IDE setup](https://rapidmlx.com/docs/cli.html#launch) with `rapid-mlx launch <claude-code|cline|continue-dev>`
@@ -453,16 +453,21 @@ PyTorch or vLLM while serving.
 
 ## Agent Support
 
-All 12 agents below are wire-verified against real weights every release via their own integration-test cell. Of these, five are **Tier-1** — **Claude Code, Codex CLI, Hermes, Aider, and DeepSeek Harness** — re-verified end-to-end against the *current* client binary every release, with one guardian per API wire (Anthropic `/v1/messages`, OpenAI `/v1/responses`, and `/v1/chat/completions` covered for tool-calling depth, reach, and DeepSeek's own harness protocol). The other seven are **Tier-2**: wire-verified in the matrix and configured on-demand. The first nine agents each ship a `rapid-mlx agents <name> --setup` config template (except Claude Code, which is one env-var), and Continue.dev gets the same one-command setup via `rapid-mlx agents continue --setup` (ten setup-capable clients in all, though Continue.dev is not part of the wire-verified matrix below); GitHub Copilot, Factory Droid, and Moonshot Kimi Code plug in through their own documented BYOK config (auth-gated, so the matrix cell is a wire smoke).
+All 12 agents below are wire-verified against real weights every release via their own integration-test cell. Of these, five are **Tier-1** — **Claude Code, Codex CLI, Hermes, Aider, and DeepSeek Harness** — re-verified end-to-end against the *current* client binary every release, with one guardian per API wire (Anthropic `/v1/messages`, OpenAI `/v1/responses`, and `/v1/chat/completions` covered for tool-calling depth, reach, and DeepSeek's own harness protocol). The other seven are **Tier-2**: wire-verified in the matrix and configured on-demand. The first nine agents each ship a `rapid-mlx agents <name> --setup` config template (except Claude Code, which is one env-var). Continue.dev and Pi also have one-command setup (11 setup-capable clients in all, though neither is part of the 12-agent family matrix); GitHub Copilot, Factory Droid, and Moonshot Kimi Code plug in through their own documented BYOK config (auth-gated, so the matrix cell is a wire smoke).
 
 Tier-1 is not a label — it is a job that blocks the release. `tests/integrations/agent_smoke.sh` drives each of the five through the same real multi-step bug-fix task against a local 35B model and asserts the repo's own test suite goes green afterwards; if any one of them fails, the version cannot tag or publish.
 
 **Tier-1 (5):** Claude Code · Codex CLI · Hermes · Aider — last re-verified end-to-end 2026-07-28 on current binaries (claude 2.1.211, codex 0.145.0, hermes 0.9.0, aider 0.86.2). DeepSeek Harness — promoted 2026-08-17, verified on dsh 0.1.0-rc.7 against `qwen3.6-35b-8bit`.
 **Tier-2 (7):** OpenCode · Qwen Code · OpenHands · Kilo Code · GitHub Copilot · Factory Droid · Moonshot Kimi Code.
 
+**Pi Coding Agent** also has one-command local setup with
+`rapid-mlx agents pi --setup` and an OpenAI-compatible `/v1/chat/completions` route. See the
+[Pi guide](docs/agents/pi.md). Pi is not yet a cell in the 12-agent family
+matrix below.
+
 | Agents (12) | Frameworks (3) |
 |---|---|
-| [Codex CLI](https://github.com/openai/codex) · [Claude Code](https://www.anthropic.com/claude-code) · [OpenCode](https://github.com/sst/opencode) · [Qwen Code](https://github.com/QwenLM/qwen-code) · [OpenHands](https://github.com/All-Hands-AI/OpenHands) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Aider](https://aider.chat) · [Kilo Code](https://github.com/Kilo-Org/kilocode) · [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) · [GitHub Copilot](https://github.com/features/copilot) · [Factory Droid](https://factory.ai) · [Moonshot Kimi Code](https://github.com/MoonshotAI/kimi-cli) | [LangChain](https://langchain.com) (+ [LangGraph](https://langchain-ai.github.io/langgraph/)) · [PydanticAI](https://ai.pydantic.dev) · [smolagents](https://github.com/huggingface/smolagents) |
+| [Codex CLI](https://github.com/openai/codex) · [Claude Code](https://www.anthropic.com/claude-code) · [OpenCode](https://github.com/anomalyco/opencode) · [Qwen Code](https://github.com/QwenLM/qwen-code) · [OpenHands](https://github.com/All-Hands-AI/OpenHands) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Aider](https://aider.chat) · [Kilo Code](https://github.com/Kilo-Org/kilocode) · [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) · [GitHub Copilot](https://github.com/features/copilot) · [Factory Droid](https://factory.ai) · [Moonshot Kimi Code](https://github.com/MoonshotAI/kimi-cli) | [LangChain](https://langchain.com) (+ [LangGraph](https://langchain-ai.github.io/langgraph/)) · [PydanticAI](https://ai.pydantic.dev) · [smolagents](https://github.com/huggingface/smolagents) |
 
 Also compatible with OpenAI-compatible clients that allow direct local endpoints via `http://localhost:8000/v1` — LibreChat, Open WebUI, and more plug in with a single URL change.
 

@@ -58,6 +58,10 @@ truthfully from the authoritative test suite in
 
 ## Agent × Family (12 agents × 5 families)
 
+Pi Coding Agent has a [local setup guide](pi.md) and a
+`rapid-mlx agents pi --test` harness, but is not yet a cell in this
+12-agent family matrix.
+
 Source: `tests/integrations/README.md` "Current cell status" (pilot run
 2026-07-06, four always-on families; Hy3 column is `xfail(strict=True)` from
 0.11.0).
