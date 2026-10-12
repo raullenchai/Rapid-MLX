@@ -9722,6 +9722,7 @@ def models_command(args):
         from rapid_mlx.byom.imports import print_imports_section
 
         print_imports_section()
+        _print_next_step()
         return
 
     all_profiles = list_profiles()
@@ -10096,6 +10097,7 @@ def models_command(args):
         for name, target in sorted(user_aliases.items()):
             print(f"  {name} -> {target}")
     print()
+    _print_next_step()
 
 
 def _format_pull_duration(seconds: float) -> str:
@@ -13046,6 +13048,43 @@ def info_command(args):
     if cfg is None and not is_v41_product:
         print("  No pattern matched — runtime probe will run when the model loads.")
         print()
+    if not getattr(args, "json", False):
+        _print_next_step(original_alias)
+
+
+def _print_next_step(alias: str | None = None) -> None:
+    """Append a copyable serve command only to terminal-facing output."""
+    if not sys.stdout.isatty():
+        return
+
+    from rapid_mlx.recommendations import physical_ram_gb, recommendation_tier
+
+    ram_gb = physical_ram_gb()
+    selected = recommendation_tier(ram_gb, validate_catalog=False).picks[0].alias
+    if alias and "/" not in alias:
+        from rapid_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_sizes import size_bytes
+        from rapid_mlx.recommendations import (
+            is_recommended_alias,
+            recommendation_footprint_gb,
+        )
+
+        profile = resolve_profile(alias)
+        if profile is not None and profile.modality == "text":
+            footprint = recommendation_footprint_gb(alias)
+            policy_fit = footprint is None or is_recommended_alias(alias, ram_gb)
+            if footprint is None:
+                size = size_bytes(profile.hf_path)
+                footprint = size * 1.5 / (1024**3) if size is not None else None
+            floor = profile.min_memory_gb or 0
+            if (
+                footprint is not None
+                and policy_fit
+                and ram_gb >= floor
+                and footprint <= ram_gb
+            ):
+                selected = alias
+    print(f"Next: rapid-mlx serve {selected}")
 
 
 def _format_v41_product_info(model_name: str) -> str:
@@ -14360,6 +14399,10 @@ def main():
             _start_quiet_lifecycle(
                 flag, no_telemetry=_argv_disables_telemetry(sys.argv[1:])
             )
+            if flag == "help" and not any(
+                token in subparsers.choices for token in sys.argv[1:]
+            ):
+                _print_next_step()
         raise
     from rapid_mlx import model_downloads
 
@@ -14886,6 +14929,7 @@ def main():
         target = getattr(args, "subcommand", None)
         if not target:
             parser.print_help()
+            _print_next_step()
         elif target in subparsers.choices:
             subparsers.choices[target].print_help()
         else:
@@ -14990,6 +15034,7 @@ def _run_front_door(parser, args, version: str) -> int:
         )
     except front_door.FrontDoorUnavailableError:
         parser.print_help()
+        _print_next_step()
         return 1
 
 

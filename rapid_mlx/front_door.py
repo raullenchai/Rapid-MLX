@@ -357,7 +357,10 @@ def render_screen(state: FrontDoorState) -> str:
     lines.append("  s      Start the server for your own tools (OpenAI/Anthropic API)")
     lines.append("  m      Choose another model (smart / fast / downloaded)")
     lines.append("  q      Quit")
-    lines += ["", f"All commands: rapid-mlx --help · Docs: {DOCS_URL}"]
+    lines += [
+        f"All commands: rapid-mlx --help · Docs: {DOCS_URL}",
+        f"Next: rapid-mlx serve {best['alias']}",
+    ]
     return "\n".join(lines)
 
 
