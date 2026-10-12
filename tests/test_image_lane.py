@@ -719,6 +719,26 @@ def test_route_409_when_no_image_model(client, monkeypatch):
     assert profile.modality == "image-gen"
 
 
+def test_route_409_on_text_server_explains_how_to_serve_image_model(
+    client, monkeypatch
+):
+    _patch_engine(monkeypatch, types.SimpleNamespace(is_image_gen=False))
+    resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": {
+            "message": (
+                "This server is serving a text model, so image generation is "
+                "unavailable. Run `rapid-mlx serve flux2-klein-4b` to serve "
+                "an image model."
+            ),
+            "type": "invalid_request_error",
+            "code": "image_model_not_loaded",
+            "param": "model",
+        }
+    }
+
+
 def test_route_409_when_edit_model_loaded(client, monkeypatch):
     _patch_engine(monkeypatch, _FakeImageEngine(is_edit=True))
     resp = client.post("/v1/images/generations", json={"prompt": "a fox"})

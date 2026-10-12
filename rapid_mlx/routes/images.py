@@ -214,8 +214,14 @@ def _image_engine(
             detail={
                 "error": {
                     "message": (
-                        "This server is not running an image model. Start it with "
-                        "`rapid-mlx serve flux2-klein-4b` (or another image alias)."
+                        (
+                            "This server is serving a text model, so image "
+                            "generation is unavailable."
+                            if img_engine is not None
+                            else "This server has no image model loaded."
+                        )
+                        + " Run `rapid-mlx serve flux2-klein-4b` to serve an "
+                        "image model."
                     ),
                     "type": "invalid_request_error",
                     "code": "image_model_not_loaded",

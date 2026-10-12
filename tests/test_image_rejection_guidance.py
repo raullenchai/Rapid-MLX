@@ -139,8 +139,8 @@ def test_memory_insufficient_names_floor_ram_and_a_fitting_alias():
     assert alias is not None
     assert message == (
         f"{_BASE} Vision for this model needs at least 32 GB of RAM; this Mac "
-        f"has 16 GB, so it started text-only. For image input, serve "
-        f"'{alias}', a vision model that fits this Mac."
+        f"has 16 GB, so it started text-only. For image input, run "
+        f"`rapid-mlx serve {alias}` to serve a vision model that fits this Mac."
     )
 
 
@@ -204,7 +204,7 @@ def test_catalog_text_only_pin_suggests_a_vision_alias():
     )
     assert guidance == (
         "Its catalog entry pins it to text-only serving. For image input, "
-        f"serve '{alias}', a vision model that fits this Mac."
+        f"run `rapid-mlx serve {alias}` to serve a vision model that fits this Mac."
     )
 
 
@@ -251,8 +251,8 @@ def test_text_only_checkpoint_reasons_suggest_a_vision_alias(reason, cause):
     alias = fitting_vision_alias(16.0, hybrid_runtime_ok=True)
     assert message == (
         "Model 'org/some-text-model' is serving text-only; image input is "
-        f"unsupported. {cause} For image input, serve '{alias}', a vision "
-        "model that fits this Mac."
+        f"unsupported. {cause} For image input, run `rapid-mlx serve {alias}` "
+        "to serve a vision model that fits this Mac."
     )
 
 
@@ -784,8 +784,8 @@ def test_missing_vision_runtime_leads_with_the_install_hint(monkeypatch):
         # Install first, only then a model to serve.
         assert guidance.endswith(
             "Image input needs the vision runtime (mlx-vlm), which is not usable "
-            f"here. {hint}. Then for image input, serve '{alias}', a vision model "
-            "that fits this Mac."
+            f"here. {hint}. Then for image input, run `rapid-mlx serve {alias}` "
+            "to serve a vision model that fits this Mac."
         )
     nothing_fits = text_lane_image_guidance(
         "org/x", "text_checkpoint", vision_runtime_ok=False, ram_gb=0.5
@@ -1004,8 +1004,8 @@ def test_flag_copy_names_the_memory_floor_it_would_hit(reason):
     alias = fitting_vision_alias(16, hybrid_runtime_ok=True)
     assert guidance.endswith(
         "Dropping it would not help: vision for this model needs at least 32 GB "
-        f"of RAM; this Mac has 16 GB. For image input, serve '{alias}', a vision "
-        "model that fits this Mac."
+        f"of RAM; this Mac has 16 GB. For image input, run "
+        f"`rapid-mlx serve {alias}` to serve a vision model that fits this Mac."
     )
     assert "Restart" not in guidance and "restart with" not in guidance
 
@@ -1078,7 +1078,8 @@ def test_base_install_on_16gb_flagship_is_not_told_to_restart():
     assert "Dropping it would not help" in guidance
     alias = fitting_vision_alias(16, hybrid_runtime_ok=False)
     assert guidance.endswith(
-        f"Then for image input, serve '{alias}', a vision model that fits this Mac."
+        f"Then for image input, run `rapid-mlx serve {alias}` to serve a vision "
+        "model that fits this Mac."
     )
 
 

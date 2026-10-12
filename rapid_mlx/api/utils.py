@@ -2054,7 +2054,10 @@ def text_lane_image_guidance(
                 f"Choose a vision model in the model picker, such as '{alias}', "
                 "which fits this Mac."
             )
-        return f"For image input, serve '{alias}', a vision model that fits this Mac."
+        return (
+            f"For image input, run `rapid-mlx serve {alias}` to serve a vision "
+            "model that fits this Mac."
+        )
 
     if reason == "vision_memory_insufficient":
         floor = profile.vision_min_memory_gb if profile is not None else None
