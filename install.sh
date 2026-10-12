@@ -23,6 +23,17 @@ warn()  { printf "  ${YELLOW}%s${RESET}\n" "$*"; }
 err()   { printf "  ${RED}%s${RESET}\n" "$*" >&2; }
 dim()   { printf "  ${DIM}%s${RESET}\n" "$*"; }
 
+# With curl | bash, stdin is installer source, not input for child commands.
+# Keep terminal input available for interactive runs; internal data pipelines
+# (such as the cache JSON reader) must keep their own explicit stdin.
+run_install_command() {
+    if [ -t 0 ]; then
+        "$@"
+    else
+        "$@" </dev/null
+    fi
+}
+
 # Download function — works with curl or wget
 DOWNLOADER=""
 if command -v curl >/dev/null 2>&1; then
@@ -36,9 +47,9 @@ fi
 
 download() {
     if [ "$DOWNLOADER" = "curl" ]; then
-        curl -fsSL "$1"
+        run_install_command curl -fsSL "$1"
     else
-        wget -qO- "$1"
+        run_install_command wget -qO- "$1"
     fi
 }
 
@@ -53,10 +64,10 @@ select_python() {
     local py ver major minor pyarch
     for py in python3.13 python3.12 python3.11 python3.10 python3; do
         command -v "$py" >/dev/null 2>&1 || continue
-        ver=$("$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
+        ver=$(run_install_command "$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
         major="${ver%%.*}"; minor="${ver#*.}"
         { [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]; } || continue
-        pyarch=$("$py" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
+        pyarch=$(run_install_command "$py" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
         if [ "$pyarch" != "arm64" ]; then
             dim "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)" >&2
             continue
@@ -80,11 +91,11 @@ select_python() {
 venv_is_complete() {
     local dir="$1" arch ver major minor
     [ -x "$dir/bin/python" ] && [ -x "$dir/bin/pip" ] || return 1
-    "$dir/bin/python" -c 'import sys' >/dev/null 2>&1 || return 1
-    "$dir/bin/pip" --version >/dev/null 2>&1 || return 1
-    arch=$("$dir/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
+    run_install_command "$dir/bin/python" -c 'import sys' >/dev/null 2>&1 || return 1
+    run_install_command "$dir/bin/pip" --version >/dev/null 2>&1 || return 1
+    arch=$(run_install_command "$dir/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
     [ "$arch" = "arm64" ] || return 1
-    ver=$("$dir/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
+    ver=$(run_install_command "$dir/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
     major="${ver%%.*}"; minor="${ver#*.}"
     [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]
 }
@@ -111,15 +122,15 @@ plan_venv_action() {
 
 # Best-effort pip self-upgrade: a transient failure here must not abort install.
 upgrade_pip() {
-    "$INSTALL_DIR/bin/pip" install --upgrade pip -q 2>/dev/null || true
+    run_install_command "$INSTALL_DIR/bin/pip" install --upgrade pip -q 2>/dev/null || true
 }
 
 # Build the venv at $INSTALL_DIR under $PYTHON and verify it came out usable.
 create_venv() {
-    "$PYTHON" -m venv "$INSTALL_DIR"
+    run_install_command "$PYTHON" -m venv "$INSTALL_DIR"
     if ! venv_is_complete "$INSTALL_DIR"; then
         err "Could not create a working virtual environment at $INSTALL_DIR."
-        dim "Selected Python: $("$PYTHON" -c 'import platform, sys; print(platform.machine(), sys.version.split()[0])' 2>/dev/null || echo unknown)"
+        dim "Selected Python: $(run_install_command "$PYTHON" -c 'import platform, sys; print(platform.machine(), sys.version.split()[0])' 2>/dev/null || echo unknown)"
         dim "Install an arm64 Python 3.10+ (e.g. 'brew install python@3.12') and re-run."
         exit 1
     fi
@@ -202,7 +213,7 @@ EOF
 }
 
 installed_cached_aliases() {
-    "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
+    run_install_command "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
         "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
 }
 
@@ -338,14 +349,14 @@ if [ -z "$PYTHON" ]; then
     warn "Python 3.10+ not found. Installing automatically..."
     if command -v brew >/dev/null 2>&1; then
         info "Installing Python 3.12 via Homebrew..."
-        brew install python@3.12
+        run_install_command brew install python@3.12
         # Resolve the formula's OWN keg path, not the bare name and not the
         # Homebrew root: python@3.12 is keg-only, so `$(brew --prefix)/bin` may
         # not carry python3.12, while a bare `python3.12` could still hit the
         # x86_64 build earlier on PATH (the reason we got here) and fail the
         # arch check below. The lookup is best-effort (|| true) so it can't abort
         # the install under set -e; fall back to the name if the keg path is gone.
-        keg="$(brew --prefix python@3.12 2>/dev/null || true)"
+        keg="$(run_install_command brew --prefix python@3.12 2>/dev/null || true)"
         if [ -n "$keg" ] && [ -x "$keg/bin/python3.12" ]; then
             PYTHON="$keg/bin/python3.12"
         else
@@ -387,22 +398,22 @@ if [ -z "$PYTHON" ]; then
         rm -f "$TMP_TAR"
         trap - EXIT
         PYTHON="${STANDALONE_DIR}/bin/python3"
-        if ! "$PYTHON" --version >/dev/null 2>&1; then
+        if ! run_install_command "$PYTHON" --version >/dev/null 2>&1; then
             err "Failed to install standalone Python."
             dim "Please install Python 3.10+ from https://www.python.org/downloads/"
             exit 1
         fi
-        ok "Installed Python $("$PYTHON" --version 2>&1)"
+        ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
     fi
 fi
 
-dim "Python: $("$PYTHON" --version 2>&1)"
+dim "Python: $(run_install_command "$PYTHON" --version 2>&1)"
 
 # Whatever interpreter we ended up with — found on PATH or auto-installed — must
 # be arm64. MLX has no x86_64 build, so a Rosetta Python cannot run Rapid-MLX at
 # all; fail here with a clear message instead of building a venv that breaks
 # later on the first `import mlx` (#1953).
-PY_ARCH=$("$PYTHON" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
+PY_ARCH=$(run_install_command "$PYTHON" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
 if [ "$PY_ARCH" != "arm64" ]; then
     err "Selected Python is ${PY_ARCH}, but Apple Silicon needs a native arm64 Python."
     dim "Interpreter: $PYTHON"
@@ -442,17 +453,17 @@ fi
 
 case "$TARGET" in
     stable)
-        "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" -q 2>/dev/null \
-            || { dim "PyPI unavailable, installing from GitHub..."; "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}" ; }
+        run_install_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" -q 2>/dev/null \
+            || { dim "PyPI unavailable, installing from GitHub..."; run_install_command "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}" ; }
         ;;
     latest)
         info "Installing latest from GitHub..."
-        "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}"
+        run_install_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}"
         ;;
     *)
         info "Installing version ${TARGET}..."
-        "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" -q 2>/dev/null \
-            || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
+        run_install_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" -q 2>/dev/null \
+            || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; run_install_command "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
         ;;
 esac
 
@@ -499,7 +510,7 @@ fi
 
 # ── 8. Verify + done ────────────────────────────────────────────────────────
 
-VERSION=$("$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null || echo "unknown")
+VERSION=$(run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null || echo "unknown")
 
 echo ""
 echo "  ╭─────────────────────────────────────╮"
