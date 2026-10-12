@@ -1431,7 +1431,7 @@ struct ContentView: View {
         let entry = catalogEntries.first {
             $0.alias.caseInsensitiveCompare(alias) == .orderedSame
         }
-        let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+        let catalogSupportsImageInput = Self.catalogImageInputCapability(
             forAlias: alias,
             isBuiltinProfile: entry?.isBuiltinProfile,
             isTextOnly: entry?.isTextOnly
@@ -1439,6 +1439,27 @@ struct ContentView: View {
         return server.imageInputAvailability(
             forAlias: alias,
             catalogSupportsImageInput: catalogSupportsImageInput
+        )
+    }
+
+    /// Preserve "not loaded yet" across the view/server boundary. During a
+    /// relaunch the selected model and its process can be ready before the
+    /// asynchronous catalog snapshot reaches this view. Turning a missing row
+    /// into `false` here makes Retry silently strip a persisted image even
+    /// though `ServerManager` has a binary-bound catalog mirror and the actual
+    /// launched lane available to answer the question. A known row remains
+    /// authoritative; an unknown row lets that existing resolver decide and
+    /// still fails closed when its own evidence is unavailable.
+    nonisolated static func catalogImageInputCapability(
+        forAlias alias: String,
+        isBuiltinProfile: Bool?,
+        isTextOnly: Bool?
+    ) -> Bool? {
+        guard let isBuiltinProfile, let isTextOnly else { return nil }
+        return ModelBrandStyle.supportsImageInput(
+            forAlias: alias,
+            isBuiltinProfile: isBuiltinProfile,
+            isTextOnly: isTextOnly
         )
     }
 

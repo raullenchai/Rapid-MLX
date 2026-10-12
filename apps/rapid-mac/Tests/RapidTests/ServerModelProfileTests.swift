@@ -25,6 +25,30 @@ final class ServerModelProfileTests {
         return d
     }
 
+    @Test("Catalog hydration preserves unknown image capability for runtime fallback")
+    func catalogHydrationPreservesUnknownImageCapability() {
+        #expect(ContentView.catalogImageInputCapability(
+            forAlias: "qwen3-vl-2b-4bit",
+            isBuiltinProfile: nil,
+            isTextOnly: nil
+        ) == nil)
+        #expect(ContentView.catalogImageInputCapability(
+            forAlias: "qwen3-vl-2b-4bit",
+            isBuiltinProfile: true,
+            isTextOnly: false
+        ) == true)
+        #expect(ContentView.catalogImageInputCapability(
+            forAlias: "qwen3-vl-2b-4bit",
+            isBuiltinProfile: false,
+            isTextOnly: false
+        ) == false)
+        #expect(ContentView.catalogImageInputCapability(
+            forAlias: "qwen3-vl-2b-4bit",
+            isBuiltinProfile: true,
+            isTextOnly: true
+        ) == false)
+    }
+
     // MARK: - Decoding
 
     @Test("Full vendor-extension response decodes every field")
