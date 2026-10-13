@@ -421,6 +421,165 @@ async def test_mllm_idle_stop_releases_model_but_reuses_worker(
 
 
 @pytest.mark.asyncio
+async def test_text_idle_stop_keeps_stream_worker_until_final_stop(monkeypatch):
+    from rapid_mlx.engine.batched import BatchedEngine
+
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._is_mllm = False
+    engine._engine = None
+    engine._mllm_scheduler = None
+    engine._model_load_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    worker = engine._model_load_executor
+    engine._tokenizer = None
+    engine._processor = None
+    engine._mllm_instance = None
+    engine._prompt_host_cache = Mock()
+    engine._tool_grammar_futures_lock = threading.Lock()
+    engine._tool_grammar_futures = set()
+    monkeypatch.setattr(engine, "_abort_all_guided_requests", lambda: None)
+
+    class Model:
+        pass
+
+    model = Model()
+    model_ref = weakref.ref(model)
+    engine._model = model
+    try:
+        del model
+        await engine.idle_stop()
+        gc.collect()
+        assert model_ref() is None
+        assert engine._model_load_executor is worker
+        assert worker.submit(threading.get_ident).result(timeout=2)
+
+        await engine.stop()
+        assert engine._model_load_executor is None
+        assert worker._shutdown is True
+    finally:
+        worker.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_text_reload_uses_existing_stream_worker(monkeypatch):
+    _stub_text_start_dependencies(monkeypatch)
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.utils import tokenizer as tokenizer_mod
+
+    class StopAfterDispatchError(Exception):
+        pass
+
+    engine = batched_mod.BatchedEngine.__new__(batched_mod.BatchedEngine)
+    engine._model_name = "fake/model"
+    engine._trust_remote_code = False
+    engine._scheduler_config = None
+    engine._model_load_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    worker = engine._model_load_executor
+    worker_ident = worker.submit(threading.get_ident).result(timeout=2)
+    dispatched_on = []
+
+    def stop_loader(*args, **kwargs):
+        dispatched_on.append(threading.get_ident())
+        raise StopAfterDispatchError
+
+    monkeypatch.setattr(tokenizer_mod, "load_model_with_fallback", stop_loader)
+    try:
+        with pytest.raises(StopAfterDispatchError):
+            await engine._start_llm()
+        assert engine._model_load_executor is worker
+        assert dispatched_on == [worker_ident]
+    finally:
+        engine._model_load_executor.shutdown(wait=True)
+        if engine._model_load_executor is not worker:
+            worker.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_text_load_retries_after_broken_worker(monkeypatch):
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.utils import tokenizer as tokenizer_mod
+
+    class StopAfterDispatchError(Exception):
+        pass
+
+    attempts = []
+
+    def initialize_worker():
+        attempts.append(threading.get_ident())
+        if len(attempts) == 1:
+            raise RuntimeError("transient stream initialization failure")
+
+    def stop_loader(*args, **kwargs):
+        raise StopAfterDispatchError
+
+    engine_core = types.ModuleType("rapid_mlx.engine_core")
+    engine_core.AsyncEngineCore = Mock()
+    engine_core.EngineConfig = Mock()
+    engine_core._init_mlx_step_thread = initialize_worker
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
+    scheduler = types.ModuleType("rapid_mlx.scheduler")
+    scheduler.SchedulerConfig = Mock()
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
+    monkeypatch.setattr(tokenizer_mod, "load_model_with_fallback", stop_loader)
+    engine = batched_mod.BatchedEngine.__new__(batched_mod.BatchedEngine)
+    engine._model_name = "fake/model"
+    engine._trust_remote_code = False
+    engine._scheduler_config = None
+    engine._model_load_executor = None
+    try:
+        with pytest.raises(concurrent.futures.thread.BrokenThreadPool):
+            await engine._start_llm()
+        with pytest.raises(StopAfterDispatchError):
+            await engine._start_llm()
+        assert len(attempts) == 2
+    finally:
+        engine._model_load_executor.shutdown(wait=True)
+
+
+def _stub_text_start_dependencies(monkeypatch):
+    """Stop text startup before model loading without importing MLX."""
+    engine_core = types.ModuleType("rapid_mlx.engine_core")
+    engine_core.AsyncEngineCore = Mock()
+    engine_core.EngineConfig = Mock()
+    engine_core._init_mlx_step_thread = lambda: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
+    scheduler = types.ModuleType("rapid_mlx.scheduler")
+    scheduler.SchedulerConfig = Mock()
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
+
+
+@pytest.mark.asyncio
+async def test_text_reload_replaces_shutdown_worker(monkeypatch):
+    _stub_text_start_dependencies(monkeypatch)
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.utils import tokenizer as tokenizer_mod
+
+    class StopAfterDispatchError(Exception):
+        pass
+
+    engine = batched_mod.BatchedEngine.__new__(batched_mod.BatchedEngine)
+    engine._model_name = "fake/model"
+    engine._trust_remote_code = False
+    engine._scheduler_config = None
+    worker = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    worker.shutdown(wait=True)
+    engine._model_load_executor = worker
+
+    def stop_loader(*args, **kwargs):
+        raise StopAfterDispatchError
+
+    monkeypatch.setattr(tokenizer_mod, "load_model_with_fallback", stop_loader)
+    try:
+        with pytest.raises(StopAfterDispatchError):
+            await engine._start_llm()
+        assert engine._model_load_executor is not worker
+        assert engine._model_load_executor.submit(lambda: 1).result(timeout=2) == 1
+        assert worker._shutdown is True
+    finally:
+        engine._model_load_executor.shutdown(wait=True)
+        worker.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("build_error", [False, True])
 @pytest.mark.parametrize("drain_seconds", [0, 0.01])
 async def test_stuck_grammar_build_does_not_block_unload_and_cleans_late_cache(
