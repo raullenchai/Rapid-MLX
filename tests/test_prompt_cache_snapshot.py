@@ -1096,8 +1096,8 @@ class TestScheduleWaitingInsertDispatch:
         assert isinstance(admitted[0], AgentRepetitionLogitsProcessor)
         assert tuple(admitted) == request._mtp_safe_logits_processors
 
-    def test_real_schedule_registers_builtin_grammar_as_transactional_mtp_safe(self):
-        """The exact request grammar and guard share MTP's admitted row."""
+    def test_real_schedule_keeps_builtin_grammar_out_of_mtp(self):
+        """Constrained tool requests fail closed to ordinary decode (#4592)."""
         from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
         from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
@@ -1133,7 +1133,7 @@ class TestScheduleWaitingInsertDispatch:
         ][0]
         assert admitted[0] is grammar
         assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
-        assert tuple(admitted) == request._mtp_safe_logits_processors
+        assert request._mtp_safe_logits_processors == (admitted[1],)
 
     def test_real_schedule_registers_reasoning_budget_as_transactional_mtp_safe(self):
         """A thinking-budget request keeps MTP: the budget joins the admitted row (#3044)."""
