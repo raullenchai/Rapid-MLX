@@ -529,26 +529,23 @@ struct MermaidRenderingTests {
         var attempts = 0
         let renderer = MermaidRenderer(
             // The first evaluator intentionally never completes. Give the
-            // recovery render enough room for a cold WebKit process on CI;
-            // this test measures queue release, not a 100 ms performance SLA.
-            renderTimeout: .milliseconds(500),
-            javaScriptEvaluator: { webView, source, theme, completion in
+            // recovery render a deterministic measurement; this test measures
+            // queue release, while the end-to-end tests below exercise WebKit.
+            renderTimeout: .seconds(1),
+            javaScriptEvaluator: { _, _, _, completion in
                 attempts += 1
                 guard attempts > 1 else { return }
-                webView.callAsyncJavaScript(
-                    "return await __rapidRender(source, theme);",
-                    arguments: ["source": source, "theme": theme.rawValue],
-                    in: nil,
-                    in: .page,
-                    completionHandler: completion
-                )
+                completion(.success(["ok": true, "width": 320, "height": 180]))
+            },
+            snapshotter: { _, configuration, completion in
+                completion(NSImage(size: configuration.rect.size), nil)
             }
         )
 
         let source = "graph TD\n  Recovered --> Queue"
         let started = ContinuousClock.now
         #expect(await renderer.image(source: source, theme: .light) == nil)
-        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(ContinuousClock.now - started < .seconds(3))
         #expect(!renderer.isKnownBad(source: source, theme: .light))
 
         let recovered = await renderer.image(source: source, theme: .light)
@@ -1148,15 +1145,21 @@ struct PreviewAutoRevealTests {
         let first = "graph TD\n  First --> Closed"
         let second = "graph TD\n  Second --> Opens"
         let view = block(first, "mermaid")
-        try? await Task.sleep(for: .milliseconds(1_500))
         let button = try #require(previewButton(view))
+        for _ in 0..<100 where button.isHidden || button.title != "Code" {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(!button.isHidden)
+        #expect(button.title == "Code")
         _ = button.target?.perform(button.action, with: button)
         #expect(button.title == "Preview")
 
         view.configure(
             code: second, language: "mermaid", options: MarkdownOptions(), isFinal: true
         )
-        try? await Task.sleep(for: .milliseconds(1_500))
+        for _ in 0..<100 where button.isHidden || button.title != "Code" {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(button.title == "Code")
         #expect(!button.isHidden)
     }

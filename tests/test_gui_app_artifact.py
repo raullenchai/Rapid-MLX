@@ -105,7 +105,9 @@ def test_gui_artifact_producer_uses_trusted_mac_only_after_promotion():
             for nested in value:
                 yield from strings(nested)
 
-    assert producer["runs-on"] == "manzanita-standard"
+    assert producer["runs-on"] == (
+        "${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}"
+    )
     assert condition == (
         "!cancelled() && "
         "needs.changes.result == 'success' && "
