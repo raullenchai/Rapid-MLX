@@ -66,17 +66,19 @@ struct MarkdownDirtyRectClippingTests {
     /// bound below is loose enough for timing noise and still far under it.
     @Test("Tail redraw cost does not scale with document length")
     func tailDrawIsFlatInDocumentLength() {
-        let short = msPerTailDraw(paragraphs: 5)
-        let long = msPerTailDraw(paragraphs: 60)
-        let ratio = long / max(short, 0.0001)
+        let ratios = (0..<5).map { _ in
+            let short = msPerTailDraw(paragraphs: 5)
+            let long = msPerTailDraw(paragraphs: 60)
+            return long / max(short, 0.0001)
+        }
+        let ratio = ratios.sorted()[ratios.count / 2]
 
         #expect(
             ratio < 4,
             """
-            redrawing a 24pt strip cost \(short) ms at 5 paragraphs and \
-            \(long) ms at 60 (ratio \(ratio)). A ratio near the 12x document \
-            ratio means draw() is walking the whole document again instead of \
-            the dirty rect.
+            median tail-draw ratio was \(ratio) across samples \(ratios). A \
+            ratio near the 12x document ratio means draw() is walking the \
+            whole document again instead of the dirty rect.
             """
         )
     }
