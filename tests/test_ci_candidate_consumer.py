@@ -331,3 +331,12 @@ def test_boolean_identity_is_not_integer(monkeypatch, field):
     client, record, *_ = setup(monkeypatch)
     record[field] = True
     assert not consumer.consume_full(client, CANDIDATE)["verified"]
+
+
+def test_failed_scoped_fallback_retains_actual_full_rejection(monkeypatch):
+    client, *_ = setup(monkeypatch)
+    client.responses[f"repos/{REPO}/pulls"] = []
+    result = consumer.consume_qualified(client, CANDIDATE)
+    assert not result["verified"]
+    assert "not a full qualification record" in result["reason"]
+    assert "candidate must identify one open queue PR" in result["full_reason"]

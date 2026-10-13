@@ -194,6 +194,7 @@ def _consume(
         if current != record or not current.get("qualified"):
             raise evidence.EvidenceError(
                 "artifact differs from live full qualification"
+                + (": " + current["reason"] if current.get("reason") else "")
             )
         if _producer_run(client, run_id) != run:
             raise evidence.EvidenceError("producer changed during verification")
@@ -234,4 +235,7 @@ def consume_qualified(
     full = consume_full(client, candidate_sha)
     if full.get("verified"):
         return full
-    return _consume(client, candidate_sha, scoped=True)
+    scoped = _consume(client, candidate_sha, scoped=True)
+    if not scoped.get("verified"):
+        scoped["full_reason"] = full.get("reason", "full qualification rejected")
+    return scoped

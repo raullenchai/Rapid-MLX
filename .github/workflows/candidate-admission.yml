@@ -71,6 +71,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Index verified full admission
+        id: publication
         if: always() && steps.result.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,6 +96,14 @@ jobs:
             --evidence-uploaded "$EVIDENCE_UPLOADED" \
             --publish-target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --github-output "$GITHUB_OUTPUT" --output "$RUNNER_TEMP/candidate-admission-publication.json"
+      - name: Upload admission publication diagnostic
+        if: always() && steps.publication.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-admission-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-admission-publication.json
+          if-no-files-found: error
+          retention-days: 7
   rollback:
     if: github.event_name == 'workflow_dispatch' && inputs.rollback && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

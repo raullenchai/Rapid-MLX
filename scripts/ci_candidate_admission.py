@@ -72,7 +72,13 @@ def verify_admission(
             "engine-not-required",
         }:
             raise evidence.EvidenceError(
-                "full admission rejected: " + consumed.get("reason", "")
+                "full admission rejected: "
+                + consumed.get("reason", "")
+                + (
+                    "; full path: " + consumed["full_reason"]
+                    if consumed.get("full_reason")
+                    else ""
+                )
             )
         if (
             consumer._producer_run(client, producer_run_id) != run
@@ -314,20 +320,36 @@ def publish_admission(
         and current == expected
         and expected.get("candidate_sha") == sha
     )
+    reason = ""
+    phase = "before-publication"
+    if evidence_uploaded is not True:
+        reason = "admission evidence was not uploaded"
+    elif current.get("verified") is not True:
+        reason = current.get("reason", "live admission rejected")
+    elif current != expected:
+        reason = "live admission differs from uploaded evidence"
+    elif expected.get("candidate_sha") != sha:
+        reason = "uploaded evidence selects a different candidate"
     # Re-read the index after the last actual consumer, including revocation.
     if consumer._status(client, sha) != index:
         return {"published": False, "reason": "index changed before publication"}
     _write_status(client, sha, "success" if valid else "failure", target)
     # Rollback may arrive during the status POST. Repair this publication if
     # its live proof changed; never claim an atomic transaction across APIs.
-    if valid and verify_admission(client, producer_run_id) != expected:
+    final = verify_admission(client, producer_run_id) if valid else None
+    if valid and final != expected:
+        phase = "after-publication"
+        reason = final.get("reason", "live admission changed after publication")
         latest = consumer._status(client, sha)
         if latest == index or not consumer.consume_qualified(client, sha).get(
             "verified"
         ):
             _write_status(client, sha, "failure", target)
         valid = False
-    return {"published": True, "verified": valid, "candidate_sha": sha}
+    result = {"published": True, "verified": valid, "candidate_sha": sha}
+    if not valid:
+        result.update(reason=str(reason)[:500], phase=phase)
+    return result
 
 
 def rollback(client: evidence.GitHubClient, target: str) -> dict:

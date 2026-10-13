@@ -186,7 +186,9 @@ def test_workflow_uses_trusted_checkout_and_indexes_after_upload():
     assert all(
         len(step["uses"].split("@")[1]) == 40 for step in steps if "uses" in step
     )
-    upload, index = steps[-2:]
+    upload = next(s for s in steps if s.get("id") == "evidence")
+    index = next(s for s in steps if s.get("id") == "publication")
+    assert steps.index(upload) < steps.index(index)
     assert upload["if"] == "steps.result.outputs.verified == 'true'"
     assert index["if"] == "always() && steps.result.outcome == 'success'"
     assert "--expected" in index["run"]
@@ -779,7 +781,9 @@ def test_rendered_publication_command_requires_uploaded_evidence_but_preserves_r
     steps = yaml.safe_load(
         (root / ".github/workflows/candidate-admission.yml").read_text()
     )["jobs"]["admit"]["steps"]
-    upload_step, index = steps[-2:]
+    upload_step = next(s for s in steps if s.get("id") == "evidence")
+    index = next(s for s in steps if s.get("id") == "publication")
+    assert steps.index(upload_step) < steps.index(index)
     assert upload_step["id"] == "evidence"
     assert (
         index["env"]["EVIDENCE_UPLOADED"]
@@ -836,3 +840,77 @@ def test_rendered_publication_command_requires_uploaded_evidence_but_preserves_r
     assert writes == [(CANDIDATE, "success" if positive else "failure")]
     result = json.loads((tmp_path / "candidate-admission-publication.json").read_text())
     assert result["verified"] is positive
+
+
+@pytest.mark.parametrize("boundary", ["before", "during-post"])
+def test_publication_retains_live_rejection_reason(monkeypatch, boundary):
+    client, *_ = setup(monkeypatch)
+    expected = admission.verify_admission(client, 100)
+    rejection = {"verified": False, "reason": "GitHub read unavailable"}
+    calls = iter([rejection] if boundary == "before" else [expected, rejection])
+    monkeypatch.setattr(admission, "verify_admission", lambda *a: next(calls))
+    writes = []
+    monkeypatch.setattr(
+        admission, "_write_status", lambda c, s, state, t: writes.append(state)
+    )
+    result = admission.publish_admission(
+        client,
+        100,
+        expected,
+        f"https://github.com/{REPO}/actions/runs/400",
+        evidence_uploaded=True,
+    )
+    assert result["published"] and not result["verified"]
+    assert result["reason"] == "GitHub read unavailable"
+    assert result["phase"] == (
+        "before-publication" if boundary == "before" else "after-publication"
+    )
+    assert writes == (["failure"] if boundary == "before" else ["success", "failure"])
+
+
+def test_publication_artifact_retains_fail_closed_result():
+    root = Path(__file__).parents[1]
+    workflow = yaml.safe_load(
+        (root / ".github/workflows/candidate-admission.yml").read_text()
+    )
+    steps = workflow["jobs"]["admit"]["steps"]
+    publication = next(s for s in steps if s.get("id") == "publication")
+    artifact = next(
+        s for s in steps if s.get("name") == "Upload admission publication diagnostic"
+    )
+    assert publication["name"] == "Index verified full admission"
+    assert artifact["if"] == "always() && steps.publication.outcome == 'success'"
+    assert (
+        artifact["with"]["path"]
+        == "${{ runner.temp }}/candidate-admission-publication.json"
+    )
+    assert artifact["with"]["if-no-files-found"] == "error"
+    assert artifact["with"]["retention-days"] == 7
+
+
+@pytest.mark.parametrize("mismatch", ["proof", "candidate"])
+def test_publication_diagnoses_uploaded_proof_mismatch(monkeypatch, mismatch):
+    client, *_ = setup(monkeypatch)
+    expected = admission.verify_admission(client, 100)
+    if mismatch == "proof":
+        expected["source_attempt"] += 1
+        reason = "live admission differs from uploaded evidence"
+    else:
+        # Even a verifier returning a self-consistent wrong target cannot
+        # redirect publication away from the authenticated notification.
+        expected["candidate_sha"] = "f" * 40
+        monkeypatch.setattr(admission, "verify_admission", lambda *a: expected)
+        reason = "uploaded evidence selects a different candidate"
+    writes = []
+    monkeypatch.setattr(
+        admission, "_write_status", lambda c, sha, state, t: writes.append((sha, state))
+    )
+    result = admission.publish_admission(
+        client,
+        100,
+        expected,
+        f"https://github.com/{REPO}/actions/runs/400",
+        evidence_uploaded=True,
+    )
+    assert not result["verified"] and result["reason"] == reason
+    assert writes == [(CANDIDATE, "failure")]
