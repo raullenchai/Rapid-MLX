@@ -1789,7 +1789,9 @@ def _install_mtp_vendored(
         # uid map; every processor on the row is in that authoritative list,
         # so anything the scheduler did not vet by identity (custom, tool-bias,
         # suppression, unknown) still fails closed below, while the built-in
-        # grammar, tool guard and thinking budget (#3044) pass as themselves.
+        # tool guard and thinking budget (#3044) pass as themselves. Grammar
+        # processors deliberately fail closed to ordinary decode: their MTP
+        # transaction is disabled pending resolution of matcher desyncs (#4592).
         row_processors: list[Any] = []
         if uid_to_request_processors is not None:
             row_processors = list(uid_to_request_processors.get(uid, ()))
@@ -9637,18 +9639,12 @@ class Scheduler:
             _glp = getattr(request, "grammar_logits_processor", None)
             if _glp is not None:
                 request_processors.append(_glp)
-            _mtp_grammar = None
-            if _glp is not None:
-                # Request attributes are an internal seam today, but treating
-                # any lookalike object as a transactional grammar would turn a
-                # future/custom processor into speculative mutable state.  The
-                # verifier supports this exact built-in implementation only;
-                # subclasses can override the transaction methods, so keep the
-                # type check exact and fail closed to ordinary decode.
-                from .api.tool_grammar import GrammarLogitsProcessor
-
-                if type(_glp) is GrammarLogitsProcessor:
-                    _mtp_grammar = _glp
+            # Keep every grammar processor out of the MTP-safe identity list.
+            # Production reports show that the built-in matcher's committed
+            # boundary can desynchronize after speculative verification and
+            # silently drop the constraint (#4592). The active/safe identity
+            # mismatch below therefore routes constrained requests through
+            # ordinary decode while retaining the grammar itself.
             # Prevent an exact agent loop before it reaches the streaming
             # hard-stop below.  The processor is deliberately tool-request
             # only and masks a single predicted token only after the output is
@@ -9727,15 +9723,14 @@ class Scheduler:
                 if type(_rblp) is ReasoningBudgetLogitsProcessor:
                     _mtp_budget = _rblp
             # MTP may reuse only this exact ordered list. Standard penalties
-            # are history-derived; the built-in grammar, the tool repetition
-            # guard and the built-in thinking budget expose explicit
-            # target-row snapshot/restore contracts. Identity (not processor
-            # count or type-name heuristics) keeps suppression, tool-bias,
-            # and unknown processors fail-closed at the GenerationBatch
-            # handoff. Order mirrors ``request_processors`` exactly.
+            # are history-derived; the tool repetition guard and built-in
+            # thinking budget expose explicit target-row snapshot/restore
+            # contracts. Identity (not processor count or type-name heuristics)
+            # keeps grammar, suppression, tool-bias, and unknown processors
+            # fail-closed at the GenerationBatch handoff. Order mirrors
+            # ``request_processors`` exactly for admitted processors.
             request._mtp_safe_logits_processors = tuple(
-                ([_mtp_grammar] if _mtp_grammar is not None else [])
-                + ([_loop_breaker] if _loop_breaker is not None else [])
+                ([_loop_breaker] if _loop_breaker is not None else [])
                 + penalty_processors
                 + ([_mtp_budget] if _mtp_budget is not None else [])
             )
