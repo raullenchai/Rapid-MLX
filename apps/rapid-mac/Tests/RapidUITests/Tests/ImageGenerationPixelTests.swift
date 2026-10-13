@@ -60,7 +60,7 @@ final class ImageGenerationPixelTests: XCTestCase {
             picker.label.contains("fake-image-alias")
         })
 
-        harness.startModel()
+        harness.startModel(selectedModel: picker)
 
         let prompt = element("Images.Prompt", in: app)
         XCTAssertTrue(prompt.waitForExistence(timeout: 20))
