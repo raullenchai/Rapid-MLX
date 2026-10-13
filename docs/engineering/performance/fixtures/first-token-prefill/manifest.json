@@ -1,0 +1,8 @@
+{
+  "source_commit": "e548298d1",
+  "algorithm": "sha256",
+  "files": {
+    "2026-10-11-first-token-prefill.tar.gz": "98f94dbdf69177bcd4d35caad8923f152c19948e8c9095c62934b60268c08fee",
+    "2026-10-12-first-token-budget.tar.gz": "3efefe38ea024b34c01597c50c4b72b7fd425f85f3bdc6f3c21e3329ba38c942"
+  }
+}

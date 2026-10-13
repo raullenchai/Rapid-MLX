@@ -6,6 +6,8 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [First-token prefill contention benchmark and findings (2026-10-12)](2026-10-12-first-token-prefill.md)
+
 - [GLM-5.3 Flash load-window memory (2026-10-10)](2026-10-10-glm53-shardwise-load.md)
 - [Native MTP cold-loader repair on M5 Max (2026-10-09)](2026-10-09-m5-native-mtp-cold-loader.md)
 - [Mac mini model matrix: Qwen3.5 4B, Gemma 4 26B, and Qwen3.8 27B](2026-08-21-mac-mini-model-matrix.md)
