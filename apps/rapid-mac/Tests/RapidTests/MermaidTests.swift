@@ -529,19 +529,16 @@ struct MermaidRenderingTests {
         var attempts = 0
         let renderer = MermaidRenderer(
             // The first evaluator intentionally never completes. Give the
-            // recovery render enough room for a cold WebKit process on CI;
-            // this test measures queue release, not a 100 ms performance SLA.
+            // recovery render a deterministic measurement; this test measures
+            // queue release, while the end-to-end tests below exercise WebKit.
             renderTimeout: .milliseconds(500),
-            javaScriptEvaluator: { webView, source, theme, completion in
+            javaScriptEvaluator: { _, _, _, completion in
                 attempts += 1
                 guard attempts > 1 else { return }
-                webView.callAsyncJavaScript(
-                    "return await __rapidRender(source, theme);",
-                    arguments: ["source": source, "theme": theme.rawValue],
-                    in: nil,
-                    in: .page,
-                    completionHandler: completion
-                )
+                completion(.success(["ok": true, "width": 320, "height": 180]))
+            },
+            snapshotter: { _, configuration, completion in
+                completion(NSImage(size: configuration.rect.size), nil)
             }
         )
 
