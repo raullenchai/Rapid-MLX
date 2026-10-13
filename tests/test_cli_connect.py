@@ -495,6 +495,50 @@ def test_banner_already_bracketed_host_not_double_bracketed():
     assert "[[::1]]" not in out
 
 
+def test_serve_next_uses_bound_endpoint_served_name_and_auth():
+    ep = connect.ServerEndpoints("::1", 9123, model="my served model")
+    out = connect.render_serve_next(ep, api_key="key with ' quote")
+    assert out.count("Next:") == 1
+    assert len(out.splitlines()) == 6
+    assert "curl -i -sS " in out
+    assert "http://[::1]:9123/v1/chat/completions" in out
+    assert "my served model" in out
+    assert '-H "Authorization: Bearer $RAPID_MLX_API_KEY"' in out
+    assert "rapid-mlx agents opencode --setup" in out
+    assert "Set RAPID_MLX_API_KEY to the server key first." in out
+    assert "key with ' quote" not in out
+    assert "More agents: claude-code, codex; full list: rapid-mlx agents" in out
+    assert "--base-url 'http://[::1]:9123/v1'" in out
+    setup = out.splitlines()[3].split("Connect a coding agent: ", 1)[1]
+    assert shlex.split(setup) == [
+        "rapid-mlx",
+        "agents",
+        "opencode",
+        "--setup",
+        "--base-url",
+        "http://[::1]:9123/v1",
+    ]
+    assert out.endswith("OpenAI SDK base_url: http://[::1]:9123/v1\n")
+
+
+def test_serve_next_has_no_auth_header_without_key():
+    out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
+    assert "Authorization" not in out
+    assert len(out.splitlines()) == 5
+    assert (
+        connect.render_serve_next(connect.ServerEndpoints("", 0, "m", listen_fd=3))
+        == ""
+    )
+    assert connect.render_serve_next(connect.ServerEndpoints("localhost", 8765)) == ""
+
+
+def test_serve_next_lists_agents_when_no_setup_profile_is_available(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: None)
+    out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
+    assert "Connect a coding agent: rapid-mlx agents\n" in out
+    assert "List agents: rapid-mlx agents" in out
+
+
 # --- #2348: connect must accept/use the live instance base URL ---------------
 # The serve banner advertises ``connect openai-python --base-url <url>`` so the
 # pasted command points at the *actual* running server (its port + model),

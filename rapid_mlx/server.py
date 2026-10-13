@@ -1152,7 +1152,7 @@ def print_ready_banner() -> None:
     """Print the connection banner after the Uvicorn listener exists."""
 
     _cfg = get_config()
-    from rapid_mlx.connect import endpoints_from_bind, render_banner
+    from rapid_mlx.connect import endpoints_from_bind, render_banner, render_serve_next
 
     _banner_model = (
         _cfg.model_name
@@ -1166,7 +1166,27 @@ def print_ready_banner() -> None:
         listen_fd=_cfg.bind_listen_fd,
     )
     if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
-        print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
+        import logging
+
+        from rapid_mlx.audio.registry import is_audio_name
+        from rapid_mlx.runtime.optional_runtime import _running_in_desktop_sidecar
+
+        interactive = (
+            sys.stdout.isatty()
+            and logging.getLogger().getEffectiveLevel() <= logging.INFO
+            and not _running_in_desktop_sidecar()
+            and not _cfg.embeddings_only
+            and not is_audio_name(_cfg.model_alias or _cfg.model_name)
+        )
+        if interactive and _ep.listen_fd is None and _ep.model:
+            note = _text_lane_image_note(_cfg)
+            next_step = render_serve_next(_ep, api_key=_cfg.api_key)
+            print(f"  Ready: {_ep.base_url}")
+            if note:
+                print(f"  Images: off. {note}")
+            print(next_step, end="", flush=True)
+        else:
+            print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
 
 
 def _text_lane_image_note(cfg) -> str | None:

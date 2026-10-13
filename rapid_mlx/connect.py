@@ -206,6 +206,48 @@ def render_banner(
     return "\n".join(lines) + "\n"
 
 
+def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str:
+    """Short, copyable next steps for an interactive, bound chat server."""
+    if ep.listen_fd is not None or not ep.model:
+        return ""
+
+    body = json.dumps(
+        {
+            "model": ep.model,
+            "messages": [{"role": "user", "content": "Say hello."}],
+            "max_tokens": 32,
+        },
+        separators=(",", ":"),
+    )
+    auth = ' -H "Authorization: Bearer $RAPID_MLX_API_KEY"' if api_key else ""
+    curl = (
+        f"curl -i -sS {shlex.quote(ep.openai_url + '/chat/completions')}"
+        f" -H 'Content-Type: application/json'{auth} -d {shlex.quote(body)}"
+    )
+    from rapid_mlx.agents import get_profile
+
+    agents = [
+        name for name in ("opencode", "claude-code", "codex") if get_profile(name)
+    ]
+    agent = agents[0] if agents else None
+    lines = ["  Next:"]
+    if api_key:
+        lines.append("    Set RAPID_MLX_API_KEY to the server key first.")
+    lines.extend(
+        [
+            f"    {curl}",
+            f"    Connect a coding agent: rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)}"
+            if agent
+            else "    Connect a coding agent: rapid-mlx agents",
+            f"    More agents: {', '.join(agents[1:])}; full list: rapid-mlx agents"
+            if agent
+            else "    List agents: rapid-mlx agents",
+            f"    OpenAI SDK base_url: {ep.openai_url}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def probe_server_alive(host: str, port: int) -> bool:
     """Best-effort liveness check: is a rapid-mlx server answering on host:port?
 

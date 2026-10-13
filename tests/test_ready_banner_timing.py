@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import inspect
 import io
+import logging
 from contextlib import redirect_stdout
 
 import pytest
@@ -126,6 +127,138 @@ def test_ready_banner_shows_served_model_name_when_overridden(monkeypatch):
     assert "Model:     studio-assistant" in out, out
     # The alias is not what the API serves — it must not lead the Model line.
     assert "Model:     lfm2.5-1b-4bit" not in out, out
+
+
+def test_interactive_ready_banner_ends_with_copyable_next(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    cfg.model_name = "studio-assistant"
+    cfg.api_key = None
+    monkeypatch.setattr(server, "_served_model_name_set", True)
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert out.index("Ready: http://localhost:8766") < out.index("Next:")
+    assert "studio-assistant" in out
+    assert out.rstrip().endswith("OpenAI SDK base_url: http://localhost:8766/v1")
+
+
+def test_interactive_ready_banner_keeps_image_guidance_before_next(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        server, "_text_lane_image_note", lambda _cfg: "use a vision model"
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert out.index("Images: off. use a vision model") < out.index("Next:")
+
+
+def test_interactive_ready_banner_uses_configured_key(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(cfg, "api_key", "test-key")
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Set RAPID_MLX_API_KEY to the server key first." in out
+    assert '-H "Authorization: Bearer $RAPID_MLX_API_KEY"' in out
+    assert "test-key" not in out
+
+
+def test_interactive_ready_banner_resolves_agents_before_ready(monkeypatch, capsys):
+    import rapid_mlx.agents as agents
+
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    original_get_profile = agents.get_profile
+    first_call = True
+
+    def get_profile(name):
+        nonlocal first_call
+        if first_call:
+            print("INFO:rapid_mlx.agents:Loaded 17 agent profiles")
+            first_call = False
+        return original_get_profile(name)
+
+    monkeypatch.setattr(agents, "get_profile", get_profile)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert out.index("Loaded 17 agent profiles") < out.index("Ready:")
+    assert out.index("Ready:") < out.index("Next:")
+
+
+def test_warning_log_level_does_not_add_next(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(
+        logging.getLogger(), "getEffectiveLevel", lambda: logging.WARNING
+    )
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Connect:" in out
+    assert "Next:" not in out
+
+
+def test_desktop_ready_banner_preserves_existing_shape(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: True
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Connect:" in out
+    assert "Next:" not in out
+
+
+def test_audio_ready_banner_has_no_chat_next(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "kokoro"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Ready: http://localhost:8766" in out
+    assert "Next:" not in out
 
 
 async def test_ready_banner_suppressed_when_no_bind_info():
