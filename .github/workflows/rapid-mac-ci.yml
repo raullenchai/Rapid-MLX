@@ -369,9 +369,11 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
-    # Manzanita's pinned image provides macOS Sequoia, Xcode 16.4, and Swift
-    # 6.1.2, matching Package.swift's Swift 6 toolchain requirement.
-    runs-on: manzanita-standard
+    # Keep the reserved provider as the default. During a provider incident,
+    # repository administrators may set MACOS_RUNNER=macos-26 to select
+    # GitHub's supported ARM64 image. Every other value fails closed to the
+    # default instead of routing repository code to an arbitrary runner label.
+    runs-on: ${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}
     # A hung test would otherwise sit on the 6-hour default. The whole
     # job is ~2 min warm; 20 leaves room for a cold package resolve and
     # still fails fast. Learned the hard way: a headless-incompatible
@@ -383,6 +385,9 @@ jobs:
         working-directory: apps/rapid-mac
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Verify Apple Silicon runner contract
+        run: ../../scripts/verify_macos_ci_runner.sh
 
       - name: swift build
         run: swift build
@@ -408,6 +413,12 @@ jobs:
       # whole run (per-run deadline + /usr/bin/sample + ps + vm_stat artifact)
       # fails fast with a readable reason instead of burning the job timeout.
       - name: swift test
+        env:
+          # The GitHub ARM64 image is slower between the two suites that
+          # explicitly checkpoint the in-process watchdog. Keep the provider's
+          # existing 90-second bound; only the allowlisted incident fallback
+          # gets 180 seconds. The outer 15-minute suite deadline is unchanged.
+          RAPID_DESKTOP_WATCHDOG_QUIET_SECONDS: ${{ vars.MACOS_RUNNER == 'macos-26' && '180' || '90' }}
         run: ./scripts/desktop-test-timeout.sh
 
       # #2488: upload the hang-sample artifact (stack + system state) so the
@@ -455,16 +466,20 @@ jobs:
     # The expensive producer runs only after `full_gate` promotion. For PRs,
     # that signal is limited to an exact internal Mergify candidate head; fork
     # PRs remain false and therefore never execute repository code on the
-    # trusted Mac fleet. Main pushes use the same pinned Manzanita image as the
+    # trusted Mac fleet. Main pushes use the same allowlisted image as the
     # artifact consumers, removing a second provider queue without changing
-    # the commit-bound build-once contract.
-    runs-on: manzanita-standard
+    # the commit-bound build-once contract. The explicit incident fallback is
+    # allowlisted to GitHub's ARM64 macos-26 image.
+    runs-on: ${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}
     timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/rapid-mac
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Verify Apple Silicon runner contract
+        run: ../../scripts/verify_macos_ci_runner.sh
 
       - name: Build release-shaped GUI app
         env:
@@ -526,8 +541,8 @@ jobs:
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
-    # Use the same pinned Swift 6 image as the build job.
-    runs-on: manzanita-standard
+    # Use the same allowlisted Apple-Silicon selection as the producer.
+    runs-on: ${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}
     strategy:
       # A failure in one product journey must not cancel independent evidence
       # from the other selected groups. The stable desktop-tests facade still
@@ -552,6 +567,9 @@ jobs:
       GUI_FLOWS: ${{ matrix.gui_flows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Verify Apple Silicon runner contract
+        run: ../../scripts/verify_macos_ci_runner.sh
 
       # BEFORE the build, because it is the cheap question and the one most
       # likely to be answered "no" by a future runner-image change. If the
