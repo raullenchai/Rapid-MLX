@@ -139,6 +139,18 @@ def _load_failure(exc: Exception, model_ref: str) -> HTTPException:
     Check local existence only after a failed load: a resident model can still
     be reused successfully after its checkpoint has been moved on disk.
     """
+    from ..image.engine import ImageRequestError
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(32):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, ImageRequestError):
+            return HTTPException(400, str(current))
+        current = current.__cause__
+
     try:
         raise_if_missing_local_model(model_ref)
     except FileNotFoundError:
@@ -152,8 +164,8 @@ def _load_failure(exc: Exception, model_ref: str) -> HTTPException:
     if message is not None:
         return HTTPException(400, message)
 
-    current: BaseException | None = exc
-    seen: set[int] = set()
+    current = exc
+    seen = set()
     for _ in range(32):
         if current is None or id(current) in seen:
             break
@@ -204,6 +216,15 @@ async def load_resident_model(request: ModelLoadRequest):
         path_profile = (
             resolve_profile(request.model_path) if request.model_path else None
         )
+        loader_profile = model_profile or path_profile
+        if (
+            request.image_mode is not None
+            and loader_profile is not None
+            and loader_profile.modality == "image-gen"
+        ):
+            from ..runtime.image_lane import ImageEngine
+
+            ImageEngine(load_ref).validate_residency_mode(request.image_mode)
         # The loader consumes model_path when supplied, so only that
         # checkpoint's metadata may authorize destructive admission. An
         # unknown override falls back to keep-then-commit rather than trusting

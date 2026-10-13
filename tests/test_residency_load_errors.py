@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resident-load failures must reach clients as actionable, safe JSON (#4492)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -184,3 +185,182 @@ def test_cyclic_cause_and_unrelated_context_stay_safe(control_plane):
     assert response.status_code == 500
     assert response.json()["error"]["type"] == "api_error"
     assert "secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("model", "mode", "message"),
+    [
+        ("qwen-image", "editing", "qwen-image does not support image editing."),
+        (
+            "qwen-image-edit",
+            "generation",
+            "qwen-image-edit does not support image generation.",
+        ),
+    ],
+)
+def test_unsupported_image_mode_rejected_before_assets_in_dynamic_loader(
+    monkeypatch, model, mode, message
+):
+    from rapid_mlx import server
+    from rapid_mlx.image.engine import ImageRequestError
+
+    asset_calls = []
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.require_local",
+        lambda _name: asset_calls.append("checkpoint"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.image.engine.ImageGenerationEngine._ensure_runtime_assets",
+        lambda _self: asset_calls.append("runtime assets"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.image.engine.ImageGenerationEngine._verify_weights_complete",
+        lambda _self: asset_calls.append("weight verification"),
+    )
+
+    with pytest.raises(ImageRequestError, match=message):
+        asyncio.run(server._load_dynamic_resident_model(model, None, image_mode=mode))
+    assert asset_calls == []
+
+
+def test_supported_image_mode_reaches_dynamic_resident_load(monkeypatch):
+    from rapid_mlx import server
+    from rapid_mlx.runtime.image_lane import ImageEngine
+
+    modes = []
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", lambda _name: None)
+    monkeypatch.setattr(
+        ImageEngine,
+        "ensure_resident",
+        lambda _self, *, mode=None: modes.append(mode),
+    )
+
+    entry = asyncio.run(
+        server._load_dynamic_resident_model("qwen-image", None, image_mode="generation")
+    )
+
+    assert isinstance(entry.engine, ImageEngine)
+    assert modes == ["generation"]
+
+
+@pytest.mark.parametrize(
+    ("model", "mode", "message"),
+    [
+        ("qwen-image", "editing", "qwen-image does not support image editing."),
+        (
+            "qwen-image-edit",
+            "generation",
+            "qwen-image-edit does not support image generation.",
+        ),
+    ],
+)
+def test_unsupported_image_mode_rejected_before_manager_admission(
+    control_plane, model, mode, message
+):
+    client, manager = control_plane
+
+    response = client.post("/v1/models/load", json={"model": model, "image_mode": mode})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == message
+    manager.load.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("model", "mode"),
+    [("qwen-image", "editing"), ("qwen-image-edit", "generation")],
+)
+def test_unsupported_image_mode_rejected_for_resident_reuse(model, mode):
+    from rapid_mlx.image.engine import ImageRequestError
+    from rapid_mlx.runtime.image_lane import ImageEngine
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import ResidentModelManager
+
+    engine = ImageEngine(model)
+    registry = ModelRegistry()
+    entry = ModelEntry(engine=engine, model_name=model, model_path=model)
+    registry.add(entry, is_default=True)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    manager.register_primary(entry, estimated_bytes=1)
+
+    with pytest.raises(ImageRequestError):
+        asyncio.run(manager.load(model, image_mode=mode))
+
+    manager.loader.assert_not_awaited()
+
+
+def test_wrapped_image_request_error(control_plane):
+    from rapid_mlx.image.engine import ImageRequestError
+
+    client, manager = control_plane
+    error = RuntimeError("loader wrapper secret")
+    error.__cause__ = ImageRequestError("qwen-image does not support image editing.")
+    manager.load.side_effect = error
+    response = client.post(
+        "/v1/models/load",
+        json={"model": "Qwen/Qwen-Image", "image_mode": "editing"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == str(error.__cause__)
+
+
+def test_image_request_error_precedes_local_diagnostics(
+    control_plane, monkeypatch, tmp_path
+):
+    from rapid_mlx.image.engine import ImageRequestError
+
+    client, manager = control_plane
+    manager.load.side_effect = ImageRequestError("unsupported image mode")
+    monkeypatch.setattr(
+        residency,
+        "raise_if_missing_local_model",
+        lambda _ref: pytest.fail("image request error reached local diagnostics"),
+    )
+    monkeypatch.setattr(
+        residency,
+        "local_model_failure_message",
+        lambda _ref, _exc: pytest.fail("image request error reached local diagnostics"),
+    )
+
+    response = client.post(
+        "/v1/models/load",
+        json={"model": str(tmp_path), "image_mode": "editing"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "unsupported image mode"
+
+
+def test_operational_image_runtime_error_stays_unchanged(control_plane):
+    from rapid_mlx.image.engine import ImageRuntimeError
+
+    client, manager = control_plane
+    manager.load.side_effect = ImageRuntimeError("loader secret /Users/private/model")
+    response = client.post("/v1/models/load", json={"model": "Qwen/Qwen-Image"})
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "message": "Failed to load resident model: ImageRuntimeError",
+            "type": "api_error",
+            "code": None,
+            "param": None,
+        }
+    }
+
+
+def test_residency_import_and_failure_without_image_extra():
+    import subprocess
+    import sys
+
+    script = """
+import builtins
+original_import = builtins.__import__
+def without_image_extra(name, *args, **kwargs):
+    if name.split('.')[0] in {'mlx', 'mflux'}:
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = without_image_extra
+from rapid_mlx.routes import residency
+assert residency._load_failure(RuntimeError('failure'), 'org/model').status_code == 500
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, capture_output=True)

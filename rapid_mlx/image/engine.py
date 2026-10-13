@@ -91,6 +91,10 @@ class ImageRuntimeError(RuntimeError):
     """Safe, actionable generation error suitable for the public API."""
 
 
+class ImageRequestError(ImageRuntimeError):
+    """The request is invalid for this model; retrying unchanged cannot succeed."""
+
+
 class ImageGenerationCancelled(ImageRuntimeError):  # noqa: N818 — a cancel, not an error condition
     """Raised when the user cancels an in-flight generation mid-denoise."""
 
@@ -606,7 +610,7 @@ class ImageGenerationEngine:
                 f"Could not tokenize the HiDream prompt: {exc}"
             ) from exc
         if token_count > MAX_PROMPT_TOKENS:
-            raise ImageRuntimeError(
+            raise ImageRequestError(
                 f"HiDream-O1 prompts are limited to {MAX_PROMPT_TOKENS} tokens."
             )
 
@@ -626,7 +630,7 @@ class ImageGenerationEngine:
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
             )
-        raise ImageRuntimeError(f"{self.family} does not support image editing.")
+        raise ImageRequestError(f"{self.family} does not support image editing.")
 
     def _verify_weights_complete(self) -> None:
         """Refuse to build a model out of a half-downloaded checkpoint.
@@ -1054,6 +1058,134 @@ class ImageGenerationEngine:
             png_bytes = self.generate(**kwargs)
             return png_bytes, self.performance_snapshot()
 
+    def validate_request(
+        self,
+        *,
+        prompt: str,
+        width: int | None = 1024,
+        height: int | None = 1024,
+        num_inference_steps: int = 4,
+        seed: int = 0,
+        guidance: float | None = None,
+        negative_prompt: str | None = None,
+        image_paths: list[str] | None = None,
+    ) -> None:
+        """Validate before lazy loading; accept the unused seed for call parity."""
+        input_paths = image_paths or []
+        editing = bool(input_paths)
+        if self.family == "qwen-image-2.1" and editing and len(input_paths) != 1:
+            raise ImageRequestError("Qwen-Image 2.1 img2img accepts one input image.")
+        if not editing and not self.supports_generation:
+            raise ImageRequestError(
+                "qwen-image-edit requires at least one input image (image_paths)."
+            )
+        if editing and not self.supports_editing:
+            raise ImageRequestError(
+                f"{self.family} is text-to-image only and does not accept input images; "
+                "use an image-edit capable model."
+            )
+        if self.family == "hidream-o1-dev":
+            if len(prompt) > 4096:
+                raise ImageRequestError(
+                    "HiDream-O1 prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 28:
+                raise ImageRequestError(
+                    "HiDream-O1 Dev supports its published 28-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRequestError(
+                    "HiDream-O1 dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 32 or height % 32:
+                raise ImageRequestError(
+                    "HiDream-O1 dimensions must be multiples of 32."
+                )
+            if guidance is not None:
+                raise ImageRequestError(
+                    "HiDream-O1 Dev does not expose classifier-free guidance; "
+                    "omit the guidance field."
+                )
+            if negative_prompt is not None:
+                raise ImageRequestError(
+                    "HiDream-O1 Dev does not support negative_prompt."
+                )
+        elif self.family == "sdxl-base":
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRequestError(
+                    "SDXL dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 8 or height % 8:
+                raise ImageRequestError("SDXL dimensions must be multiples of 8.")
+        elif self.family == "bonsai-image":
+            if len(prompt) > 4096:
+                raise ImageRequestError(
+                    "Bonsai Image prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 4:
+                raise ImageRequestError(
+                    "Bonsai Image supports its published 4-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRequestError(
+                    "Bonsai Image dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 32 or height % 32:
+                raise ImageRequestError(
+                    "Bonsai Image dimensions must be multiples of 32."
+                )
+            if guidance not in (None, 1.0):
+                raise ImageRequestError(
+                    "Bonsai Image uses guidance 1.0; omit guidance or set it to 1.0."
+                )
+            if negative_prompt is not None:
+                raise ImageRequestError(
+                    "Bonsai Image does not support negative_prompt."
+                )
+        elif self.family == "sd35-large":
+            if len(prompt) > 4096:
+                raise ImageRequestError(
+                    "SD3.5 Large prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 28:
+                raise ImageRequestError(
+                    "SD3.5 Large supports its validated 28-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 1536)
+                or not (256 <= height <= 1536)
+            ):
+                raise ImageRequestError(
+                    "SD3.5 Large dimensions must be between 256 and 1536 pixels."
+                )
+            if width % 16 or height % 16:
+                raise ImageRequestError(
+                    "SD3.5 Large dimensions must be multiples of 16."
+                )
+            if guidance is not None and (
+                not math.isfinite(guidance) or not (0.0 <= guidance <= 20.0)
+            ):
+                raise ImageRequestError(
+                    "SD3.5 Large guidance must be a finite value between 0 and 20."
+                )
+
     def generate(
         self,
         *,
@@ -1072,120 +1204,17 @@ class ImageGenerationEngine:
         required by edit-only checkpoints. Unsupported combinations fail loud
         instead of silently ignoring the conditioning image.
         """
+        self.validate_request(
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            guidance=guidance,
+            negative_prompt=negative_prompt,
+            image_paths=image_paths,
+        )
         input_paths = image_paths or []
         editing = bool(input_paths)
-        if self.family == "qwen-image-2.1" and editing and len(input_paths) != 1:
-            raise ImageRuntimeError("Qwen-Image 2.1 img2img accepts one input image.")
-        if not editing and not self.supports_generation:
-            raise ImageRuntimeError(
-                "qwen-image-edit requires at least one input image (image_paths)."
-            )
-        if editing and not self.supports_editing:
-            raise ImageRuntimeError(
-                f"{self.family} is text-to-image only and does not accept input images; "
-                "use an image-edit capable model."
-            )
-        if self.family == "hidream-o1-dev":
-            if len(prompt) > 4096:
-                raise ImageRuntimeError(
-                    "HiDream-O1 prompts are limited to 4096 characters."
-                )
-            if num_inference_steps != 28:
-                raise ImageRuntimeError(
-                    "HiDream-O1 Dev supports its published 28-step schedule only."
-                )
-            if (
-                width is None
-                or height is None
-                or not (256 <= width <= 2048)
-                or not (256 <= height <= 2048)
-            ):
-                raise ImageRuntimeError(
-                    "HiDream-O1 dimensions must be between 256 and 2048 pixels."
-                )
-            if width % 32 or height % 32:
-                raise ImageRuntimeError(
-                    "HiDream-O1 dimensions must be multiples of 32."
-                )
-            if guidance is not None:
-                raise ImageRuntimeError(
-                    "HiDream-O1 Dev does not expose classifier-free guidance; "
-                    "omit the guidance field."
-                )
-            if negative_prompt is not None:
-                raise ImageRuntimeError(
-                    "HiDream-O1 Dev does not support negative_prompt."
-                )
-        elif self.family == "sdxl-base":
-            if (
-                width is None
-                or height is None
-                or not (256 <= width <= 2048)
-                or not (256 <= height <= 2048)
-            ):
-                raise ImageRuntimeError(
-                    "SDXL dimensions must be between 256 and 2048 pixels."
-                )
-            if width % 8 or height % 8:
-                raise ImageRuntimeError("SDXL dimensions must be multiples of 8.")
-        elif self.family == "bonsai-image":
-            if len(prompt) > 4096:
-                raise ImageRuntimeError(
-                    "Bonsai Image prompts are limited to 4096 characters."
-                )
-            if num_inference_steps != 4:
-                raise ImageRuntimeError(
-                    "Bonsai Image supports its published 4-step schedule only."
-                )
-            if (
-                width is None
-                or height is None
-                or not (256 <= width <= 2048)
-                or not (256 <= height <= 2048)
-            ):
-                raise ImageRuntimeError(
-                    "Bonsai Image dimensions must be between 256 and 2048 pixels."
-                )
-            if width % 32 or height % 32:
-                raise ImageRuntimeError(
-                    "Bonsai Image dimensions must be multiples of 32."
-                )
-            if guidance not in (None, 1.0):
-                raise ImageRuntimeError(
-                    "Bonsai Image uses guidance 1.0; omit guidance or set it to 1.0."
-                )
-            if negative_prompt is not None:
-                raise ImageRuntimeError(
-                    "Bonsai Image does not support negative_prompt."
-                )
-        elif self.family == "sd35-large":
-            if len(prompt) > 4096:
-                raise ImageRuntimeError(
-                    "SD3.5 Large prompts are limited to 4096 characters."
-                )
-            if num_inference_steps != 28:
-                raise ImageRuntimeError(
-                    "SD3.5 Large supports its validated 28-step schedule only."
-                )
-            if (
-                width is None
-                or height is None
-                or not (256 <= width <= 1536)
-                or not (256 <= height <= 1536)
-            ):
-                raise ImageRuntimeError(
-                    "SD3.5 Large dimensions must be between 256 and 1536 pixels."
-                )
-            if width % 16 or height % 16:
-                raise ImageRuntimeError(
-                    "SD3.5 Large dimensions must be multiples of 16."
-                )
-            if guidance is not None and (
-                not math.isfinite(guidance) or not (0.0 <= guidance <= 20.0)
-            ):
-                raise ImageRuntimeError(
-                    "SD3.5 Large guidance must be a finite value between 0 and 20."
-                )
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel

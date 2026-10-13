@@ -326,7 +326,7 @@ async def create_image(
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-    from ..image.engine import ImageRuntimeError
+    from ..image.engine import ImageRequestError, ImageRuntimeError
 
     caller_agent, caller_client = _telemetry_inference.request_caller_headers(
         raw_request
@@ -417,6 +417,18 @@ async def create_image(
             # error, so a cancelled multi-image batch keeps its earlier images.
             cancelled = True
             break
+        except ImageRequestError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(exc),
+                        "type": "invalid_request_error",
+                        "code": "invalid_image_request",
+                        "param": None,
+                    }
+                },
+            ) from exc
         except ImageRuntimeError as exc:
             raise HTTPException(
                 status_code=500,
@@ -606,7 +618,11 @@ async def edit_image(
     """
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
-    from ..image.engine import ImageGenerationCancelled, ImageRuntimeError
+    from ..image.engine import (
+        ImageGenerationCancelled,
+        ImageRequestError,
+        ImageRuntimeError,
+    )
 
     img_engine = _image_engine(model)
     telemetry_model = engine_telemetry_id(img_engine)
@@ -788,6 +804,18 @@ async def edit_image(
                 # finished (matching the generations envelope), never an error.
                 cancelled = True
                 break
+            except ImageRequestError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": str(exc),
+                            "type": "invalid_request_error",
+                            "code": "invalid_image_request",
+                            "param": None,
+                        }
+                    },
+                ) from exc
             except ImageRuntimeError as exc:
                 raise HTTPException(
                     status_code=500,

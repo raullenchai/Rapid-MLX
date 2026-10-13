@@ -1463,6 +1463,12 @@ class ResidentModelManager:
             canonical = self._canonical(model_name)
             if canonical is not None:
                 existing_record = self._records[canonical]
+                if image_mode is not None:
+                    validate_image_mode = getattr(
+                        existing_record.entry.engine, "validate_residency_mode", None
+                    )
+                    if callable(validate_image_mode):
+                        validate_image_mode(image_mode)
                 group = _effective_replace_group(existing_record.entry, replace_group)
                 did_reload = False
                 if reload_if_changed and existing_record.performance != performance:

@@ -548,6 +548,11 @@ class _ImageBackend:
         self.loads = 0
         self.generations = 0
 
+    def validate_request(self, **kwargs) -> None:
+        from rapid_mlx.image.engine import ImageGenerationEngine
+
+        ImageGenerationEngine("sdxl-base").validate_request(**kwargs)
+
     def _ensure_loaded(self, *, for_edit: bool | None = None) -> object:
         del for_edit
         if self.fail:

@@ -597,6 +597,13 @@ def test_image_adapter_residency_without_mode_preserves_family_default(monkeypat
     assert modes == [None]
 
 
+def test_image_adapter_rejects_unknown_residency_mode():
+    engine = ImageEngine("Qwen/Qwen-Image")
+
+    with pytest.raises(ValueError, match="unsupported image residency mode"):
+        engine.validate_residency_mode("upscaling")
+
+
 def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
     engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
     expected = {"denoise_seconds": 8.0, "denoise_steps": 4}
@@ -1344,3 +1351,296 @@ def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch, model_ref):
     finally:
         for attr, value in saved.items():
             setattr(server, attr, value)
+
+
+@pytest.mark.parametrize(
+    "model,kwargs,message",
+    [
+        ("Qwen/Qwen-Image-2.1", {"image_paths": ["a", "b"]}, "one input image"),
+        ("Qwen/Qwen-Image-Edit-2509", {}, "requires at least one input image"),
+        ("Qwen/Qwen-Image", {"image_paths": ["a"]}, "text-to-image only"),
+        ("HiDream-O1-Image-Dev", {"prompt": "x" * 4097}, "4096 characters"),
+        ("HiDream-O1-Image-Dev", {"num_inference_steps": 13}, "28-step"),
+        ("HiDream-O1-Image-Dev", {"width": None}, "between 256 and 2048"),
+        ("HiDream-O1-Image-Dev", {"width": 1008}, "multiples of 32"),
+        ("HiDream-O1-Image-Dev", {"guidance": 4.0}, "omit the guidance"),
+        ("HiDream-O1-Image-Dev", {"negative_prompt": "blurry"}, "negative_prompt"),
+        ("sdxl-base", {"height": 2049}, "between 256 and 2048"),
+        ("sdxl-base", {"height": 1009}, "multiples of 8"),
+        ("bonsai-image", {"prompt": "x" * 4097}, "4096 characters"),
+        ("bonsai-image", {"num_inference_steps": 13}, "4-step"),
+        ("bonsai-image", {"width": 255}, "between 256 and 2048"),
+        ("bonsai-image", {"height": 1008}, "multiples of 32"),
+        ("bonsai-image", {"guidance": 4.0}, "guidance 1.0"),
+        ("bonsai-image", {"negative_prompt": "blurry"}, "negative_prompt"),
+        ("sd35-large", {"prompt": "x" * 4097}, "4096 characters"),
+        ("sd35-large", {"num_inference_steps": 13}, "28-step"),
+        ("sd35-large", {"width": 1537}, "between 256 and 1536"),
+        ("sd35-large", {"height": 1000}, "multiples of 16"),
+        ("sd35-large", {"guidance": float("nan")}, "finite value"),
+        ("sd35-large", {"guidance": 21.0}, "between 0 and 20"),
+    ],
+)
+@pytest.mark.parametrize("path", ["backend", "adapter", "performance"])
+def test_request_errors_precede_cold_loading(monkeypatch, model, kwargs, message, path):
+    from unittest.mock import Mock
+
+    from rapid_mlx.image.engine import ImageRequestError
+
+    adapter = ImageEngine(model)
+    backend = adapter._engine
+    load = Mock(side_effect=AssertionError("invalid request reached loader"))
+    download = Mock(side_effect=AssertionError("invalid request reached downloader"))
+    monkeypatch.setattr(backend, "_ensure_loaded", load)
+    served = Mock()
+    monkeypatch.setattr(adapter, "_emit_model_served", served)
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", download)
+    monkeypatch.setattr(backend, "_ensure_runtime_assets", download)
+    request = {"prompt": "fox", "num_inference_steps": backend.default_steps}
+    request.update(kwargs)
+    generate = (
+        backend.generate
+        if path == "backend"
+        else adapter.generate
+        if path == "adapter"
+        else adapter.generate_with_performance
+    )
+    with pytest.raises(ImageRequestError, match=message) as exc:
+        generate(**request)
+    assert isinstance(exc.value, ImageRuntimeError)
+    load.assert_not_called()
+    download.assert_not_called()
+    assert backend._active_seq == 0
+    served.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", ["generations", "edits"])
+@pytest.mark.parametrize("kind", ["request", "runtime", "cancel"])
+def test_image_route_error_classification(client, monkeypatch, endpoint, kind):
+    from unittest.mock import Mock
+
+    from rapid_mlx.image.engine import ImageRequestError
+
+    errors = {
+        "request": ImageRequestError("caller mistake"),
+        "runtime": ImageRuntimeError("offline weights"),
+        "cancel": ImageGenerationCancelled("cancelled"),
+    }
+    engine = _FakeImageEngine(is_edit=endpoint == "edits")
+    engine.generate = Mock(side_effect=errors[kind])
+    _patch_engine(monkeypatch, engine)
+    completed = Mock()
+    performance = Mock()
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.inference.emit_completed_request", completed
+    )
+    monkeypatch.setattr("rapid_mlx.routes.images._log_image_performance", performance)
+    if endpoint == "generations":
+        response = client.post("/v1/images/generations", json={"prompt": "fox"})
+    else:
+        response = client.post(
+            "/v1/images/edits",
+            data={"prompt": "fox"},
+            files={"image": ("source.png", _png_upload_bytes(), "image/png")},
+        )
+    if kind == "cancel":
+        assert response.status_code == 200
+        assert response.json()["cancelled"] is True
+        assert response.json()["data"] == []
+    else:
+        assert response.status_code == (400 if kind == "request" else 500)
+        error = {
+            "message": str(errors[kind]),
+            "type": "invalid_request_error"
+            if kind == "request"
+            else "image_generation_error",
+            "code": "invalid_image_request"
+            if kind == "request"
+            else "image_generation_failed",
+        }
+        if kind == "request":
+            error["param"] = None
+        assert response.json() == {"error": error}
+        completed.assert_not_called()
+    performance.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("steps", 13, "Bonsai Image supports its published 4-step schedule only."),
+        (
+            "guidance",
+            4.0,
+            "Bonsai Image uses guidance 1.0; omit guidance or set it to 1.0.",
+        ),
+        ("negative_prompt", "blurry", "Bonsai Image does not support negative_prompt."),
+    ],
+)
+def test_cold_bonsai_route_rejects_without_download(
+    client, monkeypatch, field, value, message
+):
+    from unittest.mock import Mock
+
+    adapter = ImageEngine("prism-ml/bonsai-image-ternary-4B-mlx-2bit")
+    _patch_engine(monkeypatch, adapter)
+    load = Mock(side_effect=AssertionError("reached cold loader"))
+    monkeypatch.setattr(adapter._engine, "_ensure_loaded", load)
+    download = Mock(side_effect=AssertionError("reached downloader"))
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", download)
+    response = client.post(
+        "/v1/images/generations", json={"prompt": "fox", field: value}
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "code": "invalid_image_request",
+            "param": None,
+        }
+    }
+    load.assert_not_called()
+    download.assert_not_called()
+
+
+def test_hidream_token_limit_is_request_error(monkeypatch):
+    import sys
+    from unittest.mock import Mock
+
+    from rapid_mlx.image.engine import ImageRequestError
+
+    # Token counting needs the processor, but never needs model weights.
+    runtime = types.ModuleType("rapid_mlx.image.hidream_runtime.runtime")
+    runtime.MAX_PROMPT_TOKENS = 1024
+    runtime._encode_prompt_ids = lambda *_args: types.SimpleNamespace(shape=(1, 1025))
+    monkeypatch.setitem(sys.modules, runtime.__name__, runtime)
+    engine = ImageGenerationEngine("HiDream-O1-Image-Dev")
+    engine._prompt_tokenizer = object()
+    load = Mock(side_effect=AssertionError("reached model loader"))
+    monkeypatch.setattr(engine, "_ensure_loaded", load)
+    with pytest.raises(
+        ImageRequestError, match="HiDream-O1 prompts are limited to 1024 tokens."
+    ):
+        engine.generate(prompt="fox", num_inference_steps=28)
+    load.assert_not_called()
+
+
+def test_unsupported_edit_builder_is_request_error():
+    from rapid_mlx.image.engine import ImageRequestError
+
+    engine = ImageGenerationEngine("Qwen/Qwen-Image")
+    with pytest.raises(
+        ImageRequestError, match="qwen-image does not support image editing."
+    ):
+        engine._build_edit_model()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_performance"])
+def test_hidream_adapter_loads_before_token_limit_error(monkeypatch, method):
+    import sys
+
+    from rapid_mlx.image.engine import ImageRequestError
+
+    events = []
+    processor = object()
+    runtime = types.ModuleType("rapid_mlx.image.hidream_runtime.runtime")
+    runtime.MAX_PROMPT_TOKENS = 1024
+
+    def encode(prompt, tokenizer):
+        assert prompt == "fox"
+        assert tokenizer is processor
+        events.append("token_counted")
+        return types.SimpleNamespace(shape=(1, 1025))
+
+    runtime._encode_prompt_ids = encode
+    monkeypatch.setitem(sys.modules, runtime.__name__, runtime)
+    adapter = ImageEngine("HiDream-O1-Image-Dev")
+    backend = adapter._engine
+
+    def build():
+        events.append("loaded")
+        return types.SimpleNamespace(processor=processor)
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.require_local",
+        lambda _name: events.append("assets_available"),
+    )
+    monkeypatch.setattr(backend, "_ensure_runtime_assets", lambda: None)
+    monkeypatch.setattr(backend, "_verify_weights_complete", lambda: None)
+    monkeypatch.setattr(backend, "_build_model", build)
+    monkeypatch.setattr(
+        adapter, "_emit_model_served", lambda: events.append("model_served")
+    )
+    assert not adapter.is_resident
+    with pytest.raises(
+        ImageRequestError, match="HiDream-O1 prompts are limited to 1024 tokens."
+    ):
+        getattr(adapter, method)(prompt="fox", num_inference_steps=28)
+    events.append("request_error")
+    assert adapter.is_resident
+    assert events == [
+        "assets_available",
+        "loaded",
+        "model_served",
+        "token_counted",
+        "request_error",
+    ]
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_performance"])
+def test_image_adapter_validates_before_preload_and_backend_loading(
+    monkeypatch, method
+):
+    from unittest.mock import Mock
+
+    adapter = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    backend = adapter._engine
+    validate = Mock(wraps=backend.validate_request)
+    monkeypatch.setattr(backend, "validate_request", validate)
+    monkeypatch.setattr(backend, "_ensure_loaded", lambda **_kwargs: _FakeModel())
+    served = Mock()
+    monkeypatch.setattr(adapter, "_emit_model_served", served)
+    result = getattr(adapter, method)(prompt="fox")
+    png_bytes = result[0] if method == "generate_with_performance" else result
+    assert png_bytes.startswith(_PNG_MAGIC)
+    assert validate.call_count == 2
+    served.assert_called_once()
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_with_performance"])
+@pytest.mark.parametrize("error_type", [ImageRuntimeError, ImageGenerationCancelled])
+@pytest.mark.parametrize("editing", [False, True])
+def test_image_adapter_emits_model_served_before_backend_failure(
+    monkeypatch, method, error_type, editing
+):
+    from unittest.mock import Mock
+
+    adapter = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    backend = adapter._engine
+    events = []
+    original_validate = backend.validate_request
+
+    def validate(**kwargs):
+        original_validate(**kwargs)
+        events.append("validated")
+
+    def load(*, for_edit):
+        assert for_edit is editing
+        events.append("loaded")
+
+    def generate(**kwargs):
+        events.append("generate")
+        raise error_type("render stopped")
+
+    monkeypatch.setattr(backend, "validate_request", validate)
+    monkeypatch.setattr(backend, "_ensure_loaded", load)
+    served = Mock(side_effect=lambda: events.append("model_served"))
+    monkeypatch.setattr(adapter, "_emit_model_served", served)
+    monkeypatch.setattr(backend, method, generate)
+    with pytest.raises(error_type, match="render stopped"):
+        getattr(adapter, method)(
+            prompt="fox", seed=7, image_paths=["source.png"] if editing else None
+        )
+    served.assert_called_once()
+    assert events == ["validated", "loaded", "model_served", "generate"]

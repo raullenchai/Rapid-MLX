@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- Invalid image settings report the model’s validation message as HTTP 400. Asset-independent parameter checks (steps, dimensions, guidance, negative prompt, character limits, and input-image rules) reject requests before any download or load. HiDream’s token limit is only evaluated once the model’s assets are available and also returns HTTP 400; a cold request downloads and loads the model first.
+
 
 ## [0.16.1] — 2026-10-12
 

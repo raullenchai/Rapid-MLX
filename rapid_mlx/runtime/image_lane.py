@@ -15,6 +15,7 @@ import sys
 from ..image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
+    ImageRequestError,
     ImageRuntimeError,
     _detect_family,
 )
@@ -110,14 +111,22 @@ class ImageEngine:
 
     def ensure_resident(self, *, mode: str | None = None) -> None:
         """Eagerly materialize lazy image weights for budgeted residency."""
-        if mode not in (None, "generation", "editing"):
-            raise ValueError(f"unsupported image residency mode: {mode!r}")
+        self.validate_residency_mode(mode)
         # ``None`` preserves the engine's family-aware default. In particular,
         # edit-only checkpoints must not be forced through the generation
         # loader when an older client omits the newly optional mode field.
         for_edit = None if mode is None else mode == "editing"
         self._engine._ensure_loaded(for_edit=for_edit)  # noqa: SLF001
         self._emit_model_served()
+
+    def validate_residency_mode(self, mode: str | None) -> None:
+        """Reject unsupported explicit modes without touching model assets."""
+        if mode not in (None, "generation", "editing"):
+            raise ValueError(f"unsupported image residency mode: {mode!r}")
+        if mode == "generation" and not self.supports_generation:
+            raise ImageRequestError(f"{self.family} does not support image generation.")
+        if mode == "editing" and not self.supports_editing:
+            raise ImageRequestError(f"{self.family} does not support image editing.")
 
     def _emit_model_served(self) -> None:
         from ..server import _emit_primary_model_served_once
@@ -179,6 +188,8 @@ class ImageEngine:
         self, **kwargs
     ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
         """Generate one image and atomically return its denoise timing."""
+        # Validate before preloading to avoid downloading invalid requests' weights.
+        self._engine.validate_request(**kwargs)
         self._engine._ensure_loaded(  # noqa: SLF001
             for_edit=bool(kwargs.get("image_paths"))
         )
@@ -198,6 +209,16 @@ class ImageEngine:
         image_paths: list[str] | None = None,
     ) -> bytes:
         """Generate one image; returns PNG bytes. Raises ``ImageRuntimeError``."""
+        # Validate before preloading to avoid downloading invalid requests' weights.
+        self._engine.validate_request(
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            guidance=guidance,
+            negative_prompt=negative_prompt,
+            image_paths=image_paths,
+        )
         self._engine._ensure_loaded(for_edit=bool(image_paths))  # noqa: SLF001
         self._emit_model_served()
         return self._engine.generate(
