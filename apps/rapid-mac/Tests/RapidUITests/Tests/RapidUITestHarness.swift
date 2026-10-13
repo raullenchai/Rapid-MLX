@@ -417,7 +417,12 @@ final class RapidUITestHarness {
                     _ = terminateFileDragSource(dragSource)
                 }
             }
-            source.click(forDuration: 1, thenDragTo: dropTarget)
+            source.click(
+                forDuration: 1,
+                thenDragTo: dropTarget,
+                withVelocity: .default,
+                thenHoldForDuration: 0.5
+            )
             guard terminateFileDragSource(dragSource) else { return 1 }
             return 1
         }
@@ -441,7 +446,16 @@ final class RapidUITestHarness {
                 url: url,
                 dropFirstGesture: simulateMissedFirstGesture && attempt == 1
             )
-            source.click(forDuration: 1, thenDragTo: dropTarget)
+            // Hosted macOS can release an immediate cross-app gesture before
+            // AppKit finishes destination negotiation. Keep the pointer over
+            // the composer briefly; the post-gesture settle budget starts only
+            // after this blocking gesture returns.
+            source.click(
+                forDuration: 1,
+                thenDragTo: dropTarget,
+                withVelocity: .default,
+                thenHoldForDuration: 0.5
+            )
             // Startup, termination and the blocking synthetic gesture are
             // bounded separately. Each completed gesture gets the full,
             // honest post-gesture settle window.

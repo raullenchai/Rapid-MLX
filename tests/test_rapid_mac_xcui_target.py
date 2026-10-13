@@ -151,9 +151,13 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         "private func launchFileDragSource", 1
     )[0]
     launch_index = retry_loop.index("launchFileDragSource(")
-    gesture_index = retry_loop.index(
-        "source.click(forDuration: 1, thenDragTo: dropTarget)"
-    )
+    held_gesture = """source.click(
+                forDuration: 1,
+                thenDragTo: dropTarget,
+                withVelocity: .default,
+                thenHoldForDuration: 0.5
+            )"""
+    gesture_index = retry_loop.index(held_gesture)
     result_index = retry_loop.index("DragTransportFile.result(at: transportResultFile)")
     termination_index = retry_loop.index(
         "guard terminateFileDragSource(dragSource)", result_index
@@ -190,7 +194,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "retry suppressed" in harness
     assert "simulateCompletionVisibilityDelay: 3" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness
-    assert "click(forDuration: 1, thenDragTo: dropTarget)" in harness
+    assert harness.count(held_gesture) == 2
     assert "func testDragPasteAndRemovalPreserveWireIdentity()" in chat_source
     assert "NSImage(data: data)" in harness
     assert "pasteboard.writeObjects([image])" in harness
