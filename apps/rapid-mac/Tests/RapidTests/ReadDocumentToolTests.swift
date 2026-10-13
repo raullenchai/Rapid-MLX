@@ -1004,26 +1004,12 @@ struct ReadDocumentToolTests {
         ))
         cache.beginPending(id)
         let generation = cache.generation(for: id)
-        let completion = Task.detached {
-            try? await Task.sleep(for: .milliseconds(150))
-            _ = cache.publish(
-                id,
-                entry: DocumentContentCache.Entry(
-                    filename: "slow-scan.pdf",
-                    text: "the complete recognized document",
-                    pageCount: 200
-                ),
-                ifGenerationIs: generation
-            )
-            cache.finishPending(id)
-        }
 
         let partialResult = await run(
             ["document_id": id.uuidString],
             cache: cache,
             stallTimeout: 0.03
         )
-        await completion.value
         let partial = try payload(partialResult)
 
         #expect(partial["extract_pending"] as? Bool == true)
@@ -1034,6 +1020,16 @@ struct ReadDocumentToolTests {
         #expect(!note.localizedCaseInsensitiveContains("attach the file again"))
         #expect(!note.localizedCaseInsensitiveContains("cannot be resumed"))
 
+        _ = cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(
+                filename: "slow-scan.pdf",
+                text: "the complete recognized document",
+                pageCount: 200
+            ),
+            ifGenerationIs: generation
+        )
+        cache.finishPending(id)
         let complete = try payload(await run(["document_id": id.uuidString], cache: cache))
         #expect(complete["content"] as? String == "the complete recognized document")
         #expect(complete["extract_pending"] == nil)

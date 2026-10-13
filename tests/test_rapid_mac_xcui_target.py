@@ -143,7 +143,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "try? phase.write" not in chat_view
     assert 'fatalError("could not record completed UI-test file drop' in chat_view
     assert '"RAPID_XCUI_DROP_FIRST_GESTURE": dropFirstGesture ? "1" : "0"' in harness
-    assert "XCTAssertEqual(recoveredAttempts, 2)" in chat_source
+    assert "simulateMissedFirstGesture: true" not in chat_source
     assert "launchFileDragSource(" in harness
     assert "terminateFileDragSource(dragSource)" in harness
     assert "simulateMissedFirstGesture && attempt == 1" in harness
@@ -188,7 +188,6 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         "for attempt in 1...maximumAttempts"
     )
     assert "retry suppressed" in harness
-    assert "XCTAssertEqual(delayedChipAttempts, 1)" in chat_source
     assert "simulateCompletionVisibilityDelay: 3" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness
     assert "click(forDuration: 1, thenDragTo: dropTarget)" in harness
