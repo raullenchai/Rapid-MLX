@@ -1006,8 +1006,16 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         # repository. Keep that typed failure instead of blaming the checkpoint.
         print(f"\n  Error loading model: {exc}")
         return
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
     from rapid_mlx.telemetry.model_events import serve_error_class
 
+    if serve_error_class(exc, model_ref=model_ref) == "other" and (
+        detail := startup_error_lines(exc, model_ref)
+    ):
+        print(f"\n  Error loading model: {exc}", file=sys.stderr)
+        print(f"  Cause: {detail[0]}", file=sys.stderr)
+        print(f"  Next step: {detail[1]}", file=sys.stderr)
+        return
     if serve_error_class(exc, model_ref=args.model) == "unsupported_architecture":
         from rapid_mlx.byom.preflight import render_architecture_guidance
 

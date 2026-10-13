@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 from pathlib import Path
 
@@ -32,6 +34,12 @@ def _chain(exc: BaseException):
         if exc.__cause__ is None:
             break
         exc = exc.__cause__
+
+
+def _same_local_path(value: object, expected: Path) -> bool:
+    return isinstance(value, str) and Path(value).expanduser().resolve(
+        strict=False
+    ) == expected.resolve(strict=False)
 
 
 def local_serve_diagnostic(
@@ -164,6 +172,9 @@ def startup_error_lines(
     from rapid_mlx.telemetry.model_events import serve_error_class
 
     error_class = serve_error_class(exc, model_ref=model_ref)
+    detail = _startup_only_diagnostic(exc, model_ref, error_class)
+    if detail is not None:
+        return detail[1:]
     detail = local_serve_diagnostic(exc, model_ref)
     if detail is not None and detail[0] == error_class:
         return detail[1:]
@@ -172,4 +183,118 @@ def startup_error_lines(
             "The model ran out of memory while loading weights.",
             "Free memory or serve a smaller or more quantized model.",
         )
+    return None
+
+
+def _startup_only_diagnostic(
+    exc: BaseException, model_ref: object, error_class: str
+) -> tuple[str, str, str] | None:
+    """Diagnose observed loader shapes for display without changing event classes."""
+    try:
+        errors = list(_chain(exc))
+        if error_class == "other" and any(
+            isinstance(error, OSError) and error.errno == errno.ENOSPC
+            for error in errors
+        ):
+            return (
+                "disk_full",
+                "The model could not be prepared because the disk is full.",
+                "Free disk space and retry the model load.",
+            )
+        if not isinstance(model_ref, str):
+            return None
+        root = Path(model_ref).expanduser().absolute()
+        if (
+            error_class == "corrupt_weights"
+            and root.is_file()
+            and root.suffix == ".safetensors"
+            and any(
+                isinstance(error, NotADirectoryError)
+                and _same_local_path(error.filename, root / "config.json")
+                for error in errors
+            )
+        ):
+            return (
+                "single_weight_file",
+                "A safetensors file was supplied where a model directory is required.",
+                "Serve its parent model directory containing config.json and the matching weights.",
+            )
+        if not root.is_dir():
+            return None
+        config_path = root / "config.json"
+        if any(
+            isinstance(error, PermissionError)
+            and error.filename is not None
+            and Path(error.filename)
+            .expanduser()
+            .resolve(strict=False)
+            .is_relative_to(root.resolve(strict=False))
+            for error in errors
+        ) or any(
+            isinstance(error, RuntimeError)
+            and str(error).startswith("[load_safetensors] Failed to open file ")
+            and _same_local_path(
+                str(error).removeprefix("[load_safetensors] Failed to open file "),
+                weight,
+            )
+            and weight.is_file()
+            and not os.access(weight, os.R_OK)
+            for weight in root.glob("model*.safetensors")
+            for error in errors
+        ):
+            return (
+                "unreadable_model_file",
+                "Rapid-MLX cannot read a file in the local model directory.",
+                "Grant your user read access to the model files, then retry.",
+            )
+        if (
+            error_class == "local_path_missing"
+            and not config_path.is_file()
+            and any(
+                isinstance(error, FileNotFoundError)
+                and _same_local_path(error.filename, config_path)
+                for error in errors
+            )
+        ):
+            return (
+                "missing_config",
+                "The local model directory is missing config.json.",
+                "Copy config.json from the same checkpoint as the model weights.",
+            )
+        if (
+            error_class == "local_path_missing"
+            and config_path.is_file()
+            and any(
+                isinstance(error, FileNotFoundError)
+                and str(error).startswith("No safetensors found in ")
+                and _same_local_path(
+                    str(error).removeprefix("No safetensors found in "), root
+                )
+                for error in errors
+            )
+        ):
+            return (
+                "missing_weights",
+                "The local model directory has no readable model safetensors files.",
+                "Complete the model download or export its MLX safetensors weights into this directory.",
+            )
+        if (
+            error_class == "other"
+            and config_path.is_file()
+            and any(root.glob("model*.safetensors"))
+            and any(
+                isinstance(error, RuntimeError)
+                and re.fullmatch(
+                    r"\[read\] Unable to read \d+ bytes from file\.", str(error)
+                )
+                for error in errors
+            )
+        ):
+            return (
+                "incomplete_weights",
+                "A model safetensors file is incomplete or unreadable.",
+                "Re-download or re-export the matching model weights, then retry.",
+            )
+    except BaseException:
+        return None
     return None
