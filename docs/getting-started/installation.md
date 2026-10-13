@@ -72,19 +72,17 @@ accepted extra names for existing scripts; on macOS they add nothing.
 | `all` | `pip install 'rapid-mlx[all]'` | audio + embeddings + chat + System One + Computer Use on top of the base install |
 
 When `rapid-mlx serve` finds that an optional runtime is absent, it prints a
-version-pinned repair command matched to the detected install method. For a
+repair command matched to the detected install method. For a
 runtime that ships with the base install (vision, image, video), a missing
-module means the environment is damaged, and the command reinstalls the pinned
-`rapid-mlx` package itself. pip and
-install.sh environments can offer to install into the current interpreter and
-restart the original command after success; the prompt defaults to no after 30
-seconds, and `--yes` (or `-y`) accepts non-interactively. uv tool, pipx, and
-Homebrew repairs are print-only so a running manager-owned environment is never
-replaced underneath the process. Broken or incompatible runtimes also remain
-print-only; a broken pip-based runtime is shown a forced reinstall command,
-while an absent runtime uses an ordinary pinned install. Prompt telemetry keeps
-an explicit no distinct from timeout/EOF/read failure and Ctrl-C, and Ctrl-C
-retains normal interrupt exit behavior after the failure is recorded.
+module means the environment is damaged. The pip repair forcibly reinstalls
+the running version; tool managers reinstall with their recorded options. pip and
+install.sh, uv tool, and pipx environments offer to run the displayed repair
+when stdin is a TTY, then restart the original serve command after success.
+Press Enter at `Install now? [Y/n]` to accept, or use `--yes` (or `-y`) in a
+non-interactive session. The prompt times out after 30 seconds without making
+changes. Homebrew, broken runtimes, and incompatible Python versions show
+manual guidance. A broken pip-based runtime uses a forced reinstall; an absent
+opt-in runtime uses an ordinary pinned install.
 
 The Homebrew formula ships the text runtime only: it omits the vision, image
 and video runtimes and does not provide Python extras.

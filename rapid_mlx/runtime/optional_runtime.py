@@ -7,6 +7,7 @@ import importlib.util
 import os
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -99,10 +100,16 @@ def optional_extra_repair_command(
         method = "unknown"
         global_pipx = False
     if method == "uv":
+        if is_base_runtime_extra(extra):
+            return "uv tool upgrade --reinstall rapid-mlx"
         return f"uv tool install --force {shlex.quote(pinned)}"
     if method == "pipx":
+        if is_base_runtime_extra(extra):
+            return "pipx reinstall rapid-mlx"
         return f"pipx install --force {shlex.quote(pinned)}"
     if global_pipx:
+        if is_base_runtime_extra(extra):
+            return "sudo pipx reinstall --global rapid-mlx"
         return f"sudo pipx install --global --force {shlex.quote(pinned)}"
     if method == "brew":
         if is_base_runtime_extra(extra):
@@ -113,7 +120,11 @@ def optional_extra_repair_command(
             f"    brew uninstall rapid-mlx && uv tool install {shlex.quote(pinned)}"
         )
     python = shlex.quote(sys.executable) if include_paths else "python"
-    reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
+    reinstall = (
+        "--upgrade --force-reinstall "
+        if status == "broken" or is_base_runtime_extra(extra)
+        else ""
+    )
     return f"{python} -m pip install {reinstall}{shlex.quote(pinned)}"
 
 
@@ -213,11 +224,11 @@ def _prompt_to_install(
 ) -> PromptResult:
     """Wait at most 30 seconds for an explicit interactive opt-in."""
     if is_base_runtime_extra(extra):
-        question = f"Repair rapid-mlx now (restores its {extra} runtime)? [y/N] "
+        question = f"Install now? [Y/n] ({extra} runtime) "
     else:
         size_mb = _EXTRA_INSTALL_SIZE_MB.get(extra)
         size = f" (~{size_mb} MB)" if size_mb is not None else ""
-        question = f"Install rapid-mlx[{extra}] now?{size} [y/N] "
+        question = f"Install now? [Y/n] (rapid-mlx[{extra}]{size}) "
     print(
         question,
         end="",
@@ -239,7 +250,7 @@ def _prompt_to_install(
     if response is None:
         print(file=sys.stderr)
         return PromptResult.NO_ANSWER
-    if response.strip().lower() in {"y", "yes"}:
+    if response.strip().lower() in {"", "y", "yes"}:
         return PromptResult.ACCEPTED
     return PromptResult.DECLINED
 
@@ -324,17 +335,34 @@ def _is_tty(stream: object | None) -> bool:
         return False
 
 
-def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
-    """Install one pinned extra, then replace this process on success."""
+def _install_argv(exc: OptionalRuntimeMissing, method: str) -> list[str]:
+    """Build the same repair operation advertised for the active installer."""
     from rapid_mlx import __version__
 
-    install_argv = [
+    pinned = runtime_install_spec(exc.extra, __version__)
+    if method == "uv":
+        return ["uv", "tool", "upgrade", "--reinstall", "rapid-mlx"]
+    if method == "pipx":
+        return ["pipx", "reinstall", "rapid-mlx"]
+    return [
         sys.executable,
         "-m",
         "pip",
         "install",
-        runtime_install_spec(exc.extra, __version__),
+        *(
+            ["--upgrade", "--force-reinstall"]
+            if is_base_runtime_extra(exc.extra)
+            else []
+        ),
+        pinned,
     ]
+
+
+def _install_optional_extra(exc: OptionalRuntimeMissing, method: str = "pip") -> None:
+    """Install one pinned extra, then replace this process on success."""
+    from rapid_mlx.telemetry import posthog_sender
+
+    install_argv = _install_argv(exc, method)
     completed = subprocess.run(install_argv, check=False)
     if completed.returncode != 0:
         print(
@@ -346,8 +374,6 @@ def _install_optional_extra(exc: OptionalRuntimeMissing) -> None:
     # ``exec`` skips atexit callbacks. Drain the two already-enqueued failure
     # terminals before replacing this process so the new PID can be measured
     # as a separate attempted -> ready journey.
-    from rapid_mlx.telemetry import posthog_sender
-
     posthog_sender.get_sender().flush(2.0)
     restart_argv = [sys.executable, *sys.orig_argv[1:]]
     os.execv(sys.executable, restart_argv)
@@ -382,12 +408,15 @@ def handle_optional_runtime_missing(
         and not managed_runtime
         and not install_detection_failed
         and not globally_managed_pipx
-        and install_method in {"pip", "install_sh", "unknown"}
-        and importlib.util.find_spec("pip") is not None
+        and install_method in {"pip", "install_sh", "unknown", "uv", "pipx"}
+        and (is_base_runtime_extra(exc.extra) or install_method not in {"uv", "pipx"})
+        and (
+            shutil.which(install_method) is not None
+            if install_method in {"uv", "pipx"}
+            else importlib.util.find_spec("pip") is not None
+        )
     )
-    is_interactive = (
-        can_install and not assume_yes and _is_tty(sys.stdin) and _is_tty(sys.stderr)
-    )
+    is_interactive = can_install and not assume_yes and _is_tty(sys.stdin)
     if can_install and not assume_yes and not is_interactive:
         action = (
             "repair rapid-mlx automatically, or run the command above manually."
@@ -437,7 +466,7 @@ def handle_optional_runtime_missing(
         failure_stage="preflight",
     )
     if accepted:
-        _install_optional_extra(exc)
+        _install_optional_extra(exc, install_method)
     if extra_recovery == "interrupted":
         raise KeyboardInterrupt
     raise SystemExit(2)

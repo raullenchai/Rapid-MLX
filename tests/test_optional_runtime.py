@@ -22,7 +22,7 @@ import pytest
 import rapid_mlx
 from rapid_mlx import cli, server
 from rapid_mlx.runtime import optional_runtime
-from rapid_mlx.runtime.base_runtime import runtime_install_spec
+from rapid_mlx.runtime.base_runtime import is_base_runtime_extra, runtime_install_spec
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.telemetry import model_events, registry, server_start
 
@@ -291,7 +291,11 @@ if lane == "vision-present":
 def _expected_install_hint_line(
     extra: str, *, child_executable: str, status: str = "absent"
 ) -> str:
-    reinstall = "--upgrade --force-reinstall " if status == "broken" else ""
+    reinstall = (
+        "--upgrade --force-reinstall "
+        if status == "broken" or is_base_runtime_extra(extra)
+        else ""
+    )
     spec = runtime_install_spec(extra, rapid_mlx.__version__)
     return (
         f"    {shlex.quote(child_executable)} -m pip install "
@@ -858,6 +862,7 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
         "rapid_mlx._version_check.detect_install_method",
         lambda: SimpleNamespace(method="uv", upgrade_command=""),
     )
+    monkeypatch.setattr(optional_runtime.shutil, "which", lambda _name: "/usr/bin/uv")
 
     with pytest.raises(OptionalRuntimeMissing) as caught:
         server._preflight_vision_runtime("bonsai2-27b-2bit")
@@ -881,7 +886,7 @@ def test_bonsai_engine_preflight_is_missing_vision_failure(monkeypatch, capsys) 
             "model_type": "vlm",
             "auto_selected": False,
             "quant": "2bit",
-            "extra_recovery": "no_installer",
+            "extra_recovery": "non_interactive",
         }
     ]
     assert [

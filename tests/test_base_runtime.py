@@ -43,7 +43,7 @@ def test_bundled_hint_says_the_runtime_ships_with_rapid_mlx(monkeypatch) -> None
     assert hint == (
         "The vision runtime ships with rapid-mlx but is missing or damaged in "
         "this environment. Repair the install with:\n"
-        "    python -m pip install rapid-mlx==1.2.3"
+        "    python -m pip install --upgrade --force-reinstall rapid-mlx==1.2.3"
     )
     assert "[vision]" not in hint
 
@@ -100,9 +100,7 @@ def test_bundled_prompt_offers_a_repair_without_a_size(monkeypatch) -> None:
     )
     result = optional_runtime._prompt_to_install("image")
     assert result is optional_runtime.PromptResult.DECLINED
-    assert (
-        stderr.getvalue() == "Repair rapid-mlx now (restores its image runtime)? [y/N] "
-    )
+    assert stderr.getvalue() == "Install now? [Y/n] (image runtime) "
 
 
 def test_python_upgrade_hint_points_at_a_supported_interpreter() -> None:

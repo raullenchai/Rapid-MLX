@@ -56,7 +56,7 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith(human)
-    assert "pip install rapid-mlx==" in result.stderr
+    assert "pip install --upgrade --force-reinstall rapid-mlx==" in result.stderr
     assert result.stderr.endswith(marker + "\n")
     assert result.stderr.count(marker) == 1
 
