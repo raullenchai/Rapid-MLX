@@ -10,7 +10,9 @@ enum CIHangWatchdog {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var started = false
     nonisolated(unsafe) private static var lastProgress = Date.timeIntervalSinceReferenceDate
-    private static let quietLimit: TimeInterval = 90
+    private static let quietLimit: TimeInterval =
+        ProcessInfo.processInfo.environment["RAPID_DESKTOP_WATCHDOG_QUIET_SECONDS"] == "180"
+            ? 180 : 90
 
     static func noteProgress() {
         lock.lock()
