@@ -32,7 +32,10 @@ MAX_CORPUS_EMBEDDED_CHUNKS = 262_144
 KEYWORD_CANDIDATE_LIMIT = 4096
 MAX_NAME_ONLY_FILES_PER_FOLDER = 200_000
 MAX_KEYWORD_TERMS = 64
-SCHEMA_VERSION = "2"
+# Maximum uncompressed UTF-8 vocabulary bytes per file, including separators.
+# Overflow files get neutral support, never partial/truncated term evidence.
+MAX_FILE_SIGNATURE_BYTES = 256 * 1024
+SCHEMA_VERSION = "3"
 DISTINCTIVE_FRACTION = 0.10
 DISTINCTIVE_MIN_FILES = 1
 # Retain at most a small vocabulary (roughly hundreds of KiB), not an unbounded
@@ -186,6 +189,10 @@ def _prepare_index(path: Path) -> None:
         os.close(directory)
 
 
+class SchemaVersionError(ValueError):
+    """The index needs a newer application; opening it would be unsafe."""
+
+
 class Store:
     def __init__(self, path: Path, model_id: str):
         _prepare_index(path)
@@ -195,6 +202,46 @@ class Store:
         # companions are repaired above before SQLite can recover their content.
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        # Refuse future indexes before any SQL schema/data/WAL change. The
+        # permission/ACL hardening above runs first and never alters contents.
+        try:
+            if self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table'"
+            ).fetchone():
+                incompatible_message = (
+                    "Local Search index was created by a newer or incompatible "
+                    "version. Update Rapid-MLX to open this index, or choose a "
+                    "new index directory."
+                )
+                try:
+                    version = self.db.execute(
+                        "SELECT value FROM meta WHERE key='schema_version'"
+                    ).fetchone()
+                except sqlite3.OperationalError as exc:
+                    if not str(exc).startswith(("no such table:", "no such column:")):
+                        raise
+                    raise SchemaVersionError(incompatible_message) from exc
+                if version is None:
+                    # Released stores commit the version before accepting data.
+                    # DDL is separate, so a crashed first init may leave empty tables.
+                    tables = self.db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('folders','files','chunks')"
+                    ).fetchall()
+                    if any(
+                        self.db.execute(f"SELECT 1 FROM {table[0]} LIMIT 1").fetchone()
+                        for table in tables
+                    ):
+                        raise SchemaVersionError(incompatible_message)
+                if version and version[0] not in ("1", "2", SCHEMA_VERSION):
+                    raise SchemaVersionError(
+                        f"Local Search index schema version {version[0]} is unsupported "
+                        f"(this application supports {SCHEMA_VERSION}). Update Rapid-MLX "
+                        "to open this index, or choose a new index directory."
+                    )
+        except BaseException:
+            self.db.close()
+            raise
         self.db.create_function(
             "local_basename",
             1,
@@ -229,9 +276,6 @@ class Store:
         version = self.db.execute(
             "SELECT value FROM meta WHERE key='schema_version'"
         ).fetchone()
-        if version and version[0] not in ("1", SCHEMA_VERSION):
-            self.db.close()
-            raise ValueError("unsupported local-search schema version")
         previous = self.db.execute(
             "SELECT value FROM meta WHERE key='model_id'"
         ).fetchone()
@@ -242,6 +286,21 @@ class Store:
             "SELECT value FROM meta WHERE key='extraction_version'"
         ).fetchone()
         with self.db:
+            self.db.execute("""CREATE TABLE IF NOT EXISTS file_signatures (
+                file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                vocabulary BLOB)""")
+            if version is None or version[0] != SCHEMA_VERSION:
+                for file in self.db.execute("SELECT id FROM files"):
+                    self._write_signature(
+                        file[0],
+                        (
+                            row[0]
+                            for row in self.db.execute(
+                                "SELECT text FROM chunks WHERE file_id=? AND kind='text' ORDER BY id",
+                                (file[0],),
+                            )
+                        ),
+                    )
             if extraction is None or extraction[0] != EXTRACTION_VERSION:
                 # Additive upgrade: keep unrelated chunks/vectors and refresh only
                 # newly supported Office files, expanded DOCX, and empty results.
@@ -298,7 +357,7 @@ class Store:
                     "INSERT OR REPLACE INTO meta VALUES ('eligibility_version',?)",
                     (ELIGIBILITY_VERSION,),
                 )
-            if (version and version[0] != SCHEMA_VERSION) or (
+            if (version and version[0] == "1") or (
                 chunking is None or chunking[0] != CHUNKING_VERSION
             ):
                 self.db.execute("UPDATE chunks SET vector=NULL")
@@ -578,6 +637,69 @@ class Store:
             )
         ]
 
+    def _write_signature(self, file_id, texts):
+        import zlib
+
+        tokens = set()
+        size = 0
+        for text in texts:
+            for token in text.casefold().split():
+                if token not in tokens:
+                    size += len(token.encode("utf-8")) + 1
+                    if size > MAX_FILE_SIGNATURE_BYTES:
+                        self.db.execute(
+                            "INSERT OR REPLACE INTO file_signatures VALUES (?,NULL)",
+                            (file_id,),
+                        )
+                        return
+                    tokens.add(token)
+        vocabulary = zlib.compress("\n".join(sorted(tokens)).encode("utf-8"))
+        self.db.execute(
+            "INSERT OR REPLACE INTO file_signatures VALUES (?,?)",
+            (file_id, vocabulary),
+        )
+
+    def query_evidence(self, candidates, rows, terms):
+        """Bounded primary-key reads, independent of corpus postings/chunk count.
+
+        Match substrings inside whitespace tokens, preserving identifiers,
+        morphology and CJK runs. Unavailable signatures get neutral support
+        without contributing to the file-evidence population.
+        """
+        import zlib
+
+        from .search import file_evidence
+
+        if not terms:
+            return {}
+        files = sorted(
+            {rows[i]["file_id"] for i in candidates if rows[i]["kind"] == "text"}
+        )
+        wanted = {term.casefold() for term in terms}
+        coverage = {}
+        for file_id in files:
+            row = self.db.execute(
+                "SELECT vocabulary FROM file_signatures WHERE file_id=?", (file_id,)
+            ).fetchone()
+            vocabulary = None
+            if row and row[0]:
+                try:
+                    decoder = zlib.decompressobj()
+                    raw = decoder.decompress(row[0], MAX_FILE_SIGNATURE_BYTES + 1)
+                    if (
+                        len(raw) <= MAX_FILE_SIGNATURE_BYTES
+                        and decoder.eof
+                        and not decoder.unconsumed_tail
+                        and not decoder.unused_data
+                    ):
+                        vocabulary = raw.decode("utf-8")
+                except (zlib.error, UnicodeDecodeError):
+                    pass
+            if vocabulary is not None:
+                coverage[file_id] = {term for term in wanted if term in vocabulary}
+        support = file_evidence(coverage, wanted)
+        return {i: support.get(rows[i]["file_id"], 0.0) for i in candidates}
+
     def chunk_text(self, chunk_id: int) -> str:
         row = self.db.execute(
             "SELECT text FROM chunks WHERE id=?", (chunk_id,)
@@ -762,6 +884,9 @@ class Store:
                     status,
                 ),
             ).lastrowid
+            self._write_signature(
+                file_id, (chunk.text for chunk in chunks if chunk.kind == "text")
+            )
             for index, chunk in enumerate(chunks):
                 vector = (
                     None

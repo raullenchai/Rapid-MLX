@@ -1046,6 +1046,19 @@ class LocalSearch:
 
             return result_cache[chunk_id]
 
+        support = {}
+        lexical_paths = {rows[i]["path"] for i in keyword}
+        if terms and any(
+            rows[i]["kind"] == "text" and rows[i]["path"] not in lexical_paths
+            for leg in semantic_legs
+            for i in leg
+        ):
+            support = await self.store.call(
+                "query_evidence",
+                set(keyword).union(*(set(leg) for leg in semantic_legs)),
+                rows,
+                terms,
+            )
         ranking = await asyncio.to_thread(
             fuse,
             [],
@@ -1056,6 +1069,7 @@ class LocalSearch:
             keyword_evidence=evidence,
             semantic_standardized=semantic_standardized,
             limit=limit,
+            query_evidence=support,
         )
         hits = []
         admitted_hits = await asyncio.to_thread(lambda: list(admitted(ranking)))
@@ -1085,6 +1099,7 @@ class LocalSearch:
                     i: z for i, z in semantic_standardized.items() if i in group_rows
                 },
                 keyword_evidence=evidence,
+                query_evidence=support,
             )
             result_groups: list[dict[str, object]] = []
             response["groups"] = result_groups

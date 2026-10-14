@@ -8183,9 +8183,13 @@ def test_first_route_refuses_newer_schema(tmp_path, method, route, body):
             assert response.status_code == 503
             assert response.json() == {
                 "error": {
-                    "message": "unsupported local-search schema version",
+                    "message": (
+                        "Local Search index schema version 999 is unsupported "
+                        "(this application supports 3). Update Rapid-MLX "
+                        "to open this index, or choose a new index directory."
+                    ),
                     "type": "invalid_request_error",
-                    "code": "store_open_failed",
+                    "code": "unsupported_index_schema",
                     "param": "local_search_dir",
                 }
             }
@@ -8287,6 +8291,658 @@ def test_model_recovers_when_worker_returns(tmp_path, monkeypatch, outage, media
             assert search.store.folder(fid)["error"] is None
             assert search.store.totals()["embedded_chunks"] > 0
             assert not search._attempted_checkpoints
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+def brute_file_evidence(bodies, terms):
+    import math
+
+    wanted = {term.casefold() for term in terms}
+    coverage = {
+        file_id: {
+            term for term in wanted if any(term in text.casefold() for text in texts)
+        }
+        for file_id, texts in bodies.items()
+    }
+    weights = {
+        term: math.log(
+            (len(bodies) + 1) / (1 + sum(term in c for c in coverage.values()))
+        )
+        for term in wanted
+    }
+    total = math.fsum(weights.values())
+    return {
+        file_id: math.fsum(weights[term] for term in covered) / total if total else 0.0
+        for file_id, covered in coverage.items()
+    }
+
+
+def test_whole_file_evidence_discounts_repetition_and_absent_terms():
+    bodies = {
+        1: ["Project status", "Schedule in Zürich", "Schedule in Zürich"],
+        2: ["Project status", "Schedule in Lima"],
+        3: ["Project status", "Budget in Lima"],
+    }
+    support = brute_file_evidence(bodies, ["PROJECT", "Zürich", "schedule", "missing"])
+    assert 0 < support[2] < support[1] < 1
+    assert support[3] == 0
+    assert brute_file_evidence({1: ["Project"], 2: ["Project"]}, ["Project"]) == {
+        1: 0,
+        2: 0,
+    }
+    assert brute_file_evidence({}, ["schedule"]) == {}
+    assert brute_file_evidence(bodies, []) == dict.fromkeys(bodies, 0)
+    bodies[1].append("Schedule in Zürich")
+    assert (
+        brute_file_evidence(bodies, ["PROJECT", "Zürich", "schedule", "missing"])
+        == support
+    )
+
+
+def test_candidate_file_evidence_reads_other_passages_but_respects_scope(tmp_path):
+    root = folder(tmp_path)
+    store = Store(tmp_path / "index.sqlite3", "model")
+    fid = store.add_folder(root)[0]
+    for name, texts in [
+        ("first.txt", ["Shared opening", "Rare specification"]),
+        ("second.txt", ["Shared opening", "General specification"]),
+        ("excluded.txt", ["Rare specification"]),
+    ]:
+        path = root / name
+        path.write_text("\n".join(texts))
+        store.replace(
+            fid,
+            path,
+            path.stat(),
+            None,
+            [Chunk(text, i + 1, None) for i, text in enumerate(texts)],
+            None,
+            "keyword",
+        )
+    rows = store.search_rows()
+    candidates = [
+        i
+        for i, row in rows.items()
+        if row["path"].endswith(("first.txt", "second.txt"))
+        and store.chunk_text(i) == "Shared opening"
+    ]
+    support = store.query_evidence(candidates, rows, ["rare", "specification"])
+    assert len(support) == 2
+    assert support[candidates[0]] == 1
+    assert support[candidates[1]] == 0
+    assert store.query_evidence([], rows, ["rare"]) == {}
+    media = {-1: {"file_id": 99, "kind": "image"}}
+    assert store.query_evidence([-1], media, ["rare"]) == {-1: 0}
+    store.close()
+
+
+def test_file_support_reorders_semantic_hits_and_group_previews_only():
+    from rapid_mlx.local_search.search import grouped_rankings
+
+    rows = {i: {"path": str(i), "kind": "text"} for i in range(3)}
+    kwargs = dict(
+        rows=rows,
+        semantic_legs=[[0, 1, 2]],
+        semantic_scores={0: 0.84, 1: 0.80, 2: 0.78},
+        semantic_standardized={0: 4, 1: 3, 2: 2},
+        keyword_evidence={},
+    )
+    original = fuse([], [], **kwargs)
+    support = {0: 0, 1: 1, 2: 0}
+    ranked = fuse([], [], query_evidence=support, **kwargs)
+    assert [i for i, _, _ in original] == [0, 1, 2]
+    assert [i for i, _, _ in ranked] == [1, 0, 2]
+    assert {i for i, _, _ in ranked} == {i for i, _, _ in original}
+    assert [s for _, s, _ in ranked] == [s for _, s, _ in original]
+    groups = grouped_rankings([], query_evidence=support, **kwargs)
+    assert groups == [("text", ranked)]
+    kwargs["keyword_evidence"] = {2: 2}
+    literal = fuse([], [2], query_evidence=support, **kwargs)
+    assert [i for i, _, _ in literal] == [2, 1, 0]
+    assert fuse([], [], query_evidence=support, rows={}, semantic_standardized={}) == []
+
+
+@pytest.mark.parametrize("variable_limit", [None, 4])
+def test_indexed_query_evidence_matches_brute_force(tmp_path, variable_limit):
+    import sqlite3
+
+    root = folder(tmp_path)
+    store = Store(tmp_path / "index.sqlite3", "model")
+    fid = store.add_folder(root)[0]
+    texts = [
+        ["SHARED Zürich 中文检索", 'quoted "term" a_%\\ ß Ä'],
+        ["shared 中文检索", "xy rare"],
+        ["shared unrelated", "nothing"],
+        ["shared Zürich", "extra"],
+        ["shared", "last"],
+    ]
+    for n, passages in enumerate(texts):
+        path = root / f"rare-{n}.txt"
+        path.write_text("\n".join(passages))
+        store.replace(
+            fid,
+            path,
+            path.stat(),
+            None,
+            [Chunk(text, i + 1, None) for i, text in enumerate(passages)],
+            None,
+            "keyword",
+        )
+    rows = store.search_rows()
+    candidates = list(rows)
+    bodies = {}
+    for row in store.db.execute("SELECT file_id,text FROM chunks"):
+        bodies.setdefault(row[0], []).append(row[1])
+    if variable_limit and hasattr(store.db, "setlimit"):
+        store.db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, variable_limit)
+    for terms in [
+        ["ZÜRICH", "中文检索", "missing", "SHARED"],
+        ["中文", "xy", "ß", "Ä", "%", "_", "\\"],
+        ["quoted", '"term"', "a_%\\"],
+        ["absent"],
+        ["shared"],
+        ["rare"],
+    ]:
+        expected = brute_file_evidence(bodies, terms)
+        assert store.query_evidence(candidates, rows, terms) == {
+            i: expected[rows[i]["file_id"]] for i in candidates
+        }
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    assert store.query_evidence(candidates, rows, []) == {}
+    assert statements == []
+    store.close()
+
+
+def test_file_signature_bound_deduplication_and_overflow(tmp_path, monkeypatch):
+    import zlib
+
+    from rapid_mlx.local_search import store as module
+
+    root = folder(tmp_path)
+    store = Store(tmp_path / "index.sqlite3", "model")
+    fid = store.add_folder(root)[0]
+    monkeypatch.setattr(module, "MAX_FILE_SIGNATURE_BYTES", 8)
+    for name, text in [
+        ("repeat.txt", "aa bb " * 100),
+        ("large.txt", "aa bb cc"),
+        ("empty.txt", ""),
+    ]:
+        path = root / name
+        path.write_text(text)
+        store.replace(
+            fid, path, path.stat(), None, [Chunk(text, 1, None)], None, "keyword"
+        )
+    rows = store.search_rows()
+    signatures = dict(
+        store.db.execute("SELECT file_id,vocabulary FROM file_signatures")
+    )
+    assert sum(blob is None for blob in signatures.values()) == 1
+    assert {
+        zlib.decompress(blob) for blob in signatures.values() if blob is not None
+    } == {b"", b"aa\nbb"}
+    support = store.query_evidence(list(rows), rows, ["aa"])
+    assert support == {
+        i: float(row["path"].endswith("repeat.txt")) for i, row in rows.items()
+    }
+    path = root / "repeat.txt"
+    store.replace(
+        fid, path, path.stat(), None, [Chunk("aa bb " * 100, 1, None)], None, "keyword"
+    )
+    assert (
+        zlib.decompress(
+            store.db.execute(
+                "SELECT vocabulary FROM file_signatures JOIN files ON file_id=files.id WHERE path=?",
+                (str(path),),
+            ).fetchone()[0]
+        )
+        == b"aa\nbb"
+    )
+    store.delete_folder(fid)
+    assert store.db.execute("SELECT count(*) FROM file_signatures").fetchone()[0] == 0
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "query,semantic,lexical",
+    [
+        ("rare", [], []),
+        ("rare", [1], []),
+        ("rare", [2], [3]),
+        ("", [2], []),
+        ("rare", [2], []),
+    ],
+)
+def test_search_query_evidence_skip_path(
+    tmp_path, monkeypatch, query, semantic, lexical
+):
+    from rapid_mlx.local_search import service as module
+
+    async def scenario():
+        search = engine(tmp_path)
+        rows = {
+            1: {"path": "image", "file_id": 1, "kind": "image"},
+            2: {"path": "text", "file_id": 2, "kind": "text"},
+            3: {"path": "text", "file_id": 2, "kind": "text"},
+        }
+        calls = []
+
+        async def call(name, *args, **kwargs):
+            calls.append(name)
+            if name == "search_rows":
+                return rows
+            if name == "distinctive_terms":
+                return args[0]
+            if name == "keyword":
+                return lexical
+            if name == "semantic_scores":
+                return [(i, 0.8) for i in semantic]
+            if name == "semantic_background":
+                return dict.fromkeys(module.KINDS, 0)
+            if name == "query_evidence":
+                return {}
+            if name == "folders":
+                return []
+            raise AssertionError(name)
+
+        try:
+            await search.store.call("folders")
+            monkeypatch.setattr(search.store, "call", call)
+            monkeypatch.setattr(
+                search,
+                "_embed_async",
+                AsyncMock(return_value=np.array([[1, 0]], dtype=np.float32)),
+            )
+            monkeypatch.setattr(
+                module,
+                "semantic_ranking",
+                lambda scores, *args, **kwargs: [i for i, _ in scores],
+            )
+            monkeypatch.setattr(module, "fuse", lambda *args, **kwargs: [])
+            await search.search(query, 10, None)
+            assert ("query_evidence" in calls) == (
+                bool(query) and semantic == [2] and not lexical
+            )
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("version", ["1", "2", None])
+def test_file_signature_migration_requires_version_and_preserves_stored_text(
+    tmp_path, version
+):
+    from rapid_mlx.local_search.store import SCHEMA_VERSION, SchemaVersionError
+
+    root = folder(tmp_path)
+    path = root / "old.txt"
+    path.write_text("early late 中文检索")
+    db = tmp_path / "old.sqlite3"
+    store = Store(db, "model")
+    fid = store.add_folder(root)[0]
+    store.replace(
+        fid,
+        path,
+        path.stat(),
+        "hash",
+        [Chunk("early", 1, None), Chunk("late 中文检索", 2, 8)],
+        [[1, 0, 0], [0, 1, 0]],
+        "indexed",
+    )
+    before = [tuple(r) for r in store.db.execute("SELECT * FROM chunks")]
+    files = [tuple(r) for r in store.db.execute("SELECT * FROM files")]
+    store.db.execute("DROP TABLE file_signatures")
+    if version:
+        store.db.execute(
+            "UPDATE meta SET value=? WHERE key='schema_version'", (version,)
+        )
+    else:
+        store.db.execute("DELETE FROM meta WHERE key='schema_version'")
+    store.db.commit()
+    store.close()
+    path.unlink()  # Signatures must be derived from stored text, not sources.
+    if version is None:
+        before_bytes = db.read_bytes()
+        with pytest.raises(SchemaVersionError, match="newer or incompatible version"):
+            Store(db, "model")
+        assert db.read_bytes() == before_bytes
+        return
+    store = Store(db, "model")
+    if version == "1":
+        # Keep main's existing media/chunking upgrade for legacy schema 1.
+        before = [(*row[:-1], None) for row in before]
+        files = [(*row[:-1], "pending") for row in files]
+        assert not store.vectors
+    else:
+        assert len(store.vectors) == 2
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM chunks")] == before
+    assert [tuple(r) for r in store.db.execute("SELECT * FROM files")] == files
+    assert (
+        store.db.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()[0]
+        == SCHEMA_VERSION
+    )
+    import zlib
+
+    assert (
+        zlib.decompress(
+            store.db.execute("SELECT vocabulary FROM file_signatures").fetchone()[0]
+        )
+        == "early\nlate\n中文检索".encode()
+    )
+    rows = store.search_rows()
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    store.query_evidence(list(rows), rows, ["late", "中文"])
+    assert len(statements) == 1  # one primary-key read per FILE, not per chunk/term
+    assert "file_signatures WHERE file_id=" in statements[0]
+    store.close()
+
+
+@pytest.mark.parametrize("layout", ["future", "different_columns", "missing_meta"])
+def test_future_schema_is_structured_error_on_all_routes(tmp_path, monkeypatch, layout):
+    import sqlite3
+
+    from rapid_mlx.routes.local_search import router
+
+    async def scenario():
+        directory = tmp_path / "future"
+        directory.mkdir()
+        db = directory / "index.sqlite3"
+        connection = sqlite3.connect(db)
+        if layout == "future":
+            connection.execute(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            connection.execute("INSERT INTO meta VALUES ('schema_version','999')")
+        elif layout == "different_columns":
+            connection.execute("CREATE TABLE meta (name TEXT, version TEXT)")
+        else:
+            connection.execute("CREATE TABLE future_metadata (version TEXT)")
+        connection.commit()
+        before = db.read_bytes()
+        connection.close()
+        search = LocalSearch(directory, resolve_model=lambda _: None)
+        app = FastAPI()
+        install_exception_handlers(app)
+        app.include_router(router)
+        app.state.local_search = search
+        from rapid_mlx.middleware.auth import check_rate_limit, verify_api_key
+
+        app.dependency_overrides[verify_api_key] = lambda: None
+        app.dependency_overrides[check_rate_limit] = lambda: None
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                requests = [
+                    ("GET", "/status", None),
+                    ("POST", "/folders", {"path": str(folder(tmp_path))}),
+                    ("DELETE", "/folders/missing", None),
+                    ("POST", "/reindex", {}),
+                    ("POST", "/search", {"query": "apple"}),
+                ]
+                for method, route, body in requests:
+                    response = await client.request(
+                        method, "/v1/local-search" + route, json=body
+                    )
+                    assert response.status_code == 503
+                    error = response.json()["error"]
+                    assert error["code"] == "unsupported_index_schema"
+                    assert "Update Rapid-MLX" in error["message"]
+            assert db.read_bytes() == before
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_replacement_preserves_file_signature(tmp_path):
+    root = folder(tmp_path)
+    path = root / "rollback.txt"
+    path.write_text("apple")
+    store = Store(tmp_path / "index.sqlite3", "model")
+    fid = store.add_folder(root)[0]
+    try:
+        store.replace(
+            fid,
+            path,
+            path.stat(),
+            "before",
+            [Chunk("apple", 1, None)],
+            [[1, 0]],
+            "indexed",
+        )
+        before = [
+            tuple(row) for row in store.db.execute("SELECT * FROM file_signatures")
+        ]
+        with pytest.raises(IndexError):
+            store.replace(
+                fid,
+                path,
+                path.stat(),
+                "after",
+                [Chunk("banana", 1, None)] * 2,
+                [[0, 1]],
+                "indexed",
+            )
+        assert [
+            tuple(row) for row in store.db.execute("SELECT * FROM file_signatures")
+        ] == before
+        assert store.keyword(["apple"], set(store.rows()))
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("layout", ["different_columns", "missing_meta"])
+def test_store_rejects_incompatible_metadata(tmp_path, layout):
+    from rapid_mlx.local_search.store import SchemaVersionError
+
+    path = tmp_path / "index.sqlite3"
+    with sqlite3.connect(path) as connection:
+        table = "meta" if layout == "different_columns" else "future_metadata"
+        connection.execute(f"CREATE TABLE {table} (version TEXT)")
+    before = path.read_bytes()
+    with pytest.raises(SchemaVersionError, match="newer or incompatible version"):
+        Store(path, "model")
+    assert path.read_bytes() == before
+
+
+def test_store_initializes_empty_database(tmp_path):
+    from rapid_mlx.local_search.store import SCHEMA_VERSION
+
+    path = tmp_path / "index.sqlite3"
+    sqlite3.connect(path).close()
+    store = Store(path, "model")
+    try:
+        assert (
+            store.db.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            == SCHEMA_VERSION
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("table", ["folders", "files", "chunks"])
+def test_store_rejects_missing_schema_version_with_data(tmp_path, table):
+    from rapid_mlx.local_search.store import SchemaVersionError
+
+    path = tmp_path / "index.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+        connection.execute(f"INSERT INTO {table} VALUES (1)")
+    connection.close()
+    before = path.read_bytes()
+    with pytest.raises(SchemaVersionError) as error:
+        Store(path, "model")
+    assert str(error.value) == (
+        "Local Search index was created by a newer or incompatible "
+        "version. Update Rapid-MLX to open this index, or choose a "
+        "new index directory."
+    )
+    assert path.read_bytes() == before
+    assert not Path(str(path) + "-wal").exists()
+
+
+@pytest.mark.parametrize("last_table", ["meta", "folders", "files", "chunks"])
+def test_store_recovers_interrupted_first_initialization(tmp_path, last_table):
+    from rapid_mlx.local_search.store import SCHEMA_VERSION
+
+    # Reproduce the DDL prefix a crash can leave before the metadata transaction.
+    reference = Store(tmp_path / "reference.sqlite3", "model")
+    try:
+        schemas = {
+            row["name"]: row["sql"]
+            for row in reference.db.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='table'"
+            )
+        }
+    finally:
+        reference.close()
+    path = tmp_path / "interrupted.sqlite3"
+    with sqlite3.connect(path) as connection:
+        for table in ("meta", "folders", "files", "chunks"):
+            connection.execute(schemas[table])
+            if table == last_table:
+                break
+    connection.close()
+    store = Store(path, "model")
+    try:
+        assert (
+            store.db.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            == SCHEMA_VERSION
+        )
+        for table in ("folders", "files", "chunks"):
+            assert store.db.execute(f"SELECT 1 FROM {table}").fetchone() is None
+    finally:
+        store.close()
+
+
+def test_store_preserves_database_corruption_error(tmp_path):
+    path = tmp_path / "index.sqlite3"
+    path.write_bytes(b"not a SQLite database")
+    with pytest.raises(sqlite3.DatabaseError, match="file is not a database"):
+        Store(path, "model")
+
+
+def test_store_preserves_metadata_probe_io_error(tmp_path, monkeypatch):
+    path = tmp_path / "index.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+
+    class FailingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql == "SELECT value FROM meta WHERE key='schema_version'":
+                raise sqlite3.OperationalError("disk I/O error")
+            return super().execute(sql, *args, **kwargs)
+
+    connect = sqlite3.connect
+    connections = []
+
+    def failing_connect(*args, **kwargs):
+        connection = connect(*args, factory=FailingConnection, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", failing_connect)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            Store(path, "model")
+        assert len(connections) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connections[0].execute("SELECT 1")
+    finally:
+        for connection in connections:
+            connection.close()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        "overflow",
+        "corrupt",
+        "over_cap",
+        "truncated",
+        "invalid_utf8",
+        "trailing_data",
+    ],
+)
+def test_search_damaged_file_signature_is_neutral(tmp_path, monkeypatch, damage):
+    import zlib
+
+    from rapid_mlx.local_search import service as service_module
+    from rapid_mlx.local_search.store import MAX_FILE_SIGNATURE_BYTES
+
+    blobs = {
+        "overflow": None,
+        "corrupt": b"invalid zlib data",
+        "over_cap": zlib.compress(b"apple " * MAX_FILE_SIGNATURE_BYTES),
+        "truncated": zlib.compress(b"apple")[:-1],
+        "invalid_utf8": zlib.compress(b"apple\xff"),
+        "trailing_data": zlib.compress(b"apple") + b"junk",
+    }
+    # Ensure semantic candidates request evidence even when keyword matches exist.
+    monkeypatch.setattr(Store, "keyword", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        service_module,
+        "semantic_ranking",
+        lambda scores, *args, **kwargs: [i for i, _ in scores],
+    )
+
+    async def scenario():
+        search = engine(tmp_path)
+        root = folder(tmp_path)
+        for name, text in (
+            ("damaged.txt", "apple orchard"),
+            ("valid.txt", "apple orchard"),
+            ("other.txt", "orchard pear"),
+        ):
+            (root / name).write_text(text)
+        try:
+            await search.add_folder(str(root))
+            await search.wait_idle()
+            rows = await search.store.call("search_rows")
+            damaged_id = next(
+                row["file_id"]
+                for row in rows.values()
+                if row["path"].endswith("damaged.txt")
+            )
+            if damage == "missing":
+                await search.store.call(
+                    "sql", "DELETE FROM file_signatures WHERE file_id=?", (damaged_id,)
+                )
+            else:
+                await search.store.call(
+                    "sql",
+                    "UPDATE file_signatures SET vocabulary=? WHERE file_id=?",
+                    (blobs[damage], damaged_id),
+                )
+            valid = [i for i, row in rows.items() if row["file_id"] != damaged_id]
+            terms = ["apple", "orchard", "pear"]
+            baseline = await search.store.call("query_evidence", valid, rows, terms)
+            assert baseline == dict.fromkeys(valid, 0.5)
+            support = await search.store.call("query_evidence", list(rows), rows, terms)
+            assert {i: support[i] for i in valid} == baseline
+            assert all(support[i] == 0.0 for i in rows if i not in valid)
+            result = await search.search("apple", 10, None)
+            assert {Path(hit["path"]).name for hit in result["results"]} == {
+                "damaged.txt",
+                "valid.txt",
+                "other.txt",
+            }
         finally:
             await search.close()
 

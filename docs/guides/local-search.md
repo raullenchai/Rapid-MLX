@@ -143,12 +143,20 @@ atomically, reuses unchanged content, removes deleted files, and resumes on
 server restart. Reindex explicitly after changing files; there is no filesystem
 watcher in this pilot. Only one folder indexes at a time. Removing an active
 folder cancels its indexing; server shutdown also cancels work between batches.
-Changing the stored model id, schema version, or chunking version invalidates
-all vectors while preserving keyword text until rebuilding finishes. Schema 2
-and chunking 3 rebuild earlier text-only indexes, including previously skipped
-media. Discovery and indexing proceed in bounded batches, with documents preferred
-within each directory. Each file becomes searchable when committed while the
-walk continues; there is no full-root pre-walk. During discovery, `files_total`
+Changing the stored model id or chunking version invalidates affected vectors
+while preserving keyword text until rebuilding finishes. Schema 2 and chunking 3
+rebuild earlier text-only indexes, including previously skipped media. Schema 3
+upgrades schemas 1 and 2 in place: derive file signatures from stored chunk text in a
+transaction. Schema 2 preserves chunk IDs, vectors, locators, and file statuses
+without source reads or re-embedding. Schema 1 retains the existing media/chunking
+upgrade, preserving keyword text and locators while queuing a vector rebuild. A newer or unrecognized schema is
+refused before any SQL schema, data, or WAL change (the owner-only permission
+and ACL hardening of the index files, which never changes their contents, still
+runs first); routes return HTTP 503 with the structured
+`unsupported_index_schema` error and instructions to update Rapid-MLX or choose
+a new index directory. Discovery and indexing proceed in bounded batches, with
+documents preferred within each directory. Each file becomes searchable when
+committed while the walk continues; there is no full-root pre-walk. During discovery, `files_total`
 is 0 (unknown), `files_done` counts processed files, and the desktop displays
 indeterminate progress with that count. Deleted files are removed after the walk
 completes; cancellation does not purge undiscovered files.
@@ -395,8 +403,29 @@ Search caches scoped metadata rather than chunk bodies and reads bodies only
 for keyword candidates and returned snippets. Replacement, removal, folder
 absorption, and metadata updates invalidate that cache. The frequency cache
 retains at most 1,024 terms to bound memory, independently of corpus size; eviction
-only repeats a computation and never changes a result. Existing indexes require
-no rebuild or re-embedding: these are search-time changes, with no schema rebuild. CPU replay timings exclude query embedding and model loading;
+only repeats a computation and never changes a result.
+
+Whole-file query-term rarity evidence reads one compressed vocabulary per
+candidate text file using its primary key; it never scans corpus-wide FTS
+postings or candidate chunk bodies. Each vocabulary contains distinct casefolded
+whitespace-delimited tokens, including punctuation, identifiers and CJK runs.
+Substring matching inside those tokens retains morphological and CJK evidence;
+this support signal is separate from phrase retrieval. Semantic-only hits within
+each kind use cosine similarity plus 0.1 times rarity-weighted term coverage;
+literal keyword priority and admission gates are preserved. Kind previews use
+the same evidence. The signature is written
+in the same transaction as the file's chunks and deleted with the file.
+`MAX_FILE_SIGNATURE_BYTES` bounds the uncompressed UTF-8 vocabulary, counting
+one separator byte per distinct token, to 256 KiB per file; compressed storage
+adds at most 1 KiB of format overhead. A file exceeding this bound stores a NULL
+signature and supplies zero term support, rather than evidence from an arbitrary
+prefix. Reads enforce the same cap; malformed signatures also supply zero term
+support. Its keyword/semantic retrieval and vectors remain available. Query work
+is bounded by candidate file count × vocabulary cap × bounded query term count,
+independent of corpus postings and document chunk count. Schema 3 adds these
+signatures without rebuilding embeddings.
+
+CPU replay timings exclude query embedding and model loading;
 real embedding latency and responsiveness under chat load still need hardware
 measurement.
 
