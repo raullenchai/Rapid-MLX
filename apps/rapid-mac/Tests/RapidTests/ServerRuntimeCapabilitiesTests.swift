@@ -502,6 +502,8 @@ struct ServerRuntimeCapabilitiesTests {
           done
           echo '--resident-memory-limit-gb'
           echo '--resident-model-idle-ttl'
+          echo '--enable-local-search'
+          echo '--local-search-dir'
           exit \(helpExitStatus)
         fi
         exit 2

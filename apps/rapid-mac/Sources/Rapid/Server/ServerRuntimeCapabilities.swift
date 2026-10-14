@@ -7,6 +7,7 @@ import Foundation
 /// source updates. Probe the actual CLI before spawn so a stale runtime does
 /// not reject newer desktop-only flags during argument parsing.
 struct ServerRuntimeCapabilities: Equatable, Sendable {
+    var supportsLocalSearch: Bool = false
     var supportsResidentMemoryLimitGB: Bool
     var supportsResidentModelIdleTTL: Bool
 
@@ -16,12 +17,14 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
     )
 
     static let allKnown = ServerRuntimeCapabilities(
+        supportsLocalSearch: true,
         supportsResidentMemoryLimitGB: true,
         supportsResidentModelIdleTTL: true
     )
 
     static func parse(serveHelp text: String) -> ServerRuntimeCapabilities {
         ServerRuntimeCapabilities(
+            supportsLocalSearch: text.contains("--enable-local-search") && text.contains("--local-search-dir"),
             supportsResidentMemoryLimitGB: text.contains("--resident-memory-limit-gb"),
             supportsResidentModelIdleTTL: text.contains("--resident-model-idle-ttl")
         )
@@ -119,6 +122,7 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
         let stdoutCapabilities = stdoutReader.capabilities
         let stderrCapabilities = stderrReader.capabilities
         return ServerRuntimeCapabilities(
+            supportsLocalSearch: (stdoutCapabilities.supportsLocalSearch || stderrCapabilities.supportsLocalSearch),
             supportsResidentMemoryLimitGB:
                 stdoutCapabilities.supportsResidentMemoryLimitGB
                 || stderrCapabilities.supportsResidentMemoryLimitGB,
@@ -193,7 +197,9 @@ private final class RuntimeProbeCancellation: @unchecked Sendable {
 private final class RuntimeProbeOutputReader: @unchecked Sendable {
     private static let memoryLimitMarker = Data("--resident-memory-limit-gb".utf8)
     private static let idleTTLMarker = Data("--resident-model-idle-ttl".utf8)
-    private static let maximumMarkerLength = max(memoryLimitMarker.count, idleTTLMarker.count)
+    private static let searchMarker = Data("--enable-local-search".utf8)
+    private static let searchDirectoryMarker = Data("--local-search-dir".utf8)
+    private static let maximumMarkerLength = [memoryLimitMarker.count, idleTTLMarker.count, searchMarker.count, searchDirectoryMarker.count].max()!
 
     private let handle: FileHandle
     private let fileDescriptor: Int32
@@ -231,6 +237,8 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
     ) -> ServerRuntimeCapabilities {
         var supportsMemoryLimit = false
         var supportsIdleTTL = false
+        var supportsSearch = false
+        var supportsSearchDirectory = false
         // Keep only enough trailing bytes to recognize a marker split across
         // two reads. The pipe is always fully drained, but a noisy runtime can
         // no longer grow Desktop memory in proportion to its output.
@@ -266,8 +274,10 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
             var chunk = [UInt8](repeating: 0, count: 4_096)
             let byteCount = read(fileDescriptor, &chunk, chunk.count)
             if byteCount > 0 {
-                if !supportsMemoryLimit || !supportsIdleTTL {
+                if !supportsMemoryLimit || !supportsIdleTTL || !supportsSearch || !supportsSearchDirectory {
                     let bytes = markerTail + Data(chunk[0..<byteCount])
+                    supportsSearch = supportsSearch || bytes.range(of: Self.searchMarker) != nil
+                    supportsSearchDirectory = supportsSearchDirectory || bytes.range(of: Self.searchDirectoryMarker) != nil
                     if !supportsMemoryLimit,
                        bytes.range(of: Self.memoryLimitMarker) != nil {
                         supportsMemoryLimit = true
@@ -285,6 +295,7 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
         }
 
         return ServerRuntimeCapabilities(
+            supportsLocalSearch: supportsSearch && supportsSearchDirectory,
             supportsResidentMemoryLimitGB: supportsMemoryLimit,
             supportsResidentModelIdleTTL: supportsIdleTTL
         )

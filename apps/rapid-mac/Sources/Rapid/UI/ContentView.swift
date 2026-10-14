@@ -131,6 +131,8 @@ struct ContentView: View {
     /// from a real user override while launch probing is suspended.
     @State private var userSelectionRevision: UInt = 0
     /// Which detail surface the sidebar shows (chat vs the Launch page).
+    @State private var localSearch = LocalSearchViewModel()
+
     /// Starts on Chat unless a GUI harness asked for another surface — see
     /// ``SidebarSection/harnessRequested(environment:)``, which is inert
     /// outside golden mode.
@@ -140,6 +142,8 @@ struct ContentView: View {
     /// the first layout pass, which is why ``usesCompactRail`` treats zero as
     /// "not yet known" rather than "narrow".
     @State private var shellWidth: CGFloat = 0
+    @AppStorage(LocalSearchFeatureConfig.enabledKey)
+    private var localSearchEnabled = LocalSearchFeatureConfig.defaultEnabled
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
@@ -394,6 +398,8 @@ struct ContentView: View {
             // also sanitises the selection on first appearance, so an app
             // launched with a now-disabled experimental tab still selected
             // (e.g. a persisted or deep-linked section) lands on Chat.
+            section = Self.sectionAfterLocalSearchGateChange(current: section, enabled: state.localSearchEnabled)
+            if !state.localSearchEnabled { localSearch.disappear() }
             section = Self.sectionAfterVideoGateChange(
                 current: section,
                 enabled: state.videoEnabled
@@ -686,6 +692,8 @@ struct ContentView: View {
                 SidebarView(
                     isCompact: usesCompactRail,
                     selection: $section,
+                    localSearchEnabled: localSearchEnabled,
+                    onFocusLocalSearch: { localSearch.focusRequest += 1 },
                     videoGenerationEnabled: videoGenerationEnabled,
                     computerUseEnabled: computerUseEnabled,
                     benchmarkEnabled: communityBenchmarkEnabled,
@@ -1210,6 +1218,10 @@ struct ContentView: View {
     }
 
     private func startModel(_ target: String) {
+        Task { _ = await serveReadinessModel(target) }
+    }
+
+    private func serveReadinessModel(_ target: String) async -> Bool {
         let catalogEntry = catalogEntries.first(where: { $0.alias == target })
         let hfPath = catalogEntry?.hfRepo
         let catalogEntryHint = catalogEntry.map {
@@ -1221,15 +1233,13 @@ struct ContentView: View {
         // ``ensureServing`` via the shared helper, NOT ``server.start``: start is
         // cold-start only and no-ops while a different model (e.g. an Images
         // checkpoint) is resident, silently dropping the switch (#1739).
-        Task {
-            _ = await server.ensureServing(
-                alias: target,
-                hfPath: hfPath,
-                estimatedMemoryGB: nil,
-                replacementGroup: .assistant,
-                catalogEntryHint: catalogEntryHint
-            )
-        }
+        return await server.ensureServing(
+            alias: target,
+            hfPath: hfPath,
+            estimatedMemoryGB: nil,
+            replacementGroup: .assistant,
+            catalogEntryHint: catalogEntryHint
+        )
     }
 
     /// Fetch the weights WITHOUT loading them. The ``download`` action only
@@ -1307,6 +1317,17 @@ struct ContentView: View {
         switch section {
         case .chat:
             mainArea
+        case .search:
+            if localSearchEnabled {
+                LocalSearchView(server: server, model: localSearch, onStartModel: {
+                    await serveReadinessModel(alias.isEmpty ? (ServerManager.lastServedAlias() ?? QuickstartCoordinator.defaultChoice.alias) : alias)
+                }, onOpenSettings: {
+                    settingsRouter.requestedCategory = .app
+                    openWindow(id: "settings")
+                })
+            } else {
+                mainArea
+            }
         case .images:
             ImagesView(viewModel: imageGen, server: server)
         case .audio:
@@ -1619,6 +1640,13 @@ struct ContentView: View {
 
     /// Route recovery for the experimental gate. Pure so Settings/sidebar
     /// behavior can be pinned without standing up the full app environment.
+    static func sectionAfterLocalSearchGateChange(
+        current: SidebarSection,
+        enabled: Bool
+    ) -> SidebarSection {
+        !enabled && current == .search ? .chat : current
+    }
+
     static func sectionAfterVideoGateChange(
         current: SidebarSection,
         enabled: Bool
@@ -1648,6 +1676,7 @@ struct ContentView: View {
     }
 
     private struct ExperimentalDestinationState: Equatable {
+        let localSearchEnabled: Bool
         let videoEnabled: Bool
         let computerUseEnabled: Bool
         let benchmarkEnabled: Bool
@@ -1656,6 +1685,7 @@ struct ContentView: View {
 
     private var experimentalDestinationState: ExperimentalDestinationState {
         ExperimentalDestinationState(
+            localSearchEnabled: localSearchEnabled,
             videoEnabled: videoGenerationEnabled,
             computerUseEnabled: computerUseEnabled,
             benchmarkEnabled: communityBenchmarkEnabled,

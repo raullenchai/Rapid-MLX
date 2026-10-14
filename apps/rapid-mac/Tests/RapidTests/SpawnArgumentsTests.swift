@@ -38,6 +38,26 @@ import Testing
 /// divergent respawn path fails CI before it ships.
 @Suite("ServerManager spawn-argument shape (issue #271)")
 struct SpawnArgumentsTests {
+    @Test("Local search argv requires both flags in runtime help")
+    func localSearchCapabilityContract() {
+        for help in ["", "--enable-local-search", "--local-search-dir"] {
+            let args = ServerManager.serveArguments(alias: "qwen3.5-9b-4bit", host: "127.0.0.1", port: 8000,
+                capabilities: .parse(serveHelp: help), localSearchEnabled: true, localSearchDirectory: "/tmp/Search Index")
+            #expect(!args.contains("--enable-local-search"))
+            #expect(!args.contains("--local-search-dir"))
+        }
+        let args = ServerManager.serveArguments(alias: "qwen3.5-9b-4bit", host: "127.0.0.1", port: 8000,
+            capabilities: .parse(serveHelp: "--enable-local-search --local-search-dir"), localSearchEnabled: true, localSearchDirectory: "/tmp/Search Index")
+        #expect(args.suffix(3) == ["--enable-local-search", "--local-search-dir", "/tmp/Search Index"])
+        let defaultArgs = ServerManager.serveArguments(alias: "qwen3.5-9b-4bit", host: "127.0.0.1", port: 8000,
+            capabilities: .parse(serveHelp: "--enable-local-search --local-search-dir"))
+        #expect(!defaultArgs.contains("--enable-local-search"))
+        #expect(!defaultArgs.contains("--local-search-dir"))
+        #expect(ApplicationSupportLocator.localSearchDirectory(environment: ["HOME": "/tmp/test-home"]).path ==
+            "/tmp/test-home/Library/Application Support/Rapid/LocalSearch")
+        #expect(SidebarSection.harnessRequested(environment: ["RAPID_GUI_GOLDEN_MODE": "1", "RAPID_GUI_INITIAL_SECTION": "search"]) == .search)
+    }
+
 
     @Test("Shutdown is latched before a child exists")
     @MainActor
@@ -454,7 +474,7 @@ struct SpawnArgumentsTests {
         // sends the page's ``scheme://host[:port]`` as the Origin
         // header, so ``http://localhost`` ONLY matches pages served
         // from default-port loopback (port 80). Browser tools served
-        // from ``http://localhost:3000`` (Open WebUI's default),
+        // from ``http://localhost:3000``,
         // ``http://localhost:8080`` etc. are INTENTIONALLY rejected
         // by this minimal allowlist — third-party in-browser tools
         // on non-default ports are not a supported integration in
@@ -519,7 +539,7 @@ struct SpawnArgumentsTests {
     @Test("serve argv reflects allocator-picked port (8001 fallback case)")
     func argvUsesProvidedPort() throws {
         // PortAllocator falls back to 8001 when 8000 is held by another
-        // app (LM Studio default, jupyter, etc.). The argv must reflect
+        // local server. The argv must reflect
         // the actually-allocated port, not the default constant.
         let argv = ServerManager.serveArguments(
             alias: "qwen3.5-4b-4bit",
