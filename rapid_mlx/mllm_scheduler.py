@@ -352,6 +352,7 @@ class MLLMScheduler:
         self.processor = processor
         self.config = config or MLLMSchedulerConfig()
         self._injected_step_executor = step_executor
+        self.cooperative_prefill = False
 
         # Get model config
         self.model_config = getattr(model, "config", None)
@@ -629,6 +630,7 @@ class MLLMScheduler:
                     and self.config.completion_batch_size == 1
                 ),
             )
+            self.batch_generator.cooperative_prefill = self.cooperative_prefill
 
     # ========== Sync API (step-based) ==========
 

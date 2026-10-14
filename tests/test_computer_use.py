@@ -1362,6 +1362,7 @@ def test_cli_capabilities_and_error_envelope(capsys):
         "window_not_found",
         "element_not_found",
         "ax_set_failed",
+        "value_not_settable",
         "unsupported_platform",
     }
 

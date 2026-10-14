@@ -603,6 +603,7 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     class _FakeMLLMScheduler:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.cooperative_prefill = False
 
         async def start(self):
             return None
@@ -634,6 +635,9 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     assert activated == ([] if backbone == "unqualified_dense" else [language_model])
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
     assert engine._mllm_dense_singleton_fastpath is (backbone == "dense27b")
+    assert engine._mllm_scheduler.cooperative_prefill is (
+        backbone != "unqualified_dense"
+    )
 
 
 @pytest.mark.asyncio

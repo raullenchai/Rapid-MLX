@@ -17,6 +17,7 @@ detachment transaction (handoff §7) for the serialized MLLM lane:
 """
 
 import builtins
+import threading
 
 import pytest
 
@@ -109,6 +110,8 @@ def _stub_generator(leaves, singleton_fastpath: str = "auto"):
     from types import SimpleNamespace
 
     gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen._prefill_step_lock = threading.RLock()
+    gen._prefill_close_requested = threading.Event()
     gen.model = SimpleNamespace(args=SimpleNamespace(max_position_embeddings=8192))
     gen.processor = SimpleNamespace(tokenizer=object())
     gen._stats = MLLMBatchStats()
@@ -695,3 +698,100 @@ class TestLegacySemanticsAlignment:
         assert extracted.keys.shape == (1, 2, 3, 4)
         assert extracted.values.shape == (1, 2, 3, 4)
         assert extracted.offset == 3
+
+
+def test_cooperative_prompt_resumes_same_cache_and_preprocesses_once():
+    leaves = _arrays_leaves()
+    gen = _stub_generator(leaves)
+    gen.active_batch = None
+    gen.cooperative_prefill = True
+    gen._pending_prefill = None
+    gen.uid_counter = 0
+    request = _make_request(0)
+    gen.unprocessed_requests = [request]
+    events = []
+    original_preprocess = gen._preprocess_request
+
+    def preprocess(req):
+        events.append(("prepare", req.uid))
+        original_preprocess(req)
+
+    def encoding(req, cache):
+        for position in (1, 2, 3):
+            events.append((position, id(cache)))
+            yield
+        return mx.zeros((1, 1, VOCAB))
+
+    gen._preprocess_request = preprocess
+    gen._vision_encoding_steps = encoding
+    with _no_prompt_processing(gen):
+        for _ in range(3):
+            assert gen.next() == []
+            assert gen.has_pending()
+            assert gen.active_batch is None
+            assert gen.unprocessed_requests == [request]
+        with pytest.raises(_StopGenerationError):
+            gen.next()
+    assert events == [("prepare", 0), (1, id(leaves)), (2, id(leaves)), (3, id(leaves))]
+    assert gen._stats.prompt_tokens == 4
+    assert gen._pending_prefill is None
+    assert gen.active_batch.uids == [0]
+    assert gen.active_batch.cache_layout == "singleton_regular"
+    assert gen.unprocessed_requests == []
+
+
+@pytest.mark.parametrize("pause_seconds", [0.0, 100.0])
+def test_cooperative_prompt_time_counts_active_work_like_sync(
+    monkeypatch, pause_seconds
+):
+    import rapid_mlx.mllm_batch_generator as module
+
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0])
+
+    def make_generator(cooperative):
+        gen = _stub_generator(_arrays_leaves())
+        gen.cooperative_prefill = cooperative
+        gen._pending_prefill = None
+        gen.active_batch = None
+        gen.stop_tokens = set()
+        gen.unprocessed_requests = [_make_request(0)]
+        original_preprocess = gen._preprocess_request
+
+        def preprocess(req):
+            clock[0] += 3.0
+            original_preprocess(req)
+
+        def encoding(req, cache):
+            for _ in range(3):
+                clock[0] += 2.0
+                yield
+            clock[0] += 1.0
+            return mx.zeros((1, 1, VOCAB))
+
+        def synchronous_encoding(req, cache):
+            clock[0] += 7.0
+            return mx.zeros((1, 1, VOCAB))
+
+        def decode(*args):
+            clock[0] += 1.0
+            return mx.zeros((1,), mx.int32), [mx.zeros((VOCAB,))]
+
+        gen._preprocess_request = preprocess
+        gen._vision_encoding_steps = encoding
+        gen._run_vision_encoding = synchronous_encoding
+        gen._step = decode
+        return gen
+
+    sync = make_generator(False)
+    assert len(sync.next()) == 1
+    cooperative = make_generator(True)
+    for _ in range(3):
+        assert cooperative.next() == []
+        clock[0] += pause_seconds
+    assert len(cooperative.next()) == 1
+    # Existing accounting has a prompt-processing contribution (10s) plus
+    # the next-step contribution including compute-ahead decode (11s).
+    assert sync._stats.prompt_time == 21.0
+    assert cooperative._stats.prompt_time == sync._stats.prompt_time
+    assert cooperative._stats.prompt_tokens == sync._stats.prompt_tokens == 4

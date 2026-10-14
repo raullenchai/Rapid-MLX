@@ -28,7 +28,7 @@ import textwrap
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -1421,6 +1421,13 @@ class MLLMBatchGenerator:
         self.unprocessed_requests: list[MLLMBatchRequest] = []
         self.active_batch: MLLMBatch | None = None
         self.uid_counter = 0
+        # Enabled only when a qualified native text peer shares our executor.
+        self.cooperative_prefill = False
+        self._prefill_step_lock = threading.RLock()
+        self._prefill_close_requested = threading.Event()
+        self._pending_prefill: (
+            tuple[MLLMBatchRequest, Generator[None, None, MLLMBatch]] | None
+        ) = None
 
         # Statistics
         self._stats = MLLMBatchStats()
@@ -3061,6 +3068,23 @@ class MLLMBatchGenerator:
 
     def close(self) -> None:
         """Release resources and reset wired limit."""
+        close_requested = getattr(self, "_prefill_close_requested", None)
+        if close_requested is not None:
+            close_requested.set()
+        lock = getattr(self, "_prefill_step_lock", None)
+        if lock is not None and not lock.acquire(blocking=False):
+            # Cancelling an asyncio waiter does not stop its executor worker.
+            # Let that worker close the continuation after the current chunk,
+            # without blocking shutdown or closing an executing generator.
+            return
+        try:
+            self._close_resources()
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _close_resources(self) -> None:
+        self._close_pending_prefill()
         if self._old_wired_limit is not None:
             # mlx-lm 0.31.3+ streams are thread-local. On shutdown the
             # owning worker thread may already be torn down, in which case
@@ -3113,6 +3137,12 @@ class MLLMBatchGenerator:
         logger.debug(f"Inserted {len(requests)} requests, UIDs: {uids}")
         return uids
 
+    def _close_pending_prefill(self) -> None:
+        pending = getattr(self, "_pending_prefill", None)
+        self._pending_prefill = None
+        if pending is not None:
+            pending[1].close()
+
     def remove(self, uids: list[int]) -> None:
         """
         Remove requests from processing.
@@ -3121,6 +3151,9 @@ class MLLMBatchGenerator:
             uids: List of UIDs to remove
         """
         uid_set = set(uids)
+        pending = getattr(self, "_pending_prefill", None)
+        if pending is not None and pending[0].uid in uid_set:
+            self._close_pending_prefill()
 
         # Remove from active batch
         if self.active_batch is not None:
@@ -3615,6 +3648,16 @@ class MLLMBatchGenerator:
     def _run_vision_encoding(
         self, request: MLLMBatchRequest, cache: list[Any] | None = None
     ) -> mx.array:
+        steps = self._vision_encoding_steps(request, cache)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as done:
+                return cast(mx.array, done.value)
+
+    def _vision_encoding_steps(
+        self, request: MLLMBatchRequest, cache: list[Any] | None = None
+    ) -> Generator[None, None, mx.array]:
         """
         Run the initial VLM forward pass to encode vision and get first logits.
 
@@ -3802,6 +3845,11 @@ class MLLMBatchGenerator:
                         cache,
                         prefix_len=request.shared_prefix_store_at,
                     )
+                # Short prompts may split only to store a cache boundary.
+                # Keep those forwards in one executor turn; only genuinely
+                # long uncached work needs to give a peer scheduling time.
+                if prompt_length > chunk:
+                    yield
             output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
         elif (
             getattr(self, "_is_gemma4_unified_vlm", False)
@@ -3874,6 +3922,16 @@ class MLLMBatchGenerator:
         return output
 
     def _process_prompts(self, requests: list[MLLMBatchRequest]) -> MLLMBatch:
+        steps = self._process_prompt_steps(requests, cooperative=False)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as done:
+                return cast(MLLMBatch, done.value)
+
+    def _process_prompt_steps(
+        self, requests: list[MLLMBatchRequest], *, cooperative: bool
+    ) -> Generator[None, None, MLLMBatch]:
         """
         Process a batch of requests through vision encoding and initial prefill.
 
@@ -3891,6 +3949,7 @@ class MLLMBatchGenerator:
         from mlx_lm.models.cache import make_prompt_cache
 
         tic = time.perf_counter()
+        prompt_elapsed = 0.0
 
         # Close the previous media request's MRoPE transaction before this
         # prefill computes its own position state: a stale installed delta
@@ -3982,9 +4041,25 @@ class MLLMBatchGenerator:
             if request_cache is None:
                 request_cache = make_prompt_cache(self.language_model)
 
+            if cooperative:
+                steps = self._vision_encoding_steps(req, request_cache)
+                try:
+                    while True:
+                        try:
+                            next(steps)
+                        except StopIteration as done:
+                            logits = done.value
+                            break
+                        prompt_elapsed += time.perf_counter() - tic
+                        yield
+                        tic = time.perf_counter()
+                finally:
+                    steps.close()
+
             with mx.stream(self._stream):
                 # Run VLM forward pass — cache= flows through to language_model
-                logits = self._run_vision_encoding(req, cache=request_cache)
+                if not cooperative:
+                    logits = self._run_vision_encoding(req, cache=request_cache)
 
                 # Extract last token logits and sample with per-request params
                 last_logits = logits[:, -1, :]
@@ -4082,7 +4157,7 @@ class MLLMBatchGenerator:
         # Create initial y (first generated tokens)
         y = mx.array(first_tokens)
 
-        self._stats.prompt_time += time.perf_counter() - tic
+        self._stats.prompt_time += prompt_elapsed + time.perf_counter() - tic
 
         # Release preprocessed vision inputs for all requests now that
         # they have been encoded into the batch KV cache.  pixel_values,
@@ -4257,6 +4332,20 @@ class MLLMBatchGenerator:
         return sampled, list(logprobs)
 
     def _next(self) -> list[MLLMBatchResponse]:
+        if not getattr(self, "cooperative_prefill", False):
+            return self._next_unlocked()
+        try:
+            with self._prefill_step_lock:
+                if self._prefill_close_requested.is_set():
+                    return []
+                return self._next_unlocked()
+        finally:
+            # Check after releasing the lock: a close request arriving just
+            # before release must not be lost after its nonblocking acquire.
+            if self._prefill_close_requested.is_set():
+                self.close()
+
+    def _next_unlocked(self) -> list[MLLMBatchResponse]:
         """
         Internal next() implementation.
 
@@ -4281,8 +4370,40 @@ class MLLMBatchGenerator:
                 self.active_batch = None
                 return []
 
-            new_batch = self._process_prompts(requests)
-            self.unprocessed_requests = self.unprocessed_requests[len(requests) :]
+            if (
+                getattr(self, "cooperative_prefill", False)
+                and self.completion_batch_size == 1
+            ):
+                pending = getattr(self, "_pending_prefill", None)
+                if pending is None:
+                    pending = (
+                        requests[0],
+                        self._process_prompt_steps(requests, cooperative=True),
+                    )
+                    self._pending_prefill = pending
+                try:
+                    # Public next() supplies this step's stream context; it
+                    # exits before the suspended continuation returns control.
+                    next(pending[1])
+                    # Preserve the existing next-step contribution across
+                    # resumes without counting executor waits between calls.
+                    self._stats.prompt_time += time.perf_counter() - tic
+                    return []
+                except StopIteration as done:
+                    new_batch = done.value
+                    requests = [pending[0]]
+                    self._pending_prefill = None
+                except BaseException:
+                    self._close_pending_prefill()
+                    raise
+            else:
+                new_batch = self._process_prompts(requests)
+            processed_uids = {req.uid for req in requests}
+            self.unprocessed_requests = [
+                req
+                for req in self.unprocessed_requests
+                if req.uid not in processed_uids
+            ]
             self.active_batch = new_batch
             prompt_processing = True
 

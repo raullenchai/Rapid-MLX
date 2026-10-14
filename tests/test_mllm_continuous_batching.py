@@ -2471,3 +2471,17 @@ class TestMLLMSchedulerErrorPropagation:
 # Run tests
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@_skip_no_mlx_lm
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cooperative_prefill_reaches_lazily_created_generator(enabled):
+    from rapid_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+    model = SimpleNamespace(config=SimpleNamespace(eos_token_id=2))
+    processor = SimpleNamespace(tokenizer=SimpleNamespace(eos_token_id=2))
+    scheduler = MLLMScheduler(model, processor, MLLMSchedulerConfig())
+    assert scheduler.batch_generator is None
+    scheduler.cooperative_prefill = enabled
+    scheduler._ensure_batch_generator()
+    assert scheduler.batch_generator.cooperative_prefill is enabled

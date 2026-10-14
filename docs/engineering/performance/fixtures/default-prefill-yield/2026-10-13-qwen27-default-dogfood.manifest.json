@@ -1,0 +1,7 @@
+{
+  "archive": "2026-10-13-qwen27-default-dogfood.tar.gz",
+  "bytes": 132846,
+  "sha256": "66ede114e3c851dad89d8f9d4f62b994f38250199d8abf0568336a259d20f346",
+  "members": 49,
+  "normalization": "Generated home/cache paths normalized; process samples retain times, CPU/RSS and basenames; frozen source scripts unchanged."
+}

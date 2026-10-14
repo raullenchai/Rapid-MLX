@@ -1,0 +1,7 @@
+{
+  "archive": "2026-10-13-hardware-model-matrix.tar.gz",
+  "sha256": "653b8c4d1f89ebf5d0ca5a0b7c0e9f2ff3a51117f7b875e854b29c54d1cc8e67",
+  "bytes": 249292,
+  "members": 140,
+  "normalization": "Generated HTTP JSON/log HF cache roots normalized to ${HF_CACHE} and remaining user home roots to ${WORKER_HOME}; host process data retains timestamps, CPU/RSS and command basenames, dropping paths and arguments; hardware serial/UUID data excluded. Frozen benchmark and lifecycle source bytes unchanged."
+}

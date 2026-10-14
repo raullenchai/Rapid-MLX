@@ -1,0 +1,7 @@
+{
+  "archive": "2026-10-13-architecture-controls.tar.gz",
+  "bytes": 73854,
+  "sha256": "e839fa6e696e9fab6d986b354bb6d08952088c34fb938e97f096d6c745041f8f",
+  "members": 28,
+  "normalization": "Generated JSON/log HF and other user-home roots replaced with ${HF_CACHE}/${WORKER_HOME}; host process samples retain time/CPU/RSS and command basenames; runner source bytes unchanged."
+}

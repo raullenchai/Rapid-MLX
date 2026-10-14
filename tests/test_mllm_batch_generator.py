@@ -3145,3 +3145,381 @@ def test_image_prefill_cleanup_preserves_cached_modality_metadata(tmp_path):
     assert model.language_model.call_count == 2
     assert model.language_model.call_args.kwargs["mm_token_type_ids"] is types
     assert cached.extra_kwargs["mm_token_type_ids"] is types
+
+
+def test_text_prefill_returns_executor_between_materialized_chunks():
+    """A queued model peer runs before the long prompt's second chunk."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(512, model)
+    cache = [_FakeCache()]
+    request = _make_ids_request(1500)
+    steps = gen._vision_encoding_steps(request, cache)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        assert executor.submit(next, steps).result() is None
+        assert executor.submit(lambda: cache[0].tokens_seen).result() == 512
+        assert cache[0].state_reads == 1
+        assert not request.vision_encoded
+        executor.submit(next, steps).result()
+        assert cache[0].tokens_seen == 1024
+        executor.submit(next, steps).result()
+        with pytest.raises(StopIteration) as done:
+            executor.submit(next, steps).result()
+    assert done.value.value.shape == (1, 1, model.vocab)
+    assert [n for n, _ in model.calls] == [512, 512, 475, 1]
+    assert cache[0].tokens_seen == 1500
+    assert request.vision_encoded
+
+
+@pytest.mark.parametrize("kind", ["media", "partial_mask", "extra_kwargs", "short"])
+def test_cooperative_encoding_keeps_indivisible_inputs(kind):
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(512, model)
+    request = _make_ids_request(100 if kind == "short" else 1500)
+    if kind == "media":
+        request.pixel_values = mx.zeros((1, 2))
+    elif kind == "partial_mask":
+        request.attention_mask = mx.concatenate([mx.ones((1499,)), mx.zeros((1,))])
+    elif kind == "extra_kwargs":
+        request.extra_kwargs = {"token_type_ids": mx.zeros((1, 1500))}
+    with pytest.raises(StopIteration):
+        next(gen._vision_encoding_steps(request, [_FakeCache()]))
+    assert len(model.calls) == 1
+    assert model.calls[0][0] == (100 if kind == "short" else 1500)
+
+
+def test_suspended_text_prefill_keeps_checkpoint_boundaries():
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(512, model)
+    request = _make_ids_request(1500)
+    request.prefix_boundary = 600
+    request.shared_prefix_store_at = 900
+    checkpoints, stores = [], []
+    gen._record_text_prefill_checkpoint = lambda req, cache, pos: checkpoints.append(
+        pos
+    )
+    gen._store_exact_text_prefix = lambda req, cache, prefix_len: stores.append(
+        prefix_len
+    )
+    steps = gen._vision_encoding_steps(request, [_FakeCache()])
+    for expected in (512, 600, 900, 1412, 1499):
+        next(steps)
+        assert checkpoints[-1] == expected
+    with pytest.raises(StopIteration):
+        next(steps)
+    assert stores == [600, 900]
+    assert [n for n, _ in model.calls] == [512, 88, 300, 512, 87, 1]
+
+
+def _suspended_generator():
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen.active_batch = None
+    gen.completion_batch_size = 1
+    gen.cooperative_prefill = True
+    gen._prefill_step_lock = threading.RLock()
+    gen._prefill_close_requested = threading.Event()
+    from rapid_mlx.mllm_batch_generator import MLLMBatchStats
+
+    gen._stats = MLLMBatchStats()
+    gen.unprocessed_requests = [_make_ids_request(1500)]
+    gen._pending_prefill = None
+    return gen
+
+
+def test_remove_closes_suspended_prefill_without_finishing_prompt():
+    gen = _suspended_generator()
+    model = _ChunkRecordingModel()
+    gen.model, gen.language_model, gen.prefill_step_size = (
+        model,
+        model.language_model,
+        512,
+    )
+    request = gen.unprocessed_requests[0]
+    steps = gen._vision_encoding_steps(request, [_FakeCache()])
+    gen._process_prompt_steps = lambda requests, cooperative: steps
+    assert gen._next() == []
+    gen.remove([999])
+    assert gen._pending_prefill is not None
+    gen.remove([request.uid])
+    assert gen._pending_prefill is None
+    assert not gen.has_pending()
+    assert not request.vision_encoded
+    with pytest.raises(StopIteration):
+        next(steps)
+    assert len(model.calls) == 1
+
+
+def test_prefill_exception_drops_suspended_state():
+    gen = _suspended_generator()
+    released = []
+
+    def fail(requests, cooperative):
+        try:
+            yield
+            raise RuntimeError("chunk failed")
+        finally:
+            released.append(True)
+
+    gen._process_prompt_steps = fail
+    assert gen._next() == []
+    with pytest.raises(RuntimeError, match="chunk failed"):
+        gen._next()
+    assert gen._pending_prefill is None
+    assert released == [True]
+    gen.remove([0])
+    assert not gen.has_pending()
+
+
+def test_close_releases_suspended_prefill():
+    gen = _suspended_generator()
+    released = []
+
+    def pending(requests, cooperative):
+        try:
+            yield
+        finally:
+            released.append(True)
+
+    gen._process_prompt_steps = pending
+    gen._old_wired_limit = None
+    gen._next()
+    gen.close()
+    assert gen._pending_prefill is None
+    assert released == [True]
+
+
+def test_close_request_during_step_lock_release_is_not_lost():
+    before_unlock, release, cleaned = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+
+    class ExitBarrier:
+        def __init__(self):
+            self.lock = threading.RLock()
+
+        def acquire(self, **kwargs):
+            return self.lock.acquire(**kwargs)
+
+        def release(self):
+            self.lock.release()
+
+        def __enter__(self):
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            try:
+                before_unlock.set()
+                assert release.wait(timeout=5)
+            finally:
+                self.lock.release()
+
+    gen = _suspended_generator()
+    gen._old_wired_limit = None
+    gen._prefill_step_lock = ExitBarrier()
+
+    def pending(requests, cooperative):
+        try:
+            yield
+        finally:
+            cleaned.set()
+
+    gen._process_prompt_steps = pending
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        step = executor.submit(gen._next)
+        try:
+            assert before_unlock.wait(timeout=2)
+            gen.close()
+            assert not cleaned.is_set()
+        finally:
+            release.set()
+        assert step.result(timeout=2) == []
+    assert cleaned.is_set()
+    assert gen._pending_prefill is None
+
+
+def test_public_next_enters_and_exits_stream_on_every_prefill_resume(monkeypatch):
+    from contextlib import contextmanager
+
+    gen = _suspended_generator()
+    gen._old_wired_limit = None
+    gen._stream = object()
+    events = []
+    in_stream = False
+
+    @contextmanager
+    def stream(selected):
+        nonlocal in_stream
+        assert selected is gen._stream
+        assert not in_stream
+        in_stream = True
+        events.append("enter")
+        try:
+            yield
+        finally:
+            in_stream = False
+            events.append("exit")
+
+    def pending(requests, cooperative):
+        for _ in range(2):
+            assert in_stream
+            events.append("forward")
+            yield
+
+    monkeypatch.setattr(mx, "stream", stream)
+    gen._process_prompt_steps = pending
+    for _ in range(2):
+        assert gen.next() == []
+        assert not in_stream
+    assert events == ["enter", "forward", "exit"] * 2
+    gen.close()
+
+
+def test_scheduler_abort_defers_removal_until_executing_chunk_returns(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx.mllm_scheduler import MLLMScheduler
+
+    started, release, cleaned = threading.Event(), threading.Event(), threading.Event()
+    gen = _suspended_generator()
+    gen._old_wired_limit = None
+    request = gen.unprocessed_requests[0]
+    worker_threads, removal_threads = [], []
+
+    def pending(requests, cooperative):
+        try:
+            worker_threads.append(threading.get_ident())
+            started.set()
+            assert release.wait(timeout=5)
+            yield
+            raise AssertionError("cancelled prompt must not resume")
+        finally:
+            cleaned.set()
+
+    gen._process_prompt_steps = pending
+    original_remove = gen.remove
+
+    def remove(uids):
+        removal_threads.append(threading.get_ident())
+        return original_remove(uids)
+
+    monkeypatch.setattr(gen, "remove", remove)
+    monkeypatch.setattr(mx, "clear_cache", lambda: None)
+    scheduler = MLLMScheduler(
+        SimpleNamespace(config=SimpleNamespace(eos_token_id=2)),
+        SimpleNamespace(tokenizer=SimpleNamespace(eos_token_id=2)),
+    )
+    scheduler.batch_generator = gen
+    scheduler.request_id_to_uid[request.request_id] = request.uid
+    scheduler.uid_to_request_id[request.uid] = request.request_id
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        step = executor.submit(gen._next)
+        try:
+            assert started.wait(timeout=2)
+            # Event-loop cancellation uses the thread-safe scheduler API;
+            # generator.remove() is a step-thread operation, unlike close().
+            assert scheduler.abort_request(request.request_id)
+            assert removal_threads == []
+            assert not cleaned.is_set()
+        finally:
+            release.set()
+        assert step.result(timeout=2) == []
+        executor.submit(scheduler._process_pending_aborts).result(timeout=2)
+    assert removal_threads == worker_threads
+    assert cleaned.is_set()
+    assert gen._pending_prefill is None
+    assert not gen.has_pending()
+    assert not scheduler._pending_abort_ids
+    gen.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_chunk", [False, True])
+async def test_stop_defers_executing_prefill_cleanup_on_borrowed_executor(
+    monkeypatch, fail_chunk
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from rapid_mlx.mllm_scheduler import MLLMScheduler
+
+    started, release, cleaned = threading.Event(), threading.Event(), threading.Event()
+    gen = _suspended_generator()
+    gen._old_wired_limit = 1234
+    gen._stream = object()
+    resets, worker_threads = [], []
+    monkeypatch.setattr(mx, "synchronize", lambda stream: None)
+    monkeypatch.setattr(
+        mx,
+        "set_wired_limit",
+        lambda value: resets.append((value, threading.get_ident())),
+    )
+
+    def held_prefill(requests, cooperative):
+        try:
+            worker_threads.append(threading.get_ident())
+            started.set()
+            assert release.wait(timeout=5)
+            if fail_chunk:
+                raise RuntimeError("held chunk failed")
+            yield
+        finally:
+            cleaned.set()
+
+    gen._process_prompt_steps = held_prefill
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = MLLMScheduler(
+            SimpleNamespace(config=SimpleNamespace(eos_token_id=2)),
+            SimpleNamespace(tokenizer=SimpleNamespace(eos_token_id=2)),
+            step_executor=executor,
+        )
+        scheduler.batch_generator = gen
+        scheduler.has_requests = lambda: True
+        scheduler._step_no_queue = gen._next
+        try:
+            await scheduler.start()
+            assert await asyncio.to_thread(started.wait, 2)
+            # The worker stays blocked: stop must neither wait for it nor
+            # close an executing generator/reset its wired limit.
+            await asyncio.wait_for(scheduler.stop(), timeout=1)
+            assert scheduler.batch_generator is None
+            assert gen._pending_prefill is not None
+            assert not cleaned.is_set()
+            assert resets == []
+        finally:
+            release.set()
+            await scheduler.stop()
+        # A barrier on the borrowed executor proves cleanup completed on its
+        # owner thread before subsequent work, including when the chunk raises.
+        assert (
+            executor.submit(lambda: "still usable").result(timeout=2) == "still usable"
+        )
+    assert cleaned.is_set()
+    assert gen._pending_prefill is None
+    assert gen._old_wired_limit is None
+    assert resets == [(1234, worker_threads[0])]
+    gen.close()
+    assert gen._next() == []
+    assert resets == [(1234, worker_threads[0])]
+
+
+def test_short_cache_boundary_split_does_not_yield_executor():
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(512, model)
+    request = _make_ids_request(100)
+    request.prefix_boundary = 50
+    request.shared_prefix_store_at = 75
+    stores = []
+    gen._store_exact_text_prefix = lambda req, cache, prefix_len: stores.append(
+        prefix_len
+    )
+    cache = [_FakeCache()]
+    with pytest.raises(StopIteration) as done:
+        next(gen._vision_encoding_steps(request, cache))
+    assert done.value.value.shape == (1, 1, model.vocab)
+    assert [n for n, _ in model.calls] == [50, 25, 24, 1]
+    assert stores == [50, 75]
+    assert cache[0].tokens_seen == 100
+    assert request.vision_encoded
