@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types
 from argparse import Namespace
 from unittest import mock
@@ -922,6 +923,95 @@ def test_rerank_maps_query_overflow_to_400(rerank_client):
     )
     assert resp.status_code == 400
     assert "input_too_long" in resp.text
+
+
+async def test_rerank_scoring_does_not_block_event_loop(monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.rerank import router
+
+    started, release = threading.Event(), threading.Event()
+
+    class _BlockingEngine(_StubEngine):
+        def score(self, query, documents, *, instruction=None):
+            started.set()
+            release.wait(timeout=5)
+            return super().score(query, documents, instruction=instruction)
+
+    monkeypatch.setattr(server, "_rerank_engine", None)
+    monkeypatch.setattr(server, "_rerank_model_locked", None)
+    _configure(reset_config(), _BlockingEngine([0.5]))
+    app = FastAPI()
+    app.include_router(router)
+    app.add_api_route("/ping", lambda: {"ok": True})
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            rerank = asyncio.create_task(
+                c.post("/v1/rerank", json={"query": "q", "documents": ["a"]})
+            )
+            assert await asyncio.to_thread(started.wait, 5)
+            assert (await c.get("/ping")).status_code == 200
+            assert not rerank.done()
+            release.set()
+            assert (await rerank).status_code == 200
+    finally:
+        release.set()
+        reset_config()
+
+
+class _ChatWorker:
+    def __init__(self, running=True):
+        self.running = running
+        self.calls = 0
+
+    async def execute_on_model_worker(self, func, *args, **kwargs):
+        if not self.running:
+            raise RuntimeError("model worker is not running")
+        self.calls += 1
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _thread_recording_engine(scores, error=None):
+    class _Engine(_StubEngine):
+        def score(self, query, documents, *, instruction=None):
+            self.threads.append(threading.current_thread().name)
+            return super().score(query, documents, instruction=instruction)
+
+    engine = _Engine(scores, error=error)
+    engine.threads = []
+    return engine
+
+
+@pytest.mark.parametrize(("running", "worker_calls"), [(True, 1), (False, 0)])
+def test_rerank_runs_on_chat_model_worker_when_running(
+    rerank_client, running, worker_calls
+):
+    engine = _thread_recording_engine([0.5])
+    _configure(rerank_client.cfg, engine)
+    worker = _ChatWorker(running=running)
+    rerank_client.cfg.engine = worker
+    resp = rerank_client.client.post(
+        "/v1/rerank", json={"query": "q", "documents": ["a"]}
+    )
+    assert resp.status_code == 200
+    assert worker.calls == worker_calls
+    assert len(engine.threads) == 1
+    assert engine.threads[0].startswith("mlx-rerank") is not running
+
+
+def test_rerank_error_on_chat_worker_is_not_retried(rerank_client):
+    engine = _thread_recording_engine([], error=RuntimeError("boom"))
+    _configure(rerank_client.cfg, engine)
+    rerank_client.cfg.engine = _ChatWorker()
+    resp = rerank_client.client.post(
+        "/v1/rerank", json={"query": "q", "documents": ["a"]}
+    )
+    assert resp.status_code == 500
+    assert len(engine.threads) == 1
 
 
 @pytest.mark.parametrize(

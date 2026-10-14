@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Rerank endpoint (Cohere / Jina compatible)."""
 
+import asyncio
+import concurrent.futures
+import functools
 import logging
 import time
 
@@ -19,6 +22,36 @@ from ..middleware.auth import check_rate_limit, verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Serializes rerank work when no chat model worker is available.
+_rerank_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="mlx-rerank"
+)
+
+
+# Runs ``func`` off the event loop, on the chat model's worker if there is one:
+# that worker also runs every chat forward pass, so rerank never overlaps them.
+async def _run_on_mlx_worker(func, /, *args, **kwargs):
+    primary = get_config().engine
+    execute = getattr(primary, "execute_on_model_worker", None)
+    if callable(execute):
+        started = False
+
+        def call():
+            nonlocal started
+            started = True
+            return func(*args, **kwargs)
+
+        try:
+            return await execute(call)
+        except RuntimeError:
+            # Raised by ``func`` itself, or the worker is not running (lazy
+            # primary before its first load, or shut down during a switch).
+            if started:
+                raise
+    return await asyncio.get_running_loop().run_in_executor(
+        _rerank_executor, functools.partial(func, *args, **kwargs)
+    )
 
 
 def _invalid_request(status_code: int, message: str, code: str, param: str | None):
@@ -123,8 +156,11 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
         documents = documents[:limit]
     start_time = time.perf_counter()
     try:
-        scored = rerank_engine.score(
-            request.query, documents, instruction=request.instruction
+        scored = await _run_on_mlx_worker(
+            rerank_engine.score,
+            request.query,
+            documents,
+            instruction=request.instruction,
         )
     except RerankInstructionNotSupportedError as exc:
         raise _invalid_request(

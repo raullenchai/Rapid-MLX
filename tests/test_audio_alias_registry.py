@@ -48,6 +48,15 @@ pytestmark = [
     pytest.mark.requires_mlx,
 ]
 
+
+@pytest.fixture(autouse=True)
+def _restore_server_default_timeout(monkeypatch):
+    # serve_command writes args.timeout into the real server module.
+    from rapid_mlx import server
+
+    monkeypatch.setattr(server, "_default_timeout", server._default_timeout)
+
+
 # ---------------------------------------------------------------------------
 # A) Registry resolution table
 # ---------------------------------------------------------------------------
