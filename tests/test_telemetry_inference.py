@@ -2749,6 +2749,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
         embed=lambda _texts: [[0.25, 0.75]],
     )
     cfg = SimpleNamespace(
+        engine=None,
         embedding_engine=engine,
         embedding_model_locked="embeddinggemma-300m-6bit",
     )
@@ -2767,7 +2768,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
         EmbeddingRequest(model="default", input="hello"), _request()
     )
 
-    assert len(response.data) == 1
+    assert len(json.loads(response.body)["data"]) == 1
     assert calls == [
         {
             "model": "<custom>",

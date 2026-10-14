@@ -1200,7 +1200,7 @@ def print_ready_banner() -> None:
             sys.stdout.isatty()
             and logging.getLogger().getEffectiveLevel() <= logging.INFO
             and not _running_in_desktop_sidecar()
-            and not _cfg.embeddings_only
+            and not _cfg.retrieval_only
             and not is_audio_name(_cfg.model_alias or _cfg.model_name)
         )
         if interactive and _ep.listen_fd is None and _ep.model:
