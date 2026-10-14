@@ -9,8 +9,14 @@ for the OpenAI-compatible /v1/embeddings endpoint.
 import logging
 import sys
 import time
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
+
+if TYPE_CHECKING:
+    import mlx.nn as nn
+    from mlx_vlm.models.gemma4.processing_gemma4 import Gemma4ImageProcessor
+    from transformers import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
@@ -174,10 +180,13 @@ class EmbeddingEngine:
         *,
         max_length: int | str = "auto",
         overflow_policy: str = "truncate",
+        vision: bool = False,
     ):
+        self.vision = vision
+        self._image_processor: Gemma4ImageProcessor | None = None
         self.model_name = model_name
-        self._model = None
-        self._tokenizer = None
+        self._model: nn.Module | None = None
+        self._tokenizer: PreTrainedTokenizerBase | None = None
         if overflow_policy not in OVERFLOW_POLICIES:
             raise ValueError(
                 f"overflow_policy must be one of {OVERFLOW_POLICIES}, "
@@ -212,7 +221,12 @@ class EmbeddingEngine:
 
         logger.info(f"Loading embedding model: {self.model_name}")
         start = time.perf_counter()
-        model, tokenizer = load_model(self.model_name)
+        if self.vision:
+            if not is_native_embedding_model(self.model_name):
+                raise ValueError("Image embedding requires EmbeddingGemma 2")
+            model, tokenizer = load_model(self.model_name, vision=True)
+        else:
+            model, tokenizer = load_model(self.model_name)
         self._model, self._tokenizer = model, tokenizer
         elapsed = time.perf_counter() - start
         logger.info(f"Embedding model loaded in {elapsed:.2f}s: {self.model_name}")
@@ -411,6 +425,83 @@ class EmbeddingEngine:
         mx.clear_cache()
 
         return result
+
+    def embed_images(self, images: list) -> list[list[float]]:
+        """Embed PIL images or local paths using the opt-in native vision tower.
+
+        Mirrors the validated pilot's media-only preprocessing and BOS/EOS policy.
+        Text embedding and its media-token rejection remain separate.
+        """
+        if not self.vision:
+            raise EmbeddingUnsupportedMediaError("Image embedding requires vision=True")
+        self._ensure_loaded()
+        if not getattr(self._model, "vision_enabled", False):
+            raise EmbeddingUnsupportedMediaError(
+                "Loaded checkpoint does not support images"
+            )
+        if not images:
+            return []
+        model = self._model
+        tokenizer = self._tokenizer
+        max_length = self.effective_max_length
+        assert model is not None and tokenizer is not None and max_length is not None
+        if self._image_processor is None:
+            import json
+
+            from mlx_vlm.models.gemma4.processing_gemma4 import Gemma4ImageProcessor
+            from mlx_vlm.utils import get_model_path
+
+            settings = json.loads(
+                (get_model_path(self.model_name) / "processor_config.json").read_text()
+            )
+            self._image_processor = Gemma4ImageProcessor(**settings["image_processor"])
+        from PIL import Image
+
+        decoded = []
+        for image in images:
+            if isinstance(image, Image.Image):
+                decoded.append(image.convert("RGB"))
+            else:
+                with Image.open(image) as opened:
+                    decoded.append(opened.convert("RGB"))
+        prepared, counts = self._image_processor(decoded)
+        config = model.config
+        pieces = [
+            tokenizer.decode([config.boi_token_id])
+            + tokenizer.decode([config.image_token_id]) * count
+            + tokenizer.decode([config.eoi_token_id])
+            for count in counts
+        ]
+        encoded = tokenizer(pieces, padding=True, truncation=False, return_tensors="np")
+        for row, count in zip(encoded["input_ids"], counts):
+            if int((row == config.image_token_id).sum()) != count:
+                raise ValueError("Tokenizer failed to expand image placeholders")
+        length = encoded["input_ids"].shape[1]
+        if length > max_length:
+            # Image placeholders cannot be truncated without corrupting scatter.
+            raise EmbeddingInputTooLongError(
+                observed_tokens=length,
+                allowed_tokens=max_length,
+                index=0,
+            )
+        pixels = prepared["pixel_values"]
+        pixels = (
+            [mx.array(p) for p in pixels]
+            if isinstance(pixels, list)
+            else mx.array(pixels)
+        )
+        try:
+            output = model(
+                mx.array(encoded["input_ids"]),
+                attention_mask=mx.array(encoded["attention_mask"]),
+                pixel_values=pixels,
+            )
+            return [
+                [float(value) for value in row]
+                for row in output.text_embeds.astype(mx.float32).tolist()
+            ]
+        finally:
+            mx.clear_cache()
 
     def embed_tokens(self, token_batches: list[list[int]]) -> list[list[float]]:
         """Embed pre-tokenized inputs (OpenAI spec input formats 3 and 4).

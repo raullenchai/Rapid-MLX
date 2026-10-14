@@ -169,6 +169,7 @@ rapid-mlx serve devstral-24b-4bit \
 - [Multimodal Guide](../guides/multimodal.md) - Images and video
 - [Audio Guide](../guides/audio.md) - Speech-to-Text and Text-to-Speech
 - [Embeddings Guide](../guides/embeddings.md) - Text embeddings
+- [Local folder search](../guides/local-search.md) - Opt-in semantic and keyword search
 - [Reasoning Models](../guides/reasoning.md) - Thinking models
 - [Tool Calling](../guides/tool-calling.md) - Function calling
 - [SDK Compatibility Notes](../guides/sdk-compat.md) - Where rapid-mlx deviates from OpenAI/Anthropic specs

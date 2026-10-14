@@ -5545,6 +5545,12 @@ def serve_command(args):
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
+    from .local_search_runtime import configure as configure_local_search
+
+    configure_local_search(
+        getattr(args, "enable_local_search", False),
+        getattr(args, "local_search_dir", None),
+    )
 
     optional_runtime.set_assume_yes(getattr(args, "yes", False))
 

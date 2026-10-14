@@ -168,6 +168,8 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # ``/v1/audio/*`` from the registry hit; this flag is the
         # text-mode-with-audio escape hatch (side-car deployments).
         "--enable-audio",
+        # Local folder search is a feature opt-in, not engine routing.
+        "--enable-local-search",
         # Hidden deprecated speculative-decoding compatibility aliases.
         # They normalize into --speculative-config and are intentionally not
         # auto-routing profile overrides.

@@ -823,6 +823,10 @@ async def lifespan(app: FastAPI):
 
     start_agent_service_lifecycle()
 
+    from .local_search_runtime import startup as start_local_search
+
+    await start_local_search(app)
+
     # Install process-death observability BEFORE any executor is created.
     # Two complementary mechanisms (codex r3 NIT clarification):
     #
@@ -1098,6 +1102,10 @@ async def lifespan(app: FastAPI):
     _shutdown_cfg = get_config()
     _shutdown_cfg.ready = False
     _shutdown_cfg.draining = True
+
+    from .local_search_runtime import shutdown as stop_local_search
+
+    await stop_local_search(app)
 
     # Shutdown teardown: save cache, close MCP, stop engine.
     #
@@ -3656,6 +3664,18 @@ Examples:
         """,
     )
     parser.add_argument(
+        "--enable-local-search",
+        action="store_true",
+        default=False,
+        help="Enable local folder text search (no model downloads).",
+    )
+    parser.add_argument(
+        "--local-search-dir",
+        type=str,
+        default=None,
+        help="Local-search index directory (default: state dir / local-search).",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default="mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -4018,6 +4038,12 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
+    from .local_search_runtime import configure as configure_local_search
+
+    configure_local_search(
+        getattr(args, "enable_local_search", False),
+        getattr(args, "local_search_dir", None),
+    )
     _standalone_start_model = args.model
     set_optional_runtime_assume_yes(args.yes)
 

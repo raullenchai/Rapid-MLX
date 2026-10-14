@@ -94,6 +94,8 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`, `gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`, `ui_tars`, `vibethinker`). Auto-detected from the alias profile; explicit flag overrides. There is no literal `auto` value — omit the flag for auto-detection. | None (auto-detected) |
+| `--enable-local-search` | Enable [local folder search](local-search.md) for documents, images and sampled video frames; no automatic model downloads | Off |
+| `--local-search-dir` | Local-search SQLite index directory | State directory / local-search |
 | `--embedding-model` | Pre-load an embedding model at startup; without a positional model the server runs embeddings-only (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
@@ -510,7 +512,8 @@ response = client.embeddings.create(
 print(response.data[0].embedding[:5])  # First 5 dimensions
 ```
 
-See [Embeddings Guide](embeddings.md) for details.
+See [Embeddings Guide](embeddings.md) for details. For folder indexing and
+hybrid retrieval, see [Local folder search](local-search.md).
 
 ### Health Check
 

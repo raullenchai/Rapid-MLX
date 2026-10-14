@@ -83,6 +83,7 @@ dependencies = [
     "tokenizers>=0.19.0",
     "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
+    "pypdf>=5.0.0",  # Local-search text extraction; imported lazily.
     "tqdm>=4.66.0",
     "pyyaml>=6.0",
     # Writing TOML, so ``rapid-mlx agents codex --setup`` can deep-merge into
@@ -412,6 +413,7 @@ ci-linux = [
     "tokenizers>=0.19.0",
     "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
+    "pypdf>=5.0.0",  # Local-search text extraction; imported lazily.
     "tqdm>=4.66.0",
     "requests>=2.28.0",
     "pyyaml>=6.0",
@@ -429,6 +431,8 @@ ci-linux = [
     "jinja2",
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
+    # Mirrors the base runtime dependency for CPU video-decoding contracts.
+    "opencv-python>=4.8.0",
 ]
 # `ci-apple` = the pytest + coverage set the `test-apple-silicon` lane installs
 # on top of `[vision]`. Same test-infra floors as `[ci-linux]`; the lane's MLX

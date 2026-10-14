@@ -1746,6 +1746,19 @@ def _add_serve_parser(
             + optional_extra_install_hint("embeddings", include_paths=False)
         ),
     )
+    serve_parser.add_argument(
+        "--enable-local-search",
+        action="store_true",
+        default=False,
+        help="Enable local folder text search at /v1/local-search (no automatic model downloads).",
+    )
+    serve_parser.add_argument(
+        "--local-search-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Local-search index directory (default: rapid-mlx state directory / local-search).",
+    )
     # Embedding input-length controls (issue #1381). Prevents silent
     # 512-token truncation: derive a model-aware limit and make overflow
     # observable / configurable.
