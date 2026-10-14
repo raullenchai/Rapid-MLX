@@ -664,6 +664,9 @@ final class ServerManager {
             : .cancelled
     }
 
+    private(set) var localSearchEnabledAtSpawn = false
+    private(set) var localSearchSupportedAtSpawn: Bool?
+
     /// Alias of the child that currently owns the runtime — for BOTH
     /// ``.starting`` and ``.ready``. Unlike ``servingAlias`` (which is
     /// ``.ready``-only) this is true the moment a child is spawned, so a
@@ -2248,6 +2251,10 @@ final class ServerManager {
     /// starts, unlike the resident API's per-engine KV/prefix knobs. Rebuild
     /// one setting changes; conversations and downloaded weights remain.
     func restartForSpeculativePerformance(alias: String, hfPath: String? = nil) async -> Bool {
+        await restartForSpawnSettings(alias: alias, hfPath: hfPath)
+    }
+
+    func restartForSpawnSettings(alias: String, hfPath: String? = nil) async -> Bool {
         await stop()
         return await ensureServing(alias: alias, hfPath: hfPath, residencyEligible: false)
     }
@@ -3029,8 +3036,13 @@ final class ServerManager {
             // a path captured in ``init`` would still be nil on the next
             // start. Nil whenever connectors are off or empty.
             mcpConfigPath: mcpConfigPathProvider?(),
-            videoOutputDirectory: videoOutputDirectory
+            videoOutputDirectory: videoOutputDirectory,
+            capabilities: runtimeCapabilities,
+            localSearchEnabled: LocalSearchFeatureConfig.isEnabled()
         )
+
+        localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
+        localSearchSupportedAtSpawn = runtimeCapabilities.supportsLocalSearch
 
         // Issue #503: resolve the user's "Models folder" preference for
         // this launch. ``validatedOverrideURL`` returns the folder only
@@ -4888,7 +4900,10 @@ final class ServerManager {
         port: Int,
         extraFlags: [String] = [],
         mcpConfigPath: String? = nil,
-        videoOutputDirectory: String? = nil
+        videoOutputDirectory: String? = nil,
+        capabilities: ServerRuntimeCapabilities = .conservative,
+        localSearchEnabled: Bool = LocalSearchFeatureConfig.defaultEnabled,
+        localSearchDirectory: String = ApplicationSupportLocator.localSearchDirectory().path
     ) -> [String] {
         // Defense in depth: ``start(alias:)`` already calls
         // ``isValidAlias`` before reaching here, but a future caller
@@ -4928,6 +4943,9 @@ final class ServerManager {
         // when the alias is the recommended pick for THIS Mac's RAM — so a
         // hand-picked model on a larger Mac keeps its full capabilities.
         args.append(contentsOf: extraFlags)
+        if localSearchEnabled && capabilities.supportsLocalSearch {
+            args.append(contentsOf: ["--enable-local-search", "--local-search-dir", localSearchDirectory])
+        }
         if let videoOutputDirectory, !videoOutputDirectory.isEmpty {
             args.append(contentsOf: ["--video-output-dir", videoOutputDirectory])
         }

@@ -2,6 +2,1306 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Unsupported file type": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不支持的文件类型"
+          }
+        }
+      }
+    },
+    "Too large": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件过大"
+          }
+        }
+      }
+    },
+    "No readable text": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可读取的文本"
+          }
+        }
+      }
+    },
+    "Scanned PDF without text": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描版 PDF，没有可读取的文本"
+          }
+        }
+      }
+    },
+    "Password-protected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受密码保护"
+          }
+        }
+      }
+    },
+    "Could not be read": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取"
+          }
+        }
+      }
+    },
+    "Private or system file": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "私密文件或系统文件"
+          }
+        }
+      }
+    },
+    "Audio is not supported yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持音频"
+          }
+        }
+      }
+    },
+    "File contents could not be indexed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法索引文件内容"
+          }
+        }
+      }
+    },
+    "Indexing paused while a chat response is generating — it resumes automatically": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在生成聊天回复，索引已暂停，稍后会自动继续"
+          }
+        }
+      }
+    },
+    "Indexing paused — it resumes automatically": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "索引已暂停，稍后会自动继续"
+          }
+        }
+      }
+    },
+    "Matched by file name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过文件名匹配"
+          }
+        }
+      }
+    },
+    "Matched by file name — %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过文件名匹配 — %@"
+          }
+        }
+      }
+    },
+    "%@ (%@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（%@）"
+          }
+        }
+      }
+    },
+    "Show all": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示全部"
+          }
+        }
+      }
+    },
+    "Show all %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示全部%@"
+          }
+        }
+      }
+    },
+    "PDF text and Word (.docx) files are searchable. Scanned PDFs need readable text; older .doc files need conversion.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可搜索 PDF 文本和 Word（.docx）文件。扫描版 PDF 需要可读取的文本；旧版 .doc 文件需要先转换格式。"
+          }
+        }
+      }
+    },
+    "Searched %@ · %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索范围：%@ · %@"
+          }
+        }
+      }
+    },
+    "The engine could not start. Try again, or check your model and engine installation in Settings.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引擎无法启动。请重试，或在设置中检查模型和引擎安装。"
+          }
+        }
+      }
+    },
+    "Search needs the local engine. Complete engine setup in Settings, then try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索需要本地引擎。请在设置中完成引擎配置后重试。"
+          }
+        }
+      }
+    },
+    "This file could not be opened. It may have moved or its drive may be disconnected. Reconnect the drive, or search again to refresh results.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开此文件。文件可能已移动，或所在驱动器未连接。请重新连接驱动器，或再次搜索以刷新结果。"
+          }
+        }
+      }
+    },
+    "%@ documents · %@ images · %@ videos": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个文档 · %@ 张图片 · %@ 个视频"
+          }
+        }
+      }
+    },
+    "Documents": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档"
+          }
+        }
+      }
+    },
+    "Videos": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视频"
+          }
+        }
+      }
+    },
+    "%lld files indexed · %lld not indexed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已索引 %lld 个文件 · %lld 个未索引"
+          }
+        }
+      }
+    },
+    "Locate folder…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找文件夹…"
+          }
+        }
+      }
+    },
+    "Try again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "Download search model": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载搜索模型"
+          }
+        }
+      }
+    },
+    "%@: %lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：%lld"
+          }
+        }
+      }
+    },
+    "Search documents, photos and videos": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索文档、照片和视频"
+          }
+        }
+      }
+    },
+    "Filter local search by file kind": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按文件类型筛选本地搜索"
+          }
+        }
+      }
+    },
+    "Retry starting engine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动引擎"
+          }
+        }
+      }
+    },
+    "Results may be incomplete while indexing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "索引期间，搜索结果可能不完整"
+          }
+        }
+      }
+    },
+    "Restart model to enable Search?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动模型以启用搜索？"
+          }
+        }
+      }
+    },
+    "Restart and enable Search": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动并启用搜索"
+          }
+        }
+      }
+    },
+    "The running model will restart. Other resident models will unload. Your conversations and files stay untouched.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行的模型将重新启动，其他驻留模型将被卸载。对话和文件不会受到影响。"
+          }
+        }
+      }
+    },
+    "Why files were not indexed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件未被索引的原因"
+          }
+        }
+      }
+    },
+    "%lld files indexed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已索引 %lld 个文件"
+          }
+        }
+      }
+    },
+    "Modified date": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修改日期"
+          }
+        }
+      }
+    },
+    "at %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位于 %@"
+          }
+        }
+      }
+    },
+    "Copy Path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制路径"
+          }
+        }
+      }
+    },
+    "Copy Timestamp": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制时间点"
+          }
+        }
+      }
+    },
+    "Search your own files": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索自己的文件"
+          }
+        }
+      }
+    },
+    "Start Search with your current model. Everything stays on your Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用当前模型启动搜索。所有内容均保留在您的 Mac 上。"
+          }
+        }
+      }
+    },
+    "Start Search": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动搜索"
+          }
+        }
+      }
+    },
+    "Start engine for local search": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动本地搜索引擎"
+          }
+        }
+      }
+    },
+    "Starting search engine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动搜索引擎"
+          }
+        }
+      }
+    },
+    "Starting the engine…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动引擎…"
+          }
+        }
+      }
+    },
+    "Preparing your model. Search will be ready here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备模型。搜索就绪后将在此处显示。"
+          }
+        }
+      }
+    },
+    "Get Search ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备搜索"
+          }
+        }
+      }
+    },
+    "Search needs an engine started with Local Search enabled.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索需要启用了本地搜索的引擎。"
+          }
+        }
+      }
+    },
+    "Restart model for Search": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动模型以使用搜索"
+          }
+        }
+      }
+    },
+    "Search documents, photos and videos on your Mac": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索 Mac 上的文档、照片和视频"
+          }
+        }
+      }
+    },
+    "Search all file kinds": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索所有文件类型"
+          }
+        }
+      }
+    },
+    "More results may appear as indexing continues. You can try different words now.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随着索引继续，可能出现更多结果。现在也可以尝试其他搜索词。"
+          }
+        }
+      }
+    },
+    "Add another folder…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加其他文件夹…"
+          }
+        }
+      }
+    },
+    "Describe an idea, a photo or a video, or search for words in your files.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "描述一个想法、一张照片或一个视频，或搜索文件中的词语。"
+          }
+        }
+      }
+    },
+    "Standard folders": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常用文件夹"
+          }
+        }
+      }
+    },
+    "Search selected folders": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索所选文件夹"
+          }
+        }
+      }
+    },
+    "Whole Mac: the first index can take a long time. You can search while it runs. System files and app internals are skipped.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整台 Mac：首次索引可能需要很长时间。您可以在索引期间搜索。系统文件和应用内部文件会被跳过。"
+          }
+        }
+      }
+    },
+    "Choose folders…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择文件夹…"
+          }
+        }
+      }
+    },
+    "%@, %@, %@, in %@, modified %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@，%@，%@，位于 %@，修改于 %@"
+          }
+        }
+      }
+    },
+    "Searches folders you choose, on your Mac. An optional ~1.1 GB search model finds files by meaning and uses extra memory. Turning off keeps your index.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上搜索所选文件夹。可选的约 1.1 GB 搜索模型可按含义查找文件，并使用额外内存。关闭功能后会保留索引。"
+          }
+        }
+      }
+    },
+    "Searches folders you choose, on-device; downloads a ~1.1 GB search model; uses extra memory while the engine runs. Engine changes take effect when the model next starts. Turning off keeps your index." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在设备上搜索您选择的文件夹；需下载约 1.1 GB 的搜索模型；引擎运行时会使用额外内存。引擎设置将在下次启动模型时生效。关闭后会保留索引。"
+          }
+        }
+      }
+    },
+    "Local Search (Experimental)" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地搜索（实验性）"
+          }
+        }
+      }
+    },
+    "Scanning and indexing: %lld files processed" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描和索引：已处理 %lld 个文件"
+          }
+        }
+      }
+    },
+    "System files and app internals are skipped. First indexing can take a long time." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统文件和应用内部文件会被跳过。首次索引可能需要较长时间。"
+          }
+        }
+      }
+    },
+    "Choose Folder…" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择文件夹…"
+          }
+        }
+      }
+    },
+    "Downloads" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载"
+          }
+        }
+      }
+    },
+    "Desktop" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面"
+          }
+        }
+      }
+    },
+    "Whole Mac" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整台 Mac"
+          }
+        }
+      }
+    },
+    "%@ · %lld files · %lld skipped · %lld chunks" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %lld 个文件 · 跳过 %lld 个 · %lld 个片段"
+          }
+        }
+      }
+    },
+    "Add Folder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加文件夹"
+          }
+        }
+      }
+    },
+    "Add Folder…" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加文件夹…"
+          }
+        }
+      }
+    },
+    "Add folders to local search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加文件夹以进行本地搜索"
+          }
+        }
+      }
+    },
+    "Building your search index" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在建立搜索索引"
+          }
+        }
+      }
+    },
+    "Cancel removing folder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消移除文件夹"
+          }
+        }
+      }
+    },
+    "Cancel search model download" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消下载搜索模型"
+          }
+        }
+      }
+    },
+    "Choose your first folders to search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要搜索的文件夹"
+          }
+        }
+      }
+    },
+    "Confirm removing folder from search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认从搜索中移除文件夹"
+          }
+        }
+      }
+    },
+    "Could not index folder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法索引文件夹"
+          }
+        }
+      }
+    },
+    "Describe an idea, or search for words in your files." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "描述一个想法，或搜索文件中的文字。"
+          }
+        }
+      }
+    },
+    "Download search model (1.1 GB)" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载搜索模型（1.1 GB）"
+          }
+        }
+      }
+    },
+    "Files never leave your Mac. Only folders you add are read." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件始终保留在您的 Mac 上。只会读取您添加的文件夹。"
+          }
+        }
+      }
+    },
+    "Find files by meaning" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按含义查找文件"
+          }
+        }
+      }
+    },
+    "Folder indexing progress" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹索引进度"
+          }
+        }
+      }
+    },
+    "Folder unavailable. Reconnect the drive or add the folder again." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹不可用。请重新连接磁盘或再次添加文件夹。"
+          }
+        }
+      }
+    },
+    "Folders (%lld)" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹（%lld）"
+          }
+        }
+      }
+    },
+    "Go to Chat to start a model" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前往聊天以启动模型"
+          }
+        }
+      }
+    },
+    "Indexing" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在索引"
+          }
+        }
+      }
+    },
+    "Indexing: %lld of %lld files" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在索引：%lld / %lld 个文件"
+          }
+        }
+      }
+    },
+    "Invalid folder identifier." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹标识符无效。"
+          }
+        }
+      }
+    },
+    "Keyword results · Download the search model to also find files by meaning." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键词结果 · 下载搜索模型后还可按含义查找文件。"
+          }
+        }
+      }
+    },
+    "Keyword search is available now. Download the search model to find related ideas even when the words differ." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在即可使用关键词搜索。下载搜索模型后，即使文字不同，也能查找相关内容。"
+          }
+        }
+      }
+    },
+    "Loading local search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载本地搜索"
+          }
+        }
+      }
+    },
+    "Local search results" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地搜索结果"
+          }
+        }
+      }
+    },
+    "Local search uses the app's running engine. Start a model from Chat, then return here." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地搜索使用应用中正在运行的引擎。请从聊天中启动模型，然后返回此处。"
+          }
+        }
+      }
+    },
+    "No files found" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到文件"
+          }
+        }
+      }
+    },
+    "Open" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开"
+          }
+        }
+      }
+    },
+    "Open file" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开文件"
+          }
+        }
+      }
+    },
+    "Preview file with Quick Look" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用快速查看预览文件"
+          }
+        }
+      }
+    },
+    "Quick Look" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快速查看"
+          }
+        }
+      }
+    },
+    "Reindex" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新索引"
+          }
+        }
+      }
+    },
+    "Reindex %@" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新索引 %@"
+          }
+        }
+      }
+    },
+    "Reindex all folders" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新索引所有文件夹"
+          }
+        }
+      }
+    },
+    "Remove %@ from search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从搜索中移除 %@"
+          }
+        }
+      }
+    },
+    "Remove folder from search?" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从搜索中移除文件夹？"
+          }
+        }
+      }
+    },
+    "Results will appear as files are indexed. You can search while indexing continues." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "索引文件后会显示结果。索引期间也可以继续搜索。"
+          }
+        }
+      }
+    },
+    "Retry local search request" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试本地搜索请求"
+          }
+        }
+      }
+    },
+    "Reveal file in Finder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示文件"
+          }
+        }
+      }
+    },
+    "Reveal in Finder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示"
+          }
+        }
+      }
+    },
+    "Scanning folder" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描文件夹"
+          }
+        }
+      }
+    },
+    "Search is temporarily unavailable" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索暂时不可用"
+          }
+        }
+      }
+    },
+    "Search model download progress" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索模型下载进度"
+          }
+        }
+      }
+    },
+    "Search request failed (HTTP %lld)." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索请求失败（HTTP %lld）。"
+          }
+        }
+      }
+    },
+    "Search your Mac by what is in your files" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按文件内容搜索您的 Mac"
+          }
+        }
+      }
+    },
+    "Search your files by what is in them" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按内容搜索文件"
+          }
+        }
+      }
+    },
+    "Searching" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在搜索"
+          }
+        }
+      }
+    },
+    "Show or hide indexed folders" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示或隐藏已索引的文件夹"
+          }
+        }
+      }
+    },
+    "Start a Model" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动模型"
+          }
+        }
+      }
+    },
+    "Start a model to search your Mac" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动模型以搜索您的 Mac"
+          }
+        }
+      }
+    },
+    "This engine does not support local search. Update the engine and restart a model." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此引擎不支持本地搜索。请更新引擎并重新启动模型。"
+          }
+        }
+      }
+    },
+    "This removes the folder's search index. Your files stay on your Mac." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这将移除文件夹的搜索索引。您的文件仍保留在 Mac 上。"
+          }
+        }
+      }
+    },
+    "Try different words or add another folder." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请尝试其他词语或添加另一个文件夹。"
+          }
+        }
+      }
+    },
+    "Unknown folder status. Refresh or update the engine." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件夹状态未知。请刷新或更新引擎。"
+          }
+        }
+      }
+    },
+    "Update the engine to use Search" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新引擎以使用搜索"
+          }
+        }
+      }
+    },
+    "Waiting for search model" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待搜索模型"
+          }
+        }
+      }
+    },
+    "What are you looking for?" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "您想查找什么？"
+          }
+        }
+      }
+    },
+    "line %lld" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 行"
+          }
+        }
+      }
+    },
+    "page %lld" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 页"
+          }
+        }
+      }
+    },
     "speculative_status.ready" : {
       "localizations" : {
         "zh-Hans" : {

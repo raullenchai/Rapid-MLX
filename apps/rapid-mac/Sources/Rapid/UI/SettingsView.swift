@@ -45,8 +45,12 @@ struct SettingsView: View {
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
     @Environment(QuickstartCoordinator.self) private var quickstart
+    @State private var confirmingSearchRestart = false
+    @State private var searchRestartAlias: String?
     @State private var confirmingSetupRestart = false
     @State private var restartingSetup = false
+    @AppStorage(LocalSearchFeatureConfig.enabledKey)
+    private var localSearchEnabled = LocalSearchFeatureConfig.defaultEnabled
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
@@ -530,6 +534,32 @@ struct SettingsView: View {
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.VideoGenerationToggle")
+                SettingsRowDivider()
+                Toggle(isOn: $localSearchEnabled) {
+                    SettingsRowLabel(
+                        title: String(localized: "Local Search (Experimental)"),
+                        description: String(localized: "Searches folders you choose, on your Mac. An optional ~1.1 GB search model finds files by meaning and uses extra memory. Turning off keeps your index.")
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.LocalSearchToggle")
+                .onChange(of: localSearchEnabled) { _, enabled in
+                    if let alias = LocalSearchFeatureConfig.restartAlias(enabling: enabled, state: server.state) {
+                        searchRestartAlias = alias
+                        confirmingSearchRestart = true
+                    }
+                }
+                .alert(String(localized: "Restart model to enable Search?"), isPresented: $confirmingSearchRestart) {
+                    Button(String(localized: "Restart and enable Search")) {
+                        if let alias = searchRestartAlias {
+                            Task { _ = await server.restartForSpawnSettings(alias: alias) }
+                        }
+                    }.accessibilityIdentifier("Settings.Experimental.LocalSearch.Restart")
+                    Button(String(localized: "Cancel"), role: .cancel) { localSearchEnabled = false }
+                        .accessibilityIdentifier("Settings.Experimental.LocalSearch.Cancel")
+                } message: {
+                    Text(String(localized: "The running model will restart. Other resident models will unload. Your conversations and files stay untouched."))
+                }
                 SettingsRowDivider()
                 Toggle(isOn: $computerUseEnabled) {
                     SettingsRowLabel(

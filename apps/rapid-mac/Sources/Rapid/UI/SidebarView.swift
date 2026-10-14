@@ -5,6 +5,7 @@ import SwiftUI
 /// ("Older" list) is a later milestone.
 enum SidebarSection: Hashable {
     case chat
+    case search
     case images
     case audio
     case video
@@ -33,6 +34,7 @@ enum SidebarSection: Hashable {
               let name = environment["RAPID_GUI_INITIAL_SECTION"] else { return nil }
         switch name {
         case "chat": return .chat
+        case "search": return .search
         case "images": return .images
         case "audio": return .audio
         case "video": return .video
@@ -123,6 +125,8 @@ struct SidebarView: View {
     var isCompact: Bool = false
 
     @Binding var selection: SidebarSection
+    var localSearchEnabled: Bool = false
+    var onFocusLocalSearch: () -> Void = {}
     /// Video is intentionally opt-in because its models require substantially
     /// more unified memory than the app's everyday chat and media workflows.
     var videoGenerationEnabled: Bool = false
@@ -332,7 +336,7 @@ struct SidebarView: View {
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
+            if localSearchEnabled || videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
                 SectionHeader(String(localized: "Experimental"))
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
@@ -346,6 +350,16 @@ struct SidebarView: View {
                         action: { selection = .video }
                     )
                     .accessibilityIdentifier("Sidebar.Video")
+                }
+                if localSearchEnabled {
+                    row(
+                        title: String(localized: "Search"),
+                        systemImage: "magnifyingglass",
+                        isSelected: selection == .search,
+                        action: { selection = .search; onFocusLocalSearch() }
+                    )
+                    .accessibilityIdentifier("Sidebar.Search")
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
                 }
                 if benchmarkEnabled {
                     row(
@@ -660,6 +674,16 @@ struct SidebarView: View {
                     action: { selection = .video }
                 )
                 .accessibilityIdentifier("Sidebar.Video")
+            }
+            if localSearchEnabled {
+                compactItem(
+                    title: String(localized: "Search"),
+                    systemImage: "magnifyingglass",
+                    isSelected: selection == .search,
+                    action: { selection = .search; onFocusLocalSearch() }
+                )
+                .accessibilityIdentifier("Sidebar.Search")
+                .keyboardShortcut("f", modifiers: [.command, .shift])
             }
             if computerUseEnabled {
                 compactItem(

@@ -664,3 +664,25 @@ surface stays countable instead of invisible:
 ```bash
 rg ax-exempt apps/rapid-mac
 ```
+
+
+### Local Search experimental opt-in
+
+Local Search is off by default. As with the existing experimental screenshot
+flows, seed the preference in the persona's defaults before launching:
+
+```bash
+env HOME="$PERSONA/home" CFFIXED_USER_HOME="$PERSONA/home" \
+  /usr/bin/defaults write "$BUNDLE_ID" Rapid.experimental.localSearchEnabled -bool true
+env HOME="$PERSONA/home" CFFIXED_USER_HOME="$PERSONA/home" \
+  RAPID_GUI_GOLDEN_MODE=1 RAPID_GUI_INITIAL_SECTION=search \
+  "$ISOLATED_APP/Contents/MacOS/Rapid"
+```
+
+Use the isolated app's bundle identifier for `BUNDLE_ID`. The initial-section
+hook selects Search only while the opt-in is enabled; otherwise navigation
+falls back to Chat. Settings → Experimental → Local Search (Experimental)
+changes sidebar visibility immediately and cancels search polling when turned
+off. Engine flags apply when the model next starts, following the existing
+spawn-time settings behavior; restart the model to change an already-running
+engine. Disabling preserves the index.
