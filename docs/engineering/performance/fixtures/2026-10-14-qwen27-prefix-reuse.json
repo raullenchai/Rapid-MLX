@@ -1,0 +1,962 @@
+{
+  "hardware": {
+    "chip": "Apple M4 Pro",
+    "gpu_cores": 16,
+    "cpu_cores": 12,
+    "memory_gib": 48,
+    "macos": "26.5.1"
+  },
+  "rapid_release": "0.16.1",
+  "base_commit": "df1f4db1fc0548ec97c6376739a76f6330e9b000",
+  "tensorfold_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+  "mlx": "0.32.3",
+  "target_revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+  "drafter_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+  "baseline_samples": [
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-0",
+      "ttft": 0.3465,
+      "elapsed": 0.4602,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-0",
+      "ttft": 7.4145,
+      "elapsed": 7.6944,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-0",
+      "ttft": 7.4151,
+      "elapsed": 7.6914,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-0",
+      "ttft": 7.7307,
+      "elapsed": 8.0231,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-1",
+      "ttft": 0.3464,
+      "elapsed": 0.4598,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-1",
+      "ttft": 7.53,
+      "elapsed": 7.8117,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-1",
+      "ttft": 7.298,
+      "elapsed": 7.5742,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-1",
+      "ttft": 7.6034,
+      "elapsed": 7.8835,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-2",
+      "ttft": 0.3454,
+      "elapsed": 0.4586,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-2",
+      "ttft": 7.2866,
+      "elapsed": 7.5639,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-2",
+      "ttft": 7.293,
+      "elapsed": 7.5672,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-2",
+      "ttft": 7.5968,
+      "elapsed": 7.8725,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    }
+  ],
+  "fixed_samples": [
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-0",
+      "ttft": 0.3353,
+      "elapsed": 0.4482,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-0",
+      "ttft": 7.5014,
+      "elapsed": 7.7707,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-0",
+      "ttft": 0.2135,
+      "elapsed": 0.481,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-0",
+      "ttft": 0.3491,
+      "elapsed": 0.6193,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-1",
+      "ttft": 0.3359,
+      "elapsed": 0.4488,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-1",
+      "ttft": 7.498,
+      "elapsed": 7.7677,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-1",
+      "ttft": 0.2133,
+      "elapsed": 0.4791,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-1",
+      "ttft": 0.3516,
+      "elapsed": 0.6217,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "short-2",
+      "ttft": 0.3346,
+      "elapsed": 0.4477,
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-cold-2",
+      "ttft": 7.5187,
+      "elapsed": 7.7878,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "prefill-repeat-2",
+      "ttft": 0.2121,
+      "elapsed": 0.4795,
+      "usage": {
+        "prompt_tokens": 755,
+        "completion_tokens": 2,
+        "total_tokens": 757
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "continuation-2",
+      "ttft": 0.3516,
+      "elapsed": 0.6206,
+      "usage": {
+        "prompt_tokens": 779,
+        "completion_tokens": 2,
+        "total_tokens": 781
+      },
+      "done": true,
+      "answer_ok": true,
+      "finish_reason": "stop"
+    }
+  ],
+  "diagnostic": {
+    "before": {
+      "boundary_events": [
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 758,
+          "messages": 3,
+          "history": 751,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 779,
+          "messages": 5,
+          "history": 772,
+          "shared": []
+        }
+      ],
+      "prefill_events": [
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        }
+      ],
+      "match_events": [
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 758,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 779,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        }
+      ]
+    },
+    "after": {
+      "boundary_events": [
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 758,
+          "messages": 3,
+          "history": 751,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 779,
+          "messages": 5,
+          "history": 772,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 779,
+          "messages": 5,
+          "history": 772,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 28,
+          "messages": 1,
+          "history": 21,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 755,
+          "messages": 3,
+          "history": 748,
+          "shared": []
+        },
+        {
+          "event": "boundary",
+          "input_tokens": 779,
+          "messages": 5,
+          "history": 772,
+          "shared": []
+        }
+      ],
+      "prefill_events": [
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [
+            751
+          ],
+          "chunk_starts": [
+            0,
+            751
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [
+            748
+          ],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [
+            748
+          ],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [],
+          "chunk_starts": [
+            0
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 0,
+          "checkpoints": [
+            748
+          ],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        },
+        {
+          "event": "prefill",
+          "cached": 748,
+          "checkpoints": [],
+          "chunk_starts": [
+            0,
+            748
+          ]
+        }
+      ],
+      "match_events": [
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 758,
+          "entries": [],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [
+            751
+          ],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            751
+          ],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            748,
+            751
+          ],
+          "allowed": [
+            748
+          ],
+          "hit": 748
+        },
+        {
+          "event": "match",
+          "input_tokens": 779,
+          "entries": [
+            748,
+            751
+          ],
+          "allowed": [
+            748
+          ],
+          "hit": 748
+        },
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [
+            748,
+            751
+          ],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            748,
+            751
+          ],
+          "allowed": [
+            748
+          ],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            748,
+            748,
+            751
+          ],
+          "allowed": [
+            748,
+            748
+          ],
+          "hit": 748
+        },
+        {
+          "event": "match",
+          "input_tokens": 779,
+          "entries": [
+            748,
+            748,
+            751
+          ],
+          "allowed": [
+            748,
+            748
+          ],
+          "hit": 748
+        },
+        {
+          "event": "match",
+          "input_tokens": 28,
+          "entries": [
+            748,
+            748,
+            751
+          ],
+          "allowed": [],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            748,
+            748,
+            751
+          ],
+          "allowed": [
+            748,
+            748
+          ],
+          "hit": 0
+        },
+        {
+          "event": "match",
+          "input_tokens": 755,
+          "entries": [
+            748,
+            748,
+            748,
+            751
+          ],
+          "allowed": [
+            748,
+            748,
+            748
+          ],
+          "hit": 748
+        },
+        {
+          "event": "match",
+          "input_tokens": 779,
+          "entries": [
+            748,
+            748,
+            748,
+            751
+          ],
+          "allowed": [
+            748,
+            748,
+            748
+          ],
+          "hit": 748
+        }
+      ]
+    }
+  },
+  "token_parity": [
+    {
+      "config": "rapid-tensorfold",
+      "name": "parity-cold-0",
+      "ttft": 7.5509,
+      "elapsed": 10.9848,
+      "usage": {
+        "prompt_tokens": 768,
+        "completion_tokens": 128,
+        "total_tokens": 896
+      },
+      "done": true,
+      "finish_reason": "length",
+      "content_sha256": "67af7845d93e08f83f071586de2ffc0714b2928607e84fc108257dd48ef7718c",
+      "token_sha256": "4d4ba800bc70a6f18244f04ff9f4ff0f7731b2ef0ea8897b68b58c5e34b53a60",
+      "native_completion_tokens": 128
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "parity-repeat-0",
+      "ttft": 0.2137,
+      "elapsed": 3.5034,
+      "usage": {
+        "prompt_tokens": 768,
+        "completion_tokens": 128,
+        "total_tokens": 896
+      },
+      "done": true,
+      "finish_reason": "length",
+      "content_sha256": "67af7845d93e08f83f071586de2ffc0714b2928607e84fc108257dd48ef7718c",
+      "token_sha256": "4d4ba800bc70a6f18244f04ff9f4ff0f7731b2ef0ea8897b68b58c5e34b53a60",
+      "native_completion_tokens": 128
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "parity-cold-0.7",
+      "ttft": 7.5381,
+      "elapsed": 11.0643,
+      "usage": {
+        "prompt_tokens": 770,
+        "completion_tokens": 128,
+        "total_tokens": 898
+      },
+      "done": true,
+      "finish_reason": "length",
+      "content_sha256": "90e77965d83164cd1d9963e2c1011ee29648ef39afe61ed13d611fb2e8d36ed9",
+      "token_sha256": "48ba59cfe9062bb4935bcfd4cf5fbcf91370d53c6ad6bfc2ddeda0b1b9bb5099",
+      "native_completion_tokens": 128
+    },
+    {
+      "config": "rapid-tensorfold",
+      "name": "parity-repeat-0.7",
+      "ttft": 0.215,
+      "elapsed": 3.7355,
+      "usage": {
+        "prompt_tokens": 770,
+        "completion_tokens": 128,
+        "total_tokens": 898
+      },
+      "done": true,
+      "finish_reason": "length",
+      "content_sha256": "90e77965d83164cd1d9963e2c1011ee29648ef39afe61ed13d611fb2e8d36ed9",
+      "token_sha256": "48ba59cfe9062bb4935bcfd4cf5fbcf91370d53c6ad6bfc2ddeda0b1b9bb5099",
+      "native_completion_tokens": 128
+    }
+  ]
+}

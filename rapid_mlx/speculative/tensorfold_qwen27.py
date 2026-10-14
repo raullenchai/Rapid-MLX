@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import importlib.metadata
 import json
 import platform
@@ -260,6 +261,8 @@ class TensorFoldQwen27Backend:
         """Load the pinned family/app boundary used by the proof."""
         require_runtime()
         require_environment()
+        from tensorfold.engine.lane_engine import LaneEngine
+        from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
         from tensorfold.families import detect
         from tensorfold.server.app import ChatApp
 
@@ -278,10 +281,17 @@ class TensorFoldQwen27Backend:
         model, tokenizer = package.load(
             target, lane_kernels="auto", drafter=str(drafter), drafter_bits=4
         )
+        # The runtime's bare engine defaults to a 2048-token grid. Without
+        # message cuts, a shorter prompt's reusable history floors to zero
+        # and no checkpoint is saved. Use the same reply-boundary plan as
+        # TensorFold serving so recurrent state resumes at an exact cut.
+        openers, assistant = message_markers(tokenizer)
+        plan = PrefillPlan(LaneEngine.prefill_step, openers, 256, assistant)
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
+            engine_factory=functools.partial(LaneEngine, prefill_plan=plan),
             lanes=1,
             context_window=int(context_window),
             default_max_tokens=int(max_tokens),

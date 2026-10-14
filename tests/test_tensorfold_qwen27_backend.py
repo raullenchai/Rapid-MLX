@@ -218,14 +218,43 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
     class ChatApp:
         def __init__(self, model, tokenizer, **kwargs):
             loaded.update(model=model, tokenizer=tokenizer, app=kwargs)
+            # Exercise the supplied factory, rather than merely checking that
+            # a keyword was passed. The default runtime factory loses reply
+            # cuts for short prompts.
+            self.engine = kwargs["engine_factory"](model)
             self.scheduler = FakeScheduler()
+
+    class LaneEngine:
+        prefill_step = 2048
+
+        def __init__(self, model, *, prefill_plan):
+            loaded["engine_plan"] = prefill_plan
+            loaded["engine_model"] = model
+
+    class PrefillPlan:
+        def __init__(self, step, openers, min_chunk, assistant):
+            self.step = step
+            self.openers = openers
+            self.min_chunk = min_chunk
+            self.assistant = assistant
+
+    def message_markers(tokenizer):
+        loaded["marker_tokenizer"] = tokenizer
+        return (10,), (10, 11)
 
     families = types.ModuleType("tensorfold.families")
     families.detect = lambda _path: types.SimpleNamespace(package=Package)
     app_module = types.ModuleType("tensorfold.server.app")
     app_module.ChatApp = ChatApp
+    lane_module = types.ModuleType("tensorfold.engine.lane_engine")
+    lane_module.LaneEngine = LaneEngine
+    plan_module = types.ModuleType("tensorfold.engine.prefill_plan")
+    plan_module.PrefillPlan = PrefillPlan
+    plan_module.message_markers = message_markers
     monkeypatch.setitem(sys.modules, "tensorfold.families", families)
     monkeypatch.setitem(sys.modules, "tensorfold.server.app", app_module)
+    monkeypatch.setitem(sys.modules, "tensorfold.engine.lane_engine", lane_module)
+    monkeypatch.setitem(sys.modules, "tensorfold.engine.prefill_plan", plan_module)
     monkeypatch.setattr(adapter, "require_runtime", lambda: None)
     monkeypatch.setattr(adapter, "require_environment", lambda: None)
     monkeypatch.setattr(adapter, "validate_pair", lambda *_args: None)
@@ -241,6 +270,16 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
     assert loaded["drafter"] == str(drafter)
     assert loaded["drafter_bits"] == 4
     assert loaded["app"]["served_name"] == "served"
+    assert loaded["app"]["snapshot_dir"] is None
+    assert loaded["marker_tokenizer"] is loaded["tokenizer"]
+    assert loaded["engine_model"] is loaded["model"]
+    plan = loaded["engine_plan"]
+    assert (plan.step, plan.openers, plan.min_chunk, plan.assistant) == (
+        2048,
+        (10,),
+        256,
+        (10, 11),
+    )
     backend.close()
 
     Package.DRAFTER = "wrong"
