@@ -371,6 +371,7 @@ def _spawn_serve(
     log_path: Path,
     extra_args: list[str],
     log_target: str | None = None,
+    quicksilver_pool: bool = False,
 ) -> subprocess.Popen[bytes]:
     # Use sys.executable + ``-m`` instead of the ``rapid-mlx`` script so
     # the share command works inside editable installs and CI environments
@@ -403,6 +404,11 @@ def _spawn_serve(
     ]
     env = dict(os.environ)
     env["RAPID_MLX_API_KEY"] = api_key
+    # Pool workers may refuse unsupported capabilities as retryable capacity
+    # misses. Ordinary sharing must not inherit that mode from a parent.
+    env.pop("RAPID_MLX_QUICKSILVER_POOL", None)
+    if quicksilver_pool:
+        env["RAPID_MLX_QUICKSILVER_POOL"] = "1"
     # Parent-PID watchdog (rapid-desktop #449 sibling fix). A SIGKILL
     # of ``rapid-mlx share`` (the supervisor) re-parents the spawned
     # ``serve`` to launchd / init; without this stamp the child would

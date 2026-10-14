@@ -1,0 +1,801 @@
+{
+  "date_utc": "2026-10-14",
+  "base_revision": "7ac7ad58bc8cabe609c4c5ee737707b5ff8f07bc",
+  "initial_engine_revision": "b598a0ccf9eecc8e1f42aae55d4035af34b605c9",
+  "final_code_revision": "c6e1567414b2f5a9fdaff369dbc740d69102fe23",
+  "hardware": {
+    "chip": "Apple M4 Pro",
+    "cpu_cores": 12,
+    "gpu_cores": 16,
+    "memory_gib": 48,
+    "os": "macOS 26.5.1"
+  },
+  "runtime": {
+    "tensorfold_version": "0.6.6",
+    "tensorfold_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "mlx_version": "0.32.3",
+    "target_repository": "Vontra/Qwen3.8-27B-MLX-4bit",
+    "target_revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+    "drafter_repository": "z-lab/Qwen3.8-27B-DFlash2",
+    "drafter_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+  },
+  "local_initial": [
+    {
+      "name": "warmup",
+      "ttft": 0.9936,
+      "elapsed": 1.5527,
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 2,
+        "total_tokens": 22
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "short-0",
+      "ttft": 0.3391,
+      "elapsed": 0.4522,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 2,
+        "total_tokens": 32
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "cold-0",
+      "ttft": 7.531,
+      "elapsed": 7.8025,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "repeat-0",
+      "ttft": 0.2142,
+      "elapsed": 0.4815,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "followup-0",
+      "ttft": 0.3543,
+      "elapsed": 0.6247,
+      "usage": {
+        "prompt_tokens": 781,
+        "completion_tokens": 2,
+        "total_tokens": 783
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "short-1",
+      "ttft": 0.3398,
+      "elapsed": 0.453,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 2,
+        "total_tokens": 32
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "cold-1",
+      "ttft": 7.504,
+      "elapsed": 7.7746,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "repeat-1",
+      "ttft": 0.2139,
+      "elapsed": 0.4799,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "followup-1",
+      "ttft": 0.351,
+      "elapsed": 0.6212,
+      "usage": {
+        "prompt_tokens": 781,
+        "completion_tokens": 2,
+        "total_tokens": 783
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "short-2",
+      "ttft": 0.3389,
+      "elapsed": 0.452,
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 2,
+        "total_tokens": 32
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "cold-2",
+      "ttft": 7.5064,
+      "elapsed": 7.7765,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "repeat-2",
+      "ttft": 0.2127,
+      "elapsed": 0.4798,
+      "usage": {
+        "prompt_tokens": 757,
+        "completion_tokens": 2,
+        "total_tokens": 759
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "followup-2",
+      "ttft": 0.3512,
+      "elapsed": 0.6204,
+      "usage": {
+        "prompt_tokens": 781,
+        "completion_tokens": 2,
+        "total_tokens": 783
+      },
+      "done": true,
+      "answer_ok": true
+    },
+    {
+      "name": "nonstream",
+      "ttft": null,
+      "elapsed": 0.4436,
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 2,
+        "total_tokens": 22,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": null
+      },
+      "done": true,
+      "answer_ok": true
+    }
+  ],
+  "public_initial": [
+    {
+      "name": "probe-0",
+      "http": 200,
+      "ttft": 1.0935,
+      "elapsed": 1.1516,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 28,
+        "total_tokens": 29,
+        "cost": 1.156e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": false
+    },
+    {
+      "name": "probe-1",
+      "http": 200,
+      "ttft": 1.7352,
+      "elapsed": 1.8795,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 28,
+        "total_tokens": 29,
+        "cost": 1.156e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "cold-0",
+      "http": 200,
+      "ttft": 8.9284,
+      "elapsed": 9.1982,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "repeat-0",
+      "http": 200,
+      "ttft": 0.8045,
+      "elapsed": 1.0722,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "followup-0",
+      "http": 200,
+      "ttft": 0.8329,
+      "elapsed": 1.1045,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "cold-1",
+      "http": 200,
+      "ttft": 8.0297,
+      "elapsed": 8.3076,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "repeat-1",
+      "http": 200,
+      "ttft": 0.7559,
+      "elapsed": 1.0283,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "followup-1",
+      "http": 200,
+      "ttft": 0.901,
+      "elapsed": 1.1694,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "cold-2",
+      "http": 200,
+      "ttft": 8.1998,
+      "elapsed": 8.4632,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "repeat-2",
+      "http": 200,
+      "ttft": 0.9629,
+      "elapsed": 1.2289,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "followup-2",
+      "http": 200,
+      "ttft": 0.8198,
+      "elapsed": 1.1025,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "nonstream",
+      "http": 200,
+      "ttft": null,
+      "elapsed": 1.2319,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 28,
+        "total_tokens": 29,
+        "cost": 1.156e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    }
+  ],
+  "public_final_waves": [
+    {
+      "name": "cold-0",
+      "http": 200,
+      "ttft": 9.1211,
+      "elapsed": 9.3942,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "repeat-0",
+      "http": 200,
+      "ttft": 1.4748,
+      "elapsed": 1.7432,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "followup-0",
+      "http": 200,
+      "ttft": 2.3415,
+      "elapsed": 2.6025,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "cold-1",
+      "http": 200,
+      "ttft": 8.843,
+      "elapsed": 9.1274,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "repeat-1",
+      "http": 200,
+      "ttft": 1.7926,
+      "elapsed": 2.0774,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "followup-1",
+      "http": 200,
+      "ttft": 1.5468,
+      "elapsed": 1.8097,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "cold-2",
+      "http": 200,
+      "ttft": 9.0359,
+      "elapsed": 9.3094,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "repeat-2",
+      "http": 200,
+      "ttft": 1.5953,
+      "elapsed": 1.8655,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "followup-2",
+      "http": 200,
+      "ttft": 1.5227,
+      "elapsed": 1.799,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 773,
+        "total_tokens": 774,
+        "cost": 0.00026486,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    }
+  ],
+  "public_final_capability": [
+    {
+      "name": "native-cold",
+      "http": 200,
+      "ttft": 8.6585,
+      "elapsed": 8.9162,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 752,
+        "total_tokens": 753,
+        "cost": 0.00025772,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "native-repeat",
+      "http": 200,
+      "ttft": 0.8105,
+      "elapsed": 1.0728,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 752,
+        "total_tokens": 753,
+        "cost": 0.00025772,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "native-followup",
+      "http": 200,
+      "ttft": 1.0679,
+      "elapsed": 1.3314,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 770,
+        "total_tokens": 771,
+        "cost": 0.00026384,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true,
+      "local_statuses": [
+        200
+      ]
+    },
+    {
+      "name": "native-tools-0",
+      "error": "URLError: <urlopen error [Errno 60] Operation timed out>",
+      "ttft": null,
+      "elapsed": 34.1211,
+      "usage": null,
+      "done": false,
+      "answer_ok": false,
+      "matched_test_node": false,
+      "local_statuses": []
+    },
+    {
+      "name": "native-tools-1",
+      "http": 200,
+      "ttft": null,
+      "elapsed": 2.4395,
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_tokens": 71,
+        "total_tokens": 80,
+        "cost": 4.25e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": false,
+      "matched_test_node": false,
+      "local_statuses": [],
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"city\": \"San Francisco\"}",
+            "name": "get_weather"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "name": "native-tools-2",
+      "http": 200,
+      "ttft": null,
+      "elapsed": 2.5319,
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_tokens": 71,
+        "total_tokens": 80,
+        "cost": 4.25e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": false,
+      "matched_test_node": false,
+      "local_statuses": [],
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"city\": \"San Francisco\"}",
+            "name": "get_weather"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "name": "native-tools-3",
+      "http": 200,
+      "ttft": null,
+      "elapsed": 2.7101,
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_tokens": 71,
+        "total_tokens": 80,
+        "cost": 4.25e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": false,
+      "matched_test_node": true,
+      "local_statuses": [
+        503
+      ],
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"city\": \"San Francisco\"}",
+            "name": "get_weather"
+          },
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "local_final_repeat": {
+    "ttft": 0.2718,
+    "elapsed": 0.5424,
+    "done": true,
+    "answer_ok": true
+  },
+  "post_stop": {
+    "http": 200,
+    "ttft": 1.4727,
+    "elapsed": 1.5376,
+    "done": true,
+    "answer_ok": true,
+    "usage": {
+      "completion_tokens": 1,
+      "prompt_tokens": 28,
+      "total_tokens": 29,
+      "cost": 1.156e-05,
+      "currency": "USD"
+    }
+  },
+  "cached_restart": [
+    {
+      "name": "after-restart-cold",
+      "http": 200,
+      "ttft": 8.469,
+      "elapsed": 8.7351,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    },
+    {
+      "name": "after-restart-repeat",
+      "http": 200,
+      "ttft": 0.7788,
+      "elapsed": 1.0288,
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 755,
+        "total_tokens": 756,
+        "cost": 0.00025874,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": true,
+      "matched_test_node": true
+    }
+  ],
+  "network_recheck": [
+    {
+      "name": "recheck-tools-0",
+      "http": 200,
+      "ttft": null,
+      "elapsed": 3.1764,
+      "usage": {
+        "completion_tokens": 9,
+        "prompt_tokens": 71,
+        "total_tokens": 80,
+        "cost": 4.25e-05,
+        "currency": "USD"
+      },
+      "done": true,
+      "answer_ok": false,
+      "matched_test_node": false,
+      "local_statuses": [],
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"city\": \"San Francisco\"}",
+            "name": "get_weather"
+          },
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "checks": {
+    "focused_python": 379,
+    "adjacent_python": 186,
+    "swift_share_compute": 12,
+    "source_preservation_smoke": true,
+    "adhoc_codesign_strict": true
+  },
+  "earnings_verified": false
+}

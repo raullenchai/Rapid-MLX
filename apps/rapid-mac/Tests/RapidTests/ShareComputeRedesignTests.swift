@@ -1038,7 +1038,7 @@ struct ShareComputeAPIAlignedSurfaceTests {
 
     /// Two cached, two not — the fixture the review screenshots use.
     private static func rows(summary: ShareComputePoolSummary?) -> [ShareComputePoolRow] {
-        let cached: Set<String> = ["qwen3.8-27b-4bit", "qwen3.6-35b"]
+        let cached: Set<String> = ["qwen3.8-27b-tensorfold", "qwen3.6-35b"]
         let catalog = ShareComputeModel.supported.map {
             entry(alias: $0.alias, cached: cached.contains($0.alias), size: "16.8 GB")
         }

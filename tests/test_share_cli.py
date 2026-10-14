@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import signal
 import threading
 from types import SimpleNamespace
@@ -566,6 +567,24 @@ def test_spawn_serve_passes_api_key_via_env_not_argv():
     env = mock_popen.call_args.kwargs["env"]
     assert "SECRET_KEY_HERE" not in " ".join(argv)
     assert env["RAPID_MLX_API_KEY"] == "SECRET_KEY_HERE"
+
+
+@pytest.mark.parametrize("pool", [False, True])
+def test_spawn_serve_scopes_pool_capability_refusals(pool):
+    with (
+        patch.dict(os.environ, {"RAPID_MLX_QUICKSILVER_POOL": "stale"}, clear=True),
+        patch("subprocess.Popen") as popen,
+    ):
+        share_cli._spawn_serve(
+            alias="qwen3.8-27b-tensorfold",
+            port=18765,
+            api_key="test-key",
+            log_path=MagicMock(),
+            extra_args=[],
+            quicksilver_pool=pool,
+        )
+    actual = popen.call_args.kwargs["env"].get("RAPID_MLX_QUICKSILVER_POOL")
+    assert actual == ("1" if pool else None)
 
 
 def test_spawn_serve_without_log_target_captures_output_in_share_log(

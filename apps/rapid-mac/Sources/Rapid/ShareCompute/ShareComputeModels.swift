@@ -33,9 +33,10 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
     static let supported: [ShareComputeModel] = [
         .init(
             catalogID: "qwen3.8-27b",
-            alias: "qwen3.8-27b-4bit",
+            alias: "qwen3.8-27b-tensorfold",
             title: "Qwen3.8 27B · 4-bit",
-            detail: String(localized: "Balanced capacity and memory use")
+            detail: String(localized: "Balanced capacity and memory use"),
+            minMemoryGB: 48
         ),
         .init(
             catalogID: "qwen3.6-35b",

@@ -130,6 +130,9 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
     with pytest.raises(HTTPException) as exc:
         validate_http_request(request)
     assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as pool_exc:
+        validate_http_request(request, pool_worker=True)
+    assert pool_exc.value.status_code == 503
 
     request = SimpleNamespace(
         top_p=0.9,
@@ -693,7 +696,12 @@ def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -
         assert outputs[-1].new_text == expected
 
 
-def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
+@pytest.mark.parametrize("pool_worker", [False, True])
+def test_render_prompt_and_server_bootstrap(monkeypatch, pool_worker) -> None:
+    if pool_worker:
+        monkeypatch.setenv("RAPID_MLX_QUICKSILVER_POOL", "1")
+    else:
+        monkeypatch.delenv("RAPID_MLX_QUICKSILVER_POOL", raising=False)
     from rapid_mlx.speculative import tensorfold_qwen27_server as server
 
     request = SimpleNamespace(
@@ -775,6 +783,7 @@ def test_render_prompt_and_server_bootstrap(monkeypatch) -> None:
     assert closed == [True]
     assert captured["max_concurrent_requests"] == 1
     assert captured["enforce_model_window"] is True
+    assert captured["validate_request_fn"].keywords["pool_worker"] is pool_worker
     assert (
         captured["runtime_status_extra"]["profile"]["compatibility"]["state"] == "ready"
     )
@@ -1013,7 +1022,8 @@ def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
     assert client.post("/v1/chat/completions", json=body).status_code == 500
 
 
-def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
+@pytest.mark.parametrize("pool_worker", [False, True])
+def test_http_stream_and_nonstream_use_provider_and_reject_tools(pool_worker) -> None:
     from fastapi.testclient import TestClient
 
     from rapid_mlx.speculative.dflash.server import _build_app
@@ -1057,7 +1067,9 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         generation_kwargs_fn=generation_kwargs,
         render_prompt_fn=render_prompt,
         generation_kwargs_with_request=True,
-        validate_request_fn=validate_http_request,
+        validate_request_fn=functools.partial(
+            validate_http_request, pool_worker=pool_worker
+        ),
         backend_name="TensorFold Qwen3.8-27B",
         runtime_status_extra={"profile": {"mode": "accelerated"}},
     )
@@ -1087,7 +1099,12 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools() -> None:
         "/v1/chat/completions",
         json={**body, "tools": [{"type": "function", "function": {"name": "x"}}]},
     )
-    assert rejected.status_code == 400
+    assert rejected.status_code == (503 if pool_worker else 400)
+    multiple = client.post("/v1/chat/completions", json={**body, "n": 2})
+    assert multiple.status_code == 400
+    invalid = client.post("/v1/chat/completions", json={**body, "messages": []})
+    assert invalid.status_code == 400
+    assert client.post("/v1/chat/completions", json=body).status_code == 200
 
 
 def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() -> None:

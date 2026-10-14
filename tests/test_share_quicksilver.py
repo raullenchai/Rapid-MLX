@@ -767,8 +767,9 @@ def test_override_authorization_applies_to_get_requests():
     "typed, expected",
     [
         ("qwen3.6-35b", ("qwen3.6-35b", "qwen3.6-35b")),
-        ("qwen3.8-27b", ("qwen3.8-27b", "qwen3.8-27b-4bit")),
-        ("qwen3.8-27b-4bit", ("qwen3.8-27b", "qwen3.8-27b-4bit")),
+        ("qwen3.8-27b", ("qwen3.8-27b", "qwen3.8-27b-tensorfold")),
+        ("qwen3.8-27b-4bit", ("qwen3.8-27b", "qwen3.8-27b-tensorfold")),
+        ("qwen3.8-27b-tensorfold", ("qwen3.8-27b", "qwen3.8-27b-tensorfold")),
         (
             "nemotron-3.5-lightning-30b-4bit",
             ("nemotron-3.5-lightning", "nemotron-3.5-lightning-30b-4bit"),
@@ -784,6 +785,13 @@ def test_resolve_catalog_table(typed, expected):
 def test_resolve_catalog_explicit_flag_wins_and_unknown_passes_through():
     args = _make_args(model="my-thing", quicksilver_model="brand-new-model")
     assert qs.resolve_catalog(args) == ("brand-new-model", "my-thing")
+
+
+@pytest.mark.parametrize("typed", ["qwen3.8-27b", "qwen3.8-27b-4bit"])
+def test_qwen_pool_default_uses_tensorfold_with_explicit_catalog(typed):
+    assert qs.resolve_catalog(
+        _make_args(model=typed, quicksilver_model="qwen3.8-27b")
+    ) == ("qwen3.8-27b", "qwen3.8-27b-tensorfold")
 
 
 def test_resolve_catalog_unknown_without_flag_errors():
@@ -1759,6 +1767,49 @@ def test_run_share_serves_with_max_seqs_2_and_no_rate_limit():
     assert "--no-thinking" in extra
 
 
+def test_qwen_pool_registers_and_serves_one_tensorfold_lane():
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    spawned: dict = {}
+    calls: list = []
+
+    def fake_spawn(**kw):
+        spawned.update(kw)
+        return serve
+
+    def fake_open(req, timeout=None):
+        calls.append(req)
+        return _FakeResp(_register_payload(model="qwen3.8-27b"))
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_open", fake_open),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(model="qwen3.8-27b", provider_key=PROVIDER_KEY))
+    registration = next(r for r in calls if r.full_url.endswith("/nodes/register"))
+    assert json.loads(registration.data)["max_concurrency"] == 1
+    assert spawned["extra_args"][:3] == ["--disable-disk-caches", "--max-num-seqs", "1"]
+    assert spawned["alias"] == "qwen3.8-27b-tensorfold"
+    assert spawned["quicksilver_pool"] is True
+
+
+def test_qwen_pool_rejects_more_than_one_lane_before_registration(capsys):
+    with patch.object(qs, "_open") as network:
+        with pytest.raises(SystemExit) as exc:
+            qs.run_share(
+                _make_args(
+                    model="qwen3.8-27b",
+                    provider_key=PROVIDER_KEY,
+                    _passthrough=["--max-num-seqs", "2"],
+                )
+            )
+        assert exc.value.code == 2
+        assert "between 1 and 1" in capsys.readouterr().err
+        network.assert_not_called()
+
+
 def test_run_share_explicit_thinking_does_not_force_disable():
     tunnel = _fake_tunnel()
     serve, ctrl_c = _patched_run_env(None)
@@ -2702,7 +2753,7 @@ def test_install_service_catalog_alias_and_plist_write_error():
         "qwen3.8-27b",
         dict(
             _register_payload(model="qwen3.8-27b", worker="test-worker"),
-            alias="qwen3.8-27b-4bit",
+            alias="qwen3.8-27b-tensorfold",
         ),
     )
     args = _make_args(
@@ -2723,7 +2774,7 @@ def test_install_service_catalog_alias_and_plist_write_error():
         patch.object(Path, "write_bytes", side_effect=OSError("read only")),
         pytest.raises(qs.QuickSilverError, match="could not write"),
     ):
-        qs.install_service(args, "qwen3.8-27b", "qwen3.8-27b-4bit")
+        qs.install_service(args, "qwen3.8-27b", "qwen3.8-27b-tensorfold")
 
 
 def test_ws_connect_kwargs_legacy_and_uninspectable():

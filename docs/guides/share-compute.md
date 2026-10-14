@@ -37,6 +37,28 @@ rapid-mlx share qwen3.8-27b --quicksilver --worker "$(hostname -s)"
 
 Enter the `qsppk-` key when prompted. Later runs reuse the local node
 registration. Choose a different `--worker` on each Mac. Stop with Ctrl-C.
+The Qwen3.8 27B pool requires 48 GB+ unified memory and defaults to the qualified TensorFold runtime in both CLI
+and Desktop, including in-memory message-boundary prefix reuse. Desktop bundles
+that runtime. For a standalone Python install, install its qualified revision
+once in the same environment as Rapid:
+
+```bash
+python -m pip install 'mlx==0.32.3' \
+  'tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248'
+```
+
+An unavailable or incompatible runtime prevents joining. The local TensorFold
+backend serves text; requests requiring unsupported tools, media, grammar, or
+sampling features return a retryable capacity refusal in pool mode, allowing
+QuickSilver to use a compatible provider. Standalone TensorFold serving retains
+its explicit 400 refusal for unsupported features. Reuse is local to the node: a new prefix,
+restart, cache eviction, or node switch can still require cold prefill.
+The qualified 27B backend advertises one concurrent request, matching its
+single inference lane; `--max-num-seqs` values above one are rejected before
+registration.
+An existing registration bound to the old ordinary 27B alias needs one fresh
+registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect with
+the provider key). Node credentials remain bound to the selected alias.
 Only models enabled in QuickSilver's current pool can receive requests; the
 Desktop **Live Pool** view shows the current availability.
 

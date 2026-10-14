@@ -33,7 +33,8 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
     emitted = constraints.emit_constraints().splitlines()
     assert emitted[0].startswith("# Release-tested versions")
     assert emitted[1:] == [
-        "mlx==0.32.2",
+        "mlx==0.32.3",
+        "tensorfold==0.6.6",
         "transformers==5.15.1",
         "mlx-vlm==0.7.2",
         "mlx-audio==0.5.3",

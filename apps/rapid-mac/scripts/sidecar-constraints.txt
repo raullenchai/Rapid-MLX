@@ -1,5 +1,6 @@
 # Release-tested versions shared by candidate-wheel and Desktop sidecar builds.
-mlx==0.32.2
+mlx==0.32.3
+tensorfold==0.6.6
 transformers==5.15.1
 mlx-vlm==0.7.2
 mlx-audio==0.5.3

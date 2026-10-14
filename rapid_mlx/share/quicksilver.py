@@ -78,13 +78,15 @@ PROVIDER_KEY_ENV_VAR = "QUICKSILVER_PROVIDER_KEY"
 # the server, which is authoritative (422 on garbage — §5.4).
 CATALOG_DEFAULT_ALIAS: dict[str, str] = {
     "nemotron-3.5-lightning": "nemotron-3.5-lightning-30b-4bit",
-    "qwen3.8-27b": "qwen3.8-27b-4bit",
+    "qwen3.8-27b": "qwen3.8-27b-tensorfold",
     "qwen3.6-35b": "qwen3.6-35b",
     "glm-5.3-flash": "glm5.3-flash-4bit",
 }
 ALIAS_TO_CATALOG: dict[str, str] = {
     alias: catalog for catalog, alias in CATALOG_DEFAULT_ALIAS.items()
 }
+# Preserve the old pool entry spelling while selecting the qualified runtime.
+ALIAS_TO_CATALOG["qwen3.8-27b-4bit"] = "qwen3.8-27b"
 # Pool listings whose upstream contract has reasoning permanently ON (the
 # cloud origin 400s ``reasoning.enabled=false``). Pool mode normally injects
 # ``--no-thinking`` (plain-share parity); for these models a node that
@@ -471,6 +473,11 @@ def resolve_catalog(args: argparse.Namespace) -> tuple[str, str]:
     """
     typed: str = getattr(args, "_original_alias", None) or args.model
     explicit: str | None = getattr(args, "quicksilver_model", None)
+    if typed in {"qwen3.8-27b", "qwen3.8-27b-4bit"} and explicit in {
+        None,
+        "qwen3.8-27b",
+    }:
+        return "qwen3.8-27b", CATALOG_DEFAULT_ALIAS["qwen3.8-27b"]
     if explicit:
         return explicit, typed
     if typed in CATALOG_DEFAULT_ALIAS:
@@ -844,7 +851,12 @@ def _passthrough_option_value(passthrough: list[str], option: str) -> str | None
     return value
 
 
-def _pool_max_concurrency(passthrough: list[str]) -> int:
+def _pool_max_concurrency(
+    passthrough: list[str],
+    *,
+    default: int = _POOL_DEFAULT_MAX_CONCURRENCY,
+    ceiling: int = _POOL_MAX_CONCURRENCY_CEILING,
+) -> int:
     """Slots to advertise at registration: the ``--max-num-seqs`` the child
     serve will actually run with (§5.3 default 2, or the user's ``--``
     override), so the pool never routes more concurrent requests than the
@@ -868,11 +880,11 @@ def _pool_max_concurrency(passthrough: list[str]) -> int:
             result = 0
             break  # any malformed occurrence fails serve's parser: stop here
     if raw is None:
-        return _POOL_DEFAULT_MAX_CONCURRENCY
-    if not 1 <= result <= _POOL_MAX_CONCURRENCY_CEILING:
+        return default
+    if not 1 <= result <= ceiling:
         raise QuickSilverError(
             f"--max-num-seqs must be an integer between 1 and "
-            f"{_POOL_MAX_CONCURRENCY_CEILING} in pool mode (got {raw!r}) — the "
+            f"{ceiling} in pool mode (got {raw!r}) — the "
             f"pool advertises exactly the slots the local serve admits"
         )
     return result
@@ -1775,7 +1787,14 @@ def _run_share(
     # Validate the serve passthrough BEFORE registering: a rejected invocation
     # must not leave a remote node registration behind.
     passthrough = list(getattr(args, "_passthrough", None) or [])
-    max_concurrency = _pool_max_concurrency(passthrough)
+    # The qualified Qwen TensorFold HTTP adapter admits exactly one request.
+    # Advertise its real capacity rather than the ordinary batching default.
+    tensorfold_qwen = serve_alias == "qwen3.8-27b-tensorfold"
+    max_concurrency = _pool_max_concurrency(
+        passthrough,
+        default=1 if tensorfold_qwen else _POOL_DEFAULT_MAX_CONCURRENCY,
+        ceiling=1 if tensorfold_qwen else _POOL_MAX_CONCURRENCY_CEILING,
+    )
     # ``share`` advertises thinking off by default. The child server defaults
     # it on, so pool mode must forward the disabling flag just like plain share
     # — except for listings whose pool contract has reasoning always on.
@@ -1943,7 +1962,7 @@ def _run_share(
     # Exact flag match (not a prefix): the same test _pool_max_concurrency
     # uses, so the injected default and the advertised slots can't disagree.
     if not any(t.split("=", 1)[0] == "--max-num-seqs" for t in passthrough):
-        extra += ["--max-num-seqs", "2"]
+        extra += ["--max-num-seqs", str(max_concurrency)]
     if catalog_id not in CATALOG_REASONING_REQUIRED and (
         not args.thinking and not thinking_passthrough
     ):
@@ -2028,6 +2047,7 @@ def _run_share(
             api_key=api_key,
             log_path=serve_log,
             extra_args=extra,
+            quicksilver_pool=True,
         )
         if not _wait_for_healthz(port, serve_proc, progress=download_progress):
             print(

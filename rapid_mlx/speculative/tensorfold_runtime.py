@@ -14,6 +14,6 @@ SUPPORTED_RUNTIME_URL = "https://github.com/ashhart/TensorFold.git"
 SUPPORTED_MLX_VERSION = "0.32.3"
 INSTALL_HINT = (
     "Install the qualified TensorFold runtime from its vetted revision with:\n"
-    '    python -m pip install "tensorfold @ '
+    f'    python -m pip install "mlx=={SUPPORTED_MLX_VERSION}" "tensorfold @ '
     f'git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}"'
 )

@@ -349,9 +349,14 @@ class TensorFoldRequestProvider:
 
 
 def validate_http_request(
-    request: Any, *, supports_reasoning_budget: bool = False
+    request: Any, *, supports_reasoning_budget: bool = False, pool_worker: bool = False
 ) -> None:
     from fastapi import HTTPException
+
+    # A valid model request can exceed this worker's qualified capabilities.
+    # QuickSilver retries 5xx responses on a compatible provider; returning 400
+    # incorrectly turns that capacity miss into a terminal customer error.
+    unsupported_status = 503 if pool_worker else 400
 
     try:
         validate_request(
@@ -359,13 +364,13 @@ def validate_http_request(
             response_format=getattr(request, "response_format", None),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=unsupported_status, detail=str(exc)) from exc
     if any(
         not isinstance(getattr(message, "content", None), str)
         for message in request.messages
     ):
         raise HTTPException(
-            status_code=400,
+            status_code=unsupported_status,
             detail="TensorFold profiles support text message content only",
         )
     # OpenAI-compatible clients commonly serialize neutral penalty values
@@ -417,7 +422,7 @@ def validate_http_request(
         unsupported.append("reasoning_max_tokens")
     if unsupported:
         raise HTTPException(
-            status_code=400,
+            status_code=unsupported_status,
             detail="TensorFold profile does not support: " + ", ".join(unsupported),
         )
 
@@ -583,6 +588,7 @@ def run_tensorfold_qwen27_server(
         validate_request_fn=functools.partial(
             validate_http_request,
             supports_reasoning_budget=supports_reasoning_budget,
+            pool_worker=os.environ.get("RAPID_MLX_QUICKSILVER_POOL") == "1",
         ),
         backend_name=backend_label,
         # One request holds the only lane, so a prompt past the model's
