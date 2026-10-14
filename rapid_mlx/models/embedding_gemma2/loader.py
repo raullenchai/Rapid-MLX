@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright © 2025 Prince Canuma
 # Adapted from pinned MLX-VLM encoder_loader.py; see NOTICE.
-"""Strict native text encoder loading without changing the vision runtime."""
+"""Strict native encoder loading with a default-off vision tower."""
 
 import json
 from pathlib import Path
@@ -14,7 +14,7 @@ from .config import ModelConfig
 from .embedding_gemma2 import Model
 
 
-def load(model_name: str):
+def load(model_name: str, *, vision: bool = False):
     from mlx_vlm.utils import _quantization_for_module_path, get_model_path
 
     path = get_model_path(model_name)
@@ -39,7 +39,7 @@ def load(model_name: str):
         raise ValueError(
             "EmbeddingGemma 2 supports BF16 or standard affine 4-bit weights"
         )
-    model = Model(ModelConfig.from_dict(config))
+    model = Model(ModelConfig.from_dict(config), vision=vision)
     index = path / "model.safetensors.index.json"
     if index.exists():
         weight_map = json.loads(index.read_text())["weight_map"]
@@ -53,11 +53,13 @@ def load(model_name: str):
         files = sorted(path.glob("*.safetensors"))
     if not files:
         raise FileNotFoundError(f"No safetensors found in {path}")
-    weights = {}
+    weights: dict[str, mx.array] = {}
     for file in files:
         if not file.is_file():
             raise FileNotFoundError(file)
-        weights.update(mx.load(str(file)))
+        shard = mx.load(str(file))
+        assert isinstance(shard, dict)
+        weights.update(shard)
     weights = model.sanitize(weights)
     if any(weight.dtype == mx.float16 for weight in weights.values()):
         raise ValueError("EmbeddingGemma 2 requires BF16 or FP32, never FP16")

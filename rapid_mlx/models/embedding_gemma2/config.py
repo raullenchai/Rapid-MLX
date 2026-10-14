@@ -59,6 +59,8 @@ class TextConfig(BaseModelConfig):
 class ModelConfig(BaseModelConfig):
     model_type: str = "embedding_gemma2"
     text_config: TextConfig = field(default_factory=TextConfig)
+    vision_config: dict | None = None
+    vision_soft_tokens_per_image: int = 280
     image_token_id: int = 258880
     audio_token_id: int = 258881
     video_token_id: int = 258884
