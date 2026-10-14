@@ -5974,6 +5974,36 @@
        "type": "builtins.str"
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "enable_local_search",
+       "help": "Enable local folder text search at /v1/local-search (no automatic model downloads).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--enable-local-search"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "local_search_dir",
+       "help": "Local-search index directory (default: rapid-mlx state directory / local-search).",
+       "metavar": "DIR",
+       "nargs": null,
+       "option_strings": [
+        "--local-search-dir"
+       ],
+       "required": false,
+       "type": "builtins.str"
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -6324,6 +6354,8 @@
         "default_presence_penalty",
         "default_frequency_penalty",
         "embedding_model",
+        "enable_local_search",
+        "local_search_dir",
         "embedding_max_length",
         "embedding_overflow_policy",
         "watchdog_ppid",

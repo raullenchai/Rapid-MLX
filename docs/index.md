@@ -37,6 +37,7 @@ GPU acceleration to local AI workloads by integrating:
 - [Multimodal (Images & Video)](guides/multimodal.md)
 - [Audio (STT/TTS)](guides/audio.md)
 - [Embeddings](guides/embeddings.md)
+- [Local folder search](guides/local-search.md)
 - [Reasoning Models](guides/reasoning.md)
 - [Tool Calling](guides/tool-calling.md)
 - [MCP & Tool Calling](guides/mcp-tools.md)

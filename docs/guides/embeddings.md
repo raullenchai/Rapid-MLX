@@ -199,3 +199,7 @@ Make sure the model name matches a HuggingFace repository compatible with mlx-em
 ```bash
 huggingface-cli download mlx-community/all-MiniLM-L6-v2-4bit
 ```
+
+For opt-in semantic and keyword retrieval over local folders, see
+[Local folder search](local-search.md). It uses a separate lazy engine and does
+not change this endpoint’s model lock.

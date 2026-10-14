@@ -553,3 +553,190 @@ def test_native_media_error_has_explicit_wire_contract(monkeypatch):
             assert response.json()["error"]["code"] != "unsupported_embedding_modality"
     finally:
         restore()
+
+
+def tiny_vision_config():
+    config = tiny_config()
+    config.update(
+        image_token_id=20,
+        boi_token_id=21,
+        eoi_token_id=22,
+        vision_config={
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "patch_size": 2,
+            "pooling_kernel_size": 2,
+            "default_output_length": 4,
+            "position_embedding_size": 16,
+        },
+    )
+    return config
+
+
+class ImageTokenizer(Tokenizer):
+    def decode(self, tokens):
+        return " ".join(map(str, tokens)) + " "
+
+    def __call__(self, texts, **kwargs):
+        ids = [self.encode(text) for text in texts]
+        width = max(map(len, ids))
+        return {
+            "input_ids": np.array([row + [0] * (width - len(row)) for row in ids]),
+            "attention_mask": np.array(
+                [[1] * len(row) + [0] * (width - len(row)) for row in ids]
+            ),
+        }
+
+
+@pytest.fixture
+def vision_engine(tmp_path, monkeypatch):
+    from rapid_mlx.models.embedding_gemma2.config import ModelConfig
+    from rapid_mlx.models.embedding_gemma2.embedding_gemma2 import Model
+
+    engine = EmbeddingEngine("embeddinggemma-2-4bit", vision=True)
+    engine._model = Model(ModelConfig.from_dict(tiny_vision_config()), vision=True)
+    engine._tokenizer = ImageTokenizer()
+    engine._resolve_effective_max_length()
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps(
+            {
+                "image_processor": {
+                    "do_resize": False,
+                    "patch_size": 2,
+                    "pooling_kernel_size": 2,
+                    "max_soft_tokens": 4,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr("mlx_vlm.utils.get_model_path", lambda _: tmp_path)
+    return engine
+
+
+@pytest.mark.parametrize("variable_size", [False, True])
+def test_native_vision_images_paths_padding_and_cached_processor(
+    vision_engine, tmp_path, monkeypatch, variable_size
+):
+    from PIL import Image
+
+    cleanup = []
+    monkeypatch.setattr(mx, "clear_cache", lambda: cleanup.append(True))
+    first = Image.new("RGBA", (4, 4), (255, 0, 0, 255))
+    second = Image.new("L", (8, 4) if variable_size else (4, 4), 128)
+    path = tmp_path / "image.png"
+    second.save(path)
+    embeddings = np.array(vision_engine.embed_images([first, path]))
+    processor = vision_engine._image_processor
+    assert embeddings.shape == (2, 768)
+    assert np.isfinite(embeddings).all()
+    assert np.allclose(np.linalg.norm(embeddings, axis=1), 1, atol=1e-6)
+    single = np.array(vision_engine.embed_images([first]))[0]
+    assert np.allclose(embeddings[0], single, atol=1e-6)
+    assert vision_engine._image_processor is processor
+    assert cleanup == [True, True]
+    # Opt-in image processing preserves the text path and media rejection.
+    assert len(vision_engine.embed("2 3")[0]) == 768
+    with pytest.raises(EmbeddingUnsupportedMediaError, match="text/code only"):
+        vision_engine.embed_tokens([[2, 20]])
+    weights = {
+        "model.vision_tower.keep": mx.ones(1),
+        "model.audio_tower.drop": mx.ones(1),
+    }
+    assert set(vision_engine._model.sanitize(weights)) == {"vision_tower.keep"}
+
+
+def test_native_vision_support_guards_and_empty_input(native_engine, vision_engine):
+    from rapid_mlx.models.embedding_gemma2.config import ModelConfig
+    from rapid_mlx.models.embedding_gemma2.embedding_gemma2 import Model
+
+    with pytest.raises(EmbeddingUnsupportedMediaError, match="vision=True"):
+        native_engine.embed_images([])
+    native_engine.vision = True
+    with pytest.raises(EmbeddingUnsupportedMediaError, match="does not support images"):
+        native_engine.embed_images([])
+    assert vision_engine.embed_images([]) == []
+    assert vision_engine._image_processor is None
+    with pytest.raises(ValueError, match="does not support images"):
+        Model(ModelConfig.from_dict(tiny_config()), vision=True)
+
+
+def test_native_vision_placeholder_validation_and_overflow(vision_engine, monkeypatch):
+    from PIL import Image
+
+    image = Image.new("RGB", (4, 4), "red")
+    vision_engine.effective_max_length = 2
+    vision_engine.overflow_policy = "truncate"
+    with pytest.raises(EmbeddingInputTooLongError) as error:
+        vision_engine.embed_images([image])
+    assert error.value.observed_tokens == 3
+    assert error.value.allowed_tokens == 2
+    assert vision_engine.num_truncations == 0
+    vision_engine.effective_max_length = 8192
+    monkeypatch.setattr(vision_engine._tokenizer, "decode", lambda _: "2 ")
+    with pytest.raises(ValueError, match="expand image placeholders"):
+        vision_engine.embed_images([image])
+
+
+def test_native_vision_scatter_preserves_order_and_checks_count():
+    from rapid_mlx.models.embedding_gemma2.embedding_gemma2 import Model
+
+    original = mx.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
+    ids = mx.array([[20, 2], [3, 20]])
+    features = mx.array([[10.0, 11.0], [12.0, 13.0]])
+    scattered = Model._scatter(original, ids, 20, features)
+    assert np.array_equal(np.array(scattered), [[[10, 11], [3, 4]], [[5, 6], [12, 13]]])
+    with pytest.raises(ValueError, match="feature count"):
+        Model._scatter(original, ids, 20, features[:1])
+    assert Model._scatter(original, ids, 99, mx.zeros((0, 2))) is original
+
+
+def test_native_vision_forward_rejects_other_media_and_clears_failed_pass(
+    vision_engine, monkeypatch
+):
+    from PIL import Image
+
+    model = vision_engine._model
+    for name in ("pixel_values_videos", "input_features"):
+        with pytest.raises(ValueError, match="text/code only"):
+            model(mx.array([[2, 3]]), **{name: mx.ones(1)})
+    cleanup = []
+    monkeypatch.setattr(mx, "clear_cache", lambda: cleanup.append(True))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("vision forward failed")
+
+    monkeypatch.setattr(type(model), "__call__", fail)
+    with pytest.raises(RuntimeError, match="vision forward failed"):
+        vision_engine.embed_images([Image.new("RGB", (4, 4), "red")])
+    assert cleanup == [True]
+
+
+def test_native_vision_loader_dispatch_and_legacy_rejection(vision_engine, monkeypatch):
+    import sys
+
+    from rapid_mlx.models.embedding_gemma2 import loader
+
+    calls = []
+
+    def load(name, **kwargs):
+        calls.append((name, kwargs))
+        return vision_engine._model, vision_engine._tokenizer
+
+    monkeypatch.setattr(loader, "load", load)
+    engine = EmbeddingEngine("embeddinggemma-2-4bit", vision=True)
+    engine.load()
+    assert engine.is_loaded
+    assert engine.effective_max_length == 8192
+    assert calls == [("embeddinggemma-2-4bit", {"vision": True})]
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_embeddings",
+        SimpleNamespace(load=lambda _: pytest.fail("legacy weights loaded")),
+    )
+    legacy = EmbeddingEngine("legacy-model", vision=True)
+    with pytest.raises(ValueError, match="requires EmbeddingGemma 2"):
+        legacy.load()

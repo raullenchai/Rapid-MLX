@@ -395,6 +395,8 @@ binary auto-routing decision has a force-on and force-off pair.
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--enable-local-search` | Enable [local folder search](../guides/local-search.md) | Off |
+| `--local-search-dir` | Local-search index directory | State directory / local-search |
 | `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2) | None |
 | `--embedding-max-length` | Max input length (tokens) for the embedding model; `auto` derives it from the model's declared maximum, or pass a positive integer for a lower operational ceiling. Inputs above the limit follow `--embedding-overflow-policy` (never truncated silently). | auto |
 | `--embedding-overflow-policy` | Overflow handling: `truncate` (discards the tail, logs a warning, increments the `rapid_mlx_embedding_truncations_total` metric) or `error` (HTTP 400 with observed and allowed token counts) | truncate |
