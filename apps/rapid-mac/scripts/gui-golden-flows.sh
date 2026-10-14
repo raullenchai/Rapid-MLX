@@ -2713,6 +2713,19 @@ flow_chat_restore() {
     # content", which the fake emits nine chunks before the stream ends. Settle
     # first so the baseline is the finished turn, not a partial one.
     wait_send_idle "$OUT/chat-settled.json"
+    # Send goes idle before the post-answer background requests (title and
+    # follow-up suggestions) finish; while they run, Unload is disabled with
+    # "Stop the active response…". Wait for them so the baseline is the
+    # settled turn rather than whichever side of that window the poll lands on.
+    for _ in {1..100}; do
+        if jq -e '[.data.ui_elements[]?
+                   | select(.identifier == "Sidebar.Residency.Unload"
+                            or .identifier == "ChatView.Residency.Unload")]
+                  | length > 0 and all(.enabled == true)' \
+               "$OUT/chat-settled.json" >/dev/null; then break; fi
+        sleep 0.2
+        see_main "$OUT/chat-settled.json"
+    done
     baseline chat-restore.answered "$OUT/chat-settled.json"
     press "$OUT/chat-settled.json" ChatView.ConversationInstructions "$OUT/conversation-instructions-open-press.json"
     wait_identifier ChatView.ConversationInstructions.Editor "$OUT/conversation-instructions-open.json"
