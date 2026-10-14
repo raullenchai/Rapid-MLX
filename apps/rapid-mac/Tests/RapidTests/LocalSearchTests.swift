@@ -72,6 +72,43 @@ private func searchResult(_ title: String) -> LocalSearchResult {
 }
 
 @Suite struct LocalSearchPresentationTests {
+    @Test(arguments: [false, true], [false, true])
+    func nonKeywordModeHasNoSemanticCaption(downloaded: Bool, loaded: Bool) {
+        #expect(LocalSearchSemanticCaption.make(
+            model: .init(id: "search", downloaded: downloaded, loaded: loaded),
+            keywordMode: false, unavailableReason: "worker failed") == nil)
+    }
+
+    @Test(arguments: [false, true], [nil, "worker failed"] as [String?])
+    func missingModelKeepsDownloadCaption(loaded: Bool, reason: String?) throws {
+        let caption = try #require(LocalSearchSemanticCaption.make(
+            model: .init(id: "search", downloaded: false, loaded: loaded),
+            keywordMode: true, unavailableReason: reason))
+        #expect(caption.text == String(localized: "Keyword results · Download the search model to also find files by meaning."))
+        #expect(caption.detail == nil)
+    }
+
+    @Test(arguments: [false, true], ["ValueError: unsupported model", "Engine has no sanctioned model worker; keyword-only", "Worker exited unexpectedly"])
+    func downloadedModelFailureKeepsRawReasonSecondary(loaded: Bool, reason: String) throws {
+        let caption = try #require(LocalSearchSemanticCaption.make(
+            model: .init(id: "search", downloaded: true, loaded: loaded),
+            keywordMode: true, unavailableReason: reason))
+        #expect(caption.text == String(localized: "Keyword results · The search model is unavailable, so meaning-based search is off."))
+        #expect(caption.detail == reason)
+        #expect(!caption.text.contains(reason))
+    }
+
+    @Test(arguments: [false, true], [nil, "", " \n\t"] as [String?])
+    func downloadedModelWithoutReasonUsesLoadedState(loaded: Bool, reason: String?) throws {
+        let caption = try #require(LocalSearchSemanticCaption.make(
+            model: .init(id: "search", downloaded: true, loaded: loaded),
+            keywordMode: true, unavailableReason: reason))
+        #expect(caption.text == (loaded
+            ? String(localized: "Keyword results · Meaning-based search is currently unavailable.")
+            : String(localized: "Keyword results · Meaning-based search is starting.")))
+        #expect(caption.detail == nil)
+    }
+
     @Test(arguments: [0, 1, 2, 3], [false, true])
     func accessibilityLabelOmitsAbsentComponents(locator: Int, nameOnly: Bool) {
         let page = locator == 1 || locator == 3 ? 2 : nil
@@ -167,6 +204,22 @@ private func searchResult(_ title: String) -> LocalSearchResult {
 }
 
 @Suite struct LocalSearchDecodingTests {
+    @Test(arguments: ["absent", "null", "Engine has no sanctioned model worker; keyword-only", "ValueError: unsupported model"])
+    func semanticUnavailableReasonIsOptional(value: String) throws {
+        var payload: [String: Any] = [
+            "enabled": true,
+            "model": ["id": "search", "downloaded": true, "loaded": false],
+            "folders": [],
+            "indexing": ["active": false, "files_done": 0, "files_total": 0],
+            "totals": ["files": 0, "chunks": 0, "index_bytes": 0]
+        ]
+        if value == "null" { payload["semantic_unavailable_reason"] = NSNull() }
+        else if value != "absent" { payload["semantic_unavailable_reason"] = value }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let status = try LocalSearchClient.decode(LocalSearchStatus.self, from: data)
+        #expect(status.semanticUnavailableReason == (value == "absent" || value == "null" ? nil : value))
+    }
+
     @Test func nullFieldsAndUnknownState() throws {
         let data = Data(#"{"enabled":true,"model":{"id":"embeddinggemma-2-4bit","downloaded":false,"loaded":false},"folders":[{"id":"f","path":"/tmp","state":"future_state","files_indexed":2,"files_skipped":1,"chunks":3,"last_indexed_at":null,"error":null}],"indexing":{"active":false,"folder_id":null,"current_path":null,"files_done":0,"files_total":0},"totals":{"files":2,"chunks":3,"index_bytes":42}}"#.utf8)
         let status = try LocalSearchClient.decode(LocalSearchStatus.self, from: data)
@@ -624,7 +677,9 @@ extension LocalSearchViewModelTests {
         }
         try stage.setValue("old AX query", for: "LocalSearch.QueryField")
         try stage.setValue("files via AX", for: "LocalSearch.QueryField")
-        try await stage.wait(for: "AX debounced response") { model.results.count == 1 }
+        try await stage.wait(for: "AX debounced response rendered") {
+            model.results.count == 1 && stage.identifiers().contains("LocalSearch.Result.0")
+        }
         #expect(model.query == "files via AX")
         #expect(queries == ["files via AX"])
         #expect(stage.identifiers().contains("LocalSearch.ResultsList"))

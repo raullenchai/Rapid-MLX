@@ -1,5 +1,23 @@
 import Foundation
 
+struct LocalSearchSemanticCaption {
+    let text: String
+    let detail: String?
+
+    static func make(model: LocalSearchStatus.Model, keywordMode: Bool, unavailableReason: String?) -> Self? {
+        guard keywordMode else { return nil }
+        guard model.downloaded else {
+            return Self(text: String(localized: "Keyword results · Download the search model to also find files by meaning."), detail: nil)
+        }
+        if let reason = unavailableReason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Self(text: String(localized: "Keyword results · The search model is unavailable, so meaning-based search is off."), detail: reason)
+        }
+        return Self(text: model.loaded
+            ? String(localized: "Keyword results · Meaning-based search is currently unavailable.")
+            : String(localized: "Keyword results · Meaning-based search is starting."), detail: nil)
+    }
+}
+
 enum LocalSearchPath {
     static func folderTitle(_ path: String) -> String {
         path == "/" ? String(localized: "Whole Mac") : abbreviated(path)

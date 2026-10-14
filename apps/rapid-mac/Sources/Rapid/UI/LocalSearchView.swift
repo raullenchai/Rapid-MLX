@@ -82,9 +82,14 @@ struct LocalSearchView: View {
                 if !status.model.downloaded { modelCard }
             }
             if let status = model.status, !status.folders.isEmpty { indexingLine(status) }
-            if model.keywordMode {
-                Text(String(localized: "Keyword results · Download the search model to also find files by meaning."))
+            if let status = model.status,
+               let caption = LocalSearchSemanticCaption.make(model: status.model, keywordMode: model.keywordMode,
+                    unavailableReason: status.semanticUnavailableReason) {
+                Text(caption.text)
                     .font(.caption).foregroundStyle(.secondary)
+                    .help(caption.detail ?? "")
+                    .accessibilityHint(caption.detail ?? "")
+                    .accessibilityIdentifier("LocalSearch.SemanticCaption")
             }
             if case .error(let message) = model.state {
                 VStack(alignment: .leading, spacing: 8) {

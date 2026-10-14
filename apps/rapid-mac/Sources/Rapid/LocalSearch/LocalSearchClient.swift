@@ -63,6 +63,7 @@ struct LocalSearchStatus: Decodable, Sendable, Equatable {
     let folders: [LocalSearchFolder]
     let indexing: Indexing
     let totals: Totals
+    var semanticUnavailableReason: String? = nil
     var needsPolling: Bool {
         indexing.active || folders.contains { $0.state == .queued || $0.state == .indexing }
     }

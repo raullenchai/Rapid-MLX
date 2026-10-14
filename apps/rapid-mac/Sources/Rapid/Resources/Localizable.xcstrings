@@ -932,6 +932,36 @@
         }
       }
     },
+    "Keyword results · Meaning-based search is currently unavailable." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键词结果 · 按含义搜索暂时不可用。"
+          }
+        }
+      }
+    },
+    "Keyword results · Meaning-based search is starting." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键词结果 · 正在启动按含义搜索。"
+          }
+        }
+      }
+    },
+    "Keyword results · The search model is unavailable, so meaning-based search is off." : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键词结果 · 搜索模型不可用，按含义搜索已关闭。"
+          }
+        }
+      }
+    },
     "Keyword search is available now. Download the search model to find related ideas even when the words differ." : {
       "localizations": {
         "zh-Hans": {
