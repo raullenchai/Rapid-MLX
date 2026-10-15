@@ -31,6 +31,19 @@ structural assertions have equivalent native coverage.
 `scripts/gui-golden-flows.sh` runs the release journeys against a built
 Rapid-MLX Desktop app without loading a real model.
 
+Every new persona seeds the sidebar and Settings feature preferences in its own
+app defaults domain, including MCP Connectors and Dock/update preferences. An
+empty per-model performance override map preserves MTP's catalog defaults.
+Feature journeys opt in explicitly through the UI; preferences remain mutable
+across relaunch. Preflight warns about matching
+keys found by read-only `defaults read NSGlobalDomain`; neither global nor real
+app preferences are changed. Keep `persona_feature_defaults` aligned with the
+source feature configs and Settings panels when adding a preference.
+
+Settings and About use PID-targeted native AX menu actions and require the real
+window to appear. Chat-depth snapshots require both residency unload controls
+to remain enabled over four consecutive observations, including after restore.
+
 **Journeys** — a user walking a path end to end:
 
 1. fresh install, consent, onboarding, and steady-state shell; its
