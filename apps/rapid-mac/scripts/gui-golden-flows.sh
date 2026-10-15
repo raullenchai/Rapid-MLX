@@ -865,6 +865,65 @@ require_ax_trust() {
         || die "GUI preconditions not met — see the rapid-ax line above and $OUT_ROOT/ax-trust.json"
 }
 
+# Product defaults read by ContentView/SettingsView and their feature panels.
+# Keep feature gates aligned with *FeatureConfig; MTP is a per-model override
+# in ModelPerfConfigStore, so an empty JSON map preserves catalog defaults.
+# Persistent app-domain values mask NSGlobalDomain while remaining UI-mutable.
+persona_feature_defaults() {
+    cat <<'DEFAULTS'
+Rapid.experimental.videoGenerationEnabled bool false
+Rapid.experimental.computerUseEnabled bool false
+Rapid.experimental.localSearchEnabled bool false
+Rapid.experimental.communityBenchmarkEnabled bool false
+Rapid.experimental.shareComputeEnabled bool false
+rapid.mcp.connectors.enabled.v1 bool false
+rapid.mcp.approval.mode.v1 string ask
+rapid.window.hideDockChoice string notAsked
+SUAutomaticallyUpdate bool true
+rapid.perf.modelOverrides.v1 data 7b7d
+rapid.server.auto_start_on_launch.v1 bool true
+rapid.server.confirm_active_request_switch.v1 bool true
+rapid.picker.show_all_models.v1 bool false
+Rapid.showLogs bool false
+Rapid.personalIntelligence.introductionCompleted bool false
+Rapid.personalIntelligence.preferredEnabled bool true
+rapid.memory.enabled bool false
+dictation.enabled bool false
+dictation.archiveAudio bool false
+rapid.appearance.v1 string light
+rapid.webSearch.provider string keenable
+rapid.tools.browse.mode.v1 string ask
+rapid.tools.enabled.web_search bool true
+rapid.tools.enabled.browse bool true
+rapid.tools.enabled.weather bool true
+rapid.tools.enabled.read_document bool true
+rapid.tools.enabled.local_search bool true
+rapid.tools.enabled.local_read bool true
+rapid.tools.enabled.local_write bool true
+rapid.tools.enabled.local_trash bool true
+rapid.tools.enabled.local_run bool true
+DEFAULTS
+}
+
+warn_global_app_defaults() {
+    # Read only: never clear or rewrite account preferences. Check names rather
+    # than values so even an explicit global false is visible in the evidence.
+    local key kind value
+    while read -r key kind value; do
+        if /usr/bin/defaults read NSGlobalDomain "$key" >/dev/null 2>&1; then
+            printf '[gui-golden] WARN: NSGlobalDomain contains %s; neutralized by persona app-domain defaults\n' "$key" >&2
+        fi
+    done < <(persona_feature_defaults)
+}
+
+seed_persona_feature_defaults() {
+    local key kind value
+    while read -r key kind value; do
+        env HOME="$PERSONA/home" CFFIXED_USER_HOME="$PERSONA/home" \
+            /usr/bin/defaults write "$BUNDLE_ID" "$key" "-$kind" "$value"
+    done < <(persona_feature_defaults)
+}
+
 require_tools() {
     [[ -d "$APP_SOURCE" ]] || die "built app not found: $APP_SOURCE"
     for tool in jq python3; do
@@ -872,7 +931,7 @@ require_tools() {
     done
     [[ -f "$BASELINE_TOOL" ]] || die "AX baseline normalizer not found: $BASELINE_TOOL"
     AX_DRIVER="$OUT_ROOT/rapid-ax"
-    swiftc "$ROOT/scripts/rapid-ax.swift" -o "$AX_DRIVER"
+    swiftc -module-cache-path "$OUT_ROOT/swift-module-cache" "$ROOT/scripts/rapid-ax.swift" -o "$AX_DRIVER"
     require_ax_trust
     flow_requires_peekaboo || return 0
     command -v peekaboo >/dev/null || die "peekaboo is required for flow: $FLOW"
@@ -944,6 +1003,7 @@ start_persona() {
     local isolated_app
     isolated_app="$(cat "$OUT/isolated-app.txt")"
     BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$isolated_app/Contents/Info.plist")"
+    seed_persona_feature_defaults
     # All regression journeys except fresh-install start with a durable quiet
     # opt-out. They test their named feature, not the one-time consent invite;
     # leaving the preference absent would make the first successful result add
@@ -1826,6 +1886,9 @@ dismiss_first_run() {
 }
 
 open_settings() {
+    # Retain the hosted-runner delivery path: direct menu-item AXPress can
+    # acknowledge Settings without dispatching its SwiftUI command. The real
+    # window postcondition below remains required for either delivery method.
     if flow_requires_peekaboo; then
         pb menu click --app "PID:$APP_PID" --item 'Settings…' --json > "$OUT/open-settings.json"
     else
@@ -1874,26 +1937,7 @@ APPLESCRIPT
 }
 
 open_about() {
-    osascript - "$APP_PID" > "$OUT/open-about.json" <<'APPLESCRIPT'
-on run argv
-    set targetPID to (item 1 of argv) as integer
-    tell application "System Events"
-        set targetProcess to first application process whose unix id is targetPID
-        set frontmost of targetProcess to true
-        tell targetProcess
-            repeat with menuBarItem in menu bar items of menu bar 1
-                try
-                    if exists menu item "About Rapid-MLX" of menu 1 of menuBarItem then
-                        click menu item "About Rapid-MLX" of menu 1 of menuBarItem
-                        return "{\"success\":true,\"method\":\"app-menu\"}"
-                    end if
-                end try
-            end repeat
-        end tell
-    end tell
-    error "About Rapid-MLX menu item not found"
-end run
-APPLESCRIPT
+    "$AX_DRIVER" app-menu "$APP_PID" 'About Rapid-MLX' > "$OUT/open-about.json"
 
     local probe=2
     for _ in {1..40}; do
@@ -3696,6 +3740,26 @@ flow_browse_all_destination() {
     cleanup_persona
 }
 
+wait_residency_idle() {
+    local destination="$1" stable=0
+    for _ in {1..120}; do
+        see_main "$destination"
+        if jq -e '.data.ui_elements as $elements
+            | all("Sidebar.Residency.Unload", "ChatView.Residency.Unload";
+                . as $id | [$elements[]? | select(.identifier == $id)]
+                | length == 1 and all(.[]; .enabled == true
+                    and .help != "Stop the active response before unloading models"))' \
+            "$destination" >/dev/null; then
+            stable=$((stable + 1))
+            [[ "$stable" -ge 4 ]] && return 0
+        else
+            stable=0
+        fi
+        sleep 0.25
+    done
+    die "residency unload controls did not settle enabled: $destination"
+}
+
 flow_chat_depth() {
     # One message is not a conversation.
     #
@@ -3768,6 +3832,7 @@ flow_chat_depth() {
     log "  no raw fences, pipe rows or list markers, code block nested and intact,"
     log "  and the CJK answer kept its emoji and its right-to-left run"
 
+    wait_residency_idle "$OUT/turn5-settled.json"
     baseline chat-depth.five-turns "$OUT/turn5-settled.json"
 
     # Restore has to bring back the WHOLE conversation. `chat-restore` only
@@ -3783,6 +3848,7 @@ flow_chat_depth() {
     [[ -n "$conversation_id" ]] || die "restored conversation row was not exposed to AX"
     press "$OUT/depth-restored.json" "$conversation_id" "$OUT/depth-open-restored.json"
     wait_send_idle "$OUT/depth-restored-transcript.json"
+    wait_residency_idle "$OUT/depth-restored-transcript.json"
     assert_transcript_turns "$OUT/depth-restored-transcript.json" 5
     # The same interleaved, transcript-scoped check as before the relaunch.
     # A restore that returns five prompts with the answers shuffled between
@@ -5970,6 +6036,7 @@ if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
 fi
 mkdir -p "$OUT_ROOT"
 require_tools
+warn_global_app_defaults
 case "$FLOW" in
     fresh-install) run_journey fresh-install flow_fresh_install ;;
     cached-quickstart) run_journey cached-quickstart flow_cached_quickstart ;;
