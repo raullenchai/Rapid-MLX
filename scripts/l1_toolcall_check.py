@@ -42,19 +42,46 @@ _TOOL = {
     },
 }
 
-_WIRE_MARKERS = (
-    "<tool_call",
-    "<toolcall",
-    "<｜tool▁call",
-    "<｜tool▁sep｜>",
-    "[TOOL_CALLS]",
+_THINK_MARKERS = (
     "<think>",
     "</think>",
 )
 
 
 def _visible_wire_marker(text: str) -> str | None:
-    return next((marker for marker in _WIRE_MARKERS if marker in text), None)
+    from rapid_mlx.routes.chat import (
+        _TOOL_WIRE_STANDALONE_MARKERS,
+        _contains_structural_tool_wire_leak,
+        _is_tool_wire_marker_only,
+    )
+
+    if _contains_structural_tool_wire_leak(text) or _is_tool_wire_marker_only(text):
+        matches = (
+            match
+            for marker_re in _TOOL_WIRE_STANDALONE_MARKERS
+            if (match := marker_re.search(text)) is not None
+        )
+        return min(matches, key=lambda match: match.start()).group(0)
+    return next((marker for marker in _THINK_MARKERS if marker in text), None)
+
+
+def _visible_fields_wire_leak(
+    fields: dict[str, str],
+) -> tuple[str, str, str] | None:
+    for field, visible in fields.items():
+        marker = _visible_wire_marker(visible)
+        if marker:
+            return field, marker, visible
+    return None
+
+
+def _wire_leak_error(context: str, marker: str, visible: str) -> ValueError:
+    marker_at = visible.find(marker)
+    excerpt_start = max(0, marker_at - 200) if marker_at >= 0 else 0
+    excerpt = visible[excerpt_start : excerpt_start + 500]
+    return ValueError(
+        f"native wire marker leaked into {context}: {marker!r}; visible={excerpt!r}"
+    )
 
 
 def _error_detail(exc: Exception) -> str:
@@ -83,13 +110,15 @@ def _validate_forced_stream(lines: list[str]) -> None:
         raise ValueError("forced stream did not terminate with data: [DONE]")
     streamed_calls: dict[int, dict[str, list[str]]] = {}
     saw_tool_delta = False
-    visible_chunks: list[str] = []
+    visible_chunks: dict[str, list[str]] = {
+        "content": [],
+        "reasoning_content": [],
+    }
     for payload in _sse_payloads(lines):
         for choice in payload.get("choices") or []:
             delta = choice.get("delta") or {}
-            visible_chunks.extend(
-                str(delta.get(key) or "") for key in ("content", "reasoning_content")
-            )
+            for key in visible_chunks:
+                visible_chunks[key].append(str(delta.get(key) or ""))
             for tool_call in delta.get("tool_calls") or []:
                 saw_tool_delta = True
                 index = tool_call.get("index", 0)
@@ -118,30 +147,38 @@ def _validate_forced_stream(lines: list[str]) -> None:
         raise ValueError(
             f"forced stream arguments are not a JSON object: {raw_arguments!r}"
         )
-    leaked = _visible_wire_marker("".join(visible_chunks))
+    leaked = _visible_fields_wire_leak(
+        {key: "".join(chunks) for key, chunks in visible_chunks.items()}
+    )
     if leaked:
-        raise ValueError(f"native wire marker leaked into stream: {leaked!r}")
+        field, marker, visible = leaked
+        raise _wire_leak_error(f"stream {field}", marker, visible)
 
 
 def _validate_replay_stream(lines: list[str]) -> None:
     if not lines or lines[-1].strip() != "data: [DONE]":
         raise ValueError("stream replay did not terminate with data: [DONE]")
     saw_choice_delta = False
-    visible_chunks: list[str] = []
+    visible_chunks: dict[str, list[str]] = {
+        "content": [],
+        "reasoning_content": [],
+    }
     for payload in _sse_payloads(lines):
         for choice in payload.get("choices") or []:
             delta = choice.get("delta")
             if not isinstance(delta, dict):
                 continue
             saw_choice_delta = True
-            visible_chunks.extend(
-                str(delta.get(key) or "") for key in ("content", "reasoning_content")
-            )
+            for key in visible_chunks:
+                visible_chunks[key].append(str(delta.get(key) or ""))
     if not saw_choice_delta:
         raise ValueError("stream replay returned no choice delta")
-    leaked = _visible_wire_marker("".join(visible_chunks))
+    leaked = _visible_fields_wire_leak(
+        {key: "".join(chunks) for key, chunks in visible_chunks.items()}
+    )
     if leaked:
-        raise ValueError(f"native wire marker leaked into replay stream: {leaked!r}")
+        field, marker, visible = leaked
+        raise _wire_leak_error(f"replay stream {field}", marker, visible)
 
 
 def main() -> int:
@@ -232,11 +269,13 @@ def main() -> int:
         )
         return 1
 
-    visible = f"{msg.get('content') or ''}\n{msg.get('reasoning_content') or ''}"
-    leaked = _visible_wire_marker(visible)
+    leaked = _visible_fields_wire_leak(
+        {key: str(msg.get(key) or "") for key in ("content", "reasoning_content")}
+    )
     if leaked:
+        field, marker, visible = leaked
         print(
-            f"FAIL: native wire marker leaked into non-stream content: {leaked!r}",
+            f"FAIL: {_wire_leak_error(f'non-stream {field}', marker, visible)}",
             file=sys.stderr,
         )
         return 1
@@ -298,15 +337,15 @@ def main() -> int:
         replay_message = nonstream_choices[0].get("message")
         if not isinstance(replay_message, dict):
             raise ValueError("non-stream replay returned no message object")
-        replay_visible = "\n".join(
-            str(replay_message.get(key) or "")
-            for key in ("content", "reasoning_content")
+        leaked = _visible_fields_wire_leak(
+            {
+                key: str(replay_message.get(key) or "")
+                for key in ("content", "reasoning_content")
+            }
         )
-        leaked = _visible_wire_marker(replay_visible)
         if leaked:
-            raise ValueError(
-                f"native wire marker leaked into non-stream replay: {leaked!r}"
-            )
+            field, marker, visible = leaked
+            raise _wire_leak_error(f"non-stream replay {field}", marker, visible)
 
         with httpx.stream(
             "POST",
