@@ -1341,7 +1341,19 @@ def test_validate_window_is_read_only_and_returns_canonical_id(monkeypatch):
     assert selection["app"]["pid"] == 7
 
 
-def test_cli_capabilities_and_error_envelope(capsys):
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "app_not_found",
+        "window_not_found",
+        "element_not_found",
+        "ax_set_failed",
+        "value_not_settable",
+        "unsupported_platform",
+        "target_drift",
+    ],
+)
+def test_cli_capabilities_and_error_envelope(monkeypatch, capsys, error_code):
     from rapid_mlx.computer_use import cli
 
     assert cli.main(["capabilities"]) == 0
@@ -1349,21 +1361,26 @@ def test_cli_capabilities_and_error_envelope(capsys):
     assert payload["ok"] is True
     assert "get-app-state" in payload["observation"]
 
+    # Exercise the CLI's error translation without selecting a real app or
+    # changing a desktop control. Backend target safety has its own tests.
+    def refuse(*_args, **_kwargs):
+        raise errors.ComputerUseError(
+            error_code, "Selected target refused the write", recovery=("Re-observe",)
+        )
+
+    monkeypatch.setattr(backend, "set_value", refuse)
     assert (
         cli.main(["set-value", "--app", "X", "--element-index", "1", "--text", "v"])
-        != 0
+        == 1
     )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    # Runs against the real desktop: which structured refusal comes back
-    # depends on whether some app matches the name and has a window.
-    assert payload["error"]["code"] in {
-        "app_not_found",
-        "window_not_found",
-        "element_not_found",
-        "ax_set_failed",
-        "value_not_settable",
-        "unsupported_platform",
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": error_code,
+            "message": "Selected target refused the write",
+            "recovery": ["Re-observe"],
+        },
     }
 
 
