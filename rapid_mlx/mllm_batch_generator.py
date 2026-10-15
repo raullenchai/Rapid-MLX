@@ -249,6 +249,53 @@ def _accepts_var_kwargs(fn) -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
+def _model_supports_gemma4_last_position(model: nn.Module) -> bool:
+    """Qualify the existing ordinary-prefill contract once per model load.
+
+    Older wrappers accept arbitrary kwargs but silently discard this option.
+    Require the known wrapper, forwarding on both hops, and an explicit trunk
+    parameter; an unavailable or changed implementation keeps the full forward.
+    """
+    if (type(model).__module__, type(model).__name__) != (
+        "mlx_vlm.models.gemma4.gemma4",
+        "Model",
+    ):
+        return False
+    language_model = getattr(model, "language_model", None)
+    trunk = getattr(language_model, "model", None)
+    calls = (
+        getattr(type(model), "__call__", None),
+        getattr(type(language_model), "__call__", None),
+    )
+    if not all(_accepts_var_kwargs(call) for call in calls):
+        return False
+    try:
+        parameter = inspect.signature(type(trunk).__call__).parameters.get(
+            "logits_to_keep"
+        )
+        return (
+            parameter is not None
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and all(
+                call is not None
+                and any(
+                    key in inspect.getsource(call)
+                    for key in ('"logits_to_keep"', "'logits_to_keep'")
+                )
+                for call in calls
+            )
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+# Unknown metadata can introduce full-position or hidden-state consumers.
+_GEMMA4_LAST_POSITION_METADATA = frozenset(
+    {"image_position_ids", "mm_token_type_ids", "token_type_ids"}
+)
+
+
 def _attention_mask_is_droppable(mask) -> bool:
     """Whether ``mask`` carries no information and can be dropped on the
     chunked text-only prefill path.
@@ -1288,6 +1335,7 @@ class MLLMBatchGenerator:
 
         # Get language model for text generation
         self.language_model = getattr(model, "language_model", model)
+        self._gemma4_last_position_prefill = _model_supports_gemma4_last_position(model)
 
         # Reuse Rapid's source-pinned APC engine rather than maintaining
         # another cache format in this lane. Hybrid/ArraysCache backbones select
@@ -3674,11 +3722,10 @@ class MLLMBatchGenerator:
                    during the forward pass.
 
         Returns:
-            Logits from the forward pass. On the chunked text-only path this
-            is the last position only (``[1, 1, vocab]``); the image /
-            no-cache single forward returns the full sequence
-            (``[1, seqlen, vocab]``). Callers slice ``[:, -1, :]`` either way,
-            so the contract is unchanged.
+            Logits from the forward pass. Chunked text and qualified ordinary
+            Gemma4 prefills return the last position (``[1, 1, vocab]``).
+            Other single forwards retain the full sequence. Callers sample
+            ``[:, -1, :]`` either way.
         """
         # Build model call kwargs.
         #
@@ -3776,10 +3823,10 @@ class MLLMBatchGenerator:
         # prefill, which passes no mask and relies on the causal mask.
         #
         # ``chunk`` is the prefill step; only prompts *longer* than one chunk
-        # take the chunked path. Short/ordinary prompts keep the original
-        # single forward — no extra forward, no ``mx.eval``/``mx.clear_cache``
-        # barrier on the hot path — so per-request latency is unchanged for
-        # them. The chunking only engages once the un-chunked activations +
+        # take the chunked path. Short/ordinary prompts keep a single forward,
+        # with the qualified last-position reduction below and no extra
+        # ``mx.eval``/``mx.clear_cache`` barrier. Chunking only engages once
+        # the un-chunked activations +
         # full-sequence logits would actually spike memory (long contexts).
         chunk = max(1, min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS))
         is_text_only = _is_text_only_request(request)
@@ -3897,6 +3944,18 @@ class MLLMBatchGenerator:
                 cache=cache,
             )
         else:
+            if (
+                cache is not None
+                and getattr(self, "_gemma4_last_position_prefill", False)
+                and not request.videos
+                and request.extra_kwargs.keys() <= _GEMMA4_LAST_POSITION_METADATA
+            ):
+                # Sample only the final position, while the dependency still
+                # fills the complete producer KV cache. In KV-sharing models
+                # it can also trim unused positions in the trailing layers.
+                # Keep explicit output/capture options and unknown metadata
+                # unchanged; never retry a failed forward on a mutated cache.
+                kwargs["logits_to_keep"] = 1
             # The media plan gates on live cache leaves; a None cache (the
             # unit-test call sites) keeps the exact historical single
             # forward, which is the media cold path with no snapshot.
