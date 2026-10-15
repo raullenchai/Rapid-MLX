@@ -43,7 +43,7 @@ not evidence of real-model generation quality.
 
 ## Verification and next phase
 
-Phase A was validated on studio-max (Apple M5 Max, 36 GB, macOS 27.0.1)
+Phase A was validated on an Apple M5 Max Mac (36 GB, macOS 27.0.1)
 with task-local CPython 3.12.15, MLX 0.32.4, mlx-lm 0.31.3, pytest 9.1.1,
 coverage 7.16.2, and diff-cover 8.0.3. No model weights were downloaded.
 The focused suite passed all 68 tests (13 Bailing, 13 Bolt, 5 registration/loader,
@@ -83,20 +83,16 @@ a fresh subprocess to compare cache semantics at equal precision. These Bolt
 contracts instead retain the caller's precision policy to cover the default GPU
 path, using the bounded comparisons and negative controls above.
 
-The test portability follow-up was validated on mzr-001 (Apple M4 Pro, 48 GiB,
-macOS 26.5.1, CPython 3.12.12, MLX 0.32.4, mlx-lm 0.31.3) after the studio-max
-FIFO queue timed out while that host remained busy. Both the unset default
+The test portability follow-up was validated on an Apple M4 Pro Mac, 48 GiB,
+macOS 26.5.1, CPython 3.12.12, MLX 0.32.4, mlx-lm 0.31.3. Both the unset default
 policy and `MLX_ENABLE_TF32=0` passed all 68 focused tests, including the negative
 controls. Each run covered all 297 changed production lines against the Phase A
 base and all 23 executable test lines changed by this follow-up against
-`921021257`. Ruff and diff checks passed. The task directory was deleted and
-the Machine Control lease released. These follow-up runs establish M4 behavior;
-M5 execution of the revised comparisons remains unverified.
+`921021257`. Ruff and diff checks passed. These follow-up runs establish M4
+behavior; M5 execution of the revised comparisons remains unverified.
 
-Acquire a Machine Control lease before running model tests. Copy the worktree
-to a task-local directory under `/private/tmp/rapid-mlx-bolt-tests/`, create a
-Python 3.12 venv there, and install `-e '.[dev]'` plus `diff-cover==8.0.3`.
-Run the following inside that directory while holding the lease:
+From the repository root, create a Python 3.12 `.venv` and install
+`-e '.[dev]'` plus `diff-cover==8.0.3`. Run the following there:
 
 ```sh
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/pytest \
@@ -116,19 +112,16 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/pytest \
 
 Repeat the pytest command with `MLX_ENABLE_TF32=0` for full-float32 parity.
 
-Copy `coverage.xml` back to the source worktree to compare its actual Git base
-without copying Git internals to the test machine. Mirror CI's diff-cover gate:
+Set `COVERAGE_XML` to the generated `coverage.xml` path. From the source
+worktree, mirror CI's diff-cover gate:
 
 ```sh
-.venv/bin/python -m diff_cover.diff_cover_tool /path/to/coverage.xml \
+.venv/bin/python -m diff_cover.diff_cover_tool "$COVERAGE_XML" \
   --compare-branch origin/main --show-uncovered --fail-under 100
 ```
 
 CI normally combines Linux and Apple coverage first; this focused Apple run
-alone covers every changed executable production line. Delete the remote task
-directory after processes finish, release the lease even after failure, and
-verify release with `list --json` and the lease record. A queued owner may
-claim the machine immediately after release.
+alone covers every changed executable production line.
 
 Original Phase A handoff (superseded by Phase B below):
 
@@ -143,23 +136,20 @@ Original Phase A handoff (superseded by Phase B below):
 
 Phase A makes no real-checkpoint parity, quality, memory, or throughput claim.
 
-## Phase B: Studio qualification (2026-10-15)
+## Phase B: M3 Ultra qualification (2026-10-15)
 
-Owner: Vector, `vector/nemotron-35-bolt`, `nemotron-bolt` worktree.
-The human owner explicitly authorized studio-ultra despite the existing
-`rapid-mlx/vector-prefill-requeue` lease. This phase does not acquire, modify,
-or release that lease or stop operator/validation processes. Every model
-execution waits under `lockf -k /var/tmp/rapid-mlx-large-model.lock`.
-Conversion uses MLX's CPU device and may run without that execution lock.
-No downloads, cache cleanup, publication, push, or catalog changes are made.
+Conversion uses MLX's CPU device. No downloads, cache cleanup, publication,
+push, or catalog changes are made in this phase.
 
 Environment: M3 Ultra, 256 GiB unified memory, macOS 26.5.2, Python 3.12.14,
 MLX 0.32.4, mlx-lm 0.31.3, Transformers 5.15.1, PyTorch 2.14.1.
 Source: the existing shared-cache snapshot of
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16`, commit
 `bca0a8cb74200a2eb7ca56eb8428b821c829bd6e`.
-All generated artifacts, scripts, logs, and raw evidence are under
-`/private/tmp/rapid-mlx-bolt/`; the normal scratch retention policy applies.
+For reproduction, set `MODEL_DIR` to the converted four-bit artifact directory
+and `OUT_DIR` to a user-supplied evidence output directory. Historical raw
+evidence filenames below identify local records; these files are not shipped
+with the repository.
 
 ### Conversion evidence
 
@@ -202,19 +192,15 @@ these other precision boundaries were estimated at 32.922 GB, so the six
 interior 2-bit layers meet the strict decimal 32 GB target. Quality and runtime
 memory require execution evidence; disk fit alone does not qualify a 48 GB Mac.
 
-`df -h /private/tmp` was checked before each conversion. Initial free space was
-123 GiB; the mixed conversion started with 84 GiB available. After both
+Free space on the conversion output filesystem was checked before each
+conversion. Initial free space was 123 GiB; the mixed conversion started with 84 GiB available. After both
 artifacts, 53 GiB remained. An 8-bit artifact and a full BF16 copy were avoided.
 
-Exact conversion commands from the worktree root (offline environment; the
-helper sets `mx.set_default_device(mx.cpu)`):
-
-```sh
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$PWD" \
-  .venv/bin/python -u /private/tmp/rapid-mlx-bolt/phase_b_convert.py --bits 4
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$PWD" \
-  .venv/bin/python -u /private/tmp/rapid-mlx-bolt/phase_b_convert.py --bits 3
-```
+Conversion workload specification: run offline with `HF_HUB_OFFLINE=1` and
+`TRANSFORMERS_OFFLINE=1`, select `mx.set_default_device(mx.cpu)`, and use the
+registration, lazy loading, quantization, and save APIs listed above for each
+recipe. The original conversion helper is not shipped in the repository;
+this is a workload specification rather than an executable conversion command.
 
 ### Runtime fixes and reference boundary
 
@@ -228,7 +214,7 @@ the dedicated tool parser. No model-name regex or alias entry was added.
 
 Validation: all 360 tests in `tests/test_nemotron_bolt_metadata.py` and
 `tests/test_model_auto_config.py` pass in 39.24 s; Ruff and format checks pass.
-This phase did not edit the separate session's vendored-model test file.
+The vendored-model test file was unchanged in this phase.
 
 The cached HF reference imports `mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn`
 unconditionally and raises `ImportError` without it. `mamba_ssm` is absent on
@@ -237,10 +223,8 @@ the installed environment; no claim of HF/MLX full-model parity is made.
 The fallback is eight-prompt quantized-versus-MLX-BF16 top-k and greedy-prefix
 comparison using Rapid's loader, not an independent validation of model math.
 
-Execution waited behind the existing validation run, which released the lock
-normally. The successful runs below all acquired that same lock. Initial
-parity harness attempts stopped after loading because Transformers 5 returned
-`BatchEncoding` from `apply_chat_template`; the scratch harness now extracts
+Initial parity harness attempts stopped after loading because Transformers 5
+returned `BatchEncoding` from `apply_chat_template`; the evaluation must extract
 `input_ids`. No model implementation change was needed for that API difference.
 A first server attempt exposed a missing `nemotron_h_puzzle` entry in
 `byom.preflight.RAPID_MODEL_TYPES`. Local commit `c5fb48e11` adds it; all 116
@@ -363,36 +347,24 @@ Start-of-run one-minute system load averages were 7.00 (mixed), 7.72 (BF16), and
 conversion had finished before these runs. The variation between repeats is
 material; no speedup claim is made.
 
-### Exact execution commands and evidence files
+### Execution workload and evidence files
 
-Run from this worktree with the task's `.venv`. The helpers are retained as task
-scratch under `/private/tmp/rapid-mlx-bolt/`, alongside their logs and hashes in
-`environment.json`. The conversion recipe and workload parameters above record
-the durable contract even after scratch retention expires.
+The original evaluation and serving harnesses are not shipped in the repository.
+Reproduce the parity smoke set and standalone benchmarks using the prompts,
+loader, cache, token limits, repetitions, and comparison metrics specified above.
+Run offline with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`; save results
+under `$OUT_DIR`, along with software versions and workload parameters.
 
-```sh
-export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$PWD"
-lockf -k /var/tmp/rapid-mlx-large-model.lock .venv/bin/python -u \
-  /private/tmp/rapid-mlx-bolt/phase_b_eval.py \
-  --model /private/tmp/rapid-mlx-bolt/bf16-text-view --name bf16
-lockf -k /var/tmp/rapid-mlx-large-model.lock .venv/bin/python -u \
-  /private/tmp/rapid-mlx-bolt/phase_b_eval.py \
-  --model /private/tmp/rapid-mlx-bolt/text-4bit-g64 --name 4bit --bench
-lockf -k /var/tmp/rapid-mlx-large-model.lock .venv/bin/python -u \
-  /private/tmp/rapid-mlx-bolt/phase_b_eval.py \
-  --model /private/tmp/rapid-mlx-bolt/text-3bit-g64 --name 3bit --bench
-TMPDIR=/private/tmp/rapid-mlx-bolt \
-  lockf -k /var/tmp/rapid-mlx-large-model.lock .venv/bin/python -u \
-  /private/tmp/rapid-mlx-bolt/phase_b_serve.py
-```
-
-The serving helper starts the following child inside its held lock, with
-`RAPID_MLX_TELEMETRY=0` and `DO_NOT_TRACK=1`, waits for health, issues the seven
-requests, and stops that child:
+The serving workload uses the following repository command from the worktree
+root with a `.venv`. Set `MODEL_DIR` to the four-bit artifact directory. Wait
+for health, issue the seven requests specified above, retain response bodies
+and SSE chunks, then stop the server:
 
 ```sh
-.venv/bin/python -m rapid_mlx.cli serve \
-  /private/tmp/rapid-mlx-bolt/text-4bit-g64 --host 127.0.0.1 --port 18035 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  RAPID_MLX_TELEMETRY=0 DO_NOT_TRACK=1 \
+  .venv/bin/python -m rapid_mlx.cli serve \
+  "$MODEL_DIR" --host 127.0.0.1 --port 18035 \
   --text-only --disable-disk-caches --disable-prefix-cache \
   --prefill-step-size 256 --max-tokens 768
 ```
@@ -413,11 +385,9 @@ ID assignment, catalog admission, and any broader quality or actual M4 testing.
 
 ## Round 1 review correction and catalog admission
 
-Owner remains Vector on Studio, branch `vector/nemotron-35-bolt`. The original
-text-only scope and non-goals are unchanged. The owner authorized catalog
-admission with the publication repository IDs below, local commits only, and
-read-only use of the converted directories while they are being uploaded.
-No conversion, model-directory modification, push, or publication is part of
+The original text-only scope and non-goals are unchanged. Catalog admission
+uses the publication repository IDs below. Converted directories remained
+read-only inputs; no conversion or model-directory modification is part of
 this round.
 
 The right-padded SSM regression compares a 333-position batch against independent
@@ -462,7 +432,7 @@ standard speculative decoding. Neither asserts a tested minimum Mac memory.
 The regressions were written and run against the unchanged implementation
 before applying fixes. Exact result: **7 failed, 1 passed, 13 deselected**.
 The normalized top-one test observed 2.5 instead of 5.0; all six padded-state
-variants failed. Raw output: `/private/tmp/rapid-mlx-bolt/round1-red.log`.
+variants failed. Raw output: `$OUT_DIR/round1-red.log`.
 The local fix derives the chunk mask from remaining lengths, applies that mask
 to incoming-state decay, and preserves incoming state when lengths are zero
 or negative. Deriving the mask also prevents padded state contributions when
@@ -489,11 +459,11 @@ Final validation on this worktree:
   Packaged catalog-schema checks passed; atomic catalog snapshots are built
   dynamically from the alias and size sources and need no checked-in rewrite.
 
-Commands and logs are in `/private/tmp/rapid-mlx-bolt/round1_verify.sh`,
-`round1-validation.log`, `round1-fp32.log`, `round1-coverage.xml`, and
-`round1-diff-coverage.log`. The verification script ran as a child of one
-`lockf -k /var/tmp/rapid-mlx-large-model.lock /bin/zsh -f` session, released
-normally afterward. The converted directories remained read-only inputs.
+Historical verification logs are `round1-validation.log`, `round1-fp32.log`,
+`round1-coverage.xml`, and `round1-diff-coverage.log`. The original verification
+helper is not shipped in the repository. Reproduce the validation using the
+focused test groups and checks listed above, saving logs under `$OUT_DIR`.
+The converted directories remained read-only inputs.
 
 [The decode investigation](../performance/2026-10-15-nemotron-bolt-decode.md)
 records the layer profile, bytes-read bound, machine activity, and follow-ups.
@@ -503,9 +473,4 @@ about 9–10% faster than the matched baselines. MoE is the largest measured
 layer category, followed by Mamba; Python graph construction does not dominate.
 Larger expert/SSM kernel or graph-capture changes remain a Vector follow-up.
 
-Catalog and implementation changes are committed locally only. No push, upload,
-release, or PR publication is performed in this round. Harbor received the
-start FYI through Orca; Atlas/Pixel/Echo named mailboxes were unavailable.
-Full FYI payloads and delivery results are retained in private task notes for
-coordinator delivery. Atlas owns the next public review/push checkpoint; Vector
-owns the shared-path correctness and deeper performance follow-ups above.
+Vector owns the shared-path correctness and deeper performance follow-ups above.

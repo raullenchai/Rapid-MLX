@@ -1,17 +1,17 @@
 # Bolt four-bit decode investigation
 
-Owner: Vector. PR #4679, `vector/nemotron-35-bolt`, Studio, 2026-10-15.
+Owner: Vector. PR #4679, 2026-10-15.
 This investigation preserves the text-only contract in
 [the decision record](../decisions/2026-10-15-nemotron-bolt-text.md).
-No converted model files, other model implementations, operator processes, or
-existing leases were changed. Every model execution ran under
-`lockf -k /var/tmp/rapid-mlx-large-model.lock`.
+No converted model files, other model implementations, or operator processes
+were changed.
 
 ## Environment and workload
 
 Mac Studio M3 Ultra, 28 CPU / 60 GPU cores, 256 GB unified memory, macOS 26.5.2;
 Python 3.12.14, MLX 0.32.4, mlx-lm 0.31.3. Model:
-`/private/tmp/rapid-mlx-bolt/text-4bit-g64`, using Rapid's registered text loader.
+the four-bit/group-64 artifact described in the decision record, using Rapid's
+registered text loader. Set `MODEL_DIR` to this artifact's directory.
 The conversion and protected BF16 head/router/latent projections are unchanged.
 
 Batch one, 1,024 prompt token IDs, temperature zero, prefill chunks of 256,
@@ -136,26 +136,21 @@ larger graph capture or fused expert/SSM work only with independent numerical,
 cache-lifecycle, and hardware evidence. Such kernel/scheduler redesigns are
 outside PR #4679 and are not implemented here.
 
-Raw evidence and the profiling helper live in `/private/tmp/rapid-mlx-bolt/`:
-`round1_profile.py`, `round1-profile-{baseline,norm-experiment,baseline-repeat,final}.json`
-and matching logs. JSON includes every timed step, per-layer samples, exact
+Historical raw evidence files are
+`round1-profile-{baseline,norm-experiment,baseline-repeat,final}.json` and
+matching logs. JSON includes every timed step, per-layer samples, exact
 expert shapes and byte counts, GPU samples, and before/after process snapshots.
-Normal scratch retention applies. To reproduce while these files exist:
+The profiling helper and raw evidence are not shipped in the repository.
 
-```sh
-PYTHONPATH="$PWD" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  RAPID_MLX_TRUST_REMOTE_CODE=0 \
-  lockf -k /var/tmp/rapid-mlx-large-model.lock .venv/bin/python -u \
-  /private/tmp/rapid-mlx-bolt/round1_profile.py --name final
-```
-
-For an independent harness after scratch expiry, follow the workload, 40-step
-construction/evaluation split, eight-step layer-barrier method, and traffic
-calculation specified above. Preserve the distinct generator and instrumented
-measurements and report all repetitions.
+To reproduce with an independent harness, load `$MODEL_DIR` through Rapid's
+registered text loader and follow the workload, 40-step construction/evaluation
+split, eight-step layer-barrier method, and traffic calculation specified above.
+Run offline with `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and
+`RAPID_MLX_TRUST_REMOTE_CODE=0`. Set `OUT_DIR` to a user-supplied output directory
+for results and environment metadata. Preserve the distinct generator and
+instrumented measurements and report all repetitions.
 
 The final implementation passed all 4,419 focused tests and all 21 Bolt tests
 with `MLX_ENABLE_TF32=0`. Ruff and formatting checks passed. Changed-line
 coverage against `origin/main` at `6fb35fbb24c5b8bb151d4fe2a7d7858adfc6d146`
-was 100% (314 executable lines, zero missing). The shared lock session was
-released normally after verification.
+was 100% (314 executable lines, zero missing).
