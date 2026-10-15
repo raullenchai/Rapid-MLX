@@ -10780,7 +10780,7 @@ class Scheduler:
                 # those references before flushing the allocator; otherwise
                 # the next admission sees the failed batch's buffers as live.
                 request.prompt_cache = None
-                request._extracted_cache = None
+                cast(Any, request)._extracted_cache = None
                 request._continuous_mtp_state = None
             if self.block_aware_cache is not None:
                 # A failed request cannot store its fetched paged prefix.
