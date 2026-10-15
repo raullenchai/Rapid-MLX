@@ -123,6 +123,7 @@ from ..service.helpers import (
     _validate_response_format,
     _validate_tool_call_params,
     _wait_with_disconnect,
+    _was_undeclared_tool_dropped,
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
     context_overflow_from_guided_limit,
@@ -6358,8 +6359,11 @@ async def _create_chat_completion_impl(
             cleaned_text = ""
     else:
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-            output.text, request, structured_tool_calls=engine_tool_calls
+            output.text,
+            request,
+            structured_tool_calls=engine_tool_calls,
         )
+    undeclared_tool_dropped = _was_undeclared_tool_dropped()
 
     # r7-A R7-H1: UI-TARS chat-lane coordinate-key parity. The parser
     # emits canonical ``point`` / ``start_point`` / ``end_point``; the
@@ -6826,7 +6830,7 @@ async def _create_chat_completion_impl(
             and reasoning_text
             and not final_content
         )
-        if not deepseek_v4_mid_think:
+        if not deepseek_v4_mid_think and not undeclared_tool_dropped:
             final_content = _rescue_silent_drop_from_reasoning(
                 final_content,
                 reasoning_text,
@@ -6860,6 +6864,16 @@ async def _create_chat_completion_impl(
             finish_reason,
             include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
         )
+
+    if (
+        undeclared_tool_dropped
+        and not (final_content or "").strip()
+        and not tool_calls
+        and not _is_structured_output_requested(response_format)
+    ):
+        from ..tool_parsers.qwen3coder_tool_parser import UNAVAILABLE_TOOL_NOTICE
+
+        final_content = UNAVAILABLE_TOOL_NOTICE
 
     # Build logprobs for response if requested.
     #
@@ -8014,16 +8028,21 @@ async def stream_chat_completion(
             # ``response_format`` which the rescue helper has no
             # access to.
             already_streamed_content = bool(processor.accumulated_text)
+            visible_content_streamed = bool(streamed_content.strip())
             has_any_tool_calls = bool(fallback_tool_calls) or (
                 finish_event.finish_reason == "tool_calls"
             )
             structured_output_requested = _is_structured_output_requested(
                 request.response_format
             )
+            rejected_only_tool_call = bool(
+                getattr(processor.tool_parser, "_undeclared_dropped", 0)
+            )
             if (
                 not already_streamed_content
                 and not has_any_tool_calls
                 and not structured_output_requested
+                and not rejected_only_tool_call
             ):
                 # Pass ``terminal_content or None`` so the helper
                 # sees the same "empty vs whitespace vs real"
@@ -8238,6 +8257,18 @@ async def stream_chat_completion(
                         "finish=length + reasoning present; surfacing "
                         "cutoff sentinel as content"
                     )
+            if (
+                not visible_content_streamed
+                and not (terminal_content or "").strip()
+                and not has_any_tool_calls
+                and not structured_output_requested
+                and rejected_only_tool_call
+            ):
+                from ..tool_parsers.qwen3coder_tool_parser import (
+                    UNAVAILABLE_TOOL_NOTICE,
+                )
+
+                terminal_content = UNAVAILABLE_TOOL_NOTICE
             final_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,

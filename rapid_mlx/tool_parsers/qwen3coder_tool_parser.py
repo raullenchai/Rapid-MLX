@@ -52,6 +52,12 @@ _INTEGER_LITERAL_RE = re.compile(r"[+-]?[0-9]+")
 # post-processor's 64 KB suppression budget would release it on its own.
 _UNDECLARED_BLOCK_MAX_CHARS = 32768
 
+# A lone rejected call leaves no answer for clients that render only content.
+# Keep the parser's removal contract, but let response adapters explain it.
+UNAVAILABLE_TOOL_NOTICE = (
+    "I couldn't complete the request because a needed tool isn't available."
+)
+
 
 class _Continue(NamedTuple):
     """Content settled so far plus the rest of the delta still to parse.
@@ -1026,6 +1032,8 @@ class Qwen3CoderToolParser(ToolParser):
                 self._log_undeclared_drop(name, declared)
             if same_stream:
                 self._undeclared_logged = max(already_logged, len(dropped))
+            if not self._stream_text:
+                self._undeclared_dropped = len(dropped)
 
             if not tool_calls and not dropped:
                 return ExtractedToolCallInformation(
