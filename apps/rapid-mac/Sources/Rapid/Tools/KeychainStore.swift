@@ -41,20 +41,61 @@ protocol KeychainItemAccessing: Sendable {
 /// authentication UI; an authorization failure is state for the app to
 /// explain, never permission for SecurityAgent to interrupt the user.
 struct SecurityKeychainItems: KeychainItemAccessing {
+    private let insertionKeychain: @Sendable () -> SecKeychain?
+
+    init(insertionKeychain: @escaping @Sendable () -> SecKeychain? = Self.unlockedDefaultKeychain) {
+        self.insertionKeychain = insertionKeychain
+    }
+
+    /// LAContext suppresses item authentication, but the file-based macOS
+    /// Keychain can still offer to create/reset a missing default database.
+    /// Preflight that database without UI and bind insertion to the same one.
+    static func unlockedDefaultKeychain() -> SecKeychain? {
+        var keychain: SecKeychain?
+        guard SecKeychainCopyDefault(&keychain) == errSecSuccess, let keychain else { return nil }
+        var status: SecKeychainStatus = 0
+        guard SecKeychainGetStatus(keychain, &status) == errSecSuccess,
+              status & SecKeychainStatus(kSecUnlockStateStatus) != 0,
+              status & SecKeychainStatus(kSecWritePermStatus) != 0 else { return nil }
+        return keychain
+    }
+
+    // This is the sole application Keychain I/O entry point: provider, ledger,
+    // web-search and bearer credentials all use SystemKeychain -> this adapter.
+    // A source guard checks direct Swift Keychain I/O calls outside this file;
+    // the current credential callers all share this lock and suppression scope.
+    // File-based database/ACL dialogs ignore LAContext; temporarily suppress
+    // legacy UI here and restore the caller's previous policy afterward.
+    // Code-signature inspection and random-byte generation do not authenticate
+    // Keychain items and do not require coordination with this I/O scope.
+    private static let interactionLock = NSRecursiveLock()
+
+    static func withoutUserInteraction<Result>(failure: Result, _ operation: () -> Result) -> Result {
+        interactionLock.lock()
+        defer { interactionLock.unlock() }
+        var previous: DarwinBoolean = false
+        guard SecKeychainGetUserInteractionAllowed(&previous) == errSecSuccess,
+              SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { return failure }
+        defer { _ = SecKeychainSetUserInteractionAllowed(previous.boolValue) }
+        return operation()
+    }
+
     func query(account: String, service: String) -> KeychainReadResult {
-        let authenticationContext = LAContext()
-        authenticationContext.interactionNotAllowed = true
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: authenticationContext,
-        ]
-        var item: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        return Self.readResult(status: status, data: item as? Data)
+        Self.withoutUserInteraction(failure: .unavailable) {
+            let authenticationContext = LAContext()
+            authenticationContext.interactionNotAllowed = true
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecUseAuthenticationContext as String: authenticationContext,
+            ]
+            var item: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            return Self.readResult(status: status, data: item as? Data)
+        }
     }
 
     static func readResult(status: OSStatus, data: Data?) -> KeychainReadResult {
@@ -68,49 +109,54 @@ struct SecurityKeychainItems: KeychainItemAccessing {
     }
 
     func upsert(account: String, service: String, secret: String) -> Bool {
-        guard let data = secret.data(using: .utf8) else { return false }
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let updateAttrs: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
-        var updateQuery = baseQuery
-        // `Skip` is a match-only option. For update, Security.framework's
-        // current contract is an LAContext that forbids interaction; this is
-        // the non-deprecated equivalent of kSecUseAuthenticationUIFail.
-        let authenticationContext = LAContext()
-        authenticationContext.interactionNotAllowed = true
-        updateQuery[kSecUseAuthenticationContext as String] = authenticationContext
-        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
-        if updateStatus == errSecSuccess { return true }
-        if updateStatus != errSecItemNotFound { return false }
+        Self.withoutUserInteraction(failure: false) {
+            guard let data = secret.data(using: .utf8) else { return false }
+            let baseQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+            ]
+            let updateAttrs: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            ]
+            var updateQuery = baseQuery
+            // LAContext covers data-protection item authentication. The
+            // surrounding guard also suppresses legacy database and ACL UI.
+            let authenticationContext = LAContext()
+            authenticationContext.interactionNotAllowed = true
+            updateQuery[kSecUseAuthenticationContext as String] = authenticationContext
+            let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
+            if updateStatus == errSecSuccess { return true }
+            if updateStatus != errSecItemNotFound { return false }
 
-        var addQuery = baseQuery
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        // Prevent authentication UI during a new insert too. Reads and updates
-        // already use a non-interactive context; add must follow the same rule.
-        let addContext = LAContext()
-        addContext.interactionNotAllowed = true
-        addQuery[kSecUseAuthenticationContext as String] = addContext
-        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+            guard let keychain = insertionKeychain() else { return false }
+            var addQuery = baseQuery
+            addQuery[kSecUseKeychain as String] = keychain
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            // Prevent authentication UI during a new insert too. Reads and updates
+            // already use a non-interactive context; add must follow the same rule.
+            let addContext = LAContext()
+            addContext.interactionNotAllowed = true
+            addQuery[kSecUseAuthenticationContext as String] = addContext
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        }
     }
 
     func remove(account: String, service: String) -> Bool {
-        let authenticationContext = LAContext()
-        authenticationContext.interactionNotAllowed = true
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecUseAuthenticationContext as String: authenticationContext,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+        Self.withoutUserInteraction(failure: false) {
+            let authenticationContext = LAContext()
+            authenticationContext.interactionNotAllowed = true
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecUseAuthenticationContext as String: authenticationContext,
+            ]
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
     }
 }
 

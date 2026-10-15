@@ -506,7 +506,7 @@ struct ShareComputeCreditsTab: View {
             .opacity(readKeyDraft.isEmpty ? RapidTheme.disabledOpacity : 1)
             .accessibilityIdentifier("ShareCompute.Credits.SaveReadKey")
 
-            Text("Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Your provider key (qsppk-) is never saved.")
+            Text("Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Provider keys (qsppk-) are managed separately in Share Compute settings.")
                 .font(.system(size: 11))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)

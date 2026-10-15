@@ -93,7 +93,7 @@ struct ShareComputeTests {
             key.contains(secret) || value.contains(secret)
         }))
         #expect(request.standardInput == Data((secret + "\n").utf8))
-        #expect(ShareComputeManager.isValidProviderKey(String(repeating: "a", count: 4_095)))
+        #expect(ShareComputeManager.isValidProviderKey("qsppk-" + String(repeating: "a", count: 4_089)))
         #expect(!ShareComputeManager.isValidProviderKey(String(repeating: "🚀", count: 1_024)))
     }
 
@@ -112,20 +112,28 @@ struct ShareComputeTests {
 
         let server = ServerManager(testingState: .idle, binaryPath: executable)
         let blocker = try await server.prepareForCommunityBenchmark()
-        let manager = ShareComputeManager(server: server)
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("share-provider-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let manager = ShareComputeManager(
+            server: server,
+            providerStore: ShareComputeProviderKeyStore(keychain: ShareComputeTestKeychain()),
+            home: home
+        )
         let firstModel = ShareComputeModel.supported[0]
-        let secondModel = ShareComputeModel.supported[1]
+        let secondModel = firstModel
 
         let staleJoin = Task { @MainActor in
-            await manager.join(model: firstModel, worker: "first", providerKey: "first-key")
+            await manager.join(model: firstModel, worker: "first", providerKey: "qsppk-first-fixture-key")
         }
         for _ in 0..<10 { await Task.yield() }
-        await manager.join(model: firstModel, worker: "first", providerKey: "first-key")
+        await manager.join(model: firstModel, worker: "first", providerKey: "qsppk-first-fixture-key")
         #expect(manager.state == .preparing)
         manager.leave()
+        await staleJoin.value
+        #expect(manager.state == .idle)
 
         let currentJoin = Task { @MainActor in
-            await manager.join(model: secondModel, worker: "second", providerKey: "second-key")
+            await manager.join(model: secondModel, worker: "second", providerKey: "qsppk-second-fixture-key")
         }
         for _ in 0..<10 { await Task.yield() }
         server.finishCommunityBenchmark(blocker)
@@ -150,11 +158,17 @@ struct ShareComputeTests {
         )
 
         let server = ServerManager(testingState: .idle, binaryPath: executable)
-        let manager = ShareComputeManager(server: server)
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("share-provider-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let manager = ShareComputeManager(
+            server: server,
+            providerStore: ShareComputeProviderKeyStore(keychain: ShareComputeTestKeychain()),
+            home: home
+        )
         await manager.join(
             model: ShareComputeModel.supported[0],
             worker: "orphan-test",
-            providerKey: "test-key"
+            providerKey: "qsppk-orphan-fixture-key"
         )
         for _ in 0..<200 {
             if manager.activeModel == nil { break }
@@ -166,18 +180,6 @@ struct ShareComputeTests {
             server.finishCommunityBenchmark(lease)
         }
         manager.finishShutdown()
-    }
-
-    @Test("A replacement join inherits the original restore model")
-    func replacementInheritsRestoreAlias() {
-        #expect(ShareComputeManager.restoreAliasForJoin(
-            pending: "previous-model",
-            currentlyServing: nil
-        ) == "previous-model")
-        #expect(ShareComputeManager.restoreAliasForJoin(
-            pending: nil,
-            currentlyServing: "current-model"
-        ) == "current-model")
     }
 
     @Test("Registration proof is non-secret and bound to model, alias, and worker")

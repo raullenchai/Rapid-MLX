@@ -603,6 +603,11 @@ struct SettingsView: View {
                     if !enabled { mcpCatalog.clear() }
                 }
             }
+            if shareComputeEnabled {
+                SettingsSection(String(localized: "Share Compute")) {
+                    ShareComputeProviderSettings(manager: shareCompute)
+                }
+            }
             if mcpConfig.isEnabled {
                 SettingsConnectorsPanel()
             }

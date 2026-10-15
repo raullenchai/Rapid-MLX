@@ -10,8 +10,8 @@ import Foundation
 enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     case empty
     /// Not a `qsprk-` key. Almost always a paste of the wrong credential —
-    /// most dangerously the `qsppk-` provider key, which Rapid must never
-    /// persist.
+    /// the `qsppk-` provider key, which belongs in its separate
+    /// provider credential store.
     case wrongPrefix
     case tooShort
     case tooLong
@@ -26,7 +26,7 @@ enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
         case .empty:
             return String(localized: "Paste your QuickSilver read key to continue.")
         case .wrongPrefix:
-            return String(localized: "That isn’t a read key. Read keys start with qsprk-. A provider key (qsppk-) registers nodes and is never saved by Rapid.")
+            return String(localized: "That isn’t a read key. Read keys start with qsprk-. Provider keys (qsppk-) belong in Share Compute settings, not the credit ledger.")
         case .tooShort:
             return String(localized: "That read key looks incomplete.")
         case .tooLong:
@@ -104,17 +104,9 @@ enum ShareComputeReadKeyStoreResult: Equatable, Sendable {
 ///
 /// ## Why this is its own type
 ///
-/// `qsprk-` is the ONLY QuickSilver credential Rapid may persist. It is
-/// account-scoped and read-only: it can list ledger windows and nothing else —
-/// it cannot register a node, mint a share key, or spend credit. That is what
-/// makes at-rest storage acceptable here and unacceptable for `qsppk-`.
-///
-/// The provider key (`qsppk-`) keeps its existing contract untouched: typed or
-/// piped into the connection sheet, handed to the share subprocess over stdin,
-/// cleared from memory immediately after. It is never written here, never in
-/// UserDefaults, never in argv, and never in the environment. Giving the read
-/// key its own store — rather than a general "QuickSilver credentials" bag —
-/// is what keeps that boundary impossible to blur by accident.
+/// This account holds only the read-only ledger key. Provider credentials use
+/// a separate Keychain account/store and travel to registration over stdin;
+/// they never enter ledger requests, UserDefaults, argv, or the environment.
 ///
 /// ## Account namespacing
 ///

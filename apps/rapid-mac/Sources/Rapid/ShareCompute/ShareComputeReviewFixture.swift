@@ -112,7 +112,7 @@ enum ShareComputeReviewFixture {
             startedAt: startedAt,
             endedAt: now,
             rewardStatus: .available,
-            restoreStatus: .requested
+            restoreStatus: .unloaded
         )
     }
 }

@@ -2,6 +2,336 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Unlock your Keychain to use the saved provider key.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请解锁钥匙串，以使用已保存的提供者密钥。"
+          }
+        }
+      }
+    },
+    "Replace the saved provider key in Settings → Experimental → Share Compute.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在“设置 → 实验性功能 → 算力分享”中更换已保存的提供者密钥。"
+          }
+        }
+      }
+    },
+    "Paste a complete qsppk- provider key as a single line.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在一行内粘贴完整的 qsppk- 提供者密钥。"
+          }
+        }
+      }
+    },
+    "This Mac couldn't save the provider key. Check that you have an unlocked login Keychain and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 无法保存提供者密钥。请确认已设置并解锁登录钥匙串，然后重试。"
+          }
+        }
+      }
+    },
+    "This Mac couldn't remove the provider key. Unlock your Keychain and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 无法移除提供者密钥。请解锁钥匙串后重试。"
+          }
+        }
+      }
+    },
+    "The local node registration isn't a regular file. Repair the QuickSilver state directory before changing the saved key.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地节点注册记录不是普通文件。请先修复 QuickSilver 状态目录，再更改已保存的密钥。"
+          }
+        }
+      }
+    },
+    "This Mac couldn't reset its node registration. Check access to the local QuickSilver state directory and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 无法重置节点注册记录。请检查本地 QuickSilver 状态目录的访问权限后重试。"
+          }
+        }
+      }
+    },
+    "Local chat paused for sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "算力分享期间，本地聊天已暂停"
+          }
+        }
+      }
+    },
+    "Stop sharing in Share Compute and wait for it to finish before starting a local model.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在算力分享中停止分享，等待结束后再启动本地模型。"
+          }
+        }
+      }
+    },
+    "Stop sharing to use local chat": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止分享后即可使用本地聊天"
+          }
+        }
+      }
+    },
+    "A name for this Mac. Use a different name on each Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为这台 Mac 起个名字。每台 Mac 请使用不同的名字。"
+          }
+        }
+      }
+    },
+    "Get a provider key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取提供者密钥"
+          }
+        }
+      }
+    },
+    "Model after sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享结束后的模型状态"
+          }
+        }
+      }
+    },
+    "Provider key · qsppk-…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提供者密钥 · qsppk-…"
+          }
+        }
+      }
+    },
+    "Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Provider keys (qsppk-) are managed separately in Share Compute settings.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rapid 将只读密钥保存在这台 Mac 的钥匙串中。它只能读取你的账户账本，无法注册节点或消费额度。提供者密钥（qsppk-）在算力分享设置中单独管理。"
+          }
+        }
+      }
+    },
+    "Requires an Apple Silicon Mac with 48 GB+ memory. Starting sharing unloads your local model. Stop takes this Mac offline and releases the sharing model; local models stay unloaded.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要配备至少 48 GB 内存的 Apple 芯片 Mac。开始分享会卸载本地模型。停止后，这台 Mac 将离线并卸载分享模型，本地模型也会保持卸载状态。"
+          }
+        }
+      }
+    },
+    "Save key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存密钥"
+          }
+        }
+      }
+    },
+    "Saved in this Mac’s Keychain for future sessions. Sent to the provider process only when registration is needed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存在这台 Mac 的钥匙串中，供以后使用。仅在需要注册时发送给提供者进程。"
+          }
+        }
+      }
+    },
+    "Saved securely in this Mac’s Keychain. You can stop sharing and come back without pasting it again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全保存在这台 Mac 的钥匙串中。停止分享后再次上线，无需重新粘贴。"
+          }
+        }
+      }
+    },
+    "Set up sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置分享"
+          }
+        }
+      }
+    },
+    "Share Compute worker name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "算力分享节点名称"
+          }
+        }
+      }
+    },
+    "Share Qwen 27B with QuickSilver": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过 QuickSilver 分享 Qwen 27B 算力"
+          }
+        }
+      }
+    },
+    "Sharing runs Qwen 27B exclusively for QuickSilver. Local chat is unavailable while sharing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享期间，Qwen 27B 专供 QuickSilver 使用，本地聊天不可用。"
+          }
+        }
+      }
+    },
+    "Start sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始分享"
+          }
+        }
+      }
+    },
+    "Stop and release memory": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止并释放内存"
+          }
+        }
+      }
+    },
+    "Stop sharing before changing the worker or provider key.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改节点名称或提供者密钥前，请先停止分享。"
+          }
+        }
+      }
+    },
+    "Stop takes this Mac offline and unloads the model": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止后，这台 Mac 将离线并卸载模型"
+          }
+        }
+      }
+    },
+    "Stop takes this Mac offline and unloads the sharing model. Your local model stays unloaded.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止后，这台 Mac 将离线并卸载分享模型，本地模型保持卸载状态。"
+          }
+        }
+      }
+    },
+    "Stop takes this Mac offline and unloads the sharing model. Your previous model stays unloaded.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止后，这台 Mac 将离线并卸载分享模型，之前使用的模型保持卸载状态。"
+          }
+        }
+      }
+    },
+    "That isn’t a read key. Read keys start with qsprk-. Provider keys (qsppk-) belong in Share Compute settings, not the credit ledger.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这不是只读密钥。只读密钥以 qsprk- 开头。请在算力分享设置中填写提供者密钥（qsppk-），而非收益账本。"
+          }
+        }
+      }
+    },
+    "Unload current model": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载当前模型"
+          }
+        }
+      }
+    },
+    "Unloaded": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已卸载"
+          }
+        }
+      }
+    },
+    "Saved provider key: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的提供者密钥：%@"
+          }
+        }
+      }
+    },
     "Unsupported file type": {
       "localizations": {
         "zh-Hans": {

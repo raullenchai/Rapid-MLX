@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Observation
 
@@ -34,13 +35,9 @@ final class ShareComputeManager {
     private(set) var snapshot: ShareComputeStatusSnapshot?
     private(set) var activeModel: ShareComputeModel?
 
-    /// What happened to the previously-serving model when the last session
-    /// ended.
-    ///
-    /// Read by the completion receipt, which has to state the restore outcome
-    /// rather than imply it. The value is written at the moment the restore
-    /// decision is taken — by which point ``restoreAlias`` has been consumed —
-    /// so the receipt cannot reconstruct it after the fact.
+    /// Sharing owns a separate, exclusive model process. Stop leaves it and
+    /// the displaced local model unloaded; old receipts retain their historical
+    /// restore outcome for compatibility.
     private(set) var lastRestoreOutcome: ShareComputeRestoreStatus = .notNeeded
 
     private weak var server: ServerManager?
@@ -51,9 +48,11 @@ final class ShareComputeManager {
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var expectedStop = false
-    private var restoreAlias: String?
-    private var restoreTask: Task<Void, Never>?
-    private var restoreAttemptID: UUID?
+    private let providerStore: ShareComputeProviderKeyStore
+    private let home: URL
+    private(set) var savedProviderKeyLabel: String?
+    private(set) var providerKeyIsStored = false
+    private(set) var providerKeyMessage: String?
     private var shuttingDown = false
     private var shutdownSignalledAt: Date?
     private var currentStatusURL: URL?
@@ -62,9 +61,88 @@ final class ShareComputeManager {
     /// lease. Without this, disabling the experiment during preparation could
     /// let the suspended task wake later and start a now-hidden provider.
     private var operationID: UUID?
+    private var preparationTask: Task<UUID, Error>?
 
-    init(server: ServerManager) {
+    init(
+        server: ServerManager,
+        providerStore: ShareComputeProviderKeyStore = ShareComputeProviderKeyStore(),
+        home: URL? = nil
+    ) {
         self.server = server
+        self.providerStore = providerStore
+        self.home = home ?? Self.runtimeHomeURL()
+        refreshProviderKey()
+    }
+
+    var canEditProviderKey: Bool {
+        child == nil && operationID == nil && preparationTask == nil && reservation == nil && !shuttingDown
+    }
+
+    func refreshProviderKey() {
+        savedProviderKeyLabel = nil
+        providerKeyIsStored = false
+        switch providerStore.load() {
+        case .found(let key):
+            providerKeyIsStored = true
+            savedProviderKeyLabel = key.redactedLabel
+            providerKeyMessage = nil
+        case .missing:
+            providerKeyMessage = nil
+        case .unavailable:
+            providerKeyIsStored = true
+            providerKeyMessage = String(localized: "Unlock your Keychain to use the saved provider key.")
+        case .corrupted:
+            providerKeyIsStored = true
+            providerKeyMessage = String(localized: "Replace the saved provider key in Settings → Experimental → Share Compute.")
+        }
+    }
+
+    @discardableResult
+    func saveProviderKey(_ raw: String) -> Bool {
+        guard canEditProviderKey else { return false }
+        guard let key = ShareComputeProviderKey.validate(raw) else {
+            providerKeyMessage = String(localized: "Paste a complete qsppk- provider key as a single line.")
+            return false
+        }
+        if case .found(let existing) = providerStore.load(), existing == key {
+            refreshProviderKey()
+            return true
+        }
+        // Reuse the existing registration-proof protocol: invalidate the old
+        // account binding BEFORE changing the Keychain secret. A crash between
+        // these operations can require another registration, never silently
+        // route rewards to the previous account. Node credentials are retained.
+        guard invalidateRegistrationProof() else { return false }
+        guard providerStore.save(key) else {
+            providerKeyMessage = String(localized: "This Mac couldn't save the provider key. Check that you have an unlocked login Keychain and try again.")
+            return false
+        }
+        refreshProviderKey()
+        return true
+    }
+
+    @discardableResult
+    func removeProviderKey() -> Bool {
+        guard canEditProviderKey else { return false }
+        guard invalidateRegistrationProof() else { return false }
+        guard providerStore.remove() else {
+            providerKeyMessage = String(localized: "This Mac couldn't remove the provider key. Unlock your Keychain and try again.")
+            return false
+        }
+        refreshProviderKey()
+        return true
+    }
+
+    func needsRegistration(for model: ShareComputeModel, worker: String) -> Bool {
+        if !hasRegistration(for: model, worker: worker) { return true }
+        if case .failed(let message) = state { return Self.isRegistrationFailure(message) }
+        return false
+    }
+
+    func requiresProviderKey(for model: ShareComputeModel, worker: String) -> Bool {
+        guard needsRegistration(for: model, worker: worker) else { return false }
+        if case .found = providerStore.load() { return false }
+        return true
     }
 
     nonisolated static func runtimeHomeURL(
@@ -96,7 +174,7 @@ final class ShareComputeManager {
     }
 
     func hasRegistration(for model: ShareComputeModel, worker: String) -> Bool {
-        Self.registrationMatches(model: model, worker: worker)
+        Self.registrationMatches(model: model, worker: worker, home: home)
     }
 
     nonisolated static func registrationMatches(
@@ -128,81 +206,78 @@ final class ShareComputeManager {
         // Connect is idempotent while a preparation or provider is already
         // live. A second button event must not replace truthful session state
         // with an unrelated engine-availability error.
-        guard child == nil, operationID == nil else { return }
+        guard canEditProviderKey else { return }
         guard let server, let binary = server.binaryPath else {
             state = .failed("Rapid-MLX's local engine is not available.")
             return
         }
-        guard ShareComputeModel.supported.contains(model) else {
+        guard ShareComputeModel.desktopSharing.contains(model) else {
             state = .failed("That model is not available in the QuickSilver pool.")
             return
         }
-        let trimmedKey = providerKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedKey, !Self.isValidProviderKey(trimmedKey) {
-            state = .failed("That provider key is not valid.")
-            return
+        if let providerKey, !providerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard saveProviderKey(providerKey) else {
+                state = .failed(providerKeyMessage ?? "The provider key couldn't be saved.")
+                return
+            }
         }
-        if !hasRegistration(for: model, worker: worker), trimmedKey?.isEmpty != false {
-            state = .failed("Connect QuickSilver with a provider key first.")
-            return
+        let registrationKey: String?
+        if needsRegistration(for: model, worker: worker) {
+            guard case .found(let key) = providerStore.load() else {
+                refreshProviderKey()
+                state = .failed(providerKeyMessage ?? "Save your QuickSilver provider key to connect this Mac.")
+                return
+            }
+            registrationKey = key.rawValue
+        } else {
+            // Ordinary off/on reuses the existing node, without the account key
+            // and without --reregister. Reading a saved key is unnecessary here.
+            registrationKey = nil
         }
-
-        // A replacement join owns the pending restore alias. Cancel an
-        // in-flight restore attempt, but keep the alias so the last session in
-        // the chain can still restore it.
-        restoreAttemptID = nil
-        restoreTask?.cancel()
-        restoreTask = nil
 
         state = .preparing
         activeModel = model
         snapshot = nil
-        // Preserve the model captured by the first join in a cancel/rejoin
-        // chain. The first preparation may already have stopped it by the
-        // time the replacement join reads `servingAlias`.
-        restoreAlias = Self.restoreAliasForJoin(
-            pending: restoreAlias,
-            currentlyServing: server.servingAlias
-        )
         let operation = UUID()
         operationID = operation
+        let preparing = Task { try await server.prepareForCommunityBenchmark() }
+        preparationTask = preparing
         let lease: UUID
         do {
-            lease = try await server.prepareForCommunityBenchmark()
+            lease = try await preparing.value
+            preparationTask = nil
         } catch is CancellationError {
+            preparationTask = nil
             guard operationID == operation else {
-                restoreIfPreparationHasNoSuccessor()
+                if child == nil, operationID == nil { resetToIdle() }
                 return
             }
             operationID = nil
             resetToIdle()
-            restorePreviousModelIfNeeded()
             return
         } catch {
+            preparationTask = nil
             guard operationID == operation else {
-                restoreIfPreparationHasNoSuccessor()
+                if child == nil, operationID == nil { resetToIdle() }
                 return
             }
             operationID = nil
-            state = .failed("Rapid couldn't pause the current model safely.")
+            state = .failed("Rapid couldn't unload the current model safely.")
             activeModel = nil
-            restorePreviousModelIfNeeded()
             return
         }
+        lastRestoreOutcome = .unloaded
         guard operationID == operation, !shuttingDown else {
-            restoreIfPreparationHasNoSuccessor()
             server.finishCommunityBenchmark(lease)
-            // This operation no longer owns manager state. A subsequent join
-            // may already have replaced activeModel and restoreAlias, so only
-            // release the lease acquired by this stale operation. The pending
-            // restore is inherited by a successor, or performed now if the
-            // user simply cancelled and no successor exists.
+            // Release only this stale operation's lease. The previous local
+            // model stays unloaded; a replacement join owns its own session.
+            if child == nil, operationID == nil { resetToIdle() }
             return
         }
         reservation = lease
 
         let session = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let statusURL = Self.statusURL(session: session)
+        let statusURL = Self.statusURL(session: session, home: home)
         currentStatusURL = statusURL
         currentSession = session
         try? FileManager.default.removeItem(at: statusURL)
@@ -211,7 +286,7 @@ final class ShareComputeManager {
         let err = Pipe()
         installDiscardingDrainer(on: out)
         installDiscardingDrainer(on: err)
-        let environment = EngineProcessEnvironment.sidecar(
+        var environment = EngineProcessEnvironment.sidecar(
             ServerManager.serveEnvironmentAdditions(
                 bearer: "",
                 ambient: ProcessInfo.processInfo.environment,
@@ -221,11 +296,12 @@ final class ShareComputeManager {
                 modelsFolderOverride: ModelsFolderPreference.validatedOverrideURL()?.path
             )
         )
+        environment["HOME"] = home.path
         let request = Self.spawnRequest(
             model: model,
             worker: worker,
             session: session,
-            providerKey: trimmedKey,
+            providerKey: registrationKey,
             environment: environment
         )
 
@@ -268,7 +344,6 @@ final class ShareComputeManager {
             activeModel = nil
             state = .failed("Rapid couldn't start Share Compute.")
             operationID = nil
-            restorePreviousModelIfNeeded()
             releaseReservation()
         }
     }
@@ -276,8 +351,13 @@ final class ShareComputeManager {
     func leave() {
         operationID = nil
         guard let child else {
-            releaseReservation()
-            resetToIdle()
+            if let preparationTask {
+                state = .stopping
+                preparationTask.cancel()
+            } else {
+                releaseReservation()
+                resetToIdle()
+            }
             return
         }
         expectedStop = true
@@ -291,10 +371,7 @@ final class ShareComputeManager {
         if shutdownSignalledAt == nil { shutdownSignalledAt = Date() }
         shuttingDown = true
         operationID = nil
-        restoreAlias = nil
-        restoreAttemptID = nil
-        restoreTask?.cancel()
-        restoreTask = nil
+        preparationTask?.cancel()
         statusTask?.cancel()
         stopEscalationTask?.cancel()
         expectedStop = true
@@ -334,6 +411,7 @@ final class ShareComputeManager {
         while !Task.isCancelled, child != nil {
             if let value = Self.loadStatus(at: url),
                value.schemaVersion == 1, value.session == session {
+                acknowledgeRegistration(value)
                 snapshot = value
                 state = Self.state(for: value)
             }
@@ -367,17 +445,8 @@ final class ShareComputeManager {
         }
     }
 
-    nonisolated static func restoreAliasForJoin(
-        pending: String?,
-        currentlyServing: String?
-    ) -> String? {
-        pending ?? currentlyServing
-    }
-
     nonisolated static func isValidProviderKey(_ value: String) -> Bool {
-        value.utf8.count <= 4_095
-            && !value.contains("\n")
-            && !value.contains("\r")
+        ShareComputeProviderKey.validate(value) != nil
     }
 
     /// Pure representation of every caller-controlled value handed to the
@@ -425,7 +494,10 @@ final class ShareComputeManager {
         } else {
             snapshot
         }
-        if let finalSnapshot { snapshot = finalSnapshot }
+        if let finalSnapshot {
+            acknowledgeRegistration(finalSnapshot)
+            snapshot = finalSnapshot
+        }
         statusTask?.cancel()
         removeCurrentStatusFile()
         cleanupPipes()
@@ -469,7 +541,6 @@ final class ShareComputeManager {
         child = nil
         activeModel = nil
         if expectedStop, !shuttingDown { state = .idle }
-        restorePreviousModelIfNeeded()
         releaseReservation()
     }
 
@@ -496,52 +567,44 @@ final class ShareComputeManager {
         snapshot = nil
     }
 
-    /// What the restore step will do, given the state it runs in.
-    ///
-    /// Pure so the completion receipt's restore line can be asserted directly
-    /// rather than by driving a whole session. The three outcomes are
-    /// genuinely different things and the receipt has to say which happened:
-    /// nothing was serving before sharing (``notNeeded``), the previous model
-    /// was asked to restart (``requested``), or the restore was abandoned because
-    /// the app is going away or the server is gone (``skipped``).
-    nonisolated static func restoreOutcome(
-        pendingAlias: String?,
-        isShuttingDown: Bool,
-        hasServer: Bool
-    ) -> ShareComputeRestoreStatus {
-        guard pendingAlias != nil else { return .notNeeded }
-        guard !isShuttingDown, hasServer else { return .skipped }
-        return .requested
-    }
-
-    private func restorePreviousModelIfNeeded() {
-        lastRestoreOutcome = Self.restoreOutcome(
-            pendingAlias: restoreAlias,
-            isShuttingDown: shuttingDown,
-            hasServer: server != nil
-        )
-        guard !shuttingDown, let alias = restoreAlias, let server else {
-            restoreAlias = nil
-            return
-        }
-        restoreTask?.cancel()
-        let attempt = UUID()
-        restoreAttemptID = attempt
-        restoreTask = Task { @MainActor [weak self, weak server] in
-            guard let server else { return }
-            await server.start(alias: alias)
-            guard let self, self.restoreAttemptID == attempt else { return }
-            self.restoreAttemptID = nil
-            self.restoreTask = nil
-            if self.operationID == nil, self.child == nil {
-                self.restoreAlias = nil
+    @discardableResult
+    private func invalidateRegistrationProof() -> Bool {
+        for model in ShareComputeModel.desktopSharing {
+            let url = Self.registrationURL(catalogID: model.catalogID, home: home)
+            do {
+                // fileExists also returns false for inaccessible ancestors.
+                // Only ENOENT proves absence; every other metadata error must
+                // prevent changing the account while an old proof may exist.
+                var metadata = stat()
+                if url.path.withCString({ Darwin.lstat($0, &metadata) }) != 0 {
+                    let code = errno
+                    if code == ENOENT { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                }
+                guard metadata.st_mode & S_IFMT == S_IFREG else {
+                    providerKeyMessage = String(localized: "The local node registration isn't a regular file. Repair the QuickSilver state directory before changing the saved key.")
+                    return false
+                }
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                providerKeyMessage = String(localized: "This Mac couldn't reset its node registration. Check access to the local QuickSilver state directory and try again.")
+                return false
             }
         }
+        return true
     }
 
-    private func restoreIfPreparationHasNoSuccessor() {
-        guard operationID == nil else { return }
-        restorePreviousModelIfNeeded()
+    private func acknowledgeRegistration(_ status: ShareComputeStatusSnapshot) {
+        if status.phase == "error", let message = status.message,
+           Self.isRegistrationFailure(message) {
+            invalidateRegistrationProof()
+        }
+    }
+
+    nonisolated static func isRegistrationFailure(_ message: String) -> Bool {
+        ["register again", "re-register", "reregister", "provider key"].contains {
+            message.localizedCaseInsensitiveContains($0)
+        }
     }
 
     private func installDiscardingDrainer(on pipe: Pipe) {

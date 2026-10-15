@@ -30,6 +30,10 @@ struct ShareComputeModel: Identifiable, Hashable, Sendable {
             && ModelSizing.isAvailable(alias: alias, on: hardware, catalogEntry: catalogEntry)
     }
 
+    /// This release contributes only the qualified Qwen27 pool model. Other
+    /// catalog definitions remain usable for historical receipts and fixtures.
+    static var desktopSharing: [Self] { supported.filter { $0.catalogID == "qwen3.8-27b" } }
+
     static let supported: [ShareComputeModel] = [
         .init(
             catalogID: "qwen3.8-27b",
