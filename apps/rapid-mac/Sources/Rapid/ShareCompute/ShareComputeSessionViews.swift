@@ -189,7 +189,7 @@ struct ShareComputePreparingView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(RapidTheme.bandReady)
                     .accessibilityHidden(true)
-                Text("Rapid requests a restart of your previous model when this reward session ends.")
+                Text("Stop takes this Mac offline and unloads the sharing model. Your local model stays unloaded.")
                     .font(.system(size: 12))
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -728,7 +728,7 @@ struct ShareComputeSessionCompleteView: View {
             fact(
                 // Named explicitly rather than "Previous model": the user is
                 // being told what Rapid attempted for them.
-                String(localized: "Model restore"),
+                String(localized: "Model after sharing"),
                 receipt.restoreStatus.title,
                 isMonospaced: false
             )

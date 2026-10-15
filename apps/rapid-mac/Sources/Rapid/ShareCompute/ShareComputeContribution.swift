@@ -66,6 +66,8 @@ enum ShareComputeRewardStatus: String, Codable, Sendable, CaseIterable {
 enum ShareComputeRestoreStatus: String, Codable, Sendable {
     /// There was no model serving when sharing started, so nothing to restore.
     case notNeeded
+    /// Sharing stopped and its model resources were released.
+    case unloaded
     /// Rapid asked the server to restart the previous alias; readiness is not
     /// confirmed here. The raw value preserves receipts written by older builds.
     case requested = "complete"
@@ -74,6 +76,7 @@ enum ShareComputeRestoreStatus: String, Codable, Sendable {
 
     var title: String {
         switch self {
+        case .unloaded: return String(localized: "Unloaded")
         case .notNeeded: return String(localized: "Not needed")
         case .requested: return String(localized: "Restart requested")
         case .skipped: return String(localized: "Skipped")

@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// The shell owns page chrome, the tab selection, and the one piece of state
 /// the manager cannot hold for us: whether a finished session's receipt is
-/// still on screen. Everything about the session itself —lifecycle, restore,
+/// still on screen. Everything about the session itself —lifecycle, residency,
 /// teardown — stays in ``ShareComputeManager``; this view projects it through
 /// ``ShareComputeScreen`` and renders.
 struct ShareComputeView: View {
@@ -92,7 +92,8 @@ struct ShareComputeView: View {
 
     private var allPoolModels: [ShareComputeLocalModel] {
         ShareComputeLocalModel.make(catalog: catalog).filter {
-            $0.model.fits(hardware, catalogEntry: $0.entry)
+            ShareComputeModel.desktopSharing.contains($0.model)
+                && $0.model.fits(hardware, catalogEntry: $0.entry)
         }
     }
 
@@ -114,13 +115,7 @@ struct ShareComputeView: View {
 
     private var requiresProviderKey: Bool {
         guard let selectedModel else { return true }
-        if !manager.hasRegistration(for: selectedModel.model, worker: worker) { return true }
-        if case .failed(let message) = manager.state {
-            return message.localizedCaseInsensitiveContains("register again")
-                || message.localizedCaseInsensitiveContains("re-register")
-                || message.localizedCaseInsensitiveContains("provider key")
-        }
-        return false
+        return manager.requiresProviderKey(for: selectedModel.model, worker: worker)
     }
 
     private var poolRows: [ShareComputePoolRow] {
@@ -214,6 +209,7 @@ struct ShareComputeView: View {
             ShareComputeConnectionReview(
                 modelTitle: selectedModel?.title ?? "",
                 requiresProviderKey: requiresProviderKey,
+                savedProviderKeyLabel: manager.savedProviderKeyLabel,
                 worker: $worker,
                 providerKey: $providerKey,
                 onCancel: dismissConnectionReview,
@@ -540,8 +536,13 @@ struct ShareComputeView: View {
 
     private func presentConnectionReview() {
         guard selectedModel != nil, !screen.locksModelSelection else { return }
+        guard manager.canEditProviderKey else { return }
         isPickerOpen = false
-        showingConnectionReview = true
+        if !requiresProviderKey {
+            startSession()
+        } else {
+            showingConnectionReview = true
+        }
     }
 
     private func dismissConnectionReview() {
@@ -550,7 +551,7 @@ struct ShareComputeView: View {
     }
 
     private func startSession() {
-        guard let model = selectedModel else { return }
+        guard let model = selectedModel, manager.canEditProviderKey else { return }
         let key = providerKey
         providerKey = ""
         showingConnectionReview = false
@@ -572,21 +573,17 @@ struct ShareComputeView: View {
     }
 
     private func shareAgain(catalogID: String) {
+        guard manager.canEditProviderKey else { return }
         completedReceipt = nil
-        if shareableModels.contains(where: { $0.id == catalogID }) {
-            selectedID = catalogID
+        guard shareableModels.contains(where: { $0.id == catalogID }) else {
+            tab = .livePool
+            return
         }
+        selectedID = catalogID
         tab = .share
+        presentConnectionReview()
     }
 
-    // MARK: - Session lifecycle
-
-    /// Watches the manager for the facts a receipt needs, then writes one when
-    /// the session ends.
-    ///
-    /// The node id and the pool/warm-up marks have to be captured WHILE the
-    /// session runs: the manager clears its snapshot and active model during
-    /// teardown, so reading them at the end would produce an empty receipt.
     private func handleStateChange(
         from previous: ShareComputeManager.State,
         to current: ShareComputeManager.State

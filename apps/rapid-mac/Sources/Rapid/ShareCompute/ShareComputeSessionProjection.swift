@@ -86,7 +86,7 @@ enum ShareComputePreparationStep: Int, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .pauseCurrentModel: return String(localized: "Pause current model")
+        case .pauseCurrentModel: return String(localized: "Unload current model")
         case .registerThisMac: return String(localized: "Register this Mac")
         case .startSharedModel: return String(localized: "Start shared model")
         case .warmUp: return String(localized: "Warm up")

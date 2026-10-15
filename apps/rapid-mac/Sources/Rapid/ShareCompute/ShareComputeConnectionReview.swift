@@ -2,15 +2,12 @@ import SwiftUI
 
 /// The review step between pressing the primary action and starting a session.
 ///
-/// It exists because joining the pool has three consequences the user should
-/// agree to explicitly — their current model gets paused, third-party work
-/// starts running locally, and the model comes back on Stop — and because a
-/// first-time join needs a provider key. A Mac that is already registered
-/// still sees the review (the consequences have not changed) but is not asked
-/// for a key again.
+/// First setup collects the node name and saves a provider key. Later sessions
+/// use Settings/Keychain and the existing registration without another sheet.
 struct ShareComputeConnectionReview: View {
     let modelTitle: String
     let requiresProviderKey: Bool
+    var savedProviderKeyLabel: String? = nil
     @Binding var worker: String
     @Binding var providerKey: String
     let onCancel: () -> Void
@@ -25,7 +22,7 @@ struct ShareComputeConnectionReview: View {
         guard !trimmedWorker.isEmpty else { return false }
         guard requiresProviderKey else { return true }
         let trimmedKey = providerKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmedKey.isEmpty && ShareComputeManager.isValidProviderKey(trimmedKey)
+        return !trimmedKey.isEmpty && ShareComputeProviderKey.validate(trimmedKey) != nil
     }
 
     var body: some View {
@@ -42,8 +39,8 @@ struct ShareComputeConnectionReview: View {
         .background(RapidTheme.surfaceOverlay)
         // A focused SecureField makes macOS offer its own "Passwords…"
         // AutoFill button, which is drawn by the system OVER this sheet —
-        // in the review captures it landed on the sentence saying Rapid does
-        // not store the key. It cannot be styled or dismissed from here, so
+        // in the review captures it landed over the key storage
+        // explanation. It cannot be styled or dismissed from here, so
         // a review capture simply opens the sheet with nothing focused. The
         // gate is the shared golden-mode one; every normal launch still
         // lands the caret in the field the user has to fill.
@@ -70,8 +67,8 @@ struct ShareComputeConnectionReview: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             assurance(
                 systemImage: "pause.circle",
-                title: String(localized: "Pause current model"),
-                detail: String(localized: "This prevents two large models from competing for unified memory.")
+                title: String(localized: "Unload current model"),
+                detail: String(localized: "Sharing runs Qwen 27B exclusively for QuickSilver. Local chat is unavailable while sharing.")
             )
             assurance(
                 systemImage: "checkmark.shield",
@@ -80,8 +77,8 @@ struct ShareComputeConnectionReview: View {
             )
             assurance(
                 systemImage: "arrow.uturn.backward",
-                title: String(localized: "Restart after Stop"),
-                detail: String(localized: "Rapid leaves the pool and requests a restart of your previous model. Check that it becomes ready.")
+                title: String(localized: "Stop and release memory"),
+                detail: String(localized: "Stop takes this Mac offline and unloads the sharing model. Your previous model stays unloaded.")
             )
         }
     }
@@ -125,6 +122,10 @@ struct ShareComputeConnectionReview: View {
                     .accessibilityIdentifier("ShareCompute.Worker")
             }
 
+            if let savedProviderKeyLabel {
+                Text("Saved provider key: \(savedProviderKeyLabel)")
+                    .font(RapidFont.secondary)
+            }
             if requiresProviderKey {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
@@ -158,7 +159,7 @@ struct ShareComputeConnectionReview: View {
                         .focused($focus, equals: .key)
                         .accessibilityLabel(String(localized: "QuickSilver provider key"))
                         .accessibilityIdentifier("ShareCompute.ProviderKey")
-                    Text("Sent directly to the local provider process. Rapid does not save it in app settings.")
+                    Text("Saved in this Mac’s Keychain for future sessions. Sent to the provider process only when registration is needed.")
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)

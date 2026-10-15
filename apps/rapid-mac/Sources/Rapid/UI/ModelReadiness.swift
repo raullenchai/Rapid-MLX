@@ -50,6 +50,8 @@ enum ModelReadiness: Equatable {
     /// The engine binary is missing — setup never finished. Terminal
     /// until the user reinstalls; ``ContentView`` owns this screen.
     case engineMissing
+    /// Share Compute owns exclusive residency, including preparation and teardown.
+    case sharingCompute
     /// No model chosen yet (empty alias, or an internal placeholder
     /// that ``ModelDisplayName`` refuses to treat as a name).
     case noModel
@@ -404,7 +406,7 @@ enum ModelReadiness: Equatable {
     var statusRole: StatusRole {
         switch self {
         case .engineMissing, .failed:      return .error
-        case .noModel, .needsDownload,
+        case .sharingCompute, .noModel, .needsDownload,
              .needsStart, .unknownModel:   return .idle
         case .downloading, .starting:      return .working
         case .ready:                       return .ready
@@ -422,7 +424,7 @@ enum ModelReadiness: Equatable {
     /// The alias this state is about, when it has one.
     var alias: String? {
         switch self {
-        case .engineMissing, .noModel:
+        case .engineMissing, .sharingCompute, .noModel:
             return nil
         case .needsDownload(let a, _), .needsStart(let a), .unknownModel(let a),
              .downloading(let a, _, _), .starting(let a, _), .ready(let a):
@@ -440,7 +442,7 @@ enum ModelReadiness: Equatable {
 
     var action: Action? {
         switch self {
-        case .engineMissing:                    return nil
+        case .engineMissing, .sharingCompute:   return nil
         case .noModel:                          return .chooseModel
         case .needsDownload(let a, _):          return .download(alias: a)
         case .needsStart(let a),
@@ -461,6 +463,7 @@ enum ModelReadiness: Equatable {
     /// Short status line — the bold half of the readiness banner.
     var headline: String {
         switch self {
+        case .sharingCompute: return String(localized: "Local chat paused for sharing")
         case .engineMissing:
             return String(localized: "Setup didn't finish")
         case .noModel:
@@ -484,6 +487,7 @@ enum ModelReadiness: Equatable {
     /// why sending is unavailable" half of the contract.
     var detail: String? {
         switch self {
+        case .sharingCompute: return String(localized: "Stop sharing in Share Compute and wait for it to finish before starting a local model.")
         case .engineMissing:
             return String(localized: "Rapid-MLX can't find its engine. Reopen the app to run setup again.")
         case .noModel:
@@ -520,6 +524,7 @@ enum ModelReadiness: Equatable {
     /// are complementary instead of redundant.
     var composerPlaceholder: String {
         switch self {
+        case .sharingCompute: return String(localized: "Stop sharing to use local chat")
         case .engineMissing:            return String(localized: "Setup didn't finish")
         case .noModel:                  return String(localized: "Choose a model first")
         case .needsDownload(let a, _):  return String(localized: "Download \(a) first")
@@ -536,6 +541,7 @@ enum ModelReadiness: Equatable {
     /// gated send is attempted, so both channels say the same thing.
     var sendTooltip: String {
         switch self {
+        case .sharingCompute: return String(localized: "Stop sharing to use local chat")
         case .engineMissing:
             return String(localized: "Rapid-MLX can't find its engine yet.")
         case .noModel:
@@ -562,6 +568,7 @@ enum ModelReadiness: Equatable {
     /// the states that previously had none.
     var emptyStateSubtitle: String {
         switch self {
+        case .sharingCompute: return String(localized: "Local chat paused for sharing")
         case .engineMissing:
             return String(localized: "Setup didn't finish")
         case .noModel:

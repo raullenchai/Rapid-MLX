@@ -158,13 +158,13 @@ def _parse_args(argv):
 # a review Mac would not have it, and the pool surfaces need a live example of
 # the download-required state with a long model name.
 SHARE_COMPUTE_POOL_ALIASES = [
-    "qwen3.8-27b-4bit",
+    "qwen3.8-27b-tensorfold",
     "qwen3.6-35b",
     "nemotron-3.5-lightning-30b-4bit",
     "glm5.3-flash-4bit",
 ]
 SHARE_COMPUTE_POOL_SIZES = {
-    "qwen3.8-27b-4bit": "16.8 GB",
+    "qwen3.8-27b-tensorfold": "16.8 GB",
     "qwen3.6-35b": "20.4 GB",
     "nemotron-3.5-lightning-30b-4bit": "18.9 GB",
 }

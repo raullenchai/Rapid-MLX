@@ -1035,7 +1035,10 @@ struct ContentView: View {
     /// answer at any instant. See ``ModelReadiness`` for the precedence
     /// rules and the copy contract.
     private var readiness: ModelReadiness {
-        ModelReadiness.resolve(
+        // Ownership outlives an error snapshot until the process group is
+        // reaped. Do not offer a local Start that the server must reject.
+        if !shareCompute.canEditProviderKey { return .sharingCompute }
+        return ModelReadiness.resolve(
             serverState: server.readinessState(for: alias),
             alias: alias,
             cacheState: cacheState(for: alias),

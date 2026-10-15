@@ -10,14 +10,31 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
 1. In **Settings → Experimental**, enable **Share Compute**.
 2. Open **Share Compute → Live Pool** to see supported models and choose one
    that is available on your Mac. Download it if the app asks you to.
-3. On **Share**, click **Connect & serve**. Give each Mac on the same provider
-   account a distinct worker name. Paste your provider key in the confirmation
-   sheet and click **Connect & Share**. Rapid sends this key directly to the
-   local provider process; it does not save the provider key in app settings.
-4. Wait for **Your Mac is contributing** and **Provider: Connected**. The Mac
+3. In **Settings → Experimental → Share Compute**, give this Mac a worker
+   name and save your `qsppk-` provider key. Use a different name on each Mac.
+   The key is stored in this Mac's Keychain, separately from the ledger key;
+   app preferences contain no secret. You can also paste and save the key in
+   the first connection sheet. Saving settings does not start sharing.
+4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). This release shares Qwen 27B only.
+   Rapid unloads the current local model and runs an exclusive pool process:
+   the sharing model is unavailable to local chat. Chat explains that sharing
+   must stop before a local model can start; it does not offer a blocked Start.
+   Repeat sessions start using
+   the saved account or existing node, without another key-entry sheet.
+5. Wait for **Your Mac is contributing** and **Provider: Connected**. The Mac
    can receive work while the app and share session remain running. Use
-   **Stop sharing** to leave the pool. Rapid requests a restart of your previous
-   local model; check that it becomes ready before using it again.
+   **Stop sharing** to go offline and unload the sharing model. Your previous
+   model stays unloaded, leaving the machine's resources available. Starting
+   again reuses the same valid node registration; stopping is not deregistration.
+   You can replace or remove the saved provider key in Settings while offline.
+   Replacing the account key invalidates the old local registration proof before
+   writing the new Keychain entry, so the next join registers the new account.
+   If the login Keychain is missing, locked, or denies this app access, Rapid
+   reports the problem without opening a system authentication/reset dialog.
+   A valid cached node can still reconnect without reading the provider key.
+   Removing the saved key does not revoke remote credentials; use QuickSilver's
+   dashboard for revocation. Local node credentials are retained, but the GUI
+   requires a provider key again after its registration proof is invalidated.
 
 For earnings, open **Credits** and save a separate QuickSilver read-only key
 (`qsprk-`). Rapid stores it in this Mac's Keychain. The credit ledger shows
@@ -35,8 +52,15 @@ shell history:
 rapid-mlx share qwen3.8-27b --quicksilver --worker "$(hostname -s)"
 ```
 
-Enter the `qsppk-` key when prompted. Later runs reuse the local node
-registration. Choose a different `--worker` on each Mac. Stop with Ctrl-C.
+Enter the `qsppk-` key when prompted. `--worker` is this Mac's node name;
+when omitted, it defaults to the hostname. Use a different name on each Mac.
+The terminal reports registration or cached-node reuse, download progress,
+model startup, warm-up, pool connection, and local request activity. Keep the
+command running while online. Ctrl-C stops sharing and unloads its worker;
+run the same command to return online using the cached node, without a key
+prompt. `--reregister` repairs an expired or changed registration binding; it
+is not required for ordinary offline/online use. The recommended CLI flow uses the interactive prompt, keeping the key out of
+argv and shell history. GUI Keychain settings are not imported into CLI.
 The Qwen3.8 27B pool requires 48 GB+ unified memory and defaults to the qualified TensorFold runtime in both CLI
 and Desktop, including in-memory message-boundary prefix reuse. Desktop bundles
 that runtime. For a standalone Python install, install its qualified revision
@@ -57,8 +81,8 @@ The qualified 27B backend advertises one concurrent request, matching its
 single inference lane; `--max-num-seqs` values above one are rejected before
 registration.
 An existing registration bound to the old ordinary 27B alias needs one fresh
-registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect with
-the provider key). Node credentials remain bound to the selected alias.
+registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect using
+the saved provider key, or save one in Settings if this is the first setup). Node credentials remain bound to the selected alias.
 Only models enabled in QuickSilver's current pool can receive requests; the
 Desktop **Live Pool** view shows the current availability.
 

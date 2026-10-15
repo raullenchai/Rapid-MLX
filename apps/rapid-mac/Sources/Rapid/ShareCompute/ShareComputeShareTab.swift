@@ -318,14 +318,11 @@ struct ShareComputeShareTab: View {
             .accessibilityIdentifier("ShareCompute.OpenPool")
         } else {
             ShareComputePrimaryBandButton(
-                // Both paths open the same review sheet. The label differs
-                // because connecting a provider key is a materially different
-                // ask from re-joining a pool this Mac is already registered
-                // with, and the button has to say which one is about to
-                // happen.
+                // First setup collects a key. Once configured, a direct start
+                // reuses the saved account or node without another review sheet.
                 title: requiresConnection
-                    ? String(localized: "Connect & serve")
-                    : String(localized: "Review & connect"),
+                    ? String(localized: "Set up sharing")
+                    : String(localized: "Start sharing"),
                 height: isNarrow ? 48 : 72,
                 action: onStart
             )
@@ -339,7 +336,7 @@ struct ShareComputeShareTab: View {
         AdaptiveAssuranceRow(isNarrow: isNarrow) {
             HStack(spacing: 22) {
                 assurance(String(localized: "One model serves at a time"))
-                assurance(String(localized: "Rapid requests a restart after Stop"))
+                assurance(String(localized: "Stop takes this Mac offline and unloads the model"))
             }
         } trailing: {
             HStack(spacing: 10) {

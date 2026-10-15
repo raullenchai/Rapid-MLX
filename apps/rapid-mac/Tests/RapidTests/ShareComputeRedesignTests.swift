@@ -355,25 +355,11 @@ struct ShareComputeRedesignTests {
 
     // MARK: - Restore
 
-    @Test("Model restore reports only what Rapid can confirm")
-    func restoreOutcome() {
-        // Nothing was serving before sharing started.
-        #expect(ShareComputeManager.restoreOutcome(
-            pendingAlias: nil, isShuttingDown: false, hasServer: true
-        ) == .notNeeded)
-        // The normal path requests a restart; this does not prove readiness.
-        #expect(ShareComputeManager.restoreOutcome(
-            pendingAlias: "qwen3.5-4b-4bit", isShuttingDown: false, hasServer: true
-        ) == .requested)
+    @Test("Stopped sharing reports unloaded; historical restore receipts still decode")
+    func restoreOutcome() throws {
+        #expect(ShareComputeRestoreStatus.unloaded.title == "Unloaded")
+        #expect(try JSONDecoder().decode(ShareComputeRestoreStatus.self, from: Data("\"complete\"".utf8)) == .requested)
         #expect(ShareComputeRestoreStatus.requested.title == "Restart requested")
-        // App shutdown abandons the restore — the receipt must not claim the
-        // model came back.
-        #expect(ShareComputeManager.restoreOutcome(
-            pendingAlias: "qwen3.5-4b-4bit", isShuttingDown: true, hasServer: true
-        ) == .skipped)
-        #expect(ShareComputeManager.restoreOutcome(
-            pendingAlias: "qwen3.5-4b-4bit", isShuttingDown: false, hasServer: false
-        ) == .skipped)
     }
 
     // MARK: - Credit ownership
