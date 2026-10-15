@@ -56,6 +56,23 @@ def _make_scheduler(*, gpu_memory_utilization: float = 0.9) -> Scheduler:
 
 
 class TestPlanMetalLimit:
+    def test_large_agent_context_has_runtime_headroom_on_36gb_mac(self):
+        # Measured 27B weights are 15.4 GB; a 14k-token Goose request with
+        # its prefix cache reaches about 29 GB active on a 30.2 GB budget.
+        plan = plan_metal_limit(
+            weights_bytes=15_400_000_000,
+            device_budget_bytes=30_200_000_000,
+        )
+        assert plan.resolved_utilization >= 0.96
+        assert plan.limit_bytes >= 29_000_000_000
+
+    def test_same_model_retains_default_cap_on_48gb_mac(self):
+        plan = plan_metal_limit(
+            weights_bytes=15_400_000_000,
+            device_budget_bytes=40_300_000_000,
+        )
+        assert plan.resolved_utilization == AUTO_UTILIZATION_FLOOR
+
     def test_small_model_fits_at_default_floor(self):
         """#2858 acceptance fixture 1: a model with plenty of headroom
         resolves to exactly the historical 0.90 default — auto mode is

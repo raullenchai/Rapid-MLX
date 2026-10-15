@@ -49,10 +49,14 @@ MAX_UTILIZATION = 1.0 - 1e-9
 
 # Runtime headroom charged on top of the measured weight footprint in auto
 # mode: KV cache for in-flight requests, activation workspace, Metal heap
-# fragmentation. Fractional so big models reserve proportionally more, with an
-# absolute floor so tiny models still get a workable slice.
+# fragmentation. A 14k-token agent request on a 15.4 GB checkpoint has a
+# measured ~14 GB runtime peak, far above 8% of weights. Size the allowance
+# against the device budget, capped so large-memory hosts keep the historical
+# 90% default when they already have ample space.
 _AUTO_HEADROOM_FRACTION = 0.08
 _AUTO_HEADROOM_MIN_BYTES = 512 * 1024**2
+_AUTO_RUNTIME_HEADROOM_DEVICE_FRACTION = 0.46
+_AUTO_RUNTIME_HEADROOM_MAX_BYTES = 14_000_000_000
 
 
 # ── Process-wide utilization ratchet (codex round 2 BLOCKING #2) ──
@@ -174,7 +178,12 @@ def plan_metal_limit(
         mode = "auto"
     else:
         headroom = max(
-            int(weights_bytes * _AUTO_HEADROOM_FRACTION), _AUTO_HEADROOM_MIN_BYTES
+            int(weights_bytes * _AUTO_HEADROOM_FRACTION),
+            _AUTO_HEADROOM_MIN_BYTES,
+            min(
+                int(device_budget_bytes * _AUTO_RUNTIME_HEADROOM_DEVICE_FRACTION),
+                _AUTO_RUNTIME_HEADROOM_MAX_BYTES,
+            ),
         )
         needed = (weights_bytes + headroom) / device_budget_bytes
         resolved = min(max(needed, AUTO_UTILIZATION_FLOOR), AUTO_UTILIZATION_CEILING)

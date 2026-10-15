@@ -10775,6 +10775,12 @@ class Scheduler:
             if request is not None:
                 self.performance.record_failed_performance(request)
                 request.set_finished(RequestStatus.FINISHED_ABORTED)
+                # A fatal Metal error can leave prompt and extracted caches on
+                # the Request until the stream consumer removes it.  Release
+                # those references before flushing the allocator; otherwise
+                # the next admission sees the failed batch's buffers as live.
+                request.prompt_cache = None
+                request._extracted_cache = None
             aborted_ids.add(request_id)
             self.finished_req_ids.add(request_id)
         self.running.clear()
@@ -10783,6 +10789,7 @@ class Scheduler:
         # Clear UID mappings (batch generator is gone)
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._hybrid_checkpoints.clear()
 
         # Release Metal memory
         mx.clear_cache()
