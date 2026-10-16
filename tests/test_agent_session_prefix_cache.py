@@ -22,6 +22,7 @@ Each test below pins one of those policies.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -345,6 +346,237 @@ def _register(sched: Scheduler, uid: int, prompt_len: int) -> Request:
     sched.uid_to_request_id[uid] = req.request_id
     sched.request_id_to_uid[req.request_id] = uid
     return req
+
+
+@pytest.mark.parametrize("tail", [1, 16, 64])
+def test_restored_boundary_keeps_both_documents_under_pressure(monkeypatch, tail):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    first = list(range(128))
+    second = list(range(500, 628))
+    assert cache.store(first, _hybrid_cache(4 * MB), message_boundary=True)
+    assert cache.store(second, _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 71, 128 + tail)
+    req.prompt_token_ids = first + list(range(1000, 1000 + tail))
+    req.prefix_boundary = 128
+
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+
+    assert req.cached_tokens == 128
+    assert req._cache_snapshot_boundary == 128
+    assert req._cache_snapshot_stored
+    assert req._boundary_snapshot_taken
+    sched._prompt_cache_save_cb(71, _hybrid_cache(4 * MB))
+    assert set(cache._entries) == {tuple(first), tuple(second)}
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    assert set(cache._entries) == {tuple(first), tuple(second)}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "long_tail",
+        "unmarked",
+        "dense",
+        "new_boundary",
+        "internal",
+        "invalid",
+        "earlier",
+    ],
+)
+def test_restored_boundary_retention_is_narrow(monkeypatch, case):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    boundary = list(range(128))
+    layers = [_KVLayer(4 * MB)] if case == "dense" else _hybrid_cache(4 * MB)
+    assert cache.store(boundary, layers, message_boundary=case != "unmarked")
+    tail = 65 if case == "long_tail" else 64 if case == "new_boundary" else 16
+    req = _register(sched, 72, 128 + tail)
+    req.prompt_token_ids = boundary + list(range(1000, 1000 + tail))
+    req.prefix_boundary = 128
+    if case == "new_boundary":
+        req.prefix_boundary = 160
+    elif case == "internal":
+        req.prefix_boundary = 0
+    elif case == "invalid":
+        req.prefix_boundary = len(req.prompt_token_ids)
+    elif case == "earlier":
+        req.prefix_boundary = 127
+
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+
+    assert req.cached_tokens == 128
+    assert not getattr(req, "_cache_snapshot_stored", False)
+
+
+def test_restored_boundary_retention_uses_prefill_tile_alignment(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    sched._prefill_tile_rows_cached = 32
+    boundary = list(range(128))
+    assert sched.memory_aware_cache.store(
+        boundary, _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 73, 144)
+    req.prefix_boundary = 129
+
+    sched._fetch_memory_aware_prefix(req)
+    assert sched._resolve_snapshot_boundary(req) == 0
+
+    assert req.cached_tokens == 128
+    assert req.prefix_boundary == 129
+    assert req._cache_snapshot_boundary == 128
+    assert req._cache_snapshot_stored
+
+
+def test_restored_boundary_evicted_before_split_planning_is_not_retained(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    assert sched.memory_aware_cache.store(
+        list(range(128)), _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 74, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched.memory_aware_cache.clear()
+
+    sched._resolve_snapshot_boundary(req)
+
+    assert req.cached_tokens == 128
+    assert not getattr(req, "_cache_snapshot_stored", False)
+
+
+def test_restored_boundary_evicted_after_planning_keeps_prompt_fallback(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    assert cache.store(list(range(128)), _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 75, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    assert req._cache_snapshot_stored
+    cache.clear()
+
+    sched._prompt_cache_save_cb(75, _hybrid_cache(4 * MB))
+
+    assert tuple(req.prompt_token_ids) in cache._entries
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    # The prompt entry remains usable by an extension with a different suffix.
+    restored, remaining = cache.fetch(req.prompt_token_ids + [999])
+    assert restored is not None
+    assert remaining == [999]
+
+
+def test_restored_boundary_insert_failure_rearms_cold_snapshot(monkeypatch):
+    sched = _scheduler(monkeypatch)
+    sched._prefill_tile_rows_cached = 32
+    assert sched.memory_aware_cache.store(
+        list(range(128)), _hybrid_cache(4 * MB), message_boundary=True
+    )
+    req = _register(sched, 76, 144)
+    req.prefix_boundary = 129
+    sched._fetch_memory_aware_prefix(req)
+    sched.waiting.append(req)
+    generator = MagicMock()
+    generator.insert.side_effect = RuntimeError("cached insert rejected")
+    generator.insert_segments.return_value = [101]
+    sched.batch_generator = generator
+    monkeypatch.setattr(sched, "_ensure_batch_generator", MagicMock(return_value=True))
+    monkeypatch.setattr(sched, "_get_request_sampler", lambda _r: MagicMock())
+    monkeypatch.setattr(sched, "_register_uid_processors", MagicMock())
+    monkeypatch.setattr(sched, "_validate_cache", lambda _c: True)
+
+    assert sched._schedule_waiting() == [req]
+
+    generator.insert.assert_called_once()
+    assert generator.insert_segments.call_args.kwargs["caches"] is None
+    assert generator.insert_segments.call_args.args[0] == [
+        [list(range(128)), list(range(128, 144))]
+    ]
+    assert req.cached_tokens == 0
+    assert not req._cache_snapshot_restored
+    assert not req._cache_snapshot_stored
+    assert not req._boundary_snapshot_taken
+    assert req._cache_snapshot_boundary == 128
+
+
+@pytest.mark.parametrize("lost", ["metadata", "backend"])
+def test_restored_retention_without_its_boundary_preserves_fallback(monkeypatch, lost):
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    assert cache.store(list(range(128)), _hybrid_cache(4 * MB), message_boundary=True)
+    req = _register(sched, 78, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    layers = _hybrid_cache(4 * MB)
+    assert sched._boundary_snapshot_supersedes(req, layers, 144)
+
+    if lost == "backend":
+        sched.memory_aware_cache = None
+        assert not sched._boundary_snapshot_supersedes(req, layers, 144)
+        return
+
+    del req._cache_snapshot_boundary
+    sched._prompt_cache_save_cb(78, layers)
+    assert tuple(req.prompt_token_ids) in cache._entries
+    req.output_token_ids = [7, 8]
+    req._extracted_cache = _hybrid_cache(4 * MB)
+    sched.running[req.request_id] = req
+    sched._cleanup_finished({req.request_id})
+    # Missing restored metadata must not suppress the completion under pressure.
+    assert tuple(req.prompt_token_ids + req.output_token_ids) in cache._entries
+
+
+def test_restored_boundary_completion_decision_blocks_concurrent_eviction(monkeypatch):
+    from rapid_mlx import scheduler as scheduler_module
+
+    sched = _scheduler(monkeypatch)
+    cache = sched.memory_aware_cache
+    cache._max_memory = 10 * MB
+    key = tuple(range(128))
+    assert cache.store(list(key), _hybrid_cache(4 * MB), message_boundary=True)
+    assert cache.store(list(range(500, 628)), _hybrid_cache(4 * MB))
+    req = _register(sched, 77, 144)
+    req.prefix_boundary = 128
+    sched._fetch_memory_aware_prefix(req)
+    sched._resolve_snapshot_boundary(req)
+    attempted = threading.Event()
+    outcome = {}
+
+    def evict_if_possible():
+        acquired = cache._lock.acquire(blocking=False)
+        outcome["evicted"] = acquired
+        if acquired:
+            try:
+                cache._evict_entry_locked(key, "pressure")
+            finally:
+                cache._lock.release()
+        attempted.set()
+
+    def estimate_with_concurrent_pressure(_layers):
+        worker = threading.Thread(target=evict_if_possible)
+        worker.start()
+        worker.join(timeout=2)
+        assert attempted.is_set(), "eviction attempt did not finish"
+        return 4 * MB
+
+    monkeypatch.setattr(
+        scheduler_module, "estimate_kv_cache_memory", estimate_with_concurrent_pressure
+    )
+
+    assert not sched._protect_boundary_behind_completion(req, _hybrid_cache(4 * MB))
+    assert not outcome["evicted"]
+    assert key in cache._entries
 
 
 def test_hybrid_prompt_entry_skipped_after_a_stored_boundary(monkeypatch):
