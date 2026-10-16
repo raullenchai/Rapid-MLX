@@ -2852,7 +2852,7 @@ class BatchedEngine(BaseEngine):
                 messages, template_tools, enable_thinking, chat_template_kwargs
             )
             tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
-            return tokenizer.decode(token_ids, skip_special_tokens=False)
+            return str(tokenizer.decode(token_ids, skip_special_tokens=False))
         prompt = self._apply_chat_template(
             messages,
             tools=template_tools,
@@ -3667,6 +3667,7 @@ class BatchedEngine(BaseEngine):
         # prefill only their common token prefix plus one disposable token.
         # The latter lets the scheduler snapshot the complete shared prefix.
         shared_warm_boundary = 0
+        prompt: str | list[int]
         if len(messages) == 1 and messages[0].get("role") == "system" and tools:
             prompt, shared_warm_boundary = self._shared_system_tools_prompt(
                 messages, template_tools, enable_thinking, chat_template_kwargs
@@ -3679,12 +3680,15 @@ class BatchedEngine(BaseEngine):
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
             )
-        prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
-            prompt,
-            enable_thinking=enable_thinking,
-            has_tools=bool(template_tools),
-            as_token_ids=True,
-        )
+        output_router_seed = None
+        if not shared_warm_boundary:
+            assert isinstance(prompt, str)
+            prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
+                prompt,
+                enable_thinking=enable_thinking,
+                has_tools=bool(template_tools),
+                as_token_ids=True,
+            )
         if output_router_seed is not None:
             kwargs["_output_router_seed_token_ids"] = output_router_seed
 
@@ -3701,7 +3705,7 @@ class BatchedEngine(BaseEngine):
         # agnostic — any parser whose wire opener can be precomputed
         # by the route can opt in by extending the allowlist (codex r7 NIT).
         forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
-        if forced_assistant_prefix:
+        if forced_assistant_prefix and not shared_warm_boundary:
             prompt = prompt + forced_assistant_prefix
             # When we prefix the assistant turn ourselves, the response
             # surface lacks the prefix bytes (the model only emits the
@@ -4562,6 +4566,7 @@ class BatchedEngine(BaseEngine):
         template_tools = convert_tools_for_template(tools) if tools else None
 
         shared_warm_boundary = 0
+        prompt: str | list[int]
         if len(messages) == 1 and messages[0].get("role") == "system" and tools:
             prompt, shared_warm_boundary = self._shared_system_tools_prompt(
                 messages, template_tools, enable_thinking, chat_template_kwargs
@@ -4574,12 +4579,15 @@ class BatchedEngine(BaseEngine):
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
             )
-        prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
-            prompt,
-            enable_thinking=enable_thinking,
-            has_tools=bool(template_tools),
-            as_token_ids=True,
-        )
+        output_router_seed = None
+        if not shared_warm_boundary:
+            assert isinstance(prompt, str)
+            prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
+                prompt,
+                enable_thinking=enable_thinking,
+                has_tools=bool(template_tools),
+                as_token_ids=True,
+            )
 
         # ``forced_assistant_prefix`` — see ``chat()`` for the rationale.
         # On the streaming path the prefix is also injected into the
@@ -4589,7 +4597,7 @@ class BatchedEngine(BaseEngine):
         # streaming tool-call parsers (hermes / qwen3coder) see the
         # complete envelope from the very first delta.
         forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
-        if forced_assistant_prefix:
+        if forced_assistant_prefix and not shared_warm_boundary:
             prompt = prompt + forced_assistant_prefix
 
         # Compute prefix boundary for cache — non-trimmable-cache gate, see
