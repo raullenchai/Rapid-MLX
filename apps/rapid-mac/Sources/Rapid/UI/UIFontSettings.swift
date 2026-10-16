@@ -146,6 +146,7 @@ struct UIFontScaleControl: View {
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(label)
+        .accessibilityIdentifier("Settings.Appearance.TextSize.\(delta < 0 ? "Decrease" : "Increase")")
     }
 
     static func label(_ scale: Double) -> String {
