@@ -16,7 +16,7 @@ import logging
 import platform
 import sys
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -231,6 +231,164 @@ def require_environment(
         )
 
 
+def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any:
+    """Keep one optional tail cut without displacing scheduler-selected states."""
+
+    class CheckpointEngine(engine_type):
+        interior_tokens = None
+        interior_releases = 0
+
+        def _release_interior(self, store):
+            tokens = self.interior_tokens
+            self.interior_tokens = None
+            if tokens is None:
+                return
+            # Public take transfers precisely this owned prefix; it does not
+            # choose a victim. Never remove a state promoted to a system pin.
+            probe = [*tokens, 0]
+            usable = lambda n: n == len(tokens)
+            entry = store.peek(probe, usable=usable)
+            if entry is not None and not entry.pinned:
+                if store.match(probe, usable=usable, take=True) is not None:
+                    self.interior_releases += 1
+
+        def _retention_fits(self, store, snapshots):
+            return len(store) + len(snapshots) <= store.slots and (
+                store.budget_bytes is None
+                or store.nbytes
+                + sum(int(self.cache_nbytes(cache)) for _, cache in snapshots)
+                <= store.budget_bytes
+            )
+
+        def _is_history_cut(self, ids, position):
+            assistant = tuple(self.prefill_plan.assistant)
+            if not assistant:
+                return False
+            width = len(assistant)
+            for at in range(len(ids) - width, max(-1, len(ids) - 256), -1):
+                if tuple(ids[at : at + width]) == assistant:
+                    return self.prompt_chunks(ids).floor(at) == position
+            return False
+
+        def begin_stream(
+            self, stream, *, cache=None, cached_tokens=0, checkpoints_at=()
+        ):
+            store = store_getter()
+            if store is None:
+                return super().begin_stream(
+                    stream,
+                    cache=cache,
+                    cached_tokens=cached_tokens,
+                    checkpoints_at=checkpoints_at,
+                )
+            original = set(checkpoints_at)
+            ids = stream.prompt_ids
+            owned = self.interior_tokens
+            if owned is not None:
+                probe = [*owned, 0]
+                entry = store.peek(probe, usable=lambda n: n == len(owned))
+                if entry is None or entry.pinned:
+                    self.interior_tokens = None
+                elif ids[: len(owned)] == owned and (
+                    len(owned) in original
+                    or (
+                        cached_tokens == len(owned)
+                        and not original
+                        and self._is_history_cut(ids, len(owned))
+                    )
+                ):
+                    # Shortening a message can make the restored cut its new
+                    # history boundary. It is no longer an optional interior.
+                    if len(owned) not in original:
+                        store.insert(owned, entry.cache, last_prompt=ids)
+                    self.interior_tokens = None
+            if not original and self.interior_tokens is None:
+                return super().begin_stream(
+                    stream,
+                    cache=cache,
+                    cached_tokens=cached_tokens,
+                    checkpoints_at=checkpoints_at,
+                )
+            starts = [
+                i for i, token in enumerate(ids) if token in self.prefill_plan.openers
+            ]
+            candidate = None
+            if len(starts) >= 2 and starts[-1] - starts[-2] >= 2 * self.prefill_step:
+                cuts = self.prompt_chunks(ids).starts or []
+                grid = [
+                    at
+                    for previous, at in zip(cuts, cuts[1:])
+                    if at - previous == self.prefill_step
+                ]
+                if grid:
+                    candidate = grid[-1]
+            owned = self.interior_tokens
+            if owned is not None and (
+                candidate != len(owned) or ids[: len(owned)] != owned
+            ):
+                self._release_interior(store)
+            added = None
+            if (
+                original
+                and self.interior_tokens is None
+                and candidate is not None
+                and candidate > cached_tokens
+                and candidate not in original
+                and len(store) + len(original) + 1 <= store.slots
+            ):
+                added = candidate
+                checkpoints_at = sorted(original | {added})
+            steps = super().begin_stream(
+                stream,
+                cache=cache,
+                cached_tokens=cached_tokens,
+                checkpoints_at=checkpoints_at,
+            )
+            if added is None and self.interior_tokens is None:
+                return steps
+
+            def retain():
+                completed = False
+                try:
+                    result = yield from steps
+                    completed = True
+                    return result
+                finally:
+                    snapshots = stream.history_checkpoints
+                    if added is not None:
+                        extra = next(
+                            (pair for pair in snapshots if len(pair[0]) == added), None
+                        )
+                        progress = (
+                            not completed
+                            and extra is not None
+                            and added == max(len(tokens) for tokens, _ in snapshots)
+                        )
+                        if (
+                            extra is not None
+                            and completed
+                            and self._retention_fits(store, snapshots)
+                        ):
+                            self.interior_tokens = extra[0]
+                        elif not progress:
+                            # Only remove our extra. Keep every runtime history,
+                            # shared-system and interrupted-prefill selection.
+                            stream.history_checkpoints = [
+                                pair for pair in snapshots if len(pair[0]) != added
+                            ]
+                    elif self.interior_tokens is not None:
+                        if not completed and any(
+                            tokens == self.interior_tokens for tokens, _ in snapshots
+                        ):
+                            self.interior_tokens = None  # runtime retry progress
+                        elif not self._retention_fits(store, snapshots):
+                            self._release_interior(store)
+
+            return retain()
+
+    return CheckpointEngine
+
+
 class TensorFoldQwen27Backend:
     """Request adapter around a pinned TensorFold ``ChatApp``.
 
@@ -306,17 +464,22 @@ class TensorFoldQwen27Backend:
 
             fraction = model_fraction(package)
 
+        retained_store: dict[str, Any] = {}
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
-            engine_factory=functools.partial(LaneEngine, prefill_plan=plan),
+            engine_factory=functools.partial(
+                _checkpoint_engine(LaneEngine, lambda: retained_store.get("store")),
+                prefill_plan=plan,
+            ),
             lanes=lanes,
             **({"memory_fraction": fraction} if lanes > 1 else {}),
             context_window=int(context_window),
             default_max_tokens=int(max_tokens),
             snapshot_dir=None,
         )
+        retained_store["store"] = app.checkpoints
         return cls(app)
 
     async def stream(
