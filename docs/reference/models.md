@@ -21,11 +21,40 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
 | MiniCPM 5 | 1B, 2B | 4-bit, OptiQ 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
-| Ternary Bonsai | 1.7B, 27B, Bonsai 2 27B (vision) | 2-bit (ternary) |
+| Ternary Bonsai | 1.7B, 27B; Bonsai 2 2B, 4B, 9B, 27B (vision) | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 | NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 | G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
 | K2 Horizon | 7B (experimental, text-only) | 4-bit |
+
+### Ternary Bonsai 2 small vision models
+
+These aliases use the same native Hadamard loader as `bonsai2-27b-2bit`.
+All support text, image input, tool calls, and optional thinking.
+
+| Alias | Checkpoint | Download footprint |
+|-------|------------|--------------------|
+| `bonsai2-2b-2bit` | `prism-ml/Ternary-Bonsai-2-2B-mlx-2bit` | 1.13 GiB |
+| `bonsai2-4b-2bit` | `prism-ml/Ternary-Bonsai-2-4B-mlx-2bit` | 1.82 GiB |
+| `bonsai2-9b-2bit` | `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` | 3.36 GiB |
+
+```bash
+rapid-mlx serve bonsai2-2b-2bit
+rapid-mlx serve bonsai2-4b-2bit
+rapid-mlx serve bonsai2-9b-2bit
+```
+
+Defaults follow each checkpoint's `generation_config.json`: temperature 1.0,
+top-p 0.95, top-k 20. For short answers, set
+`chat_template_kwargs: {"enable_thinking": false}`; the publisher recommends
+temperature 0.7 and top-p 0.8 in this mode. Thinking can require thousands of
+output tokens; allow at least 8,192 when enabling it. Presence penalties are
+request settings rather than alias defaults (1.0 with thinking, 1.5 without).
+The optional `mtp/` drafters in the 4B and 9B repositories are unused;
+speculative decoding is disabled for these aliases.
+
+See the [qualification and performance record](../engineering/performance/2026-10-15-bonsai2-small.md)
+for environment, API gates, and measured memory.
 
 ### Experimental 256 GB lane: DeepSeek V4.1 Flash
 

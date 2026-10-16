@@ -72,6 +72,10 @@ class Packed(nn.Module):
             return (
                 _fwht(out, self.block, self.signs, inverse=True) if self.block else out
             )
+        return self.as_linear(x)
+
+    def as_linear(self, x):
+        """Project with the packed weights, including a tied embedding head."""
         if self.block:
             x = _fwht(x, self.block, self.signs)
         return mx.quantized_matmul(

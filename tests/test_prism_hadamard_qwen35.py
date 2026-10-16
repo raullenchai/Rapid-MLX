@@ -212,6 +212,10 @@ def test_loader_uses_only_data_and_validates_schema(
     )
     weights["language_model.layers.0.signs"] = mx.ones((512,))
     mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    # Optional drafter data must never enter the target model's weight load.
+    (tmp_path / "mtp").mkdir()
+    (tmp_path / "mtp" / "model.safetensors").write_bytes(b"unused drafter")
+    (tmp_path / "mtp" / "config.json").write_text('{"model_type":"qwen3_5_mtp"}')
     (tmp_path / "untrusted.py").write_text(
         "raise AssertionError('snapshot code executed')"
     )
@@ -307,7 +311,8 @@ def _install_metadata_stub(monkeypatch, config):
     )
 
 
-def test_text_lane_guard_rejects_prism_pack(monkeypatch):
+@pytest.mark.parametrize("size", [2, 4, 9, 27])
+def test_text_lane_guard_rejects_prism_pack(monkeypatch, size):
     # A prism_hadamard_qwen35 pack routed to the text lane (base wheel with the
     # vision runtime present, or an explicit --no-mllm) must be rejected BEFORE
     # weights download, not left to crash deep in mlx-lm on an unknown arch.
@@ -321,7 +326,9 @@ def test_text_lane_guard_rejects_prism_pack(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="multimodal lane"):
-        server._reject_text_lane_only_mllm_pack("bonsai2-27b-2bit", "/snap/bonsai2")
+        server._reject_text_lane_only_mllm_pack(
+            f"bonsai2-{size}b-2bit", "/snap/bonsai2"
+        )
 
 
 def test_text_lane_guard_surfaces_missing_vision_runtime_first(monkeypatch):
@@ -398,7 +405,8 @@ def test_text_lane_guard_passes_through_other_models(monkeypatch, config):
     server._reject_text_lane_only_mllm_pack("some-model", "/snap/other")
 
 
-def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch):
+@pytest.mark.parametrize("size", [2, 4, 9, 27])
+def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch, size):
     # Cold default start (no --no-mllm): the config-only preflight must require
     # the vision runtime for a prism_hadamard_qwen35 pack BEFORE
     # _ensure_routing_config pulls the whole 8.6 GB checkpoint. is_mllm_model()
@@ -425,7 +433,7 @@ def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch):
     monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", _raise)
 
     with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]"):
-        server._preflight_vision_runtime("bonsai2-27b-2bit")
+        server._preflight_vision_runtime(f"bonsai2-{size}b-2bit")
     assert calls == ["/snap/pack"]
 
 
@@ -504,7 +512,8 @@ def test_preflight_ignores_ordinary_text_checkpoint(monkeypatch):
     server._preflight_vision_runtime("some-text-model")
 
 
-def test_dynamic_residency_rejects_prism_pack_before_download(monkeypatch):
+@pytest.mark.parametrize("size", [2, 4, 9, 27])
+def test_dynamic_residency_rejects_prism_pack_before_download(monkeypatch, size):
     """Runtime residency (the Desktop control plane's second model-load entry
     point) must apply the same pre-weight text-lane guard as primary startup:
     a Bonsai 2 pack misrouted to the text lane is rejected before its 8.6 GB
@@ -549,4 +558,67 @@ def test_dynamic_residency_rejects_prism_pack_before_download(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="multimodal lane"):
-        asyncio.run(server._load_dynamic_resident_model("bonsai2-27b-2bit", None))
+        asyncio.run(server._load_dynamic_resident_model(f"bonsai2-{size}b-2bit", None))
+
+
+@pytest.mark.parametrize("block", [0, 512])
+def test_tied_packed_embedding_head_matches_dense_basis(block):
+    """Small Bonsai 2 models use the input embedding as their output head."""
+    import mlx.core as mx
+    import numpy as np
+
+    from rapid_mlx.models.prism_hadamard_qwen35 import Packed
+
+    rng = np.random.default_rng(17)
+    width = 512
+    arrays = mx.quantize(
+        mx.array(rng.normal(size=(8, width)), dtype=mx.float16),
+        group_size=128,
+        bits=2,
+    )
+    signs = mx.array(rng.choice([-1.0, 1.0], width), dtype=mx.float16)
+    embedding = Packed(arrays, block, signs if block else None, True)
+    # Build the effective embedding matrix through lookup, independently of
+    # the head's forward activation transform (including sign ordering).
+    dense = np.array(embedding(mx.arange(8)))
+    hidden = rng.normal(size=(2, 3, width)).astype(np.float16)
+    expected = hidden.astype(np.float32) @ dense.astype(np.float32).T
+    actual = np.array(embedding.as_linear(mx.array(hidden)))
+    np.testing.assert_allclose(actual, expected, rtol=0.015, atol=0.1)
+
+
+@pytest.mark.parametrize("size", [2, 4, 9])
+def test_small_bonsai2_catalog_contract(size):
+    from rapid_mlx.cli import _available_models_json_payload
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_auto_config import detect_model_config
+    from rapid_mlx.model_sizes import size_bytes
+
+    alias = f"bonsai2-{size}b-2bit"
+    repo = f"prism-ml/Ternary-Bonsai-2-{size}B-mlx-2bit"
+    profile = resolve_profile(alias)
+    assert profile.hf_path == repo
+    assert profile.supports_image_input is True
+    assert profile.is_hybrid is True
+    assert profile.is_hybrid_explicit is True
+    assert profile.supports_spec_decode is False
+    assert profile.tool_call_parser == "qwen3_coder_xml"
+    assert profile.reasoning_parser == "qwen3"
+    assert dict(profile.recommended_sampling) == {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+    }
+    assert size_bytes(repo) > 1_000_000_000
+    assert detect_model_config(repo).tool_call_parser == "qwen3_coder_xml"
+    payload = _available_models_json_payload()
+    entry = next(e for e in payload["text"] if e["alias"] == alias)
+    assert entry["hf_path"] == repo
+    assert entry["supports_image_input"] is True
+    assert entry["supports_native_mtp"] is False
+    atomic = next(
+        e for e in payload["atomic"]["snapshot"]["aliases"] if e["alias"] == alias
+    )
+    assert atomic["availability"]["desktop"] is True
+    assert "image_understanding" in atomic["capabilities"]["operation_modes"]
+    assert atomic["capabilities"]["tool_call_parser"] == "qwen3_coder_xml"
