@@ -2815,19 +2815,27 @@ class BatchedEngine(BaseEngine):
         if self._is_mllm:
             raise RuntimeError("build_prompt is not supported for MLLM models")
         template_tools = convert_tools_for_template(tools) if tools else None
-        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
+        try:
+            prompt = self._apply_chat_template(
+                messages,
+                tools=template_tools,
+                enable_thinking=enable_thinking,
+                add_generation_prompt=add_generation_prompt,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+        except Exception as exc:
+            if not (
+                len(messages) == 1
+                and messages[0].get("role") == "system"
+                and tools
+                and "No user query found in messages" in str(exc)
+            ):
+                raise
             token_ids, _ = self._shared_system_tools_prompt(
                 messages, template_tools, enable_thinking, chat_template_kwargs
             )
             tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
             return str(tokenizer.decode(token_ids, skip_special_tokens=False))
-        prompt = self._apply_chat_template(
-            messages,
-            tools=template_tools,
-            enable_thinking=enable_thinking,
-            add_generation_prompt=add_generation_prompt,
-            chat_template_kwargs=chat_template_kwargs,
-        )
         prepared, _ = self._prepare_harmony_no_thinking_prompt(
             prompt,
             enable_thinking=enable_thinking,
@@ -3636,17 +3644,24 @@ class BatchedEngine(BaseEngine):
         # The latter lets the scheduler snapshot the complete shared prefix.
         shared_warm_boundary = 0
         prompt: str | list[int]
-        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
-            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
-                messages, template_tools, enable_thinking, chat_template_kwargs
-            )
-        else:
+        try:
             prompt = self._apply_chat_template(
                 messages,
                 template_tools,
                 num_images=len(all_images),
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
+            )
+        except Exception as exc:
+            if not (
+                len(messages) == 1
+                and messages[0].get("role") == "system"
+                and tools
+                and "No user query found in messages" in str(exc)
+            ):
+                raise
+            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
             )
         output_router_seed = None
         if not shared_warm_boundary:
@@ -3673,8 +3688,17 @@ class BatchedEngine(BaseEngine):
         # agnostic — any parser whose wire opener can be precomputed
         # by the route can opt in by extending the allowlist (codex r7 NIT).
         forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
-        if forced_assistant_prefix and not shared_warm_boundary:
-            prompt = prompt + forced_assistant_prefix
+        if forced_assistant_prefix:
+            if isinstance(prompt, list):
+                tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+                prompt = [
+                    *prompt,
+                    *tokenizer.encode(
+                        forced_assistant_prefix, add_special_tokens=False
+                    ),
+                ]
+            else:
+                prompt = prompt + forced_assistant_prefix
             # When we prefix the assistant turn ourselves, the response
             # surface lacks the prefix bytes (the model only emits the
             # continuation). The tool parser needs to see the full
@@ -4535,17 +4559,24 @@ class BatchedEngine(BaseEngine):
 
         shared_warm_boundary = 0
         prompt: str | list[int]
-        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
-            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
-                messages, template_tools, enable_thinking, chat_template_kwargs
-            )
-        else:
+        try:
             prompt = self._apply_chat_template(
                 messages,
                 template_tools,
                 num_images=len(all_images),
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
+            )
+        except Exception as exc:
+            if not (
+                len(messages) == 1
+                and messages[0].get("role") == "system"
+                and tools
+                and "No user query found in messages" in str(exc)
+            ):
+                raise
+            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
             )
         output_router_seed = None
         if not shared_warm_boundary:
@@ -4565,8 +4596,17 @@ class BatchedEngine(BaseEngine):
         # streaming tool-call parsers (hermes / qwen3coder) see the
         # complete envelope from the very first delta.
         forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
-        if forced_assistant_prefix and not shared_warm_boundary:
-            prompt = prompt + forced_assistant_prefix
+        if forced_assistant_prefix:
+            if isinstance(prompt, list):
+                tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+                prompt = [
+                    *prompt,
+                    *tokenizer.encode(
+                        forced_assistant_prefix, add_special_tokens=False
+                    ),
+                ]
+            else:
+                prompt = prompt + forced_assistant_prefix
 
         # Compute prefix boundary for cache — non-trimmable-cache gate, see
         # ``chat()`` for the rationale. Path parity: stream and non-stream

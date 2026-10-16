@@ -312,6 +312,48 @@ def test_system_tools_only_completion_saves_exact_cross_session_boundary():
     assert len(prompt) == boundary + 1
 
 
+def test_system_tools_only_keeps_a_template_that_accepts_it():
+    engine = _engine(_SectionTokenizer())
+    engine._loaded = True
+    engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+        prompt,
+        None,
+    )
+    messages = [{"role": "system", "content": "guidance"}]
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+    assert engine.build_prompt(messages, tools) == _render(messages)
+
+
+@pytest.mark.asyncio
+async def test_system_tools_warm_prompt_contains_forced_assistant_prefix():
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    engine._loaded = True
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    messages = [{"role": "system", "content": "guidance"}]
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+
+    def requires_user(items, template_tools=None, **kwargs):
+        if not any(item["role"] == "user" for item in items):
+            raise ValueError("No user query found in messages")
+        return _render(items, template_tools, **kwargs)
+
+    engine._apply_chat_template = requires_user
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    engine.generate = generate
+    await engine.chat(messages, tools=tools, forced_assistant_prefix="<tool_call>")
+    boundary = seen["prefix_boundary"]
+    assert seen["exact_prefix_boundary"] is True
+    assert seen["prompt"][boundary + 1 :] == tokenizer.encode(
+        "<tool_call>", add_special_tokens=False
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exact", [False, True])
 async def test_text_stream_passes_exact_prefix_flag_without_breaking_admission(exact):
