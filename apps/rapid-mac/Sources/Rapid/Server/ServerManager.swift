@@ -4288,7 +4288,7 @@ final class ServerManager {
         )
     }
 
-    private func appendLogLines(_ lines: [String]) {
+    func appendLogLines(_ lines: [String]) {
         // Pass the RAW line to `downloadProgress.ingest` — the
         // progress parser scans for tqdm tokens (`%`, `[…<…]`,
         // `it/s`) that the scrubber's URL/header patterns don't

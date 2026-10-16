@@ -1080,13 +1080,16 @@ extension LocalSearchPresentationTests {
 }
 
 extension LocalSearchFeatureGateTests {
-    @Test func onlyEnablingWithALiveChildNeedsOneRestart() {
+    @Test func onlyAChangedSpawnFlagWithALiveChildNeedsOneRestart() {
         for state: ServerState in [.idle, .missing, .stopped, .crashed(alias: "model", message: "failed")] {
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: true, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: false, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: true, state: state) == nil)
         }
         for state: ServerState in [.starting(alias: "model"), .ready(alias: "model")] {
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: true, state: state) == "model")
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: false, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: false, state: state) == "model")
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: true, state: state) == "model")
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: true, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: false, state: state) == nil)
         }
     }
 }

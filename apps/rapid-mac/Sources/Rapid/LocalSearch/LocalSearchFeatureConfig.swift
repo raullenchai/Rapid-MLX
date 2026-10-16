@@ -1,13 +1,17 @@
 import Foundation
 
 /// Experimental opt-in, resolved again at each engine spawn. Disabling keeps
-/// the on-disk index; the running engine retains its flags until restarted.
+/// the on-disk index and restarts an enabled child so indexing stops.
 enum LocalSearchFeatureConfig {
     static let enabledKey = "Rapid.experimental.localSearchEnabled"
     static let defaultEnabled = false
 
-    static func restartAlias(enabling: Bool, state: ServerState) -> String? {
-        guard enabling else { return nil }
+    static func restartAlias(
+        enabled: Bool,
+        enabledAtSpawn: Bool,
+        state: ServerState
+    ) -> String? {
+        guard enabled != enabledAtSpawn else { return nil }
         switch state {
         case .ready(let alias), .starting(let alias): return alias
         default: return nil

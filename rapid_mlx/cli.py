@@ -5525,6 +5525,22 @@ def _serve_cua_only_mode(args) -> None:
     _hard_exit_after_serve()
 
 
+def _validate_local_search_exposure_or_exit(args) -> None:
+    from .local_search_runtime import validate_exposure
+    from .server import _resolve_api_key
+
+    try:
+        validate_exposure(
+            enabled=getattr(args, "enable_local_search", False),
+            host=getattr(args, "host", "127.0.0.1"),
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            inherited_listener=getattr(args, "listen_fd", None) is not None,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -5545,6 +5561,8 @@ def serve_command(args):
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
+    _validate_local_search_exposure_or_exit(args)
+
     from .local_search_runtime import configure as configure_local_search
 
     configure_local_search(
@@ -14577,6 +14595,10 @@ def main():
             ):
                 _print_next_step()
         raise
+    if getattr(args, "command", None) == "serve" and getattr(
+        args, "enable_local_search", False
+    ):
+        _validate_local_search_exposure_or_exit(args)
     from rapid_mlx import model_downloads
 
     model_downloads.configure(getattr(args, "disable_model_downloads", False))

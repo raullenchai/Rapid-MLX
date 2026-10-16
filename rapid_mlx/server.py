@@ -4038,6 +4038,20 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
+    from .local_search_runtime import (
+        validate_exposure as validate_local_search_exposure,
+    )
+
+    try:
+        validate_local_search_exposure(
+            enabled=getattr(args, "enable_local_search", False),
+            host=getattr(args, "host", "127.0.0.1"),
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            inherited_listener=getattr(args, "listen_fd", None) is not None,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
     from .local_search_runtime import configure as configure_local_search
 
     configure_local_search(

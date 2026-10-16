@@ -544,15 +544,31 @@ struct SettingsView: View {
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.LocalSearchToggle")
                 .onChange(of: localSearchEnabled) { _, enabled in
-                    if let alias = LocalSearchFeatureConfig.restartAlias(enabling: enabled, state: server.state) {
-                        searchRestartAlias = alias
-                        confirmingSearchRestart = true
+                    if let alias = LocalSearchFeatureConfig.restartAlias(
+                        enabled: enabled,
+                        enabledAtSpawn: server.localSearchEnabledAtSpawn,
+                        state: server.state
+                    ) {
+                        if enabled {
+                            searchRestartAlias = alias
+                            confirmingSearchRestart = true
+                        } else {
+                            Task {
+                                if !(await server.restartForSpawnSettings(alias: alias)) {
+                                    server.appendLogLines(["Could not restart the model after disabling Local Search. Local Search remains disabled."])
+                                }
+                            }
+                        }
                     }
                 }
                 .alert(String(localized: "Restart model to enable Search?"), isPresented: $confirmingSearchRestart) {
                     Button(String(localized: "Restart and enable Search")) {
                         if let alias = searchRestartAlias {
-                            Task { _ = await server.restartForSpawnSettings(alias: alias) }
+                            Task {
+                                if !(await server.restartForSpawnSettings(alias: alias)) {
+                                    server.appendLogLines(["Could not restart the model to enable Local Search. See the server status and Startup Log for details."])
+                                }
+                            }
                         }
                     }.accessibilityIdentifier("Settings.Experimental.LocalSearch.Restart")
                     Button(String(localized: "Cancel"), role: .cancel) { localSearchEnabled = false }

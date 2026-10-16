@@ -4,6 +4,7 @@
 import asyncio
 import io
 import os
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -12,6 +13,7 @@ import threading
 import zipfile
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -32,6 +34,7 @@ from rapid_mlx.local_search.extraction import (
 from rapid_mlx.local_search.search import fuse, snippet
 from rapid_mlx.local_search.service import LocalSearch, ModelLoadError, local_model_path
 from rapid_mlx.local_search.store import Store
+from rapid_mlx.local_search_runtime import validate_exposure
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
 FIRST_ROUTES = [
@@ -43,6 +46,159 @@ FIRST_ROUTES = [
     ("POST", "/search", {"query": "apple"}),
     ("POST", "/search", {"query": "apple", "folder_ids": ["unknown"]}),
 ]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.23.4.5", "::1", " 127.0.0.1 "])
+def test_local_search_allows_unauthenticated_loopback(host):
+    validate_exposure(enabled=True, host=host, api_key=None)
+
+
+@pytest.mark.parametrize("host", ["localhost", "LOCALHOST", "", "   ", "ip6-localhost"])
+def test_local_search_requires_authentication_for_host_names(host, monkeypatch):
+    # Names are re-resolved at bind time, so they are never trusted as
+    # loopback, even when they currently resolve to it.
+    def fail(*args, **kwargs):
+        raise AssertionError("validation must not resolve host names")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    with pytest.raises(ValueError, match="requires API-key authentication"):
+        validate_exposure(enabled=True, host=host, api_key=None)
+    validate_exposure(enabled=True, host=host, api_key="secret")
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.20", "server.local"])
+def test_local_search_requires_authentication_off_loopback(host):
+    with pytest.raises(ValueError, match="requires API-key authentication"):
+        validate_exposure(enabled=True, host=host, api_key=None)
+    validate_exposure(enabled=True, host=host, api_key="secret")
+    validate_exposure(enabled=False, host=host, api_key=None)
+
+
+def test_local_search_requires_authentication_for_inherited_listener():
+    with pytest.raises(ValueError, match="--listen-fd requires API-key"):
+        validate_exposure(
+            enabled=True,
+            host="127.0.0.1",
+            api_key=None,
+            inherited_listener=True,
+        )
+    validate_exposure(
+        enabled=True,
+        host="127.0.0.1",
+        api_key="secret",
+        inherited_listener=True,
+    )
+
+
+def test_unified_cli_rejects_remote_local_search_before_model_resolution():
+    env = os.environ.copy()
+    env.pop("RAPID_MLX_API_KEY", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "rapid_mlx.cli",
+            "serve",
+            "qwen3.5-4b-4bit",
+            "--host",
+            "0.0.0.0",
+            "--enable-local-search",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "non-loopback --host requires API-key authentication" in result.stderr
+    assert "Alias:" not in result.stdout
+    assert "Resolving" not in result.stderr
+
+
+def test_unified_cli_exposure_helper_reports_actionable_error(monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    args = SimpleNamespace(
+        enable_local_search=True,
+        host="0.0.0.0",
+        api_key=None,
+        listen_fd=None,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._validate_local_search_exposure_or_exit(args)
+
+    assert exc_info.value.code == 2
+    assert "requires API-key authentication" in capsys.readouterr().err
+
+
+def test_unified_cli_runs_exposure_gate_immediately_after_parse(monkeypatch):
+    from rapid_mlx import cli
+
+    class ExposureGateReachedError(Exception):
+        pass
+
+    observed = []
+
+    def stop_after_gate(args):
+        observed.append((args.command, args.enable_local_search, args.host))
+        raise ExposureGateReachedError
+
+    monkeypatch.setattr(cli, "_validate_local_search_exposure_or_exit", stop_after_gate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "qwen3.5-4b-4bit",
+            "--host",
+            "0.0.0.0",
+            "--enable-local-search",
+        ],
+    )
+
+    with pytest.raises(ExposureGateReachedError):
+        cli.main.__wrapped__()
+
+    assert observed == [("serve", True, "0.0.0.0")]
+
+
+def test_standalone_server_parser_rejects_inherited_listener(capsys):
+    from rapid_mlx import server
+
+    with pytest.raises(SystemExit) as exc_info:
+        server._build_parser().parse_args(["--model", "test", "--listen-fd", "3"])
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --listen-fd 3" in capsys.readouterr().err
+
+
+def test_standalone_server_rejects_remote_local_search_after_parse(monkeypatch, capsys):
+    from rapid_mlx import server
+
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid_mlx.server",
+            "--model",
+            "qwen3.5-4b-4bit",
+            "--host",
+            "0.0.0.0",
+            "--enable-local-search",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        server.main.__wrapped__()
+
+    assert exc_info.value.code == 2
+    assert "requires API-key authentication" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("existing", [False, True])

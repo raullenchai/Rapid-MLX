@@ -1,10 +1,49 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI opt-in and server lifespan integration (no work when disabled)."""
 
+import ipaddress
 from pathlib import Path
 
 _enabled = False
 _directory: str | None = None
+
+
+def validate_exposure(
+    *,
+    enabled: bool,
+    host: str,
+    api_key: str | None,
+    inherited_listener: bool = False,
+) -> None:
+    """Refuse filesystem APIs on a non-loopback listener without auth."""
+    if not enabled or api_key:
+        return
+    if inherited_listener:
+        raise ValueError(
+            "--enable-local-search with --listen-fd requires API-key "
+            "authentication because --host cannot attest the inherited socket; "
+            "set --api-key or RAPID_MLX_API_KEY"
+        )
+    if _is_loopback_host(host):
+        return
+    raise ValueError(
+        "--enable-local-search on a non-loopback --host requires API-key "
+        "authentication; set --api-key or RAPID_MLX_API_KEY, or bind to "
+        "the literal loopback address 127.0.0.1 or ::1"
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True only for a literal loopback address (127.0.0.0/8 or ::1).
+
+    Host names, including ``localhost``, are not trusted: the server resolves
+    the name again when it binds, so a name validated as loopback here could
+    bind elsewhere (hosts-file entries, DNS rebinding).
+    """
+    try:
+        return ipaddress.ip_address((host or "").strip()).is_loopback
+    except ValueError:
+        return False
 
 
 def configure(enabled: bool, directory: str | None = None) -> None:

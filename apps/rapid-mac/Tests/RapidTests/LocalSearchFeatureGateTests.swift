@@ -82,16 +82,18 @@ struct LocalSearchFeatureGateTests {
         }
     }
 
-    @Test("Enabling Search restarts only a starting or ready model; disabling never restarts")
+    @Test("Search restarts an active model exactly when the spawn flag changes")
     func restartGate() {
         let alias = "qwen3.5-9b-4bit"
         for state: ServerState in [.starting(alias: alias), .ready(alias: alias)] {
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: true, state: state) == alias)
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: false, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: false, state: state) == alias)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: true, state: state) == alias)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: true, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: false, state: state) == nil)
         }
         for state: ServerState in [.missing, .idle, .stopped, .crashed(alias: alias, message: "Exited")] {
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: true, state: state) == nil)
-            #expect(LocalSearchFeatureConfig.restartAlias(enabling: false, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: true, enabledAtSpawn: false, state: state) == nil)
+            #expect(LocalSearchFeatureConfig.restartAlias(enabled: false, enabledAtSpawn: true, state: state) == nil)
         }
     }
 }
