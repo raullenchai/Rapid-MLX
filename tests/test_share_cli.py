@@ -157,6 +157,63 @@ def test_share_warns_when_configured_server_key_is_replaced(monkeypatch, capsys)
     assert "operator-key" not in warning
 
 
+def test_plain_share_registers_with_the_same_bearer_as_local_serve(capsys):
+    key = "a1" * 24
+    factory = MagicMock(return_value=_fake_tunnel())
+    auth_gate = MagicMock(return_value=True)
+    _drive_share_capture(
+        _make_args(),
+        extra_patches=(
+            patch.object(share_cli.secrets, "token_hex", return_value=key),
+            patch.object(share_cli.ws_tunnel, "TunnelClient", factory),
+            patch.object(share_cli, "_verify_auth_gate", auth_gate),
+        ),
+    )
+    assert factory.call_args.kwargs["share_key"] == auth_gate.call_args.args[1] == key
+    assert "key_in_path" not in factory.call_args.kwargs
+    # The intentional share-key banner is on stdout; diagnostics never print it.
+    assert key not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("phase", ["connect", "ready", "disconnect"])
+def test_plain_share_redacts_key_echoed_in_tunnel_errors(phase, capsys):
+    key = "ab" * 24
+    tunnel = _fake_tunnel(
+        error=RuntimeError(f"relay echoed Bearer {key}"),
+        closed=phase == "disconnect",
+    )
+    if phase == "connect":
+        tunnel.ready_event = MagicMock()
+        tunnel.ready_event.wait.return_value = False
+    elif phase == "disconnect":
+        # Initial readiness succeeds, then the monitor sees the relay error.
+        def connected(*args, **kwargs):
+            tunnel.error = None
+            return MagicMock(is_alive=lambda: False)
+
+        def disconnected(*args, **kwargs):
+            tunnel.error = RuntimeError(f"relay echoed Bearer {key}")
+            return True
+
+        tunnel.run_in_thread.side_effect = connected
+        tunnel.closed_event.is_set = disconnected
+    with pytest.raises(SystemExit) as exc:
+        _drive_share_capture(
+            _make_args(),
+            extra_patches=(
+                patch.object(share_cli.secrets, "token_hex", return_value=key),
+                patch.object(share_cli.ws_tunnel, "TunnelClient", return_value=tunnel),
+            ),
+        )
+    assert exc.value.code == 1
+    output = capsys.readouterr()
+    assert key not in output.err
+    assert "[redacted]" in output.err
+    if phase != "disconnect":
+        assert key not in output.out
+    tunnel.stop.assert_called_once()
+
+
 def test_share_command_aborts_when_serve_exits_before_ready():
     serve_proc = MagicMock()
     serve_proc.poll.return_value = 1  # already exited

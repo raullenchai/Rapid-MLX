@@ -912,7 +912,13 @@ def share_command(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         print(f"Connecting to relay {relay_url}…", file=sys.stderr)
-        tunnel = ws_tunnel.TunnelClient(local_port=port, relay_url=relay_url)
+        # Prove the share key at the upgrade (Authorization header, never the
+        # URL): the relay refuses keyless plain-share registration and only
+        # forwards consumers whose bearer matches the proven key, so an
+        # observed tunnel id alone cannot be re-registered and harvested.
+        tunnel = ws_tunnel.TunnelClient(
+            local_port=port, relay_url=relay_url, share_key=api_key
+        )
         tunnel_thread = tunnel.run_in_thread()
         # 30s ceiling is generous: a healthy WS handshake completes in
         # well under a second; anything beyond that means the relay is
@@ -924,10 +930,12 @@ def share_command(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             if err is not None:
-                print(f"   reason: {err}", file=sys.stderr)
+                detail = str(err).replace(api_key, "[redacted]")
+                print(f"   reason: {detail}", file=sys.stderr)
             sys.exit(1)
         if tunnel.error is not None:
-            print(f"share: WS tunnel failed: {tunnel.error}", file=sys.stderr)
+            detail = str(tunnel.error).replace(api_key, "[redacted]")
+            print(f"share: WS tunnel failed: {detail}", file=sys.stderr)
             sys.exit(1)
 
         # End-to-end probe: bearer-authed /v1/models through the public
@@ -990,7 +998,11 @@ def share_command(args: argparse.Namespace) -> None:
                 # a non-zero exit so supervisor wrappers restart us; the
                 # serve child is still alive, terminated in cleanup.
                 err = tunnel.error
-                suffix = f": {err}" if err is not None else ""
+                suffix = (
+                    ": " + str(err).replace(api_key, "[redacted]")
+                    if err is not None
+                    else ""
+                )
                 print(
                     f"share: WS tunnel disconnected{suffix}. Stopping serve.",
                     file=sys.stderr,

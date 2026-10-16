@@ -100,6 +100,33 @@ CHUNK_SIZE = 4096
 _ABORT_MARKER_STALE_SECONDS = 5.0
 
 
+class _CredentialFilter(logging.Filter):
+    """Redact this connection's credentials before any log handler sees them."""
+
+    def __init__(self, *credentials: str | None) -> None:
+        super().__init__()
+        self.credentials = sorted(
+            {value for value in credentials if value}, key=len, reverse=True
+        )
+
+    def _redact(self, text: str) -> str:
+        for value in self.credentials:
+            text = text.replace(value, "[redacted]")
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact(record.getMessage())
+        record.args = ()
+        if record.exc_info:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+            record.exc_info = None
+        if record.exc_text:
+            record.exc_text = self._redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = self._redact(record.stack_info)
+        return True
+
+
 def _hard_close(conn: http.client.HTTPConnection) -> None:
     """Close a loopback connection such that a thread blocked in
     ``getresponse()``/``read1`` on it WAKES UP.
@@ -205,9 +232,8 @@ class TunnelClient:
         requests_started_event: threading.Event | None = None,
     ) -> None:
         """
-        QuickSilver-pool mode knobs (all default to the historical plain
-        ``share`` behaviour — a default-constructed client sends the same
-        bytes and forwards the same headers it always did):
+        Authentication and QuickSilver-pool mode knobs (a keyless transport
+        client preserves the historical upgrade and forwarding behaviour):
 
         * ``share_key`` — when set, the WS upgrade carries
           ``Authorization: Bearer <share_key>`` so a keyed relay can
@@ -231,6 +257,12 @@ class TunnelClient:
         self._share_key = share_key
         self._override_authorization = override_authorization
         self._inject_stream_usage = inject_stream_usage
+        # websockets DEBUG logs include upgrade headers and close reasons.
+        # Use a private logger so redaction precedes all handlers without
+        # installing a process-global filter or retaining old share keys.
+        self._ws_logger = logging.Logger("websockets.client")
+        self._ws_logger.parent = logging.getLogger("websockets.client")
+        self._ws_logger.addFilter(_CredentialFilter(share_key, override_authorization))
         # Sticky across pool reconnects when supplied by the share supervisor.
         self._requests_started = requests_started_event or threading.Event()
         # Set by ``run`` on its event loop; used by ``_sync_send`` to
@@ -299,13 +331,13 @@ class TunnelClient:
         return {"t": "ready", "v": 1}
 
     def _auth_headers(self) -> dict[str, str] | None:
-        """Extra HTTP headers for the WS upgrade. In pool mode the
-        server-minted share_key proves node ownership as a ``Bearer``
+        """Extra HTTP headers for the WS upgrade. The plain or pool
+        share_key proves tunnel ownership as a ``Bearer``
         credential the relay hashes at upgrade time — kept out of the
         URL (which would leak into exception reprs / launchd logs) and
         out of any post-upgrade frame (the relay authenticates the
-        upgrade, not a later message). ``None`` for plain share so a
-        default client sends the exact upgrade request it always did."""
+        upgrade, not a later message). ``None`` only for an explicitly
+        keyless transport client."""
         if self._share_key is None:
             return None
         return {"Authorization": f"Bearer {self._share_key}"}
@@ -349,6 +381,8 @@ class TunnelClient:
         from .tls import client_context
 
         kwargs = self._connect_kwargs(headers)
+        if self._share_key or self._override_authorization:
+            kwargs["logger"] = self._ws_logger
         if urllib.parse.urlsplit(uri).scheme == "wss":
             kwargs["ssl"] = client_context()
         return kwargs
