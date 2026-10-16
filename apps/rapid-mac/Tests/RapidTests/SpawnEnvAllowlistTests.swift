@@ -27,6 +27,14 @@ struct SpawnEnvAllowlistTests {
         #expect(env["RAPID_MLX_PREFIX_CACHE_AUTOLOAD"] == "0")
     }
 
+    @Test("Goose Chat restores its saved shared prefix")
+    func gooseChatRestoresPrefixCache() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "test-bearer", ambient: [:], gooseChat: true
+        )
+        #expect(env["RAPID_MLX_PREFIX_CACHE_AUTOLOAD"] == "1")
+    }
+
     // MARK: - PATH augmentation for Dock-launched runs
 
     /// The PATH a GUI app actually inherits when launched from Finder or
