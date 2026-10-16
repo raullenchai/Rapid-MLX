@@ -380,7 +380,7 @@ struct ModelPickerBar: View {
         .overlay(alignment: .top) {
             if let toast = deletionToast {
                 Text(toast)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(.thinMaterial, in: Capsule())
@@ -1439,7 +1439,7 @@ struct ModelPickerBar: View {
                 // mid-``server.stop()``.
                 if isStoppingInFlight {
                     Text("Stopping…")
-                        .font(.callout)
+                        .font(.rapid(.callout))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1459,7 +1459,7 @@ struct ModelPickerBar: View {
                         handleStartTap()
                     } label: {
                         Label(startButtonLabel, systemImage: startButtonIcon)
-                            .font(.callout.weight(.semibold))
+                            .font(.rapid(.callout).weight(.semibold))
                             .foregroundStyle(startLabelColor)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -2111,11 +2111,11 @@ struct ModelInfoPopover: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(info.alias)
-                .font(.headline)
+                .font(.rapid(.headline))
                 .lineLimit(1)
                 .textSelection(.enabled)
             Text("\(info.paramsLabel) · \(info.quantLabel) · \(info.contextLabel) context")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
         }
     }
@@ -2129,17 +2129,17 @@ struct ModelInfoPopover: View {
                 .monospacedDigit()
                 .textSelection(.enabled)
         }
-        .font(.callout)
+        .font(.rapid(.callout))
     }
 
     private func hfRepoRow(_ repo: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Hugging Face repo")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 Text(repo)
-                    .font(.callout.monospaced())
+                    .font(.rapid(.callout).monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)

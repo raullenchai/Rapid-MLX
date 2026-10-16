@@ -424,6 +424,7 @@ struct RapidApp: App {
                 // hue. Steel-blue (`brand`) is demoted to the info/tool/data
                 // lane per the rapidmlx.com design system (rapid-desktop #632).
                 .tint(RapidTheme.brandAmber)
+                .font(.rapid(.body))
                 .environment(server)
                 .environment(cuaServer)
                 .environment(downloads)
@@ -636,6 +637,7 @@ struct RapidApp: App {
                     }
                 }
                 .tint(RapidTheme.brandAmber)
+                .font(.rapid(.body))
                 .environment(chatViewModel)
                 .environment(sampling)
                 .environment(customInstructions)

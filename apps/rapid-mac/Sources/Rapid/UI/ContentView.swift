@@ -2246,18 +2246,18 @@ private struct BrowseApprovalSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Fetch this web page?")
-                .font(.headline)
+                .font(.rapid(.headline))
             Text("The model wants to fetch content from:")
-                .font(.callout)
+                .font(.rapid(.callout))
                 .foregroundStyle(.secondary)
 
             Text(BrowseApprovalStore.displaySafe(request.host))
-                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .font(.rapid(.body, design: .monospaced).weight(.semibold))
                 .textSelection(.enabled)
 
             ScrollView {
                 Text(BrowseApprovalStore.displaySafe(request.fullURL))
-                    .font(.system(.callout, design: .monospaced))
+                    .font(.rapid(.callout, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -2269,11 +2269,11 @@ private struct BrowseApprovalSheet: View {
 
             Text("The page's text is sent back to the model. Only http/https "
                 + "public addresses are allowed — private and local addresses are blocked.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
             Text("Always allow applies to all future public web pages. You can turn it off in Settings → Tools.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
             HStack {
@@ -2314,12 +2314,12 @@ private struct LocalToolApprovalDialog: ViewModifier {
         )) {
             if let request = store.pendingRequest {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(request.title).font(.headline)
+                    Text(request.title).font(.rapid(.headline))
                     Text("Personal Intelligence wants to use Rapid's local workspace on this Mac.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.rapid(.callout)).foregroundStyle(.secondary)
                     ScrollView {
                         Text(request.argumentsPreview)
-                            .font(.system(.callout, design: .monospaced))
+                            .font(.rapid(.callout, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
@@ -2331,7 +2331,7 @@ private struct LocalToolApprovalDialog: ViewModifier {
                     Text(request.toolName == "local_trash"
                          ? "Files are moved to Trash and remain recoverable. Folders are never removed."
                          : "Review the exact path, content, command, and arguments before allowing it.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.rapid(.caption)).foregroundStyle(.secondary)
                     HStack {
                         Spacer()
                         Button("Don't allow") { store.answer(.deny) }
@@ -2392,25 +2392,25 @@ private struct MCPToolApprovalSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Run \(request.shortName)?")
-                .font(.headline)
+                .font(.rapid(.headline))
             Text("The model wants to run a tool from the “\(request.serverName)” connector.")
-                .font(.callout)
+                .font(.rapid(.callout))
                 .foregroundStyle(.secondary)
 
             // `toolName` is the raw server-supplied name (kept raw on the
             // request for dispatch and grant keys); scrub it for display so a
             // bidi/zero-width scalar can't spoof which tool this dialog approves.
             Text(BrowseApprovalStore.displaySafe(request.toolName))
-                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .font(.rapid(.body, design: .monospaced).weight(.semibold))
                 .textSelection(.enabled)
 
             if !request.argumentsPreview.isEmpty {
                 Text("With:")
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                 ScrollView {
                     Text(request.argumentsPreview)
-                        .font(.system(.callout, design: .monospaced))
+                        .font(.rapid(.callout, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
@@ -2423,12 +2423,12 @@ private struct MCPToolApprovalSheet: View {
 
             Text("Connectors are programs running on this Mac. Only allow tools "
                 + "from servers you set up yourself.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
             Text("Always allow applies to this tool only. You can review and "
                 + "revoke it in Settings → Experimental.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
             HStack {

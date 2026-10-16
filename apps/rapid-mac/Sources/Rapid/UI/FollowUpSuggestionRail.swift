@@ -24,7 +24,7 @@ import SwiftUI
 /// anybody. The hazard is removed by construction rather than guarded
 /// against, which is why the probe needs no changes at all.
 ///
-/// The height is a constant because the rail can never wrap: one line, one
+/// The height is stable at each text size because the rail can never wrap: one line, one
 /// horizontal scroller, `.lineLimit(1)` on every chip. That is also why the
 /// row scrolls sideways rather than flowing — a flowing layout would make the
 /// height depend on the text, and the text comes from a model.
@@ -35,9 +35,10 @@ struct FollowUpSuggestionRail: View {
     let disabledTooltip: String
     let onSelect: (String) -> Void
 
-    /// One control plus the gap above it. Fixed — see the type comment.
-    static let reservedHeight: CGFloat =
-        RapidTheme.ControlHeight.small + RapidTheme.Space.md
+    /// One scaled control plus the gap above it, stable across loading states.
+    static var reservedHeight: CGFloat {
+        UIFontSettings.shared.scaled(RapidTheme.ControlHeight.small) + RapidTheme.Space.md
+    }
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -60,10 +61,10 @@ struct FollowUpSuggestionRail: View {
                         onSelect(question)
                     } label: {
                         Text(question)
-                            .font(.caption)
+                            .font(.rapid(.caption))
                             .lineLimit(1)
                             .padding(.horizontal, RapidTheme.Space.md)
-                            .frame(height: RapidTheme.ControlHeight.small)
+                            .frame(height: UIFontSettings.shared.scaled(RapidTheme.ControlHeight.small))
                             // Deliberately `card`, not `brandPrimary`: the
                             // composer's send disc is this surface's one amber
                             // moment, and three glowing chips would take that

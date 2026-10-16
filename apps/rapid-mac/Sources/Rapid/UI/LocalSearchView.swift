@@ -86,7 +86,7 @@ struct LocalSearchView: View {
                let caption = LocalSearchSemanticCaption.make(model: status.model, keywordMode: model.keywordMode,
                     unavailableReason: status.semanticUnavailableReason) {
                 Text(caption.text)
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.rapid(.caption)).foregroundStyle(.secondary)
                     .help(caption.detail ?? "")
                     .accessibilityHint(caption.detail ?? "")
                     .accessibilityIdentifier("LocalSearch.SemanticCaption")
@@ -105,7 +105,7 @@ struct LocalSearchView: View {
                 ScrollViewReader { proxy in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(String(localized: "Results may be incomplete while indexing"))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.rapid(.caption)).foregroundStyle(.secondary)
                             .opacity(model.isIndexing ? 1 : 0)
                             .accessibilityHidden(!model.isIndexing)
                             .accessibilityIdentifier("LocalSearch.IncompleteResults")
@@ -203,13 +203,13 @@ struct LocalSearchView: View {
                                     Text(LocalSearchPath.folderTitle(folder.path)).lineLimit(1).truncationMode(.middle)
                                         .help(folder.path).accessibilityValue(folder.path)
                                     Text(folder.countLabel)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    if let counts = folder.filesByKind { Text(counts.label).font(.caption).foregroundStyle(.secondary) }
-                                    Text(folder.state.title).font(.caption).foregroundStyle(.secondary)
+                                        .font(.rapid(.caption)).foregroundStyle(.secondary)
+                                    if let counts = folder.filesByKind { Text(counts.label).font(.rapid(.caption)).foregroundStyle(.secondary) }
+                                    Text(folder.state.title).font(.rapid(.caption)).foregroundStyle(.secondary)
                                     if let explanation = folder.skippedExplanation {
                                         DisclosureGroup(String(localized: "Why files were not indexed")) {
                                             Text(explanation)
-                                                .font(.caption).foregroundStyle(.secondary)
+                                                .font(.rapid(.caption)).foregroundStyle(.secondary)
                                                 .multilineTextAlignment(.leading)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                         }.accessibilityIdentifier("LocalSearch.Folder.\(index).SkipReasons")
@@ -224,7 +224,7 @@ struct LocalSearchView: View {
                                         }.buttonStyle(.rapidSecondary)
                                         .accessibilityIdentifier("LocalSearch.Folder.\(index).Recover")
                                     }
-                                    if let error = folder.error { Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                                    if let error = folder.error { Text(error).font(.rapid(.caption)).foregroundStyle(.secondary).textSelection(.enabled) }
                                 }
                                 .multilineTextAlignment(.leading)
                                 Spacer()
@@ -274,7 +274,7 @@ struct LocalSearchView: View {
                 Text(status.totals.indexedSummary)
             }
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.rapid(.caption)).foregroundStyle(.secondary)
         .lineLimit(status.indexing.active && status.indexing.pausedReason != nil ? nil : 1)
         .frame(minHeight: indexLineHeight, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -288,20 +288,20 @@ struct LocalSearchView: View {
 
     private var modelCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(String(localized: "Find files by meaning")).font(.headline)
+            Text(String(localized: "Find files by meaning")).font(.rapid(.headline))
             Text(String(localized: "Keyword search is available now. Download the search model to find related ideas even when the words differ."))
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.rapid(.callout)).foregroundStyle(.secondary)
             if let job, job.status == .running {
                 ProgressView(value: job.progress.progressFraction)
                     .accessibilityLabel(String(localized: "Search model download progress"))
                     .accessibilityIdentifier("LocalSearch.DownloadProgress")
-                if let subtitle = job.progress.progressSubtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                if let subtitle = job.progress.progressSubtitle { Text(subtitle).font(.rapid(.caption)).foregroundStyle(.secondary) }
                 Button(String(localized: "Cancel Download")) { downloads.cancelDownload(alias: Self.searchAlias) }
                     .buttonStyle(.rapidSecondary).accessibilityLabel(String(localized: "Cancel search model download"))
                     .accessibilityIdentifier("LocalSearch.CancelDownload")
             } else {
                 if let job, case .failed(let message) = job.status {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.rapid(.caption)).foregroundStyle(.secondary)
                 }
                 Button(String(localized: "Download search model (1.1 GB)")) {
                     downloadSearchModel()
@@ -335,20 +335,20 @@ struct LocalSearchView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(URL(fileURLWithPath: result.path).lastPathComponent).font(.headline)
+                    Text(URL(fileURLWithPath: result.path).lastPathComponent).font(.rapid(.headline))
                     Spacer()
                     timestampTag(result)
-                    if let page = result.page { Text(String(localized: "page \(page)")).font(.caption).foregroundStyle(.secondary) }
-                    if let line = result.line { Text(String(localized: "line \(line)")).font(.caption).foregroundStyle(.secondary) }
+                    if let page = result.page { Text(String(localized: "page \(page)")).font(.rapid(.caption)).foregroundStyle(.secondary) }
+                    if let line = result.line { Text(String(localized: "line \(line)")).font(.rapid(.caption)).foregroundStyle(.secondary) }
                     Text(Date(timeIntervalSince1970: result.modifiedAt).formatted(date: .abbreviated, time: .omitted))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.rapid(.caption)).foregroundStyle(.secondary)
                         .accessibilityLabel(String(localized: "Modified date"))
                 }
-                Text(LocalSearchPath.resultFolder(result, folders: model.status?.folders ?? [])).font(.caption).foregroundStyle(.secondary)
+                Text(LocalSearchPath.resultFolder(result, folders: model.status?.folders ?? [])).font(.rapid(.caption)).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(result.path).accessibilityValue(result.path)
                 if let explanation = result.nameOnlyExplanation {
-                    Text(explanation).font(.callout).foregroundStyle(.secondary).lineLimit(4)
-                } else if result.kind == .text { highlighted(result).font(.callout).lineLimit(4) }
+                    Text(explanation).font(.rapid(.callout)).foregroundStyle(.secondary).lineLimit(4)
+                } else if result.kind == .text { highlighted(result).font(.rapid(.callout)).lineLimit(4) }
             }
         }
         .padding(.vertical, 6)
@@ -415,10 +415,10 @@ struct LocalSearchView: View {
         VStack(alignment: .leading, spacing: 6) {
             LocalSearchThumbnail(result: result).frame(height: 132)
             Text(URL(fileURLWithPath: result.path).lastPathComponent)
-                .font(.headline).lineLimit(2)
+                .font(.rapid(.headline)).lineLimit(2)
             timestampTag(result)
             if let explanation = result.nameOnlyExplanation {
-                Text(explanation).font(.caption).foregroundStyle(.secondary).lineLimit(4)
+                Text(explanation).font(.rapid(.caption)).foregroundStyle(.secondary).lineLimit(4)
             }
         }
         .padding(8)
@@ -448,7 +448,7 @@ struct LocalSearchView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(String(localized: "\(section.title) (\(section.total.formatted()))"))
-                                .font(.headline)
+                                .font(.rapid(.headline))
                                 .accessibilityAddTraits(.isHeader)
                                 .accessibilityIdentifier("LocalSearch.Section.\(section.id).Header")
                             Spacer()
@@ -504,7 +504,7 @@ struct LocalSearchView: View {
     @ViewBuilder private func timestampTag(_ result: LocalSearchResult) -> some View {
         if result.kind == .video, let timestamp = result.timestamp {
             Text(String(localized: "at \(LocalSearchTimestamp.formatted(timestamp))"))
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.rapid(.caption)).foregroundStyle(.secondary)
         }
     }
 
@@ -533,10 +533,10 @@ struct LocalSearchView: View {
     }
     @ViewBuilder private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: "magnifyingglass").scaledSystemFont(32, relativeTo: .title).foregroundStyle(RapidTheme.brand).accessibilityHidden(true)
+            Image(systemName: "magnifyingglass").font(.system(size: 32)).foregroundStyle(RapidTheme.brand).accessibilityHidden(true)
             switch model.state {
             case .engineStopped:
-                Text(String(localized: "Search your own files")).font(.headline)
+                Text(String(localized: "Search your own files")).font(.rapid(.headline))
                 Text(String(localized: "Start Search with your current model. Everything stays on your Mac."))
                 Button(String(localized: "Start Search"), action: beginEngineStart).buttonStyle(.rapidPrimary)
                     .accessibilityLabel(String(localized: "Start engine for local search"))
@@ -544,11 +544,11 @@ struct LocalSearchView: View {
             case .engineStarting:
                 ProgressView().accessibilityLabel(String(localized: "Starting search engine"))
                     .accessibilityIdentifier("LocalSearch.StartProgress")
-                Text(String(localized: "Starting the engine…")).font(.headline)
+                Text(String(localized: "Starting the engine…")).font(.rapid(.headline))
                 Text(String(localized: "Preparing your model. Search will be ready here."))
-                if let detail = server.downloadProgress.progressSubtitle { Text(detail).font(.caption) }
+                if let detail = server.downloadProgress.progressSubtitle { Text(detail).font(.rapid(.caption)) }
             case .unsupported:
-                Text(String(localized: "Get Search ready")).font(.headline)
+                Text(String(localized: "Get Search ready")).font(.rapid(.headline))
                 if server.localSearchEnabledAtSpawn || server.localSearchSupportedAtSpawn == false {
                     Text(String(localized: "This engine does not support local search. Update the engine and restart a model."))
                 } else {
@@ -559,17 +559,17 @@ struct LocalSearchView: View {
                 Button(String(localized: "Open Settings"), action: onOpenSettings)
                     .buttonStyle(.rapidSecondary).accessibilityIdentifier("LocalSearch.OpenSettings")
             case .noFolders:
-                Text(model.visionAvailable ? String(localized: "Search documents, photos and videos on your Mac") : String(localized: "Search your Mac by what is in your files")).font(.headline)
+                Text(model.visionAvailable ? String(localized: "Search documents, photos and videos on your Mac") : String(localized: "Search your Mac by what is in your files")).font(.rapid(.headline))
                 Text(String(localized: "Files never leave your Mac. Only folders you add are read."))
                 firstFolderChoices
                 Text(String(localized: "PDF text and Word (.docx) files are searchable. Scanned PDFs need readable text; older .doc files need conversion."))
-                    .font(.caption).accessibilityIdentifier("LocalSearch.DocumentFormats")
+                    .font(.rapid(.caption)).accessibilityIdentifier("LocalSearch.DocumentFormats")
                 if model.status?.model.downloaded == false { modelCard }
             case .indexing:
-                Text(String(localized: "Building your search index")).font(.headline)
+                Text(String(localized: "Building your search index")).font(.rapid(.headline))
                 Text(String(localized: "Results will appear as files are indexed. You can search while indexing continues."))
             case .noResults:
-                Text(String(localized: "No files found")).font(.headline)
+                Text(String(localized: "No files found")).font(.rapid(.headline))
                 Text(model.searchedScope).accessibilityIdentifier("LocalSearch.SearchedScope")
                 switch model.emptyResultsAction {
                 case .clearFilter:
@@ -590,7 +590,7 @@ struct LocalSearchView: View {
                         .buttonStyle(.rapidSecondary).accessibilityIdentifier("LocalSearch.OpenSettings")
                 }
             case .ready, .results, .modelMissing:
-                Text(String(localized: "What are you looking for?")).font(.headline)
+                Text(String(localized: "What are you looking for?")).font(.rapid(.headline))
                 Text(model.visionAvailable ? String(localized: "Describe an idea, a photo or a video, or search for words in your files.") : String(localized: "Describe an idea, or search for words in your files."))
             }
         }
@@ -601,7 +601,7 @@ struct LocalSearchView: View {
     private var firstFolderChoices: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "Standard folders")).font(.headline)
+                Text(String(localized: "Standard folders")).font(.rapid(.headline))
                 ForEach([LocalSearchFolderShortcut.desktop, .documents, .downloads], id: \.self) { shortcut in
                     Toggle(shortcut.title, isOn: Binding(
                         get: { selectedShortcuts.contains(shortcut) },
@@ -624,7 +624,7 @@ struct LocalSearchView: View {
             }.buttonStyle(.rapidSecondary).disabled(model.isMutating)
                 .accessibilityIdentifier("LocalSearch.AddFolder.WholeMac")
             Text(String(localized: "Whole Mac: the first index can take a long time. You can search while it runs. System files and app internals are skipped."))
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.rapid(.caption)).foregroundStyle(.secondary)
             Button(action: addFolders) {
                 Label(String(localized: "Choose folders…"), systemImage: "folder.badge.plus")
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -652,7 +652,7 @@ struct LocalSearchView: View {
             folderShortcut(.wholeMac)
                 .help(String(localized: "System files and app internals are skipped. First indexing can take a long time."))
             Text(String(localized: "System files and app internals are skipped. First indexing can take a long time."))
-                .font(.caption)
+                .font(.rapid(.caption))
             Divider()
             Button(String(localized: "Choose Folder…"), action: addFolders)
                 .accessibilityIdentifier("LocalSearch.AddFolder.Choose")

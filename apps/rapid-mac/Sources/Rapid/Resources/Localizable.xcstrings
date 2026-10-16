@@ -2,6 +2,66 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Text size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "字体大小"
+          }
+        }
+      }
+    },
+    "Scales all interface text. Text is never smaller than 12 pt." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缩放全部界面文字，文字最小不低于 12 pt。"
+          }
+        }
+      }
+    },
+    "Reset to default" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复默认"
+          }
+        }
+      }
+    },
+    "Customize" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义"
+          }
+        }
+      }
+    },
+    "Decrease text size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "减小字体"
+          }
+        }
+      }
+    },
+    "Increase text size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "增大字体"
+          }
+        }
+      }
+    },
     "Unlock your Keychain to use the saved provider key.": {
       "localizations": {
         "zh-Hans": {
@@ -3825,7 +3885,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已拷贝"
+            "value" : "已复制"
           }
         }
       }
@@ -3835,7 +3895,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拷贝"
+            "value" : "复制"
           }
         }
       }

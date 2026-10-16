@@ -26,7 +26,7 @@ struct DesktopServerPortField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Server port")
-                .font(.headline)
+                .font(.rapid(.headline))
             HStack(spacing: 8) {
                 TextField("7659", text: $draft)
                     .textFieldStyle(.roundedBorder)
@@ -49,16 +49,16 @@ struct DesktopServerPortField: View {
                 .accessibilityIdentifier("ConnectTools.ServerPort.Save")
                 if !draft.isEmpty && !isValid {
                     Text("1…65535, 1024+ recommended")
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.red)
                 } else {
                     Text("Takes effect on next start. Restart to apply.")
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                 }
             }
             Text("Default 7659 (R M L X on a phone). 8000 fallback still probed. A custom port lets your gateway keep 8000.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

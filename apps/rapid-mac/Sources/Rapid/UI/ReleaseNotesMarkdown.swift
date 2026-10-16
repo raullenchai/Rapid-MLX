@@ -53,23 +53,23 @@ struct ReleaseNotesMarkdown: View {
                 Text(Self.inline(text))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.callout)
+            .font(.rapid(.callout))
         case .ordered(let marker, let text):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(marker).foregroundStyle(.secondary).monospacedDigit()
                 Text(Self.inline(text))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.callout)
+            .font(.rapid(.callout))
         case .code(let text):
             Text(text)
-                .font(.system(.callout, design: .monospaced))
+                .font(.rapid(.callout, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
                 .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         case .paragraph(let text):
             Text(Self.inline(text))
-                .font(.callout)
+                .font(.rapid(.callout))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

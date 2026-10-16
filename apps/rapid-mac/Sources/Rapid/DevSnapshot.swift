@@ -945,7 +945,7 @@ enum DevSnapshot {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                     ForEach(Array(cases.enumerated()), id: \.offset) { _, item in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.0).font(.caption2).foregroundStyle(.tertiary)
+                            Text(item.0).font(.rapid(.caption2)).foregroundStyle(.tertiary)
                             ModelsTableHeading(heading: item.1)
                         }
                     }

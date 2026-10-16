@@ -24,9 +24,9 @@ struct SettingsMemoryPanel: View {
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Automatic memory")
-                        .font(.body)
+                        .font(.rapid(.body))
                     Text("Review completed conversations and save durable preferences. Disabled by default.")
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -38,14 +38,14 @@ struct SettingsMemoryPanel: View {
                     Text(memoryStore.entries.count == 1
                         ? String(localized: "1 saved memory")
                         : String(localized: "\(memoryStore.entries.count) saved memories"))
-                        .font(.subheadline)
+                        .font(.rapid(.subheadline))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Clear All", role: .destructive) {
                         confirmingClear = true
                     }
                     .buttonStyle(.borderless)
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .accessibilityIdentifier("Settings.Memory.ClearAll")
                 }
 
@@ -59,7 +59,7 @@ struct SettingsMemoryPanel: View {
                 .frame(minHeight: 200)
             } else if memoryStore.isEnabled {
                 Text("No memories yet. They appear here after the assistant completes a conversation.")
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .foregroundStyle(.secondary)
             }
 
@@ -85,10 +85,10 @@ struct SettingsMemoryPanel: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.content)
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .textSelection(.enabled)
                 Text("\(entry.evidenceCount)× seen · \(entry.updatedAt, style: .relative)")
-                    .font(.caption2)
+                    .font(.rapid(.caption2))
                     .foregroundStyle(.tertiary)
             }
             Spacer()
@@ -97,7 +97,7 @@ struct SettingsMemoryPanel: View {
                 editingEntry = entry
             }
             .buttonStyle(.borderless)
-            .font(.caption)
+            .font(.rapid(.caption))
             .accessibilityIdentifier("Settings.Memory.Row.Edit")
             Button(role: .destructive) {
                 memoryStore.remove(id: entry.id)

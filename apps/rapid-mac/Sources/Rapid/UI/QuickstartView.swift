@@ -2838,7 +2838,7 @@ struct QuickstartView: View {
                     .scaledSystemFont(10, relativeTo: .caption2, design: .monospaced)
                     .tracking(OnboardingD.Tracking.badge)
                     .foregroundStyle(RapidTheme.textTertiary)
-                    .frame(width: OnboardingD.rowSizeSlot, alignment: .trailing)
+                    .frame(width: UIFontSettings.shared.scaled(OnboardingD.rowSizeSlot), alignment: .trailing)
                     .accessibilityHidden(true)
                 Color.clear.frame(width: OnboardingD.selectionGlyph, height: 1)
             }

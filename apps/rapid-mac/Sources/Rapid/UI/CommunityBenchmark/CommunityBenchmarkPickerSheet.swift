@@ -79,7 +79,7 @@ struct CommunityBenchmarkPickerSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             Text("Choose a model to benchmark")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.rapid(size: 17, weight: .semibold))
                 .foregroundStyle(RapidTheme.textPrimary)
             HStack(spacing: RapidTheme.Space.sm) {
                 Image(systemName: "magnifyingglass")

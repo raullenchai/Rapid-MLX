@@ -147,7 +147,7 @@ struct RapidSegmentedControl<Value: Hashable>: View {
                     isSelected ? RapidTheme.brandOnAccent : RapidTheme.textSecondary
                 )
                 .padding(.horizontal, RapidTheme.Space.md)
-                .frame(height: RapidTheme.ControlHeight.segmented - RapidTheme.Space.xs)
+                .frame(height: UIFontSettings.shared.scaled(RapidTheme.ControlHeight.segmented - RapidTheme.Space.xs))
                 .background(
                     RoundedRectangle(cornerRadius: RapidTheme.Radius.segment, style: .continuous)
                         .fill(isSelected ? RapidTheme.brandPrimary : Color.clear)

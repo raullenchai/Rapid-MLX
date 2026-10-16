@@ -292,6 +292,7 @@ struct SettingsModelManagementPanel: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                 HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                     Image(systemName: customFolderPath == nil ? "internaldrive" : "externaldrive")
+                        .font(.system(size: 13))
                         .foregroundStyle(RapidTheme.utilityActionLabel)
                         .frame(width: RapidTheme.Layout.iconSlot)
                         .accessibilityHidden(true)
@@ -987,7 +988,7 @@ struct SettingsModelManagementPanel: View {
             // sort ordered the table by exactly that number.
             HStack(spacing: ModelTableLayout.cellSpacing) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(RapidFont.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(RapidTheme.statusReady)
                     .accessibilityHidden(true)
                 if let size = Self.onDiskSizeLabel(entry) {
@@ -995,7 +996,6 @@ struct SettingsModelManagementPanel: View {
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help(
                             entry.isExternal
                                 ? String(localized: "Measured size on disk. Downloaded by another app — Rapid can't delete it.")
@@ -1010,7 +1010,6 @@ struct SettingsModelManagementPanel: View {
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 }
                 // A model another MLX runtime downloaded gets no delete
                 // button (#1718). Deletion rebuilds
@@ -1048,7 +1047,6 @@ struct SettingsModelManagementPanel: View {
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Measured size on disk. Stop this model before deleting it.")
                         .accessibilityLabel("On disk, \(size)")
                 }
@@ -1056,7 +1054,6 @@ struct SettingsModelManagementPanel: View {
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.statusReady)
                     .lineLimit(1)
-                    .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 QuietIconButton(
                     symbol: "trash",
                     label: String(localized: "Stop serving and delete \(entry.alias) from disk"),
@@ -1075,7 +1072,6 @@ struct SettingsModelManagementPanel: View {
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Estimated download size.")
                         .accessibilityLabel("Estimated download, about \(gb)")
                 }
@@ -1695,8 +1691,26 @@ enum RecommendedCardLayout {
 /// between them. Serving rows now carry measured size, status, and a delete
 /// control, so the column is wide enough for all three without truncation.
 enum ModelTableLayout {
-    /// Shared width of the Size column.
-    static let sizeColumnWidth: CGFloat = 124
+    /// Shared width of the Size column at the current Settings text size.
+    static var sizeColumnWidth: CGFloat { sizeColumnWidth(cellFontSize: cellFontSize) }
+
+    /// Never narrower than the original 124pt; grows with the cell font so
+    /// the widest serving cell ("123.4 GiB · Serving · trash") never clips.
+    static func sizeColumnWidth(cellFontSize: CGFloat) -> CGFloat {
+        max(124, inUseCellWidth(size: "123.4 GiB", cellFontSize: cellFontSize).rounded(.up))
+    }
+
+    /// The cells render in ``RapidFont/caption`` (11pt base through the
+    /// shared text size, so ≥ 12pt).
+    static var cellFontSize: CGFloat { UIFontSettings.shared.pointSize(11) }
+
+    private static func cellTextWidth(
+        _ text: String, cellFontSize: CGFloat, weight: NSFont.Weight = .regular
+    ) -> CGFloat {
+        (text as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: cellFontSize, weight: weight)
+        ]).width
+    }
 
     /// Shared width of the Quality·Speed meters column.
     ///
@@ -1732,55 +1746,40 @@ enum ModelTableLayout {
     /// Spacing between the glyph, the figure and the button in a cell.
     static let cellSpacing: CGFloat = 6
 
-    /// How far a figure in the Size column may shrink before it starts
-    /// truncating. The cells apply this as `.minimumScaleFactor`.
-    ///
-    /// Settings is NOT inside ``rapidChatDynamicTypeClamp``, so these
-    /// `.caption` runs scale with the system text size, and a fixed-width
-    /// column plus `lineLimit(1)` means growth eventually clips the
-    /// number — which is the defect this column was widened to fix. A
-    /// 20% shrink floor buys roughly 1.25x of text growth before that
-    /// happens, covering the non-accessibility sizes. It is a bound, not
-    /// a Dynamic Type pass: at the AX sizes this table needs to reflow,
-    /// which is a change to every column and not this fix's business.
-    static let cellMinimumScaleFactor: CGFloat = 0.8
-
-    /// Does a cell of intrinsic width ``needed`` survive ``scale`` times
-    /// text growth without truncating, given the shrink floor?
-    ///
-    /// Deliberately conservative: it grows the WHOLE cell, including the
-    /// fixed glyphs and spacing that do not scale. The real cell grows by
-    /// less, so a pass here is a real pass; a fail may be pessimistic.
-    /// That is the right direction for a guard whose failure mode is a
-    /// clipped number.
+    /// Does a cell fit without shrinking its text below the chosen size?
     static func fits(_ needed: CGFloat, atTextScale scale: CGFloat) -> Bool {
-        needed * scale * cellMinimumScaleFactor <= sizeColumnWidth
+        needed * scale <= sizeColumnWidth
     }
 
-    /// A `.caption`-sized SF Symbol (state glyph) or the 11pt trash.
-    static let glyphWidth: CGFloat = 15
+    /// A caption-sized SF Symbol (state glyph) or the trash button; 15pt
+    /// at the 12pt cell font, growing with it.
+    static func glyphWidth(cellFontSize: CGFloat) -> CGFloat {
+        max(15, (cellFontSize * 1.25).rounded(.up))
+    }
 
     /// Width a cached cell needs: state glyph + measured size + delete.
-    static func cachedCellWidth(size: String) -> CGFloat {
-        glyphWidth
+    static func cachedCellWidth(size: String, cellFontSize: CGFloat = cellFontSize) -> CGFloat {
+        glyphWidth(cellFontSize: cellFontSize)
             + cellSpacing
-            + RecommendedCardLayout.captionWidth(size)
+            + cellTextWidth(size, cellFontSize: cellFontSize)
             + cellSpacing
-            + glyphWidth
+            + glyphWidth(cellFontSize: cellFontSize)
     }
 
     /// Width a not-cached cell needs: estimate + download glyph. The 8pt
     /// spacing is the one that branch renders.
-    static func notCachedCellWidth(size: String) -> CGFloat {
-        RecommendedCardLayout.captionWidth("~" + size) + 8 + glyphWidth
+    static func notCachedCellWidth(size: String, cellFontSize: CGFloat = cellFontSize) -> CGFloat {
+        cellTextWidth("~" + size, cellFontSize: cellFontSize) + 8 + glyphWidth(cellFontSize: cellFontSize)
     }
 
     /// Width a serving cell needs: measured size + status + stop-and-delete.
-    static func inUseCellWidth(size: String) -> CGFloat {
-        RecommendedCardLayout.captionWidth(size)
+    /// "Serving" is measured at medium weight — slightly wider than the
+    /// regular weight it renders in, so the bound is conservative.
+    static func inUseCellWidth(size: String, cellFontSize: CGFloat = cellFontSize) -> CGFloat {
+        cellTextWidth(size, cellFontSize: cellFontSize)
             + cellSpacing
-            + RecommendedCardLayout.captionMediumWidth(String(localized: "Serving"))
+            + cellTextWidth(String(localized: "Serving"), cellFontSize: cellFontSize, weight: .medium)
             + cellSpacing
-            + glyphWidth
+            + glyphWidth(cellFontSize: cellFontSize)
     }
 }

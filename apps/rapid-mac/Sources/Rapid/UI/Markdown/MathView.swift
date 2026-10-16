@@ -48,7 +48,7 @@ struct MathView: View {
                 latex: source,
                 displayMode: displayMode,
                 colorScheme: colorScheme,
-                baseFontSize: baseFontSize
+                baseFontSize: UIFontSettings.shared.pointSize(baseFontSize)
             )
                 .accessibilityLabel("Math: \(latex)")
         } else {

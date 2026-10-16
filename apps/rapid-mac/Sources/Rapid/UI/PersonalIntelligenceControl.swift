@@ -51,7 +51,7 @@ struct PersonalIntelligencePopover: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 Text("Personal Intelligence")
-                    .font(.headline)
+                    .font(.rapid(.headline))
                 if modelSupported {
                     Text("Use your Mac’s tools and local context to get things done.")
                         .foregroundStyle(.secondary)
@@ -92,6 +92,6 @@ struct PersonalIntelligencePopover: View {
 
     private func promise(_ symbol: String, _ text: String) -> some View {
         Label(text, systemImage: symbol)
-            .font(.callout)
+            .font(.rapid(.callout))
     }
 }

@@ -84,9 +84,9 @@ struct DictationView: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
             Text("Speech to Text")
-                .font(.headline)
+                .font(.rapid(.headline))
             Text("Press a hotkey in any app, speak, and your words appear at the cursor. Audio is transcribed on this Mac.")
-                .font(.subheadline)
+                .font(.rapid(.subheadline))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -107,10 +107,10 @@ struct DictationView: View {
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(statusHeadline)
-                    .font(.subheadline.weight(.medium))
+                    .font(.rapid(.subheadline).weight(.medium))
                     .accessibilityIdentifier("Dictation.Status")
                 Text(statusDetail)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -477,9 +477,9 @@ struct DictationView: View {
                 .font(.system(size: 14))
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text(label).font(.subheadline.weight(.medium))
+                Text(label).font(.rapid(.subheadline).weight(.medium))
                 detail()
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -497,7 +497,7 @@ struct DictationView: View {
                     .foregroundStyle(.orange)
                     .font(.system(size: 12))
                 Text(error)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -532,7 +532,7 @@ struct DictationView: View {
     private var vocabularySection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.md) {
-                Text("Vocabulary").font(.subheadline.weight(.semibold))
+                Text("Vocabulary").font(.rapid(.subheadline).weight(.semibold))
                 budgetMeter
                 Spacer()
             }
@@ -540,7 +540,7 @@ struct DictationView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                 if controller.vocabulary.terms.isEmpty {
                     Text("No terms yet. Add the names Rapid keeps getting wrong — project names, people, product names.")
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                 } else {
                     FlowLayout(spacing: RapidTheme.Space.sm) {
@@ -553,7 +553,7 @@ struct DictationView: View {
                 // The cap is the whole design constraint, not a nicety —
                 // measured accuracy falls off past ~20 terms.
                 Text("Accuracy drops when more than \(DictationVocabulary.activeLimit) terms are sent at once, so keep this list to the names that actually get missed.")
-                    .font(.caption2)
+                    .font(.rapid(.caption2))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -574,7 +574,7 @@ struct DictationView: View {
                     Divider().overlay(RapidTheme.hairline)
                     VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                         Text("Found on this Mac")
-                            .font(.caption.weight(.medium))
+                            .font(.rapid(.caption).weight(.medium))
                             .foregroundStyle(.secondary)
                         FlowLayout(spacing: RapidTheme.Space.sm) {
                             ForEach(controller.vocabulary.suggestions.prefix(12), id: \.self) { name in
@@ -582,7 +582,7 @@ struct DictationView: View {
                                     controller.vocabulary.add(name)
                                 } label: {
                                     Label(name, systemImage: "plus")
-                                        .font(.caption.monospaced())
+                                        .font(.rapid(.caption).monospaced())
                                         .padding(.horizontal, RapidTheme.Space.sm)
                                         .padding(.vertical, RapidTheme.Space.xs)
                                         .overlay(
@@ -627,7 +627,7 @@ struct DictationView: View {
             }
             .frame(width: 80, height: 5)
             Text("\(controller.vocabulary.activeCount) of \(DictationVocabulary.activeLimit) active")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
@@ -636,7 +636,7 @@ struct DictationView: View {
     private func termChip(_ term: DictationVocabulary.Term) -> some View {
         HStack(spacing: RapidTheme.Space.xs) {
             Text(term.text)
-                .font(.caption.monospaced())
+                .font(.rapid(.caption).monospaced())
                 .foregroundStyle(term.isActive ? Color.primary : Color.secondary)
             Button {
                 controller.vocabulary.remove(term.text)
@@ -676,11 +676,11 @@ struct DictationView: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             HStack {
-                Text("Recent").font(.subheadline.weight(.semibold))
+                Text("Recent").font(.rapid(.subheadline).weight(.semibold))
                 Spacer()
                 Toggle("Keep recordings", isOn: $controller.archiveAudio)
                     .toggleStyle(.checkbox)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .help("Off by default. Keeping recordings lets a correction be verified against the original audio.")
                     .accessibilityIdentifier("Dictation.ArchiveAudio")
                 if !controller.history.entries.isEmpty {
@@ -692,7 +692,7 @@ struct DictationView: View {
 
             if controller.history.entries.isEmpty {
                 Text("Dictations you make will show up here.")
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .padding(RapidTheme.Space.lg)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -723,12 +723,12 @@ struct DictationView: View {
     private func historyRow(_ entry: DictationHistory.Entry) -> some View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             Text(entry.date, style: .time)
-                .font(.caption.monospaced())
+                .font(.rapid(.caption).monospaced())
                 .foregroundStyle(.tertiary)
-                .frame(width: 62, alignment: .leading)
+                .frame(width: UIFontSettings.shared.scaled(62), alignment: .leading)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(entry.text)
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 HStack(spacing: RapidTheme.Space.md) {
@@ -736,7 +736,7 @@ struct DictationView: View {
                     Text(String(format: "%.1fs", entry.duration))
                     Text(String(format: "%.2fs", entry.latency))
                 }
-                .font(.caption2)
+                .font(.rapid(.caption2))
                 .foregroundStyle(.tertiary)
             }
             Spacer(minLength: RapidTheme.Space.sm)
@@ -823,7 +823,7 @@ private struct TranscriptionModelOptionRow: View {
 
     private func pickerBadge(_ text: String, emphasized: Bool = false) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .medium))
+            .font(.rapid(size: 9, weight: .medium))
             .foregroundStyle(emphasized ? RapidTheme.green : Color.secondary)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
@@ -858,10 +858,10 @@ private struct DictationFixSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
-            Text("Fix transcription").font(.headline)
+            Text("Fix transcription").font(.rapid(.headline))
 
             Text(entry.text)
-                .font(.callout)
+                .font(.rapid(.callout))
                 .padding(RapidTheme.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
@@ -870,13 +870,13 @@ private struct DictationFixSheet: View {
                 )
 
             HStack(spacing: RapidTheme.Space.md) {
-                Text("Heard").frame(width: 68, alignment: .leading)
+                Text("Heard").frame(width: UIFontSettings.shared.scaled(68), alignment: .leading)
                 TextField("Header", text: $heard)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("Dictation.Fix.Heard")
             }
             HStack(spacing: RapidTheme.Space.md) {
-                Text("Should be").frame(width: 68, alignment: .leading)
+                Text("Should be").frame(width: UIFontSettings.shared.scaled(68), alignment: .leading)
                 TextField("herdr", text: $correction)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("Dictation.Fix.Correction")
@@ -884,7 +884,7 @@ private struct DictationFixSheet: View {
 
             if let verdict {
                 Text(verdict)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

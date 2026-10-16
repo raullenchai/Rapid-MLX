@@ -1,5 +1,24 @@
 import SwiftUI
 
+/// Shared text lanes keep headers and values aligned at every text size.
+enum ShareComputeLedgerLayout {
+    enum Column: CaseIterable {
+        case window, model, requests, tokens, credit, status
+
+        func width(fonts: UIFontSettings = .shared) -> CGFloat {
+            let base: CGFloat = switch self {
+            case .window: 140
+            case .model: 210
+            case .requests: 82
+            case .tokens: 120
+            case .credit: 100
+            case .status: 90
+            }
+            return fonts.scaled(base)
+        }
+    }
+}
+
 /// "What have I earned?" — now backed by QuickSilver's contributor ledger.
 ///
 /// ## The ownership split, made literal
@@ -94,10 +113,10 @@ struct ShareComputeCreditsTab: View {
             VStack(alignment: .leading, spacing: 4) {
                 ShareComputeEyebrow(text: String(localized: "QuickSilver · Contributor ledger"), size: 11)
                 Text("Credit ledger")
-                    .font(.system(size: isNarrow ? 21 : 25, weight: .semibold))
+                    .font(.rapid(size: isNarrow ? 21 : 25, weight: .semibold))
                     .foregroundStyle(RapidTheme.bandInk)
                 Text(subtitle)
-                    .font(.system(size: 12))
+                    .font(.rapid(size: 12))
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -132,7 +151,7 @@ struct ShareComputeCreditsTab: View {
                     Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
                 }
                 Text("Refresh")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.rapid(size: 11, weight: .medium))
             }
             .foregroundStyle(RapidTheme.bandInkSecondary)
             .padding(.horizontal, 10)
@@ -198,7 +217,7 @@ struct ShareComputeCreditsTab: View {
             VStack(alignment: .leading, spacing: 0) {
                 if let hold = refreshHoldNote, state.staleNote == nil {
                     Text(hold)
-                        .font(.system(size: 11))
+                        .font(.rapid(size: 11))
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.bottom, 10)
@@ -206,15 +225,26 @@ struct ShareComputeCreditsTab: View {
                 }
                 if let staleNote = state.staleNote {
                     Text(staleNote)
-                        .font(.system(size: 11))
+                        .font(.rapid(size: 11))
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.bottom, 10)
                         .accessibilityIdentifier("ShareCompute.Credits.Stale")
                 }
-                columnHeaders
-                ForEach(account.windows.prefix(Self.visibleRowLimit)) { window in
-                    ShareComputeLedgerRowView(window: window, isNarrow: isNarrow)
+                // Keep the columns at their readable widths even when the
+                // enlarged table is wider than the ledger panel.
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        columnHeaders
+                        ForEach(account.windows.prefix(Self.visibleRowLimit)) { window in
+                            ShareComputeLedgerRowView(window: window, isNarrow: isNarrow)
+                        }
+                    }
+                    .fixedSize(horizontal: !isNarrow, vertical: false)
+                    .containerRelativeFrame(.horizontal, alignment: .leading) { width, _ in
+                        isNarrow ? width : max(width, ShareComputeLedgerLayout.Column.allCases
+                            .reduce(CGFloat(20)) { $0 + $1.width() })
+                    }
                 }
                 footer(account)
             }
@@ -230,12 +260,12 @@ struct ShareComputeCreditsTab: View {
         Group {
             if !isNarrow {
                 HStack(spacing: 0) {
-                    headerLabel(String(localized: "Window"), width: 140)
-                    headerLabel(String(localized: "Node · Model"), width: 210)
-                    headerLabel(String(localized: "Requests"), width: 70)
-                    headerLabel(String(localized: "Tokens in/out"), width: 100)
-                    headerLabel(String(localized: "Credit"), width: 80)
-                    headerLabel(String(localized: "Status"), width: 70)
+                    headerLabel(String(localized: "Window"), width: ShareComputeLedgerLayout.Column.window.width())
+                    headerLabel(String(localized: "Node · Model"), width: ShareComputeLedgerLayout.Column.model.width())
+                    headerLabel(String(localized: "Requests"), width: ShareComputeLedgerLayout.Column.requests.width())
+                    headerLabel(String(localized: "Tokens in/out"), width: ShareComputeLedgerLayout.Column.tokens.width())
+                    headerLabel(String(localized: "Credit"), width: ShareComputeLedgerLayout.Column.credit.width())
+                    headerLabel(String(localized: "Status"), width: ShareComputeLedgerLayout.Column.status.width())
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 4)
@@ -248,11 +278,10 @@ struct ShareComputeCreditsTab: View {
 
     private func headerLabel(_ text: String, width: CGFloat) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 8, weight: .bold))
+            .font(.rapid(size: 8, weight: .bold))
             .tracking(0.5)
             .foregroundStyle(RapidTheme.bandInkTertiary)
             .lineLimit(1)
-            .minimumScaleFactor(0.8)
             .frame(width: width, alignment: .leading)
             .accessibilityHidden(true)
     }
@@ -271,7 +300,7 @@ struct ShareComputeCreditsTab: View {
                         account.windows.count
                     )
             )
-            .font(.system(size: 10))
+            .font(.rapid(size: 10))
             .foregroundStyle(RapidTheme.bandInkSecondary)
             Spacer(minLength: RapidTheme.Space.sm)
         }
@@ -295,14 +324,14 @@ struct ShareComputeCreditsTab: View {
                     size: 10
                 )
                 Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
-                    .font(.system(size: 11))
+                    .font(.rapid(size: 11))
                     .foregroundStyle(RapidTheme.bandInkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if receipts.isEmpty {
                 Text("No connection periods recorded yet.")
-                    .font(.system(size: 12))
+                    .font(.rapid(size: 12))
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                     .accessibilityIdentifier("ShareCompute.EmptyHistory")
             } else {
@@ -345,17 +374,15 @@ struct ShareComputeCreditsTab: View {
     private func localMetric(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.system(size: isNarrow ? 17 : 19, weight: .semibold))
+                .font(.rapid(size: isNarrow ? 17 : 19, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.bandInk)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
             Text(label.uppercased())
-                .font(.system(size: 9, weight: .semibold))
+                .font(.rapid(size: 9, weight: .semibold))
                 .tracking(0.4)
                 .foregroundStyle(RapidTheme.bandInkSecondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -375,12 +402,12 @@ struct ShareComputeCreditsTab: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.rapid(size: 13, weight: .medium))
                     .foregroundStyle(RapidTheme.bandInk)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail {
                     Text(detail)
-                        .font(.system(size: 12))
+                        .font(.rapid(size: 12))
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -425,7 +452,7 @@ struct ShareComputeCreditsTab: View {
                     size: 11
                 )
                 Text(state == .unauthorized ? String(localized: "Replace your read key") : String(localized: "Add a read key"))
-                    .font(.system(size: isNarrow ? 22 : 25, weight: .bold))
+                    .font(.rapid(size: isNarrow ? 22 : 25, weight: .bold))
                     .foregroundStyle(RapidTheme.onBrandPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(
@@ -433,7 +460,7 @@ struct ShareComputeCreditsTab: View {
                         ? String(localized: "QuickSilver rejected the saved key — it may have been revoked or replaced. Create a new one and paste it below.")
                         : String(localized: "A read key lets Rapid show your account’s credit ledger. It is read-only: it cannot register nodes or spend credit.")
                 )
-                .font(.system(size: 13))
+                .font(.rapid(size: 13))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -443,7 +470,7 @@ struct ShareComputeCreditsTab: View {
             } label: {
                 HStack(spacing: 7) {
                     Text("Open read-only earnings keys")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.rapid(size: 13, weight: .semibold))
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 11, weight: .bold))
                         .accessibilityHidden(true)
@@ -466,7 +493,7 @@ struct ShareComputeCreditsTab: View {
                 // lands in a screenshot.
                 SecureField("qsprk-…", text: $readKeyDraft)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.rapid(size: 13, design: .monospaced))
                     .foregroundStyle(RapidTheme.onBrandPrimary)
                     .padding(.horizontal, 12)
                     .frame(height: 38)
@@ -485,7 +512,7 @@ struct ShareComputeCreditsTab: View {
 
                 if let readKeyRejection {
                     Text(readKeyRejection.message)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.rapid(size: 11, weight: .medium))
                         .foregroundStyle(RapidTheme.onBrandPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("ShareCompute.Credits.ReadKeyError")
@@ -494,7 +521,7 @@ struct ShareComputeCreditsTab: View {
 
             Button(action: onSaveReadKey) {
                 Text("Save & load ledger")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.rapid(size: 13, weight: .semibold))
                     .foregroundStyle(RapidTheme.bandInk)
                     .frame(maxWidth: .infinity)
                     .frame(height: 42)
@@ -507,7 +534,7 @@ struct ShareComputeCreditsTab: View {
             .accessibilityIdentifier("ShareCompute.Credits.SaveReadKey")
 
             Text("Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Provider keys (qsppk-) are managed separately in Share Compute settings.")
-                .font(.system(size: 11))
+                .font(.rapid(size: 11))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -520,7 +547,7 @@ struct ShareComputeCreditsTab: View {
     private var removeKeyButton: some View {
         Button(action: onRemoveReadKey) {
             Text("Remove saved key")
-                .font(.system(size: 11, weight: .bold))
+                .font(.rapid(size: 11, weight: .bold))
                 .foregroundStyle(RapidTheme.onBrandPrimary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 32)
@@ -545,11 +572,11 @@ struct ShareComputeCreditsTab: View {
                     size: 11
                 )
                 Text(monthTitle)
-                    .font(.system(size: isNarrow ? 23 : 27, weight: .bold))
+                    .font(.rapid(size: isNarrow ? 23 : 27, weight: .bold))
                     .foregroundStyle(RapidTheme.onBrandPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(monthScope)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.rapid(size: 12, weight: .medium))
                     .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -574,34 +601,33 @@ struct ShareComputeCreditsTab: View {
                 HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.sm) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("FINAL API CREDIT")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.rapid(size: 9, weight: .bold))
                             .tracking(0.4)
                             .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                         Text(totals.map { ShareComputeCreditFormatter.credit($0.finalCredit) } ?? "—")
-                            .font(.system(size: 22, weight: .bold))
+                            .font(.rapid(size: 22, weight: .bold))
                             .monospacedDigit()
                             .foregroundStyle(RapidTheme.onBrandPrimary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
                     }
                     Spacer(minLength: RapidTheme.Space.sm)
                     VStack(alignment: .trailing, spacing: 3) {
                         Text("ACCRUED")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.rapid(size: 9, weight: .bold))
                             .tracking(0.4)
                             .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                         // `nil` renders `—`, not `$0.00`: a bucket containing a
                         // window with an unknown pre-cap amount has no honest
                         // accrued total.
                         Text(totals.flatMap(\.accruedCredit).map(ShareComputeCreditFormatter.credit) ?? "—")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.rapid(size: 14, weight: .semibold))
                             .monospacedDigit()
                             .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                     }
                 }
                 if totals?.hasPendingWindows == true {
                     Text("Some windows are still pending; QuickSilver finalises them after the month closes.")
-                        .font(.system(size: 11))
+                        .font(.rapid(size: 11))
                         .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -632,7 +658,7 @@ struct ShareComputeCreditsTab: View {
             // The unit claim, stated plainly. `usd_api_credit` is spendable
             // platform balance; calling it a payout or cash would be false.
             Text(unitExplanation)
-                .font(.system(size: 11))
+                .font(.rapid(size: 11))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -641,7 +667,7 @@ struct ShareComputeCreditsTab: View {
             } label: {
                 HStack(spacing: 7) {
                     Text("QuickSilver balance")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.rapid(size: 13, weight: .semibold))
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 11, weight: .bold))
                         .accessibilityHidden(true)
@@ -661,13 +687,13 @@ struct ShareComputeCreditsTab: View {
             if let savedKeyLabel {
                 HStack(spacing: RapidTheme.Space.sm) {
                     Text(savedKeyLabel)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.rapid(size: 11, design: .monospaced))
                         .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                         .lineLimit(1)
                     Spacer(minLength: RapidTheme.Space.sm)
                     Button(action: onRemoveReadKey) {
                         Text("Replace")
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.rapid(size: 11, weight: .bold))
                             .foregroundStyle(RapidTheme.onBrandPrimary)
                     }
                     .buttonStyle(.plain)
@@ -721,17 +747,15 @@ struct ShareComputeCreditsTab: View {
     private func amberField(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label.uppercased())
-                .font(.system(size: 9, weight: .bold))
+                .font(.rapid(size: 9, weight: .bold))
                 .tracking(0.4)
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
             Text(value)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.rapid(size: 14, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.onBrandPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -767,47 +791,44 @@ struct ShareComputeLedgerRowView: View {
     private var wide: some View {
         HStack(spacing: 0) {
             Text(periodLabel)
-                .font(.system(size: 11))
+                .font(.rapid(size: 11))
                 .foregroundStyle(RapidTheme.bandInk)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: ShareComputeLedgerLayout.Column.window.width(), alignment: .leading)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(modelLabel)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.rapid(size: 12, weight: .medium))
                     .foregroundStyle(modelTint)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
                 Text(window.nodeID)
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.rapid(size: 9, design: .monospaced))
                     .foregroundStyle(RapidTheme.bandLink)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .frame(width: 210, alignment: .leading)
+            .frame(width: ShareComputeLedgerLayout.Column.model.width(), alignment: .leading)
 
             Text("\(window.requestCount)")
-                .font(.system(size: 12))
+                .font(.rapid(size: 12))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.bandInk)
-                .frame(width: 70, alignment: .leading)
+                .frame(width: ShareComputeLedgerLayout.Column.requests.width(), alignment: .leading)
 
             Text("\(ShareComputeCreditFormatter.count(window.inputTokens)) / \(ShareComputeCreditFormatter.count(window.outputTokens))")
-                .font(.system(size: 11))
+                .font(.rapid(size: 11))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.bandInkSecondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: ShareComputeLedgerLayout.Column.tokens.width(), alignment: .leading)
 
             Text(ShareComputeCreditFormatter.credit(window.finalCredit))
-                .font(.system(size: 12, weight: .semibold))
+                .font(.rapid(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.bandInk)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: ShareComputeLedgerLayout.Column.credit.width(), alignment: .leading)
 
-            statusTag.frame(width: 70, alignment: .leading)
+            statusTag.frame(width: ShareComputeLedgerLayout.Column.status.width(), alignment: .leading)
         }
     }
 
@@ -815,29 +836,28 @@ struct ShareComputeLedgerRowView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: RapidTheme.Space.sm) {
                 Text(modelLabel)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.rapid(size: 12, weight: .medium))
                     .foregroundStyle(modelTint)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
                 Spacer(minLength: RapidTheme.Space.sm)
                 Text(ShareComputeCreditFormatter.credit(window.finalCredit))
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.rapid(size: 12, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(RapidTheme.bandInk)
                 statusTag
             }
             HStack(spacing: 8) {
                 Text(periodLabel)
-                    .font(.system(size: 10))
+                    .font(.rapid(size: 10))
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                 Text("·").foregroundStyle(RapidTheme.bandInkTertiary).font(.system(size: 10))
                 Text(String(format: String(localized: "%d req"), window.requestCount))
-                    .font(.system(size: 10))
+                    .font(.rapid(size: 10))
                     .monospacedDigit()
                     .foregroundStyle(RapidTheme.bandInkSecondary)
                 Spacer(minLength: 0)
                 Text(window.nodeID)
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.rapid(size: 9, design: .monospaced))
                     .foregroundStyle(RapidTheme.bandLink)
                     .lineLimit(1)
                     .truncationMode(.middle)

@@ -42,7 +42,7 @@ private struct ScaledSystemFontModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.font(.system(size: size, weight: weight, design: design))
+        content.font(.rapid(size: size, weight: weight, design: design))
     }
 }
 

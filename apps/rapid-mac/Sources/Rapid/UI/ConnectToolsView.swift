@@ -383,7 +383,7 @@ struct ConnectToolsView: View {
                     }
                     Spacer(minLength: RapidTheme.Space.sm)
                     Text("LOCAL")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .font(.rapid(size: 10, weight: .semibold, design: .rounded))
                         .tracking(0.6)
                         .foregroundStyle(.secondary)
                 }
@@ -456,6 +456,7 @@ struct ConnectToolsView: View {
     ) -> some View {
         HStack(spacing: RapidTheme.Space.sm) {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 12))
                 .frame(width: 12)
             Label(title, systemImage: systemImage)
                 .font(RapidFont.secondary)

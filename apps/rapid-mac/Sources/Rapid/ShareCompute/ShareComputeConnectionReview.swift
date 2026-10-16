@@ -53,7 +53,7 @@ struct ShareComputeConnectionReview: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Review & connect this Mac")
-                .font(.system(size: 19, weight: .bold))
+                .font(.rapid(size: 19, weight: .bold))
                 .foregroundStyle(RapidTheme.textPrimary)
             Text(modelTitle)
                 .font(RapidFont.body)

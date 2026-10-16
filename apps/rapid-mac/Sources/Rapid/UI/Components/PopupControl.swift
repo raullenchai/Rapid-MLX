@@ -32,7 +32,7 @@ struct PopupControlChrome: View {
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, RapidTheme.Space.md)
-        .frame(width: width, height: RapidTheme.ControlHeight.small)
+        .frame(width: width, height: UIFontSettings.shared.scaled(RapidTheme.ControlHeight.small))
         .background(
             RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
                 .fill(RapidTheme.surfaceCode)

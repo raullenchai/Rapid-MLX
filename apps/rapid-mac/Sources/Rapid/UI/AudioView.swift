@@ -357,11 +357,11 @@ struct AudioView: View {
                     Slider(value: $viewModel.speed, in: 0.5...2, step: 0.05)
                         .accessibilityIdentifier("Audio.Speech.Speed")
                     Text(viewModel.speed.formatted(.number.precision(.fractionLength(2))) + "x")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .font(.rapid(size: 12, weight: .medium, design: .monospaced))
                         .monospacedDigit()
-                        .frame(width: 48, alignment: .trailing)
+                        .frame(width: UIFontSettings.shared.scaled(48), alignment: .trailing)
                 }
-                .frame(width: controlFieldWidth)
+                .frame(width: UIFontSettings.shared.scaled(controlFieldWidth))
                 .accessibilityElement(children: .contain)
             }
         }
@@ -382,9 +382,9 @@ struct AudioView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text(label).font(.subheadline.weight(.medium))
+                Text(label).font(.rapid(.subheadline).weight(.medium))
                 Text(caption)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -530,7 +530,7 @@ struct AudioView: View {
     }
 
     private func popupControlLabel(_ value: String) -> some View {
-        PopupControlChrome(title: value, width: controlFieldWidth)
+        PopupControlChrome(title: value, width: UIFontSettings.shared.scaled(controlFieldWidth))
     }
 
     private func handleReadinessAction(_ action: ModelReadiness.Action) {
@@ -789,7 +789,7 @@ private struct VoiceOptionRow: View {
         }
         .padding(.leading, RapidTheme.Space.sm)
         .padding(.trailing, RapidTheme.Space.xs)
-        .frame(height: 30)
+        .frame(height: UIFontSettings.shared.scaled(30))
         .background(
             RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
                 .fill(isSelected || hovering ? RapidTheme.hoverFill : .clear)

@@ -1004,6 +1004,7 @@ struct ChatView: View {
                     } label: {
                         HStack(spacing: RapidTheme.Space.sm) {
                             Image(systemName: "doc")
+                                .font(.system(size: 13))
                                 .frame(width: 16, alignment: .center)
                             Text("Upload file")
                         }
@@ -1021,6 +1022,7 @@ struct ChatView: View {
                     } label: {
                         HStack(spacing: RapidTheme.Space.sm) {
                             Image(systemName: "photo")
+                                .font(.system(size: 13))
                                 .frame(width: 16, alignment: .center)
                             Text("Upload photo")
                         }
@@ -1210,7 +1212,7 @@ struct ChatView: View {
                         .font(.system(size: 10, weight: .semibold))
                 }
                 Text(Self.composerResidentUnloadTitle(modelCount: modelCount))
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.rapid(size: 11, weight: .semibold))
                     .lineLimit(1)
                     // The composer still has flexible space at its 440pt
                     // detail-width floor. Spend that before abbreviating the
@@ -1587,10 +1589,10 @@ struct ChatView: View {
                             .frame(width: 28)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(attachment.filename)
-                                .font(.caption.weight(.medium))
+                                .font(.rapid(.caption).weight(.medium))
                                 .lineLimit(1)
                             Text(attachment.detailText)
-                                .font(.caption2)
+                                .font(.rapid(.caption2))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
@@ -2030,14 +2032,15 @@ private struct MessageRow: View {
                                 ForEach(message.fileAttachments) { attachment in
                                     HStack(spacing: RapidTheme.Space.sm) {
                                         Image(systemName: attachment.kind.systemImage)
+                                            .font(.system(size: 13))
                                             .foregroundStyle(RapidTheme.userBubbleText.opacity(0.8))
                                             .frame(width: 20)
                                         VStack(alignment: .leading, spacing: 1) {
                                             Text(attachment.filename)
-                                                .font(.caption.weight(.medium))
+                                                .font(.rapid(.caption).weight(.medium))
                                                 .lineLimit(1)
                                             Text(attachment.detailText)
-                                                .font(.caption2)
+                                                .font(.rapid(.caption2))
                                                 .foregroundStyle(RapidTheme.userBubbleText.opacity(0.7))
                                                 .lineLimit(1)
                                         }
@@ -2101,7 +2104,7 @@ private struct MessageRow: View {
     /// sleep — same wording as ``SidebarView.renameField(_:)``.)
     private var userEditor: some View {
         TextEditor(text: $editDraft)
-            .font(.body)
+            .font(.rapid(.body))
             .foregroundStyle(RapidTheme.userBubbleText)
             .scrollContentBackground(.hidden)
             .focused($editFieldFocused)
@@ -2253,7 +2256,7 @@ private struct MessageRow: View {
                     TextKitMarkdownView(content: prose)
                 }
                 Text(ChatMessage.toolCallArtifactSuppressedCaptionCopy)
-                    .font(.footnote)
+                    .font(.rapid(.footnote))
                     .foregroundStyle(.secondary)
             } else if hasAssistantContent {
                 if let streamingMarkdown {
@@ -2270,7 +2273,7 @@ private struct MessageRow: View {
                 }
             } else if let caption = toolDispatchCaption {
                 Text(caption)
-                    .font(.footnote)
+                    .font(.rapid(.footnote))
                     .foregroundStyle(.secondary)
             } else if showTypingIndicator {
                 typingIndicator
@@ -2284,7 +2287,7 @@ private struct MessageRow: View {
             }
             if message.toolNotCalledFlagged {
                 Text(ChatMessage.toolNotCalledCaptionCopy)
-                    .font(.footnote)
+                    .font(.rapid(.footnote))
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(ChatMessage.toolNotCalledCaptionAccessibilityLabel)
             }
@@ -2292,17 +2295,17 @@ private struct MessageRow: View {
                 failureCaption
             } else if let hint = softCaption {
                 Text(hint)
-                    .font(.footnote)
+                    .font(.rapid(.footnote))
                     .foregroundStyle(.secondary)
             }
             if message.contentTruncated {
                 Text(ChatMessage.lengthTruncationBadgeCopy)
-                    .font(.footnote)
+                    .font(.rapid(.footnote))
                     .foregroundStyle(.secondary)
             }
             if let stats = statsCaption {
                 Text(stats)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.tertiary)
             }
             if showsAssistantActions {
@@ -2447,7 +2450,7 @@ private struct MessageRow: View {
                 .accessibilityIdentifier(actionIdentifier("PreviousBranch"))
 
                 Text("\(branch.index)/\(branch.count)")
-                    .font(.caption2)
+                    .font(.rapid(.caption2))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                     // One label for the pair: VoiceOver reads "Response 2 of
@@ -2532,7 +2535,7 @@ private struct MessageRow: View {
     private var reasoningDisclosure: some View {
         DisclosureGroup(isExpanded: $reasoningExpanded) {
             Text(message.reasoning)
-                .font(.callout)
+                .font(.rapid(.callout))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2546,7 +2549,7 @@ private struct MessageRow: View {
                         .accessibilityHidden(true)
                 }
             }
-                .font(.caption.weight(.medium))
+                .font(.rapid(.caption).weight(.medium))
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(reasoningAccessibilityLabel)
@@ -2590,7 +2593,7 @@ private struct MessageRow: View {
 
     private var failureCaption: some View {
         Text(message.errorMessage ?? String(localized: "The model couldn't complete that request."))
-            .font(.footnote)
+            .font(.rapid(.footnote))
             .foregroundStyle(failureCaptionTint)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2639,7 +2642,7 @@ private struct MessageRow: View {
 
     private var systemNote: some View {
         Text(message.content)
-            .font(.footnote)
+            .font(.rapid(.footnote))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -2780,7 +2783,7 @@ private struct ToolCallChip: View {
                         .font(.system(size: 11))
                         .foregroundStyle(RapidTheme.brand)
                     Text(ChatTextSanitizer.sanitizeForDisplay(call.function.name))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .font(.rapid(size: 12, weight: .medium, design: .monospaced))
                     Spacer(minLength: 0)
                     Image(systemName: statusIcon)
                         .font(.system(size: 11))
@@ -2806,18 +2809,18 @@ private struct ToolCallChip: View {
                     // red error reads as Rapid's output and sends the user
                     // hunting for a setting to fix (0.14.1 mini dogfood).
                     Text("Requested by the model")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.rapid(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
                         .textCase(.uppercase)
                     Text(prettyArguments)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.rapid(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let body = resultBody {
                         Divider()
                         Text(body)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.rapid(size: 11, design: .monospaced))
                             .foregroundStyle(resultBodyColor)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2829,7 +2832,7 @@ private struct ToolCallChip: View {
                             Label(action.title, systemImage: action.systemImage)
                         }
                         .buttonStyle(.link)
-                        .font(.system(size: 11))
+                        .font(.rapid(size: 11))
                         .accessibilityIdentifier("ToolCallChip.\(action.rawValue)")
                     }
                 }
@@ -3228,6 +3231,11 @@ struct ComposeTextEditor: NSViewRepresentable {
         !viewHasMarkedText && editorText != bindingText
     }
 
+    /// 15pt base (matches the transcript body) through the Settings text size.
+    static var editorFont: NSFont {
+        .systemFont(ofSize: UIFontSettings.shared.pointSize(15))
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let tv = AutosizingTextView.makeForComposer()
         tv.delegate = context.coordinator
@@ -3246,7 +3254,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         // sweep) — was NSFont.systemFontSize (13). NSTextView ignores
         // Dynamic Type either way (documented in DynamicTypeClamp);
         // this only aligns the default-size look with the chat.
-        tv.font = NSFont.systemFont(ofSize: 15)
+        tv.font = Self.editorFont
         // Width tracks the view (so wrapping matches the visible width),
         // height is unbounded so ``usedRect`` reflects every line. This
         // is what lets us measure the true content height below.
@@ -3305,6 +3313,13 @@ struct ComposeTextEditor: NSViewRepresentable {
             // A programmatic assignment does not fire ``didChangeText``,
             // so the parent would keep the height of the previous draft
             // (e.g. after Send clears it, or after Up-arrow recall).
+            view.remeasure()
+        }
+        // Settings "Text size": NSTextView does not observe it, so re-apply.
+        // Skipped during IME composition, which a font swap would disturb.
+        let font = Self.editorFont
+        if view.font != font, !view.hasMarkedText() {
+            view.font = font
             view.remeasure()
         }
         view.onMeasuredHeight = onMeasuredHeight
@@ -3815,7 +3830,7 @@ private struct CodeBlockWithCopy: View {
                 Image(systemName: copiedRecently ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 11, weight: .medium))
                 Text(copiedRecently ? String(localized: "Copied") : String(localized: "Copy"))
-                    .font(.caption2.weight(.medium))
+                    .font(.rapid(.caption2).weight(.medium))
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)

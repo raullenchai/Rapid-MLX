@@ -428,7 +428,7 @@ struct SettingsPerformancePanel: View {
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: warns ? "exclamationmark.triangle.fill" : "info.circle")
-                .font(RapidFont.caption)
+                .font(.system(size: 11))
                 .foregroundStyle(warns ? RapidTheme.statusWarning : RapidTheme.textSecondary)
         }
     }

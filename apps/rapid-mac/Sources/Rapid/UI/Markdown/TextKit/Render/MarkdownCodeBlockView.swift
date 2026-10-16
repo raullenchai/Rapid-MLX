@@ -68,18 +68,24 @@ final class MarkdownCodeBlockView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// Header label / Copy / Preview font: 11pt base through the shared
+    /// text-size setting (so never below 12pt).
+    static var headerFont: NSFont {
+        .systemFont(ofSize: UIFontSettings.shared.pointSize(11), weight: .medium)
+    }
+
     private func setUpHeader() {
-        headerLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        headerLabel.font = Self.headerFont
         headerLabel.textColor = .secondaryLabelColor
         headerLabel.lineBreakMode = .byTruncatingTail
         headerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
 
-        copyButton.title = "复制"
+        copyButton.title = String(localized: "Copy")
         copyButton.bezelStyle = .inline
         copyButton.isBordered = false
-        copyButton.font = .systemFont(ofSize: 11, weight: .medium)
+        copyButton.font = Self.headerFont
         copyButton.contentTintColor = .secondaryLabelColor
         copyButton.target = self
         copyButton.action = #selector(copyCode)
@@ -89,7 +95,7 @@ final class MarkdownCodeBlockView: NSView {
         previewButton.title = "Preview"
         previewButton.bezelStyle = .inline
         previewButton.isBordered = false
-        previewButton.font = .systemFont(ofSize: 11, weight: .medium)
+        previewButton.font = Self.headerFont
         previewButton.contentTintColor = .secondaryLabelColor
         previewButton.target = self
         previewButton.action = #selector(togglePreview)
@@ -141,6 +147,12 @@ final class MarkdownCodeBlockView: NSView {
         renderer.setCode(code, language: language)
         setAccessibilityValue(code)
 
+        // Re-applied on every configure so a Settings text-size change reaches
+        // already-mounted blocks.
+        let font = Self.headerFont
+        for control in [headerLabel, copyButton, previewButton] as [NSControl] where control.font != font {
+            control.font = font
+        }
         headerLabel.stringValue = language?.capitalized ?? ""
         headerLabel.isHidden = (language?.isEmpty ?? true)
         updatePreviewAvailability()
@@ -209,7 +221,9 @@ final class MarkdownCodeBlockView: NSView {
     /// rarely reaches that corner; a full-width image reaches it every time.
     private var headerHeight: CGFloat {
         guard !(language?.isEmpty ?? true) || previewImage != nil else { return 0 }
-        return options.codeHeaderInsets.top + 16 + options.codeHeaderInsets.bottom
+        let font = Self.headerFont
+        let line = (font.ascender - font.descender + font.leading).rounded(.up)
+        return options.codeHeaderInsets.top + max(16, line) + options.codeHeaderInsets.bottom
     }
 
     public func height(forWidth width: CGFloat) -> CGFloat {
@@ -446,9 +460,9 @@ final class MarkdownCodeBlockView: NSView {
         // Momentary confirmation, matching ChatGPT's
         // `MarkdownCodeBlockHeaderCopyButton` which tracks a
         // `recentlyPerformed` state.
-        copyButton.title = "已复制"
+        copyButton.title = String(localized: "Copied")
         didCopyResetWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.copyButton.title = "复制" }
+        let work = DispatchWorkItem { [weak self] in self?.copyButton.title = String(localized: "Copy") }
         didCopyResetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
     }

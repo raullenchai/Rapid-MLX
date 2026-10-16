@@ -145,6 +145,27 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Code block Copy and Copied use localized keys in every state")
+    func codeBlockCopyLabels() throws {
+        let json = try loadCatalog()
+        let strings = try #require(json["strings"] as? [String: Any])
+        for (key, value) in [("Copy", "复制"), ("Copied", "已复制")] {
+            let entry = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(localizations["zh-Hans"] as? [String: Any])
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(unit["value"] as? String == value)
+            #expect(unit["state"] as? String == "translated")
+        }
+        let source = try String(contentsOf: rapidSource(
+            "UI/Markdown/TextKit/Render/MarkdownCodeBlockView.swift"
+        ))
+        #expect(source.components(separatedBy: "copyButton.title = String(localized: \"Copy\")").count == 3)
+        #expect(source.contains("copyButton.title = String(localized: \"Copied\")"))
+        #expect(!source.contains("\"复制\""))
+        #expect(!source.contains("\"已复制\""))
+    }
+
     @Test("Every entry that declares a zh-Hans block has a non-empty translated value")
     func noPartialZHEntries() throws {
         let json = try loadCatalog()

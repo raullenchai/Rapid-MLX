@@ -112,23 +112,23 @@ private struct DictationHUDView: View {
         switch model.phase {
         case .starting:
             Text("Starting…")
-                .font(.system(size: 13, design: .monospaced))
+                .font(.rapid(size: 13, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.9))
         case .recording(let seconds, let level):
             HStack(spacing: 10) {
                 LevelMeter(level: level, animated: !reduceMotion)
                 Text(Self.timeLabel(seconds))
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.rapid(size: 13, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(Color.white.opacity(0.92))
             }
         case .transcribing:
             Text("Transcribing…")
-                .font(.system(size: 13, design: .monospaced))
+                .font(.rapid(size: 13, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.9))
         case .failed(let message):
             Text(message)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.rapid(size: 13, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.9))
                 .lineLimit(1)
         }

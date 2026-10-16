@@ -68,7 +68,12 @@ struct TextKitMarkdownView: View, Equatable {
 
     static func options(basePointSize: CGFloat) -> MarkdownOptions {
         var options = MarkdownOptions.assistantTranscript()
-        options.textPointSize = basePointSize
+        // Settings "Text size" applies here too; read during `body`, so a
+        // change re-renders and pushes new metrics through `updateNSView`.
+        let fonts = UIFontSettings.shared
+        options.textPointSize = fonts.pointSize(basePointSize)
+        options.codePointSize = fonts.pointSize(options.codePointSize)
+        options.codeLineHeight = (options.codePointSize * 1.23).rounded()
         options.textColor = .labelColor
         options.linkColor = NSColor(RapidTheme.linkLabel)
         return options

@@ -25,7 +25,7 @@ struct GitHubStarButton: View {
             openURL(GitHubCommunity.repositoryURL)
         } label: {
             Label("Star on GitHub", systemImage: "star")
-                .font(.system(size: 12, weight: .medium))
+                .font(.rapid(size: 12, weight: .medium))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
         }
@@ -62,11 +62,11 @@ struct GitHubStarPromptCard: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                     Text("Enjoying Rapid-MLX?")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.rapid(size: 14, weight: .semibold))
                         .foregroundStyle(RapidTheme.textPrimary)
 
                     Text("Rapid-MLX is open source. If it helped today, a GitHub star helps other developers find it.")
-                        .font(.system(size: 14))
+                        .font(.rapid(size: 14))
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -118,7 +118,7 @@ struct GitHubStarPromptCard: View {
                     .buttonStyle(RapidPrimaryButtonStyle(
                         expands: true,
                         height: RapidTheme.ControlHeight.medium,
-                        font: .system(size: 14, weight: .medium)
+                        font: .rapid(size: 14, weight: .medium)
                     ))
                     .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
                     .disabled(prompt.isStarring)
@@ -135,7 +135,7 @@ struct GitHubStarPromptCard: View {
                         .buttonStyle(RapidSecondaryButtonStyle(
                             expands: true,
                             height: RapidTheme.ControlHeight.medium,
-                            font: .system(size: 14, weight: .medium)
+                            font: .rapid(size: 14, weight: .medium)
                         ))
                         .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
                         .disabled(prompt.isStarring)
@@ -157,7 +157,7 @@ struct GitHubStarPromptCard: View {
                         .buttonStyle(RapidSecondaryButtonStyle(
                             expands: true,
                             height: RapidTheme.ControlHeight.medium,
-                            font: .system(size: 14, weight: .medium)
+                            font: .rapid(size: 14, weight: .medium)
                         ))
                         .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
                         .accessibilityIdentifier("GitHub.Star.ValueMoment.Feedback")

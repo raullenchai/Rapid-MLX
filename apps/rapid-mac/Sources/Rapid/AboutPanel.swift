@@ -178,10 +178,10 @@ private struct AboutView: View {
             .padding(.top, 8)
 
             Text("Rapid-MLX")
-                .font(.title2.weight(.bold))
+                .font(.rapid(.title2).weight(.bold))
 
             Text(versionLine)
-                .font(.callout)
+                .font(.rapid(.callout))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
@@ -193,7 +193,7 @@ private struct AboutView: View {
                     }
                     Text(engine.summary)
                 }
-                .font(.caption.weight(engine.isOverride ? .semibold : .regular))
+                .font(.rapid(.caption).weight(engine.isOverride ? .semibold : .regular))
                 .foregroundStyle(engine.isOverride ? .primary : .secondary)
                 .help(engine.path)
                 .accessibilityLabel("\(engine.summary). Path: \(engine.path)")
@@ -201,7 +201,7 @@ private struct AboutView: View {
             }
 
             Text("Fast, private AI that runs on your Mac.")
-                .font(.callout)
+                .font(.rapid(.callout))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -214,18 +214,18 @@ private struct AboutView: View {
                 Text("·").foregroundStyle(.tertiary)
                 aboutLink("Privacy", privacyURL)
             }
-            .font(.callout)
+            .font(.rapid(.callout))
             .padding(.top, 2)
 
             Link(AboutPanel.mtplxAttribution, destination: URL(string: mtplxURL)!)
-                .font(.caption)
+                .font(.rapid(.caption))
                 .tint(RapidTheme.brand)
                 .accessibilityIdentifier("About.Link.MTPLX")
 
             Spacer(minLength: 0)
 
             Text("© 2026 · Runs 100% on your Mac")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.tertiary)
         }
         .padding(24)

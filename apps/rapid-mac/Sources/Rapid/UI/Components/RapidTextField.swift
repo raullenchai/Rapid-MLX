@@ -37,7 +37,7 @@ struct RapidTextField: View {
             .focusEffectDisabled()
             .onSubmit { onSubmit?() }
             .padding(.horizontal, RapidTheme.Space.md - 2)
-            .frame(height: RapidTheme.ControlHeight.large)
+            .frame(height: UIFontSettings.shared.scaled(RapidTheme.ControlHeight.large))
             .background(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
                     .fill(RapidTheme.surfaceRaised)

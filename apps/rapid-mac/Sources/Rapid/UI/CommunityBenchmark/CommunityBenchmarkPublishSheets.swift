@@ -91,7 +91,7 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 Text("Publish this result to the Community Benchmark?")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.rapid(size: 17, weight: .semibold))
                     .foregroundStyle(RapidTheme.textPrimary)
                 Text("It will be published publicly under your anonymous contributor alias on rapidmlx.com.")
                     .font(RapidFont.body)
@@ -184,7 +184,7 @@ struct CommunityBenchmarkShareConfirmationSheet: View {
                     .font(.system(size: 11))
                     .accessibilityHidden(true)
                 Text("KEPT ON THIS MAC, NOT PUBLISHED")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.rapid(size: 11, weight: .semibold))
                     .tracking(0.5)
             }
             .foregroundStyle(RapidTheme.textTertiary)
@@ -375,7 +375,7 @@ struct CommunityBenchmarkPublishedSheet: View {
 
                 VStack(spacing: RapidTheme.Space.sm) {
                     Text(celebration.headline)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.rapid(size: 20, weight: .semibold))
                         .foregroundStyle(RapidTheme.textPrimary)
                     Text(celebration.body)
                         .font(RapidFont.body)

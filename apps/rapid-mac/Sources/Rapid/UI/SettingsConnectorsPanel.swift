@@ -328,6 +328,7 @@ struct SettingsConnectorsPanel: View {
         )) {
             HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                 Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 13))
                     .foregroundStyle(RapidTheme.utilityActionLabel)
                     .frame(width: RapidTheme.Layout.iconSlot)
                     .accessibilityHidden(true)

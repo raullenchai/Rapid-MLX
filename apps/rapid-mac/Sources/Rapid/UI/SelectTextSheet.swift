@@ -36,9 +36,9 @@ struct SelectTextSheet: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Select text")
-                        .font(.headline)
+                        .font(.rapid(.headline))
                     Text("Selection here crosses paragraphs — ⌘C copies it.")
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()

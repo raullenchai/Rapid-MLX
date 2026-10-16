@@ -57,7 +57,7 @@ struct MemoryPill: View {
                     .fill(color(for: pressure))
                     .frame(width: 6, height: 6)
                 Text(MemoryProbe.formatLabel(snap))
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.rapid(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -77,7 +77,7 @@ struct MemoryPill: View {
                     .fill(Color.secondary.opacity(0.4))
                     .frame(width: 6, height: 6)
                 Text("memory: —")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.rapid(size: 10, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
             .help("Memory probe failed — host_statistics64 returned an error.")

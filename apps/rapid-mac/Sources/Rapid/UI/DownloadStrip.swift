@@ -159,6 +159,7 @@ struct DownloadStrip: View {
         } else {
             HStack(spacing: 8) {
                 statusGlyph(for: job)
+                    .font(.system(size: 13))
                     .frame(width: 16)
                 Text(job.alias)
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)

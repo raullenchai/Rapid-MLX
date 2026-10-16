@@ -185,7 +185,7 @@ struct CommunityWorkloadBadge: View {
 
     var body: some View {
         Text(workload.displayName.uppercased())
-            .font(.system(size: 10, weight: .semibold))
+            .font(.rapid(size: 10, weight: .semibold))
             .tracking(0.3)
             .foregroundStyle(RapidTheme.brandSecondary)
             .padding(.horizontal, 6)
@@ -239,16 +239,16 @@ struct CommunityMetricView: View {
                 Text(metric.value)
                     .font(
                         isHeadline
-                            ? .system(size: 44, weight: .semibold, design: .monospaced)
-                            : .system(size: 20, weight: .medium, design: .monospaced)
+                            ? .rapid(size: 44, weight: .semibold, design: .monospaced)
+                            : .rapid(size: 20, weight: .medium, design: .monospaced)
                     )
                     .monospacedDigit()
                 if let unit = metric.unit {
                     Text(unit)
                         .font(
                             isHeadline
-                                ? .system(size: 18, weight: .regular, design: .monospaced)
-                                : .system(size: 13, design: .monospaced)
+                                ? .rapid(size: 18, weight: .regular, design: .monospaced)
+                                : .rapid(size: 13, design: .monospaced)
                         )
                         .foregroundStyle(RapidTheme.textSecondary)
                 }
@@ -314,7 +314,7 @@ struct CommunityContributorIdentity: View {
             CommunityContributorPortrait(contributor: contributor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(contributor.displayName)
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .font(.rapid(size: 13, weight: .medium, design: .monospaced))
                     .foregroundStyle(RapidTheme.textPrimary)
                     .textSelection(.enabled)
                 if showsDestination, let url = contributor.profileURL {

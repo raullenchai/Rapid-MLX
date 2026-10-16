@@ -54,7 +54,7 @@ struct FailureDiagnosisView: View {
 
     private var diagnosisText: some View {
         Text(diagnosis.message)
-            .font(.callout)
+            .font(.rapid(.callout))
             .foregroundStyle(.primary)
             .fixedSize(horizontal: false, vertical: true)
     }

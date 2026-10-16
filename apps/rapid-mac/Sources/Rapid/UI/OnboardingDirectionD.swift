@@ -274,7 +274,7 @@ private struct OnboardingRailMark: View {
             .frame(width: 22, height: 22)
             .overlay {
                 Text("R")
-                    .scaledSystemFont(13, relativeTo: .caption, weight: .bold)
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(RapidTheme.brandPrimary)
             }
             .accessibilityHidden(true)
@@ -317,7 +317,7 @@ private struct OnboardingRailStepRow: View {
         switch state {
         case .complete:
             Text("✓")
-                .scaledSystemFont(11, relativeTo: .caption, weight: .semibold, design: .monospaced)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(RapidTheme.statusReady)
         case .current:
             Text("\(step.displayNumber)")
@@ -332,7 +332,7 @@ private struct OnboardingRailStepRow: View {
 }
 
 /// THIS MAC — the machine facts that bear on the model decision.
-private struct OnboardingRailFacts: View {
+struct OnboardingRailFacts: View {
     let hardware: MacHardware
     var freeSpace: String?
     /// At 240pt the two-column `label … value` rows start truncating the chip
@@ -358,11 +358,11 @@ private struct OnboardingRailFacts: View {
                 // From Step 2 onward the decision rests on room as well as
                 // memory, so the chip joins the memory line to make space for
                 // it (Paper 05.1 frame 04).
-                row("Memory", "\(Self.memoryText(hardware)) · \(hardware.brandString)")
-                row("Free space", freeSpace)
+                Self.row("Memory", "\(Self.memoryText(hardware)) · \(hardware.brandString)")
+                Self.row("Free space", freeSpace)
             } else {
-                row("Chip", hardware.brandString)
-                row("Memory", Self.memoryText(hardware))
+                Self.row("Chip", hardware.brandString)
+                Self.row("Memory", Self.memoryText(hardware))
             }
         }
         .padding(.horizontal, 24)
@@ -377,7 +377,7 @@ private struct OnboardingRailFacts: View {
         .accessibilityLabel(Self.spokenFacts(hardware: hardware, freeSpace: freeSpace))
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    static func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .scaledSystemFont(12)
@@ -386,8 +386,7 @@ private struct OnboardingRailFacts: View {
             Text(value)
                 .scaledSystemFont(12, design: .monospaced)
                 .foregroundStyle(RapidTheme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -226,7 +226,7 @@ private struct RapidButtonSurface: View {
             .lineLimit(1)
             .padding(.horizontal, RapidTheme.Space.md)
             .frame(maxWidth: expands ? .infinity : nil)
-            .frame(height: height)
+            .frame(height: UIFontSettings.shared.scaled(height))
             .background(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.button, style: .continuous)
                     .fill(fill)

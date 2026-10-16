@@ -105,22 +105,22 @@ struct ShareComputeModelOption: View {
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.title)
-                        .font(.system(size: 14, weight: .bold))
+                        .font(.rapid(size: 14, weight: .bold))
                         .foregroundStyle(RapidTheme.bandInk)
                         .lineLimit(1)
                     Text(model.detail)
-                        .font(.system(size: 11))
+                        .font(.rapid(size: 11))
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: RapidTheme.Space.md)
                 if let size = model.onDiskSize {
                     Text(size)
-                        .font(.system(size: 12))
+                        .font(.rapid(size: 12))
                         .foregroundStyle(RapidTheme.bandInkSecondary)
                 }
                 Text("Ready on this Mac")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.rapid(size: 11, weight: .bold))
                     .foregroundStyle(RapidTheme.bandReady)
                 // Fixed trailing slot so the tick's presence on one row cannot
                 // shift the readiness label on the rows around it.

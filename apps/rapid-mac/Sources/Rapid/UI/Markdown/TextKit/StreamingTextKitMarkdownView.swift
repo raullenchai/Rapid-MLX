@@ -26,6 +26,7 @@ struct StreamingTextKitMarkdownView: View {
                 StreamingMarkdownSegmentView(
                     segment: segment,
                     basePointSize: basePointSize,
+                    uiFontScale: UIFontSettings.shared.scale,
                     fadeState: fadeState,
                     fadeConfiguration: Self.fadeConfiguration
                 )
@@ -48,11 +49,14 @@ struct StreamingTextKitMarkdownView: View {
 private struct StreamingMarkdownSegmentView: View, Equatable {
     let segment: StreamingMarkdownDocument.Segment
     let basePointSize: CGFloat
+    /// Part of equality so a committed segment re-renders on a text-size change.
+    let uiFontScale: Double
     let fadeState: TextFadeAnimationState
     let fadeConfiguration: TextFadeConfiguration
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.segment == rhs.segment && lhs.basePointSize == rhs.basePointSize
+            && lhs.uiFontScale == rhs.uiFontScale
     }
 
     var body: some View {

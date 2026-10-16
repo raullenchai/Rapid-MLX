@@ -684,6 +684,9 @@ struct SettingsView: View {
                 .labelsHidden()
                 .accessibilityIdentifier("Settings.Appearance.ThemePicker")
             }
+            SettingsSection {
+                UIFontScaleControl()
+            }
         }
     }
 

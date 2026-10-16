@@ -368,7 +368,7 @@ struct MarkdownTableView: View {
             // The header's semibold is a row-level decision, so a run that is
             // *also* bold cannot go heavier — it simply stays semibold.
             let weight: Font.Weight = (isHeader || run.isStrong) ? .semibold : .regular
-            var font = Font.system(
+            var font = Font.rapid(
                 size: options.tablePointSize,
                 weight: weight,
                 design: run.isInlineCode ? .monospaced : .default

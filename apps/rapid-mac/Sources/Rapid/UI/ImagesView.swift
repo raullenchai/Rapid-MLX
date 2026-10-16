@@ -416,21 +416,21 @@ struct ImagesView: View {
                             Text(viewModel.cancelling
                                  ? "Stopping…"
                                  : (finalizing ? "Finalizing image…" : "Generating"))
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.rapid(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
                         } else {
                             ProgressView().controlSize(.small)
                             Text(viewModel.cancelling
                                  ? "Stopping…"
                                  : "Warming up \(viewModel.selectedDisplayName)")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.rapid(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
                                 .lineLimit(1).truncationMode(.middle)
                         }
                         Spacer(minLength: 8)
                         if denoising {
                             Text("\(step) / \(total)")
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .font(.rapid(size: 12, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(RapidTheme.bandInkSecondary)
                                 .monospacedDigit()
                                 .accessibilityIdentifier("Images.Progress.Step")
@@ -458,7 +458,7 @@ struct ImagesView: View {
 
                     HStack {
                         Text(String(format: "%.1fs", max(0, elapsed)))
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .font(.rapid(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                             .monospacedDigit()
                         Spacer()
@@ -467,7 +467,7 @@ struct ImagesView: View {
                              : (denoising
                                 ? etaText(secondsRemaining: viewModel.denoiseETASeconds)
                                 : "First run — only happens once"))
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.rapid(size: 12, weight: .medium))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                             .accessibilityIdentifier("Images.Progress.ETA")
                     }
@@ -758,7 +758,7 @@ struct ImagesView: View {
                     viewModel.use(starter: starter)
                 } label: {
                     Text(starter)
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
@@ -785,7 +785,7 @@ struct ImagesView: View {
                     viewModel.aspect = ar
                 } label: {
                     Text(ar.label)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.rapid(size: 11, weight: .medium))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .background(on ? RapidTheme.hoverFill : Color.clear)
@@ -829,7 +829,7 @@ struct ImagesView: View {
                     .font(.system(size: 11, weight: .medium))
                     .accessibilityHidden(true)
                 Text(viewModel.outputSizeLabel)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.rapid(size: 11, weight: .medium))
                     .monospacedDigit()
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))

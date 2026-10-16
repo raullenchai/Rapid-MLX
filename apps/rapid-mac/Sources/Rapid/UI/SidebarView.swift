@@ -798,32 +798,36 @@ struct SidebarView: View {
         .accessibilityHidden(true)
     }
 
+    /// Let the budget wrap before hiding any digits or units in a narrow sidebar.
+    static func residencySummaryRow(_ summary: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.xs) {
+            Image(systemName: "memorychip")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("Resident")
+                .font(RapidFont.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Spacer(minLength: 4)
+            Text(summary)
+                .font(.rapid(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("Sidebar.Residency")
+    }
+
     private func residencyFooter(
         _ snapshot: ModelResidencySnapshot,
         preferredAlias: String?,
         server: ServerManager
     ) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
-            HStack(spacing: RapidTheme.Space.xs) {
-                Image(systemName: "memorychip")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text("Resident")
-                    .font(RapidFont.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Text(
-                    Self.memorySummary(
-                        usedBytes: snapshot.memoryUsedBytes,
-                        limitBytes: snapshot.memoryLimitBytes
-                    )
-                )
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("Sidebar.Residency")
+            Self.residencySummaryRow(Self.memorySummary(
+                usedBytes: snapshot.memoryUsedBytes,
+                limitBytes: snapshot.memoryLimitBytes
+            ))
 
             HStack(spacing: RapidTheme.Space.xs) {
                 if snapshot.memoryLimitBytes > 0 {
@@ -854,7 +858,7 @@ struct SidebarView: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Text(Self.formatBytes(model.displayBytes))
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.rapid(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("Sidebar.ResidentModel.\(model.id)")
@@ -875,7 +879,7 @@ struct SidebarView: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Text(lane.lane.uppercased())
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.rapid(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("Sidebar.ResidentAudio.\(lane.lane)")
@@ -1857,7 +1861,7 @@ private struct CUASidebarRow: View {
                 Spacer(minLength: RapidTheme.Space.xs)
                 if let status = CUASidebarStatus(phase: viewModel.phase) {
                     Text(status.title)
-                        .font(.caption2.weight(.semibold))
+                        .font(.rapid(.caption2).weight(.semibold))
                         .foregroundStyle(
                             status == .awaitingApproval ? Color.orange : Color.secondary
                         )

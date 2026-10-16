@@ -163,7 +163,7 @@ struct CommunityBenchmarkTestMethodSheet: View {
             Text("\(index)")
                 .font(RapidFont.metric)
                 .foregroundStyle(RapidTheme.textSecondary)
-                .frame(width: 22, height: 22)
+                .frame(width: UIFontSettings.shared.scaled(22), height: UIFontSettings.shared.scaled(22))
                 .background(RapidTheme.surfaceCanvas, in: RoundedRectangle(cornerRadius: 6))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {

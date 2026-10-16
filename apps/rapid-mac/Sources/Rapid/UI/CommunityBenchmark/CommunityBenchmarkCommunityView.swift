@@ -133,10 +133,10 @@ struct CommunityBenchmarkCommunityView: View {
                 }
                 if let overflow = value.overflowLabel {
                     Text(overflow)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.rapid(size: 11, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(RapidTheme.textSecondary)
-                        .frame(width: 52, height: 30)
+                        .frame(width: UIFontSettings.shared.scaled(52), height: UIFontSettings.shared.scaled(30))
                         .background(
                             RapidTheme.surfaceCanvas,
                             in: RoundedRectangle(cornerRadius: 7)
@@ -170,7 +170,7 @@ struct CommunityBenchmarkCommunityView: View {
                             .strokeBorder(RapidTheme.brandPrimary, lineWidth: 1.5)
                     )
                     Text("YOU")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.rapid(size: 10, weight: .semibold))
                         .tracking(0.4)
                         .foregroundStyle(RapidTheme.brandPrimaryDeep)
                 }
@@ -223,7 +223,7 @@ struct CommunityBenchmarkCommunityView: View {
                     .foregroundStyle(RapidTheme.textTertiary)
             }
             Text("\(count)")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.rapid(size: 15, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.textPrimary)
             Text(label)
@@ -236,7 +236,7 @@ struct CommunityBenchmarkCommunityView: View {
 
     private var separator: some View {
         Text("·")
-            .font(RapidFont.body)
+            .font(.system(size: 13))
             .foregroundStyle(RapidTheme.textTertiary)
             .accessibilityHidden(true)
     }
@@ -247,7 +247,7 @@ struct CommunityBenchmarkCommunityView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Performance on Macs like yours")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.rapid(size: 16, weight: .semibold))
                     .foregroundStyle(RapidTheme.textPrimary)
                 Text("Published Rapid-MLX Desktop results for the selected Mac profile. These are observations, not rankings.")
                     .font(RapidFont.body)
@@ -369,7 +369,7 @@ struct CommunityBenchmarkCommunityView: View {
                     .truncationMode(.tail)
                 if row.summary.includesYours {
                     Text("INCLUDES YOURS")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.rapid(size: 9, weight: .semibold))
                         .tracking(0.3)
                         .foregroundStyle(RapidTheme.brandPrimaryDeep)
                         .padding(.horizontal, 6)
@@ -392,7 +392,7 @@ struct CommunityBenchmarkCommunityView: View {
                     metricText($0, unit: row.summary.unit)
                 } ?? "—"
             )
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .font(.rapid(size: 13, weight: .medium, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(RapidTheme.textPrimary)
                 .frame(width: 80, alignment: .trailing)
@@ -435,7 +435,7 @@ struct CommunityBenchmarkCommunityView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Where your Mac can help")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.rapid(size: 16, weight: .semibold))
                     .foregroundStyle(RapidTheme.textPrimary)
                 Text(
                     String(
@@ -508,13 +508,13 @@ struct CommunityBenchmarkCommunityView: View {
                         ? String(localized: "FIRST RESULT NEEDED")
                         : String(localized: "MORE RESULTS NEEDED")
                 )
-                .font(.system(size: 11, weight: .semibold))
+                .font(.rapid(size: 11, weight: .semibold))
                 .tracking(0.5)
             }
             .foregroundStyle(RapidTheme.brandPrimaryDeep)
 
             Text(gap.modelAlias)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.rapid(size: 15, weight: .semibold))
                 .foregroundStyle(RapidTheme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)

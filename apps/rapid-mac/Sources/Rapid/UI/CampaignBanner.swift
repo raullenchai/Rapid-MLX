@@ -89,10 +89,10 @@ struct CampaignBanner: View {
 
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(campaign.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.rapid(size: 13, weight: .semibold))
                     .foregroundStyle(RapidTheme.textPrimary)
                 Text(campaign.body)
-                    .font(.system(size: 12))
+                    .font(.rapid(size: 12))
                     .foregroundStyle(RapidTheme.textSecondary)
                     .lineLimit(2)
             }

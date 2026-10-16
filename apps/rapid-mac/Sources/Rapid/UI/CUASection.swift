@@ -165,7 +165,7 @@ struct CUASection: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             HStack(spacing: 8) {
                 Text("RUN AN AGENT TASK")
-                    .font(.caption2.weight(.bold))
+                    .font(.rapid(.caption2).weight(.bold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if viewModel.phase.isBusy {
@@ -183,7 +183,7 @@ struct CUASection: View {
             } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Task")
-                    .font(.caption.weight(.semibold))
+                    .font(.rapid(.caption).weight(.semibold))
                     .foregroundStyle(.secondary)
                 ZStack(alignment: .topLeading) {
                     if viewModel.goal.isEmpty {
@@ -196,7 +196,7 @@ struct CUASection: View {
                     }
                     TextEditor(text: $viewModel.goal)
                         .frame(minHeight: 52, maxHeight: 96)
-                        .font(.body)
+                        .font(.rapid(.body))
                         .scrollContentBackground(.hidden)
                         .padding(8)
                         .accessibilityLabel("Task goal")
@@ -209,7 +209,7 @@ struct CUASection: View {
         modelConfiguration
 
             Label(viewModel.plannerDisclosure, systemImage: "desktopcomputer")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("ComputerUse.Agent.ModelDisclosure")
 
@@ -218,7 +218,7 @@ struct CUASection: View {
                     "Allow this model to receive this task and the names of open apps to choose where to work",
                     isOn: $viewModel.allowRemoteAppDiscovery
                 )
-                .font(.caption)
+                .font(.rapid(.caption))
                 .accessibilityIdentifier("ComputerUse.Agent.RemoteAppDiscoveryConsent")
             }
 
@@ -227,7 +227,7 @@ struct CUASection: View {
             .padding(.top, 6)
             .accessibilityIdentifier("ComputerUse.Agent.MaxSteps")
         }
-        .font(.caption)
+        .font(.rapid(.caption))
         .accessibilityIdentifier("ComputerUse.Agent.Advanced")
 
         if let resolution = viewModel.targetResolutionApproval,
@@ -236,7 +236,7 @@ struct CUASection: View {
           targetResolutionApproval(approval)
             } else if let error = viewModel.targetError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.ScopeError")
                 if viewModel.browserAutomationRecoveryRequired {
@@ -281,7 +281,7 @@ struct CUASection: View {
             }
             if let actionError = viewModel.actionError {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.ActionError")
             }
@@ -337,11 +337,11 @@ struct CUASection: View {
         VStack(alignment: .leading, spacing: 18) {
           VStack(alignment: .leading, spacing: 6) {
             Text("Add Model")
-              .font(.title3.weight(.semibold))
+              .font(.rapid(.title3).weight(.semibold))
             Text(
               "Rapid always executes actions on this Mac. Choose where the planning model runs and exactly what it may receive."
             )
-            .font(.callout)
+            .font(.rapid(.callout))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           }
@@ -382,12 +382,12 @@ struct CUASection: View {
               }
               .accessibilityIdentifier("ComputerUse.Agent.ModelRemoteConsent")
               Text("External endpoints must use HTTPS. LAN addresses are also treated as external.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             } else if !brainDraftURL.isEmpty {
               Text("This loopback endpoint runs on this Mac and does not require an API key.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -395,7 +395,7 @@ struct CUASection: View {
 
           if let error = viewModel.brainError {
             Text(error)
-              .font(.caption)
+              .font(.rapid(.caption))
               .foregroundStyle(.red)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -451,11 +451,11 @@ struct CUASection: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(label)
-        .font(.callout.weight(.medium))
+        .font(.rapid(.callout).weight(.medium))
       content()
         .textFieldStyle(.roundedBorder)
       Text(help)
-        .font(.caption)
+        .font(.rapid(.caption))
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -464,9 +464,9 @@ struct CUASection: View {
   private func targetResolutionApproval(_ approval: CUATargetApproval) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Label("Confirm app access", systemImage: "macwindow.on.rectangle")
-        .font(.callout.weight(.semibold))
+        .font(.rapid(.callout).weight(.semibold))
       Text(approval.prompt)
-        .font(.callout)
+        .font(.rapid(.callout))
             HStack {
         Button("Cancel") { viewModel.cancelTargetResolution() }
           .accessibilityIdentifier("ComputerUse.Agent.ScopeCancel")
@@ -490,7 +490,7 @@ struct CUASection: View {
   private var modelConfiguration: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Model")
-        .font(.caption.weight(.semibold))
+        .font(.rapid(.caption).weight(.semibold))
         .foregroundStyle(.secondary)
       HStack(spacing: 8) {
         Picker("Model", selection: $viewModel.plannerName) {
@@ -517,16 +517,16 @@ struct CUASection: View {
 
   private var manageModelsSheet: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Manage Models").font(.headline)
+      Text("Manage Models").font(.rapid(.headline))
       Text("Choose the local or cloud OpenAI-compatible endpoint Rapid uses to plan this task.")
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
       List(viewModel.plannerOptions) { model in
                         HStack(alignment: .firstTextBaseline) {
           VStack(alignment: .leading, spacing: 3) {
             Text(model.displayName)
             Text(model.url)
-              .font(.caption)
+              .font(.rapid(.caption))
                                 .foregroundStyle(.secondary)
               .lineLimit(1)
                             }
@@ -539,13 +539,13 @@ struct CUASection: View {
             .accessibilityIdentifier("ComputerUse.Agent.ModelRemove")
           } else {
             Text("Built in")
-              .font(.caption)
+              .font(.rapid(.caption))
               .foregroundStyle(.secondary)
                     }
                 }
             }
       if let error = viewModel.brainError {
-        Text(error).font(.caption).foregroundStyle(.red)
+        Text(error).font(.rapid(.caption)).foregroundStyle(.red)
             }
       HStack {
         Button("Add Model…") {
@@ -589,9 +589,9 @@ struct CUASection: View {
     private var permissionReadiness: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Check Mac permissions", systemImage: "lock.shield")
-                .font(.callout.weight(.semibold))
+                .font(.rapid(.callout).weight(.semibold))
             Text(permissionReadinessMessage)
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 ForEach(permissionSettingsLinks, id: \.rawValue) { permission in
@@ -625,7 +625,7 @@ struct CUASection: View {
             }
             if let message = viewModel.permissionRequestMessage {
                 Text(message)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("ComputerUse.Agent.Permission.Message")
             }
@@ -665,10 +665,10 @@ struct CUASection: View {
                     viewModel.phase == .starting ? String(localized: "Starting task") : String(localized: "Task in progress"),
                     systemImage: viewModel.phase == .starting ? "hourglass" : "gearshape.2"
                 )
-                .font(.headline)
+                .font(.rapid(.headline))
                 Spacer()
                 Text(viewModel.phase == .starting ? String(localized: "STARTING") : String(localized: "RUNNING"))
-                    .font(.caption2.weight(.bold))
+                    .font(.rapid(.caption2).weight(.bold))
                     .foregroundStyle(.blue)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -686,18 +686,18 @@ struct CUASection: View {
             }
             if let progress = viewModel.activeProgress {
                 Text("Step \(progress.step) · limit \(progress.maxSteps): \(progress.instruction)")
-                    .font(.callout)
+                    .font(.rapid(.callout))
                     .accessibilityIdentifier("ComputerUse.Agent.ActiveStep")
                 HStack(spacing: 8) {
                     if let action = progress.action, !action.isEmpty {
-                        Text(action).font(.caption.weight(.semibold))
+                        Text(action).font(.rapid(.caption).weight(.semibold))
                     }
                     if let target = progress.target, !target.isEmpty {
-                        Text(target).font(.caption).foregroundStyle(.secondary)
+                        Text(target).font(.rapid(.caption)).foregroundStyle(.secondary)
                     }
                     if let outcome = progress.outcomeLabel {
                         Text(outcome)
-                            .font(.caption.weight(.semibold))
+                            .font(.rapid(.caption).weight(.semibold))
                             .foregroundStyle(progress.outcome == "success" ? .green : .orange)
                             .accessibilityIdentifier("ComputerUse.Agent.StepOutcome")
                     }
@@ -705,7 +705,7 @@ struct CUASection: View {
             } else {
                 ProgressView().controlSize(.small)
                 Text("Preparing the first step…")
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
             }
         }
@@ -718,9 +718,9 @@ struct CUASection: View {
     private func runContextCard(_ context: CUARunContext) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(runContextTitle, systemImage: "scope")
-                .font(.callout.weight(.semibold))
+                .font(.rapid(.callout).weight(.semibold))
             Text(context.goal)
-                .font(.body)
+                .font(.rapid(.body))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .accessibilityIdentifier("ComputerUse.Agent.RunContext.Goal")
@@ -734,25 +734,25 @@ struct CUASection: View {
                 Label(context.plannerDisplayName, systemImage: "cpu")
                 Label("Up to \(context.maxSteps) steps", systemImage: "list.number")
             }
-            .font(.caption)
+            .font(.rapid(.caption))
             .foregroundStyle(.secondary)
             if context.targets.isEmpty, !context.allowedDomain.isEmpty {
                 Label("Reviewed domain: \(context.allowedDomain)", systemImage: "network")
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("ComputerUse.Agent.RunContext.Domain")
             }
             if context.targets.count > 1 {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Apps used").font(.caption.weight(.semibold))
+                    Text("Apps used").font(.rapid(.caption).weight(.semibold))
                     ForEach(context.targets) { target in
                         HStack {
                             Text(target.displayName)
                             Spacer()
                             Text(target.allowedDomain.isEmpty ? "No domain restriction" : target.allowedDomain)
                         }
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(
                             target.targetID == viewModel.activeTargetID ? .primary : .secondary
                         )
@@ -782,28 +782,28 @@ struct CUASection: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Label("Task complete", systemImage: "checkmark.circle.fill")
-                    .font(.headline)
+                    .font(.rapid(.headline))
                     .foregroundStyle(.green)
                 Spacer()
                 Text("COMPLETED")
-                    .font(.caption2.weight(.bold))
+                    .font(.rapid(.caption2).weight(.bold))
                     .foregroundStyle(.green)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(.green.opacity(0.1), in: Capsule())
             }
             Text(result.displayedAnswer)
-                .font(.body)
+                .font(.rapid(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ComputerUse.Agent.Summary.Answer")
             if let completionNote = result.completionNote {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Completion note")
-                        .font(.caption.weight(.semibold))
+                        .font(.rapid(.caption).weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text(completionNote)
-                        .font(.callout)
+                        .font(.rapid(.callout))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -830,35 +830,35 @@ struct CUASection: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Label("Task failed", systemImage: "exclamationmark.triangle.fill")
-                    .font(.headline)
+                    .font(.rapid(.headline))
                     .foregroundStyle(.red)
                 Spacer()
                 Text("FAILED")
-                    .font(.caption2.weight(.bold))
+                    .font(.rapid(.caption2).weight(.bold))
                     .foregroundStyle(.red)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(.red.opacity(0.1), in: Capsule())
             }
             Text(failure.summary)
-                .font(.body)
+                .font(.rapid(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ComputerUse.Agent.Failure.Summary")
             if let changeWarning = failure.changeWarning {
                 Label(changeWarning, systemImage: "exclamationmark.circle")
-                    .font(.callout.weight(.semibold))
+                    .font(.rapid(.callout).weight(.semibold))
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.Failure.ChangeWarning")
             }
             if viewModel.browserAutomationRecoveryRequired {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Browser access is not allowed")
-                        .font(.callout.weight(.semibold))
+                        .font(.rapid(.callout).weight(.semibold))
                     Text(
                         "The task stopped because Rapid could not verify the selected browser's domain. Allow Rapid to control that browser in System Settings, then choose New Task and try again."
                     )
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     Button("Open Automation Settings") {
                         MacAutomationPermissions.openAutomationSettings()
@@ -881,7 +881,7 @@ struct CUASection: View {
                     Text(
                         "Restores this task as a draft. Rapid will choose the apps again and ask before accessing a website."
                     )
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .contain)
@@ -890,7 +890,7 @@ struct CUASection: View {
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(failure.technicalDetails)
-                        .font(.caption.monospaced())
+                        .font(.rapid(.caption).monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -909,7 +909,7 @@ struct CUASection: View {
                         ? "Technical details"
                         : "Technical details and run history (\(viewModel.events.count) events)"
                 )
-                .font(.caption.weight(.semibold))
+                .font(.rapid(.caption).weight(.semibold))
             }
             .tint(.secondary)
             .accessibilityIdentifier("ComputerUse.Agent.History")
@@ -928,7 +928,7 @@ struct CUASection: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let evidence, !evidence.isEmpty {
                     Text(evidence)
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -945,7 +945,7 @@ struct CUASection: View {
             .padding(.top, 6)
         } label: {
             Text(detailsLabel(hasEvidence: evidence != nil, evidenceLabel: evidenceLabel))
-                .font(.caption.weight(.semibold))
+                .font(.rapid(.caption).weight(.semibold))
         }
         .tint(.secondary)
         .accessibilityIdentifier("ComputerUse.Agent.History")
@@ -967,7 +967,7 @@ struct CUASection: View {
         )
         return VStack(alignment: .leading, spacing: 8) {
             Label("Approval needed", systemImage: "hand.raised.fill")
-                .font(.callout.weight(.semibold))
+                .font(.rapid(.callout).weight(.semibold))
                 .foregroundStyle(.orange)
             LabeledContent("App", value: approval.app)
             if let context = viewModel.runContext, !context.allowedDomain.isEmpty {
@@ -988,7 +988,7 @@ struct CUASection: View {
             }
             LabeledContent("Reason", value: approval.reason)
             Text("Rapid is paused. Approve only after checking the app and requested action.")
-                .font(.caption)
+                .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
             HStack {
                 Button("Approve and Continue") { Task { await viewModel.approve() } }
@@ -1005,7 +1005,7 @@ struct CUASection: View {
             }
             if let approvalUnavailableMessage = viewModel.approvalUnavailableMessage {
                 Text(approvalUnavailableMessage)
-                    .font(.caption)
+                    .font(.rapid(.caption))
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("ComputerUse.Agent.ApprovalUnavailable")
             }
@@ -1036,13 +1036,13 @@ struct CUAEventList: View {
             ForEach(events, id: \.seq) { event in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(eventLabel(for: event))
-                        .font(.caption)
+                        .font(.rapid(.caption))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
                     if let outcome = event.outcome {
                         Text(outcomeLabel(outcome))
-                            .font(.caption2.weight(.bold))
+                            .font(.rapid(.caption2).weight(.bold))
                             .foregroundStyle(outcome == "success" ? .green : .orange)
                     }
                 }

@@ -33,10 +33,10 @@ struct SegmentedBenchMeter: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(meter.label)
-                .font(.system(size: labelSize))
+                .font(.rapid(size: labelSize))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(width: labelWidth, alignment: .trailing)
+                .frame(width: UIFontSettings.shared.scaled(labelWidth), alignment: .trailing)
 
             if meter.level == nil {
                 untestedLabel
@@ -44,9 +44,9 @@ struct SegmentedBenchMeter: View {
                 segments
                 if showValue {
                     Text(meter.formattedValue)
-                        .font(.system(size: valueSize, weight: .medium).monospacedDigit())
+                        .font(.rapid(size: valueSize, weight: .medium).monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 30, alignment: .trailing)
+                        .frame(width: UIFontSettings.shared.scaled(30), alignment: .trailing)
                 }
             }
         }
@@ -66,7 +66,7 @@ struct SegmentedBenchMeter: View {
 
     private var untestedLabel: some View {
         Text("Untested")
-            .font(.system(size: valueSize, weight: .medium))
+            .font(.rapid(size: valueSize, weight: .medium))
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
