@@ -1148,6 +1148,7 @@ class EngineCore:
         images: list[Any] | None = None,
         videos: list[Any] | None = None,
         prefix_boundary: int = 0,
+        exact_prefix_boundary: bool = False,
         has_tools: bool = False,
         requires_prompt_integrity: bool = False,
         grammar_logits_processor: Any | None = None,
@@ -1167,6 +1168,7 @@ class EngineCore:
             images: Optional images for multimodal
             videos: Optional videos for multimodal
             prefix_boundary: Token count for shared prefix (for cache)
+            exact_prefix_boundary: Preserve that boundary without tile rounding
             has_tools: Whether the request includes tool definitions
                 (used by PFlash to skip compression — #287)
             requires_prompt_integrity: Whether lossy prompt transforms
@@ -1196,6 +1198,7 @@ class EngineCore:
             images=images,
             videos=videos,
             prefix_boundary=prefix_boundary,
+            exact_prefix_boundary=exact_prefix_boundary,
             has_tools=has_tools,
             requires_prompt_integrity=requires_prompt_integrity,
             grammar_logits_processor=grammar_logits_processor,
