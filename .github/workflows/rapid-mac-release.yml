@@ -120,7 +120,10 @@ jobs:
       # mflux, mlx-video; OpenCV excluded pending a licensing decision):
       # measured 2026-10-07 on an Apple Silicon builder, the .app went
       # 578 -> 1293 MiB (sidecar 502 -> 1211 MiB). Keep ~20 MiB headroom.
-      BUNDLE_SIZE_CAP_MB: "1315"
+      # Re-measured 2026-10-16 for 0.16.2: 1298 -> 1316 MiB (sidecar 1215 ->
+      # 1230 MiB) from the bundled TensorFold runtime and Local Search's PDF
+      # extraction plus new app code; the top site-packages are unchanged.
+      BUNDLE_SIZE_CAP_MB: "1340"
       # Per-release DMG growth ceiling — enforced by the "Bundle size delta
       # gate" step against the previous rapid-mac release. The full-runtime
       # release grows the compressed DMG 133 -> 239 MiB (+106 MiB); restore
