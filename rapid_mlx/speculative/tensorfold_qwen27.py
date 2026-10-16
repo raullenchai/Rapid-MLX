@@ -16,6 +16,7 @@ import logging
 import platform
 import sys
 import threading
+import weakref
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -464,13 +465,13 @@ class TensorFoldQwen27Backend:
 
             fraction = model_fraction(package)
 
-        retained_store: dict[str, Any] = {}
+        store_ref: Callable[[], Any] = lambda: None
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
             engine_factory=functools.partial(
-                _checkpoint_engine(LaneEngine, lambda: retained_store.get("store")),
+                _checkpoint_engine(LaneEngine, lambda: store_ref()),
                 prefill_plan=plan,
             ),
             lanes=lanes,
@@ -479,7 +480,8 @@ class TensorFoldQwen27Backend:
             default_max_tokens=int(max_tokens),
             snapshot_dir=None,
         )
-        retained_store["store"] = app.checkpoints
+        if app.checkpoints is not None:
+            store_ref = weakref.ref(app.checkpoints)
         return cls(app)
 
     async def stream(

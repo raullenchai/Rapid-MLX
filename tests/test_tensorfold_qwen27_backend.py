@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -314,7 +315,9 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
         256,
         (10, 11),
     )
+    store_ref = weakref.ref(backend._app.checkpoints)
     backend.close()
+    assert store_ref() is None
 
     Package.DRAFTER = "wrong"
     with pytest.raises(TensorFoldUnavailable, match="family declaration"):
