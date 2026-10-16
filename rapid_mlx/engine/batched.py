@@ -3352,7 +3352,6 @@ class BatchedEngine(BaseEngine):
                 if processor is not None
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
-            exact_prefix_boundary = bool(kwargs.pop("exact_prefix_boundary", False))
             try:
                 request_id = await mllm_scheduler.add_request_async(
                     request_id=request_id,
@@ -3436,6 +3435,7 @@ class BatchedEngine(BaseEngine):
             )
 
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
+            exact_prefix_boundary = bool(kwargs.pop("exact_prefix_boundary", False))
             # PFlash routing hints (#287) — parity with generate().
             has_tools = bool(kwargs.pop("has_tools", False))
             requires_prompt_integrity = bool(
