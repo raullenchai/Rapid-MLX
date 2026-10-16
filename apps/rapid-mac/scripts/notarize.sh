@@ -132,8 +132,23 @@ if [[ "$NOTARY_STATUS" != "Accepted" || "$submit_exit" -ne 0 ]]; then
     exit 1
 fi
 
+# notarytool reports Accepted before the ticket is always reachable from
+# Apple's ticket-delivery service; stapling immediately afterwards can fail
+# with exit 68 (NSURLError -1005 "network connection was lost"). Retry the
+# staple with backoff. `stapler validate` below stays mandatory.
 echo "==> stapler staple $STAPLE_TARGET"
-xcrun stapler staple "$STAPLE_TARGET"
+staple_delays=(15 30 60 120)
+staple_attempt=1
+until xcrun stapler staple "$STAPLE_TARGET"; do
+    if (( staple_attempt > ${#staple_delays[@]} )); then
+        echo "==> stapler staple FAILED after ${staple_attempt} attempts"
+        exit 1
+    fi
+    delay="${staple_delays[$((staple_attempt - 1))]}"
+    echo "==> stapler staple attempt ${staple_attempt} failed; retrying in ${delay}s"
+    sleep "$delay"
+    staple_attempt=$((staple_attempt + 1))
+done
 xcrun stapler validate "$STAPLE_TARGET"
 
 echo "==> Gatekeeper assessment"
