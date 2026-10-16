@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from scripts import l1_toolcall_check as gate
 
 
@@ -26,13 +28,13 @@ class _Response:
         return False
 
 
-def _forced_payload():
+def _forced_payload(content=""):
     return {
         "choices": [
             {
                 "message": {
                     "role": "assistant",
-                    "content": "",
+                    "content": content,
                     "tool_calls": [
                         {
                             "id": "call_probe",
@@ -132,6 +134,96 @@ def test_gate_fails_closed_when_stream_replay_has_no_done(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["l1_toolcall_check.py"])
 
     assert gate.main() == 1
+
+
+def test_wire_detector_preserves_marker_prose_and_rejects_structural_residue():
+    assert gate._visible_wire_marker("Use <tool_call> as the opening tag.") is None
+    assert (
+        gate._visible_wire_marker("The literal [TOOL_CALLS] token is documented.")
+        is None
+    )
+    assert (
+        gate._visible_wire_marker(
+            '<tool_call>{"name":"release_probe","arguments":{}}</tool_call>'
+        )
+        == "<tool_call>"
+    )
+    assert gate._visible_wire_marker("<tool_call>") == "<tool_call>"
+    assert gate._visible_wire_marker("<think>hidden reasoning</think>") == "<think>"
+
+
+def test_wire_leak_diagnostic_bounds_visible_output():
+    visible = "x" * 400 + "<think>" + "y" * 400
+    detail = str(gate._wire_leak_error("stream", "<think>", visible))
+    assert "visible=" in detail
+    assert "<think>" in detail
+    assert "x" * 201 not in detail
+    assert "y" * 294 not in detail
+
+
+def test_visible_channels_are_checked_independently():
+    assert (
+        gate._visible_fields_wire_leak(
+            {
+                "content": "Use <tool_call> as the opening tag.",
+                "reasoning_content": '{"name":"example","arguments":{}}',
+            }
+        )
+        is None
+    )
+    assert gate._visible_fields_wire_leak(
+        {
+            "content": "<tool_call>",
+            "reasoning_content": "ordinary reasoning",
+        }
+    ) == ("content", "<tool_call>", "<tool_call>")
+
+
+def test_replay_stream_checks_visible_channels_independently():
+    with pytest.raises(ValueError, match="replay stream content"):
+        gate._validate_replay_stream(
+            [
+                'data: {"choices":[{"delta":{"content":"<tool_call>","reasoning_content":"ordinary reasoning"}}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    gate._validate_replay_stream(
+        [
+            'data: {"choices":[{"delta":{"content":"Use <tool_call> as the opening tag.","reasoning_content":"{\\"name\\":\\"example\\",\\"arguments\\":{}}"}}]}',
+            "data: [DONE]",
+        ]
+    )
+
+
+def test_gate_allows_explanatory_tool_marker_prose(monkeypatch):
+    posts = iter(
+        [
+            _Response(_forced_payload("Use <tool_call> as the opening tag.")),
+            _Response({"choices": [{"message": {"content": "ack"}}]}),
+        ]
+    )
+    streams = iter(
+        [
+            _Response(
+                lines=[
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"release_probe","arguments":"{}"}}]}}]}',
+                    "data: [DONE]",
+                ]
+            ),
+            _Response(
+                lines=[
+                    'data: {"choices":[{"delta":{"content":"ack"}}]}',
+                    "data: [DONE]",
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr(gate.httpx, "post", lambda *args, **kwargs: next(posts))
+    monkeypatch.setattr(gate.httpx, "stream", lambda *args, **kwargs: next(streams))
+    monkeypatch.setattr(sys, "argv", ["l1_toolcall_check.py"])
+
+    assert gate.main() == 0
 
 
 def test_gate_fails_closed_when_nonstream_replay_has_no_message(monkeypatch):

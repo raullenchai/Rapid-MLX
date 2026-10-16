@@ -1008,6 +1008,7 @@ jobs:
             tests/test_g9v3_model.py \
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
+            tests/test_nemotron_h_puzzle_vendored.py \
             tests/test_cohere2_moe_reference_parity.py \
             tests/test_mtp_spec_decode.py \
             tests/test_metal_cap_enforcement.py \

@@ -865,6 +865,36 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("gpt_oss_puzzle")
 
+    if "mlx_lm.models.nemotron_h_puzzle" not in sys.modules:
+        # Prefer a future native Puzzle implementation when available.
+        import importlib.util as _importlib_util
+
+        _puzzle_native_spec = None
+        try:
+            _puzzle_native_spec = _importlib_util.find_spec(
+                "mlx_lm.models.nemotron_h_puzzle"
+            )
+        except (ImportError, ValueError):
+            _puzzle_native_spec = None
+
+        if _puzzle_native_spec is None:
+            try:
+                from ..models import nemotron_h_puzzle as _nemotron_h_puzzle
+
+                sys.modules.setdefault(
+                    "mlx_lm.models.nemotron_h_puzzle", _nemotron_h_puzzle
+                )
+            except Exception as e:
+                logger.warning(
+                    "nemotron_h_puzzle vendored module failed to register — "
+                    "NVIDIA Puzzle checkpoints will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("nemotron_h_puzzle")
+        else:
+            _VENDORED_MODEL_TYPES.add("nemotron_h_puzzle")
+
     if "mlx_lm.models.nemotron_labs_diffusion" not in sys.modules:
         # NVIDIA Nemotron-Labs-Diffusion (3B/8B/14B) — AR (autoregressive)
         # mode = a Ministral3-style decoder + untied diffusion_head. Vendored
