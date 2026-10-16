@@ -305,6 +305,33 @@ def test_system_tools_only_completion_saves_exact_cross_session_boundary():
     assert tokenizer.encode(warm)[boundary] != tokenizer.encode(real)[boundary]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exact", [False, True])
+async def test_text_stream_passes_exact_prefix_flag_without_breaking_admission(exact):
+    engine = _engine(_SectionTokenizer())
+    engine._loaded = True
+    engine._select_mllm_request_path = lambda *_args: False
+    engine._ensure_generation_admission = lambda: ("admission", False)
+    seen = {}
+
+    class AdmittedError(Exception):
+        pass
+
+    async def add_request(**kwargs):
+        seen.update(kwargs)
+        raise AdmittedError
+
+    engine._engine = SimpleNamespace(add_request=add_request)
+    with pytest.raises(AdmittedError):
+        await anext(
+            engine.stream_generate(
+                "prompt", prefix_boundary=100, exact_prefix_boundary=exact
+            )
+        )
+    assert seen["prefix_boundary"] == 100
+    assert seen["exact_prefix_boundary"] is exact
+
+
 def _reference_boundary(messages, real, **kwargs):
     reference = _engine(_SectionTokenizer(), scheduler=False)
     reference._tokenizer.get_added_vocab = lambda: {}
