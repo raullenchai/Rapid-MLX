@@ -988,6 +988,7 @@ jobs:
             tests/test_mllm_cache_namespace_compat.py \
             tests/test_memory_cache.py \
             tests/test_metal_memory_budget.py \
+            tests/test_generation_error_memory_release.py \
             tests/test_kv_cache_gemma4_gate.py \
             tests/test_gemma4_unified_routing.py \
             tests/test_gemma4_kv_share.py \
