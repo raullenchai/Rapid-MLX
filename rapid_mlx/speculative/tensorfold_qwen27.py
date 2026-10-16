@@ -231,36 +231,6 @@ def require_environment(
         )
 
 
-def _checkpoint_engine(engine_type: Any) -> Any:
-    """Add two interior snapshots through the engine's existing retention API."""
-
-    class CheckpointEngine(engine_type):
-        def begin_stream(
-            self, stream, *, cache=None, cached_tokens=0, checkpoints_at=()
-        ):
-            # An empty scheduler selection means no retention was requested
-            # (including cache-off). Never change the deterministic chunk plan:
-            # only retain existing step-sized cuts, newest first, at most two.
-            if checkpoints_at:
-                starts = self.prompt_chunks(stream.prompt_ids).starts or []
-                interior = [
-                    at
-                    for previous, at in zip(starts, starts[1:])
-                    if at - previous == self.prefill_step
-                ][-2:]
-                checkpoints_at = sorted(
-                    set(checkpoints_at) | {at for at in interior if at > cached_tokens}
-                )
-            return super().begin_stream(
-                stream,
-                cache=cache,
-                cached_tokens=cached_tokens,
-                checkpoints_at=checkpoints_at,
-            )
-
-    return CheckpointEngine
-
-
 class TensorFoldQwen27Backend:
     """Request adapter around a pinned TensorFold ``ChatApp``.
 
@@ -340,9 +310,7 @@ class TensorFoldQwen27Backend:
             model,
             tokenizer,
             served_name=served_name,
-            engine_factory=functools.partial(
-                _checkpoint_engine(LaneEngine), prefill_plan=plan
-            ),
+            engine_factory=functools.partial(LaneEngine, prefill_plan=plan),
             lanes=lanes,
             **({"memory_fraction": fraction} if lanes > 1 else {}),
             context_window=int(context_window),
