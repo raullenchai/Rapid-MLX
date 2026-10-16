@@ -396,7 +396,7 @@ final class WorkAgent {
             body["model"] = model
             body["max_tokens"] = 1
             body["temperature"] = 0
-            body["stream"] = false
+            body["stream"] = true
             guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
