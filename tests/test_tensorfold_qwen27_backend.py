@@ -200,8 +200,61 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
     assert app.closed
 
 
+def test_in_message_retention_uses_existing_cuts_only() -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27 import _checkpoint_engine
+
+    class Engine:
+        prefill_step = 2048
+
+        def prompt_chunks(self, prompt):
+            return types.SimpleNamespace(starts=[0, 2048, 4096, 6144, 7950])
+
+        def begin_stream(self, stream, **kwargs):
+            return kwargs
+
+    engine = _checkpoint_engine(Engine)()
+    stream = types.SimpleNamespace(prompt_ids=list(range(7960)))
+    result = engine.begin_stream(stream, checkpoints_at=[7950])
+    assert result["checkpoints_at"] == [4096, 6144, 7950]
+    # Already restored state needs no earlier copies; retain the history cut.
+    result = engine.begin_stream(stream, cached_tokens=6144, checkpoints_at=[7950])
+    assert result["checkpoints_at"] == [7950]
+    # The scheduler supplies no retention requests when caching is disabled.
+    assert engine.begin_stream(stream, checkpoints_at=[])["checkpoints_at"] == []
+
+
+@pytest.mark.parametrize(
+    ("starts", "cached", "selected", "expected"),
+    [
+        ([0, 748], 0, [748], [748]),
+        ([0, 300, 2348, 4396, 6444, 7000], 0, [300, 7000], [300, 4396, 6444, 7000]),
+        ([0, 2048, 4096, 6144, 8192, 9000], 8192, [9000], [9000]),
+        ([0, 2048, 4096, 6144, 8192, 9000], 0, [6144, 9000], [6144, 8192, 9000]),
+    ],
+)
+def test_in_message_retention_boundaries(starts, cached, selected, expected) -> None:
+    from rapid_mlx.speculative.tensorfold_qwen27 import _checkpoint_engine
+
+    class Engine:
+        prefill_step = 2048
+
+        def prompt_chunks(self, prompt):
+            return types.SimpleNamespace(starts=starts)
+
+        def begin_stream(self, stream, **kwargs):
+            return kwargs
+
+    cache = object()
+    stream = types.SimpleNamespace(prompt_ids=list(range(starts[-1] + 10)))
+    result = _checkpoint_engine(Engine)().begin_stream(
+        stream, cache=cache, cached_tokens=cached, checkpoints_at=selected
+    )
+    assert result == dict(cache=cache, cached_tokens=cached, checkpoints_at=expected)
+
+
 @pytest.mark.parametrize("lanes", [1, 4])
 def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> None:
+
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 
     target = tmp_path / "target"
@@ -232,6 +285,12 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
         def __init__(self, model, *, prefill_plan):
             loaded["engine_plan"] = prefill_plan
             loaded["engine_model"] = model
+
+        def prompt_chunks(self, prompt):
+            return types.SimpleNamespace(starts=[0, 2048, 4096, 6144, 7950])
+
+        def begin_stream(self, stream, **kwargs):
+            return kwargs
 
     class PrefillPlan:
         def __init__(self, step, openers, min_chunk, assistant):
@@ -283,6 +342,10 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
     assert loaded["app"]["snapshot_dir"] is None
     assert loaded["marker_tokenizer"] is loaded["tokenizer"]
     assert loaded["engine_model"] is loaded["model"]
+    retention = backend._app.engine.begin_stream(
+        types.SimpleNamespace(prompt_ids=list(range(7960))), checkpoints_at=[7950]
+    )
+    assert retention["checkpoints_at"] == [4096, 6144, 7950]
     plan = loaded["engine_plan"]
     assert (plan.step, plan.openers, plan.min_chunk, plan.assistant) == (
         2048,
