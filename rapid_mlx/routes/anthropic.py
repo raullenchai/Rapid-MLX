@@ -1208,7 +1208,12 @@ async def create_anthropic_message(
         # mode). The Anthropic adapter downstream renders the
         # rescued ``content`` into a TextBlock; without this it would
         # emit a completely empty ``content=[]`` Messages response.
-        finish_reason = "tool_calls" if tool_calls else output.finish_reason
+        # Preserve token exhaustion even when a tool call has already been parsed.
+        finish_reason = (
+            "tool_calls"
+            if tool_calls and output.finish_reason != "length"
+            else output.finish_reason
+        )
         # PR #715 bundle, fuzz finding C: detect helper Case-4 blank
         # (parser routed whole no-tag output to reasoning, helper
         # cleared cleaned_text=""). See chat.py route for the full
@@ -3273,17 +3278,12 @@ async def _stream_anthropic_messages(
         block_index += 1
         streamed_any_content_block = True
 
-    # R-06 (r5-A bundle): map the engine's ``finish_reason`` onto the
-    # Anthropic ``stop_reason`` enum (``end_turn``, ``max_tokens``,
-    # ``stop_sequence``, ``tool_use``). Tool-use wins over everything
-    # else (mutually-exclusive per the public spec); ``length`` from
-    # the engine becomes ``max_tokens`` for spec-compliant
-    # continuation; the ``stop_sequence`` ladder below preserves H-03
-    # behaviour for user-supplied ``stop_sequences`` matches.
-    if tool_calls:
-        stop_reason = "tool_use"
-    elif stream_finish_reason == "length":
+    # Token exhaustion takes precedence even after a tool-use block was sent.
+    # Any other finish with calls reports a completed tool-use turn.
+    if stream_finish_reason == "length":
         stop_reason = "max_tokens"
+    elif tool_calls:
+        stop_reason = "tool_use"
     else:
         stop_reason = "end_turn"
     # H-03: when a user-supplied ``stop_sequences`` entry fired (and the

@@ -970,7 +970,7 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
         previous_position_ids = getattr(self._model, "_position_ids", missing)
         previous_rope_deltas = getattr(self._model, "_rope_deltas", missing)
         self._model._position_ids = self._native_position_ids
-        self._model._rope_deltas = self._native_rope_deltas
+        self._model._rope_deltas = self._lane_rope_deltas(args, kwargs)
         try:
             return super().__call__(*args, **kwargs)
         finally:
@@ -984,6 +984,28 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
                 del self._model._rope_deltas
             else:
                 self._model._rope_deltas = previous_rope_deltas
+
+    def _lane_rope_deltas(self, args, kwargs):
+        """Return this lane's MRoPE deltas with one row per batch row.
+
+        The language module keeps the deltas computed by the first forward
+        and reuses them for later batched forwards, slicing when the batch
+        shrinks but never growing them. A lane that first prefilled 3 rows
+        then crashed every later batch of 4+ rows with a broadcast error, and
+        error recovery left the stale rows in place. This lane is text-only,
+        so every row's MRoPE delta is zero; size it to the current batch.
+        """
+        deltas = self._native_rope_deltas
+        inputs = args[0] if args else kwargs.get("inputs")
+        rows_shape = getattr(deltas, "shape", None)
+        inputs_shape = getattr(inputs, "shape", None)
+        if not rows_shape or not inputs_shape or len(inputs_shape) < 2:
+            return deltas
+        if rows_shape[0] == inputs_shape[0]:
+            return deltas
+        import mlx.core as mx
+
+        return mx.zeros((inputs_shape[0], 1), dtype=deltas.dtype)
 
     def make_cache(self):
         from mlx_lm.models.cache import KVCache

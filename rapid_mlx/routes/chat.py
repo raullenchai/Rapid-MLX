@@ -6812,7 +6812,12 @@ async def _create_chat_completion_impl(
             logger.warning(f"JSON output parsing failed: {e}")
 
     # Determine finish reason
-    finish_reason = "tool_calls" if tool_calls else output.finish_reason
+    # Tool deltas can precede token exhaustion; a length finish is never a completed call.
+    finish_reason = (
+        "tool_calls"
+        if tool_calls and output.finish_reason != "length"
+        else output.finish_reason
+    )
     if is_cancellation_finish_reason(finish_reason):
         return Response(status_code=499)
 
@@ -8021,18 +8026,18 @@ async def stream_chat_completion(
 
         # Emit the terminal chunk. Three cases:
         #   (a) Streaming parser already emitted tool_calls during the
-        #       loop → buffered_finish has finish_reason="tool_calls"
-        #       and fallback_tool_calls is empty. Emit as-is.
+        #       loop → buffered_finish preserves length or reports tool_calls
+        #       for any other finish. Emit as-is when there is no fallback.
         #   (b) Streaming parser missed the call but finalize() recovered
         #       it via cross-format fallback → merge tool_calls into the
-        #       buffered finish and override finish_reason="tool_calls".
+        #       buffered finish and upgrade any non-length finish to tool_calls.
         #   (c) No tool calls at all → emit the buffered finish unchanged.
         if buffered_finish is not None:
             finish_event, finish_output = buffered_finish
             if fallback_tool_calls:
                 logger.info(
                     "[SSE-FALLBACK-TC-MERGED] merging %d recovered tool_call(s) "
-                    "into terminal chunk; overriding finish_reason -> tool_calls",
+                    "into terminal chunk",
                     len(fallback_tool_calls),
                 )
             # Merge any released prefix-held content into the terminal
@@ -8393,6 +8398,7 @@ async def stream_chat_completion(
                         finish_reason=(
                             "tool_calls"
                             if fallback_tool_calls
+                            and finish_event.finish_reason != "length"
                             else finish_event.finish_reason
                         ),
                         logprobs=_build_chunk_logprobs(finish_output),

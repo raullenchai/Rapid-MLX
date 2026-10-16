@@ -610,19 +610,8 @@ def test_r06_stop_reason_end_turn_on_natural_finish():
     assert message_delta["delta"]["stop_reason"] == "end_turn", message_delta
 
 
-def test_r06_stop_reason_tool_use_wins_over_length():
-    """When tool_calls survive enforcement, ``stop_reason="tool_use"``
-    wins regardless of the engine's ``finish_reason`` (mutually-exclusive
-    per the Anthropic spec). Prevents a regression where a future
-    refactor swaps the precedence and reports ``max_tokens`` for a
-    completed tool_use.
-
-    Codex r5 [BLOCKING]: the engine MUST report
-    ``finish_reason="length"`` to actually exercise the "tool_use wins
-    over length" branch. An earlier draft used the tool_calls-vocab
-    engine finish, which doesn't reach the length precedence check and
-    would silently pass even if the precedence were inverted.
-    """
+def test_r06_stop_reason_length_wins_over_tool_use():
+    """Token exhaustion remains visible after a tool-use block was streamed."""
     engine = _ToolCallEngine({"x": 500, "y": 300}, finish_reason="length")
     client = _make_client(engine)
     r = client.post(
@@ -651,7 +640,7 @@ def test_r06_stop_reason_tool_use_wins_over_length():
     assert r.status_code == 200
     events = _parse_sse(r.text)
     message_delta = next(d for _, d in events if d.get("type") == "message_delta")
-    assert message_delta["delta"]["stop_reason"] == "tool_use", message_delta
+    assert message_delta["delta"]["stop_reason"] == "max_tokens", message_delta
 
 
 # ---------------------------------------------------------------------------

@@ -211,6 +211,40 @@ def test_wrapper_restores_mllm_mrope_state_when_forward_fails():
     assert model._rope_deltas == "mllm-delta"
 
 
+@pytest.mark.parametrize("first_rows,next_rows", [(3, 4), (2, 5), (4, 2), (3, 3)])
+def test_wrapper_sizes_text_lane_mrope_deltas_to_each_batch(first_rows, next_rows):
+    """A lane that first batched N rows must serve a later batch of M rows."""
+    import mlx.core as mx
+
+    seen = []
+
+    class _BatchedLanguageModel(_LanguageModel):
+        def __call__(self, inputs, cache=None):
+            rows = inputs.shape[0]
+            if self._rope_deltas is None:
+                self._rope_deltas = mx.zeros((rows, 1), dtype=mx.int32)
+            seen.append(tuple(self._rope_deltas.shape))
+            # Mirrors the language module's batched offset arithmetic.
+            offsets = mx.arange(rows)
+            deltas = self._rope_deltas
+            if deltas.shape[0] > rows:
+                deltas = deltas[:rows]
+            return offsets + deltas.squeeze(-1)
+
+    model = _BatchedLanguageModel()
+    model._rope_deltas = None
+    wrapper = Qwen36NativeCacheTextWrapper(model)
+
+    wrapper(mx.zeros((first_rows, 4), dtype=mx.int32))
+    out = wrapper(inputs=mx.zeros((next_rows, 1), dtype=mx.int32))
+
+    assert out.shape == (next_rows,)
+    assert seen == [(first_rows, 1), (next_rows, 1)]
+    assert wrapper._native_rope_deltas.shape == (next_rows, 1)
+    assert not mx.any(wrapper._native_rope_deltas).item()
+    assert model._rope_deltas is None
+
+
 def test_eligibility_is_pinned_to_qualified_qwen36_geometry():
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",

@@ -2378,7 +2378,12 @@ async def _non_stream(
         if rf is not None and final_content:
             final_content = extract_json_from_response(final_content)
 
-    finish_reason = "tool_calls" if tool_calls else output.finish_reason
+    # Tool deltas can precede token exhaustion; a length finish is never a completed call.
+    finish_reason = (
+        "tool_calls"
+        if tool_calls and output.finish_reason != "length"
+        else output.finish_reason
+    )
     if is_cancellation_finish_reason(finish_reason):
         return Response(status_code=499)
 

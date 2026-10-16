@@ -2589,9 +2589,11 @@ def test_dogfood_forced_stream_truncation_parity(
         assert buffered.status_code == 200, buffered.text
         choice = buffered.json()["choices"][0]
         assert not choice["message"].get("content")
-        assert choice["finish_reason"] == "tool_calls"
+        # max_tokens ended generation, so the synthesized call keeps the
+        # truthful "length" finish rather than claiming a completed call.
+        assert choice["finish_reason"] == "length"
         expected = choice["message"]["tool_calls"][0]["function"]
         assert expected == {"name": "get_weather", "arguments": "{}"}
         assert [call["function"] for call in calls] == [expected]
-        assert finishes == ["tool_calls"]
+        assert finishes == ["length"]
         assert not errors
