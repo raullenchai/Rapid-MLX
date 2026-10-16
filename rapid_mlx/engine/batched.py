@@ -40,7 +40,6 @@ from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
 from ..prompt_token_reuse import (
     added_token_markers,
-    common_prefix_length,
     encode_sharing_head,
 )
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
@@ -3859,9 +3858,12 @@ class BatchedEngine(BaseEngine):
                     if isinstance(next_turn, str)
                     else list(next_turn)
                 )
-                return min(
-                    common_prefix_length(warm_tokens, next_tokens), len(warm_tokens) - 1
-                )
+                shared = 0
+                for left, right in zip(warm_tokens, next_tokens):
+                    if left != right:
+                        break
+                    shared += 1
+                return min(shared, len(warm_tokens) - 1)
             except Exception:
                 return 0
         try:
