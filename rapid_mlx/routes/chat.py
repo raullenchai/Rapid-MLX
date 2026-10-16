@@ -2701,6 +2701,8 @@ def _contains_structural_tool_wire_leak(
     """
     if not text:
         return False
+    if allow_truncated and _FORCED_TOOL_SECTION_RE.search(text):
+        return True
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         match = balanced_re.search(text)
         if match and _span_has_tool_payload_object(match.group(0)):
@@ -2748,7 +2750,7 @@ def _scrub_visible_tool_wire_leaks(
     """
     if not text:
         return text or ""
-    result = text
+    result = _strip_forced_tool_section(text) if allow_truncated else text
     # DeepSeek V3.1 orphan fragment:
     # ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{...}`` without a closer.
     # Remove the whole fragment so the opener/name prefix cannot leak
@@ -2848,6 +2850,26 @@ def _strip_forced_tool_section(text: str | None) -> str:
     if result.strip() in {"<think>", "</think>"}:
         return ""
     return result
+
+
+def _strip_truncated_forced_xml_call(text: str | None, tool_names: set[str]) -> str:
+    """Remove an unclosed XML tail only for an actually produced forced call.
+
+    A line-start envelope alone may be a documentation example. The structured
+    call's name supplies the evidence needed to discard a truncated prefill.
+    Closed envelopes remain the parser's responsibility.
+    """
+    if not text:
+        return text or ""
+    match = re.search(
+        r"(?:^|\n)[ \t]*<tool_call>\s*<function=([^<>\s]+)>"
+        r"(?:(?!</function>|</tool_call>).)*\Z",
+        text,
+        re.DOTALL,
+    )
+    if match and match.group(1) in tool_names:
+        return text[: match.start()].rstrip()
+    return text
 
 
 def _scrub_tool_wire_literals(text: str | None) -> str:
@@ -3460,9 +3482,9 @@ def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str |
     ``finish_reason="tool_calls"`` would ``json.loads`` the arguments and
     execute a broken call, trusting a guarantee the server cannot make. Callers
     fail EXPLICITLY on a non-``None`` return — 422 on the non-stream paths;
-    drop-the-synth (the turn finishes with its real terminal reason,
-    ``stop``/``length``, never a fabricated ``tool_calls``) / ``response.failed``
-    on the streaming paths — rather than shipping the bad call.
+    an SSE error on streaming chat (including at the token limit), or
+    ``response.failed`` on streaming responses — rather than shipping a bad
+    call the client might execute.
 
     Returns ``None`` (synth allowed) when the tool has no constraints the
     synthesised arguments violate, the schema can't be resolved, or the
@@ -6706,7 +6728,10 @@ async def _create_chat_completion_impl(
         # Any wire-literal scrub above only touched user-visible
         # ``cleaned_text`` — reasoning extraction operates on the
         # untouched ``raw_text``.
-        raw_text=_raw_text_for_reasoning,
+        # A rejected span has already been removed authoritatively. Giving
+        # the reasoning fallback the original raw text would restore it when
+        # cleaned_text is empty (notably zero-argument XML calls).
+        raw_text=(cleaned_text if undeclared_tool_dropped else _raw_text_for_reasoning),
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
@@ -6756,8 +6781,13 @@ async def _create_chat_completion_impl(
         # malformed duplicate.  Never expose that native section through the
         # OpenAI content channels; the structured ``tool_calls`` field is the
         # authoritative representation.
-        cleaned_text = _strip_forced_tool_section(cleaned_text)
-        reasoning_text = _strip_forced_tool_section(reasoning_text)
+        _produced_tool_names = {call.function.name for call in tool_calls}
+        cleaned_text = _strip_truncated_forced_xml_call(
+            _strip_forced_tool_section(cleaned_text), _produced_tool_names
+        )
+        reasoning_text = _strip_truncated_forced_xml_call(
+            _strip_forced_tool_section(reasoning_text), _produced_tool_names
+        )
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
@@ -7385,6 +7415,7 @@ async def stream_chat_completion(
             and _stream_tool_choice
             and _stream_tool_choice.get("mode") in ("required", "named")
         )
+        _produced_tool_names: set[str] = set()
         _forced_content_pending: list[tuple[str, ChoiceLogProbs | None]] = []
         _forced_wire_quarantine = False
         _forced_quarantine_tail = ""
@@ -7597,6 +7628,11 @@ async def stream_chat_completion(
                     # parser-native ``point``. Gated on
                     # ``function.name == "computer"`` inside the helper.
                     _normalized_tcs = _normalize_ui_tars_tcs_for_chat(event.tool_calls)
+                    _produced_tool_names.update(
+                        tc["function"]["name"]
+                        for tc in (_normalized_tcs or [])
+                        if tc.get("function", {}).get("name")
+                    )
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         created=_sse_created,
@@ -7836,7 +7872,7 @@ async def stream_chat_completion(
                 # wire so we cannot 422 mid-flight. If the synthesised call's
                 # arguments fail the target tool's schema, DON'T fabricate it —
                 # leave ``fallback_tool_calls`` empty. The terminal gate below
-                # reports a forced-choice error unless generation hit ``length``;
+                # reports a forced-choice error even when generation hit ``length``;
                 # never ship a broken call that the client might execute.
                 _synth_err = _forced_synth_schema_error(
                     _synth_target, _synth_call.function.arguments, request.tools
@@ -7902,7 +7938,36 @@ async def stream_chat_completion(
                 _forced_terminal_content_consumed = True
                 _forced_content_pending.append((_terminal_held, None))
                 _pending_raw = "".join(text for text, _ in _forced_content_pending)
-                if _contains_structural_tool_wire_leak(
+                _produced_tool_names.update(
+                    tc["function"]["name"] for tc in fallback_tool_calls
+                )
+                _xml_cleaned = _strip_truncated_forced_xml_call(
+                    _pending_raw, _produced_tool_names
+                )
+                if _xml_cleaned != _pending_raw:
+                    if _xml_cleaned:
+                        yield _content_sse_chunk(_xml_cleaned, None)
+                elif (
+                    buffered_finish is not None
+                    and buffered_finish[0].finish_reason == "length"
+                    and re.fullmatch(
+                        r"<tool_call>\n<function=[^<>\s]+>\n",
+                        kwargs.get("forced_assistant_prefix") or "",
+                    )
+                    and _pending_raw.strip()
+                    and (
+                        "<parameter=".startswith(_pending_raw.strip())
+                        or _pending_raw.lstrip().startswith("<parameter=")
+                    )
+                ):
+                    # The XML prefill was swallowed upstream; a one-token
+                    # continuation can leave only '<'. Do not replay that
+                    # parameter-header prefix as prose at the budget boundary.
+                    # This prefix is server-generated, so it establishes wire
+                    # context even when schema validation refuses synthesis
+                    # and no produced tool name is available as evidence.
+                    _final_content = ""
+                elif _contains_structural_tool_wire_leak(
                     _pending_raw, allow_truncated=True
                 ):
                     _final_content = _scrub_visible_tool_wire_leaks(
@@ -7922,14 +7987,16 @@ async def stream_chat_completion(
         # Required/named requests must never report a successful stop after
         # dropping every call. Headers are already sent, so signal a stream
         # error rather than fabricating arguments.
+        # #4432 exempted ``length`` to preserve token-limit results. With zero
+        # calls after synthesis, that exemption silently loses a forced turn
+        # while non-stream returns 422. Truncation must also error here; calls
+        # already emitted/recovered bypass this gate, and schema-valid synthesis
+        # above still returns a call just as non-stream does.
         if (
             _stream_tool_choice
             and _stream_tool_choice.get("mode") in {"required", "named"}
             and processor._tool_calls_emitted_to_wire == 0
             and not fallback_tool_calls
-            and (
-                buffered_finish is None or buffered_finish[0].finish_reason != "length"
-            )
         ):
             error = {
                 "error": {

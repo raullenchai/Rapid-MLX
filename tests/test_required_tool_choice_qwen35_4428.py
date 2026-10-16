@@ -240,7 +240,7 @@ def test_stream_missing_call_error_and_length_boundary(finish, choice, monkeypat
         for c in ch.get("choices", [])
         if c.get("finish_reason")
     ]
-    if finish != "length" and choice != "auto":
+    if choice != "auto":
         assert [e["code"] for e in errors] == ["tool_choice_violation"]
         assert not terminal
     else:

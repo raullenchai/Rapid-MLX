@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.routes.chat import router as chat_router
 from rapid_mlx.service import helpers
 
@@ -38,11 +39,15 @@ class _Request:
         return {"tools": TOOLS}
 
 
-def test_nonstream_rejected_only_call_has_safe_content(monkeypatch):
+@pytest.mark.parametrize(
+    "rejected",
+    [REJECTED, "<tool_call>\n<function=delete_everything>\n</function>\n</tool_call>"],
+)
+def test_nonstream_rejected_only_call_has_safe_content(monkeypatch, rejected):
     cfg = get_config()
     monkeypatch.setattr(cfg, "enable_auto_tool_choice", True)
     monkeypatch.setattr(cfg, "tool_call_parser", "qwen3_coder_xml")
-    content, calls = helpers._parse_tool_calls_with_parser(REJECTED, _Request())
+    content, calls = helpers._parse_tool_calls_with_parser(rejected, _Request())
     assert calls is None
     assert content == ""
     assert helpers._was_undeclared_tool_dropped()
@@ -89,9 +94,18 @@ class _Engine:
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_chat_reply_after_rejected_only_call(stream):
+@pytest.mark.parametrize(
+    "rejected",
+    [REJECTED, "<tool_call>\n<function=delete_everything>\n</function>\n</tool_call>"],
+)
+@pytest.mark.parametrize("reasoning_parser", [None, "qwen3"])
+def test_chat_reply_after_rejected_only_call(stream, rejected, reasoning_parser):
     cfg = reset_config()
-    cfg.engine = _Engine()
+    cfg.engine = _Engine(rejected)
+    cfg.reasoning_parser_name = reasoning_parser
+    cfg.reasoning_parser = (
+        Qwen3ReasoningParser(tokenizer=None) if reasoning_parser else None
+    )
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True

@@ -12,7 +12,7 @@ knows is schema-invalid.
 Fix (``routes/chat._forced_synth_schema_error`` + call sites in chat.py /
 responses.py): when the synthesised arguments don't provide every ``required``
 property, fail EXPLICITLY — 422 on the non-stream paths, an SSE error on
-non-truncated streaming chat turns (#4428), ``response.failed``
+streaming chat turns (including token-limit truncation), ``response.failed``
 on the streaming responses surface — instead of shipping the bad call. A tool
 with NO required fields still synthesises ``"{}"`` as before.
 """

@@ -50,7 +50,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from rapid_mlx.config import reset_config
+from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.routes.chat import (
@@ -61,6 +61,7 @@ from rapid_mlx.routes.chat import (
     _scrub_tool_wire_literals,
     _scrub_visible_tool_wire_leaks,
     _strip_forced_tool_section,
+    _strip_truncated_forced_xml_call,
     _synthesize_forced_tool_call,
 )
 from rapid_mlx.routes.chat import router as chat_router
@@ -1505,6 +1506,8 @@ def test_1676_forced_deepseek_section_is_removed_from_visible_channels():
         "<toolcallsbegin>\n<toolcallbegin>function<toolsep>release_probe"
         "</function>\n<argument>now</argument>"
     )
+    assert _contains_structural_tool_wire_leak(fullwidth, allow_truncated=True)
+    assert _contains_structural_tool_wire_leak(compact, allow_truncated=True)
     assert _strip_forced_tool_section(fullwidth) == "narration"
     assert _strip_forced_tool_section(compact) == ""
     assert _strip_forced_tool_section("<think>") == ""
@@ -2228,3 +2231,367 @@ def test_forced_shape_salvage_reaches_the_wire_repair():
     # (single quotes) is not an object the wire can carry.
     raw = '"name": "local_run", "arguments": >{\'command\': \'python3\'}'
     assert _salvage_forced_shape_arguments("local_run", raw, _LOCAL_RUN_TOOLS) is None
+
+
+@pytest.mark.parametrize(
+    "budget, tail",
+    [
+        (1, "<"),
+        (2, "<parameter"),
+        (3, "<parameter="),
+        (4, "<parameter=content"),
+        (8, "<parameter=content>\n# Write"),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_rc_xml_forced_header_at_tiny_budget(monkeypatch, budget, tail, stream):
+    prefix = "<tool_call>\n<function=write_file>\n"
+
+    class Engine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(text=prefix, new_text=prefix, completion_tokens=0)
+            yield GenerationOutput(
+                text=prefix + tail,
+                raw_text=prefix + tail,
+                new_text=tail,
+                prompt_tokens=4,
+                completion_tokens=budget,
+                finished=True,
+                finish_reason="length",
+            )
+
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._compute_forced_tool_prefix", lambda *a: prefix
+    )
+    client = _make_client(Engine(text=prefix + tail), tool_call_parser="hermes")
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call write_file now."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            "max_tokens": budget,
+            "stream": stream,
+            "enable_thinking": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    if stream:
+        choices = [
+            c
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+            for c in json.loads(line[6:])["choices"]
+        ]
+        assert "".join(c["delta"].get("content") or "" for c in choices) == ""
+        calls = [call for c in choices for call in c["delta"].get("tool_calls", [])]
+        assert calls[-1]["function"] == {"name": "write_file", "arguments": "{}"}
+    else:
+        message = response.json()["choices"][0]["message"]
+        assert not message.get("content"), message
+        assert message["tool_calls"][0]["function"] == {
+            "name": "write_file",
+            "arguments": "{}",
+        }
+
+
+def test_rc_xml_header_scrub_preserves_inline_documentation_and_narration():
+    example = "Explain <tool_call><function=write_file> literally."
+    assert not _contains_structural_tool_wire_leak(example, allow_truncated=True)
+    assert _scrub_visible_tool_wire_leaks(example, allow_truncated=True) == example
+    raw = "Calling now.\n<tool_call>\n<function=write_file>\n<"
+    assert not _contains_structural_tool_wire_leak(raw, allow_truncated=True)
+    assert "<tool_call>" in _scrub_visible_tool_wire_leaks(raw, allow_truncated=True)
+    assert _strip_forced_tool_section(raw) == raw
+    assert _strip_truncated_forced_xml_call(raw, {"write_file"}) == "Calling now."
+
+
+@pytest.mark.parametrize(
+    "text, names, expected",
+    [
+        (None, {"write_file"}, ""),
+        ("", {"write_file"}, ""),
+        ("ordinary prose", {"write_file"}, "ordinary prose"),
+        ("<tool_call>\n<function=write_file>\n<", {"write_file"}, ""),
+        ("Example:\n<tool_call>\n<function=other_tool>", {"write_file"}, None),
+        ("Example:\n<tool_call>\n<function=write_file>", set(), None),
+        ("Inline <tool_call><function=write_file>", {"write_file"}, None),
+        ("<tool_call><function=write_file></function>", {"write_file"}, None),
+        ("<tool_call><function=write_file></tool_call>", {"write_file"}, None),
+    ],
+)
+def test_truncated_forced_xml_requires_produced_name(text, names, expected):
+    assert _strip_truncated_forced_xml_call(text, names) == (
+        text if expected is None else expected
+    )
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_unclosed_xml_documentation_preserved_by_route(forced):
+    example_name = "other_tool" if forced else "write_file"
+    example = f"Example:\n<tool_call>\n<function={example_name}>"
+    client = _make_client(_RecordingEngine(text=example))
+    get_config().enable_auto_tool_choice = True
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Show an XML example."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "tool_choice": (
+                {"type": "function", "function": {"name": "write_file"}}
+                if forced
+                else "auto"
+            ),
+            "enable_thinking": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert message["content"] == example
+    if forced:
+        assert message["tool_calls"][0]["function"]["name"] == "write_file"
+    else:
+        assert not message.get("tool_calls")
+
+
+@pytest.mark.parametrize("narration", ["", "Calling now.\n"])
+def test_stream_truncated_xml_tail_requires_produced_name(monkeypatch, narration):
+    raw = narration + "<tool_call>\n<function=write_file>\n<"
+
+    class Engine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text=raw,
+                new_text=raw,
+                prompt_tokens=4,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="length",
+            )
+
+    # Exercise the terminal XML envelope path when no prefill was swallowed.
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._compute_forced_tool_prefix", lambda *a: None
+    )
+    client = _make_client(Engine(text=raw))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call write_file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            "stream": True,
+            "enable_thinking": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        c
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+        for c in json.loads(line[6:])["choices"]
+    ]
+    assert (
+        "".join(c["delta"].get("content") or "" for c in choices) == narration.rstrip()
+    )
+    calls = [call for c in choices for call in c["delta"].get("tool_calls", [])]
+    assert calls[-1]["function"]["name"] == "write_file"
+
+
+def test_stream_parsed_call_name_evidence(monkeypatch):
+    class Engine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            text = ""
+            deltas = [
+                '<tool_call>{"name":"write_file","arguments":',
+                '{"content":"example"}',
+                "}</tool_call>",
+            ]
+            for index, delta in enumerate(deltas):
+                text += delta
+                yield GenerationOutput(
+                    text=text,
+                    new_text=delta,
+                    prompt_tokens=4,
+                    completion_tokens=index + 1,
+                    finished=index == len(deltas) - 1,
+                    finish_reason="stop" if index == len(deltas) - 1 else None,
+                )
+
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._compute_forced_tool_prefix", lambda *a: None
+    )
+    client = _make_client(Engine())
+    get_config().enable_auto_tool_choice = True
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call write_file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"content": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            "stream": True,
+            "enable_thinking": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        c
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+        for c in json.loads(line[6:])["choices"]
+    ]
+    calls = [call for c in choices for call in c["delta"].get("tool_calls", [])]
+    assert any(call["function"].get("name") == "write_file" for call in calls)
+    arguments = "".join(call["function"].get("arguments", "") for call in calls)
+    assert json.loads(arguments) == {"content": "example"}
+    assert not any(c["delta"].get("content") for c in choices)
+
+
+@pytest.mark.parametrize(
+    "family,budget,tail",
+    [
+        ("qwen35", 1, "<"),
+        ("qwen35", 4, "<parameter=city"),
+        ("qwen35", 16, "<parameter=city>\n"),
+        ("bonsai2", 1, ""),
+        ("bonsai2", 4, "<parameter="),
+        ("bonsai2", 16, "<parameter=city>\n"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["named", "required"])
+@pytest.mark.parametrize("required_city", [True, False])
+def test_dogfood_forced_stream_truncation_parity(
+    monkeypatch, family, budget, tail, mode, required_city
+):
+    """Replay the dogfood zero-call boundary with representative XML tails.
+
+    Qwen budget 1 releases '<' after the synthetic prefix is swallowed;
+    the other tails exercise empty terminal recovery. Bonsai's budget-16
+    already-emitted incomplete JSON call is a separate validation concern.
+    """
+    prefix = "<tool_call>\n<function=get_weather>\n"
+    raw = prefix + tail
+
+    class Engine(_RecordingEngine):
+        async def chat(self, messages, **kwargs):
+            return GenerationOutput(
+                text=raw,
+                raw_text=raw,
+                prompt_tokens=4,
+                completion_tokens=budget,
+                finished=True,
+                finish_reason="length",
+            )
+
+        async def stream_chat(self, messages, **kwargs):
+            assert kwargs["forced_assistant_prefix"] == prefix
+            yield GenerationOutput(text=prefix, new_text=prefix, completion_tokens=0)
+            yield GenerationOutput(
+                text=raw,
+                raw_text=raw,
+                new_text=tail,
+                prompt_tokens=4,
+                completion_tokens=budget,
+                finished=True,
+                finish_reason="length",
+            )
+
+    monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "0")
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._compute_forced_tool_prefix", lambda *a: prefix
+    )
+    client = _make_client(Engine(), tool_call_parser="hermes")
+    schema = {"type": "object", "properties": {}}
+    if required_city:
+        schema.update(properties={"city": {"type": "string"}}, required=["city"])
+    payload = {
+        "model": "test-model",
+        "messages": [
+            {"role": "user", "content": "Use get_weather to look up weather in Paris."}
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "get_weather", "parameters": schema},
+            }
+        ],
+        "tool_choice": (
+            {"type": "function", "function": {"name": "get_weather"}}
+            if mode == "named"
+            else "required"
+        ),
+        "max_tokens": budget,
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    buffered = client.post("/v1/chat/completions", json={**payload, "stream": False})
+    streamed = client.post("/v1/chat/completions", json={**payload, "stream": True})
+    assert streamed.status_code == 200, streamed.text
+    chunks = [
+        json.loads(line[6:])
+        for line in streamed.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    choices = [c for chunk in chunks for c in chunk.get("choices", [])]
+    assert "".join(c["delta"].get("content") or "" for c in choices) == ""
+    assert not any(c["delta"].get("reasoning_content") for c in choices)
+    calls = [tc for c in choices for tc in c["delta"].get("tool_calls", [])]
+    errors = [chunk["error"] for chunk in chunks if "error" in chunk]
+    finishes = [c["finish_reason"] for c in choices if c.get("finish_reason")]
+    assert streamed.text.count("data: [DONE]") == 1
+    if required_city:
+        assert buffered.status_code == 422, buffered.text
+        assert "city" in buffered.json()["detail"]
+        assert [error["code"] for error in errors] == ["tool_choice_violation"]
+        assert not calls
+        assert not finishes
+        assert "error" in chunks[-1]
+    else:
+        assert buffered.status_code == 200, buffered.text
+        choice = buffered.json()["choices"][0]
+        assert not choice["message"].get("content")
+        assert choice["finish_reason"] == "tool_calls"
+        expected = choice["message"]["tool_calls"][0]["function"]
+        assert expected == {"name": "get_weather", "arguments": "{}"}
+        assert [call["function"] for call in calls] == [expected]
+        assert finishes == ["tool_calls"]
+        assert not errors
