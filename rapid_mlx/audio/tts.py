@@ -23,6 +23,12 @@ from pathlib import Path
 
 import numpy as np
 
+from .time_stretch import time_stretch
+
+# These mlx-audio families accept but ignore speed, or lack a native tempo
+# control. All other families (including Kokoro and F5) keep native handling.
+_POST_STRETCH_FAMILIES = frozenset({"qwen3_tts", "chatterbox", "indextts"})
+
 logger = logging.getLogger(__name__)
 
 _QWEN_SAMPLER_PATCH_LOCK = threading.RLock()
@@ -768,7 +774,10 @@ class TTSEngine:
                 if ref_audio:
                     gen_kwargs["ref_audio"] = ref_audio
             else:
-                gen_kwargs = {"text": text, "voice": voice, "speed": speed}
+                gen_kwargs = {"text": text, "voice": voice}
+                # Post-stretched families must not also apply native tempo.
+                if self._model_family not in _POST_STRETCH_FAMILIES:
+                    gen_kwargs["speed"] = speed
                 if self._model_family == "qwen3_tts":
                     gen_kwargs["lang_code"] = "auto"
                     if self._is_qwen3_voicedesign():
@@ -827,6 +836,8 @@ class TTSEngine:
                 if len(audio_chunks) > 1
                 else audio_chunks[0]
             )
+            if self._model_family in _POST_STRETCH_FAMILIES:
+                full_audio = time_stretch(full_audio, sample_rate, speed)
             duration = len(full_audio) / sample_rate
 
             return AudioOutput(
@@ -976,13 +987,19 @@ class TTSEngine:
         if not self._loaded:
             self.load()
 
-        sample_rate = 24000
+        # WSOLA needs context across model chunks. For non-native tempo,
+        # buffer the model's own stream and stretch the assembled clip once
+        # rather than restarting at every boundary. This yields one complete
+        # clip and delays first audio until synthesis finishes.
+        post_stretch = self._model_family in _POST_STRETCH_FAMILIES
+        gen_kwargs: dict[str, object] = {"text": text, "voice": voice}
+        if not post_stretch:
+            gen_kwargs["speed"] = speed
+        buffer_for_stretch = post_stretch and speed != 1.0
+        buffered: list[np.ndarray] = []
+        sample_rate = buffered_rate = 24000
 
-        for result in self.model.generate(
-            text=text,
-            voice=voice,
-            speed=speed,
-        ):
+        for result in self.model.generate(**gen_kwargs):
             audio_data = result.audio
             if hasattr(result, "sample_rate"):
                 sample_rate = result.sample_rate
@@ -992,6 +1009,20 @@ class TTSEngine:
             else:
                 audio_np = np.array(audio_data, dtype=np.float32)
 
+            if buffer_for_stretch:
+                if buffered and sample_rate != buffered_rate:
+                    raise ValueError("TTS stream changed sample rate mid-clip")
+                buffered_rate = sample_rate
+                buffered.append(audio_np)
+                continue
+            yield AudioOutput(
+                audio=audio_np,
+                sample_rate=sample_rate,
+                duration=len(audio_np) / sample_rate,
+            )
+
+        if buffered:
+            audio_np = time_stretch(np.concatenate(buffered), sample_rate, speed)
             yield AudioOutput(
                 audio=audio_np,
                 sample_rate=sample_rate,
