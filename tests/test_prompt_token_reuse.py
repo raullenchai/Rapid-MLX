@@ -285,6 +285,26 @@ def test_warm_turn_tokenizes_the_full_prompt_once():
     assert boundary == len(stable_tokens) - batched._PREFIX_BOUNDARY_REPLAY_TOKENS
 
 
+def test_system_tools_only_completion_saves_exact_cross_session_boundary():
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    messages = [{"role": "system", "content": "unchanged guidance " * 400}]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object"}},
+        }
+    ]
+    warm = _render(messages)
+    real = _render([*messages, {"role": "user", "content": "hi"}])
+
+    boundary = engine._compute_prefix_boundary(messages, tools, generation_prompt=warm)
+
+    assert boundary > 0
+    assert tokenizer.encode(warm)[:boundary] == tokenizer.encode(real)[:boundary]
+    assert tokenizer.encode(warm)[boundary] != tokenizer.encode(real)[boundary]
+
+
 def _reference_boundary(messages, real, **kwargs):
     reference = _engine(_SectionTokenizer(), scheduler=False)
     reference._tokenizer.get_added_vocab = lambda: {}

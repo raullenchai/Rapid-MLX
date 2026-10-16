@@ -37,7 +37,11 @@ from ..api.utils import (
 )
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
-from ..prompt_token_reuse import added_token_markers, encode_sharing_head
+from ..prompt_token_reuse import (
+    added_token_markers,
+    common_prefix_length,
+    encode_sharing_head,
+)
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
@@ -3153,6 +3157,7 @@ class BatchedEngine(BaseEngine):
         # snapshot at the message boundary (#427). Set by ``chat()`` after
         # message-aware boundary computation; absent for raw-prompt callers.
         prefix_boundary = kwargs.pop("prefix_boundary", 0)
+        exact_prefix_boundary = bool(kwargs.pop("exact_prefix_boundary", False))
         # PFlash routing hints (#287). chat()/stream_chat() set these
         # from tools / response_format; raw-prompt callers default to
         # the safe (un-protected) values.
@@ -3194,6 +3199,7 @@ class BatchedEngine(BaseEngine):
                 prompt=prompt,
                 sampling_params=sampling_params,
                 prefix_boundary=prefix_boundary,
+                exact_prefix_boundary=exact_prefix_boundary,
                 has_tools=has_tools,
                 requires_prompt_integrity=requires_prompt_integrity,
                 grammar_logits_processor=grammar_logits_processor,
@@ -3346,6 +3352,7 @@ class BatchedEngine(BaseEngine):
                 if processor is not None
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
+            exact_prefix_boundary = bool(kwargs.pop("exact_prefix_boundary", False))
             try:
                 request_id = await mllm_scheduler.add_request_async(
                     request_id=request_id,
@@ -3446,6 +3453,7 @@ class BatchedEngine(BaseEngine):
                 prompt=prompt,
                 sampling_params=sampling_params,
                 prefix_boundary=prefix_boundary,
+                exact_prefix_boundary=exact_prefix_boundary,
                 has_tools=has_tools,
                 requires_prompt_integrity=requires_prompt_integrity,
                 grammar_logits_processor=grammar_logits_processor,
@@ -3691,6 +3699,8 @@ class BatchedEngine(BaseEngine):
                 )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
+                if not any(message.get("role") == "user" for message in messages):
+                    kwargs["exact_prefix_boundary"] = True
 
         if tools:
             kwargs["has_tools"] = True
@@ -3784,7 +3794,44 @@ class BatchedEngine(BaseEngine):
                 last_user_idx = i
                 break
         if last_user_idx is None:
-            return 0
+            # A system+tools-only completion can prime an agent's shared
+            # prefix before its first user turn. The assistant marker in that
+            # completion is not shared with a subsequent user message, so
+            # snapshot their token LCP exactly (including recurrent state).
+            if len(messages) != 1 or messages[0].get("role") != "system" or not tools:
+                return 0
+            try:
+                template_tools = convert_tools_for_template(tools)
+                warm = generation_prompt or self._apply_chat_template(
+                    messages,
+                    template_tools,
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                )
+                next_turn = self._apply_chat_template(
+                    [*messages, {"role": "user", "content": "__prefix_probe__"}],
+                    template_tools,
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                )
+                tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+                warm_tokens = (
+                    self.encode_prompt_text(warm) or tokenizer.encode(warm)
+                    if isinstance(warm, str)
+                    else list(warm)
+                )
+                next_tokens = (
+                    tokenizer.encode(next_turn)
+                    if isinstance(next_turn, str)
+                    else list(next_turn)
+                )
+                return min(
+                    common_prefix_length(warm_tokens, next_tokens), len(warm_tokens) - 1
+                )
+            except Exception:
+                return 0
         try:
             template_tools = convert_tools_for_template(tools) if tools else None
 
@@ -4481,6 +4528,8 @@ class BatchedEngine(BaseEngine):
                 )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
+                if not any(message.get("role") == "user" for message in messages):
+                    kwargs["exact_prefix_boundary"] = True
 
         if tools:
             kwargs["has_tools"] = True
