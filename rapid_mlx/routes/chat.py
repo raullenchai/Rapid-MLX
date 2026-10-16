@@ -2636,6 +2636,8 @@ def _payload_object_after_marker(
     text: str,
     marker_end: int,
     window_end: int,
+    *,
+    allow_truncated: bool = False,
 ) -> tuple[int, int] | None:
     """Return adjacent JSON payload bounds after a wire marker, if any."""
     pos = marker_end
@@ -2644,6 +2646,24 @@ def _payload_object_after_marker(
     if pos >= window_end or text[pos] != "{":
         return None
     object_end = _balanced_json_end(text, pos)
+    if object_end is None and allow_truncated and window_end == len(text):
+        # At EOF a forced call can stop after its name or during the next
+        # key. Recognize only this JSON header, never arbitrary text after
+        # a marker. Live streaming leaves partials undecided so a later
+        # documentation suffix can still establish that they were prose.
+        payload = text[pos:window_end]
+        header = re.match(r'\{\s*"name"\s*:\s*("(?:[^"\\]|\\.)*")\s*', payload)
+        if header is not None:
+            try:
+                name = json.loads(header.group(1))
+            except ValueError:
+                return None
+            tail = payload[header.end() :]
+            if name and (
+                not tail
+                or (tail.startswith(",") and '"arguments"'.startswith(tail[1:].strip()))
+            ):
+                return pos, window_end
     if object_end is None or object_end > window_end:
         return None
     payload = text[pos:object_end]
@@ -2666,7 +2686,9 @@ def _span_has_tool_payload_object(span: str) -> bool:
     return False
 
 
-def _contains_structural_tool_wire_leak(text: str | None) -> bool:
+def _contains_structural_tool_wire_leak(
+    text: str | None, *, allow_truncated: bool = False
+) -> bool:
     """Return True when known wire markers appear as tool-wire residue.
 
     ``_contains_tool_wire_literal`` intentionally answers the broad
@@ -2686,12 +2708,20 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     if cross_match and _span_has_tool_payload_object(cross_match.group(0)):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
-        match = marker_re.search(text)
-        if not match:
-            continue
-        window_end = min(len(text), match.end() + 2048)
-        if _payload_object_after_marker(text, match.end(), window_end) is not None:
-            return True
+        matches = (
+            marker_re.finditer(text) if allow_truncated else [marker_re.search(text)]
+        )
+        for match in matches:
+            if not match:
+                continue
+            window_end = min(len(text), match.end() + 2048)
+            if (
+                _payload_object_after_marker(
+                    text, match.end(), window_end, allow_truncated=allow_truncated
+                )
+                is not None
+            ):
+                return True
     return False
 
 
@@ -2705,7 +2735,9 @@ def _is_tool_wire_marker_only(text: str | None) -> bool:
     return not result.strip()
 
 
-def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
+def _scrub_visible_tool_wire_leaks(
+    text: str | None, *, allow_truncated: bool = False
+) -> str:
     """Scrub structural wire residue while preserving marker examples.
 
     Unlike ``_scrub_tool_wire_literals`` this is safe for route-visible
@@ -2739,6 +2771,7 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
             result,
             sep + len(deepseek_sep),
             min(len(result), sep + len(deepseek_sep) + 2048),
+            allow_truncated=allow_truncated,
         )
         if payload_bounds is None:
             search_pos = begin + len(deepseek_begin)
@@ -2764,7 +2797,7 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
                 window_end = min(len(result), match.end() + 2048)
                 pieces.append(result[last : match.start()])
                 payload_bounds = _payload_object_after_marker(
-                    result, match.end(), window_end
+                    result, match.end(), window_end, allow_truncated=allow_truncated
                 )
                 if payload_bounds is not None:
                     _, object_end = payload_bounds
@@ -6624,7 +6657,7 @@ async def _create_chat_completion_impl(
     # parser-wire residue, not merely a literal token mention.
     _raw_text_for_reasoning = output.raw_text or output.text
     _raw_has_structural_wire = _contains_structural_tool_wire_leak(
-        _raw_text_for_reasoning
+        _raw_text_for_reasoning, allow_truncated=True
     )
 
     def _should_scrub_visible_wire(
@@ -6636,7 +6669,7 @@ async def _create_chat_completion_impl(
             and bool(tool_calls)
             and _contains_tool_wire_literal(text)
             and (
-                _contains_structural_tool_wire_leak(text)
+                _contains_structural_tool_wire_leak(text, allow_truncated=True)
                 or (allow_raw_context and _raw_has_structural_wire)
             )
         )
@@ -6653,7 +6686,9 @@ async def _create_chat_completion_impl(
     # (handled by ``_finalize_content_and_reasoning`` returning
     # ``cleaned_text`` that we never mutate after this block).
     if _wire_scrub_active:
-        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
+        cleaned_text = _scrub_visible_tool_wire_leaks(
+            cleaned_text, allow_truncated=True
+        )
 
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
@@ -6709,7 +6744,9 @@ async def _create_chat_completion_impl(
     if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
     if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
-        reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
+        reasoning_text = _scrub_visible_tool_wire_leaks(
+            reasoning_text, allow_truncated=True
+        )
     if _is_forced_choice and tool_calls:
         # #1676/#1677: a recovered valid DeepSeek call may be followed by a
         # malformed duplicate.  Never expose that native section through the
@@ -7851,8 +7888,12 @@ async def stream_chat_completion(
                 _forced_terminal_content_consumed = True
                 _forced_content_pending.append((_terminal_held, None))
                 _pending_raw = "".join(text for text, _ in _forced_content_pending)
-                if _contains_structural_tool_wire_leak(_pending_raw):
-                    _final_content = _scrub_visible_tool_wire_leaks(_pending_raw)
+                if _contains_structural_tool_wire_leak(
+                    _pending_raw, allow_truncated=True
+                ):
+                    _final_content = _scrub_visible_tool_wire_leaks(
+                        _pending_raw, allow_truncated=True
+                    )
                     if _final_content:
                         yield _content_sse_chunk(_final_content, None)
                 else:

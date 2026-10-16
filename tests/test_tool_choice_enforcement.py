@@ -1515,6 +1515,154 @@ def test_1676_literal_deepseek_marker_mention_is_preserved():
     assert _strip_forced_tool_section(prose) == prose
 
 
+@pytest.mark.parametrize("tail", ["", ",", ', "', ', "arg', ', "arguments"'])
+def test_4663_terminal_truncated_named_header_is_wire(tail):
+    raw = '<tool_call> {"name": "add_numbers"' + tail
+    # Live partials can still become documentation; only terminal callers
+    # opt into the truncated-header classification.
+    assert not _contains_structural_tool_wire_leak(raw)
+    assert _contains_structural_tool_wire_leak(raw, allow_truncated=True)
+    assert _scrub_visible_tool_wire_leaks(raw, allow_truncated=True) == ""
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        'Example: `<tool_call>{"name":"add_numbers", "`',
+        'Explain <tool_call> near {"name":"add_numbers", " documentation.',
+        '<tool_call>{"example": "add_numbers", "',
+        '<tool_call>{"name":"bad\\q", "',
+    ],
+)
+def test_4663_incomplete_examples_are_not_terminal_wire(raw):
+    assert not _contains_structural_tool_wire_leak(raw, allow_truncated=True)
+    assert _scrub_visible_tool_wire_leaks(raw, allow_truncated=True) == raw
+
+
+@pytest.mark.parametrize(
+    "choice", ["required", {"type": "function", "function": {"name": "add_numbers"}}]
+)
+@pytest.mark.parametrize("narration", ["", "Use <tool_call> for tool invocation.\n"])
+def test_4663_forced_truncated_payload_does_not_leak_to_content(choice, narration):
+    raw = narration + '<tool_call> {"name": "add_numbers", "'
+    client = _make_client(_RecordingEngine(text=raw), tool_call_parser="hermes")
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call add_numbers now."}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": choice,
+            "max_tokens": 128,
+        },
+    )
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert (message.get("content") or "").strip() == narration.strip(), message
+    assert not message.get("reasoning_content"), message
+    assert len(message["tool_calls"]) == 1
+    assert message["tool_calls"][0]["function"] == {
+        "name": "add_numbers",
+        "arguments": "{}",
+    }
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 200])
+@pytest.mark.parametrize("narration", ["", "Use <tool_call> for tool invocation.\n"])
+def test_4663_stream_terminal_does_not_replay_truncated_wire(chunk_size, narration):
+    raw = narration + '<tool_call> {"name": "add_numbers", "'
+
+    class Engine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            # Match BatchedEngine's synthetic-prefix contract before genuine
+            # model bytes. The postprocessor swallows this injected prefix.
+            prefix = kwargs.get("forced_assistant_prefix")
+            if prefix:
+                yield GenerationOutput(
+                    text=prefix, new_text=prefix, prompt_tokens=0, completion_tokens=0
+                )
+            text = ""
+            chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+            for index, chunk in enumerate(chunks):
+                text += chunk
+                last = index == len(chunks) - 1
+                yield GenerationOutput(
+                    text=text,
+                    raw_text=text,
+                    new_text=chunk,
+                    tokens=[index],
+                    prompt_tokens=4,
+                    completion_tokens=index + 1,
+                    finished=last,
+                    finish_reason="length" if last else None,
+                )
+
+    client = _make_client(Engine())
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call add_numbers now."}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": {"type": "function", "function": {"name": "add_numbers"}},
+            "max_tokens": 128,
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200
+    data = [
+        line[6:] for line in response.text.splitlines() if line.startswith("data: ")
+    ]
+    assert data[-1] == "[DONE]"
+    visible = ""
+    streamed_calls = {}
+    for line in data[:-1]:
+        for choice in json.loads(line).get("choices", []):
+            delta = choice.get("delta", {})
+            visible += (delta.get("content") or "") + (
+                delta.get("reasoning_content") or ""
+            )
+            for call in delta.get("tool_calls", []):
+                function = streamed_calls.setdefault(
+                    call["index"], {"name": "", "arguments": ""}
+                )
+                for key in function:
+                    function[key] += call.get("function", {}).get(key) or ""
+    assert visible.strip() == narration.strip(), visible
+    assert streamed_calls == {0: {"name": "add_numbers", "arguments": "{}"}}
+
+
+def test_4663_forced_truncated_wire_in_reasoning_preserves_narration():
+    raw = 'Need to call the tool.\n<tool_call> {"name": "add_numbers", "'
+
+    class Engine(_RecordingEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            output.reasoning_text = raw
+            return output
+
+    client = _make_client(Engine(text=raw))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Call add_numbers now."}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 128,
+        },
+    )
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert len(message["tool_calls"]) == 1
+    assert message["tool_calls"][0]["function"] == {
+        "name": "add_numbers",
+        "arguments": "{}",
+    }
+    assert (message.get("content") or "").strip() == "Need to call the tool."
+    assert (message.get("reasoning_content") or "").strip() == "Need to call the tool."
+
+
 def test_codex_r11_broad_scrub_does_not_cross_family_strip_marker_prose():
     """Cross-family scrub needs payload evidence before deleting a span."""
 
