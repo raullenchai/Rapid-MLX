@@ -1053,6 +1053,7 @@ jobs:
             tests/test_qwen35_moe_router.py \
             tests/test_qwen35_fused_gdn_decode.py \
             tests/test_qwen3_5_eager_dispatch.py \
+            tests/test_nemotron_h_ssm.py \
             tests/test_qwen36_native_text_cache.py \
             tests/test_compiled_decode.py \
             tests/test_hybrid_state_checkpoints.py \

@@ -64,6 +64,7 @@ from ..patches.deepseek_v32_indexer_gate import (
 from ..patches.mla_absorbed_verify import (
     install_mla_absorbed_verify as _install_mla_absorbed_verify,
 )
+from ..patches.nemotron_h_ssm import install_nemotron_h_ssm_fix
 from ..patches.qwen3_5_eager_dispatch import (
     install_qwen3_5_eager_dispatch as _install_qwen3_5_eager_dispatch,
 )
@@ -77,6 +78,7 @@ _install_dsv32_indexer_gate()
 _install_qwen3_5_eager_dispatch()
 _install_qwen3_5_norm_shift_fix()
 _install_mla_absorbed_verify()
+install_nemotron_h_ssm_fix()
 
 # Models that require tokenizer fallback
 FALLBACK_MODELS = [
