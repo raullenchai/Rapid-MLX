@@ -2815,6 +2815,12 @@ class BatchedEngine(BaseEngine):
         if self._is_mllm:
             raise RuntimeError("build_prompt is not supported for MLLM models")
         template_tools = convert_tools_for_template(tools) if tools else None
+        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
+            token_ids, _ = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
+            )
+            tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+            return tokenizer.decode(token_ids, skip_special_tokens=False)
         prompt = self._apply_chat_template(
             messages,
             tools=template_tools,
@@ -3624,14 +3630,23 @@ class BatchedEngine(BaseEngine):
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        # Apply chat template
-        prompt = self._apply_chat_template(
-            messages,
-            template_tools,
-            num_images=len(all_images),
-            enable_thinking=enable_thinking,
-            chat_template_kwargs=chat_template_kwargs,
-        )
+        # Agent warm-up may contain only the shared system and tools. Some
+        # templates require a user turn; render two probes internally and
+        # prefill only their common token prefix plus one disposable token.
+        # The latter lets the scheduler snapshot the complete shared prefix.
+        shared_warm_boundary = 0
+        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
+            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
+            )
+        else:
+            prompt = self._apply_chat_template(
+                messages,
+                template_tools,
+                num_images=len(all_images),
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
         prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
             prompt,
             enable_thinking=enable_thinking,
@@ -3678,7 +3693,10 @@ class BatchedEngine(BaseEngine):
         # (Mamba/DeltaNet+Transformer) have the "can't trim" constraint that
         # PR #435 was built to fix. Gating on ``is_hybrid`` keeps the fix
         # active where it's needed and inert where it broke things.
-        if self._needs_prefix_boundary_snapshot():
+        if shared_warm_boundary and self._needs_prefix_boundary_snapshot():
+            kwargs["prefix_boundary"] = shared_warm_boundary
+            kwargs["exact_prefix_boundary"] = True
+        elif self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
                 prefix_boundary = self._compute_prefix_boundary(
                     messages,
@@ -3763,6 +3781,37 @@ class BatchedEngine(BaseEngine):
             )
         except (TypeError, ValueError):
             return False
+
+    def _shared_system_tools_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        template_tools: list[dict] | None,
+        enable_thinking: bool | None,
+        chat_template_kwargs: dict | None,
+    ) -> tuple[list[int], int]:
+        """Render a system+tools-only warm request without a visible user turn."""
+        tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+        probes = []
+        for content in ("A", "界"):
+            rendered = self._apply_chat_template(
+                [*messages, {"role": "user", "content": content}],
+                template_tools,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+            probes.append(
+                tokenizer.encode(rendered)
+                if isinstance(rendered, str)
+                else list(rendered)
+            )
+        boundary = 0
+        for left, right in zip(*probes):
+            if left != right:
+                break
+            boundary += 1
+        if boundary <= 0 or boundary >= len(probes[0]):
+            raise ValueError("Chat template has no distinct shared system/tools prefix")
+        return probes[0][: boundary + 1], boundary
 
     def _compute_prefix_boundary(
         self,
@@ -4480,14 +4529,19 @@ class BatchedEngine(BaseEngine):
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        # Apply chat template
-        prompt = self._apply_chat_template(
-            messages,
-            template_tools,
-            num_images=len(all_images),
-            enable_thinking=enable_thinking,
-            chat_template_kwargs=chat_template_kwargs,
-        )
+        shared_warm_boundary = 0
+        if len(messages) == 1 and messages[0].get("role") == "system" and tools:
+            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
+            )
+        else:
+            prompt = self._apply_chat_template(
+                messages,
+                template_tools,
+                num_images=len(all_images),
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
         prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
             prompt,
             enable_thinking=enable_thinking,
@@ -4510,7 +4564,10 @@ class BatchedEngine(BaseEngine):
         # ``chat()`` for the rationale. Path parity: stream and non-stream
         # must apply the same gating condition so a future change can't
         # silently regress one path while keeping the other green.
-        if self._needs_prefix_boundary_snapshot():
+        if shared_warm_boundary and self._needs_prefix_boundary_snapshot():
+            kwargs["prefix_boundary"] = shared_warm_boundary
+            kwargs["exact_prefix_boundary"] = True
+        elif self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
                 prefix_boundary = self._compute_prefix_boundary(
                     messages,
