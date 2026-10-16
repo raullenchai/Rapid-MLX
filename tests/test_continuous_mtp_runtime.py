@@ -187,6 +187,21 @@ def test_dynamic_membership_requires_policy_and_dense_attestation(
     ]
 
 
+def test_descriptor_deeper_than_backend_assembles_at_backend_ceiling(
+    ragged_install_stub,
+):
+    inner = _InjectedTextModel(_descriptor(recursive_draft_depth=4))
+
+    runtime = runtime_module.assemble_continuous_self_mtp_runtime(
+        inner,
+        array_ops=_ArrayOpsStub(),
+    )
+
+    assert runtime.config.enabled is True
+    assert runtime.capabilities.missing_fixed_core() == ()
+    assert ragged_install_stub == [{"qwen4_state_cls": None, "qsa_cls": None}]
+
+
 def test_qwen4_is_not_attested_by_the_dense_adapter():
     descriptor = _descriptor("qwen4_exp")
     inner = _InjectedTextModel(descriptor)

@@ -358,6 +358,46 @@ def test_one_token_remaining_uses_target_only_cycle():
     assert [call[-1] for call in forward.calls if call[0] == "target"][-1] == 0
 
 
+def test_k1_cohort_drafts_once_per_cycle_and_verifies_two_wide():
+    """A K=1 cohort (``num_speculative_tokens: 1``) must be a legal lane shape.
+
+    Before this, ``prepare`` refused anything but K=2 even though the cycle
+    already handles a shared depth of 1 for near-terminal rows, so the
+    operator's requested depth never reached the cohort.
+    """
+    runtime, forward, cache_events = _runtime()
+    lanes = []
+    for uid, prompt in ((0, [1, 2]), (1, [5, 6])):
+        detached, _first = prepare_self_mtp_lane(
+            SelfMTPLaneSpec(uid=uid, prompt=prompt, max_tokens=12, num_draft=1),
+            runtime,
+        )
+        lanes.append(detached)
+    batch = attach_self_mtp_lanes(None, lanes)
+    drafts_before = len([call for call in forward.calls if call[0] == "draft"])
+
+    proposal = propose_batched_self_mtp(batch)
+
+    assert proposal.draft_depths == (1, 1)
+    assert all(accepted <= 1 for accepted in proposal.accepted_lengths)
+    assert [len(row) for row in proposal.outputs] == [
+        accepted + 1 for accepted in proposal.accepted_lengths
+    ]
+    draft_calls = [call for call in forward.calls if call[0] == "draft"]
+    assert len(draft_calls) - drafts_before == 1  # no second recursion at K=1
+    verify = [call for call in forward.calls if call[0] == "target"][-1]
+    assert verify[1].shape == (2, 2)
+    assert verify[-1] == 1  # n_confirmed follows the shared depth
+    commit_batched_self_mtp(
+        batch,
+        proposal,
+        emitted_counts=[len(row) for row in proposal.outputs],
+        terminal=[False, False],
+    )
+    assert [lane.num_draft for lane in batch.lanes] == [1, 1]
+    assert ("trim", (0, 0), {"verify_size": 2, "validate": False}) not in cache_events
+
+
 def test_cohort_uses_uniform_depth_for_scalar_confirmed_boundary():
     runtime, forward, _cache_events = _runtime()
     lane0, _ = _prepare(runtime, 0, [1, 2])
@@ -629,7 +669,9 @@ def test_long_prefill_threads_previous_hidden_into_recursive_draft():
 @pytest.mark.parametrize(
     ("sampling", "num_draft", "message"),
     [
-        (SelfMTPSampling(), 1, "requires K=2"),
+        (SelfMTPSampling(), 3, "1 <= K <= 2"),
+        (SelfMTPSampling(), True, "1 <= K <= 2"),
+        (SelfMTPSampling(), 1.5, "1 <= K <= 2"),
         (SelfMTPSampling(uses_xtc=True), 2, "XTC"),
         (SelfMTPSampling(temperature=0.5), 2, "greedy sampling only"),
         (SelfMTPSampling(has_logits_processors=True), 2, "injected hook"),
@@ -641,9 +683,11 @@ def test_prepare_refuses_unattested_sampling_and_depth(sampling, num_draft, mess
         uid=1,
         prompt=[1, 2],
         max_tokens=8,
-        num_draft=num_draft,
+        num_draft=num_draft if type(num_draft) is int else 2,
         sampling=sampling,
     )
+    if type(num_draft) is not int:
+        object.__setattr__(spec, "num_draft", num_draft)
     with pytest.raises(ContinuousSelfMTPUnsupported, match=message):
         runtime.compute.prepare(spec, runtime.forwards)
 

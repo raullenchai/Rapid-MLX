@@ -170,6 +170,10 @@ from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
 
+# One clamp warning per server process (the batch generator, and with it the
+# continuous-MTP router install, is recreated during the server's life).
+_CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = False
+
 # Functional hybrid cache updates retain their prior lazy graph until an eval
 # barrier. Eight steps bounds that graph to a few hundred live Metal handles on
 # current 40-layer families while amortizing the synchronization cost.
@@ -1029,12 +1033,20 @@ def _install_continuous_mtp_router(
             "vendored MTP/plain decode"
         )
         return False
+    # ``num_speculative_tokens`` reaches the singleton verifier as
+    # ``mtp_max_k``; the cohort planner used to ignore it and always start from
+    # the policy default of 2.  Hand the request to the planner, which clamps
+    # it to the attested recursive draft depth, so K=1 is reachable on hosts
+    # where the verify forward is cheap per position but the per-cycle
+    # overhead is not.
+    requested_depth = getattr(config, "mtp_max_k", 2)
     decision = plan_router_install(
         model,
         enabled=getattr(config, "mtp_continuous_batching", False),
         cache_quantized=cache_quantized,
         cache_windowed=bool(getattr(config, "use_paged_cache", False)),
         max_lanes=max_lanes,
+        max_draft_tokens=requested_depth,
         # Preserve the mature singleton verifier for one-user traffic.  The
         # continuous coordinator pays for ragged bookkeeping even at B=1 and
         # is admitted only when there is real batching work to amortize it.
@@ -1078,6 +1090,28 @@ def _install_continuous_mtp_router(
             "retaining vendored MTP/plain decode"
         )
         return False
+    # Only now is a cohort going to run, so only now is a clamped depth worth
+    # a warning.  The generator is recreated during the server's life, so
+    # say it once per process and keep later installs at debug level.
+    global _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED
+    if (
+        decision.draft_tokens is not None
+        and decision.requested_draft_tokens is not None
+        and decision.draft_tokens != decision.requested_draft_tokens
+    ):
+        _level = (
+            logging.DEBUG if _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED else logging.WARNING
+        )
+        _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = True
+        logger.log(
+            _level,
+            "[MTP-continuous] num_speculative_tokens=%d exceeds the supported "
+            "continuous draft depth; the cohort drafts %d per lane (the "
+            "singleton verifier keeps max_k=%d)",
+            decision.requested_draft_tokens,
+            decision.draft_tokens,
+            decision.requested_draft_tokens,
+        )
 
     def _response_factory(**kwargs):
         # Response fields vary across mlx-lm 0.31 patch levels. Build exactly
@@ -1262,6 +1296,15 @@ def _install_continuous_mtp_router(
         joining_specs: list[SelfMTPLaneSpec] = []
         joining_stops: dict[int, frozenset[int]] = {}
         joining_sequences: dict[int, Any] = {}
+        # The engine refuses mixed depths inside one cohort, so a join must be
+        # built at the depth the live lanes already run (admission may have
+        # lowered it below the policy maximum under memory pressure).
+        live_depth = getattr(driver, "draft_depth", None)
+        join_depth = (
+            int(router.config.max_draft_tokens)
+            if live_depth is None
+            else int(live_depth)
+        )
         for sequence, metadata in _queued_candidates():
             if len(joining_specs) >= room:
                 break
@@ -1284,7 +1327,7 @@ def _install_continuous_mtp_router(
                 uid=metadata.uid,
                 prompt=metadata.prompt_tokens,
                 max_tokens=metadata.max_tokens,
-                num_draft=2,
+                num_draft=join_depth,
                 sampling=SelfMTPSampling(temperature=metadata.temperature),
                 accept_counter=(
                     _ensure_request_mtp_counter(requests[metadata.lane_id])

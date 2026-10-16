@@ -29,6 +29,7 @@ from .batched import (
     plan_admission,
 )
 from .continuous_engine import SelfMTPLaneSpec, SelfMTPSampling
+from .mlx_backend import RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS
 from .prepared_state import (
     PreparedMTPState,
     PreparedStateIdentity,
@@ -143,6 +144,11 @@ class ContinuousMTPRouterInstallDecision:
     fallback: ContinuousMTPIntegrationRoute
     reasons: tuple[str, ...] = ()
     live_token_delivery: bool = False
+    # Operator-requested cohort depth and the depth the planner actually
+    # installed (clamped to the backend ceiling, which the descriptor must
+    # attest).  Both are ``None`` when the router was refused.
+    requested_draft_tokens: int | None = None
+    draft_tokens: int | None = None
 
 
 class ContinuousMTPIntegrationRouter:
@@ -281,8 +287,27 @@ def plan_router_install(
     min_batch_lanes: int = 2,
     hard_reserve_bytes: int = 8 * 1024**3,
     allow_dynamic_membership: bool = False,
+    max_draft_tokens: int = 2,
 ) -> ContinuousMTPRouterInstallDecision:
-    """Feature-detect a model and return an install plan without mutation."""
+    """Feature-detect a model and return an install plan without mutation.
+
+    ``max_draft_tokens`` is the operator's requested cohort depth
+    (``num_speculative_tokens``).  The planner is authoritative for the
+    installed depth: it clamps the request to the backend ceiling
+    (``RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS``) and to the descriptor's
+    ``recursive_draft_depth`` (``draft_tokens`` on the decision says what was
+    installed), and rejects a non-positive request.  The descriptor itself must
+    attest at least the backend ceiling: the injected batched forward always
+    recurses that deep, so a family attesting shallower recursion is refused
+    (falls back) rather than run at a depth it never qualified.  A shallower
+    *request* (e.g. ``num_speculative_tokens=1``) is a supported K=1 cohort.
+    ``plan_admission`` may still lower the depth per cycle under memory
+    pressure, never raise it.
+    """
+    if isinstance(max_draft_tokens, bool) or not isinstance(max_draft_tokens, int):
+        raise ValueError("max_draft_tokens must be a positive integer")
+    if max_draft_tokens < 1:
+        raise ValueError("max_draft_tokens must be positive")
     candidate = getattr(model, "language_model", model)
     descriptor = getattr(candidate, "batched_mtp_capability", None)
     descriptor_map = descriptor if isinstance(descriptor, Mapping) else {}
@@ -300,10 +325,16 @@ def plan_router_install(
         )
         and getattr(candidate, "mtp", None) is not None
     )
+    attested_depth = descriptor_map.get("recursive_draft_depth")
+    descriptor_supports_backend = (
+        isinstance(attested_depth, int)
+        and not isinstance(attested_depth, bool)
+        and attested_depth >= RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS
+    )
     descriptor_core = (
         descriptor_map.get("protocol_version") == 1
         and descriptor_map.get("fixed_membership") is True
-        and descriptor_map.get("recursive_draft_depth") == 2
+        and descriptor_supports_backend
         and callable(batch_forward)
     )
     capabilities = BatchedMTPCapabilities(
@@ -353,6 +384,21 @@ def plan_router_install(
             ),
         )
 
+    # The descriptor attests what the model can recurse through, while the
+    # Rapid backend has its own implementation ceiling. Clamp against both so
+    # an over-capable descriptor cannot admit a depth that ``prepare`` rejects.
+    depth_ceiling = (
+        attested_depth
+        if isinstance(attested_depth, int)
+        and not isinstance(attested_depth, bool)
+        and attested_depth >= 1
+        else 1
+    )
+    draft_tokens = min(
+        max_draft_tokens,
+        depth_ceiling,
+        RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS,
+    )
     router = ContinuousMTPIntegrationRouter(
         config=BatchedMTPConfig(
             enabled=enabled,
@@ -360,6 +406,7 @@ def plan_router_install(
             min_batch_lanes=min_batch_lanes,
             hard_reserve_bytes=hard_reserve_bytes,
             allow_dynamic_membership=allow_dynamic_membership,
+            max_draft_tokens=draft_tokens,
         ),
         runtime=runtime,
     )
@@ -378,6 +425,8 @@ def plan_router_install(
         admitted=True,
         router=router,
         fallback=ContinuousMTPIntegrationRoute.LEGACY_MTP,
+        requested_draft_tokens=max_draft_tokens,
+        draft_tokens=draft_tokens,
     )
 
 
@@ -393,7 +442,6 @@ def _runtime_refusals(
     descriptor = runtime.capability_descriptor
     required_descriptor = {
         "protocol_version": 1,
-        "recursive_draft_depth": 2,
         "fixed_membership": True,
         "dynamic_join": True,
         "quantized_cache": False,
@@ -403,6 +451,13 @@ def _runtime_refusals(
     for name, expected in required_descriptor.items():
         if descriptor.get(name) != expected:
             reasons.append(f"capability descriptor mismatch: {name}")
+    recursive_depth = descriptor.get("recursive_draft_depth")
+    if (
+        isinstance(recursive_depth, bool)
+        or not isinstance(recursive_depth, int)
+        or recursive_depth < RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS
+    ):
+        reasons.append("capability descriptor mismatch: recursive_draft_depth")
     if runtime.cache_quantized:
         reasons.append("quantized cache is unsupported")
     if runtime.cache_windowed:

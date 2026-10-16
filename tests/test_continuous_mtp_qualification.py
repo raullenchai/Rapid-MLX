@@ -246,7 +246,10 @@ def test_unknown_alias_explicit_opt_in_fails_closed(capsys) -> None:
 
     assert excinfo.value.code == 2
     assert args.mtp_continuous_batching_tier == "unknown"
-    assert "has not completed continuous-MTP qualification" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "has not completed continuous-MTP qualification" in error
+    assert "unless they resolve to a catalog profile" in error
+    assert "always unqualified" not in error
 
 
 def test_blocked_alias_explicit_opt_in_fails_closed(monkeypatch, capsys) -> None:
