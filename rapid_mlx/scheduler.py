@@ -9746,7 +9746,7 @@ class Scheduler:
                 len(prompt_tokens),
             )
             snapshot_boundary = 0
-        elif snapshot_boundary > 0:
+        elif snapshot_boundary > 0 and not request.exact_prefix_boundary:
             aligned_boundary = self._tile_aligned_boundary(request, snapshot_boundary)
             override_boundary = aligned_boundary != snapshot_boundary
             snapshot_boundary = aligned_boundary

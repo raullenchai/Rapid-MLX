@@ -186,6 +186,7 @@ class Request:
     cached_tokens: int = 0  # Number of tokens retrieved from cache
     remaining_tokens: list[int] | None = None  # Tokens still needing processing
     prefix_boundary: int = 0  # Token count for shared prefix (messages[:-1])
+    exact_prefix_boundary: bool = False  # Primed system+tools edge must not move
     # Absolute prompt position where the prefill stores a snapshot because the
     # prompt shares that span with a stored entry it could not resume from.
     shared_prefix_snapshot_at: int = 0
