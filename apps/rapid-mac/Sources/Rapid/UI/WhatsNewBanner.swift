@@ -85,28 +85,21 @@ struct WhatsNewBanner: View {
                                 // `lastSeenVersion` already rolled forward.
                                 // Same shape as `GitHubStarPrompt`.
                                 //
-                                // The completion is NOT called on the main
-                                // thread: `OpenURLAction._defaultAction`
-                                // forwards it from `NSWorkspace`'s
-                                // `com.apple.launchservices.open-queue`.
-                                // `InstallTracker` is `@MainActor`, so
-                                // touching it inline trips the Swift runtime
-                                // isolation check and traps (EXC_BREAKPOINT).
-                                // The package builds in Swift 5 language
-                                // mode, so the compiler does not catch it.
-                                //
-                                // Hop FIRST, before reading anything: the
-                                // whole body is then main-actor-isolated by
-                                // construction, and a later edit that adds a
-                                // statement at the top cannot silently
-                                // reintroduce the crash. Pinned by
-                                // `OpenURLCompletionMainActorTests`.
-                                openURL(url) { accepted in
-                                    Task { @MainActor in
-                                        guard accepted else { return }
+                                // The completion runs on LaunchServices'
+                                // open-queue, not the main thread. A closure
+                                // literal here would inherit this view's
+                                // `@MainActor` isolation and trap on entry
+                                // (EXC_BREAKPOINT, the 0.16.2 "See what's
+                                // new" crash), so it is built by
+                                // `OpenURLCompletion`, which is nonisolated
+                                // and hops to the main actor itself. Pinned
+                                // by `OpenURLCompletionMainActorTests`.
+                                openURL(
+                                    url,
+                                    completion: OpenURLCompletion.onMainActorIfAccepted { [installTracker] in
                                         installTracker.dismissUpgradeNotice()
                                     }
-                                }
+                                )
                             }
                             .buttonStyle(RapidPrimaryButtonStyle(
                                 height: RapidTheme.ControlHeight.small,
