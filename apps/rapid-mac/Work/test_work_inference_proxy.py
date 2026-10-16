@@ -1,5 +1,6 @@
 """Focused regression test for the Goose Chat inference rate while streaming."""
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -16,6 +17,28 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 PROXY = pathlib.Path(__file__).with_name("work-inference-proxy.py")
+GOOSE_PREFIX = pathlib.Path(__file__).with_name("goose-prefix.json")
+
+
+class GoosePrefixTests(unittest.TestCase):
+    def test_bundled_prefix_is_the_captured_stock_system_and_tools(self):
+        # Captured from the pinned Goose helper in the packaged app path.
+        # The warm request must not invent a visible user turn.
+        prefix = json.loads(GOOSE_PREFIX.read_text())
+        self.assertEqual([m["role"] for m in prefix["messages"]], ["system"])
+        self.assertEqual(len(prefix["tools"]), 34)
+        self.assertEqual(
+            hashlib.sha256(prefix["messages"][0]["content"].encode()).hexdigest(),
+            "b3bc3ac3600356bc18515a0f2c91a4f67f9ebdc56397238081eac8adbbc42631",
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                json.dumps(
+                    prefix["tools"], sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest(),
+            "6aabccf39198f9c4710179168d80e13b6b8f2776db26509b064bf03bfbd042ff",
+        )
 
 
 class StreamRateTests(unittest.TestCase):
