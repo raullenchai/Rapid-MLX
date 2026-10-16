@@ -27,6 +27,12 @@ from .continuous_engine import (
     SelfMTPLaneSpec,
 )
 
+# The injected batched MTP forward recurses exactly twice per cycle
+# (``recursive_draft_depth: 2`` in the capability descriptor), so two is the
+# deepest draft a Rapid continuous cohort can run.  Shallower drafts reuse the
+# same cycle with the second recursion skipped (``second_lengths`` below).
+RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS = 2
+
 
 class ArrayOps(Protocol):
     def uint32(self, value: Any) -> Any: ...
@@ -365,11 +371,11 @@ class RapidMLXSelfMTPBackend:
         array_ops: ArrayOps | None = None,
         logits_processor: Callable[[SelfMTPLane, Any, Any], Any] | None = None,
         prefill_step_size: int = 512,
-        draft_depth: int = 2,
+        draft_depth: int = RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS,
     ) -> None:
         if prefill_step_size < 1:
             raise ValueError("prefill_step_size must be positive")
-        if draft_depth != 2:
+        if draft_depth != RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS:
             raise ValueError("the first Rapid continuous self-MTP backend is K=2")
         self.target_cache_factory = target_cache_factory
         self.draft_cache_factory = draft_cache_factory
@@ -433,8 +439,18 @@ class RapidMLXSelfMTPBackend:
     def prepare(
         self, spec: SelfMTPLaneSpec, forwards: RapidForwardSeams
     ) -> PreparedLaneData:
-        if spec.num_draft != self.draft_depth:
-            raise ContinuousSelfMTPUnsupported("Rapid continuous self-MTP requires K=2")
+        # ``propose`` already drafts ``min(self.draft_depth, lane.num_draft, …)``
+        # per cycle and skips the second recursion when the shared depth is 1
+        # (the near-terminal path), so any depth up to the backend ceiling is
+        # an attested cycle shape; deeper than the ceiling is not.
+        if (
+            type(spec.num_draft) is not int
+            or not 1 <= spec.num_draft <= self.draft_depth
+        ):
+            raise ContinuousSelfMTPUnsupported(
+                "Rapid continuous self-MTP supports draft depth 1 <= K <= "
+                f"{self.draft_depth}, got {spec.num_draft!r}"
+            )
         if spec.sampling.uses_xtc:
             raise ContinuousSelfMTPUnsupported("XTC has no exact verifier")
         if spec.sampling.temperature > 0:
@@ -1136,6 +1152,7 @@ class RapidRaggedCacheAdapter:
 
 
 __all__ = [
+    "RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS",
     "ArrayOps",
     "RapidMLXSelfMTPBackend",
     "RapidRaggedCacheAdapter",

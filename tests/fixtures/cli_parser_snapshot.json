@@ -1196,6 +1196,25 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "choices": [
+        "total",
+        "uncached"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "total",
+       "dest": "pflash_threshold_basis",
+       "help": "What --pflash auto compares to --pflash-threshold: 'total' prompt tokens (default) or only the tokens NOT covered by a usable memory-aware prefix-cache entry ('uncached'), so warm sessions that grow past the threshold keep hitting the cache.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--pflash-threshold-basis"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": true,
@@ -1256,7 +1275,8 @@
         "pflash_block_size",
         "pflash_query_window",
         "pflash_stride_blocks",
-        "pflash_include_tools"
+        "pflash_include_tools",
+        "pflash_threshold_basis"
        ],
        "title": "options"
       }
@@ -6206,6 +6226,25 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "choices": [
+        "total",
+        "uncached"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "total",
+       "dest": "pflash_threshold_basis",
+       "help": "What --pflash auto compares to --pflash-threshold: 'total' prompt tokens (default) or only the tokens NOT covered by a usable memory-aware prefix-cache entry ('uncached'), so warm sessions that grow past the threshold keep hitting the cache.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--pflash-threshold-basis"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": false,
@@ -6368,7 +6407,8 @@
         "pflash_block_size",
         "pflash_query_window",
         "pflash_stride_blocks",
-        "pflash_include_tools"
+        "pflash_include_tools",
+        "pflash_threshold_basis"
        ],
        "title": "options"
       }

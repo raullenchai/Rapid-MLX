@@ -3647,7 +3647,9 @@ def _normalize_speculative_config_or_exit(args):
                 "error: continuous MTP is not verified for "
                 f"{args.model!r}: this target {state}. Use ordinary MTP, or "
                 "pass --force-spec-decode only for an operator-controlled "
-                "experiment.",
+                "experiment. (Qualification tiers are recorded per catalog "
+                "alias; unknown local paths or repo ids remain unqualified "
+                "unless they resolve to a catalog profile.)",
                 file=sys.stderr,
             )
             sys.exit(2)

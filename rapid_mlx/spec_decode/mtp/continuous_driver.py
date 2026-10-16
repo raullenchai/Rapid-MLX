@@ -154,6 +154,13 @@ class ContinuousMTPDriver:
     def pending_join_uids(self) -> tuple[int, ...]:
         return tuple(spec.uid for join in self._pending_joins for spec in join.specs)
 
+    @property
+    def draft_depth(self) -> int | None:
+        """Draft depth shared by the live cohort (``None`` once it is empty)."""
+        if self.closed:
+            return None
+        return self._batch.draft_depth
+
     def owns_uid(self, uid: int) -> bool:
         """Return whether this driver owns live, queued, or draining state."""
         return uid in (

@@ -1787,6 +1787,26 @@
     "is_text_only": true,
     "supports_spec_decode": false
   },
+  "nemotron-3.5-super-vl": {
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-4bit",
+    "tool_call_parser": "nemotron",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false
+  },
+  "nemotron-3.5-super-vl-3bit": {
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-3bit",
+    "tool_call_parser": "nemotron",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "is_text_only": true,
+    "supports_spec_decode": false
+  },
   "nemotron-3.5-lightning-30b-4bit": {
     "hf_path": "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
     "tool_call_parser": "nemotron",

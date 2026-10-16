@@ -1362,6 +1362,21 @@ class MemoryCacheConfig:
         return max(int(fallback_total * self.max_memory_percent), self.min_memory_bytes)
 
 
+@dataclass(frozen=True)
+class PrefixProbe:
+    """Result of ``MemoryAwarePrefixCache.probe``: what a ``fetch`` of the same
+    tokens would reuse, without doing any of the work a fetch does.
+
+    ``matched_tokens`` is the number of leading tokens a fetch would take from
+    the cache (0 on a miss); ``match_type`` mirrors ``fetch``'s
+    ``_last_match_type`` vocabulary (``exact`` / ``supersequence`` / ``prefix``
+    / ``lcp`` / ``miss``).
+    """
+
+    matched_tokens: int
+    match_type: str
+
+
 @dataclass
 class CacheStats:
     """Statistics for cache performance monitoring."""
@@ -1542,6 +1557,110 @@ class _CacheEntry:
         )
 
 
+def _has_deepseek_pooling(layer: Any) -> bool:
+    """True for (or wrappers containing) a pooling cache whose rewind is only
+    partially reversible, so an exact trim must be attempted on a copy."""
+    if type(layer).__module__ == "rapid_mlx.models.qwen4_exp_cache":
+        return type(layer).__name__ == "QSAIndexCache"
+    if type(layer).__module__ == "rapid_mlx.models.deepseek_v4_cache":
+        return type(layer).__name__ in {
+            "PoolingCache",
+            "BatchPoolingCache",
+            "DeepseekV4PoolingCache",
+            "BatchDeepseekV4PoolingCache",
+        }
+    return any(
+        _has_deepseek_pooling(child) for child in (getattr(layer, "caches", None) or ())
+    )
+
+
+def _rewind_feasible(
+    cache: list[Any], trim_by: int, *, _inside_wrapper: bool = False
+) -> bool:
+    """Metadata-only predicate: would ``_trim_cache_offset`` succeed on these
+    KV layers for ``trim_by`` tokens?  Mirrors its refusal paths without copying
+    or mutating cache state. Pooling caches expose amount-aware ``can_trim``;
+    composite wrappers are checked recursively because their aggregate
+    ``is_trimmable`` only proves that one token can be removed."""
+    if trim_by < 0:
+        return False
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    try:
+        from mlx_lm.models.cache import QuantizedKVCache
+    except ImportError:
+        QuantizedKVCache = None  # noqa: N806
+
+    for layer in cache:
+        if layer is None:
+            continue
+        children = getattr(layer, "caches", None)
+        if children is not None:
+            if not _has_deepseek_pooling(layer) or not _rewind_feasible(
+                list(children), trim_by, _inside_wrapper=True
+            ):
+                return False
+            continue
+        if _has_deepseek_pooling(layer):
+            can_trim = getattr(layer, "can_trim", None)
+            if not callable(can_trim) or not can_trim(trim_by):
+                return False
+            continue
+        is_trimmable = getattr(layer, "is_trimmable", None)
+        if callable(is_trimmable) and not is_trimmable():
+            return False
+        offset = getattr(layer, "offset", None)
+        if QuantizedKVCache is not None and isinstance(layer, QuantizedKVCache):
+            if not isinstance(offset, int) or trim_by > max(0, offset):
+                return False
+            continue
+        if hasattr(layer, "values_compressed"):
+            # TurboQuant.trim mutates exactly to max(offset - n, 0), but returns
+            # None, so trim_wrapper_exact cannot attest it inside a wrapper.
+            if (
+                _inside_wrapper
+                or not isinstance(offset, int)
+                or trim_by > max(0, offset)
+            ):
+                return False
+            continue
+        if (
+            isinstance(offset, int)
+            and hasattr(layer, "keys")
+            and not isinstance(layer.keys, (list, tuple))
+        ):
+            if trim_by > max(0, offset):
+                return False
+            if _inside_wrapper and not isinstance(layer, (KVCache, RotatingKVCache)):
+                return False
+            continue
+        # Unknown leaves may report that some trim is possible, but the real
+        # dispatch only deep-copies them unchanged. Probe must fail closed.
+        if trim_by:
+            return False
+    return True
+
+
+def _snap_position(cache: list[Any], entry_len: int, target_len: int) -> int:
+    """Position ``_snap_hybrid_trim`` would rewind a hybrid entry to, computed
+    from checkpoint metadata only (0 when it would refuse)."""
+    if target_len <= 0 or entry_len <= 0:
+        return 0
+    if any(
+        _layer_forbids_trim(layer) and not is_recurrent_layer(layer)
+        for layer in cache
+        if layer is not None
+    ):
+        return 0
+    position = achievable_position(cache, min(target_len, entry_len))
+    if position <= 0:
+        return 0
+    kv_only = [None if is_recurrent_layer(layer) else layer for layer in cache]
+    if entry_len - position > 0 and not _rewind_feasible(kv_only, entry_len - position):
+        return 0
+    return position
+
+
 def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any] | None:
     """Create shallow copies of KVCache/QuantizedKVCache layers with offset reduced.
 
@@ -1560,20 +1679,7 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any] | None:
     except ImportError:
         QuantizedKVCache = None  # noqa: N806
 
-    def has_deepseek_pooling(layer: Any) -> bool:
-        if type(layer).__module__ == "rapid_mlx.models.qwen4_exp_cache":
-            return type(layer).__name__ == "QSAIndexCache"
-        if type(layer).__module__ == "rapid_mlx.models.deepseek_v4_cache":
-            return type(layer).__name__ in {
-                "PoolingCache",
-                "BatchPoolingCache",
-                "DeepseekV4PoolingCache",
-                "BatchDeepseekV4PoolingCache",
-            }
-        return any(
-            has_deepseek_pooling(child)
-            for child in (getattr(layer, "caches", None) or ())
-        )
+    has_deepseek_pooling = _has_deepseek_pooling
 
     def trim_wrapper_exact(layer: Any) -> Any:
         """Copy and trim a wrapper only when every nested cache can rewind.
@@ -2292,34 +2398,86 @@ class MemoryAwarePrefixCache:
                 best = max(best, low)
         return best
 
-    def _fetch_locked(
+    def probe(self, tokens: list[int]) -> PrefixProbe:
+        """Report what ``fetch(tokens)`` would reuse, with no side effects.
+
+        Unlike ``fetch`` this does not touch the LRU order or statistics, does
+        not deep-copy, decompress or trim any cache arrays, and does not set
+        ``_last_match_type``.  It walks the same candidate order as
+        ``_fetch_locked`` (exact → supersequence → prefix → LCP) and reports the
+        reusable prefix length.  For matches that would need a rewind it is
+        conservative: it counts them only when the rewind can be shown
+        feasible from cache metadata alone (hybrid checkpoints, plain KV
+        layers), so it may report fewer tokens than ``fetch`` would reuse but
+        never more.
+        """
+        if not tokens:
+            return PrefixProbe(0, "miss")
+        tokens_key = tuple(tokens)
+        with self._lock:
+            return self._probe_locked(tokens, tokens_key)
+
+    def _probe_locked(
         self, tokens: list[int], tokens_key: tuple[int, ...]
-    ) -> tuple[list[Any] | None, list[int]]:
-        # --- O(1) exact match ---
-        #
-        # The scheduler starts generation by forwarding the final prompt token
-        # once more.  A cache captured at the full N-token boundary therefore
-        # has to be trimmed to N-1 before it can be consumed.  Recurrent and
-        # DeepSeek-V4 pooling caches cannot do that.  Treat their exact entry as
-        # unusable here and continue looking for a strict stored prefix (the
-        # N-1 snapshot or a message boundary); returning the exact entry only
-        # makes the scheduler discard it and full-prefill the request.
+    ) -> PrefixProbe:
         exact_entry = self._entries.get(tokens_key)
         unusable_non_trimmable_exact = bool(
             exact_entry is not None and exact_entry.non_trimmable
         )
         if exact_entry is not None and not unusable_non_trimmable_exact:
-            entry = exact_entry
-            self._entries.move_to_end(tokens_key)
-            self._stats.hits += 1
-            self._stats.tokens_saved += len(tokens)
-            self._last_match_type = "exact"
-            # Deep copy: cache objects have mutable offset/state that
-            # generation modifies in-place, corrupting the stored entry.
-            cache_out = copy.deepcopy(entry.cache)
-            cache_out = self._decompress_cache(cache_out)
-            return cache_out, []
+            return PrefixProbe(len(tokens), "exact")
 
+        best_match, best_length, best_super = self._match_candidates_locked(
+            tokens_key, unusable_non_trimmable_exact
+        )
+
+        if best_super is not None:
+            n_cached = len(best_super.tokens)
+            n_requested = len(tokens)
+            excess = n_cached - n_requested
+            has_non_trimmable = any(_layer_forbids_trim(lc) for lc in best_super.cache)
+            if excess > 0 and has_non_trimmable:
+                position = _snap_position(best_super.cache, n_cached, n_requested)
+                if position > best_length:
+                    return PrefixProbe(position, "supersequence")
+            elif excess > 0:
+                if _rewind_feasible(best_super.cache, excess):
+                    return PrefixProbe(n_requested, "supersequence")
+            else:
+                return PrefixProbe(n_requested, "supersequence")
+
+        if best_match is not None:
+            return PrefixProbe(best_length, "prefix")
+
+        best_lcp_entry, best_lcp_length = self._lcp_candidate_locked(tokens_key)
+        if best_lcp_entry is not None and best_lcp_length > 0:
+            has_non_trimmable = any(
+                _layer_forbids_trim(lc) for lc in best_lcp_entry.cache
+            )
+            if not has_non_trimmable:
+                if _rewind_feasible(
+                    best_lcp_entry.cache,
+                    len(best_lcp_entry.tokens) - best_lcp_length,
+                ):
+                    return PrefixProbe(best_lcp_length, "lcp")
+            else:
+                position = _snap_position(
+                    best_lcp_entry.cache, len(best_lcp_entry.tokens), best_lcp_length
+                )
+                if position > 0:
+                    return PrefixProbe(position, "lcp")
+
+        return PrefixProbe(0, "miss")
+
+    def _match_candidates_locked(
+        self, tokens_key: tuple[int, ...], unusable_non_trimmable_exact: bool
+    ) -> tuple[_CacheEntry | None, int, _CacheEntry | None]:
+        """Longest stored strict prefix and longest supersequence of ``tokens_key``.
+
+        Pure lookup shared by ``fetch`` and ``probe``: touches no LRU order,
+        statistics or cache arrays.  Returns ``(prefix_entry, prefix_len,
+        supersequence_entry)``.
+        """
         # --- O(log N) prefix & supersequence match via sorted index ---
         best_match: _CacheEntry | None = None
         best_length = 0
@@ -2413,6 +2571,80 @@ class MemoryAwarePrefixCache:
                 else:
                     # Past the supersequence range
                     break
+        return best_match, best_length, best_super
+
+    def _lcp_candidate_locked(
+        self, tokens_key: tuple[int, ...]
+    ) -> tuple[_CacheEntry | None, int]:
+        """Nearest stored neighbour sharing the longest common prefix (pure).
+
+        Shared by ``fetch`` and ``probe``.  Returns ``(entry, lcp_len)`` with
+        ``(None, 0)`` when no neighbour shares a prefix.
+        """
+        sorted_keys = self._sorted_keys
+        best_lcp_entry: _CacheEntry | None = None
+        best_lcp_length = 0
+
+        if sorted_keys:
+            idx = bisect.bisect_left(sorted_keys, tokens_key)
+            # Check neighbors around insertion point (they share the most
+            # common prefix due to lexicographic ordering).
+            for i in (idx - 1, idx):
+                if i < 0 or i >= len(sorted_keys):
+                    continue
+                cached_key = sorted_keys[i]
+                if cached_key == tokens_key:
+                    continue  # Skip exact (already handled)
+                min_len = min(len(cached_key), len(tokens_key))
+                if min_len <= best_lcp_length:
+                    continue
+                # Compute LCP length
+                lcp = 0
+                for j in range(min_len):
+                    if cached_key[j] != tokens_key[j]:
+                        break
+                    lcp = j + 1
+                if lcp > best_lcp_length:
+                    best_lcp_entry = self._entries[cached_key]
+                    best_lcp_length = lcp
+                    logger.debug(
+                        f"[cache_fetch] LCP scan: cached_len={len(cached_key)} "
+                        f"req_len={len(tokens_key)} lcp={lcp}"
+                    )
+        return best_lcp_entry, best_lcp_length
+
+    def _fetch_locked(
+        self, tokens: list[int], tokens_key: tuple[int, ...]
+    ) -> tuple[list[Any] | None, list[int]]:
+        # --- O(1) exact match ---
+        #
+        # The scheduler starts generation by forwarding the final prompt token
+        # once more.  A cache captured at the full N-token boundary therefore
+        # has to be trimmed to N-1 before it can be consumed.  Recurrent and
+        # DeepSeek-V4 pooling caches cannot do that.  Treat their exact entry as
+        # unusable here and continue looking for a strict stored prefix (the
+        # N-1 snapshot or a message boundary); returning the exact entry only
+        # makes the scheduler discard it and full-prefill the request.
+        exact_entry = self._entries.get(tokens_key)
+        unusable_non_trimmable_exact = bool(
+            exact_entry is not None and exact_entry.non_trimmable
+        )
+        if exact_entry is not None and not unusable_non_trimmable_exact:
+            entry = exact_entry
+            self._entries.move_to_end(tokens_key)
+            self._stats.hits += 1
+            self._stats.tokens_saved += len(tokens)
+            self._last_match_type = "exact"
+            # Deep copy: cache objects have mutable offset/state that
+            # generation modifies in-place, corrupting the stored entry.
+            cache_out = copy.deepcopy(entry.cache)
+            cache_out = self._decompress_cache(cache_out)
+            return cache_out, []
+
+        # --- O(log N) prefix & supersequence match via sorted index ---
+        best_match, best_length, best_super = self._match_candidates_locked(
+            tokens_key, unusable_non_trimmable_exact
+        )
 
         # --- Supersequence match handling ---
         if best_super is not None:
@@ -2483,35 +2715,7 @@ class MemoryAwarePrefixCache:
         # This handles the agentic pattern: same system+context prefix
         # but different final user message.  Use the sorted index to find
         # the nearest neighbor which likely shares the longest prefix.
-        best_lcp_entry: _CacheEntry | None = None
-        best_lcp_length = 0
-
-        if sorted_keys:
-            idx = bisect.bisect_left(sorted_keys, tokens_key)
-            # Check neighbors around insertion point (they share the most
-            # common prefix due to lexicographic ordering).
-            for i in (idx - 1, idx):
-                if i < 0 or i >= len(sorted_keys):
-                    continue
-                cached_key = sorted_keys[i]
-                if cached_key == tokens_key:
-                    continue  # Skip exact (already handled)
-                min_len = min(len(cached_key), len(tokens_key))
-                if min_len <= best_lcp_length:
-                    continue
-                # Compute LCP length
-                lcp = 0
-                for j in range(min_len):
-                    if cached_key[j] != tokens_key[j]:
-                        break
-                    lcp = j + 1
-                if lcp > best_lcp_length:
-                    best_lcp_entry = self._entries[cached_key]
-                    best_lcp_length = lcp
-                    logger.debug(
-                        f"[cache_fetch] LCP scan: cached_len={len(cached_key)} "
-                        f"req_len={len(tokens_key)} lcp={lcp}"
-                    )
+        best_lcp_entry, best_lcp_length = self._lcp_candidate_locked(tokens_key)
 
         if best_lcp_entry is not None and best_lcp_length > 0:
             excess = len(best_lcp_entry.tokens) - best_lcp_length

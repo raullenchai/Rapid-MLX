@@ -147,6 +147,7 @@ def fuse(
     semantic_standardized: dict[int, float] | None = None,
     keyword_evidence: dict[int, int] | None = None,
     limit: int | None = None,
+    query_evidence: dict[int, float] | None = None,
 ) -> list[tuple[int, float, list[str]]]:
     legs = semantic_legs if semantic_legs is not None else [semantic]
     head_paths = (
@@ -227,7 +228,15 @@ def fuse(
             i = ranking[n]
             queues[rows[i]["kind"]].append(i)
         for queue in queues.values():
-            queue.sort(key=lambda i: (-(semantic_scores or {})[i], i))
+            queue.sort(
+                key=lambda i: (
+                    -(
+                        (semantic_scores or {})[i]
+                        + 0.1 * (query_evidence or {}).get(i, 0.0)
+                    ),
+                    i,
+                )
+            )
         used = dict.fromkeys(KINDS, 0)
         ordered = []
         strength = {i: NormalDist().cdf(z) for i, z in semantic_standardized.items()}
@@ -279,6 +288,22 @@ def fuse(
     return [(i, normalized[i], matched[i]) for i in ranking]
 
 
+def file_evidence(coverage, terms):
+    """Weight candidate file term coverage, independent of passage repetition."""
+    wanted = {term.casefold() for term in terms}
+    weights = {
+        term: math.log(
+            (len(coverage) + 1) / (1 + sum(term in c for c in coverage.values()))
+        )
+        for term in wanted
+    }
+    total = math.fsum(weights.values())
+    return {
+        file_id: math.fsum(weights[term] for term in covered) / total if total else 0.0
+        for file_id, covered in coverage.items()
+    }
+
+
 def top_files(ranking: list[int], rows: dict, count: int) -> list[int]:
     seen = set()
     result = []
@@ -300,6 +325,7 @@ def grouped_rankings(
     semantic_scores: dict[int, float] | None,
     semantic_standardized: dict[int, float],
     keyword_evidence: dict[int, int],
+    query_evidence: dict[int, float] | None = None,
 ) -> list[tuple[str, list[tuple[int, float, list[str]]]]]:
     """Rank independent kind previews without changing the flat fusion policy."""
     groups = []
@@ -313,6 +339,8 @@ def grouped_rankings(
             ],
             semantic_scores=semantic_scores,
             keyword_evidence=keyword_evidence,
+            semantic_standardized=semantic_standardized,
+            query_evidence=query_evidence,
         )
         if ranking:
             groups.append((kind, ranking))

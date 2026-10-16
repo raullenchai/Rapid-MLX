@@ -21,7 +21,11 @@ from .continuous_engine import (
     ContinuousSelfMTPUnsupportedError,
     RapidForwardSeams,
 )
-from .mlx_backend import RapidMLXSelfMTPBackend, RapidRaggedCacheAdapter
+from .mlx_backend import (
+    RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS,
+    RapidMLXSelfMTPBackend,
+    RapidRaggedCacheAdapter,
+)
 from .ragged_cache import preflight_ragged_cache, trim_ragged_cache
 
 _SUPPORTED_FAMILIES = frozenset({"qwen3_5"})
@@ -78,7 +82,6 @@ def _require_descriptor(
 
     required = {
         "protocol_version": 1,
-        "recursive_draft_depth": 2,
         "fixed_membership": True,
         "target_return_hidden": True,
         "mtp_return_hidden": True,
@@ -94,6 +97,16 @@ def _require_descriptor(
             raise _unsupported(
                 f"capability descriptor mismatch: {name} must be {expected!r}"
             )
+    recursive_depth = descriptor.get("recursive_draft_depth")
+    if (
+        isinstance(recursive_depth, bool)
+        or not isinstance(recursive_depth, int)
+        or recursive_depth < RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS
+    ):
+        raise _unsupported(
+            "capability descriptor mismatch: recursive_draft_depth must be "
+            f"at least {RAPID_CONTINUOUS_MTP_MAX_DRAFT_TOKENS}"
+        )
 
     batch_forward_name = descriptor.get("batch_forward")
     if not isinstance(batch_forward_name, str) or not batch_forward_name:

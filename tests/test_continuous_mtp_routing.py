@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -286,6 +287,130 @@ def test_install_plan_threads_attested_dynamic_membership():
     assert admitted.router.runtime.capabilities.dynamic_membership is True
 
 
+def test_requested_draft_depth_reaches_the_cohort_policy_and_planned_lanes():
+    """``num_speculative_tokens`` used to stop at the singleton verifier.
+
+    ``plan_router_install`` built ``BatchedMTPConfig`` without
+    ``max_draft_tokens``, so every cohort started from the dataclass default
+    of 2 whatever the serve config said.
+    """
+    router = _router(max_draft_tokens=1)
+    assert router.config.max_draft_tokens == 1
+
+    decision = router.plan([_request("a", 1), _request("b", 2)], free_bytes=1)
+
+    assert decision.route is ContinuousMTPIntegrationRoute.CONTINUOUS_PLANNED
+    assert decision.admission is not None
+    assert decision.admission.draft_tokens == 1
+    assert [lane.spec.num_draft for lane in decision.cohort] == [1, 1]
+
+    # Omitting the argument keeps today's default so existing callers are
+    # unaffected.
+    assert _router().config.max_draft_tokens == 2
+
+
+@pytest.mark.parametrize(
+    ("depths", "expected"),
+    [((1, 1), 1), ((2, 2), 2), ((), None), ((1, 2), None)],
+)
+def test_live_cohort_draft_depth_is_exposed_through_the_driver(
+    depths, expected, monkeypatch
+):
+    from rapid_mlx.spec_decode.mtp.continuous_batch import (
+        ContinuousMTPGenerationBatch,
+    )
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import MTPToken
+
+    # Only the engine's lane state is stubbed: exercise both real properties
+    # that the scheduler reads when choosing the depth of a joining lane.
+    lanes = tuple(
+        SimpleNamespace(uid=uid, num_draft=depth, max_tokens=8)
+        for uid, depth in enumerate(depths)
+    )
+    batch = ContinuousMTPGenerationBatch(
+        batch=SimpleNamespace(lanes=lanes),
+        first_tokens=tuple(MTPToken(10, None, False) for _ in lanes),
+        stop_tokens={lane.uid: frozenset() for lane in lanes},
+    )
+    driver = ContinuousMTPDriver(batch)
+
+    assert batch.draft_depth == expected
+    assert driver.draft_depth == expected
+
+    monkeypatch.setattr(batch, "_closed", True)
+    assert driver.draft_depth is None
+
+
+@pytest.mark.parametrize("depth", [None, True, "2", 0, 1])
+def test_router_refuses_insufficient_or_malformed_recursive_depth(depth):
+    model = _Model()
+    model.batched_mtp_capability = MappingProxyType(
+        {**dict(_descriptor()), "recursive_draft_depth": depth}
+    )
+
+    decision = plan_router_install(model, enabled=True, hard_reserve_bytes=0)
+
+    assert decision.admitted is False
+    assert decision.router is None
+    assert decision.fallback is ContinuousMTPIntegrationRoute.LEGACY_MTP
+    assert "capability descriptor mismatch: recursive_draft_depth" in decision.reasons
+
+
+def test_planner_clamps_requested_depth_to_the_attested_recursive_depth():
+    """The planner is authoritative: a request deeper than the descriptor's
+    ``recursive_draft_depth`` is installed at that depth, never handed to the
+    backend to refuse at ``prepare``; a non-positive request is rejected."""
+    decision = plan_router_install(
+        _Model(), enabled=True, hard_reserve_bytes=0, max_draft_tokens=3
+    )
+
+    assert decision.admitted is True
+    assert decision.router is not None
+    assert decision.requested_draft_tokens == 3
+    assert decision.draft_tokens == 2
+    assert decision.router.config.max_draft_tokens == 2
+    planned = decision.router.plan([_request("a", 1), _request("b", 2)], free_bytes=1)
+    assert planned.admission is not None
+    assert planned.admission.draft_tokens == 2
+    assert [lane.spec.num_draft for lane in planned.cohort] == [2, 2]
+
+    # Requests at or below the ceiling are installed verbatim and reported.
+    exact = plan_router_install(
+        _Model(), enabled=True, hard_reserve_bytes=0, max_draft_tokens=2
+    )
+    assert (exact.requested_draft_tokens, exact.draft_tokens) == (2, 2)
+
+    # A future descriptor may attest deeper recursion before the Rapid backend
+    # implements it. It remains compatible, but the backend ceiling is
+    # authoritative at admission.
+    deeper_model = _Model()
+    deeper_model.batched_mtp_capability = MappingProxyType(
+        {**dict(_descriptor()), "recursive_draft_depth": 4}
+    )
+    backend_limited = plan_router_install(
+        deeper_model, enabled=True, hard_reserve_bytes=0, max_draft_tokens=4
+    )
+    assert backend_limited.admitted is True
+    assert backend_limited.requested_draft_tokens == 4
+    assert backend_limited.draft_tokens == 2
+    assert backend_limited.router is not None
+    assert backend_limited.router.config.max_draft_tokens == 2
+
+    # A refused install reports no depth at all.
+    refused = plan_router_install(
+        _Model(), enabled=True, max_lanes=1, hard_reserve_bytes=0, max_draft_tokens=3
+    )
+    assert refused.admitted is False
+    assert refused.requested_draft_tokens is None and refused.draft_tokens is None
+
+    for bad in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match="max_draft_tokens"):
+            plan_router_install(
+                _Model(), enabled=True, hard_reserve_bytes=0, max_draft_tokens=bad
+            )
+
+
 def test_supported_requests_build_an_immutable_fixed_cohort_plan():
     router = _router()
 
@@ -522,6 +647,171 @@ def test_live_installer_fails_closed_before_mutating_unsupported_generators(
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("requested", "expected", "clamped"),
+    [(1, 1, False), (2, 2, False), (3, 2, True)],
+)
+def test_live_installer_threads_mtp_max_k_into_the_cohort_policy(
+    monkeypatch, caplog, requested, expected, clamped
+):
+    import logging
+
+    from rapid_mlx import scheduler as scheduler_module
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+
+    monkeypatch.setattr(scheduler_module, "_CONTINUOUS_MTP_DEPTH_CLAMP_WARNED", False)
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    runtime = SimpleNamespace(
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+            dynamic_membership=True,
+        )
+    )
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+    config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        # ``serve`` resolves ``num_speculative_tokens`` into ``mtp_max_k``.
+        mtp_max_k=requested,
+        max_num_seqs=4,
+        completion_batch_size=4,
+    )
+    batch_gen = _SchedulerBatchGenerator()
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"):
+        assert _install_continuous_mtp_router(batch_gen, _Model(), config)
+
+    assert batch_gen._continuous_mtp_router.config.max_draft_tokens == expected
+    clamp_lines = [
+        record.message
+        for record in caplog.records
+        if "exceeds the supported continuous draft depth" in record.message
+    ]
+    assert bool(clamp_lines) is clamped
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("bad_depth", [0, -1, True, 1.5])
+def test_live_installer_preserves_planner_depth_validation(bad_depth):
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+
+    config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        mtp_max_k=bad_depth,
+        max_num_seqs=4,
+        completion_batch_size=4,
+    )
+
+    with pytest.raises(ValueError, match="max_draft_tokens"):
+        _install_continuous_mtp_router(_SchedulerBatchGenerator(), _Model(), config)
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_clamp_warning_waits_for_admission_and_fires_once(
+    monkeypatch, caplog
+):
+    """A refused router must not claim a cohort will run at a clamped depth,
+    and a server whose generator is recreated warns once, not per install."""
+    import logging
+
+    from rapid_mlx import scheduler as scheduler_module
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    monkeypatch.setattr(scheduler_module, "_CONTINUOUS_MTP_DEPTH_CLAMP_WARNED", False)
+    runtime = SimpleNamespace(
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+            dynamic_membership=True,
+        )
+    )
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+
+    def _clamp_records():
+        return [
+            record
+            for record in caplog.records
+            if "exceeds the supported continuous draft depth" in record.message
+        ]
+
+    # 1. Planner refuses (one lane cannot amortize a cohort): no cohort, no
+    #    warning, even though K=3 would have been clamped.
+    refused = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        mtp_max_k=3,
+        max_num_seqs=1,
+        completion_batch_size=1,
+    )
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+        assert not _install_continuous_mtp_router(
+            _SchedulerBatchGenerator(), _Model(), refused
+        )
+    assert _clamp_records() == []
+
+    # 2. Runtime assembly refuses after the planner admitted: still no warning.
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("refused")),
+    )
+    admitted = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        mtp_max_k=3,
+        max_num_seqs=4,
+        completion_batch_size=4,
+    )
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+        assert not _install_continuous_mtp_router(
+            _SchedulerBatchGenerator(), _Model(), admitted
+        )
+    assert _clamp_records() == []
+
+    # 3. Two successful installs in one process (generator recreated): one
+    #    WARNING, then DEBUG.
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+        assert _install_continuous_mtp_router(
+            _SchedulerBatchGenerator(), _Model(), admitted
+        )
+        assert _install_continuous_mtp_router(
+            _SchedulerBatchGenerator(), _Model(), admitted
+        )
+    assert [record.levelno for record in _clamp_records()] == [
+        logging.WARNING,
+        logging.DEBUG,
+    ]
+
+
+@pytest.mark.requires_mlx
 def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatch):
     from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
     from rapid_mlx.spec_decode.mtp import continuous_runtime
@@ -548,6 +838,9 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     class _Driver:
         dynamic_membership = True
         lane_uids = (1, 2)
+        # The live cohort runs shallower than the policy maximum (admission
+        # may lower the depth under memory pressure); joins must follow it.
+        draft_depth = 1
         pending_join_uids = ()
         last_attached_uids = ()
         has_work = True
@@ -575,7 +868,14 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
             return ()
 
         def queue_lanes(self, specs, *, stop_tokens):
-            self.calls.append(("join", tuple(spec.uid for spec in specs), stop_tokens))
+            self.calls.append(
+                (
+                    "join",
+                    tuple(spec.uid for spec in specs),
+                    stop_tokens,
+                    tuple(spec.num_draft for spec in specs),
+                )
+            )
             if self.fail_join:
                 raise RuntimeError("join preparation rejected")
             return tuple(spec.uid for spec in specs)
@@ -690,6 +990,7 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
         call for call in driver.calls if isinstance(call, tuple) and call[0] == "join"
     )
     assert join[1] == (4, 5)
+    assert join[3] == (1, 1)  # follows the live cohort, not the policy default
 
     driver.lane_uids = (1, 2, 4, 5)
     batch_gen.next()
@@ -1188,3 +1489,23 @@ def test_queue_only_admission_remains_queue_when_every_lane_is_plain(monkeypatch
         free_bytes=0,
     )
     assert decision.route is ContinuousMTPIntegrationRoute.QUEUE
+
+
+@pytest.mark.parametrize("depth", [None, True, "2", 1])
+def test_runtime_refuses_unattested_recursive_draft_depth(depth):
+    admitted = _router()
+    runtime = replace(
+        admitted.runtime,
+        capability_descriptor={**_descriptor(), "recursive_draft_depth": depth},
+    )
+    router = routing_module.ContinuousMTPIntegrationRouter(
+        config=admitted.config, runtime=runtime
+    )
+
+    decision = router.plan([_request("a", 1), _request("b", 2)], free_bytes=1)
+
+    assert decision.route is ContinuousMTPIntegrationRoute.LEGACY_MTP
+    assert decision.cohort == ()
+    assert decision.reasons == (
+        "capability descriptor mismatch: recursive_draft_depth",
+    )

@@ -211,7 +211,21 @@ def load_model_checked(
 ) -> tuple[Any, dict[str, Any]]:
     """Run an mlx-lm model loader and type its internal load phase."""
 
-    validate_model_config_file(model_path)
+    config = validate_model_config_file(model_path)
+    effective_config = {**(config or {}), **(kwargs.get("model_config") or {})}
+    if (
+        effective_config.get("model_type") == "nemotron_h"
+        and effective_config.get("rapid_mlx_nemotron_h") is True
+        and "get_model_classes" not in kwargs
+    ):
+        from .models.nemotron_h_super import get_model_classes
+
+        kwargs["get_model_classes"] = get_model_classes
+        kwargs["model_config"] = {
+            **(kwargs.get("model_config") or {}),
+            "model_file": None,
+            "auto_map": None,
+        }
     with typed_mlx_load_boundaries():
         return loader(model_path, **kwargs)
 

@@ -288,6 +288,18 @@ class ContinuousMTPGenerationBatch:
         return tuple(self._states)
 
     @property
+    def draft_depth(self) -> int | None:
+        """The one draft depth every live lane shares, or ``None`` when empty.
+
+        The engine refuses per-lane depths (``adaptive per-lane draft depth is
+        excluded``), so a joining lane must be built at exactly this depth.
+        """
+        depths = {lane.num_draft for lane in self._batch.lanes}
+        if len(depths) != 1:
+            return None
+        return int(next(iter(depths)))
+
+    @property
     def initial_pending(self) -> bool:
         return any(state.pending_initial is not None for state in self._states.values())
 

@@ -170,6 +170,10 @@ from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
 
+# One clamp warning per server process (the batch generator, and with it the
+# continuous-MTP router install, is recreated during the server's life).
+_CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = False
+
 # Functional hybrid cache updates retain their prior lazy graph until an eval
 # barrier. Eight steps bounds that graph to a few hundred live Metal handles on
 # current 40-layer families while amortizing the synchronization cost.
@@ -1029,12 +1033,20 @@ def _install_continuous_mtp_router(
             "vendored MTP/plain decode"
         )
         return False
+    # ``num_speculative_tokens`` reaches the singleton verifier as
+    # ``mtp_max_k``; the cohort planner used to ignore it and always start from
+    # the policy default of 2.  Hand the request to the planner, which clamps
+    # it to the attested recursive draft depth, so K=1 is reachable on hosts
+    # where the verify forward is cheap per position but the per-cycle
+    # overhead is not.
+    requested_depth = getattr(config, "mtp_max_k", 2)
     decision = plan_router_install(
         model,
         enabled=getattr(config, "mtp_continuous_batching", False),
         cache_quantized=cache_quantized,
         cache_windowed=bool(getattr(config, "use_paged_cache", False)),
         max_lanes=max_lanes,
+        max_draft_tokens=requested_depth,
         # Preserve the mature singleton verifier for one-user traffic.  The
         # continuous coordinator pays for ragged bookkeeping even at B=1 and
         # is admitted only when there is real batching work to amortize it.
@@ -1078,6 +1090,28 @@ def _install_continuous_mtp_router(
             "retaining vendored MTP/plain decode"
         )
         return False
+    # Only now is a cohort going to run, so only now is a clamped depth worth
+    # a warning.  The generator is recreated during the server's life, so
+    # say it once per process and keep later installs at debug level.
+    global _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED
+    if (
+        decision.draft_tokens is not None
+        and decision.requested_draft_tokens is not None
+        and decision.draft_tokens != decision.requested_draft_tokens
+    ):
+        _level = (
+            logging.DEBUG if _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED else logging.WARNING
+        )
+        _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = True
+        logger.log(
+            _level,
+            "[MTP-continuous] num_speculative_tokens=%d exceeds the supported "
+            "continuous draft depth; the cohort drafts %d per lane (the "
+            "singleton verifier keeps max_k=%d)",
+            decision.requested_draft_tokens,
+            decision.draft_tokens,
+            decision.requested_draft_tokens,
+        )
 
     def _response_factory(**kwargs):
         # Response fields vary across mlx-lm 0.31 patch levels. Build exactly
@@ -1262,6 +1296,15 @@ def _install_continuous_mtp_router(
         joining_specs: list[SelfMTPLaneSpec] = []
         joining_stops: dict[int, frozenset[int]] = {}
         joining_sequences: dict[int, Any] = {}
+        # The engine refuses mixed depths inside one cohort, so a join must be
+        # built at the depth the live lanes already run (admission may have
+        # lowered it below the policy maximum under memory pressure).
+        live_depth = getattr(driver, "draft_depth", None)
+        join_depth = (
+            int(router.config.max_draft_tokens)
+            if live_depth is None
+            else int(live_depth)
+        )
         for sequence, metadata in _queued_candidates():
             if len(joining_specs) >= room:
                 break
@@ -1284,7 +1327,7 @@ def _install_continuous_mtp_router(
                 uid=metadata.uid,
                 prompt=metadata.prompt_tokens,
                 max_tokens=metadata.max_tokens,
-                num_draft=2,
+                num_draft=join_depth,
                 sampling=SelfMTPSampling(temperature=metadata.temperature),
                 accept_counter=(
                     _ensure_request_mtp_counter(requests[metadata.lane_id])
@@ -4089,6 +4132,39 @@ def _install_suffix_decoding(
         min_confidence,
     )
     return True
+
+
+def _pflash_cached_prefix_tokens(
+    pflash_config: Any,
+    memory_aware_cache: Any,
+    block_aware_cache: Any,
+    tokens: list[int],
+) -> int:
+    """Tokens of ``tokens`` the memory-aware prefix cache would reuse, for the
+    PFlash ``uncached`` threshold basis.
+
+    Returns 0 — i.e. leaves PFlash on its ``total`` arithmetic — unless the
+    basis is ``uncached``, the mode is ``auto``, the memory-aware cache (not
+    the block-aware one) is in use and the prompt is long enough for the
+    threshold to matter. ``probe`` itself has no side effects. When its result
+    would suppress compression, admission immediately performs one real fetch
+    and recomputes from the actual reuse; an intervening eviction can therefore
+    touch miss statistics before the request safely falls back to compression.
+    """
+    if getattr(pflash_config, "threshold_basis", "total") != "uncached":
+        return 0
+    if getattr(pflash_config, "mode", "off") != "auto":
+        return 0
+    if block_aware_cache is not None or memory_aware_cache is None:
+        return 0
+    if len(tokens) < int(getattr(pflash_config, "threshold", 0)):
+        return 0
+    probe = getattr(memory_aware_cache, "probe", None)
+    if not callable(probe):
+        return 0
+    result = probe(list(tokens))
+    matched = int(getattr(result, "matched_tokens", 0) or 0)
+    return max(0, min(matched, len(tokens)))
 
 
 class Scheduler:
@@ -8284,25 +8360,71 @@ class Scheduler:
         if request.prompt_token_ids is not None and request.model_prompt_tokens == 0:
             request.model_prompt_tokens = len(request.prompt_token_ids)
 
-        # PFlash long-prompt compression — must run before any cache
-        # lookup. When compression engages, prompt_token_ids is replaced
-        # by the kept-token subsequence and the prefix cache is bypassed
-        # entirely (both fetch and store, see below) because the
+        # PFlash long-prompt compression — must be decided before any cached
+        # KV is used. When compression engages, prompt_token_ids is replaced
+        # by the kept-token subsequence and no prefix-cache state is reused or
+        # stored (the uncached basis may have performed one confirming lookup)
+        # because the
         # compressed token sequence is a positional fiction: position i
         # in compressed land does NOT correspond to position i in the
         # original prompt, so reusing KV computed for the uncompressed
         # prefix would inject position-shifted state into a later
         # uncompressed request that shares the same sink prefix.
         pflash_compressed = False
+        _pflash_prefetched: tuple[Any, list[int], float, str | None] | None = None
         if self.config.pflash_config.mode != "off" and request.prompt_token_ids:
             original_tokens = list(request.prompt_token_ids)
             original_prefix_boundary = request.prefix_boundary
             scoring_start = time.monotonic()
+            # threshold_basis=uncached: ask the memory-aware prefix cache,
+            # with a side-effect-free probe, how much of this prompt it would
+            # reuse, and let PFlash compare only the uncached remainder to the
+            # threshold. If the probe would suppress compression, fetch once
+            # immediately and decide from the actual reusable amount so an
+            # intervening eviction cannot create a stale bypass. Other paths
+            # leave the normal fetch below unchanged.
+            structurally_ineligible = request.requires_prompt_integrity or (
+                request.has_tools and self.config.pflash_config.skip_when_tools
+            )
+            _pflash_cached_prefix = 0
+            if not structurally_ineligible:
+                _pflash_cached_prefix = _pflash_cached_prefix_tokens(
+                    self.config.pflash_config,
+                    self.memory_aware_cache,
+                    self.block_aware_cache,
+                    original_tokens,
+                )
+                # A side-effect-free probe cannot reserve an entry. If it would
+                # suppress compression, immediately perform the one real fetch
+                # and make the decision from what was actually reusable. An
+                # eviction between probe and fetch therefore falls back to
+                # compression instead of admitting a threshold-sized cold
+                # prefill based on stale metadata.
+                if (
+                    _pflash_cached_prefix > 0
+                    and len(original_tokens) - _pflash_cached_prefix
+                    < self.config.pflash_config.threshold
+                    and self.memory_aware_cache is not None
+                ):
+                    _fetch_t0 = time.monotonic()
+                    _cache, _remaining = self.memory_aware_cache.fetch(original_tokens)
+                    _fetch_dt = time.monotonic() - _fetch_t0
+                    _match_type = self.memory_aware_cache._last_match_type
+                    _pflash_prefetched = (
+                        _cache,
+                        _remaining,
+                        _fetch_dt,
+                        _match_type,
+                    )
+                    _pflash_cached_prefix = (
+                        len(original_tokens) - len(_remaining) if _cache else 0
+                    )
             compressed_tokens, metadata = compress_request_tokens(
                 original_tokens,
                 self.config.pflash_config,
                 has_tools=request.has_tools,
                 requires_prompt_integrity=request.requires_prompt_integrity,
+                cached_prefix_tokens=_pflash_cached_prefix,
             )
             metadata["scoring_seconds"] = time.monotonic() - scoring_start
             metadata["logical_prompt_tokens"] = len(original_tokens)
@@ -8312,10 +8434,10 @@ class Scheduler:
             request.pflash_metadata = metadata
             if metadata["compressed"]:
                 pflash_compressed = True
-                # M-02: count every prompt that took the PFlash bypass
-                # so /metrics surfaces the work that prefix-cache
-                # counters can't (the compressed sequence skips both
-                # fetch and store — see the explanation block above).
+                # M-02: count every prompt that took the PFlash bypass so
+                # /metrics surfaces compressed work independently of cache
+                # counters. The compressed sequence reuses and stores no KV;
+                # a stale-probe confirmation may still have counted a lookup.
                 # ``tokens_dropped`` = logical prompt length minus kept
                 # length, i.e. the saving operators want for capacity
                 # planning.
@@ -8392,7 +8514,7 @@ class Scheduler:
                 request.cache_hit_type = "miss"
                 request.remaining_tokens = request.prompt_token_ids
         elif self.memory_aware_cache is not None:
-            self._fetch_memory_aware_prefix(request)
+            self._fetch_memory_aware_prefix(request, prefetched=_pflash_prefetched)
         elif self.prefix_cache is not None:
             # Use legacy prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
@@ -8439,16 +8561,25 @@ class Scheduler:
             f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
         )
 
-    def _fetch_memory_aware_prefix(self, request: Request) -> None:
+    def _fetch_memory_aware_prefix(
+        self,
+        request: Request,
+        *,
+        prefetched: tuple[Any, list[int], float, str | None] | None = None,
+    ) -> None:
         """Look the request's prompt up in the memory-aware prefix cache."""
         import time as _time
 
         store: Any = self.memory_aware_cache
         prompt: list[int] = request.prompt_token_ids or []
-        _fetch_t0 = _time.monotonic()
-        cache, remaining = store.fetch(prompt)
-        _fetch_dt = _time.monotonic() - _fetch_t0
-        request.cache_hit_type = store._last_match_type
+        if prefetched is None:
+            _fetch_t0 = _time.monotonic()
+            cache, remaining = store.fetch(prompt)
+            _fetch_dt = _time.monotonic() - _fetch_t0
+            match_type = store._last_match_type
+        else:
+            cache, remaining, _fetch_dt, match_type = prefetched
+        request.cache_hit_type = match_type
         if cache:
             request.prompt_cache = cache
             request.cached_tokens = len(prompt) - len(remaining)

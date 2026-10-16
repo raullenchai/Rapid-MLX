@@ -319,6 +319,15 @@ def _add_pflash_args(parser) -> None:
         help="Allow PFlash compression on prompts with tool definitions. "
         "By default tool prompts are skipped for tool-call reliability.",
     )
+    parser.add_argument(
+        "--pflash-threshold-basis",
+        choices=["total", "uncached"],
+        default="total",
+        help="What --pflash auto compares to --pflash-threshold: 'total' "
+        "prompt tokens (default) or only the tokens NOT covered by a usable "
+        "memory-aware prefix-cache entry ('uncached'), so warm sessions that "
+        "grow past the threshold keep hitting the cache.",
+    )
 
 
 CLI_IDENTITY = (

@@ -415,13 +415,22 @@ binary auto-routing decision has a force-on and force-off pair.
 | `--pflash-query-window` | Trailing query window used to score middle blocks | 512 |
 | `--pflash-stride-blocks` | Keep every Nth middle block as an anchor during scoring (0 disables anchors) | 8 |
 | `--pflash-include-tools` | Allow compression on prompts with tool definitions (skipped by default for tool-call reliability) | off |
+| `--pflash-threshold-basis` | What `--pflash auto` compares to `--pflash-threshold`: `total` prompt tokens, or only the `uncached` tokens not already covered by a memory-aware prefix-cache entry (memory-aware cache only; the block-aware cache keeps `total` semantics). A partially cached prompt is still compressed when its uncached remainder reaches the threshold | `total` |
 
 PFlash is lossy. A compressed prompt keeps the first `--pflash-sink-tokens`,
 the last `--pflash-tail-tokens`, and the middle blocks that score highest
 against the end of the prompt, until it reaches `--pflash-keep-ratio` of the
 original. The rest of the middle is dropped, so the model does not see it. A
 compressed request also skips the prefix cache, so a later turn of the same
-conversation prefills from scratch. Prompts with tool definitions are
+conversation prefills from scratch. With `--pflash auto` the threshold is
+compared to the whole prompt by default, so a conversation that grows past it
+is compressed on every later turn. `--pflash-threshold-basis uncached` instead
+asks the memory-aware prefix cache (a side-effect-free probe; the block-aware
+cache is not consulted and keeps `total` semantics) how much of the prompt it
+already holds and compares only the uncached remainder: a warm conversation
+that grew past the threshold keeps its cache, a cold prompt above the
+threshold is compressed as before, and a partially cached prompt whose
+uncached remainder itself reaches the threshold is still compressed. Prompts with tool definitions are
 skipped unless you pass `--pflash-include-tools`, and Chat Completions
 requests with a `response_format` are skipped too.
 

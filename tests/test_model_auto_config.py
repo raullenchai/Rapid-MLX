@@ -2627,6 +2627,33 @@ class TestCheckpointMetadataFallback:
             snapshot_dir=None,
         )
 
+    @pytest.mark.parametrize(
+        "opt_in", [{}, {"rapid_mlx_nemotron_h": False}, {"rapid_mlx_nemotron_h": 1}]
+    )
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_unflagged_lightning_preserves_nonhybrid_routing(
+        self, monkeypatch, opt_in, nested
+    ):
+        # Lightning uses layers_block_type, not the existing layer_types signal.
+        language_config = {
+            "model_type": "nemotron_h",
+            "architectures": ["NemotronHForCausalLM"],
+            "layers_block_type": ["mamba", "moe", "attention", "moe"],
+            "n_routed_experts": 128,
+            "num_experts_per_tok": 6,
+            **opt_in,
+        }
+        metadata = {"text_config": language_config} if nested else language_config
+        assert auto_config_mod.config_declares_linear_attention(metadata) is False
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(metadata, None),
+        )
+        # No architecture override: leave existing routing/speculation policy
+        # intact, including any explicit profile selected by the caller.
+        assert auto_config_mod._detect_metadata_config("/local/lightning") is None
+
     def test_repackaged_agents_a1_dense_routes_from_config_and_template(
         self, monkeypatch
     ):

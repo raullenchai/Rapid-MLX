@@ -17,7 +17,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | Kimi | K2.6 | 4-bit |
 | Phi 3.5 / 4 | mini, 14B | 4-bit |
 | Granite 4 / 4.2 | tiny, h-micro (4.0-H); 3B, 8B, 30B dense (4.2) | 4/8-bit |
-| Nemotron 3 / 3.5 | Nano 30B, Lightning 30B, Bolt 74B-A9B (text) | 3/4-bit |
+| Nemotron 3 / 3.5 | Nano 30B, Lightning 30B, Bolt 74B-A9B (text), Super VL 120B-A12B (mixed 2/3-bit or 4-bit, text) | 2/3/4-bit |
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
 | MiniCPM 5 | 1B, 2B | 4-bit, OptiQ 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |

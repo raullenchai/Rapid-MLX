@@ -128,7 +128,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -382,7 +383,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -634,7 +636,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -887,7 +890,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -1140,7 +1144,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -1396,7 +1401,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -1645,7 +1651,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,
@@ -1900,7 +1907,8 @@
        "skip_when_tools": true,
        "stride_blocks": 8,
        "tail_tokens": 2048,
-       "threshold": 32768
+       "threshold": 32768,
+       "threshold_basis": "total"
       },
       "prefill_batch_size": 8,
       "prefill_step_size": 1024,

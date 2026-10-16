@@ -61,6 +61,11 @@ class PFlashConfig:
     query_window: int = 512
     stride_blocks: int = 8
     skip_when_tools: bool = True
+    # "total" compares the whole prompt to ``threshold``; "uncached" compares
+    # only the part NOT already covered by a usable memory-aware prefix-cache
+    # entry, so a warm agent session that grows past the threshold keeps its
+    # cache instead of being compressed (and losing the cache) every turn.
+    threshold_basis: str = "total"
 
     def validate(self) -> PFlashConfig:
         if self.mode not in ("off", "auto", "always"):
@@ -81,6 +86,8 @@ class PFlashConfig:
             raise ValueError("--pflash-query-window must be > 0")
         if self.stride_blocks < 0:
             raise ValueError("--pflash-stride-blocks must be >= 0")
+        if self.threshold_basis not in ("total", "uncached"):
+            raise ValueError("--pflash-threshold-basis must be one of: total, uncached")
         return self
 
 
@@ -147,6 +154,7 @@ def config_from_args(args: Any) -> PFlashConfig:
         query_window=args.pflash_query_window,
         stride_blocks=args.pflash_stride_blocks,
         skip_when_tools=not getattr(args, "pflash_include_tools", False),
+        threshold_basis=getattr(args, "pflash_threshold_basis", None) or "total",
     ).validate()
 
 
@@ -367,6 +375,7 @@ def compress_tokens(
     *,
     has_tools: bool = False,
     requires_prompt_integrity: bool = False,
+    cached_prefix_tokens: int = 0,
 ) -> PFlashResult:
     """Compress a token list according to PFlash settings.
 
@@ -393,8 +402,15 @@ def compress_tokens(
         return _unchanged(tokens, "empty")
     if config.mode == "off":
         return _unchanged(tokens, "off")
-    if config.mode == "auto" and n_tokens < config.threshold:
-        return _unchanged(tokens, "threshold")
+    if config.mode == "auto":
+        effective_tokens = n_tokens
+        if config.threshold_basis == "uncached" and cached_prefix_tokens > 0:
+            effective_tokens = n_tokens - min(cached_prefix_tokens, n_tokens)
+        if effective_tokens < config.threshold:
+            return _unchanged(
+                tokens,
+                "threshold" if n_tokens < config.threshold else "cached_prefix",
+            )
 
     block_size = max(1, config.block_size)
     keep_budget = _keep_budget(n_tokens, config)
@@ -458,13 +474,16 @@ def compress_request_tokens(
     *,
     has_tools: bool = False,
     requires_prompt_integrity: bool = False,
+    cached_prefix_tokens: int = 0,
 ) -> tuple[list[int], dict[str, int | bool | str | float]]:
     """Compress request tokens and return compact metadata for logging/state."""
+    cached_prefix_tokens = max(0, min(int(cached_prefix_tokens), len(tokens)))
     result = compress_tokens(
         tokens,
         config,
         has_tools=has_tools,
         requires_prompt_integrity=requires_prompt_integrity,
+        cached_prefix_tokens=cached_prefix_tokens,
     )
     return result.tokens, {
         "compressed": result.compressed,
@@ -475,6 +494,7 @@ def compress_request_tokens(
         "compression_ratio": result.compression_ratio,
         "middle_tokens_kept": result.middle_tokens_kept,
         "endpoints_only": result.endpoints_only,
+        "cached_prefix_tokens": cached_prefix_tokens,
     }
 
 

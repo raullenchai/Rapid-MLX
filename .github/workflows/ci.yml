@@ -988,6 +988,8 @@ jobs:
             tests/test_mllm_cache.py \
             tests/test_mllm_cache_namespace_compat.py \
             tests/test_memory_cache.py \
+            tests/test_pflash_threshold_basis.py \
+            tests/test_pflash_threshold_basis_scheduler.py \
             tests/test_metal_memory_budget.py \
             tests/test_kv_cache_gemma4_gate.py \
             tests/test_gemma4_unified_routing.py \
@@ -1010,6 +1012,8 @@ jobs:
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_nemotron_h_puzzle_vendored.py \
+            tests/test_nemotron_h_super.py \
+            tests/test_nemotron_super_vl_convert.py \
             tests/test_cohere2_moe_reference_parity.py \
             tests/test_mtp_spec_decode.py \
             tests/test_metal_cap_enforcement.py \
