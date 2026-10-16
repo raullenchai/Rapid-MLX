@@ -295,14 +295,21 @@ def test_system_tools_only_completion_saves_exact_cross_session_boundary():
             "function": {"name": "lookup", "parameters": {"type": "object"}},
         }
     ]
-    warm = _render(messages)
-    real = _render([*messages, {"role": "user", "content": "hi"}])
 
-    boundary = engine._compute_prefix_boundary(messages, tools, generation_prompt=warm)
+    def requires_user(items, template_tools=None, **kwargs):
+        if not any(item["role"] == "user" for item in items):
+            raise ValueError("No user query found in messages")
+        return _render(items, template_tools, **kwargs)
 
+    engine._apply_chat_template = requires_user
+    prompt, boundary = engine._shared_system_tools_prompt(messages, tools, False, None)
+    real = tokenizer.encode(
+        requires_user([*messages, {"role": "user", "content": "hi"}], tools)
+    )
     assert boundary > 0
-    assert tokenizer.encode(warm)[:boundary] == tokenizer.encode(real)[:boundary]
-    assert tokenizer.encode(warm)[boundary] != tokenizer.encode(real)[boundary]
+    assert prompt[:boundary] == real[:boundary]
+    assert prompt[boundary] != real[boundary]
+    assert len(prompt) == boundary + 1
 
 
 @pytest.mark.asyncio
