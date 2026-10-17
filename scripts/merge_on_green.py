@@ -86,27 +86,27 @@ def freeze(api: GitHub, manual: str = "") -> str:
     if manual.lower() == "true":
         return "RELEASE_FREEZE is true"
     try:
-        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
-            runs = api.items(
-                f"actions/workflows/auto-release.yml/runs?status={status}",
-                "workflow_runs",
-            )
-            for run in runs:
-                if run["status"] == "completed":
-                    continue
-                jobs = api.items(f"actions/runs/{run['id']}/jobs", "jobs")
-                detect = [j for j in jobs if j["name"] == "detect"]
-                if not detect or any(j["status"] != "completed" for j in detect):
-                    return f"Release run {run['id']} detection undetermined"
-                if any(
-                    j["name"] != "detect"
-                    and (j["status"] != "completed" or j["conclusion"] != "skipped")
-                    for j in jobs
-                ):
-                    return f"Release run {run['id']} is releasing"
-                # With only detect visible, downstream jobs may not exist yet.
-                if not any(j["name"] != "detect" for j in jobs):
-                    return f"Release run {run['id']} downstream jobs undetermined"
+        runs = api.items(
+            "actions/workflows/auto-release.yml/runs",
+            "workflow_runs",
+            max_pages=1,
+        )
+        for run in runs:
+            if run["status"] == "completed":
+                continue
+            jobs = api.items(f"actions/runs/{run['id']}/jobs", "jobs")
+            detect = [j for j in jobs if j["name"] == "detect"]
+            if not detect or any(j["status"] != "completed" for j in detect):
+                return f"Release run {run['id']} detection undetermined"
+            if any(
+                j["name"] != "detect"
+                and (j["status"] != "completed" or j["conclusion"] != "skipped")
+                for j in jobs
+            ):
+                return f"Release run {run['id']} is releasing"
+            # With only detect visible, downstream jobs may not exist yet.
+            if not any(j["name"] != "detect" for j in jobs):
+                return f"Release run {run['id']} downstream jobs undetermined"
         head = api.request("commits/main")
         if head["commit"]["message"].startswith("chore: bump version to "):
             runs = api.items(

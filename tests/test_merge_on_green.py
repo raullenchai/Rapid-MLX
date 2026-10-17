@@ -76,8 +76,7 @@ def ready():
     api.data[f"commits/{SHA}/statuses"] = [
         dict(context="merge-ready-head", id=1, state="success")
     ]
-    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
-        api.data[f"actions/workflows/auto-release.yml/runs?status={status}"] = []
+    api.data["actions/workflows/auto-release.yml/runs"] = []
     api.data["commits/main"] = dict(sha=SHA, commit=dict(message="Fix behavior"))
     api.data[("PUT", "pulls/1/merge")] = dict(merged=True, message="merged")
     return api
@@ -233,9 +232,7 @@ def test_freeze_variable_and_api_error():
 )
 def test_release_detection(jobs, expected):
     api = ready()
-    api.data["actions/workflows/auto-release.yml/runs?status=waiting"] = [
-        dict(id=7, status="waiting")
-    ]
+    api.data["actions/workflows/auto-release.yml/runs"] = [dict(id=7, status="waiting")]
     api.data["actions/runs/7/jobs"] = jobs
     assert expected in m.freeze(api)
     if not expected:
@@ -244,7 +241,7 @@ def test_release_detection(jobs, expected):
 
 def test_completed_run_does_not_freeze_and_bump_head_race():
     api = ready()
-    api.data["actions/workflows/auto-release.yml/runs?status=queued"] = [
+    api.data["actions/workflows/auto-release.yml/runs"] = [
         dict(id=7, status="completed")
     ]
     assert m.freeze(api) == ""
@@ -556,3 +553,34 @@ def test_unknown_mergeability_can_resolve(monkeypatch):
     api.handler = handler
     assert m.live_pr(api, 1)["mergeable_state"] == "clean"
     assert reads == 2
+
+
+@pytest.mark.parametrize(
+    "status", ["in_progress", "waiting", "pending", "requested", "queued", "new_status"]
+)
+def test_release_status_transition_uses_one_bounded_listing(monkeypatch, status):
+    api = m.GitHub("owner/repo", "read")
+    request = Mock()
+
+    def response(path, *args, **kwargs):
+        if "?status=" in path:
+            # A waiting run moves to in_progress after that status was queried.
+            return dict(workflow_runs=[])
+        if path == "actions/workflows/auto-release.yml/runs?per_page=100&page=1":
+            return dict(
+                workflow_runs=[dict(id=7, status=status)]
+                + [dict(id=i, status="completed") for i in range(99)]
+            )
+        if path == "actions/runs/7/jobs?per_page=100&page=1":
+            return dict(jobs=[])
+        if path == "commits/main":
+            return dict(sha=SHA, commit=dict(message="Fix behavior"))
+        raise AssertionError(path)
+
+    request.side_effect = response
+    monkeypatch.setattr(api, "request", request)
+    assert m.freeze(api) == "Release run 7 detection undetermined"
+    assert [c.args[0] for c in request.call_args_list] == [
+        "actions/workflows/auto-release.yml/runs?per_page=100&page=1",
+        "actions/runs/7/jobs?per_page=100&page=1",
+    ]

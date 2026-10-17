@@ -33,13 +33,23 @@ def ensure_label(api: GitHub, label: str) -> None:
 
 def issue(api: GitHub, label: str, title: str, body: str) -> None:
     ensure_label(api, label)
-    issues = api.items(f"issues?state=open&labels={label}")
-    issues = [i for i in issues if "pull_request" not in i]
+    path = f"issues?state=open&labels={label}"
+    issues = [i for i in api.items(path) if "pull_request" not in i]
     body = f"<!-- {label} -->\n{body}"
-    if issues:
-        api.request(f"issues/{issues[0]['number']}", "PATCH", {"body": body})
-    else:
+    if not issues:
         api.request("issues", "POST", {"title": title, "body": body, "labels": [label]})
+        # Another guard may have created the same tracking issue concurrently.
+        issues = [i for i in api.items(path) if "pull_request" not in i]
+    if issues:
+        issues.sort(key=lambda i: i["number"])
+        kept = issues[0]["number"]
+        api.request(f"issues/{kept}", "PATCH", {"body": body})
+        for duplicate in issues[1:]:
+            number = duplicate["number"]
+            api.request(
+                f"issues/{number}/comments", "POST", {"body": f"Duplicate of #{kept}"}
+            )
+            api.request(f"issues/{number}", "PATCH", {"state": "closed"})
 
 
 def runs(api: GitHub, workflow: str, event: str) -> list[dict]:
@@ -202,11 +212,16 @@ def guard(api: GitHub, run: dict) -> str:
     jobs = api.items(
         f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs"
     )
-    failed = [j for j in jobs if j["conclusion"] == "failure"]
+    failed = [
+        j
+        for j in jobs
+        if j["conclusion"] == "failure"
+        and j.get("name") not in {"tests", "desktop-tests"}
+    ]
     failed_steps = [
         s for j in failed for s in j.get("steps", []) if s["conclusion"] == "failure"
     ]
-    if not failed_steps or all(
+    if failed and all(
         s["name"] in {"Set up job", "Set up runner", "Initialize containers"}
         for s in failed_steps
     ):
@@ -237,31 +252,34 @@ def guard(api: GitHub, run: dict) -> str:
     if existing:
         notify_author(api, originals[0], existing[0], run)
         return "Revert PR already exists"
-    try:
-        api.request(f"git/ref/heads/{branch}")
-        return "Revert branch already exists"
-    except APIError as exc:
-        if exc.status != 404:
-            raise
     if not api.pat:
         raise APIError("RELEASE_PAT is required for revert writes")
     try:
-        revert_commit(api, sha, branch)
-    except (APIError, OSError, subprocess.TimeoutExpired) as exc:
+        api.request(f"git/ref/heads/{branch}")
+    except APIError as exc:
+        if exc.status != 404:
+            raise
+        try:
+            revert_commit(api, sha, branch)
+        except (APIError, OSError, subprocess.TimeoutExpired) as exc:
+            issue(api, "main-red", "Main CI is failing", f"{detail}\n{exc}")
+            return "Revert conflict or preparation failure recorded"
+    try:
+        revert = api.request(
+            "pulls",
+            "POST",
+            {
+                "head": branch,
+                "base": "main",
+                "title": f'Revert "{title}"',
+                "body": f"Reverts #{originals[0]['number']}.\nFailing run: {run['html_url']}\n"
+                "This revert PR is NOT auto-merged. Review and merge manually.",
+            },
+            pat=True,
+        )
+    except APIError as exc:
         issue(api, "main-red", "Main CI is failing", f"{detail}\n{exc}")
-        return "Revert conflict or preparation failure recorded"
-    revert = api.request(
-        "pulls",
-        "POST",
-        {
-            "head": branch,
-            "base": "main",
-            "title": f'Revert "{title}"',
-            "body": f"Reverts #{originals[0]['number']}.\nFailing run: {run['html_url']}\n"
-            "This revert PR is NOT auto-merged. Review and merge manually.",
-        },
-        pat=True,
-    )
+        return "Revert PR creation failure recorded"
     ensure_label(api, "post-merge-revert")
     api.request(
         f"issues/{revert['number']}/labels", "POST", {"labels": ["post-merge-revert"]}

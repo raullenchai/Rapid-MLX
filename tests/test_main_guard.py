@@ -197,10 +197,8 @@ def test_revert_pr_and_author_comment_idempotence(monkeypatch):
     assert any(c[:2] == ("issues/3/comments", "POST") for c in api.calls)
 
 
-def test_existing_branch_and_api_error():
+def test_existing_branch_api_error():
     api = setup_api()
-    api.data[f"git/ref/heads/{BRANCH}"] = {}
-    assert "branch already" in g.guard(api, run())
     api.data[f"git/ref/heads/{BRANCH}"] = APIError("forbidden", 403)
     with pytest.raises(APIError):
         g.guard(api, run())
@@ -346,3 +344,99 @@ def test_cli(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as result:
         runpy.run_module("scripts.main_guard", run_name="__main__")
     assert result.value.code == 1
+
+
+@pytest.mark.parametrize("facade", ["tests", "desktop-tests"])
+@pytest.mark.parametrize("steps", [[], [dict(name="Set up job", conclusion="failure")]])
+def test_setup_failure_with_failed_facade_is_infrastructure(facade, steps):
+    api = setup_api()
+    api.data["actions/runs/10/attempts/2/jobs"] = [
+        dict(name="workload", conclusion="failure", steps=steps),
+        dict(
+            name=facade,
+            conclusion="failure",
+            steps=[dict(name="Check results", conclusion="failure")],
+        ),
+    ]
+    assert g.guard(api, run()) == "Infrastructure-only failure ignored"
+    assert not any(c[1] == "POST" for c in api.calls)
+
+
+@pytest.mark.parametrize("facade", ["tests", "desktop-tests"])
+def test_only_failed_facade_is_real_failure(facade):
+    api = setup_api()
+    api.data["actions/runs/10/attempts/1/jobs"] = [
+        dict(name=facade, conclusion="failure", steps=[])
+    ]
+    api.data[("POST", "actions/runs/10/rerun-failed-jobs")] = None
+    assert g.guard(api, run(run_attempt=1)) == "Failed jobs rerun once"
+
+
+@pytest.mark.parametrize("creation_fails", [False, True])
+def test_orphan_revert_branch_resumes_pr_creation(monkeypatch, creation_fails):
+    api = setup_api()
+    api.data[f"git/ref/heads/{BRANCH}"] = {}
+    prepare = Mock()
+    monkeypatch.setattr(g, "revert_commit", prepare)
+    if creation_fails:
+        api.data[("POST", "pulls")] = APIError("PR creation refused", 422)
+        assert g.guard(api, run()) == "Revert PR creation failure recorded"
+        assert any(
+            "PR creation refused" in str(c[2])
+            for c in api.calls
+            if c[:2] == ("issues", "POST")
+        )
+    else:
+        assert g.guard(api, run()) == "Revert PR proposed"
+        pr = next(c for c in api.calls if c[:2] == ("pulls", "POST"))
+        assert pr[3] and pr[2]["head"] == BRANCH
+        assert pr[2]["title"] == 'Revert "Fix behavior"'
+        assert "#3" in pr[2]["body"] and "NOT auto-merged" in pr[2]["body"]
+        assert any(c[:2] == ("issues/4/labels", "POST") for c in api.calls)
+        assert any(c[:2] == ("issues/3/comments", "POST") for c in api.calls)
+    prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+@pytest.mark.parametrize("label", ["main-red", "nightly-failure"])
+def test_tracking_issue_dedupes_concurrent_creation_and_refresh(refresh, label):
+    api = setup_api()
+    listing = f"issues?state=open&labels={label}"
+    reads = 0
+
+    def handler(path, method, data, pat):
+        nonlocal reads
+        if path == listing:
+            reads += 1
+            if not refresh and reads == 1:
+                return []
+            return [
+                dict(number=12),
+                dict(number=2, pull_request={}),
+                dict(number=8),
+                dict(number=10),
+            ]
+        if method in {"POST", "PATCH"}:
+            return {}
+        return NotImplemented
+
+    api.handler = handler
+    g.issue(api, label, "Failure", "Current failure")
+    assert (
+        "issues/8",
+        "PATCH",
+        {"body": f"<!-- {label} -->\nCurrent failure"},
+        False,
+    ) in api.calls
+    for number in (10, 12):
+        comment = (
+            f"issues/{number}/comments",
+            "POST",
+            {"body": "Duplicate of #8"},
+            False,
+        )
+        close = (f"issues/{number}", "PATCH", {"state": "closed"}, False)
+        assert comment in api.calls and close in api.calls
+        assert api.calls.index(comment) < api.calls.index(close)
+    assert not any(c[0].startswith("issues/2") for c in api.calls)
+    assert reads >= (1 if refresh else 2)
