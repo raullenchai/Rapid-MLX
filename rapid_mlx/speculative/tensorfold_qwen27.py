@@ -261,16 +261,6 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 <= store.budget_bytes
             )
 
-        def _is_history_cut(self, ids, position):
-            assistant = tuple(self.prefill_plan.assistant)
-            if not assistant:
-                return False
-            width = len(assistant)
-            for at in range(len(ids) - width, max(-1, len(ids) - 256), -1):
-                if tuple(ids[at : at + width]) == assistant:
-                    return self.prompt_chunks(ids).floor(at) == position
-            return False
-
         def begin_stream(
             self, stream, *, cache=None, cached_tokens=0, checkpoints_at=()
         ):
@@ -290,18 +280,8 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 entry = store.peek(probe, usable=lambda n: n == len(owned))
                 if entry is None or entry.pinned:
                     self.interior_tokens = None
-                elif ids[: len(owned)] == owned and (
-                    len(owned) in original
-                    or (
-                        cached_tokens == len(owned)
-                        and not original
-                        and self._is_history_cut(ids, len(owned))
-                    )
-                ):
-                    # Shortening a message can make the restored cut its new
-                    # history boundary. It is no longer an optional interior.
-                    if len(owned) not in original:
-                        store.insert(owned, entry.cache, last_prompt=ids)
+                elif ids[: len(owned)] == owned and len(owned) in original:
+                    # Only the scheduler can promote an optional cut to history.
                     self.interior_tokens = None
             if not original and self.interior_tokens is None:
                 return super().begin_stream(
@@ -316,10 +296,13 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
             candidate = None
             if len(starts) >= 2 and starts[-1] - starts[-2] >= 2 * self.prefill_step:
                 cuts = self.prompt_chunks(ids).starts or []
+                boundary = min(starts[-1], max(original, default=starts[-1]))
                 grid = [
                     at
                     for previous, at in zip(cuts, cuts[1:])
                     if at - previous == self.prefill_step
+                    and at < boundary
+                    and at not in original
                 ]
                 if grid:
                     candidate = grid[-1]
@@ -334,7 +317,6 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 and self.interior_tokens is None
                 and candidate is not None
                 and candidate > cached_tokens
-                and candidate not in original
                 and len(store) + len(original) + 1 <= store.slots
             ):
                 added = candidate

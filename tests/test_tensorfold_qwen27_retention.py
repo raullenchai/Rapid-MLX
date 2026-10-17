@@ -206,14 +206,13 @@ def test_short_final_message_releases_prior_long_message_cut():
     assert [len(tokens) for tokens, _ in result.history_checkpoints] == [7950]
 
 
-def test_restored_cut_that_becomes_history_is_not_released_later():
+def test_scheduler_selected_cut_relinquishes_optional_ownership():
     store, engine = setup_cut()
     key = tuple(engine.interior_tokens)
     shortened = prompt()[:6144] + [100] * 56 + [10, 11] + [0] * 6
-    run(engine, shortened, cached=6144, selected=())
+    run(engine, shortened, cached=6144, selected=(6144,))
     assert engine.interior_tokens is None
     assert key in store.entries
-    assert store.entries[key].last_prompt == shortened
     run(engine, prompt(1))
     assert key in store.entries
     assert list(key) not in store.transfers
@@ -223,8 +222,12 @@ def test_original_or_pinned_checkpoint_is_never_owned_or_removed():
     store = Store()
     engine = _checkpoint_engine(Engine, lambda: store)()
     original = run(engine, prompt(), selected=(6144, 7950))
-    assert engine.interior_tokens is None
-    assert [len(tokens) for tokens, _ in original.history_checkpoints] == [6144, 7950]
+    assert engine.interior_tokens == prompt()[:4096]
+    assert [len(tokens) for tokens, _ in original.history_checkpoints] == [
+        4096,
+        6144,
+        7950,
+    ]
     store, engine = setup_cut()
     key = tuple(engine.interior_tokens)
     entry = store.entries[key]
@@ -309,3 +312,59 @@ def test_interrupted_existing_cut_becomes_runtime_progress():
     run(engine, prompt(1))
     assert tuple(tokens) in store.entries
     assert tokens not in store.transfers
+
+
+class PlannedEngine(Engine):
+    def __init__(self):
+        super().__init__()
+        plan = pytest.importorskip("tensorfold.engine.prefill_plan")
+        self.prefill_plan = plan.PrefillPlan(
+            step=2048, openers=(10,), min_chunk=256, assistant=(10, 11)
+        )
+
+    def prompt_chunks(self, ids):
+        return self.prefill_plan.chunks(ids)
+
+
+def test_aligned_history_boundary_keeps_latest_eligible_interior():
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
+    engine = _checkpoint_engine(PlannedEngine, lambda: store)()
+    ids = [100] * 8202
+    for at in (0, 33, 8192):
+        ids[at] = 10
+    ids[8193] = 11
+    assert engine.prompt_chunks(ids).starts == [0, 2048, 4096, 6144, 8192]
+    first = run(engine, ids, selected=(8192,))
+    assert [len(t) for t, _ in first.history_checkpoints] == [6144, 8192]
+    assert engine.interior_tokens == ids[:6144]
+    keep(store, first)
+    edited = ids.copy()
+    edited[7900] = 999
+    assert (
+        store.longest(edited, usable=lambda n: n in engine.prompt_chunks(edited))
+        == 6144
+    )
+
+
+def test_raw_assistant_marker_does_not_relinquish_optional_ownership():
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
+    engine = _checkpoint_engine(PlannedEngine, lambda: store)()
+    keep(store, run(engine, prompt()))
+    owned = engine.interior_tokens.copy()
+    raw = owned + [100] * 56 + [10, 11] + [100] * 8
+    starts = engine.prompt_chunks(raw)
+    cached, cache, last = store.match(raw, usable=lambda n: n in starts)
+    selected = checkpoints.choose_checkpoints(0, cached, last, raw)
+    assert cached == 6144
+    assert selected == []
+    assert starts.floor(6200) == cached
+    run(engine, raw, cached=cached, cache=cache, selected=selected)
+    assert engine.interior_tokens == owned
+    other = run(engine, prompt(1))
+    assert store.peek(owned + [0], usable=lambda n: n == len(owned)) is None
+    assert engine.interior_releases == 1
+    keep(store, other)
+    assert len(store) == 3  # two native histories and just one optional cut
+    assert engine.interior_tokens == prompt(1)[:6144]

@@ -68,10 +68,12 @@ that a single scheduler thread makes interleaved lifecycles atomic.
 ## Retention policy
 
 The adapter owns at most one optional cut. It considers the latest existing
-full-step grid start only when the final supplied message spans at least two
-2,048-token steps, the scheduler already requests retention, the cut is beyond
-the restored state, and the cut is not already selected. Admission requires
-space for the current store, all original selections, and one extra slot.
+full-step grid start strictly before both the final message boundary and the
+last original scheduler selection, excluding all original selections. An aligned
+history boundary therefore does not hide an earlier eligible interior. The
+final supplied message must span at least two 2,048-token steps, the scheduler
+must already request retention, and the cut must be beyond the restored state.
+Admission requires space for the current store, all original selections, and one extra slot.
 Pinned entries count conservatively in this admission test.
 
 After prefill, the wrapper checks the actual byte sizes of every pending
@@ -83,20 +85,22 @@ it to displace them. Release uses exact-prefix `peek` and public
 `match(..., take=True)` for the owned cut; it never chooses an arbitrary victim
 or removes a pinned system entry.
 
-An incompatible prompt or short final message releases the optional cut. If
-shortening the prompt makes the restored cut an ordinary history boundary,
-ownership is relinquished and its history metadata is updated. Cancellation
-preserves runtime retry progress and original snapshots. The store is reached
+An incompatible prompt or short final message releases the optional cut.
+Ownership is relinquished as history only when the scheduler itself selects
+the owned length. Assistant marker proximity is insufficient: raw completions
+can contain the same marker. The pinned scheduler filters out restored lengths
+(`server/checkpoints.py:32-37`, `server/prompt_fill.py:97-99`), so a shortened
+chat whose history floors to the restored cut also keeps optional ownership
+until the normal release rules apply. Cancellation preserves runtime retry progress and original snapshots. The store is reached
 through a weak reference so keeping the factory does not retain model caches
 after backend close. Administrative transfer lookups increment runtime hit
 counters, so reuse below comes from terminal provider `cached_tokens`, not the
 store's lookup hit counter. Optional releases and native evictions are reported
 separately.
 
-The approximately 158-line wrapper was reviewed for simplification. Its checks
-cover distinct admission, release, history promotion, interruption, pinning,
-and lifecycle cases. The single-lane wrapper is unchanged from the guarded
-implementation; the lane gate avoids adding a new synchronization mechanism.
+The wrapper was reviewed for simplification; the marker inference and its
+metadata reinsertion were removed. Its checks cover distinct admission, release, history promotion, interruption, pinning,
+and lifecycle cases. The lane gate avoids adding a new synchronization mechanism.
 
 ## Measurement method
 
@@ -242,7 +246,7 @@ Across paired mixed phases, the largest observed fixed-minus-before increase is 
 
 ## Model-free verification
 
-- `tests/test_tensorfold_*`: 226 passed. The lane-factory regression fails for
+- `tests/test_tensorfold_*`: 228 passed after the offline review corrections. The lane-factory regression fails for
   lanes 2/4/8 before the decision and passes afterward; lane 1 passes in both.
   The existing guard regressions cover full slots, actual pending bytes,
   pressure release, compatible edits, short turns, history promotion, pinning,
@@ -250,7 +254,7 @@ Across paired mixed phases, the largest observed fixed-minus-before increase is 
   A focused full-slot factory replay fails against the rebased two-cut pilot
   (`[4096, 6144, 7950]` instead of `[7950]`) and passes against this guard.
 - `pytest --cov=rapid_mlx` plus `diff-cover --compare-branch=origin/main
-  --fail-under=100`: 88 changed executable lines, zero missing, 100%.
+  --fail-under=100`: 76 changed executable lines, zero missing, 100%.
 - Ruff check and format check pass across all 12 TensorFold source/test files.
 - `scripts/check_mypy_error_budget.py` passes in its pinned Python 3.11
   environment: 839 grandfathered diagnostics across 161 files, no growth. The
@@ -338,3 +342,39 @@ hashes; archive receipts before a new measurement. A startup-only attempt was
 interrupted before inference to bypass a spurious large-download confirmation;
 the successful campaign uses `RAPID_MLX_AUTO_PULL=1` together with offline mode
 and disabled downloads. That interruption is excluded from measurement.
+
+## Offline review corrections
+
+Two model-free regressions failed against the reviewed implementation and pass
+with the corrections. The real pinned `PrefillPlan` for 8,202 tokens with message
+openers at 0, 33, and 8,192 produces starts `[0, 2048, 4096, 6144, 8192]`.
+With original selection `[8192]`, the adapter now retains 6,144 as well; editing
+token 7,900 resumes 6,144. A raw completion extending that optional prefix with
+56 tokens, an assistant marker, and eight tokens has no scheduler selection.
+It retains optional ownership and releases the old entry on the next
+incompatible prompt, leaving at most one optional cut.
+
+An offline replay compared the reviewed and corrected hooks over all 436
+recorded requests in 22 rebased campaign files, using their audited prompt token
+IDs/history/shared lengths, the real pinned plan/store/selection function, and
+scalar snapshots. Snapshot sizes follow `258750464 + 65536 * prefix_length`
+bytes, verified against every recorded snapshot size. The old-hook replay
+matches every recorded fixed-run reuse count. This checks retention decisions;
+it does not remeasure latency or execute model inference.
+
+The fixtures are **not all equivalent**: `setup-thinking` in each of
+`before-on-0-requests.json` and `fixed-on-0-requests.json` changes candidate
+8,192 to 6,144 and selected/retained lengths `[8192]` to `[6144, 8192]`.
+Retained bytes increase from 3,945,207,808 to 4,606,611,456 for that request.
+The next request, `S5a`, releases the optional cut and restores the previous
+inventory/bytes. Its cumulative release counter, and those of `S6`,
+`near-start`, `long-system-cold`, and `long-system-edit`, increase by one in
+both files. All replayed reuse counts are unchanged. The other 20 files have
+identical candidate/admission, ownership, inventory, bytes, and release results.
+Removing only the marker heuristic changes none of the 436 requests; no
+measured case is lost. Shortened histories without scheduler selection may
+release sooner, which preserves the optional-cut ownership contract.
+
+No models were loaded or servers started for these corrections. The changed
+`setup-thinking` admission requires an owner decision on any model rerun;
+earlier measurements do not measure this new admission.
