@@ -205,7 +205,11 @@ from .memory_cache import (  # noqa: E402
     session_floor_bytes,
 )
 from .paged_cache import PagedCacheManager
-from .pflash import PFlashConfig, compress_request_tokens
+from .pflash import (
+    PFlashConfig,
+    compress_request_tokens,
+    threshold_basis_fallback_reason,
+)
 from .prefix_cache import (
     BlockAwarePrefixCache,
     PrefixCacheManager,
@@ -4663,6 +4667,19 @@ class Scheduler:
                 logger.info(
                     f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
                 )
+
+        # Cache construction above is shared by serve, bench and direct engines.
+        basis_fallback = threshold_basis_fallback_reason(
+            self.config.pflash_config,
+            prefix_cache_enabled=self.config.enable_prefix_cache,
+            paged_cache_enabled=self.block_aware_cache is not None,
+            memory_aware_cache_available=self.memory_aware_cache is not None,
+        )
+        if basis_fallback is not None:
+            logger.warning(
+                "--pflash-threshold-basis uncached behaves as total: %s.",
+                basis_fallback,
+            )
 
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.

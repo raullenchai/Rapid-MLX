@@ -9,6 +9,7 @@ from rapid_mlx.pflash import (
     compress_request_tokens,
     compress_tokens,
     config_from_args,
+    threshold_basis_fallback_reason,
 )
 
 
@@ -98,3 +99,35 @@ def test_metadata_clamps_cached_prefix_to_prompt(reported, expected):
         _toks(1500), cfg, cached_prefix_tokens=reported
     )
     assert metadata["cached_prefix_tokens"] == expected
+
+
+@pytest.mark.parametrize(
+    "mode,basis,prefix,paged,memory,expected",
+    [
+        ("always", "uncached", True, False, True, "--pflash always"),
+        ("auto", "uncached", True, True, False, "block-aware/paged cache"),
+        (
+            "auto",
+            "uncached",
+            True,
+            False,
+            False,
+            "memory-aware prefix cache is disabled",
+        ),
+        ("auto", "uncached", False, False, False, "prefix caching is disabled"),
+        ("auto", "uncached", True, False, True, None),
+        ("always", "total", False, False, False, None),
+        ("off", "uncached", False, False, False, None),
+    ],
+)
+def test_threshold_basis_fallback_reason(mode, basis, prefix, paged, memory, expected):
+    reason = threshold_basis_fallback_reason(
+        PFlashConfig(mode=mode, threshold_basis=basis),
+        prefix_cache_enabled=prefix,
+        paged_cache_enabled=paged,
+        memory_aware_cache_available=memory,
+    )
+    if expected is None:
+        assert reason is None
+    else:
+        assert expected in reason

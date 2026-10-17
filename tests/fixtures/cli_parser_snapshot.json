@@ -1113,7 +1113,7 @@
        "const": null,
        "default": 256,
        "dest": "pflash_sink_tokens",
-       "help": "Leading prompt tokens always kept by PFlash (default: 256).",
+       "help": "Leading prompt tokens always kept by PFlash (default: 256). Counted inside the keep budget; compression is skipped if sink + tail leave no middle-token budget.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -1128,7 +1128,7 @@
        "const": null,
        "default": 2048,
        "dest": "pflash_tail_tokens",
-       "help": "Trailing prompt tokens always kept by PFlash (default: 2048).",
+       "help": "Trailing prompt tokens always kept by PFlash (default: 2048). Counted inside the keep budget; compression is skipped if sink + tail leave no middle-token budget.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -6143,7 +6143,7 @@
        "const": null,
        "default": 256,
        "dest": "pflash_sink_tokens",
-       "help": "Leading prompt tokens always kept by PFlash (default: 256).",
+       "help": "Leading prompt tokens always kept by PFlash (default: 256). Counted inside the keep budget; compression is skipped if sink + tail leave no middle-token budget.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -6158,7 +6158,7 @@
        "const": null,
        "default": 2048,
        "dest": "pflash_tail_tokens",
-       "help": "Trailing prompt tokens always kept by PFlash (default: 2048).",
+       "help": "Trailing prompt tokens always kept by PFlash (default: 2048). Counted inside the keep budget; compression is skipped if sink + tail leave no middle-token budget.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
