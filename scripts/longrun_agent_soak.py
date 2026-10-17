@@ -9,6 +9,7 @@ import asyncio
 import csv
 import json
 import random
+import reprlib
 import subprocess
 import time
 from collections import Counter
@@ -71,6 +72,79 @@ def percentile(values, fraction):
         return ""
     ordered = sorted(values)
     return round(ordered[min(len(ordered) - 1, int((len(ordered) - 1) * fraction))], 1)
+
+
+def diagnostic_repr(value, limit):
+    formatter = reprlib.Repr()
+    formatter.maxlevel = 4
+    formatter.maxdict = 4
+    formatter.maxlist = 4
+    formatter.maxtuple = 4
+    formatter.maxset = 4
+    formatter.maxstring = 200
+    formatter.maxlong = 200
+    formatter.maxother = 200
+    try:
+        return formatter.repr(value)[:limit]
+    except (ValueError, RecursionError):
+        # Huge integers and deeply nested JSON values may not be representable.
+        return f"<{type(value).__name__}>"[:limit]
+
+
+def response_details(body, message_count):
+    body = body if isinstance(body, dict) else {}
+    choices = body.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    choice = choice if isinstance(choice, dict) else {}
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    content = message.get("content")
+    content = "" if content is None else content
+    reasoning = message.get("reasoning_content")
+    reasoning = "" if reasoning is None else reasoning
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is not None:
+        finish_reason = (
+            finish_reason
+            if isinstance(finish_reason, str)
+            else diagnostic_repr(finish_reason, 200)
+        )[:200]
+    usage = body.get("usage")
+    if isinstance(usage, dict):
+        # A fixed schema and 64-bit counts bound both field count and value size.
+        usage = {
+            key: usage[key]
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "reasoning_tokens",
+            )
+            if type(usage.get(key)) is int and usage[key].bit_length() <= 64
+        }
+    elif usage is not None:
+        usage = diagnostic_repr(usage, 500)
+    return {
+        "finish_reason": finish_reason,
+        "usage": usage,
+        "content_length": len(
+            content if isinstance(content, str) else diagnostic_repr(content, 500)
+        ),
+        "reasoning_content": (
+            reasoning
+            if isinstance(reasoning, str)
+            else diagnostic_repr(reasoning, 2000)
+        )[:2000],
+        "content_repr": (
+            repr(content)[:500]
+            if isinstance(content, str)
+            else diagnostic_repr(content, 500)
+        ),
+        "request_message_count": message_count,
+    }
 
 
 def process_stats(pid):
@@ -149,6 +223,7 @@ class Soak:
         error=None,
         disconnected=False,
         cancelled=False,
+        details=None,
     ):
         event = {
             "kind": kind,
@@ -171,7 +246,11 @@ class Soak:
         if error:
             self.errors.write(
                 json.dumps(
-                    {"elapsed_s": round(time.monotonic() - self.start, 1), **event}
+                    {
+                        "elapsed_s": round(time.monotonic() - self.start, 1),
+                        **event,
+                        **(details or {}),
+                    }
                 )
                 + "\n"
             )
@@ -227,36 +306,54 @@ class Soak:
             payload["tool_choice"] = "required"
         started = time.monotonic()
         try:
-            disconnected, cancelled, stage, error, reply = await asyncio.wait_for(
+            (
+                disconnected,
+                cancelled,
+                stage,
+                error,
+                reply,
+                details,
+            ) = await asyncio.wait_for(
                 self.send(kind, payload, client or self.client),
                 timeout=self.args.timeout,
             )
         except TimeoutError:
-            disconnected, cancelled, stage, error, reply = (
+            disconnected, cancelled, stage, error, reply, details = (
                 False,
                 False,
                 "deadline",
                 "request deadline exceeded",
                 None,
+                None,
             )
         except httpx.HTTPStatusError as exc:
-            disconnected, cancelled, stage, error, reply = (
+            disconnected, cancelled, stage, error, reply, details = (
                 False,
                 False,
                 "http",
                 f"HTTP {exc.response.status_code}: {exc.response.text[:240]}",
                 None,
+                None,
             )
         except Exception as exc:
-            disconnected, cancelled, stage, error, reply = (
+            disconnected, cancelled, stage, error, reply, details = (
                 False,
                 False,
                 "request",
                 f"{type(exc).__name__}: {str(exc)[:240]}",
                 None,
+                None,
             )
         self.record(
-            kind, started, worker, sequence, stage, error, disconnected, cancelled
+            kind,
+            started,
+            worker,
+            sequence,
+            stage,
+            error,
+            disconnected,
+            cancelled,
+            details,
         )
         if session is not None and not error and reply is not None:
             session.append(messages[-1])
@@ -269,12 +366,18 @@ class Soak:
         stage = "initial"
         error = None
         reply = None
+        details = None
+        validation_body = None
+        validation_message_count = len(payload["messages"])
         try:
             if payload["stream"]:
                 chunks = 0
                 done = False
                 finished = False
                 content = []
+                reasoning = []
+                finish_reason = None
+                usage = None
                 async with client.stream(
                     "POST", self.args.url + "/v1/chat/completions", json=payload
                 ) as response:
@@ -300,14 +403,22 @@ class Soak:
                                     )
                                 if not isinstance(item.get("choices"), list):
                                     raise ValueError("stream chunk missing choices")
+                                if item.get("usage") is not None:
+                                    usage = item["usage"]
                                 finished |= any(
                                     choice.get("finish_reason") is not None
                                     for choice in item["choices"]
                                 )
                                 for choice in item["choices"]:
-                                    part = (choice.get("delta") or {}).get("content")
+                                    if choice.get("finish_reason") is not None:
+                                        finish_reason = choice["finish_reason"]
+                                    delta = choice.get("delta") or {}
+                                    part = delta.get("content")
                                     if isinstance(part, str):
                                         content.append(part)
+                                    part = delta.get("reasoning_content")
+                                    if isinstance(part, str):
+                                        reasoning.append(part)
                                 chunks += 1
                         if kind == "disconnect" and chunks >= 3:
                             disconnected = True
@@ -316,6 +427,18 @@ class Soak:
                             requested_cancel = True
                             asyncio.current_task().cancel()
                             await asyncio.sleep(0)
+                validation_body = {
+                    "choices": [
+                        {
+                            "finish_reason": finish_reason,
+                            "message": {
+                                "content": "".join(content),
+                                "reasoning_content": "".join(reasoning),
+                            },
+                        }
+                    ],
+                    "usage": usage,
+                }
                 if kind == "disconnect" and not disconnected:
                     error = "disconnect stream ended before 3 chunks"
                 elif kind == "cancel":
@@ -333,6 +456,7 @@ class Soak:
                 )
                 response.raise_for_status()
                 body = response.json()
+                validation_body = body
                 if not body.get("choices"):
                     error = "no choices"
                 elif (
@@ -371,12 +495,14 @@ class Soak:
                         "tool_choice": "none",
                         "max_tokens": 40,
                     }
+                    validation_message_count = len(followup["messages"])
                     stage = "tool_followup"
                     followup_response = await client.post(
                         self.args.url + "/v1/chat/completions", json=followup
                     )
                     followup_response.raise_for_status()
-                    followup_choices = followup_response.json().get("choices")
+                    validation_body = followup_response.json()
+                    followup_choices = validation_body.get("choices")
                     if not followup_choices:
                         error = "tool follow-up has no choices"
                     elif not (
@@ -387,6 +513,10 @@ class Soak:
                         reply = [assistant, *replies, followup_choices[0]["message"]]
                 else:
                     reply = body["choices"][0]["message"]
+            if error:
+                details = response_details(
+                    validation_body or {}, validation_message_count
+                )
         except asyncio.CancelledError:
             if kind == "cancel" and requested_cancel:
                 cancelled = True
@@ -396,7 +526,7 @@ class Soak:
             error = f"HTTP {exc.response.status_code}: {exc.response.text[:240]}"
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:240]}"
-        return disconnected, cancelled, stage, error, reply
+        return disconnected, cancelled, stage, error, reply, details
 
     async def worker(self, index):
         if self.args.daemon:
