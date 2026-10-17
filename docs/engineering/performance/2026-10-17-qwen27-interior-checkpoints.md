@@ -69,14 +69,23 @@ that a single scheduler thread makes interleaved lifecycles atomic.
 
 ## Retention policy
 
-The adapter owns at most one optional cut. A compatible request restoring that
-exact cut promotes it only if the cold scheduler would have retained it:
-`0 < h < len(ids)` and `prompt_chunks(ids).floor(h) == len(owned)`. The
-adapter-owned registry supplies the submitted job's actual history length;
-missing IDs mean zero. With no cached state and no last prompt,
-`choose_checkpoints(h, 0, None, ids)` selects only valid h
-(`server/checkpoints.py:28-37`); `server/prompt_fill.py:97-99` floors and filters
-those positions. Raw assistant markers have no role in promotion.
+The adapter owns at most one optional cut. On a compatible resume from that
+exact cut, promotion uses the native selection counterfactual with this optional
+entry excluded. Public `store.peek(ids, usable=...)` rejects its length and
+accepts only actual chunk starts from public `prompt_chunks`
+(`engine/lane_engine.py:388-393`), returning the same best strict-prefix hit
+and prior `last_prompt` as native matching (`server/checkpoints.py:175-208`).
+The scheduler's usable predicate is chunk membership; its `take` flag changes
+cache transfer, not the selected hit (`server/prompt_fill.py:80-94`).
+The hook calls public `choose_checkpoints(history_len, cached_main,
+last_prompt_main, ids)` (`server/checkpoints.py:28-37`), floors those choices,
+unions the floored nonzero shared-prefix lengths using public `PromptChunks.floor`
+(`engine/prefill_plan.py:84-91`), and filters strictly between
+`cached_main` and `len(ids)`, exactly as `server/prompt_fill.py:57-58,97-99`.
+Ownership is relinquished iff the owned length is in this set. The registry
+supplies the actual submitted history and shared-prefix lengths; missing IDs
+mean zero history and no shared cuts. Raw assistant markers do not identify
+native selections.
 
 Promotion replaces the exact resident key through public `store.insert`, using
 its existing cache and the current prompt. This copies no arrays and replaces
@@ -84,7 +93,9 @@ rather than double-charges the entry (`server/checkpoints.py:232-245`). It also
 sets the creation length (`born`) that main would store: merely relinquishing
 ownership leaves the old length, which changes preferential eviction
 (`:275-283`). Native match already refreshes recency/last_prompt (`:192-210`).
-Pinned entries are protected; missing entries clear stale ownership.
+If the promoted length is also a floored shared prefix, insertion preserves
+native pinning (`server/scheduler.py:545-548`). Pinned entries are protected;
+missing entries clear stale ownership.
 
 Every other restored cut remains optional and releases on an incompatible
 prompt or when a later native boundary supersedes it. There is no second resumed owner. Candidate selection uses the latest
@@ -109,11 +120,11 @@ The CLI routes this backend to the HTTP provider
 without the generation suffix and computes shared system lengths
 (`rapid_mlx/speculative/tensorfold_qwen27_server.py:76-121`). The provider builds
 ChatJob(history_len=..., shared_prefix_lens=...) and submits directly to the
-scheduler. Before submission it registers `job_id -> history_len`, removing
+scheduler. Before submission it registers `job_id -> (history_len, shared_prefix_lens)`, removing
 the entry in finally on completion, cancellation, submission failure, or worker
 error. Runtime `server/prompt_fill.py:104-105` constructs
 `LaneStream(stream_id=job.job_id)` and `:124-125` passes it to begin_stream.
-**This product path supplies authoritative history to the hook.**
+**This product path supplies authoritative selection context to the hook.**
 The measured campaign invoked the CLI HTTP route; its saved command receipts
 and public Scheduler.submit audits record nonzero history/shared lengths.
 
@@ -304,9 +315,13 @@ with no growth.
 
 This is latest-message retention, not a promise to keep interiors in every
 conversation. Optional cuts, including raw or edited resumes without a matching
-history floor, release on incompatible turns, when a later native boundary
+counterfactual native selection, release on incompatible turns, when a later native boundary
 supersedes them, or first under pressure. Promoted
-history has native eviction behavior. Earlier-message edits and edits before the
+native selections have native eviction behavior. Promotion alone does not
+materialize other counterfactual selections below the restored cut: a newly
+introduced shorter shared prefix can be suppressed, causing later reuse to
+fall below native behavior. The policy therefore does not establish universal
+retention or reuse equivalence. Earlier-message edits and edits before the
 retained tail cut can still miss. System-message reuse remains controlled by the existing system
 checkpoints. The measured byte cost is workload-specific and residency remains
 conditional. Multiple lanes preserve boundary-only retention and do not gain

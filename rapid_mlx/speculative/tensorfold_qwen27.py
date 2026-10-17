@@ -233,9 +233,11 @@ def require_environment(
 
 
 def _checkpoint_engine(
-    engine_type: Any, store_getter: Callable[[], Any], history_lengths: dict[str, int]
+    engine_type: Any,
+    store_getter: Callable[[], Any],
+    checkpoint_context: dict[str, tuple[int, tuple[int, ...]]],
 ) -> Any:
-    """Keep one optional cut unless the cold scheduler would store it as history."""
+    """Keep one optional cut unless native selection without it would retain it."""
 
     class CheckpointEngine(engine_type):
         interior_tokens = None
@@ -263,6 +265,29 @@ def _checkpoint_engine(
                 <= store.budget_bytes
             )
 
+        def _native_selection_without_owned(self, store, stream, owned):
+            from tensorfold.server.checkpoints import choose_checkpoints
+
+            ids = stream.prompt_ids
+            starts = self.prompt_chunks(ids)
+            # prompt_fill.py:80-99: usable is chunk membership; take only changes
+            # cache transfer, not selection. peek returns match's prior metadata
+            # without copying, touching LRU, or changing last_prompt
+            # (checkpoints.py:175-208). Reject just our compatible exact key.
+            hit = store.peek(ids, usable=lambda n: n != len(owned) and n in starts)
+            cached = 0 if hit is None else len(hit.tokens)
+            last_prompt = None if hit is None else hit.last_prompt
+            history, shared = checkpoint_context.get(stream.stream_id, (0, ()))
+            chosen = choose_checkpoints(history, cached, last_prompt, ids)
+            # prompt_fill.py:57-58,97-99: shared cuts use the same floor, then
+            # both sources are filtered strictly beyond the counterfactual hit.
+            shared_at = {starts.floor(n) for n in shared} - {0}
+            return {
+                at
+                for at in {*(starts.floor(n) for n in chosen), *shared_at}
+                if cached < at < len(ids)
+            }
+
         def begin_stream(
             self, stream, *, cache=None, cached_tokens=0, checkpoints_at=()
         ):
@@ -280,21 +305,25 @@ def _checkpoint_engine(
             if owned is not None:
                 entry = store.peek([*owned, 0], usable=lambda n: n == len(owned))
                 compatible = ids[: len(owned)] == owned
-                # Cold choose_checkpoints(h, 0, None, ids) selects only h
-                # (checkpoints.py:28-37); prompt_fill.py:97-99 floors it.
-                history = history_lengths.get(stream.stream_id, 0)
                 if entry is None or entry.pinned:
                     self.interior_tokens = None
                 elif (
                     compatible
                     and cached_tokens == len(owned)
-                    and 0 < history < len(ids)
-                    and self.prompt_chunks(ids).floor(history) == len(owned)
+                    and len(owned)
+                    in self._native_selection_without_owned(store, stream, owned)
                 ):
                     # Public insert replaces this exact key without copying.
                     # Match refreshed last_prompt, but only insert refreshes born,
                     # which native eviction uses (checkpoints.py:244,275-283).
-                    store.insert(owned, entry.cache, last_prompt=ids)
+                    shared = checkpoint_context.get(stream.stream_id, (0, ()))[1]
+                    store.insert(
+                        owned,
+                        entry.cache,
+                        last_prompt=ids,
+                        pinned=len(owned)
+                        in {self.prompt_chunks(ids).floor(n) for n in shared},
+                    )
                     self.interior_tokens = None
                 elif not compatible or cached_tokens > len(owned):
                     # A later native boundary supersedes this optional tail.
@@ -395,7 +424,7 @@ class TensorFoldQwen27Backend:
         self, app: Any, *, executor: concurrent.futures.Executor | None = None
     ):
         self._app = app
-        self._history_lengths: dict[str, int] = {}
+        self._checkpoint_context: dict[str, tuple[int, tuple[int, ...]]] = {}
         self._executor = executor or concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(getattr(app, "max_batch_size", 1))),
             thread_name_prefix="tensorfold-qwen27",
@@ -459,13 +488,13 @@ class TensorFoldQwen27Backend:
 
             fraction = model_fraction(package)
 
-        history_lengths: dict[str, int] = {}
+        checkpoint_context: dict[str, tuple[int, tuple[int, ...]]] = {}
         store_ref: Callable[[], Any] = lambda: None
         # The scheduler interleaves unfinished prefills when lanes > 1.
         # Admission and later transfer are not one transaction: the optional
         # cut's ownership/headroom policy therefore requires a single lane.
         engine_type = (
-            _checkpoint_engine(LaneEngine, lambda: store_ref(), history_lengths)
+            _checkpoint_engine(LaneEngine, lambda: store_ref(), checkpoint_context)
             if lanes == 1
             else LaneEngine
         )
@@ -486,7 +515,7 @@ class TensorFoldQwen27Backend:
         if app.checkpoints is not None:
             store_ref = weakref.ref(app.checkpoints)
         backend = cls(app)
-        backend._history_lengths = history_lengths
+        backend._checkpoint_context = checkpoint_context
         return backend
 
     async def stream(

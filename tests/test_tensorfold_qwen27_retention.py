@@ -385,19 +385,26 @@ def test_cold_raw_completion_delegates_empty_scheduler_selection():
     assert len(store) == 0
 
 
-def runtime_request(engine, store, ids, history):
+def runtime_request(engine, store, ids, history, shared=()):
     histories = getattr(engine, "test_histories", {})
-    histories["test"] = history
+    histories["test"] = (history, tuple(shared))
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     chunks = engine.prompt_chunks(ids)
     hit = store.match(ids, usable=lambda n: n in chunks)
     cached, cache, last = hit if hit else (0, None, None)
     chosen = checkpoints.choose_checkpoints(history, cached, last, ids)
     selected = sorted(
-        at for at in {chunks.floor(n) for n in chosen} if cached < at < len(ids)
+        at
+        for at in {
+            *(chunks.floor(n) for n in chosen),
+            *(chunks.floor(n) for n in shared),
+        }
+        if cached < at < len(ids)
     )
     stream = run(engine, ids, cached=cached, cache=cache, selected=selected)
-    keep(store, stream)
+    shared_at = {chunks.floor(n) for n in shared} - {0}
+    for tokens, snapshot in stream.history_checkpoints:
+        store.insert(tokens, snapshot, last_prompt=ids, pinned=len(tokens) in shared_at)
     histories.pop("test", None)
     return cached, selected
 
@@ -537,3 +544,122 @@ def test_pending_bytes_release_resumed_optional_before_original_transfer():
     assert [len(tokens) for tokens, _ in edited.history_checkpoints] == [7950]
     keep(store, edited)
     assert store.nbytes == 300
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_counterfactual_native_stable_or_shared_cut_survives_unrelated_chat(shared):
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    results = []
+    for wrapped in (False, True):
+        histories = {}
+        store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
+        engine = (
+            _checkpoint_engine(PlannedEngine, lambda store=store: store, histories)
+            if wrapped
+            else PlannedEngine
+        )()
+        engine.test_histories = histories
+        shorter = prompt()[:4096] + [10, 11] + [100] * 8
+        if not shared:
+            runtime_request(engine, store, shorter, 4096)
+        runtime_request(engine, store, prompt(), 7950)
+        edited = prompt(edit=True)
+        runtime_request(engine, store, edited, 7950, shared=(7000,) if shared else ())
+        assert getattr(engine, "interior_tokens", None) is None
+        promoted = store.peek(edited, usable=lambda n: n == 6144)
+        assert promoted.last_prompt == edited
+        assert promoted.born == len(edited)
+        assert promoted.pinned == shared
+        runtime_request(engine, store, short_prompt(0), 990)
+        later = edited.copy()
+        later[7000] = 777
+        results.append(runtime_request(engine, store, later, 7950)[0])
+    assert results == [6144, 6144]
+
+
+def test_counterfactual_ignores_unusable_entry_and_does_not_touch_other_metadata():
+    store, engine = setup_cut(PlannedEngine)
+    # A strict prefix that is not a chunk start must not become main's hit.
+    store.insert(prompt()[:6000], [1], last_prompt=prompt())
+    unusable = store.entries[tuple(prompt()[:6000])]
+    owned = engine.interior_tokens.copy()
+    stream = SimpleNamespace(stream_id="absent", prompt_ids=prompt(edit=True))
+    assert engine._native_selection_without_owned(store, stream, owned) == set()
+    assert store.entries[tuple(prompt()[:6000])] is unusable
+    assert unusable.last_prompt == prompt()
+
+
+class SmallPlannedEngine(Engine):
+    prefill_step = 16
+
+    def __init__(self):
+        super().__init__()
+        plan = pytest.importorskip("tensorfold.engine.prefill_plan")
+        self.prefill_plan = plan.PrefillPlan(
+            step=16, openers=(10,), min_chunk=2, assistant=(10, 11)
+        )
+
+    def prompt_chunks(self, ids):
+        return self.prefill_plan.chunks(ids)
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_randomized_native_retention_and_reuse(seed):
+    """200 seeds x 24 requests; report the complete reproducer on any failure."""
+    import random
+
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    rng = random.Random(seed)
+    stores = [
+        checkpoints.CheckpointStore(
+            8, copier=list, sizer=lambda c: c[0], budget_bytes=800
+        )
+        for _ in range(2)
+    ]
+    contexts = {}
+    engines = [
+        SmallPlannedEngine(),
+        _checkpoint_engine(SmallPlannedEngine, lambda: stores[1], contexts)(),
+    ]
+    engines[1].test_histories = contexts
+    conversations = {}
+    sequence = []
+    failures = []
+    for _ in range(24):
+        conversation = rng.randrange(4)
+        action = rng.choice(("new", "edit", "extend", "repeat", "shorten"))
+        if conversation not in conversations or action == "new":
+            length = rng.choice((30, 64, 66, 80, 96))
+            ids = [100 + conversation] * length
+            ids[0] = ids[3] = ids[-2] = 10
+            ids[-1] = 11
+        else:
+            ids = conversations[conversation].copy()
+            if action == "edit":
+                ids[rng.randrange(4, len(ids) - 2)] = rng.randrange(200, 210)
+            elif action == "extend":
+                ids += [100 + conversation] * rng.choice((16, 32)) + [10, 11]
+            elif action == "shorten":
+                ids = ids[: rng.randrange(5, max(6, len(ids) - 2))] + [10, 11]
+        conversations[conversation] = ids
+        history = len(ids) - 2 if rng.randrange(5) else 0
+        shared = (3,) if rng.randrange(4) == 0 else ()
+        sequence.append((ids.copy(), history, shared))
+        previous_head = {tuple(e.tokens) for e in stores[1]._entries}
+        reused = [
+            runtime_request(engine, store, ids, history, shared)[0]
+            for engine, store in zip(engines, stores)
+        ]
+        diagnostic = f"seed={seed}, sequence={sequence!r}, reuse={reused}"
+        if reused[1] < reused[0]:
+            failures.append((len(sequence), "reuse", reused))
+        # Check every previously resident HEAD state that main still holds,
+        # including histories that no longer match this request.
+        main_keys = {tuple(e.tokens) for e in stores[0]._entries}
+        head_keys = {tuple(e.tokens) for e in stores[1]._entries}
+        deleted = (previous_head & main_keys) - head_keys
+        if deleted:
+            failures.append((len(sequence), "deleted", deleted))
+    # Finish every sequence even after finding a violation, so the randomized
+    # budget is reproducible and all counterexamples remain visible.
+    assert not failures, f"{diagnostic}, failures={failures!r}"

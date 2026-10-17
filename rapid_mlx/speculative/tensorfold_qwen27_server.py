@@ -287,7 +287,10 @@ class TensorFoldRequestProvider:
                         raise RuntimeError("TensorFold backend is closed")
                     self.backend._active[request_id] = cancellation
                     registered = True
-            self.backend._history_lengths[request_id] = history_len
+            self.backend._checkpoint_context[request_id] = (
+                history_len,
+                tuple(shared_prefix_lens),
+            )
             app.scheduler.submit(job)
             while True:
                 if self._close_cancellable:
@@ -370,7 +373,7 @@ class TensorFoldRequestProvider:
             )
             outputs.append(terminal)
         finally:
-            self.backend._history_lengths.pop(request_id, None)
+            self.backend._checkpoint_context.pop(request_id, None)
             cancellation.cancel()
             if registered:
                 with self.backend._lock:
