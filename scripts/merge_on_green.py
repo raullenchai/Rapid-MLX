@@ -91,7 +91,19 @@ def freeze(api: GitHub, manual: str = "") -> str:
             "workflow_runs",
             max_pages=1,
         )
-        for run in runs:
+        # Keep the recent snapshot across status transitions, while finding old
+        # active reruns without walking the entire unfiltered workflow history.
+        candidates = {run["id"]: run for run in runs}
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            for run in api.items(
+                f"actions/workflows/auto-release.yml/runs?status={status}",
+                "workflow_runs",
+            ):
+                candidates[run["id"]] = run
+        for run in candidates.values():
+            if run["status"] == "completed":
+                continue
+            run = api.request(f"actions/runs/{run['id']}")
             if run["status"] == "completed":
                 continue
             jobs = api.items(f"actions/runs/{run['id']}/jobs", "jobs")

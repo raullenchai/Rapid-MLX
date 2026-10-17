@@ -77,6 +77,8 @@ def ready():
         dict(context="merge-ready-head", id=1, state="success")
     ]
     api.data["actions/workflows/auto-release.yml/runs"] = []
+    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+        api.data[f"actions/workflows/auto-release.yml/runs?status={status}"] = []
     api.data["commits/main"] = dict(sha=SHA, commit=dict(message="Fix behavior"))
     api.data[("PUT", "pulls/1/merge")] = dict(merged=True, message="merged")
     return api
@@ -233,6 +235,7 @@ def test_freeze_variable_and_api_error():
 def test_release_detection(jobs, expected):
     api = ready()
     api.data["actions/workflows/auto-release.yml/runs"] = [dict(id=7, status="waiting")]
+    api.data["actions/runs/7"] = dict(id=7, status="waiting")
     api.data["actions/runs/7/jobs"] = jobs
     assert expected in m.freeze(api)
     if not expected:
@@ -555,21 +558,66 @@ def test_unknown_mergeability_can_resolve(monkeypatch):
     assert reads == 2
 
 
-@pytest.mark.parametrize(
-    "status", ["in_progress", "waiting", "pending", "requested", "queued", "new_status"]
-)
-def test_release_status_transition_uses_one_bounded_listing(monkeypatch, status):
-    api = m.GitHub("owner/repo", "read")
-    request = Mock()
+ACTIVE_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
+RUNS = "actions/workflows/auto-release.yml/runs"
 
-    def response(path, *args, **kwargs):
+
+@pytest.mark.parametrize("status", [*ACTIVE_STATUSES, "new_status"])
+def test_release_status_transition_retains_recent_snapshot(monkeypatch, status):
+    api = m.GitHub("owner/repo", "read")
+
+    def response(path):
         if "?status=" in path:
-            # A waiting run moves to in_progress after that status was queried.
+            # The run moves between queried statuses and is absent from both.
             return dict(workflow_runs=[])
-        if path == "actions/workflows/auto-release.yml/runs?per_page=100&page=1":
+        if path == f"{RUNS}?per_page=100&page=1":
             return dict(
                 workflow_runs=[dict(id=7, status=status)]
-                + [dict(id=i, status="completed") for i in range(99)]
+                + [dict(id=i + 100, status="completed") for i in range(99)]
+            )
+        if path == "actions/runs/7":
+            return dict(id=7, status="in_progress")
+        if path == "actions/runs/7/jobs?per_page=100&page=1":
+            return dict(jobs=[])
+        raise AssertionError(path)
+
+    request = Mock(side_effect=response)
+    monkeypatch.setattr(api, "request", request)
+    assert m.freeze(api) == "Release run 7 detection undetermined"
+    assert [c.args[0] for c in request.call_args_list] == [
+        f"{RUNS}?per_page=100&page=1",
+        *[f"{RUNS}?status={s}&per_page=100&page=1" for s in ACTIVE_STATUSES],
+        "actions/runs/7",
+        "actions/runs/7/jobs?per_page=100&page=1",
+    ]
+
+
+@pytest.mark.parametrize("status", ACTIVE_STATUSES)
+def test_older_active_release_found_without_scanning_unfiltered_history(
+    monkeypatch, status
+):
+    api = m.GitHub("owner/repo", "read")
+
+    def response(path):
+        if path == f"{RUNS}?per_page=100&page=1":
+            return dict(
+                workflow_runs=[dict(id=i + 100, status="completed") for i in range(100)]
+            )
+        if path == f"{RUNS}?per_page=100&page=2":
+            # The active run exists here, but scanning unfiltered history is forbidden.
+            pytest.fail("Unfiltered release history must remain bounded to one page")
+        if path == f"{RUNS}?status={status}&per_page=100&page=1":
+            return dict(
+                workflow_runs=[dict(id=i + 200, status=status) for i in range(100)]
+            )
+        if path == f"{RUNS}?status={status}&per_page=100&page=2":
+            return dict(workflow_runs=[dict(id=7, status=status)])
+        if "?status=" in path:
+            return dict(workflow_runs=[])
+        if path.startswith("actions/runs/") and "/jobs" not in path:
+            return dict(
+                id=int(path.rsplit("/", 1)[1]),
+                status="in_progress" if path == "actions/runs/7" else "completed",
             )
         if path == "actions/runs/7/jobs?per_page=100&page=1":
             return dict(jobs=[])
@@ -577,10 +625,49 @@ def test_release_status_transition_uses_one_bounded_listing(monkeypatch, status)
             return dict(sha=SHA, commit=dict(message="Fix behavior"))
         raise AssertionError(path)
 
-    request.side_effect = response
+    request = Mock(side_effect=response)
     monkeypatch.setattr(api, "request", request)
     assert m.freeze(api) == "Release run 7 detection undetermined"
-    assert [c.args[0] for c in request.call_args_list] == [
-        "actions/workflows/auto-release.yml/runs?per_page=100&page=1",
-        "actions/runs/7/jobs?per_page=100&page=1",
+    assert any(
+        c.args[0] == f"{RUNS}?status={status}&per_page=100&page=2"
+        for c in request.call_args_list
+    )
+
+
+@pytest.mark.parametrize("live_status", ["completed", "in_progress"])
+def test_release_union_deduplicates_and_rechecks_live_status(live_status):
+    api = ready()
+    run = dict(id=7, status="waiting")
+    api.data[RUNS] = [run]
+    for status in ACTIVE_STATUSES:
+        api.data[f"{RUNS}?status={status}"] = [run]
+    api.data["actions/runs/7"] = dict(id=7, status=live_status)
+    api.data["actions/runs/7/jobs"] = [
+        dict(name="detect", status="completed"),
+        dict(
+            name="release",
+            status="queued" if live_status == "completed" else "completed",
+            conclusion="skipped",
+        ),
     ]
+    assert m.freeze(api) == ""
+    paths = [c[0] for c in api.calls]
+    assert paths.count("actions/runs/7") == 1
+    assert paths.count("actions/runs/7/jobs") == (live_status != "completed")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        RUNS,
+        *[f"{RUNS}?status={s}" for s in ACTIVE_STATUSES],
+        "actions/runs/7",
+        "actions/runs/7/jobs",
+    ],
+)
+def test_release_union_api_errors_fail_closed(path):
+    api = ready()
+    api.data[RUNS] = [dict(id=7, status="waiting")]
+    api.data["actions/runs/7"] = dict(id=7, status="waiting")
+    api.data[path] = m.APIError("offline")
+    assert m.freeze(api) == "Release freeze evaluation failed: offline"
