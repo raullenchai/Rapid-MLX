@@ -280,8 +280,11 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 entry = store.peek(probe, usable=lambda n: n == len(owned))
                 if entry is None or entry.pinned:
                     self.interior_tokens = None
-                elif ids[: len(owned)] == owned and len(owned) in original:
-                    # Only the scheduler can promote an optional cut to history.
+                elif ids[: len(owned)] == owned and cached_tokens == len(owned):
+                    # Restored positions are absent from scheduler selections,
+                    # and LaneStream carries no authoritative history length.
+                    # Let normal store policy keep a possibly real history;
+                    # relinquish without reinserting or refreshing the entry.
                     self.interior_tokens = None
             if not original and self.interior_tokens is None:
                 return super().begin_stream(
@@ -359,13 +362,10 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                             stream.history_checkpoints = [
                                 pair for pair in snapshots if len(pair[0]) != added
                             ]
-                    elif self.interior_tokens is not None:
-                        if not completed and any(
-                            tokens == self.interior_tokens for tokens, _ in snapshots
-                        ):
-                            self.interior_tokens = None  # runtime retry progress
-                        elif not self._retention_fits(store, snapshots):
-                            self._release_interior(store)
+                    elif self.interior_tokens is not None and not self._retention_fits(
+                        store, snapshots
+                    ):
+                        self._release_interior(store)
 
             return retain()
 
