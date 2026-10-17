@@ -376,5 +376,8 @@ measured case is lost. Shortened histories without scheduler selection may
 release sooner, which preserves the optional-cut ownership contract.
 
 No models were loaded or servers started for these corrections. The changed
-`setup-thinking` admission requires an owner decision on any model rerun;
-earlier measurements do not measure this new admission.
+`setup-thinking` admission was not remeasured: it requests an existing grid
+start, the same mechanism whose token parity the S3 and mixed-edit runs
+verified, it fits the slot and byte budget, and the next request releases it
+with reuse unchanged. Its latency and parity for that request are therefore
+inferred, not measured.
