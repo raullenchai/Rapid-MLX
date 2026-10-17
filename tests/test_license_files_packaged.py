@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_release_stamp_scripts import _step_named, _workflow_job
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - exercised only on the 3.10 floor
@@ -70,6 +72,21 @@ def test_package_data_ships_every_tracked_license_file():
     assert not missing, (
         "Tracked license files missing from package-data:\n" + "\n".join(missing)
     )
+
+
+def test_ci_runs_the_real_license_file_package_build_once():
+    steps = _workflow_job(
+        REPO_ROOT / ".github" / "workflows" / "ci.yml", "test-matrix"
+    )["steps"]
+    stamp_index, _ = _step_named(steps, "Run real release-stamp package build")
+    license_index, run = _step_named(steps, "Run real license-file package build")
+    assert license_index == stamp_index + 1
+    assert run["if"] == "matrix.python-version == '3.11' && matrix.shard == 1"
+    assert (
+        "tests/test_license_files_packaged.py::"
+        "test_real_distributions_ship_every_tracked_license_file" in run["run"]
+    )
+    assert "--run-slow -m slow" in run["run"]
 
 
 @pytest.mark.slow
