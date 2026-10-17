@@ -305,14 +305,44 @@ def _checkpoint_engine(
             if owned is not None:
                 entry = store.peek([*owned, 0], usable=lambda n: n == len(owned))
                 compatible = ids[: len(owned)] == owned
-                if entry is None or entry.pinned:
+                resumed = compatible and cached_tokens == len(owned)
+                native = (
+                    self._native_selection_without_owned(store, stream, owned)
+                    if resumed
+                    else set()
+                )
+                if resumed and not any(at < len(owned) for at in native):
+                    # Main would touch its ordinary hit even when it selects no
+                    # new checkpoint. Preserve its LRU/last_prompt bookkeeping;
+                    # discard the public match's temporary cache copy immediately.
+                    chunks = self.prompt_chunks(ids)
+                    usable = lambda n: n != len(owned) and n in chunks
+                    if store.peek(ids, usable=usable) is not None:
+                        store.match(ids, usable=usable)
+                if resumed and any(at < len(owned) for at in native):
+                    # Skipping a native state can change later pinning and victim
+                    # order, evicting unrelated native histories. Recompute from
+                    # the ordinary hit when a resume would suppress a selection.
+                    self._release_interior(store)
+                    chunks = self.prompt_chunks(ids)
+                    hit = store.match(ids, usable=lambda n: n in chunks)
+                    cached_tokens, cache, last = hit if hit else (0, None, None)
+                    from tensorfold.server.checkpoints import choose_checkpoints
+
+                    history, shared = checkpoint_context.get(stream.stream_id, (0, ()))
+                    chosen = choose_checkpoints(history, cached_tokens, last, ids)
+                    original = {
+                        at
+                        for at in {
+                            *(chunks.floor(n) for n in chosen),
+                            *(chunks.floor(n) for n in shared),
+                        }
+                        if cached_tokens < at < len(ids)
+                    }
+                    checkpoints_at = sorted(original)
+                elif entry is None or entry.pinned:
                     self.interior_tokens = None
-                elif (
-                    compatible
-                    and cached_tokens == len(owned)
-                    and len(owned)
-                    in self._native_selection_without_owned(store, stream, owned)
-                ):
+                elif resumed and len(owned) in native:
                     # Public insert replaces this exact key without copying.
                     # Match refreshed last_prompt, but only insert refreshes born,
                     # which native eviction uses (checkpoints.py:244,275-283).

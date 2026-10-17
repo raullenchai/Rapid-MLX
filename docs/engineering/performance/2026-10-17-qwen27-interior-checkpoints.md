@@ -10,9 +10,9 @@ Base: `7be1c00fe45fa0f7c2ee23804075f81f9d1a3aff`. Measurements started on
 `76b8296cd1cf3a009de045d719dd4823974afae2`. Main advanced during the
 campaign with release notes, an unrelated model profile, and a Desktop video fix.
 The branch was rebased again. The Qwen27 profile, CLI, TensorFold modules, pinned
-runtime, and frozen before/fixed adapters retain the measured behavior; both
-adapter files match final base/implementation blobs byte for byte. Tests,
-coverage, and the mypy budget were rerun on the final base.
+runtime, and frozen before/fixed adapters preserve the measured sources.
+Subsequent retention corrections have model-free evidence only. Tests,
+coverage, and the mypy budget were rerun on the final policy.
 
 ## Problem and compatibility boundary
 
@@ -305,11 +305,49 @@ invalid prompt-end/out-of-range history. Existing tests preserve pinning,
 interrupted prefill, byte/slot headroom, cache-off, lane gating and weak lifetime.
 No new coverage exemptions or mypy budget allocations are used.
 
-Current verification: 241 TensorFold tests pass; fresh diff-cover against
-origin/main is 100% with zero missing changed lines for both adapter files.
-Ruff check/format pass across all 12 TensorFold Python files. The pinned
-Python 3.11 mypy budget remains 839 grandfathered errors across 161 files,
-with no growth.
+The finalized contract protects every main-held state against deletion or
+eviction and never allows less reuse, except for the precisely bounded
+resume-skip class below. It separately requires zero regressions on the
+436-request replay and measured K=2/4/6 common workloads, and all deterministic
+probes and earlier regressions to pass.
+
+The classifier records the exact skipped token prefix, originating request,
+main hit, native selection and resumed owned length. A later reuse deficit must
+identify that same skipped key while main still holds it; unrelated eviction
+victims cannot inherit its exemption. Seed 12's original loss is resume-skip.
+Seed 92's three reuse losses are resume-skip, but its deletions of lengths 62
+and 81 are outside the class. Across 2,000 original adversarial seeds, eight
+violations are outside the class (six deletions and two reuse losses).
+The rendered-chat generator exposes another cause: optional resumes fail to
+touch main's ordinary hit, changing LRU order when system pins rotate under
+pressure. Both causes are corrected: recompute from the ordinary hit when a
+resume would skip a native selection, and preserve ordinary-hit bookkeeping
+through public `match` otherwise. The latter immediately discards the temporary
+cache copy; its allocation cost has not been measured on a loaded model.
+
+Final model-free run, Python 3.12.13 on the qualification host:
+
+| Generator | Seeds | Requests per seed | Total requests | Helper time | Resume-skip occurrences | Other violations |
+|---|---:|---:|---:|---:|---:|---:|
+| Adversarial | 0–1,999 | 24 | 48,000 | 4.845 s | 0 | 0 |
+| Rendered chat | 0–1,999 | 24 | 48,000 | 50.426 s | 0 | 0 |
+
+Both use the real plan/store/selector with scalar snapshots. Rendered chat uses
+step 16 for compact stress cases, role-delimited messages, three shared system
+blocks and the actual server `_prompt_boundaries` implementation (including its
+512-token threshold and 2,048/512 offsets); identical system prefixes always
+produce identical shared lengths. History comes from rendering without the
+generation suffix. No realistic resume-skip sequence was observed. Fast defaults
+are 200 adversarial and 20 rendered seeds, plus fixed regressions for all twelve
+rendered-chat counterexample seeds; the complete retention file passes in 1.81 s.
+Set `TENSORFOLD_PROPERTY_SEEDS=2000 TENSORFOLD_REALISTIC_SEEDS=2000` when running
+that test file to reproduce the larger budget (helper times exclude pytest).
+
+Current verification: 481 TensorFold tests pass in 22.77 s; probes 1–4 pass.
+Fresh diff-cover against origin/main is 100% (113 executable changed lines,
+zero missing) across both adapters. Ruff check/format passes all 12 TensorFold
+Python files. The pinned Python 3.11 mypy budget remains 839 grandfathered errors
+across 161 files, with no growth. No coverage exemptions or budget changes.
 
 ## Limits
 
@@ -317,15 +355,22 @@ This is latest-message retention, not a promise to keep interiors in every
 conversation. Optional cuts, including raw or edited resumes without a matching
 counterfactual native selection, release on incompatible turns, when a later native boundary
 supersedes them, or first under pressure. Promoted
-native selections have native eviction behavior. Promotion alone does not
-materialize other counterfactual selections below the restored cut: a newly
-introduced shorter shared prefix can be suppressed, causing later reuse to
-fall below native behavior. The policy therefore does not establish universal
-retention or reuse equivalence. Earlier-message edits and edits before the
-retained tail cut can still miss. System-message reuse remains controlled by the existing system
-checkpoints. The measured byte cost is workload-specific and residency remains
-conditional. Multiple lanes preserve boundary-only retention and do not gain
+native selections have native eviction behavior. Earlier-message edits and
+edits before the retained tail cut can still miss. System-message reuse remains
+controlled by the existing system checkpoints. The measured byte cost is
+workload-specific and residency remains conditional. Multiple lanes preserve boundary-only retention and do not gain
 this interior-edit speedup. No multi-lane interior-cut performance claim is made.
+
+The only contract exception is resume-skip: for a request with counterfactual
+main hit `h` and optional resumed cut `c`, a native selected position `p` is
+skipped only if `h < p < c`. It covers that exact token-prefix key, never
+unrelated downstream eviction victims. There are at most five native selections
+per request (two history/stable candidates plus three shared candidates), hence
+at most `min(5, max(0, c-h-1))` skipped keys. A later reuse loss attributable to
+one such key is at most `p` tokens per affected request; there is no cumulative
+or time bound while main retains it. The current guard avoids this class by
+recomputing from the ordinary hit when necessary; both final generators observe
+zero skips. This is finite workload evidence, not proof over all request streams.
 
 The evidence does not qualify temperature sampling, all edit locations,
 long-running memory pressure, pool routing/affinity, GUI journeys, or other model
@@ -439,3 +484,15 @@ counts administrative releases separately. Previous HEAD already disagrees
 with the historical fixed measurement only at S4; this is accounted for above.
 The policy is tested with scalar caches; full scheduler memory admission and
 model execution are not requalified by this replay.
+
+
+The final contract replay (`review/round6_fixture_equivalence.py`) covers the
+same 22 files / 436 requests with zero record changes from `b3c948294`, zero main
+reuse regressions and zero common-workload mismatches. An additional replay of
+the original measured common campaigns covers nine files each for K=2/4/6:
+99 / 180 / 270 requests respectively. All request reuse and native eviction
+counts match main; all follow-up/regenerate inventories and bytes match main.
+All policy records match prior HEAD. Opening requests retain the already
+qualified optional surplus. Receipts, exact-prefix classification records,
+probes, coverage and check logs are under the same scratch root's `review/round6-*`.
+No models or servers were run, and no new latency or parity qualification is claimed.
