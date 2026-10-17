@@ -357,6 +357,7 @@ def test_manual_desktop_override_has_no_inputs_and_isolated_concurrency():
     assert workflow["concurrency"]["group"] == (
         "rapid-mac-ci-${{ github.event_name == 'workflow_dispatch' "
         "&& 'manual-' || '' }}${{ github.ref }}"
+        "${{ github.event_name == 'schedule' && '-nightly' || '' }}"
     )
 
 

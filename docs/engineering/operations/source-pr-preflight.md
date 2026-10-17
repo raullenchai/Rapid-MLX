@@ -1,5 +1,10 @@
 # Source PR CPU preflight
 
+> Phase-1 update: ordinary PRs now run the ordinary path-aware gate, including
+> applicable Apple Silicon unit tests and changed-line coverage. Source preflight
+> and canary flags no longer affect PR classification. The implementation below
+> remains for cutover compatibility; see [merge operations](path-aware-merge-queue.md).
+
 `RAPID_MLX_SOURCE_PREFLIGHT=true` opts ordinary same-repository engine PRs into
 CPU preflight. The variable is off unless explicitly enabled after deployment.
 

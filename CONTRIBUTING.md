@@ -253,3 +253,28 @@ The release pipeline is fully automated from a single commit on `main`. Push a c
 If your PR adds a model alias, capability profile, or CLI flag, do **not** bump `pyproject.toml` — ship the change with no version bump. The `version-check.yml` workflow instead *blocks* a stray `version` change in any non-bump PR; the release is cut later in a dedicated `chore: bump version to X.Y.Z` PR that batches the accumulated changes. This batch-then-cut SOP is what prevents a stale `rapid-mlx models` list (and the silently-skipped releases an inline bump would cause).
 
 Full details, escape hatches, and rationale: [`docs/development/releasing.md`](docs/development/releasing.md).
+
+## Merge authorization during phase-1 cutover
+
+Apply exactly one ready label after review and green PR-head checks:
+`merge-ready` for the no-Mac lane, or `merge-ready-mac` for the Mac-required
+lane. The authorization status binds to that exact head; after pushing another
+commit, remove and reapply the appropriate label. Version-bump PRs are merged
+by humans.
+
+Land phase 1 through the existing queue. The operator then opens and labels the
+phase-2 PR deleting queue configuration and queue-only workflows. Set
+`MERGE_ON_GREEN_ENABLED=true` only while that removal PR is the only PR carrying
+a ready label. The merger lands it, leaving the queue without configuration;
+the repository admin then uninstalls the queue app. During the brief overlap,
+both paths can only merge the same exact head using head-SHA-matched squash;
+the loser observes a closed PR and does nothing.
+
+Once enabled, merge-on-green squash-merges green,
+authorized heads directly without requiring a rebase. PR heads run the ordinary
+path-aware Linux, Apple Silicon and changed-line coverage gate. Full main CI,
+nightly validation and exact-SHA release gates provide integration evidence.
+Revert PRs from the main guard require human review and merge authorization.
+Do not merge during a release freeze. See
+[merge operations](docs/engineering/operations/path-aware-merge-queue.md) and
+[the phase-1 decision](docs/engineering/decisions/2026-10-17-merge-on-green.md).

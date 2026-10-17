@@ -33,6 +33,8 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '17 9 * * *'
   merge_group:
     types: [checks_requested]
 
@@ -41,7 +43,7 @@ permissions:
 
 # One in-flight build per PR branch; a new push cancels the previous run.
 concurrency:
-  group: rapid-mac-ci-${{ github.event_name == 'workflow_dispatch' && 'manual-' || '' }}${{ github.ref }}
+  group: rapid-mac-ci-${{ github.event_name == 'workflow_dispatch' && 'manual-' || '' }}${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: true
 
 # Every job in this workflow runs product code (engine, CLI, Desktop app) on

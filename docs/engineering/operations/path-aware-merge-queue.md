@@ -5,36 +5,41 @@ pay the full release-grade macOS cost.
 
 ## PR gate
 
-### Release preparation source feedback
+### Phase-1 cutover
 
-With `RAPID_MLX_SOURCE_PREFLIGHT=true`, same-repository ordinary PRs changing
-only `scripts/release_control.py`, `scripts/release_prepare.py`,
-`scripts/release_version.py`, their corresponding `tests/test_release_*.py`
-files (those three exact names), and recognized documentation can use the
-existing CPU source preflight. It runs all three Python 3.11 unit shards,
-Linux coverage aggregation, lint, type checking and repository guards. It
-defers Apple tests, model smokes and final changed-line coverage to the full
-combined integration candidate. `RELEASE.md` is recognized documentation.
+Ordinary PR heads now use the path-aware classifier directly. The
+`RAPID_MLX_SOURCE_PREFLIGHT` and `RAPID_MLX_SOURCE_CANARY` variables no longer
+select reduced PR routes. Apple Silicon unit tests and 100% changed-line
+coverage run on applicable PR heads before merge. L1 model smokes and GUI golden
+flows run on main pushes, nightly, and release qualification.
 
-This is source feedback, not full qualification or permission to merge.
-Promoted queue/train candidates, main and release pushes retain full validation
-inside the selected lanes. Forks, disabled preflight, publishing/signing or
-authority helpers, workflow/collection/dependency changes and unknown paths
-retain their full source route; adding an eligible release path never makes a
-mixed control change eligible. The existing flag disables this preflight
-expansion without changing candidate gates. No separate controller is needed.
+Land phase 1 through the existing queue. The operator then opens and labels the
+phase-2 PR deleting queue configuration and queue-only workflows. Set
+`MERGE_ON_GREEN_ENABLED=true` only while that removal PR is the only PR carrying
+a ready label. The merger lands it, leaving the queue without configuration;
+the repository admin then uninstalls the queue app. During the brief overlap,
+both paths can only merge the same exact head using head-SHA-matched squash;
+the loser observes a closed PR and does nothing.
 
-The expected benefit is fewer duplicate Python-version and Apple runs before
-integration. It does not shorten the full candidate itself or guarantee a
-particular merge time. Measure source duration, Mac runner allocation and
-push-to-merge latency separately.
+Once enabled, merge-on-green checks the same exclusive ready labels and
+exact-head status, all stable aggregate checks from the Actions app, the lane
+check and optional type-check result, then squash-merges one live head at a
+time. It does not require rebasing onto current main. Bump PRs remain manual.
+Release freezes block the merger; `RELEASE_PAT` is required for merge writes.
+Default-branch code alone executes with privileged credentials.
+
+Main failures rerun once and can produce a reviewed revert PR or one `main-red`
+tracking issue. Nightly failures use one `nightly-failure` issue. See the
+[decision record](../decisions/2026-10-17-merge-on-green.md) for operating
+commands, semantic-conflict risk and rollback. The queue sections below remain
+for the pre-enable path and rollback until phase 2 removes that machinery.
 
 `scripts/classify_ci_changes.py` assigns changed paths to the engine and desktop
 lanes. The policy fails closed: an empty diff, workflow change, or unknown
 product area selects all applicable lanes.
 
 - Engine changes run the Linux test matrix, the Apple Silicon test suite, and
-  one representative L1 model (`qwen3.5-4b-4bit`).
+  changed-line coverage. L1 model smokes run on main, nightly and release gates.
 - Desktop changes run the Swift build/test and the inexpensive GUI harness
   contracts. They do not run engine model smokes.
 - Documentation-only changes run universal repository guards and stable
@@ -55,31 +60,20 @@ and commands. Whole-repository Ruff and engine/Desktop version synchronization
 remain universal because Desktop support code includes Python and either side
 of the shared version contract may change.
 
-The strict required checks are the stable aggregate jobs `tests`,
+Merge admission requires the stable aggregate jobs `tests`,
 `desktop-tests`, and `version-bump-guard`. They must not be renamed or hidden
-behind workflow-level path filters without a matching branch-protection
-migration. `tests` includes lint, type-check job health, the MLX
+behind workflow-level path filters without updating the merger and retained
+queue contracts. This phase adds no branch-protection checks. `tests` includes lint, type-check job health, the MLX
 dependency-bound guard on pull requests, and all selected engine test lanes;
 `desktop-tests` includes every selected Desktop lane. `version-bump-guard`
 runs for every pull request, passing quickly when the version is unchanged.
 
 ### Type-error budget
 
-The existing source-preflight route also accepts the exact
-`config/mypy-error-baseline.txt` debt file and ordinary direct
-`tests/headless_mlx/test_*.py` regression files alongside eligible engine
-changes. This does not bypass the type-error ratchet: the same pinned type job
-and its shrink-only budget remain required. Headless CPU contracts still run
-once each across all three Python 3.11 shards in their separate pytest process;
-fake MLX modules do not leak into ordinary collection.
-
-Collection support (`conftest.py`, package initializers and nested fixtures),
-headless control/workflow tests, interpreter/dependency pins and unknown mixed
-paths keep full source checks. Source preflight is only earlier feedback; the
-combined queue candidate retains complete applicable compatibility, Apple/model
-and changed-line coverage gates. Disable `RAPID_MLX_SOURCE_PREFLIGHT` to restore
-the previous full source behavior. Neither eligibility nor fewer allocated jobs
-alone proves shorter push-to-merge time; record actual hosted timings.
+The retained source-preflight implementation is inactive for ordinary PRs.
+They retain the pinned type job and its shrink-only budget. Headless CPU
+contracts run in a separate pytest process so fake modules do not leak into
+ordinary collection. Queue candidates and non-PR full validation stay intact.
 
 Engine changes run a shrink-only mypy debt ratchet. The checked-in
 `config/mypy-error-baseline.txt` records the current error count for each dirty

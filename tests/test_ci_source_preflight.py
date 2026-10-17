@@ -238,13 +238,15 @@ def test_rendered_aggregate_has_no_failure_or_wrong_context_success(updates, pas
 @pytest.mark.parametrize(
     ("event", "head_repo", "head_ref", "enabled", "expected"),
     [
-        ("pull_request", "owner/repo", "feature/server", "true", True),
+        ("pull_request", "owner/repo", "feature/server", "true", False),
         ("pull_request", "fork/repo", "feature/server", "true", False),
         ("pull_request", "owner/repo", "train/feature", "true", False),
         ("pull_request", "owner/repo", "mergify/merge-queue/0123456789", "true", False),
         ("pull_request", "owner/repo", "feature/server", "false", False),
         ("push", "owner/repo", "", "true", False),
         ("merge_group", "owner/repo", "", "true", False),
+        ("schedule", "owner/repo", "", "true", False),
+        ("workflow_dispatch", "owner/repo", "", "true", False),
     ],
 )
 def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
@@ -280,7 +282,7 @@ def test_actual_workflow_classifier_keeps_candidates_main_and_forks_full(
         HEAD_REF=head_ref,
         PR_BASE_SHA="a" * 40,
         GITHUB_SHA="b" * 40,
-        CANARY_ENABLED="false",
+        CANARY_ENABLED="true",
         SOURCE_PREFLIGHT_ENABLED=enabled,
         CANDIDATE_SHADOW_ENABLED="false",
         CANDIDATE_CANARY_ENABLED="false",
@@ -439,9 +441,9 @@ def test_documentation_does_not_duplicate_feature_source_full_checks(tmp_path, d
     )
     assert result.returncode == 0, result.stderr
     outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert outputs["source_preflight"] == "true"
+    assert outputs["source_preflight"] == "false"
     assert outputs["source_canary"] == "false"
-    assert len(json.loads(outputs["test_matrix"])["include"]) == 3
+    assert len(json.loads(outputs["test_matrix"])["include"]) == 9
 
 
 @pytest.mark.parametrize(
