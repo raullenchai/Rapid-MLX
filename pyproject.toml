@@ -688,6 +688,11 @@ rapid_mlx = [
     # The vendored mlx-vlm APC/cache implementation is MIT-licensed; its
     # license text must travel with every wheel that redistributes the source.
     "models/mlx_vlm_vendored/LICENSE",
+    # MiniCPM-V 4.7 attribution must ship with the redistributed source.
+    "models/mlx_vlm_vendored/models/minicpmv4_7/LICENSE",
+    # MTP attribution must ship with the redistributed speculative-decoding source.
+    "spec_decode/mtp/LICENSE-MTPLX",
+    "spec_decode/mtp/NOTICE-MTPLX",
     "models/embedding_gemma2/LICENSE",
     "models/embedding_gemma2/NOTICE",
 ]
