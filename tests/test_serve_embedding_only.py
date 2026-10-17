@@ -44,7 +44,7 @@ def test_serve_command_routes_to_embedding_only_mode(stub_serve_port_resolution)
         listen_fd=None,
     )
     with (
-        mock.patch.object(cli, "_serve_embedding_only_mode") as embed_only,
+        mock.patch.object(cli, "_serve_retrieval_only_mode") as embed_only,
         mock.patch.object(cli, "_ensure_model_downloaded") as download,
         mock.patch.object(cli, "_serve_audio_mode") as audio,
     ):
@@ -66,7 +66,7 @@ def test_serve_command_rejects_primary_model_flags_in_embedding_only_mode(capsys
         max_tokens=None,
     )
     with (
-        mock.patch.object(cli, "_serve_embedding_only_mode") as embed_only,
+        mock.patch.object(cli, "_serve_retrieval_only_mode") as embed_only,
         mock.patch.object(cli, "_resolve_serve_port") as resolve_port,
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -74,7 +74,7 @@ def test_serve_command_rejects_primary_model_flags_in_embedding_only_mode(capsys
 
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
-    assert "embeddings-only" in err
+    assert "retrieval-only" in err
     assert "--served-model-name, --lazy-load" in err
     assert "--max-tokens" not in err
     embed_only.assert_not_called()
@@ -149,7 +149,7 @@ def test_embedding_only_rejects_explicit_generation_tuning(options, capsys):
     ):
         cli.serve_command(args)
     assert exc_info.value.code == 2
-    assert "embeddings-only" in capsys.readouterr().err
+    assert "retrieval-only" in capsys.readouterr().err
     resolve_port.assert_not_called()
 
 
@@ -177,7 +177,7 @@ def test_embedding_only_accepts_shared_and_embedding_options():
             "-y",
         ]
     )
-    assert cli._embedding_only_incompatible_options(args) == []
+    assert cli._retrieval_only_incompatible_options(args) == []
 
 
 @pytest.mark.parametrize("flag", ["--lazy", "--lazy-l", "--embedding-mo=other"])
@@ -273,7 +273,7 @@ async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
 # An audio server with an embedding sidecar keeps reporting its lazy primary.
 def test_embedding_sidecar_does_not_mark_primary_loaded(embeddings_only_config):
     embeddings_only_config.model_name = "mlx-community/Kokoro-82M-bf16"
-    assert embeddings_only_config.embeddings_only is False
+    assert embeddings_only_config.retrieval_only is False
     assert embeddings_only_config.model_loaded is False
 
 
@@ -282,7 +282,7 @@ def test_serve_command_with_model_does_not_take_embedding_only_mode():
     args = Namespace(model="qwen3.5-4b-4bit", embedding_model=EMBED_ID)
     with (
         mock.patch.object(
-            cli, "_serve_embedding_only_mode", side_effect=AssertionError
+            cli, "_serve_retrieval_only_mode", side_effect=AssertionError
         ) as embed_only,
         mock.patch.object(
             cli, "_validate_primary_lifecycle_args", side_effect=SystemExit(0)
@@ -342,7 +342,7 @@ def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch, lis
         rate_limit=0,
         cors_origins=None,
     )
-    cli._serve_embedding_only_mode(args)
+    cli._serve_retrieval_only_mode(args)
 
     assert events == ["cors", "hosts", "sync", f"load:{EMBED_ID}", "uvicorn", "exit"]
     assert stub_server._api_key == "secret"

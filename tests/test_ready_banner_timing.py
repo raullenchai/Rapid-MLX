@@ -261,6 +261,32 @@ def test_audio_ready_banner_has_no_chat_next(monkeypatch, capsys):
     assert "Next:" not in out
 
 
+@pytest.mark.parametrize(
+    ("embedding_engine", "rerank_engine"),
+    [(object(), None), (None, object()), (object(), object())],
+    ids=["embedding", "rerank", "embedding+rerank"],
+)
+def test_retrieval_only_ready_banner_has_no_chat_next(
+    monkeypatch, capsys, embedding_engine, rerank_engine
+):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "model_alias", None)
+    monkeypatch.setattr(cfg, "embedding_engine", embedding_engine)
+    monkeypatch.setattr(cfg, "rerank_engine", rerank_engine)
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Ready: http://localhost:8766" in out
+    assert "Next:" not in out
+
+
 async def test_ready_banner_suppressed_when_no_bind_info():
     """Embedded usage (uvicorn owned elsewhere) leaves bind_* unset — silent."""
     cfg = get_config()

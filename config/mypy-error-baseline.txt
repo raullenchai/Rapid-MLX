@@ -32,7 +32,6 @@ rapid_mlx/cli.py 15
 rapid_mlx/community_bench/submission.py 1
 rapid_mlx/disk_stream_patch.py 2
 rapid_mlx/doctor/env_health.py 1
-rapid_mlx/embedding.py 7
 rapid_mlx/engine/base.py 1
 rapid_mlx/engine/batched.py 44
 rapid_mlx/engine_core.py 4
@@ -104,7 +103,6 @@ rapid_mlx/routes/anthropic.py 7
 rapid_mlx/routes/audio.py 6
 rapid_mlx/routes/chat.py 39
 rapid_mlx/routes/completions.py 1
-rapid_mlx/routes/embeddings.py 4
 rapid_mlx/routes/images.py 4
 rapid_mlx/routes/responses.py 10
 rapid_mlx/routes/video.py 9

@@ -3313,6 +3313,58 @@ class EmbeddingResponse(BaseModel):
 
 
 # =============================================================================
+# Rerank (Cohere / Jina compatible)
+# =============================================================================
+
+
+class RerankDocument(BaseModel):
+    """A document passed in object form (``{"text": ...}``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: StrictStr
+
+
+class RerankRequest(BaseModel):
+    """Request for document reranking (Cohere / Jina compatible)."""
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    model: str | None = None
+    query: StrictStr
+    documents: list[StrictStr | RerankDocument]
+    # ``None`` or ``0`` returns every document.
+    top_n: StrictInt | None = Field(default=None, ge=0)
+    return_documents: StrictBool = True
+    # Rapid-MLX extension: task instruction for instruction-aware rerankers.
+    instruction: StrictStr | None = None
+
+
+class RerankResultDocument(BaseModel):
+    text: str
+
+
+class RerankResult(BaseModel):
+    index: int
+    relevance_score: float
+    document: RerankResultDocument | None = None
+
+
+class RerankUsage(BaseModel):
+    prompt_tokens: int = 0
+    total_tokens: int = 0
+
+
+class RerankResponse(BaseModel):
+    """Response for the rerank endpoint, sorted by descending relevance."""
+
+    id: str = Field(default_factory=lambda: f"rerank-{uuid.uuid4().hex}")
+    model: str
+    results: list[RerankResult]
+    usage: RerankUsage = Field(default_factory=RerankUsage)
+
+
+# =============================================================================
 # Streaming (for SSE responses)
 # =============================================================================
 

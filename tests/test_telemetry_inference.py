@@ -2749,6 +2749,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
         embed=lambda _texts: [[0.25, 0.75]],
     )
     cfg = SimpleNamespace(
+        engine=None,
         embedding_engine=engine,
         embedding_model_locked="embeddinggemma-300m-6bit",
     )
@@ -2767,7 +2768,7 @@ async def test_embedding_success_emits_completed_request(monkeypatch):
         EmbeddingRequest(model="default", input="hello"), _request()
     )
 
-    assert len(response.data) == 1
+    assert len(json.loads(response.body)["data"]) == 1
     assert calls == [
         {
             "model": "<custom>",
@@ -3208,7 +3209,7 @@ def test_worst_case_counter_cardinality_supports_28_complete_models():
         * len(enums["caller"]["values"])
         * (1 + len(enums["inference_error_class"]["values"]))
     )
-    assert keys_per_model == 8 * 32 * 11  # 32 callers after #4041 added 5 harnesses
+    assert keys_per_model == 9 * 32 * 11  # 9 endpoints after /v1/rerank
     assert store.MAX_KEYS // keys_per_model == 28
 
 

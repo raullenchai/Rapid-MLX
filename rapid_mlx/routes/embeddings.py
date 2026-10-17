@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Embeddings endpoint."""
 
+import asyncio
 import base64
+import concurrent.futures
+import functools
 import logging
 import math
 import struct
 import time
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from ..api.models import (
     EmbeddingData,
@@ -22,14 +27,45 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Serializes embedding work when no chat model worker is available.
+_embedding_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="mlx-embedding"
+)
+
+
+# Runs ``func`` off the event loop, on the chat model's worker if there is one:
+# that worker also runs every chat forward pass, so embedding never overlaps them.
+async def _run_on_mlx_worker(func, /, *args, **kwargs):
+    primary = get_config().engine
+    execute = getattr(primary, "execute_on_model_worker", None)
+    if callable(execute):
+        started = False
+
+        def call():
+            nonlocal started
+            started = True
+            return func(*args, **kwargs)
+
+        try:
+            return await execute(call)
+        except RuntimeError:
+            # Raised by ``func`` itself, or the worker is not running (lazy
+            # primary before its first load, or shut down during a switch).
+            if started:
+                raise
+    return await asyncio.get_running_loop().run_in_executor(
+        _embedding_executor, functools.partial(func, *args, **kwargs)
+    )
+
 
 @router.post(
     "/v1/embeddings",
     dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
+    response_model=EmbeddingResponse,
 )
 async def create_embeddings(
     request: EmbeddingRequest, raw_request: Request
-) -> EmbeddingResponse:
+) -> JSONResponse:
     """Create embeddings for the given input text(s)."""
     from ..embedding import (
         EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT,
@@ -168,15 +204,16 @@ async def create_embeddings(
             texts = [raw_input]
         elif isinstance(raw_input, list) and not raw_input:
             raise HTTPException(status_code=400, detail="Input must not be empty")
+        # mypy cannot narrow list element types through all(isinstance(...)).
         elif isinstance(raw_input, list) and all(isinstance(x, str) for x in raw_input):
-            texts = raw_input
+            texts = cast(list[str], raw_input)
         elif isinstance(raw_input, list) and all(isinstance(x, int) for x in raw_input):
-            token_batches = [list(raw_input)]
+            token_batches = [list(cast(list[int], raw_input))]
         elif isinstance(raw_input, list) and all(
             isinstance(x, list) and all(isinstance(t, int) for t in x)
             for x in raw_input
         ):
-            token_batches = [list(x) for x in raw_input]
+            token_batches = [list(cast(list[int], x)) for x in raw_input]
         else:
             raise HTTPException(
                 status_code=400,
@@ -210,11 +247,21 @@ async def create_embeddings(
         try:
             if token_batches is not None:
                 prompt_tokens = sum(min(len(b), eff_limit) for b in token_batches)
-                embeddings = cfg.embedding_engine.embed_tokens(token_batches)
+                embeddings = await _run_on_mlx_worker(
+                    cfg.embedding_engine.embed_tokens, token_batches
+                )
                 n_inputs = len(token_batches)
             else:
-                prompt_tokens = cfg.embedding_engine.count_tokens(texts)
-                embeddings = cfg.embedding_engine.embed(texts)
+                assert texts is not None
+                embedding_engine = cfg.embedding_engine
+
+                def count_and_embed():
+                    return (
+                        embedding_engine.count_tokens(texts),
+                        embedding_engine.embed(texts),
+                    )
+
+                prompt_tokens, embeddings = await _run_on_mlx_worker(count_and_embed)
                 n_inputs = len(texts)
         except EmbeddingUnsupportedMediaError as exc:
             raise HTTPException(
@@ -255,57 +302,63 @@ async def create_embeddings(
             f"Embeddings: {n_inputs} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
         )
 
-        # Optional truncation (OpenAI MRL semantics). Sliced post-embed
-        # because mlx-embeddings doesn't expose a native dim parameter,
-        # then L2-renormalized so the resulting vector is still a valid
-        # unit-norm embedding for cosine similarity (matches OpenAI
-        # cookbook recommendation for text-embedding-3-large).
-        if request.dimensions is not None:
-            full_dim = len(list(embeddings[0]))
-            if request.dimensions > full_dim:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"dimensions={request.dimensions} exceeds the "
-                        f"model's native embedding size of {full_dim}"
-                    ),
-                )
+        def build_response(embeddings) -> JSONResponse:
+            # Optional truncation (OpenAI MRL semantics). Sliced post-embed
+            # because mlx-embeddings doesn't expose a native dim parameter,
+            # then L2-renormalized so the resulting vector is still a valid
+            # unit-norm embedding for cosine similarity (matches OpenAI
+            # cookbook recommendation for text-embedding-3-large).
+            if request.dimensions is not None:
+                full_dim = len(list(embeddings[0]))
+                if request.dimensions > full_dim:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"dimensions={request.dimensions} exceeds the "
+                            f"model's native embedding size of {full_dim}"
+                        ),
+                    )
 
-            truncated: list[list[float]] = []
-            for vec in embeddings:
-                sliced = list(vec)[: request.dimensions]
-                norm = math.sqrt(sum(x * x for x in sliced))
-                if norm > 0:
-                    sliced = [x / norm for x in sliced]
-                truncated.append(sliced)
-            embeddings = truncated
+                truncated: list[list[float]] = []
+                for vec in embeddings:
+                    sliced = list(vec)[: request.dimensions]
+                    norm = math.sqrt(sum(x * x for x in sliced))
+                    if norm > 0:
+                        sliced = [x / norm for x in sliced]
+                    truncated.append(sliced)
+                embeddings = truncated
 
-        # encoding_format=base64 per OpenAI spec — float32 little-endian
-        # bytes, base64-encoded as ASCII. Saves ~2-4× bandwidth on large
-        # batches and is the default for several OpenAI client SDKs.
-        if request.encoding_format == "base64":
-            encoded: list[list[float] | str] = []
-            for vec in embeddings:
-                vec_list = list(vec)
-                packed = struct.pack(f"<{len(vec_list)}f", *vec_list)
-                encoded.append(base64.b64encode(packed).decode("ascii"))
-            data = [
-                EmbeddingData(index=i, embedding=enc) for i, enc in enumerate(encoded)
-            ]
-        else:
-            data = [
-                EmbeddingData(index=i, embedding=list(vec))
-                for i, vec in enumerate(embeddings)
-            ]
+            # encoding_format=base64 per OpenAI spec — float32 little-endian
+            # bytes, base64-encoded as ASCII. Saves ~2-4× bandwidth on large
+            # batches and is the default for several OpenAI client SDKs.
+            if request.encoding_format == "base64":
+                encoded: list[list[float] | str] = []
+                for vec in embeddings:
+                    vec_list = list(vec)
+                    packed = struct.pack(f"<{len(vec_list)}f", *vec_list)
+                    encoded.append(base64.b64encode(packed).decode("ascii"))
+                data = [
+                    EmbeddingData(index=i, embedding=enc)
+                    for i, enc in enumerate(encoded)
+                ]
+            else:
+                data = [
+                    EmbeddingData(index=i, embedding=list(vec))
+                    for i, vec in enumerate(embeddings)
+                ]
 
-        response = EmbeddingResponse(
-            data=data,
-            model=model_name,
-            usage=EmbeddingUsage(
-                prompt_tokens=prompt_tokens,
-                total_tokens=prompt_tokens,
-            ),
-        )
+            response = EmbeddingResponse(
+                data=data,
+                model=model_name,
+                usage=EmbeddingUsage(
+                    prompt_tokens=prompt_tokens,
+                    total_tokens=prompt_tokens,
+                ),
+            )
+            return JSONResponse(response.model_dump(mode="json"))
+
+        # Rendering a large batch as JSON takes long enough to stall other requests.
+        json_response = await asyncio.to_thread(build_response, embeddings)
         from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
         _telemetry_inference.emit_completed_request(
@@ -315,7 +368,7 @@ async def create_embeddings(
             caller_client=caller_client,
             result="ok",
         )
-        return response
+        return json_response
 
     except ImportError:
         from rapid_mlx.telemetry.inference import emit_capability_rejected

@@ -112,8 +112,15 @@ async def health():
         model_type = "video-gen"
     elif getattr(engine, "is_mllm", False):
         model_type = "mllm"
-    elif cfg.embeddings_only:
-        model_type = "embedding"
+    elif cfg.retrieval_only:
+        model_type = "+".join(
+            kind
+            for kind, lane in (
+                ("embedding", cfg.embedding_engine),
+                ("rerank", cfg.rerank_engine),
+            )
+            if lane is not None
+        )
     else:
         model_type = "llm"
 

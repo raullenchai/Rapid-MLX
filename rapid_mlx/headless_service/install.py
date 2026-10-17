@@ -483,7 +483,8 @@ def install_command(args) -> int:
     label = getattr(args, "label", None) or DEFAULT_LABEL
     model = getattr(args, "model", None)
     embedding_model = getattr(args, "embedding_model", None)
-    if model is None and embedding_model is None:
+    rerank_model = getattr(args, "rerank_model", None)
+    if model is None and embedding_model is None and rerank_model is None:
         model = "qwen3.5-4b-4bit"
     user = getattr(args, "service_user", None)
     host = getattr(args, "host", None) or "127.0.0.1"
@@ -536,6 +537,7 @@ def install_command(args) -> int:
             executable=executable,
             model=model,
             embedding_model=embedding_model,
+            rerank_model=rerank_model,
             host=host,
             port=port,
             serve_args=serve_args,
@@ -587,7 +589,7 @@ def install_command(args) -> int:
 
     # Model-cache check: warn (not fail) if a model isn't cached under the
     # service account's HOME — the documented workflow pre-downloads it.
-    for cached_model in (model, embedding_model):
+    for cached_model in (model, embedding_model, rerank_model):
         if cached_model and not _cache_root_present(home, cached_model):
             print(
                 f"warning: model {cached_model!r} not found in the service "
@@ -612,6 +614,8 @@ def install_command(args) -> int:
         print(f"  model: {model or '(none)'}")
         if embedding_model:
             print(f"  embedding model: {embedding_model}")
+        if rerank_model:
+            print(f"  rerank model: {rerank_model}")
         return 0
 
     if not is_root():
@@ -744,7 +748,11 @@ def install_command(args) -> int:
 
     served = ", ".join(
         f"{kind} {name}"
-        for kind, name in (("model", model), ("embedding model", embedding_model))
+        for kind, name in (
+            ("model", model),
+            ("embedding model", embedding_model),
+            ("rerank model", rerank_model),
+        )
         if name
     )
     print(f"Installed and running: {label} ({served}, {host}:{port}).")

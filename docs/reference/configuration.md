@@ -162,6 +162,18 @@ table and shows how a compressed response is marked.
 | `--embedding-max-length` | Max input length (tokens); `auto` derives it from the model's declared maximum, or pass a positive integer for a lower ceiling | `auto` |
 | `--embedding-overflow-policy` | Handling for over-length inputs: `truncate` (logged + metric, never silent) or `error` (HTTP 400 with observed/allowed counts) | `truncate` |
 
+### Rerank Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--rerank-model` | Pre-load a reranker for `/v1/rerank`; see the [Rerank Guide](../guides/rerank.md) for the supported models | None |
+| `--rerank-model-family` | Family of `--rerank-model` when its name does not reveal it: `qwen3`, `bge2`, `mxbai2`, `jina3` or `roberta` | Detected |
+| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request (excess handled per `--rerank-overflow-policy`); `0` or negative disables the limit | `0` |
+| `--rerank-max-length` | Max tokens per query/document pair; `auto` uses the model's default, or pass a positive integer | `auto` |
+| `--rerank-overflow-policy` | Handling for requests over `--rerank-max-documents` and documents over `--rerank-max-length`: `truncate` (logged) or `error` (HTTP 400) | `truncate` |
+| `--rerank-instruction` | Task description for requests without an `instruction` field | The model's default |
+| `--rerank-prompt` | Judging prompt that replaces the model's own | The model's default |
+
 ### Speculative Decoding Options
 
 Use `--speculative-config` for speculative decoding usage. Legacy

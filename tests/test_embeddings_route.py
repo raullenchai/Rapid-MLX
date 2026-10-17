@@ -187,5 +187,119 @@ def test_embeddings_returns_200_when_configured(monkeypatch):
     engine.embed.assert_called_once()
 
 
+class _ChatWorker:
+    def __init__(self, running=True):
+        self.running = running
+        self.calls = 0
+
+    async def execute_on_model_worker(self, func, *args, **kwargs):
+        import asyncio
+
+        if not self.running:
+            raise RuntimeError("model worker is not running")
+        self.calls += 1
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _thread_recording_engine(error=None):
+    import threading
+
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.count_tokens.return_value = 1
+    engine.threads = []
+
+    def embed(texts):
+        engine.threads.append(threading.current_thread().name)
+        if error is not None:
+            raise error
+        return [[1.0, 0.0]]
+
+    engine.embed.side_effect = embed
+    return engine
+
+
+@pytest.fixture
+def chat_engine():
+    from rapid_mlx.config import get_config
+
+    cfg = get_config()
+    saved = cfg.engine
+    yield cfg
+    cfg.engine = saved
+
+
+async def test_embedding_does_not_block_event_loop(monkeypatch, chat_engine):
+    import asyncio
+    import threading
+
+    import httpx
+
+    started, release = threading.Event(), threading.Event()
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.count_tokens.return_value = 1
+
+    def embed(texts):
+        started.set()
+        release.wait(timeout=5)
+        return [[1.0, 0.0]]
+
+    engine.embed.side_effect = embed
+    chat_engine.engine = None
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    client.app.add_api_route("/ping", lambda: {"ok": True})
+    transport = httpx.ASGITransport(app=client.app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            embedding = asyncio.create_task(
+                c.post("/v1/embeddings", json={"model": "stub-embed", "input": "a"})
+            )
+            assert await asyncio.to_thread(started.wait, 5)
+            assert (await c.get("/ping")).status_code == 200
+            assert not embedding.done()
+            release.set()
+            assert (await embedding).status_code == 200
+    finally:
+        release.set()
+        restore()
+
+
+@pytest.mark.parametrize(("running", "worker_calls"), [(True, 1), (False, 0)])
+def test_embedding_runs_on_chat_model_worker_when_running(
+    monkeypatch, chat_engine, running, worker_calls
+):
+    engine = _thread_recording_engine()
+    worker = _ChatWorker(running=running)
+    chat_engine.engine = worker
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        r = client.post("/v1/embeddings", json={"model": "stub-embed", "input": "a"})
+    finally:
+        restore()
+    assert r.status_code == 200, r.text
+    assert worker.calls == worker_calls
+    assert len(engine.threads) == 1
+    assert engine.threads[0].startswith("mlx-embedding") is not running
+
+
+def test_embedding_error_on_chat_worker_is_not_retried(monkeypatch, chat_engine):
+    engine = _thread_recording_engine(error=RuntimeError("boom"))
+    chat_engine.engine = _ChatWorker()
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        r = client.post("/v1/embeddings", json={"model": "stub-embed", "input": "a"})
+    finally:
+        restore()
+    assert r.status_code == 500
+    assert len(engine.threads) == 1
+
+
 if __name__ == "__main__":  # pragma: no cover — convenience only
     pytest.main([__file__, "-v"])

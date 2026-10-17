@@ -41,7 +41,10 @@ class _PortContextArgumentParser(argparse.ArgumentParser):
         if (
             getattr(parsed, "command", None) == "serve"
             and getattr(parsed, "model", None) is None
-            and getattr(parsed, "embedding_model", None)
+            and (
+                getattr(parsed, "embedding_model", None)
+                or getattr(parsed, "rerank_model", None)
+            )
         ):
             for action in self._actions:
                 if not isinstance(action, argparse._SubParsersAction):
@@ -1797,6 +1800,89 @@ def _add_serve_parser(
             "rapid_mlx_embedding_truncations_total metric (never silent); "
             "'error' rejects the request with a 400 carrying the observed "
             "and allowed token counts."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-model",
+        type=str,
+        default=None,
+        help=(
+            "Pre-load a reranker for /v1/rerank at startup. Supported "
+            "families: Qwen3-Reranker, BGE reranker v2 Gemma, mxbai-rerank-v2, "
+            "jina-reranker-v3 and XLM-RoBERTa cross-encoders such as "
+            "BAAI/bge-reranker-v2-m3 (needs the [embeddings] extra). Without a "
+            "positional model, the server runs without a chat model."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-model-family",
+        type=str,
+        choices=["bge2", "jina3", "mxbai2", "qwen3", "roberta"],
+        default=None,
+        help=(
+            "Reranker family of --rerank-model when its name does not reveal "
+            "it, e.g. a fine-tune or a renamed local copy: qwen3 "
+            "(Qwen3-Reranker), bge2 (BGE reranker v2 Gemma), mxbai2 "
+            "(mxbai-rerank-v2), roberta (XLM-RoBERTa cross-encoders such as "
+            "bge-reranker-v2-m3) or jina3 (jina-reranker-v3). Default: detect "
+            "from the model name and config."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-instruction",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Task description for /v1/rerank requests without an 'instruction' "
+            "field (default: the model family's own default). XLM-RoBERTa "
+            "cross-encoders take no instruction."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-prompt",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Judging prompt of the reranker, replacing the model family's own "
+            "(Qwen3-Reranker, mxbai-rerank-v2 and jina-reranker-v3 only)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-max-documents",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Maximum documents per /v1/rerank request; larger requests are "
+            "handled per --rerank-overflow-policy. 0 or a negative value "
+            "disables the limit (default: 0)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-max-length",
+        type=str,
+        default="auto",
+        metavar="TOKENS",
+        help=(
+            "Max tokens per query/document pair for --rerank-model. 'auto' "
+            "(default) uses the model's default, capped at the model's "
+            "maximum; a positive integer "
+            "sets the limit explicitly, capped at the model's maximum. Longer "
+            "pairs are handled per --rerank-overflow-policy."
+        ),
+    )
+    serve_parser.add_argument(
+        "--rerank-overflow-policy",
+        type=str,
+        choices=["truncate", "error"],
+        default="truncate",
+        help=(
+            "How to handle /v1/rerank requests over --rerank-max-documents or "
+            "documents over --rerank-max-length: 'truncate' (default) scores "
+            "only the first documents / shortens the document and logs a "
+            "warning; 'error' rejects the request with a 400."
         ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the
