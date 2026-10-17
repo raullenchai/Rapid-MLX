@@ -45,6 +45,8 @@ def test_engine_only_does_not_select_desktop():
         "community-benchmarks/schema.json",
         "config/mypy-error-baseline.txt",
         "config/mypy-requirements.txt",
+        "config/pr-validate-deps.txt",
+        "config/requirements-ci-linux.txt",
         "evals/coherence_gate.py",
         "examples/tool_calling.py",
         "harness/perf_floors.json",
@@ -114,6 +116,39 @@ def test_unknown_product_area_fails_closed():
     )
 
 
+def test_unknown_config_file_fails_closed():
+    assert classify(["config/some-new-file.txt"]) == Lanes(
+        engine=True, desktop=True, docs_only=False
+    )
+
+
+def test_pr_validate_dependency_and_test_diff_is_engine_only():
+    paths = [
+        "config/pr-validate-deps.txt",
+        "config/requirements-ci-linux.txt",
+        "pyproject.toml",
+        "scripts/pr_validate/_xdist.py",
+        "scripts/pr_validate/steps/full_unit.py",
+        "tests/conftest.py",
+        "tests/test_pr_validate_full_unit.py",
+    ]
+    assert classify(paths) == Lanes(engine=True, desktop=False, docs_only=False)
+    assert classify_policy(paths).linux_matrix_mode == "full"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/rapid-mac/Sources/Rapid/App.swift",
+        "apps/rapid-mac/Package.swift",
+        "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml",
+        ".github/workflows/rapid-mac-ci.yml",
+    ],
+)
+def test_desktop_app_and_workflow_paths_select_desktop(path):
+    assert classify([path]).desktop is True
+
+
 def test_cross_lane_rename_selects_removed_product_lane():
     # Workflows pass --no-renames, so a rename is represented by both paths.
     assert classify(["rapid_mlx/server.py", "docs/server.md"]) == Lanes(
@@ -165,6 +200,7 @@ def test_leaf_engine_changes_use_complete_py311_matrix(paths):
     [
         (".github/workflows/ci.yml", "ci-control"),
         ("config/requirements-ci-linux.txt", "dependency-or-policy"),
+        ("config/pr-validate-deps.txt", "dependency-or-policy"),
         ("pyproject.toml", "dependency-or-policy"),
         (".coveragerc", "dependency-or-policy"),
         ("scripts/ci_test_shard.py", "ci-or-build-control"),

@@ -76,6 +76,8 @@ _ENGINE_FILES = {
     "Makefile",
     "config/mypy-error-baseline.txt",
     "config/mypy-requirements.txt",
+    "config/pr-validate-deps.txt",
+    "config/requirements-ci-linux.txt",
     "pyproject.toml",
     "uv.lock",
     "pytest.ini",

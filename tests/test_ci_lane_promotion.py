@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts.classify_ci_changes import _DESKTOP_PREFIX
+
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 DESKTOP_WORKFLOW = ROOT / ".github/workflows/rapid-mac-ci.yml"
@@ -292,6 +294,74 @@ def test_unpromoted_desktop_aggregate_requires_fast_lane_and_skips_gui():
     skipped_gate = run.index('elif [ "$GUI_APP_BUILD" != skipped ]')
     assert no_lane < build_gate < promotion < skipped_gate
     assert "status remains pending" not in run
+
+
+def test_desktop_aggregate_keeps_required_check_name_and_dependencies():
+    job = _job(DESKTOP_WORKFLOW, "desktop-tests")
+    assert job["name"] == (
+        "${{ github.event_name == 'workflow_dispatch' "
+        "&& 'desktop-tests (manual full suite)' || 'desktop-tests' }}"
+    )
+    dispatch_name, automatic_name = job["name"].split("&& ", 1)[1].split(" || ")
+    assert automatic_name == "'desktop-tests' }}"
+    assert dispatch_name == "'desktop-tests (manual full suite)'"
+    assert dispatch_name != "'desktop-tests'"
+    assert job["if"] == "always()"
+    assert {
+        "changes",
+        "build",
+        "gui-app-build",
+        "gui-golden-flows",
+        "accessibility-identifiers",
+        "accessibility-identifier-tests",
+        "gui-harness-contracts",
+    } <= set(job["needs"])
+
+
+@pytest.mark.parametrize(
+    ("classifier", "overrides", "exit_code"),
+    [
+        ("failure", {"DESKTOP_EXPECTED": "false"}, 1),
+        ("cancelled", {"DESKTOP_EXPECTED": "false"}, 1),
+        ("skipped", {"DESKTOP_EXPECTED": "false"}, 1),
+        ("success", {"DESKTOP_EXPECTED": "false", "BUILD": "skipped"}, 0),
+        ("success", {"GOLDEN_FLOWS": "failure"}, 1),
+        ("success", {"GOLDEN_FLOWS": "cancelled"}, 1),
+        ("success", {"BUILD": "failure"}, 1),
+        ("success", {}, 0),
+    ],
+)
+def test_desktop_aggregate_verdict(classifier, overrides, exit_code):
+    run = _step_run(DESKTOP_WORKFLOW, "desktop-tests", "Check desktop results")
+    run = run.replace("${{ needs.changes.result }}", classifier)
+    env = os.environ | {
+        "DESKTOP_EXPECTED": "true",
+        "FULL_GATE": "true",
+        "IDENTIFIERS": "success",
+        "IDENTIFIER_TESTS": "success",
+        "HARNESS_CONTRACTS": "success",
+        "BUILD": "success",
+        "GUI_APP_BUILD": "success",
+        "GOLDEN_FLOWS": "success",
+        "REUSE_MAC": "false",
+    }
+    result = subprocess.run(
+        ["bash", "-c", run], env=env | overrides, capture_output=True, text=True
+    )
+    assert result.returncode == exit_code, result.stdout + result.stderr
+
+
+def test_manual_desktop_override_has_no_inputs_and_isolated_concurrency():
+    workflow = _workflow_strings(DESKTOP_WORKFLOW)
+    assert workflow["on"]["workflow_dispatch"] == ""
+    assert workflow["concurrency"]["group"] == (
+        "rapid-mac-ci-${{ github.event_name == 'workflow_dispatch' "
+        "&& 'manual-' || '' }}${{ github.ref }}"
+    )
+
+
+def test_classifier_desktop_prefix_matches_app_root():
+    assert _DESKTOP_PREFIX == "apps/rapid-mac/"
 
 
 def test_required_aggregates_do_not_publish_shadow_commit_statuses():

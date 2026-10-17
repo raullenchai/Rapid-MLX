@@ -25,6 +25,9 @@
 name: rapid-mac CI
 
 on:
+  # Manual runs execute the complete Desktop and GUI suite on any branch.
+  # They are informational and do not publish the required check name.
+  workflow_dispatch:
   push:
     branches: [main, release/0.16.0]
   pull_request:
@@ -38,7 +41,7 @@ permissions:
 
 # One in-flight build per PR branch; a new push cancels the previous run.
 concurrency:
-  group: rapid-mac-ci-${{ github.ref }}
+  group: rapid-mac-ci-${{ github.event_name == 'workflow_dispatch' && 'manual-' || '' }}${{ github.ref }}
   cancel-in-progress: true
 
 # Every job in this workflow runs product code (engine, CLI, Desktop app) on
@@ -943,6 +946,10 @@ jobs:
   # Stable required-check facade. It is present even on non-desktop PRs,
   # unlike workflow-level path filters. Ordinary PRs settle after the fast
   # Desktop lane; promoted and integration heads add the GUI golden-flow gate.
+    # Mergify matches the required check name on the SHA regardless of event.
+    # Give informational manual runs a distinct name so pending or failed runs
+    # cannot block the queue's automatic desktop-tests check.
+    name: ${{ github.event_name == 'workflow_dispatch' && 'desktop-tests (manual full suite)' || 'desktop-tests' }}
     needs:
       - queue-tree-evidence
       - changes
