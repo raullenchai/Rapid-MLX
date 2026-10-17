@@ -20,6 +20,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
+from types import MemberDescriptorType
 from typing import Any, cast
 
 import mlx.core as mx
@@ -67,6 +68,57 @@ from .memory_peak import (  # noqa: E402
     reset_peak_for_sample,
     sample_window_intact,
 )
+
+
+def _owned_attr(
+    obj: object, name: str
+) -> tuple[dict[str, object] | MemberDescriptorType, object] | None:
+    """Resolve only instance storage, without invoking properties or proxies."""
+    try:
+        state = object.__getattribute__(obj, "__dict__")
+        if isinstance(state, dict) and name in state:
+            return state, state[name]
+    except Exception:
+        pass
+    try:
+        for cls in type(obj).__mro__:
+            descriptor = cls.__dict__.get(name)
+            if isinstance(descriptor, MemberDescriptorType):
+                return descriptor, descriptor.__get__(obj, type(obj))
+    except Exception:
+        pass
+    return None
+
+
+def _take_attr(obj: object, name: str) -> object | None:
+    """Detach owned state, falling back to assignment for restricted slots."""
+    owned = _owned_attr(obj, name)
+    if owned is None:
+        return None
+    storage, value = owned
+    try:
+        if isinstance(storage, dict):
+            storage.pop(name, None)
+        else:
+            storage.__delete__(obj)
+    except Exception:
+        _replace_attr(obj, name, None)
+    return value
+
+
+def _replace_attr(obj: object, name: str, value: object) -> None:
+    """Replace only existing instance storage; never synthesize attributes."""
+    owned = _owned_attr(obj, name)
+    if owned is None:
+        return
+    storage, _ = owned
+    try:
+        if isinstance(storage, dict):
+            storage[name] = value
+        else:
+            storage.__set__(obj, value)
+    except Exception:
+        pass
 
 
 def _read_kv_dims(model):
@@ -6081,7 +6133,6 @@ class Scheduler:
                 except Exception as e:
                     logger.debug(f"Error closing BatchGenerator: {e}")
                 finally:
-                    state = getattr(generator, "__dict__", None) or {}
                     # Upstream close synchronizes/restores wired_limit only. It
                     # does not discard failed lazy graphs or request-local hooks.
                     for name in (
@@ -6091,28 +6142,31 @@ class Scheduler:
                         "_suffix_teardown",
                         "_compiled_decode_teardown",
                     ):
-                        teardown = state.pop(name, None)
+                        teardown = _take_attr(generator, name)
                         if teardown is not None:
+                            # Release memory even if detachment failed; clearing
+                            # self.batch_generator above prevents a second retirement.
                             try:
-                                teardown()
+                                cast(Any, teardown)()
                             except Exception as exc:
                                 logger.debug("Error retiring generator hook: %s", exc)
                     for name in ("_unprocessed_sequences", "_currently_processing"):
-                        queue = state.get(name)
+                        owned_queue = _owned_attr(generator, name)
+                        queue = owned_queue[1] if owned_queue is not None else None
                         if queue is not None:
                             try:
-                                queue.clear()
+                                cast(Any, queue).clear()
                             except Exception as exc:
                                 logger.debug(
                                     "Error clearing retired generator queue: %s", exc
                                 )
-                                state.pop(name, None)
+                                _take_attr(generator, name)
                     for name in ("_prompt_batch", "_generation_batch", "active_batch"):
-                        batch = state.get(name)
+                        owned_batch = _owned_attr(generator, name)
+                        batch = owned_batch[1] if owned_batch is not None else None
                         if batch is None:
                             continue
                         try:
-                            batch_state = getattr(batch, "__dict__", None) or {}
                             # Replace containers, never mutate shared cache layers:
                             # valid prefix entries may still own those layers.
                             for field in (
@@ -6129,19 +6183,17 @@ class Scheduler:
                                 "_num_tokens",
                                 "_matcher_states",
                             ):
-                                if field in batch_state:
-                                    batch_state[field] = []
+                                _replace_attr(batch, field, [])
                             for field in ("_current_tokens", "_next_tokens"):
-                                if field in batch_state:
-                                    batch_state[field] = None
+                                _replace_attr(batch, field, None)
                             for field in ("_step", "next", "filter"):
-                                batch_state.pop(field, None)
+                                _take_attr(batch, field)
                         except Exception as exc:
                             logger.debug(
                                 "Error clearing retired generator batch: %s", exc
                             )
                         finally:
-                            state[name] = None
+                            _replace_attr(generator, name, None)
                     for name in (
                         "next",
                         "remove",
@@ -6152,7 +6204,7 @@ class Scheduler:
                         "_continuous_mtp_driver",
                         "_continuous_mtp_removed_states",
                     ):
-                        state.pop(name, None)
+                        _take_attr(generator, name)
         except Exception as exc:
             logger.debug("Error retiring BatchGenerator state: %s", exc)
         finally:
