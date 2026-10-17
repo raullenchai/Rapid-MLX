@@ -498,6 +498,8 @@ the documented round-2 change, not a new replay discrepancy. Full output:
 `review/round3_fixture_equivalence.py`, both under the existing scratch root.
 
 Fresh round-3 checks: 238 TensorFold tests pass; diff-cover against origin/main
-reports 78 changed executable lines, zero missing, 100%. Ruff check and format check pass for all 12 TensorFold Python files. Pinned
-Python 3.11 mypy reports 839 grandfathered errors across 161 files, no growth. Historical check counts
+reports 85 changed executable lines, zero missing, 100% after the implementation
+commit (the pre-commit combined diff counted 78). Ruff check and format check
+pass for all 12 TensorFold Python files. Pinned Python 3.11 mypy reports 839
+grandfathered errors across 161 files, no growth. Historical check counts
 above belong to their respective implementations. No models or servers ran.
