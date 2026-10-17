@@ -53,6 +53,17 @@ SIZES = GOLDEN["sizes"]
 CASES = GOLDEN["cases"]
 LOGGER = "rapid_mlx.tool_parsers.qwen3coder_tool_parser"
 
+# #4714 shares the Markdown boundary for declared and undeclared tools.
+# These historical streams lost whitespace inside code; now every byte stays.
+# Keep the captured origin/main fixture unchanged as the negative baseline.
+MARKDOWN_WHITESPACE_4714 = {
+    "lone_undeclared_in_code_fence": {1, 2},
+    "lone_undeclared_in_tilde_fence": {1, 2, 3},
+    "lone_undeclared_in_unclosed_fence": {1, 2},
+    "short_fence_does_not_close": {1, 2},
+    "dropped_then_fenced": {1, 2},
+}
+
 
 def _shape(result: tuple[list[tuple[str, str]], str]) -> dict:
     calls, content = result
@@ -82,7 +93,10 @@ def test_non_streaming(case):
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_streaming(case, size):
     got = _shape(stream(case["text"], REQUESTS[case["request"]], size))
-    if "after_drop_main" in case:
+    if size in MARKDOWN_WHITESPACE_4714.get(case["name"], set()):
+        content = case.get("after_drop_main", {}).get("remainder", case["text"])
+        assert got == {"calls": [], "content": content}
+    elif "after_drop_main" in case:
         # The leading block is dropped; the rest streams exactly as
         # origin/main streams that remaining text on its own.
         after = case["after_drop_main"]

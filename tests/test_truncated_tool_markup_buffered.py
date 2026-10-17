@@ -576,7 +576,7 @@ def _stream_snapshots():
 
 
 def test_streaming_unchanged_against_base():
-    """All streaming definitions are identical; compare review events as well."""
+    """Unrelated streaming definitions stay identical to origin/main."""
     import ast
     import os
     import subprocess
@@ -612,7 +612,28 @@ def test_streaming_unchanged_against_base():
                         for method in node.body
                         if not (
                             isinstance(method, ast.FunctionDef)
-                            and method.name == "strip_trailing_tool_envelope"
+                            and method.name
+                            in {
+                                "strip_trailing_tool_envelope",
+                                # #4714 intentionally changes these scans;
+                                # dedicated fence tests pin their output.
+                                "_first_opener_pos",
+                                "_new_opener_position",
+                                "_function_start_positions",
+                                "_content_without_admitted_calls",
+                                "__init__",
+                                "_reset_streaming_state",
+                                "inside_fence",
+                                "skip_fence_span",
+                                "_fence_state",
+                                "_restore_fence_state",
+                                "_feed_fence",
+                                "_finish_fence_line",
+                                "_fence_result",
+                                "mask_markdown_fenced_regions",
+                                "flush_held_content",
+                                "_streaming_step_once",
+                            }
                         )
                     ]
             # The opt-in buffered Markdown query leaves the original streaming
@@ -644,7 +665,8 @@ def test_streaming_unchanged_against_base():
                 for node in tree.body
                 if not (
                     isinstance(node, ast.FunctionDef)
-                    and node.name == "_strip_trailing_tool_envelope"
+                    and node.name
+                    in {"_strip_trailing_tool_envelope", "_mask_markdown_fences"}
                 )
             ]
             return ast.dump(tree, include_attributes=False)

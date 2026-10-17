@@ -3923,6 +3923,14 @@ class StreamingPostProcessor:
             or "[Calling" in _fallback_text
             or LFM_CALL_START.search(_fallback_text) is not None
         )
+        _markdown_fence_mask = getattr(
+            type(self.tool_parser), "mask_markdown_fenced_regions", None
+        )
+        _cross_format_text = (
+            _markdown_fence_mask(_fallback_text)
+            if _markdown_fence_mask
+            else _fallback_text
+        )
         if (
             self.tool_parser
             and _fallback_text
@@ -4003,7 +4011,7 @@ class StreamingPostProcessor:
                 # non-stream try/except — a parser bug must not abort the stream.
                 # See #425.
                 try:
-                    _, fb_tcs = parse_tool_calls(_fallback_text, self.request)
+                    _, fb_tcs = parse_tool_calls(_cross_format_text, self.request)
                 except Exception as e:
                     logger.warning(
                         "finalize cross-format fallback parser raised: %s", e
