@@ -1,0 +1,58 @@
+name: Merge on green
+
+on:
+  pull_request_target:
+    types: [labeled]
+  workflow_run:
+    workflows: [CI, rapid-mac CI, Version bump guard, Bind merge-ready to head, Auto-release on version bump]
+    types: [completed]
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Restrict evaluation to one PR number
+        type: string
+        required: false
+      dry_run:
+        description: Evaluate without merging
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+  actions: read
+
+concurrency:
+  group: merge-on-green
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Disabled
+        if: vars.MERGE_ON_GREEN_ENABLED != 'true'
+        run: echo 'merge-on-green disabled'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: vars.MERGE_ON_GREEN_ENABLED == 'true'
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Evaluate and merge authorized heads
+        if: vars.MERGE_ON_GREEN_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          RELEASE_FREEZE: ${{ vars.RELEASE_FREEZE }}
+          INPUT_PR: ${{ inputs.pr }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=()
+          if [ -n "$INPUT_PR" ]; then args+=(--pr "$INPUT_PR"); fi
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python -m scripts.merge_on_green --repo "$GITHUB_REPOSITORY" "${args[@]}"

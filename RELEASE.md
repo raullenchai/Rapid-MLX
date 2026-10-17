@@ -501,3 +501,37 @@ source/candidate CI, review, actual packaged dogfood, signing/notarization,
 protected publication approval and final channel verification still apply. The
 operator never merges, queues, tags, approves deployments, changes protection or
 publishes. Continue through the canonical pipeline after normal bump-PR merge.
+
+## Merge freeze during release
+
+The opt-in merge-on-green merger automatically freezes during any active
+releasing or undetermined `auto-release.yml` run, including manual dispatches.
+Non-release pushes freeze only until detection and skipped downstream jobs
+are determined. A version-bump main head also freezes merges until a completed
+push release run exists for that exact SHA. API errors keep the merger frozen.
+This protects exact-SHA CI from superseding main pushes and the release's
+requirement that its candidate is still main HEAD. Release gates remain intact.
+
+Before release-sensitive manual work, set an explicit freeze:
+
+```bash
+gh variable set RELEASE_FREEZE --body true
+# After release validation and recovery are complete:
+gh variable delete RELEASE_FREEZE
+```
+
+Removing the manual freeze does not bypass an automatic freeze. Inspect the
+merger step summary and release run before resuming. The freeze controls this
+merger; humans must also avoid unrelated main merges during a release.
+Land phase 1 through the existing queue. The operator then opens and labels the
+phase-2 PR deleting queue configuration and queue-only workflows. Set
+`MERGE_ON_GREEN_ENABLED=true` only while that removal PR is the only PR carrying
+a ready label. The merger lands it, leaving the queue without configuration;
+the repository admin then uninstalls the queue app. During the brief overlap,
+both paths can only merge the same exact head using head-SHA-matched squash;
+the loser observes a closed PR and does nothing.
+`RELEASE_PAT` is mandatory for automated merges and revert PR writes; an empty
+secret fails closed. Disable the merger at any time with
+`gh variable set MERGE_ON_GREEN_ENABLED --body false`.
+See [the decision record](docs/engineering/decisions/2026-10-17-merge-on-green.md)
+for cutover and rollback.

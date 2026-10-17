@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
   # Merge queue candidates are synthetic commits.  They need their own trigger
   # or GitHub waits forever for the required `tests` check.
   merge_group:
@@ -15,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job in this workflow runs product code (engine, CLI, Desktop app) on
@@ -247,39 +250,9 @@ jobs:
                 fi
               fi
             else
-              # Only the latest successful main-push qualification on the
-              # exact PR base can anchor a reduced source check. Every miss,
-              # pending run, red/cancelled attempt or API failure broadens.
-              if [ "$CANARY_ENABLED" = true ]; then
-                if gh run list --repo "$REPO" --workflow ci.yml --event push \
-                  --branch main --commit "$PR_BASE_SHA" --limit 1 \
-                  --json databaseId,headSha,status,conclusion > /tmp/source-canary-base.json \
-                  && jq -e --arg base "$PR_BASE_SHA" \
-                    '.[0] | .headSha == $base and .status == "completed" and .conclusion == "success"' \
-                    /tmp/source-canary-base.json > /dev/null; then
-                  echo "source_canary_base_run=$(jq -r '.[0].databaseId' /tmp/source-canary-base.json)" >> "$GITHUB_OUTPUT"
-                else
-                  CANARY_ENABLED=false
-                fi
-              fi
-              if [ "$SOURCE_PREFLIGHT_ENABLED" = true ] && [ "$HEAD_REPO" = "$REPO" ]; then
-                preflight_args=(--source-preflight)
-                if [ "$CANARY_ENABLED" = true ]; then
-                  preflight_args+=(--source-canary)
-                fi
-                python scripts/classify_ci_changes.py \
-                  --paths-file /tmp/changed-paths "${preflight_args[@]}" \
-                  --github-output "$GITHUB_OUTPUT"
-              elif [ "$CANARY_ENABLED" = true ]; then
-                python scripts/classify_ci_changes.py \
-                  --paths-file /tmp/changed-paths --source-canary \
-                  --github-output "$GITHUB_OUTPUT"
-              else
-                python scripts/classify_ci_changes.py \
-                  --paths-file /tmp/changed-paths --force-full \
-                  --force-reason source-canary-disabled \
-                  --github-output "$GITHUB_OUTPUT"
-              fi
+              python scripts/classify_ci_changes.py \
+                --paths-file /tmp/changed-paths \
+                --github-output "$GITHUB_OUTPUT"
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"}]}' >> "$GITHUB_OUTPUT"
             fi
           else
@@ -324,7 +297,7 @@ jobs:
             echo "- Mapped CPU canary: ${SOURCE_CANARY:-false}"
             echo "- Selected regression files: ${MAPPED_TESTS:-full route}"
             echo "- Exact-base main qualification run: ${BASE_RUN:-none}"
-            echo '- Full candidate/main/release qualification remains required.'
+            echo '- PR head runs the ordinary path-aware gate; L1 smoke and GUI golden flows run on main pushes, nightly, and the release gate.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   merge-lane-no-mac:
@@ -797,6 +770,8 @@ jobs:
             --cov=scripts.pr_validate.queue_ready \
             --cov=scripts.pr_validate.runner \
             --cov=scripts.pr_validate.pr_validate \
+            --cov=scripts.merge_on_green \
+            --cov=scripts.main_guard \
             --cov=scripts.check_release_source_ref \
             --cov=scripts.check_release_environment \
             --cov=scripts.upload_release_r2 \

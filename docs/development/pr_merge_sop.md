@@ -237,7 +237,12 @@ Before merge, the PR description must accurately reflect actual current state:
   `FAILURE`, `CANCELLED`, or `TIMED_OUT` for any relevant check.
 
 - For an ordinary pull request, apply exactly one integration authorization
-  label and let the matching managed queue combine and revalidate it. Use
+  label. Before cutover the matching managed queue combines and revalidates it.
+  Once the operator enables `MERGE_ON_GREEN_ENABLED` for the sole ready-labeled
+  phase-2 removal PR (see the [cutover procedure](../engineering/operations/path-aware-merge-queue.md#phase-1-cutover)),
+  the merger squash-merges exact authorized green heads directly, one at a
+  time, subject to release freezes. The queue instructions below remain for
+  the pre-enable path and rollback until phase 2. Use
   `merge-ready` only when both `merge-lane-no-mac` is green and
   `merge-lane-mac` is skipped. Use `merge-ready-mac` when
   `merge-lane-mac` is green; this includes engine-only, Desktop-only, and

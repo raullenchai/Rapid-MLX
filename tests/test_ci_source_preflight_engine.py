@@ -97,13 +97,15 @@ def test_type_baseline_source_fast_route_preserves_existing_type_ratchet():
 @pytest.mark.parametrize(
     "event,head_repo,head_ref,enabled,expected",
     [
-        ("pull_request", "owner/repo", "feature/engine", "true", True),
+        ("pull_request", "owner/repo", "feature/engine", "true", False),
         ("pull_request", "fork/repo", "feature/engine", "true", False),
         ("pull_request", "owner/repo", "train/feature", "true", False),
         ("pull_request", "owner/repo", "mergify/merge-queue/0123456789", "true", False),
         ("pull_request", "owner/repo", "feature/engine", "false", False),
         ("push", "owner/repo", "", "true", False),
         ("merge_group", "owner/repo", "", "true", False),
+        ("schedule", "owner/repo", "", "true", False),
+        ("workflow_dispatch", "owner/repo", "", "true", False),
     ],
 )
 def test_actual_engine_workflow_source_context(
@@ -130,7 +132,7 @@ def test_actual_engine_workflow_source_context(
         HEAD_REF=head_ref,
         PR_BASE_SHA="a" * 40,
         GITHUB_SHA="b" * 40,
-        CANARY_ENABLED="false",
+        CANARY_ENABLED="true",
         SOURCE_PREFLIGHT_ENABLED=enabled,
         CANDIDATE_SHADOW_ENABLED="false",
         CANDIDATE_CANARY_ENABLED="false",

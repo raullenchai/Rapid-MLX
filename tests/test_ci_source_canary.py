@@ -214,8 +214,8 @@ def test_canary_has_distinct_artifact_mandatory_coverage_and_full_backstop():
         for step in jobs["changes"]["steps"]
         if step.get("name") == "Classify validation lanes"
     )
-    assert '"$CANARY_ENABLED" = true' in classifier
-    assert "--force-reason source-canary-disabled" in classifier
+    assert "--source-canary" not in classifier
+    assert "--source-preflight" not in classifier
     assert "--force-reason promoted-head" in classifier
     assert "echo 'source_canary=false'" in classifier
 
@@ -253,34 +253,25 @@ def test_actual_source_execution_guard_rejects_empty_or_skipped_proof(
     assert (result.returncode == 0) == passes
 
 
-def test_red_pending_missing_or_wrong_base_anchor_is_not_eligible(tmp_path):
-    # Exercise the same exact-head/complete-success predicate used by the
-    # workflow against completed, red, pending, absent and mismatched records.
+def test_pr_route_never_uses_reduced_source_or_base_anchor():
     script = next(
         step["run"]
         for step in workflow()["changes"]["steps"]
         if step.get("name") == "Classify validation lanes"
     )
-    predicate = '.[0] | .headSha == $base and .status == "completed" and .conclusion == "success"'
-    assert predicate in script
-    assert (
-        "--event push" in script and '--branch main --commit "$PR_BASE_SHA"' in script
-    )
-    assert "CANARY_ENABLED=false" in script
-    for record, eligible in [
-        ([dict(headSha="a" * 40, status="completed", conclusion="success")], True),
-        ([dict(headSha="a" * 40, status="completed", conclusion="failure")], False),
-        ([dict(headSha="a" * 40, status="in_progress", conclusion="")], False),
-        ([dict(headSha="b" * 40, status="completed", conclusion="success")], False),
-        ([], False),
-    ]:
-        result = subprocess.run(
-            ["jq", "-e", "--arg", "base", "a" * 40, predicate],
-            input=json.dumps(record),
-            capture_output=True,
-            text=True,
-        )
-        assert (result.returncode == 0) == eligible
+    assert "source-canary-base.json" not in script
+    assert "--source-preflight" not in script
+    assert "--source-canary" not in script
+    assert "--force-reason promoted-head" in script
+    assert "linux_matrix_reason=non-pr-full" in script
+    ordinary = script.split("  else\n    python scripts/classify_ci_changes.py", 1)[1]
+    ordinary = ordinary.split("echo 'l1_matrix=", 1)[0]
+    assert ordinary.replace("\\\n", " ").split() == [
+        "--paths-file",
+        "/tmp/changed-paths",
+        "--github-output",
+        '"$GITHUB_OUTPUT"',
+    ]
 
 
 @pytest.mark.parametrize("force_full", [False, True])

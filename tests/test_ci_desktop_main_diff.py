@@ -126,6 +126,7 @@ def test_normal_main_push_classifies_complete_diff(repository, paths, desktop):
         {"EVENT_NAME": "merge_group"},
         {"EVENT_NAME": "workflow_dispatch"},
         {"EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/feature"},
+        {"EVENT_NAME": "schedule"},
     ],
 )
 def test_unqualified_push_or_merge_group_stays_full(repository, overrides):
