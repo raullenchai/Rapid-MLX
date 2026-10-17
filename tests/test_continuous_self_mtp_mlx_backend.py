@@ -1224,3 +1224,206 @@ def test_batched_greedy_cycle_matches_per_row_reference_on_real_mlx():
                 return streams, forward.calls
 
     assert drive(per_row=False) == drive(per_row=True)
+
+
+@pytest.fixture
+def mlx_ragged_runtime():
+    """Use real pinned cache implementations without patching global classes."""
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.models import cache as cm
+
+    from rapid_mlx.spec_decode.mtp import ragged_cache as ragged
+
+    class Arrays(cm.ArraysCache):
+        pass
+
+    class Batch(cm.BatchKVCache):
+        pass
+
+    module = SimpleNamespace(
+        mx=mx,
+        dynamic_roll=cm.dynamic_roll,
+        ArraysCache=Arrays,
+        BatchKVCache=Batch,
+    )
+    ragged.install_ragged_cache_rollback(
+        cache_module=module, qwen4_state_cls=None, qsa_cls=None
+    )
+    return mx, cm, ragged, Arrays, Batch
+
+
+def _assert_mlx_bit_exact(mx, actual, expected):
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype
+    # Conversion is exact for the finite fp32/bf16 inputs used here, including
+    # signed zero. Comparing bits also catches signed-zero changes.
+    np.testing.assert_array_equal(
+        np.asarray(actual.astype(mx.float32)).view(np.uint32),
+        np.asarray(expected.astype(mx.float32)).view(np.uint32),
+    )
+
+
+@pytest.mark.parametrize("cursor", [1, 8, 17, 257])
+@pytest.mark.parametrize("pattern", ["zero", "uniform", "ragged", "positive_ragged"])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_ragged_kv_rollback_bit_exact_to_original_algorithm(
+    mlx_ragged_runtime, cursor, pattern, dtype
+):
+    mx, cm, ragged, _, Batch = mlx_ragged_runtime
+    rng = np.random.default_rng(cursor)
+    batch = 8
+    max_drop = min(2, cursor)
+    if pattern == "zero":
+        drops = [0] * batch
+    elif pattern == "uniform":
+        drops = [max_drop] * batch
+    else:
+        drops = rng.integers(
+            0 if pattern == "ragged" else 1, max_drop + 1, batch
+        ).tolist()
+        drops[:2] = [0 if pattern == "ragged" else 1, max_drop]
+    padding = rng.integers(0, cursor - max(drops) + 1, batch).tolist()
+    cache = Batch(left_padding=padding)
+    cache._idx = cursor
+    cache.offset = mx.array([cursor - p for p in padding])
+    # Exercise a reserved tail and different key/value head dimensions.
+    cache.keys = mx.array(rng.standard_normal((batch, 2, cursor + 7, 4))).astype(
+        getattr(mx, dtype)
+    )
+    cache.values = mx.array(rng.standard_normal((batch, 2, cursor + 7, 3))).astype(
+        getattr(mx, dtype)
+    )
+    original = [cache.keys, cache.values, cache.offset, cache.left_padding]
+    uniform = min(drops)
+    residual = mx.array([d - uniform for d in drops])
+    stop = cursor - uniform
+    expected_kv = []
+    for value in original[:2]:
+        expected = mx.array(value)
+        if max(drops) > uniform:
+            expected[:, :, :stop] = cm.dynamic_roll(
+                expected[:, :, :stop], residual[:, None], 2
+            )
+        expected_kv.append(expected)
+    expected_offset = original[2] - mx.array(drops)
+    expected_padding = original[3] + residual
+    mx.eval(original, expected_kv, expected_offset, expected_padding)
+    ragged.RapidRaggedCacheAdapter().rollback(
+        SelfMTPCachePair([cache], [Batch(left_padding=[0] * batch)]),
+        target_drops=drops,
+        draft_drops=[0] * batch,
+        verify_width=3,
+    )
+    mx.eval(cache.state)
+    assert cache._idx == stop
+    for actual, expected in zip(
+        [cache.keys, cache.values, cache.offset, cache.left_padding],
+        [*expected_kv, expected_offset, expected_padding],
+    ):
+        _assert_mlx_bit_exact(mx, actual, expected)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("pattern", ["zero", "uniform", "ragged", "random"])
+def test_ragged_arrays_rollback_bit_exact_to_original_algorithm(
+    mlx_ragged_runtime, legacy, pattern
+):
+    mx, _, ragged, Arrays, _ = mlx_ragged_runtime
+    rng = np.random.default_rng(4589)
+    batch = 8
+    cache = Arrays(size=2)
+    shapes = [(batch, 3, 7), (batch, 2, 4, 3)]
+    states = [
+        [mx.array(rng.standard_normal(shape)).astype(mx.float32) for shape in shapes]
+        for _ in range(3)
+    ]
+    cache.cache = states[2]
+    cache.rollback_state = tuple(states[0]) if legacy else states[:2]
+    max_drop = 1 if legacy else 2
+    if pattern == "zero":
+        drops = [0] * batch
+    elif pattern == "uniform":
+        drops = [max_drop] * batch
+    elif pattern == "ragged":
+        drops = [i % (max_drop + 1) for i in range(batch)]
+    else:
+        drops = rng.integers(0, max_drop + 1, batch).tolist()
+    # The original implementation selected each row, then concatenated.
+    expected = []
+    for slot in range(2):
+        rows = []
+        for row, drop in enumerate(drops):
+            source = states[2] if drop == 0 else states[0 if legacy else 2 - drop]
+            rows.append(source[slot][row : row + 1])
+        expected.append(mx.concatenate(rows, axis=0))
+    mx.eval(states, expected)
+    ragged.trim_ragged_cache([cache], drops, verify_size=3)
+    mx.eval(cache.state)
+    for actual, old in zip(cache.cache, expected):
+        _assert_mlx_bit_exact(mx, actual, old)
+    if pattern in ("zero", "uniform"):
+        source = states[2] if pattern == "zero" else states[0]
+        assert all(actual is old for actual, old in zip(cache.cache, source))
+    assert cache.rollback_state is None
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize(
+    "failure",
+    ["snapshot_none", "snapshot_shape", "verify_boundary", "offset", "pending"],
+)
+def test_real_ragged_preflight_failure_keeps_both_groups_unchanged(
+    mlx_ragged_runtime, standalone, failure
+):
+    mx, _, ragged, Arrays, Batch = mlx_ragged_runtime
+
+    def make_kv():
+        cache = Batch(left_padding=[0, 1])
+        cache.keys = mx.arange(48, dtype=mx.float32).reshape(2, 1, 8, 3)
+        cache.values = -cache.keys
+        cache.offset = mx.array([6, 5])
+        cache._idx = 6
+        return cache
+
+    first = make_kv()
+    drops = [3 if failure == "verify_boundary" else 1, 0]
+    if failure in ("offset", "pending"):
+        last = make_kv()
+        if failure == "offset":
+            last.offset = mx.array([0, 5])
+        else:
+            last._right_padding = mx.array([0, 1])
+    else:
+        last = Arrays(size=2)
+        last.cache = [mx.full((2, 3), slot) for slot in (1, 2)]
+        last.rollback_state = [tuple(last.cache), tuple(last.cache)]
+        if failure == "snapshot_none":
+            last.rollback_state[1] = (None, last.cache[1])
+        elif failure == "snapshot_shape":
+            last.rollback_state[1] = (mx.zeros((2, 4)), last.cache[1])
+
+    def arrays(cache):
+        if isinstance(cache, Arrays):
+            return cache.cache
+        return [cache.keys, cache.values, cache.offset, cache.left_padding]
+
+    original = list(arrays(first))
+    last_state = list(arrays(last))
+    last_snapshots = getattr(last, "rollback_state", None)
+    mx.eval(original, last_state)
+    with pytest.raises((ragged.RaggedCacheUnsupportedError, ValueError)):
+        if standalone:
+            ragged.trim_ragged_cache([first, last], drops, verify_size=3)
+        else:
+            ragged.RapidRaggedCacheAdapter().rollback(
+                SelfMTPCachePair([first], [last]),
+                target_drops=drops,
+                draft_drops=drops,
+                verify_width=3,
+            )
+    assert first._idx == 6
+    for actual, old in zip(arrays(first), original):
+        assert actual is old
+        _assert_mlx_bit_exact(mx, actual, old)
+    assert all(actual is old for actual, old in zip(arrays(last), last_state))
+    assert getattr(last, "rollback_state", None) is last_snapshots
