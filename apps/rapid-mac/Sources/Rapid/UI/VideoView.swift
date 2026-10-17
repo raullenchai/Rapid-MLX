@@ -687,9 +687,33 @@ private struct VideoPlaybackView: View {
     }
 
     var body: some View {
-        VideoPlayer(player: player)
+        VideoPlayerView(player: player)
             .onDisappear { player.pause() }
             .accessibilityLabel("Generated video preview")
+    }
+}
+
+// Use AppKit's player to avoid the SwiftUI VideoPlayer overlay metadata crash (#4719).
+struct VideoPlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player {
+            view.player = player
+        }
+    }
+
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+        view.player?.pause()
+        view.player = nil
     }
 }
 

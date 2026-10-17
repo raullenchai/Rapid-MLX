@@ -1,9 +1,37 @@
+import AVKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
 @Suite("Video foundation")
 struct VideoFoundationTests {
+    @MainActor
+    @Test("Video preview hosts an AppKit player and stops playback on dismantle")
+    func videoPreviewPlayerLifecycle() throws {
+        let url = URL(fileURLWithPath: "/nonexistent/rapid-video-preview.mp4")
+        let player = AVPlayer(url: url)
+        let host = NSHostingView(rootView: VideoPlayerView(player: player))
+        host.frame = NSRect(x: 0, y: 0, width: 320, height: 180)
+        host.layoutSubtreeIfNeeded()
+
+        func findPlayerView(in view: NSView) -> AVPlayerView? {
+            if let playerView = view as? AVPlayerView { return playerView }
+            return view.subviews.lazy.compactMap { findPlayerView(in: $0) }.first
+        }
+
+        let playerView = try #require(findPlayerView(in: host))
+        #expect(playerView.player === player)
+        #expect(playerView.controlsStyle == .inline)
+        #expect(playerView.videoGravity == .resizeAspect)
+
+        player.rate = 1
+        #expect(player.rate == 1)
+        VideoPlayerView.dismantleNSView(playerView, coordinator: ())
+        #expect(player.rate == 0)
+        #expect(playerView.player == nil)
+    }
+
     @Test("Video JSON exposes exact request modes and memory floor")
     func parsesMachineReadableVideoCapabilities() throws {
         let output = """
