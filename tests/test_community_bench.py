@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -1640,15 +1641,7 @@ def _run_validate(*paths: Path) -> tuple[int, str]:
 
 
 def _write_submission(tmp_path: Path, payload: dict, name: str | None = None) -> Path:
-    """Write a payload to ``tmp_path/community-benchmarks/submissions/<name>``.
-
-    Note: validate.py resolves the submissions dir relative to its own
-    file location (``REPO_ROOT/community-benchmarks/submissions``). So
-    these tests write to the REAL submissions dir under ``tmp_path``
-    only when ``tmp_path`` is the real repo (it isn't). Instead, we
-    pass synthetic files into the REAL submissions dir for end-to-end
-    runs — see ``_run_validate_against_repo`` below.
-    """
+    """Write a payload under a repository-shaped temporary submissions directory."""
     sub_dir = tmp_path / "community-benchmarks" / "submissions"
     sub_dir.mkdir(parents=True, exist_ok=True)
     fname = name or "20260615-apple-m4-pro-qwen3.5-9b-4bit-abcdef012345.json"
@@ -1657,14 +1650,8 @@ def _write_submission(tmp_path: Path, payload: dict, name: str | None = None) ->
     return path
 
 
-def _write_to_real_submissions(payload: dict, name: str | None = None) -> Path:
-    """Write a synthetic payload into the REAL submissions dir, returning
-    a path the test must clean up afterwards.
-
-    Tests use this to validate against the actual validate.py's
-    ``_check_path_in_submissions`` guard, which resolves the path
-    relative to the real repo. Cleanup is the test's responsibility.
-    """
+def _write_validator_submission(payload: dict, name: str | None = None) -> Path:
+    """Write into the per-test validator repository, preserving path validation."""
     sub_dir = REPO_ROOT / "community-benchmarks" / "submissions"
     sub_dir.mkdir(parents=True, exist_ok=True)
     fname = name or "20260615-apple-m4-pro-qwen3.5-9b-4bit-abcdef012345.json"
@@ -1674,97 +1661,103 @@ def _write_to_real_submissions(payload: dict, name: str | None = None) -> Path:
 
 
 @pytest.fixture
-def cleanup_real_submissions():
-    """Track and remove any files written to the real submissions dir."""
-    created: list[Path] = []
-    yield created
-    for p in created:
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
+def isolated_validator_repo(tmp_path, monkeypatch):
+    """Run the real validator against isolated files, never the working tree.
+
+    Retain the repository layout so path, schema, aliases and duplicate-ID
+    checks exercise the same code as the production command.
+    """
+    repo = tmp_path / "validator-repo"
+    for relative in (
+        "community-benchmarks/scripts/validate.py",
+        "community-benchmarks/schema.json",
+        "rapid_mlx/aliases.json",
+    ):
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / relative, destination)
+    for name, value in {
+        "REPO_ROOT": repo,
+        "SCRIPTS_DIR": repo / "community-benchmarks/scripts",
+        "SCHEMA_PATH": repo / "community-benchmarks/schema.json",
+        "ALIASES_PATH": repo / "rapid_mlx/aliases.json",
+    }.items():
+        monkeypatch.setattr(sys.modules[__name__], name, value)
 
 
-def test_validate_accepts_good_payload(cleanup_real_submissions) -> None:
+def test_validate_accepts_good_payload(isolated_validator_repo) -> None:
     """A perfectly-formed payload must produce rc=0."""
     pytest.importorskip("jsonschema")
-    path = _write_to_real_submissions(_good_payload())
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(_good_payload())
     rc, out = _run_validate(path)
     assert rc == 0, out
     assert "OK" in out
 
 
-def test_validate_rejects_bad_schema(cleanup_real_submissions) -> None:
+def test_validate_rejects_bad_schema(isolated_validator_repo) -> None:
     """Missing required field ⇒ schema failure."""
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     del bad["schema_version"]
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "schema" in out
 
 
-def test_validate_rejects_wrong_const(cleanup_real_submissions) -> None:
+def test_validate_rejects_wrong_const(isolated_validator_repo) -> None:
     """``rounds=7`` violates ``const: 5``."""
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     bad["config"]["rounds"] = 7
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "rounds" in out or "schema" in out
 
 
-def test_validate_rejects_unknown_alias(cleanup_real_submissions) -> None:
+def test_validate_rejects_unknown_alias(isolated_validator_repo) -> None:
     bad = _good_payload()
     bad["model"]["alias"] = "definitely-not-a-real-alias"
     bad["model"]["hf_path"] = "x/y"
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "whitelist" in out.lower() or "alias" in out
 
 
-def test_validate_rejects_mismatched_hf_path(cleanup_real_submissions) -> None:
+def test_validate_rejects_mismatched_hf_path(isolated_validator_repo) -> None:
     """Right alias key, wrong hf_path — possible silent retargeting."""
     bad = _good_payload()
     bad["model"]["hf_path"] = "evil/path"
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "hf_path" in out
 
 
-def test_validate_rejects_implausible_decode_tps(cleanup_real_submissions) -> None:
+def test_validate_rejects_implausible_decode_tps(isolated_validator_repo) -> None:
     """A decode_tps of 9000 trips the sanity ceiling."""
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     bad["buckets"]["short"]["decode_tps"]["median"] = 9000.0
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     # schema's range cap is 5000, so this also fails schema validation
     # before we get to the sanity check — both are valid outcomes.
     assert rc == 1
 
 
-def test_validate_rejects_bad_filename(cleanup_real_submissions) -> None:
+def test_validate_rejects_bad_filename(isolated_validator_repo) -> None:
     pytest.importorskip("jsonschema")
     # Wrong shape: no date prefix
-    path = _write_to_real_submissions(_good_payload(), name="bogus.json")
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(_good_payload(), name="bogus.json")
     rc, out = _run_validate(path)
     assert rc == 1
     assert "filename" in out
 
 
-def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
+def test_validate_rejects_zero_decode_tps(isolated_validator_repo) -> None:
     """Regression: ``decode_tps=0`` must fail. Round-2 used a sanity
     check on the summary median; round-7 hardened the schema to
     ``exclusiveMinimum: 0`` on per-round throughput so the rejection
@@ -1783,14 +1776,13 @@ def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
         "max": 0.0,
         "stddev": 0.0,
     }
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "decode_tps" in out
 
 
-def test_validate_rejects_non_apple_chip(cleanup_real_submissions) -> None:
+def test_validate_rejects_non_apple_chip(isolated_validator_repo) -> None:
     """Regression: hand-edited submission with non-Apple chip must fail.
 
     The CLI gate is bypassable by anyone willing to edit JSON, so the
@@ -1800,15 +1792,14 @@ def test_validate_rejects_non_apple_chip(cleanup_real_submissions) -> None:
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     bad["hardware"]["chip"] = "Intel Xeon E5-2670"
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "Apple" in out and "chip" in out
 
 
 def test_validate_rejects_duplicate_submission_id(
-    cleanup_real_submissions,
+    isolated_validator_repo,
 ) -> None:
     """Regression: a submission whose ``submission_id`` already exists
     in submissions/ must be rejected. (Codex PR #582 round-3 BLOCKING.)
@@ -1823,21 +1814,19 @@ def test_validate_rejects_duplicate_submission_id(
     second = _good_payload()
     second["submission_id"] = "aaaaaaaaaaaa"  # collision
 
-    first_path = _write_to_real_submissions(
+    _write_validator_submission(
         first, name="20260101-apple-m4-pro-qwen3-5-9b-4bit-aaaaaaaaaaaa.json"
     )
-    cleanup_real_submissions.append(first_path)
-    second_path = _write_to_real_submissions(
+    second_path = _write_validator_submission(
         second, name="20260102-apple-m4-pro-qwen3-5-9b-4bit-aaaaaaaaaaaa.json"
     )
-    cleanup_real_submissions.append(second_path)
 
     rc, out = _run_validate(second_path)
     assert rc == 1
     assert "submission_id" in out and "already exists" in out
 
 
-def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
+def test_validate_rejects_bad_datetime_format(isolated_validator_repo) -> None:
     """Regression: schema ``format: date-time`` must actually be enforced.
 
     jsonschema's ``validate()`` ignored ``format:`` until we wired in
@@ -1847,8 +1836,7 @@ def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     bad["submitted_at"] = "definitely not a timestamp"
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
 
@@ -1880,7 +1868,7 @@ def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
     ],
 )
 def test_validate_rejects_non_rfc3339_datetimes(
-    cleanup_real_submissions, bogus_value
+    isolated_validator_repo, bogus_value
 ) -> None:
     """Regression: the ``date-time`` checker must enforce full RFC 3339,
     not the loose subset accepted by ``datetime.fromisoformat`` alone.
@@ -1894,8 +1882,7 @@ def test_validate_rejects_non_rfc3339_datetimes(
     pytest.importorskip("jsonschema")
     bad = _good_payload()
     bad["submitted_at"] = bogus_value
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1, (
         f"validator must reject submitted_at={bogus_value!r} per RFC 3339; "
@@ -1923,7 +1910,7 @@ def test_validate_rejects_non_rfc3339_datetimes(
     ],
 )
 def test_validate_accepts_valid_rfc3339_datetimes(
-    cleanup_real_submissions, good_value
+    isolated_validator_repo, good_value
 ) -> None:
     """Counterpart: the tightened checker must not over-reject legitimate
     RFC 3339 forms — Z suffix, fractional seconds, numeric offsets,
@@ -1931,8 +1918,7 @@ def test_validate_accepts_valid_rfc3339_datetimes(
     pytest.importorskip("jsonschema")
     good = _good_payload()
     good["submitted_at"] = good_value
-    path = _write_to_real_submissions(good)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(good)
     rc, out = _run_validate(path)
     assert rc == 0, (
         f"validator wrongly rejected submitted_at={good_value!r}; out={out!r}"
@@ -1940,7 +1926,7 @@ def test_validate_accepts_valid_rfc3339_datetimes(
 
 
 def test_validate_rejects_summary_mismatch_with_rounds(
-    cleanup_real_submissions,
+    isolated_validator_repo,
 ) -> None:
     """Regression: summary stats must be derivable from ``rounds_raw``
     (Codex PR #582 round-2 BLOCKING).
@@ -1954,14 +1940,13 @@ def test_validate_rejects_summary_mismatch_with_rounds(
     # Median is 42 (true), but we claim 99 — large enough delta to
     # exceed the 1e-3 relative tolerance.
     bad["buckets"]["short"]["decode_tps"]["median"] = 99.0
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "rounds_raw" in out and "median" in out
 
 
-def test_validate_rejects_nan_in_payload(cleanup_real_submissions) -> None:
+def test_validate_rejects_nan_in_payload(isolated_validator_repo) -> None:
     """Regression: NaN/Infinity in any numeric field must fail.
 
     json.loads accepts these by default and every comparison against
@@ -1970,8 +1955,7 @@ def test_validate_rejects_nan_in_payload(cleanup_real_submissions) -> None:
     """
     pytest.importorskip("jsonschema")
     payload = _good_payload()
-    path = _write_to_real_submissions(payload)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(payload)
     # Write a NaN by hand — json.dump won't emit it for a Python float
     # with allow_nan=False, but a hand-edited PR JSON could carry one.
     raw = path.read_text().replace('"decode_tps": 40.0', '"decode_tps": NaN', 1)
@@ -1981,27 +1965,25 @@ def test_validate_rejects_nan_in_payload(cleanup_real_submissions) -> None:
     assert "non-finite" in out.lower() or "nan" in out.lower()
 
 
-def test_validate_rejects_symlink(cleanup_real_submissions, tmp_path) -> None:
+def test_validate_rejects_symlink(isolated_validator_repo, tmp_path) -> None:
     """Symlinks under submissions/ are rejected — they could collapse
     the dedup check and inflate a single contributor's row count.
     (Codex PR #582 round-7 BLOCKING.)
     """
     pytest.importorskip("jsonschema")
     target_payload = _good_payload()
-    target_path = _write_to_real_submissions(target_payload)
-    cleanup_real_submissions.append(target_path)
+    target_path = _write_validator_submission(target_payload)
 
     sub_dir = REPO_ROOT / "community-benchmarks" / "submissions"
     link_path = sub_dir / "20260615-apple-m4-pro-qwen3-5-9b-4bit-bbbbbbbbbbbb.json"
     link_path.symlink_to(target_path.name)  # relative within submissions/
-    cleanup_real_submissions.append(link_path)
 
     rc, out = _run_validate(link_path)
     assert rc == 1
     assert "symlink" in out.lower()
 
 
-def test_validate_rejects_zero_in_rounds_raw(cleanup_real_submissions) -> None:
+def test_validate_rejects_zero_in_rounds_raw(isolated_validator_repo) -> None:
     """A zero (or negative) value in any rounds_raw row must fail, even
     when the summary median lands in the realistic band. (Codex PR
     #582 round-7 BLOCKING.)
@@ -2021,15 +2003,14 @@ def test_validate_rejects_zero_in_rounds_raw(cleanup_real_submissions) -> None:
         "max": float(max(values)),
         "stddev": float(statistics.pstdev(values)),
     }
-    path = _write_to_real_submissions(bad)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(bad)
     rc, out = _run_validate(path)
     assert rc == 1
     assert "rounds_raw" in out and "decode_tps" in out
 
 
 def test_validate_rejects_empty_hf_path_in_alias_entry(
-    cleanup_real_submissions, monkeypatch, tmp_path
+    isolated_validator_repo, monkeypatch, tmp_path
 ) -> None:
     """If aliases.json carries an empty hf_path for an alias, the
     submission MUST be rejected — not waved through. (Codex PR #582
@@ -2041,12 +2022,9 @@ def test_validate_rejects_empty_hf_path_in_alias_entry(
     """
     pytest.importorskip("jsonschema")
     payload = _good_payload()
-    path = _write_to_real_submissions(payload)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(payload)
 
-    # Snapshot the real aliases.json and restore it via try/finally —
-    # the cleanup fixture only knows how to delete temp submission
-    # files, not how to restore a checked-in JSON.
+    # Mutate only the per-test alias file read by the validator subprocess.
     real_aliases = ALIASES_PATH.read_text()
     aliases_dict = json.loads(real_aliases)
     target_alias = payload["model"]["alias"]
@@ -2833,7 +2811,7 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
 
 
 def test_validate_path_check_works_from_relocated_validator(
-    cleanup_real_submissions, tmp_path: Path
+    isolated_validator_repo, tmp_path: Path
 ) -> None:
     """The GHA workflow copies validate.py to ``/tmp/base-validator/`` so the
     "trusted base" pass can run a frozen-in-time validator against the PR's
@@ -2844,13 +2822,12 @@ def test_validate_path_check_works_from_relocated_validator(
     after v0.7.9 release.)
 
     Regression: copy validate.py to a temp location, invoke it against a
-    submission file in the REAL repo. The check must accept it because
+    submission file in an isolated repository. The check must accept it because
     the file's *own* ancestry is ``community-benchmarks/submissions/``.
     """
     pytest.importorskip("jsonschema")
     payload = _good_payload()
-    path = _write_to_real_submissions(payload)
-    cleanup_real_submissions.append(path)
+    path = _write_validator_submission(payload)
 
     # Mirror the GHA setup: copy just the validator script to /tmp-style
     # location. SCHEMA_PATH and ALIASES_PATH still resolve via the
@@ -2878,7 +2855,7 @@ def test_validate_path_check_works_from_relocated_validator(
 
 
 def test_relocated_validator_catches_duplicate_id(
-    cleanup_real_submissions, tmp_path: Path
+    isolated_validator_repo, tmp_path: Path
 ) -> None:
     """The duplicate-``submission_id`` gate must still fire even when the
     validator is relocated (GHA trust-gate setup).
@@ -2896,7 +2873,7 @@ def test_relocated_validator_catches_duplicate_id(
     """
     pytest.importorskip("jsonschema")
 
-    # Plant a duplicate-id payload on disk in the REAL submissions dir.
+    # Plant a duplicate-id payload on disk in the isolated submissions directory.
     # ``submission_id`` is the dedup key; both files share it.
     payload_a = _good_payload()
     sid = payload_a["submission_id"]
@@ -2905,9 +2882,8 @@ def test_relocated_validator_catches_duplicate_id(
 
     name_a = "20260615-apple-m4-pro-qwen3.5-9b-4bit-abcdef012345.json"
     name_b = "20260615-apple-m4-pro-qwen3.5-9b-4bit-fedcba543210.json"
-    path_a = _write_to_real_submissions(payload_a, name=name_a)
-    path_b = _write_to_real_submissions(payload_b, name=name_b)
-    cleanup_real_submissions.extend([path_a, path_b])
+    _write_validator_submission(payload_a, name=name_a)
+    path_b = _write_validator_submission(payload_b, name=name_b)
 
     # Relocate just the validator + its data deps to a tmp tree —
     # mirroring the GHA workflow.
@@ -2923,7 +2899,7 @@ def test_relocated_validator_catches_duplicate_id(
     # Invoke the RELOCATED validator on file B. Pre-fix this would have
     # silently passed because /tmp/.../submissions/ is empty (no
     # duplicates visible to the index). Post-fix it must fail because
-    # the corpus is derived from path_b's own parent (the real dir
+    # the corpus is derived from path_b's own parent (the isolated directory
     # containing both files).
     r = subprocess.run(
         [sys.executable, str(relocated / "validate.py"), str(path_b)],

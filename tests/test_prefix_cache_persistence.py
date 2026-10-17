@@ -1746,6 +1746,9 @@ def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
     from rapid_mlx import config as _config_mod
     from rapid_mlx.runtime import cache as _cache_mod
 
+    # Each saver takes an exclusive filesystem lock; use a per-test directory.
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: str(tmp_path / "cache"))
+
     captured = {"pred": None}
 
     class _Engine:
@@ -1788,6 +1791,9 @@ def test_save_prefix_cache_to_disk_predicate_is_forward_looking(tmp_path, monkey
     from rapid_mlx import config as _config_mod
     from rapid_mlx.runtime import cache as _cache_mod
 
+    # Each saver takes an exclusive filesystem lock; use a per-test directory.
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: str(tmp_path / "cache"))
+
     captured = {"pred": None}
 
     class _Engine:
@@ -1827,7 +1833,9 @@ def test_save_prefix_cache_to_disk_predicate_is_forward_looking(tmp_path, monkey
     assert pred() is True, "at-now check should trip after wall-clock past deadline"
 
 
-def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypatch):
+def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(
+    tmp_path, monkeypatch
+):
     """Codex PR #667 round 1 BLOCKING-1 regression.
 
     External / third-party engine implementations may still expose the
@@ -1839,6 +1847,9 @@ def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypa
     """
     from rapid_mlx import config as _config_mod
     from rapid_mlx.runtime import cache as _cache_mod
+
+    # Each saver takes an exclusive filesystem lock; use a per-test directory.
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: str(tmp_path / "cache"))
 
     calls = []
 
@@ -1865,7 +1876,9 @@ def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypa
     )
 
 
-def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(monkeypatch):
+def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(
+    tmp_path, monkeypatch
+):
     """Codex PR #667 round 2 BLOCKING-2 regression.
 
     The round-1 fallback caught any ``TypeError`` whose message
@@ -1880,6 +1893,9 @@ def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(monkeypatch):
     """
     from rapid_mlx import config as _config_mod
     from rapid_mlx.runtime import cache as _cache_mod
+
+    # Each saver takes an exclusive filesystem lock; use a per-test directory.
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: str(tmp_path / "cache"))
 
     calls = {"n": 0}
 
@@ -2107,6 +2123,9 @@ def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monke
     """
     from rapid_mlx import config as _config_mod
     from rapid_mlx.runtime import cache as _cache_mod
+
+    # Each saver takes an exclusive filesystem lock; use a per-test directory.
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: str(tmp_path / "cache"))
 
     captured = {"pred": "unset"}
 

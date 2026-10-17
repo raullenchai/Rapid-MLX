@@ -1556,12 +1556,15 @@ def test_unavailable_stderr_object_still_uses_helper(monkeypatch, tmp_path, stde
 
     so._reset_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(so.sys, "stderr", stderr)
     try:
-        so.install_signal_observability(observed_signals=())
-        assert so._crash_path is not None
-        assert so._crash_pipe is not None
-        assert so._crash_tee is not None
+        # Restore the borrowed stderr before teardown re-arms the process's
+        # prior faulthandler target; installation still sees the broken stream.
+        with monkeypatch.context() as patcher:
+            patcher.setattr(so.sys, "stderr", stderr)
+            so.install_signal_observability(observed_signals=())
+            assert so._crash_path is not None
+            assert so._crash_pipe is not None
+            assert so._crash_tee is not None
     finally:
         so._reset_for_tests()
 

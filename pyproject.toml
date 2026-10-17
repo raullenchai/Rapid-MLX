@@ -327,6 +327,7 @@ all = [
 # canonical source, instead of every script hand-maintaining a list.
 test = [
     "pytest>=7.0.0",
+    "pytest-xdist>=3.8.0",
     # Community protocol tests use jsonschema's external Registry API. Keep
     # this explicit so a partial/no-deps test install fails instead of skipping
     # the complete contract suite.
@@ -393,6 +394,7 @@ test = [
 ci-linux = [
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "hypothesis>=6.100.0",
@@ -439,6 +441,7 @@ ci-linux = [
 # runtime comes from `[vision]` + core deps.
 ci-apple = [
     "pytest>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
 ]
@@ -449,6 +452,7 @@ dev = [
     # "install dev, run pytest" workflow contributors have used since
     # day one).
     "pytest>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "referencing>=0.28.4",
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",

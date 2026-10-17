@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 
@@ -22,6 +23,24 @@ REQUIREMENTS = (
     RequiredWorkflow("ci.yml", "tests"),
     RequiredWorkflow("rapid-mac-ci.yml", "desktop-tests"),
 )
+
+
+@pytest.fixture(autouse=True)
+def launch_fake_gh_with_current_python(monkeypatch):
+    """Avoid executing newly written scripts via macOS's executable loader.
+
+    Keep the real subprocess and its timeout: launching the known interpreter
+    reads the fixture as data and avoids first-execution validation delays.
+    """
+    real_run_gh = release_ci._run_gh
+
+    def run_gh(gh, repo, *args, timeout_sec=60):
+        path = Path(gh)
+        if path.name == "gh" and (path.parent / "state").is_dir():
+            return real_run_gh(sys.executable, repo, gh, *args, timeout_sec=timeout_sec)
+        return real_run_gh(gh, repo, *args, timeout_sec=timeout_sec)
+
+    monkeypatch.setattr(release_ci, "_run_gh", run_gh)
 
 
 def _record(

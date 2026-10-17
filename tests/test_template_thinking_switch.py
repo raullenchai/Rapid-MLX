@@ -317,11 +317,14 @@ class TestTemplateThinkingSwitch:
     def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
         from rapid_mlx.utils import chat_template as module
 
+        # A cold parser caches None under the mock; restore it for later tests.
+        module._template_parser.cache_clear()
         module._template_context_facts_for_source.cache_clear()
         monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
         try:
             assert template_thinking_switch(NORTH_CLAUSE) is None
         finally:
+            module._template_parser.cache_clear()
             module._template_context_facts_for_source.cache_clear()
 
 

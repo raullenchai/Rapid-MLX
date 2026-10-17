@@ -336,7 +336,10 @@ class TestAdvisoryContract:
         assert dc[4] == "--compare-branch"
         assert dc[5] == expected_ref
 
-    def test_pytest_cmd_neutralizes_repo_addopts(self, ctx_factory, monkeypatch):
+    @pytest.mark.parametrize("parallel", [False, True])
+    def test_pytest_cmd_neutralizes_repo_addopts(
+        self, ctx_factory, monkeypatch, parallel
+    ):
         # codex #1220 r17 (N1): stripping the PYTEST_ADDOPTS env var is not
         # enough — a repo-level ``addopts`` in pyproject.toml / pytest.ini (e.g.
         # ``-x`` / ``--maxfail``) would still stop the suite early and hand us
@@ -345,6 +348,11 @@ class TestAdvisoryContract:
         # complete, self-contained spec of the run; the env strip covers the
         # other layer.
         _both_tools_present(monkeypatch)
+        monkeypatch.setenv("PR_VALIDATE_UNIT_WORKERS", "4")
+        monkeypatch.setattr(
+            "scripts.pr_validate._xdist.importlib.util.find_spec",
+            lambda name: None if name == "xdist" and not parallel else object(),
+        )
         ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         captured: dict[str, object] = {}
 
@@ -361,6 +369,24 @@ class TestAdvisoryContract:
         )
         assert DiffCoverageStep().run(ctx).status == "pass"
         cmd = captured["pytest_cmd"]
+        assert cmd == [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "tests/",
+            "--ignore=tests/integrations",
+            "--ignore=tests/test_event_loop.py",
+            "--cov=rapid_mlx",
+            "--cov-report=",
+            f"--cov-report=xml:{ctx.artifact_path('coverage.xml')}",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            *(["-n", "4", "--dist", "loadgroup"] if parallel else []),
+        ]
         # ``-o addopts=`` present as consecutive argv items → clears any
         # configured addopts from pyproject.toml / pytest.ini.
         assert "-o" in cmd
@@ -428,6 +454,86 @@ class TestAdvisoryContract:
         assert "80" in res.summary
         # The finding must flag that some tests failed (honest advisory signal).
         assert res.findings and "some unit tests failed" in res.findings[0]
+
+    @pytest.mark.parametrize(
+        "diagnostic",
+        [
+            "[gw0] node down: Not properly terminated",
+            "replacing crashed worker gw0",
+            "worker 'gw12' crashed while running 'tests/test_example.py::test_one'",
+            "worker gw0 crashed and worker restarting disabled",
+            "maximum crashed workers reached: 4",
+            "The following workers failed to return coverage data, ensure that "
+            "pytest-cov is installed on these workers.",
+        ],
+    )
+    @pytest.mark.parametrize("stream", ["stdout", "stderr"])
+    @pytest.mark.parametrize("write_succeeds", [False, True])
+    def test_skip_when_worker_coverage_is_incomplete(
+        self, ctx_factory, monkeypatch, diagnostic, stream, write_succeeds
+    ):
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
+        if not write_succeeds:
+            monkeypatch.setattr(
+                "scripts.pr_validate.steps.diff_coverage._safe_write",
+                lambda *a, **k: False,
+            )
+
+        def fake_run(cmd, *a, **k):
+            assert "pytest" in cmd  # never proceed to diff-cover
+            Path(_xml_target(cmd)).write_text("<coverage/>")
+            output = {"stdout": "", "stderr": "", stream: diagnostic}
+            return subprocess.CompletedProcess(cmd, 1, **output)
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "coverage may be incomplete" in res.summary
+        log_path = ctx.artifact_path("diff-coverage.log")
+        if write_succeeds:
+            assert res.artifacts == [str(log_path)]
+            assert diagnostic in log_path.read_text()
+        else:
+            assert res.artifacts == []
+
+    def test_test_output_mentioning_crash_words_still_measures(
+        self, ctx_factory, monkeypatch
+    ):
+        # Only the plugins' line-start diagnostics mean lost worker data; a
+        # failing test that prints similar words must not discard coverage.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    1,
+                    stdout=(
+                        "=================================== FAILURES "
+                        "===================================\n"
+                        "_________________ test_prints _________________\n"
+                        "----------------------------- Captured stdout call "
+                        "-----------------------------\n"
+                        "replacing crashed worker gw0\n"
+                        "[gw1] node down: simulated by the test\n"
+                        "=========================== short test summary info "
+                        "============================\n"
+                        "FAILED tests/test_x.py::test_prints\n"
+                        "========== 1 failed, 9 passed in 1.00s ==========\n"
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        assert DiffCoverageStep().run(ctx).status == "pass"
 
     @pytest.mark.parametrize("exit_code", [2, 3, 4, 5])
     def test_skip_when_suite_interrupted_or_errored(

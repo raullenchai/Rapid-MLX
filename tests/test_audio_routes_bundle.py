@@ -32,6 +32,7 @@ weights and run fast in CI.
 
 from __future__ import annotations
 
+import importlib
 import io
 import struct
 import sys
@@ -112,6 +113,10 @@ def _reset_audio_probe():
     """Clear cached probe verdicts + recorded lane statuses between tests."""
     from rapid_mlx.audio import probe
 
+    # Routes emit lifecycle events through server helpers. Import those before
+    # a test replaces Transformers with a WhisperProcessor-only stub, so lazy
+    # server bootstrap cannot mistake that narrow stub for the real package.
+    importlib.import_module("rapid_mlx.server")
     probe._reset_probe_cache()
     yield
     probe._reset_probe_cache()
@@ -134,13 +139,19 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
     return TestClient(app), _restore
 
 
-def _mount_models_app() -> tuple[TestClient, callable]:
+def _mount_models_app(monkeypatch) -> tuple[TestClient, callable]:
     """Mount the models router on a bare FastAPI app, bypassing auth."""
+    from rapid_mlx import server as server_module
     from rapid_mlx.config import get_config
     from rapid_mlx.routes import models as models_route
+    from rapid_mlx.routes.audio import register_audio_routes
 
     app = FastAPI()
     app.include_router(models_route.router)
+    # Lane health is advertised only for the canonical app's registered audio
+    # routes. Build that state here instead of borrowing an earlier test's app.
+    register_audio_routes(app)
+    monkeypatch.setattr(server_module, "app", app)
     cfg = get_config()
     saved_api = cfg.api_key
     saved_name = cfg.model_name
@@ -1051,7 +1062,7 @@ class TestDeepProbeSurfacesDegradedLane:
         probe._record_lane_status("stt", "degraded", "simulated")
         probe._record_lane_status("tts", "ok", None)
 
-        client, restore = _mount_models_app()
+        client, restore = _mount_models_app(monkeypatch)
         try:
             r = client.get("/v1/models")
         finally:
@@ -1065,11 +1076,11 @@ class TestDeepProbeSurfacesDegradedLane:
         assert entry["audio_lanes"] == {"stt": "degraded", "tts": "ok"}, entry
 
     def test_models_endpoint_omits_lane_status_when_probe_never_ran(
-        self, _reset_audio_probe
+        self, monkeypatch, _reset_audio_probe
     ):
         """When the deep probe is disabled (default), the field is
         ``None`` so the wire shape is unchanged for existing clients."""
-        client, restore = _mount_models_app()
+        client, restore = _mount_models_app(monkeypatch)
         try:
             r = client.get("/v1/models")
         finally:

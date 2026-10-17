@@ -466,12 +466,26 @@ def test_is_offline_cache_miss_detects_wrapped_hf_offline_signal():
 
 
 @pytest.fixture(scope="module")
-def tok():
+def tok(original_hf_settings):
     transformers = pytest.importorskip("transformers")
     try:
-        return transformers.AutoTokenizer.from_pretrained(
-            _TOKENIZER_MODEL, revision=_TOKENIZER_REVISION
-        )
+        # Restore host policy even if an earlier test imported the hub while
+        # its offline flag or cache directory was temporarily patched.
+        offline_env, offline, cache = original_hf_settings
+        with pytest.MonkeyPatch.context() as patcher:
+            if offline_env is None:
+                patcher.delenv("HF_HUB_OFFLINE", raising=False)
+            else:
+                patcher.setenv("HF_HUB_OFFLINE", offline_env)
+            from huggingface_hub import constants
+
+            patcher.setattr(constants, "HF_HUB_OFFLINE", offline)
+            patcher.setattr(constants, "HF_HUB_CACHE", cache)
+            return transformers.AutoTokenizer.from_pretrained(
+                _TOKENIZER_MODEL,
+                revision=_TOKENIZER_REVISION,
+                cache_dir=cache,
+            )
     except Exception as exc:  # noqa: BLE001 — re-raised unless offline cache-miss
         if not _is_offline_cache_miss(exc):
             raise

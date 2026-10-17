@@ -33,7 +33,10 @@ class InstallerStdinTests(unittest.TestCase):
 
             def binary(name, source):
                 path = binaries / name
-                path.write_text("#!/bin/bash\nset -eu\n" + source)
+                path.write_text(
+                    "#!/bin/bash\nset -eu\n"
+                    'if [ "${1-}" = --test-ready ]; then exit 0; fi\n' + source
+                )
                 path.chmod(0o755)
                 return path
 
@@ -157,6 +160,20 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 "FALLBACK": str(int(fallback)),
                 "TMPDIR": os.environ.get("TMPDIR", work),
             }
+            # Newly generated executables can incur macOS first-launch validation.
+            # Establish fixture readiness before the installer's stdin-hang budget;
+            # the installer itself retains the same ten-second timeout below.
+            for path in binaries.iterdir():
+                if path.is_symlink():
+                    continue
+                subprocess.run(
+                    [str(path), "--test-ready"],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    env=env,
+                    check=True,
+                    timeout=30,
+                )
             command = (
                 ["/bin/bash", str(INSTALL_SH), target]
                 if file

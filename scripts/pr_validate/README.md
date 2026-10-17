@@ -78,7 +78,7 @@ an untrusted PR's execution environment.
 | 1 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
 | 2 | `lint` | when diff has .py | ~3s |
 | 3 | `targeted_tests` | when diff has .py | 30s–3min |
-| 4 | `full_unit` | blast ≥ medium | ~25s |
+| 4 | `full_unit` | blast ≥ medium | ~3 min (parallel; host-dependent) |
 | 5 | `stress_e2e_bench` | blast == high | 5–10min |
 
 (The codex review goes near the front by design: get cheap critical
@@ -396,7 +396,12 @@ pre-existing flakes. Real regressions = fail.
 ### `full_unit` (step 4)
 
 `pytest tests/` minus integrations + event_loop. Gated on blast ≥
-medium (low-blast PRs can't break runtime).
+medium (low-blast PRs can't break runtime). Runs in parallel by default with
+pytest-xdist and `--dist loadgroup`, using the performance-core count capped
+at 20 workers. Set `PR_VALIDATE_UNIT_WORKERS` to override the count; `0` or `1`
+runs serially. Invalid counts fail explicitly. If pytest-xdist is unavailable,
+the step reports the serial fallback in its result and log. The advisory
+`diff_coverage` suite uses the same worker selection.
 
 ### `stress_e2e_bench` (step 5)
 
