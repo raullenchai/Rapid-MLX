@@ -286,13 +286,17 @@ def _add_pflash_args(parser) -> None:
         "--pflash-sink-tokens",
         type=int,
         default=256,
-        help="Leading prompt tokens always kept by PFlash (default: 256).",
+        help="Leading prompt tokens always kept by PFlash (default: 256). "
+        "Counted inside the keep budget; compression is skipped if sink + tail "
+        "leave no middle-token budget.",
     )
     parser.add_argument(
         "--pflash-tail-tokens",
         type=int,
         default=2_048,
-        help="Trailing prompt tokens always kept by PFlash (default: 2048).",
+        help="Trailing prompt tokens always kept by PFlash (default: 2048). "
+        "Counted inside the keep budget; compression is skipped if sink + tail "
+        "leave no middle-token budget.",
     )
     parser.add_argument(
         "--pflash-block-size",

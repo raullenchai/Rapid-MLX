@@ -409,13 +409,20 @@ binary auto-routing decision has a force-on and force-off pair.
 | `--pflash-threshold` | Minimum prompt tokens before `--pflash auto` compresses | 32768 |
 | `--pflash-keep-ratio` | Fraction of prompt tokens to keep when compressing; unset resolves a per-alias override if pinned, else 0.20 | None (per-alias or 0.20) |
 | `--pflash-min-keep-tokens` | Minimum tokens to keep when compressing | 2048 |
-| `--pflash-sink-tokens` | Leading prompt tokens always kept | 256 |
-| `--pflash-tail-tokens` | Trailing prompt tokens always kept | 2048 |
+| `--pflash-sink-tokens` | Leading prompt tokens always kept, counted inside the keep budget | 256 |
+| `--pflash-tail-tokens` | Trailing prompt tokens always kept, counted inside the keep budget | 2048 |
 | `--pflash-block-size` | Middle-token scoring block size | 128 |
 | `--pflash-query-window` | Trailing query window used to score middle blocks | 512 |
 | `--pflash-stride-blocks` | Keep every Nth middle block as an anchor during scoring (0 disables anchors) | 8 |
 | `--pflash-include-tools` | Allow compression on prompts with tool definitions (skipped by default for tool-call reliability) | off |
 | `--pflash-threshold-basis` | What `--pflash auto` compares to `--pflash-threshold`: `total` prompt tokens, or only the `uncached` tokens not already covered by a memory-aware prefix-cache entry (memory-aware cache only; the block-aware cache keeps `total` semantics). A partially cached prompt is still compressed when its uncached remainder reaches the threshold | `total` |
+
+For a prompt of `N` tokens, the keep budget is
+`max(ceil(N * keep_ratio), min_keep_tokens)`, capped at `N` and floored at 1.
+Sink and tail tokens count **inside** this budget. If their combined count
+meets or exceeds it, compression is skipped and the full prompt is prefilled
+(`insufficient_middle_budget` when a middle span exists and the budget is below `N`).
+Raising sink/tail can therefore disable compression even above the threshold.
 
 PFlash is lossy. A compressed prompt keeps the first `--pflash-sink-tokens`,
 the last `--pflash-tail-tokens`, and the middle blocks that score highest
@@ -432,7 +439,10 @@ that grew past the threshold keeps its cache, a cold prompt above the
 threshold is compressed as before, and a partially cached prompt whose
 uncached remainder itself reaches the threshold is still compressed. Prompts with tool definitions are
 skipped unless you pass `--pflash-include-tools`, and Chat Completions
-requests with a `response_format` are skipped too.
+requests with a `response_format` are skipped too. The `uncached` basis only
+has an effect with `--pflash auto` and the memory-aware prefix cache. With
+`--pflash always`, `--use-paged-cache`, `--disable-prefix-cache`, or
+`--no-memory-aware-cache`, startup warns that it behaves as `total`.
 
 PFlash is off by default for every model, so every prompt reaches the model in
 full. To opt in, pass `--pflash auto` to compress only prompts of at least

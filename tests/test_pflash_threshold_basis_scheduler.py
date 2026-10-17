@@ -124,6 +124,68 @@ def _scheduler(pflash_config: PFlashConfig) -> Scheduler:
     )
 
 
+@pytest.mark.parametrize(
+    "mode,basis,prefix,paged,memory,expected",
+    [
+        ("always", "uncached", True, False, True, "--pflash always"),
+        ("auto", "uncached", True, True, False, "block-aware/paged cache"),
+        (
+            "auto",
+            "uncached",
+            True,
+            False,
+            False,
+            "memory-aware prefix cache is disabled",
+        ),
+        ("auto", "uncached", False, False, False, "prefix caching is disabled"),
+        ("auto", "uncached", True, False, True, None),
+        ("always", "total", False, False, False, None),
+        ("off", "uncached", False, False, False, None),
+    ],
+)
+def test_threshold_basis_startup_warning(
+    monkeypatch, caplog, mode, basis, prefix, paged, memory, expected
+):
+    import rapid_mlx.scheduler as scheduler_module
+
+    # Exercise real cache selection without allocating cache storage or a model.
+    monkeypatch.setattr(
+        scheduler_module, "validate_paged_cache_capability", lambda *a, **k: None
+    )
+    for name in (
+        "MemoryAwarePrefixCache",
+        "PrefixCacheManager",
+        "PagedCacheManager",
+        "BlockAwarePrefixCache",
+    ):
+        monkeypatch.setattr(scheduler_module, name, MagicMock())
+    scheduler_module.MemoryAwarePrefixCache.return_value.memory_limit_mb = 1.0
+    monkeypatch.setattr(Scheduler, "_prefix_cache_session_floor_bytes", lambda self: 0)
+    scheduler = Scheduler(
+        model=object(),
+        tokenizer=_DummyTokenizer(),
+        config=SchedulerConfig(
+            enable_prefix_cache=prefix,
+            use_paged_cache=paged,
+            use_memory_aware_cache=memory,
+            pflash_config=_config(mode=mode, threshold_basis=basis),
+        ),
+    )
+    assert (scheduler.memory_aware_cache is not None) == (
+        prefix and memory and not paged
+    )
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "--pflash-threshold-basis uncached behaves as total:" in record.getMessage()
+    ]
+    if expected is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert expected in warnings[0]
+
+
 def _fake_cache(
     matched: int,
     match_type: str = "prefix",

@@ -122,6 +122,27 @@ class PFlashResult:
         return self.compressed and self.middle_tokens_kept == 0
 
 
+def threshold_basis_fallback_reason(
+    config: PFlashConfig,
+    *,
+    prefix_cache_enabled: bool,
+    paged_cache_enabled: bool,
+    memory_aware_cache_available: bool,
+) -> str | None:
+    """Explain an ineffective uncached basis using the initialized cache mode."""
+    if config.threshold_basis != "uncached" or config.mode == "off":
+        return None
+    if config.mode == "always":
+        return "--pflash always does not use the auto threshold"
+    if not prefix_cache_enabled:
+        return "prefix caching is disabled"
+    if paged_cache_enabled:
+        return "the block-aware/paged cache does not support uncached threshold checks"
+    if not memory_aware_cache_available:
+        return "the memory-aware prefix cache is disabled"
+    return None
+
+
 def config_from_args(args: Any) -> PFlashConfig:
     """Build and validate a PFlashConfig from argparse-style attributes.
 
