@@ -80,7 +80,7 @@ class Vector:
         return Vector([left + right for left, right in zip(self.values, values)])
 
 
-class FakeOps:
+class LegacyOps:
     def __init__(self):
         self.rolls = []
 
@@ -102,6 +102,17 @@ class FakeOps:
     def roll_rows(self, value, shifts, *, axis, stop):
         self.rolls.append((value, shifts.tolist(), axis, stop))
         return ("rolled", value, tuple(shifts.tolist()), axis, stop)
+
+
+class FakeOps(LegacyOps):
+    @staticmethod
+    def select_rows(sources, indices):
+        return Rows([sources[source].rows[row] for row, source in enumerate(indices)])
+
+    def roll_kv(self, keys, values, shifts, *, stop):
+        return tuple(
+            self.roll_rows(value, shifts, axis=2, stop=stop) for value in (keys, values)
+        )
 
 
 class FakeArraysCache:
@@ -274,8 +285,9 @@ def test_installer_rejects_qwen_cache_from_a_different_runtime():
         _install(arrays=Arrays, qwen=ForeignQwen, qsa=None)
 
 
-def test_batch_kv_splits_uniform_cursor_move_from_residual_row_roll():
-    ops = FakeOps()
+@pytest.mark.parametrize("ops_cls", [FakeOps, LegacyOps])
+def test_batch_kv_splits_uniform_cursor_move_from_residual_row_roll(ops_cls):
+    ops = ops_cls()
 
     class Arrays(FakeArraysCache):
         pass
@@ -291,7 +303,9 @@ def test_batch_kv_splits_uniform_cursor_move_from_residual_row_roll():
     assert cache.offset.tolist() == [7, 3]
     assert cache.left_padding.tolist() == [0, 4]
     assert len(ops.rolls) == 2
-    assert ops.rolls[0][1:] == ([0, 2], 2, 7)
+    assert ops.rolls == [("keys", [0, 2], 2, 7), ("values", [0, 2], 2, 7)]
+    assert cache.keys == ("rolled", "keys", (0, 2), 2, 7)
+    assert cache.values == ("rolled", "values", (0, 2), 2, 7)
     assert cache.invalidations == 1
 
 
@@ -352,11 +366,12 @@ def test_batch_kv_preflight_rejects_pending_padding_and_overtrim():
         cache.preflight_ragged_trim([1, 7], verify_size=7)
 
 
-def test_arrays_cache_selects_each_rows_exact_verify_boundary():
+@pytest.mark.parametrize("ops_cls", [FakeOps, LegacyOps])
+def test_arrays_cache_selects_each_rows_exact_verify_boundary(ops_cls):
     class Arrays(FakeArraysCache):
         pass
 
-    _install(FakeOps(), arrays=Arrays, qwen=None, qsa=None)
+    _install(ops_cls(), arrays=Arrays, qwen=None, qsa=None)
     cache = Arrays([Rows(["a-live", "b-live"]), Rows(["A-live", "B-live"])])
     cache.rollback_state = [
         [Rows(["a-keep1", "b-keep1"]), Rows(["A-keep1", "B-keep1"])],
@@ -883,3 +898,190 @@ def test_transaction_adapter_detach_empty_keep_and_multi_keep_missing_merge():
     pair = SelfMTPCachePair([ExtractOnly()], [ExtractOnly()])
     with pytest.raises(Exception, match="no merge"):
         adapter.detach(pair, [], [0, 1])
+
+
+@pytest.mark.parametrize("draft_drops", [[1, 1], [0, 0]])
+def test_adapter_validates_each_cache_once_and_reuses_leaf_plans(
+    monkeypatch, draft_drops
+):
+    class Arrays(FakeArraysCache):
+        pass
+
+    class Batch(FakeBatchKVCache):
+        pass
+
+    class QSA(FakeQSAIndexCache, Arrays):
+        pass
+
+    ops = FakeOps()
+    _install(ops, arrays=Arrays, batch_kv=Batch, qsa=QSA)
+    recurrent = Arrays([Rows(["live-a", "live-b"])])
+    recurrent.rollback_state = [[Rows(["old-a", "old-b"])]]
+    target = [Batch(), recurrent]
+    draft = [Batch(), QSA()]
+    calls = []
+    syncs = []
+    original_tolist = ops.tolist
+
+    def tolist(value):
+        syncs.append(value)
+        return original_tolist(value)
+
+    monkeypatch.setattr(ops, "tolist", tolist)
+    for cache in target + draft:
+        original = cache.preflight_ragged_trim
+
+        def counted(n, *, verify_size, validate=True, original=original, cache=cache):
+            calls.append(cache)
+            return original(n, verify_size=verify_size, validate=validate)
+
+        monkeypatch.setattr(cache, "preflight_ragged_trim", counted)
+    RapidRaggedCacheAdapter().rollback(
+        SelfMTPCachePair(target, draft),
+        target_drops=[1, 0],
+        draft_drops=draft_drops,
+        verify_width=2,
+    )
+    assert calls == target + (draft if any(draft_drops) else [])
+    assert len(syncs) == 1 + bool(any(draft_drops))
+    assert target[0]._idx == 8
+    assert recurrent.cache == [Rows(["old-a", "live-b"])]
+    assert draft[0]._idx == 8 - draft_drops[0]
+
+
+def test_arrays_preflight_never_slices_or_gathers_and_uniform_restore_reuses_source():
+    class MetadataOnlyRows(Rows):
+        def __getitem__(self, item):
+            raise AssertionError("preflight must not slice rows")
+
+    class MetadataOnlyOps(FakeOps):
+        @staticmethod
+        def select_rows(sources, indices):
+            raise AssertionError("uniform restore must not gather")
+
+    class Arrays(FakeArraysCache):
+        pass
+
+    _install(MetadataOnlyOps(), arrays=Arrays)
+    live = MetadataOnlyRows(["live-a", "live-b"])
+    boundary = MetadataOnlyRows(["old-a", "old-b"])
+    cache = Arrays([live])
+    cache.rollback_state = [[boundary]]
+    assert cache.preflight_ragged_trim([0, 1], verify_size=2) == [0, 1]
+    trim_ragged_cache([cache], [1, 1], verify_size=2)
+    assert cache.cache[0] is boundary
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("failure", ["slots", "shape", "none", "draft"])
+def test_planned_rollback_failures_are_atomic(standalone, failure):
+    class Arrays(FakeArraysCache):
+        pass
+
+    class Batch(FakeBatchKVCache):
+        pass
+
+    _install(arrays=Arrays, batch_kv=Batch)
+    first = Batch()
+    last = Arrays([Rows(["a", "b"])])
+    last.rollback_state = [[Rows(["old-a", "old-b"])]]
+    drops = [1, 0]
+    if failure == "slots":
+        last.cache.append(Rows(["extra-a", "extra-b"]))
+    elif failure == "shape":
+        last.cache[0].shape = (2, 2)
+    elif failure == "none":
+        last.cache.append(None)
+        last.rollback_state[0].append(Rows(["a", "b"]))
+    original_cache = last.cache
+    original_snapshots = last.rollback_state
+    if failure == "draft":
+        draft = Batch()
+        draft._right_padding = Vector([0, 1])
+        pair = SelfMTPCachePair([first, last], [draft])
+    else:
+        pair = SelfMTPCachePair([first], [last])
+    with pytest.raises(RaggedCacheUnsupportedError):
+        if standalone:
+            trim_ragged_cache(pair.target + pair.draft, drops, verify_size=2)
+        else:
+            RapidRaggedCacheAdapter().rollback(
+                pair, target_drops=drops, draft_drops=drops, verify_width=2
+            )
+    assert first._idx == 8
+    assert first.keys == "keys"
+    assert first.offset.tolist() == [8, 6]
+    assert not hasattr(first, "invalidations")
+    assert last.cache is original_cache
+    assert last.rollback_state is original_snapshots
+
+
+@pytest.mark.parametrize("trim_attribute", [{}, {"trim_ragged": None}])
+@pytest.mark.parametrize("standalone", [True, False])
+def test_preflight_only_leaf_passes_validation_but_apply_planning_is_atomic(
+    trim_attribute, standalone
+):
+    class Batch(FakeBatchKVCache):
+        pass
+
+    _install(batch_kv=Batch)
+    first = Batch()
+    incomplete = SimpleNamespace(
+        preflight_ragged_trim=lambda values, *, validate: values, **trim_attribute
+    )
+    assert preflight_ragged_cache(incomplete, [1, 1], verify_size=2) == [1, 1]
+    assert preflight_ragged_cache([first, incomplete], [1, 1], verify_size=2) == [1, 1]
+    with pytest.raises(RaggedCacheUnsupportedError, match="no ragged"):
+        if standalone:
+            trim_ragged_cache([first, incomplete], [1, 1], verify_size=2)
+        else:
+            RapidRaggedCacheAdapter().rollback(
+                SelfMTPCachePair([first], [incomplete]),
+                target_drops=[1, 1],
+                draft_drops=[1, 1],
+                verify_width=2,
+            )
+    assert first._idx == 8
+    assert first.keys == "keys"
+    assert first.values == "values"
+    assert first.offset.tolist() == [8, 6]
+    assert first.left_padding.tolist() == [0, 2]
+    assert not hasattr(first, "invalidations")
+
+
+def test_default_ops_select_snapshots_share_kv_index_and_preserve_reserved_tail():
+    import numpy as np
+
+    indices_used = []
+
+    def take(value, indices, *, axis):
+        indices_used.append(indices)
+        return np.take_along_axis(value, indices, axis=axis)
+
+    ops = ragged._DefaultArrayOps(
+        SimpleNamespace(
+            mx=SimpleNamespace(
+                array=np.array,
+                concatenate=np.concatenate,
+                arange=np.arange,
+                where=np.where,
+                take_along_axis=take,
+            ),
+            dynamic_roll=None,
+        )
+    )
+    sources = [np.array([[i], [i + 1]]) for i in (0, 10, 20)]
+    np.testing.assert_array_equal(ops.select_rows(sources, [2, 0]), [[20], [1]])
+    keys = np.arange(54).reshape(2, 1, 9, 3)
+    values = -keys[..., :1]
+    shifts = np.array([0, 2])
+    actual = ops.roll_kv(keys, values, shifts, stop=5)
+    for original, rolled in zip((keys, values), actual):
+        expected = original.copy()
+        expected[1, :, :5] = np.roll(expected[1, :, :5], 2, axis=1)
+        np.testing.assert_array_equal(rolled, expected)
+    assert indices_used[0] is indices_used[1]
+    assert ops.roll_kv(None, None, shifts, stop=5) == (None, None)
+    unchanged = ops.roll_kv(keys, values, shifts, stop=0)
+    assert unchanged[0] is keys
+    assert unchanged[1] is values
