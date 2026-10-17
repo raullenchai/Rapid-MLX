@@ -7,6 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from ..local_search.extraction import FolderAccessDeniedError
 from ..local_search.store import SchemaVersionError
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..middleware.exception_handlers import register_request_model
@@ -88,6 +89,13 @@ async def add_folder(body: FolderRequest, request: Request, response: Response):
         folder, created = await get_service(request).add_folder(body.path)
     except ValueError as exc:
         error(str(exc), "invalid_folder_path", "path")
+    except FolderAccessDeniedError:
+        error(
+            "Rapid-MLX isn't allowed to read this folder. Allow access in System Settings › Privacy & Security, then try again.",
+            "folder_permission_denied",
+            "path",
+            403,
+        )
     except OSError:
         error(
             "path must be an existing absolute directory without '..', outside excluded directories, other than /",

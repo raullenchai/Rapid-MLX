@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import io
 import os
@@ -244,6 +245,10 @@ class SkippedError(ValueError):
     """A file cannot safely be indexed (reason is suitable for persisted status)."""
 
 
+class FolderAccessDeniedError(PermissionError):
+    """The selected folder's own entries cannot be listed."""
+
+
 def excluded_location(path: Path, root: Path) -> bool:
     """Absolute exclusions apply while walking a broader root.
 
@@ -282,11 +287,20 @@ def validate_folder(value: str) -> Path:
     path = path.resolve(strict=True)
     if not path.is_dir():
         raise ValueError("path must be a directory")
-    if (
-        excluded_location(path, path)
-        or (path / "pyvenv.cfg").exists()
-        or any(excluded(parent, directory=True) for parent in (path, *path.parents))
+    if excluded_location(path, path) or any(
+        excluded(parent, directory=True) for parent in (path, *path.parents)
     ):
+        raise ValueError("path is hidden, sensitive, or an excluded directory")
+    # macOS privacy can allow stat on a folder while denying access to its entries.
+    # Probe before the pyvenv.cfg stat, which also needs access to those entries.
+    try:
+        with os.scandir(path):
+            pass
+    except OSError as exc:
+        if isinstance(exc, PermissionError) or exc.errno in (errno.EPERM, errno.EACCES):
+            raise FolderAccessDeniedError(*exc.args) from exc
+        raise
+    if (path / "pyvenv.cfg").exists():
         raise ValueError("path is hidden, sensitive, or an excluded directory")
     return path
 

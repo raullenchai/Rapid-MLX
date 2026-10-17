@@ -17,6 +17,39 @@ struct LocalSearchView: View {
     @FocusState private var resultsFocused: Bool
     private static let searchAlias = "embeddinggemma-2-4bit"
 
+    private var permissionNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Text("macOS blocked access to this folder.").font(.headline)
+                Spacer()
+                Button { model.dismissPermissionNotice() } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Dismiss"))
+                .accessibilityIdentifier("LocalSearch.PermissionNotice.Dismiss")
+            }
+            Text("Allow Rapid-MLX under Privacy & Security › Files and Folders (or Full Disk Access for Whole Mac), then try again.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Open Privacy Settings") {
+                    guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
+                    NSWorkspace.shared.open(url)
+                }
+                .buttonStyle(.rapidSecondary)
+                .accessibilityIdentifier("LocalSearch.PermissionNotice.OpenSettings")
+                Button("Try Again") { Task { await model.retry() } }
+                    .buttonStyle(.rapidSecondary)
+                    .disabled(model.isMutating)
+                    .accessibilityIdentifier("LocalSearch.PermissionNotice.Retry")
+            }
+        }
+        .padding(RapidTheme.Space.md)
+        .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("LocalSearch.PermissionNotice")
+    }
+
     private func beginEngineStart() {
         Task { await model.startEngine(using: onStartModel) }
     }
@@ -90,6 +123,7 @@ struct LocalSearchView: View {
                     .accessibilityHint(caption.detail ?? "")
                     .accessibilityIdentifier("LocalSearch.SemanticCaption")
             }
+            if model.permissionNotice { permissionNotice }
             if case .error(let message) = model.state {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(message).foregroundStyle(.secondary)

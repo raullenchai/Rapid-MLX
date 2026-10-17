@@ -188,11 +188,11 @@ struct LocalSearchClient: Sendable {
     }
     enum Failure: Error, LocalizedError {
         case unsupported
-        case http(Int, String?)
+        case http(Int, String?, code: String? = nil)
         var errorDescription: String? {
             switch self {
             case .unsupported: String(localized: "This engine does not support local search. Update the engine and restart a model.")
-            case let .http(code, message): message ?? String(localized: "Search request failed (HTTP \(code)).")
+            case let .http(code, message, _): message ?? String(localized: "Search request failed (HTTP \(code)).")
             }
         }
     }
@@ -218,10 +218,11 @@ struct LocalSearchClient: Sendable {
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 404, route == "status" { throw Failure.unsupported }
             struct Envelope: Decodable {
-                struct Detail: Decodable { let message: String? }
+                struct Detail: Decodable { let message: String?; let code: String? }
                 let error: Detail?
             }
-            throw Failure.http(http.statusCode, (try? JSONDecoder().decode(Envelope.self, from: data))?.error?.message)
+            let detail = (try? JSONDecoder().decode(Envelope.self, from: data))?.error
+            throw Failure.http(http.statusCode, detail?.message, code: detail?.code)
         }
         return data
     }

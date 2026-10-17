@@ -418,14 +418,19 @@ private final class LocalSearchRequestRecorder: @unchecked Sendable {
     private var requests: [URLRequest] = []
     private var status = 200
     private var body = Data()
+    private var replies: [(Int, Data)] = []
     func reply(status: Int = 200, body: Data = Data()) {
         lock.lock(); defer { lock.unlock() }
-        self.status = status; self.body = body
+        self.status = status; self.body = body; replies = []
+    }
+    func replySequence(_ values: [(Int, Data)]) {
+        lock.lock(); defer { lock.unlock() }
+        replies = values
     }
     func record(_ request: URLRequest) -> (Int, Data) {
         lock.lock(); defer { lock.unlock() }
         requests.append(request)
-        return (status, body)
+        return replies.isEmpty ? (status, body) : replies.removeFirst()
     }
     var captured: [URLRequest] {
         lock.lock(); defer { lock.unlock() }
@@ -545,12 +550,17 @@ private final class LocalSearchURLProtocol: URLProtocol {
         let endpoint = LocalSearchClient.Endpoint(port: 8000, bearer: nil)
         LocalSearchURLProtocol.recorder.reply(status: 400, body: Data(#"{"error":{"message":"Folder denied","type":"permission_error","code":"denied","param":"path"}}"#.utf8))
         do { try await client.add(path: "/tmp", endpoint: endpoint); Issue.record("Expected HTTP error") }
-        catch { #expect(error.localizedDescription == "Folder denied") }
+        catch {
+            #expect(error.localizedDescription == "Folder denied")
+            guard case LocalSearchClient.Failure.http(400, _, code: "denied") = error else {
+                Issue.record("Expected decoded server code"); return
+            }
+        }
         LocalSearchURLProtocol.recorder.reply(status: 404)
         do { _ = try await client.status(endpoint); Issue.record("Expected unsupported engine") }
         catch { guard case LocalSearchClient.Failure.unsupported = error else { Issue.record("Wrong error: \(error)"); return } }
         do { try await client.remove(id: "removed", endpoint: endpoint); Issue.record("Expected HTTP error") }
-        catch { guard case LocalSearchClient.Failure.http(404, _) = error else { Issue.record("Folder 404 is not an engine capability failure"); return } }
+        catch { guard case LocalSearchClient.Failure.http(404, _, _) = error else { Issue.record("Folder 404 is not an engine capability failure"); return } }
     }
     @Test @MainActor func folderMutationErrorRetries() async {
         let client = client()
@@ -1376,5 +1386,71 @@ extension LocalSearchAccessibilityTests {
         let row = try #require(stage.tree().first { $0.id == "LocalSearch.Result.0" })
         #expect(row.text.contains(result.snippetLabel))
         #expect(stage.identifiers().contains("LocalSearch.ResultsList"))
+    }
+}
+
+
+extension LocalSearchClientTests {
+    @Test @MainActor func permissionNoticeKeepsPageAndRetryResumesAtFailedFolder() async throws {
+        let recorder = LocalSearchURLProtocol.recorder
+        let denied = Data(#"{"error":{"message":"Access denied","code":"folder_permission_denied"}}"#.utf8)
+        for folders in [[], [searchFolder()]] {
+            recorder.replySequence([(200, Data()), (403, denied)])
+            let before = recorder.captured.count
+            let model = LocalSearchViewModel(client: client(), fetchStatus: { _ in searchStatus(folders: folders) })
+            await model.appear(endpoint: .init(port: 8000, bearer: nil))
+            let state = model.state
+            await model.add(paths: ["/tmp/first", "/tmp/blocked", "/tmp/last"])
+            #expect(model.state == state)
+            #expect(model.permissionNotice)
+            #expect(recorder.captured.count == before + 2)
+            recorder.reply()
+            await model.retry()
+            #expect(!model.permissionNotice)
+            #expect(model.state == state)
+            let paths = try recorder.captured.dropFirst(before).map { try body($0)["path"] as? String }
+            #expect(paths == ["/tmp/first", "/tmp/blocked", "/tmp/blocked", "/tmp/last"])
+            recorder.reply(status: 403, body: denied)
+            await model.add(paths: ["/tmp/blocked"])
+            model.dismissPermissionNotice()
+            #expect(!model.permissionNotice)
+            #expect(model.state == state)
+            // An older engine's generic 400 retains the existing full-page error.
+            recorder.reply(status: 400, body: Data(#"{"error":{"message":"Invalid folder"}}"#.utf8))
+            await model.add(paths: ["/tmp/blocked"])
+            #expect(model.state == .error("Invalid folder"))
+            #expect(!model.permissionNotice)
+            recorder.reply(status: 403, body: denied)
+            await model.retry()
+            #expect(model.state == state)
+            #expect(model.permissionNotice)
+            recorder.reply()
+            await model.reindex()
+            #expect(!model.permissionNotice)
+            model.disappear()
+        }
+    }
+
+    @Test @MainActor func permissionNoticeRendersAccessibleRecoveryControls() async throws {
+        let model = LocalSearchViewModel(client: client(), fetchStatus: { _ in searchStatus() })
+        let server = ServerManager(testingState: .ready(alias: "test"), binaryPath: URL(fileURLWithPath: "/usr/bin/true"))
+        let stage = GoldenStage(LocalSearchView(server: server, model: model, onStartModel: { true })
+            .environment(DownloadManager()))
+        defer { model.disappear() }
+        try await stage.waitForIdentifier("LocalSearch.AddFolder.Desktop")
+        LocalSearchURLProtocol.recorder.reply(status: 403,
+            body: Data(#"{"error":{"message":"Access denied","code":"folder_permission_denied"}}"#.utf8))
+        await model.add(paths: ["/tmp/blocked"])
+        try await stage.waitForIdentifier("LocalSearch.PermissionNotice.Retry")
+        for identifier in ["LocalSearch.PermissionNotice", "LocalSearch.PermissionNotice.OpenSettings",
+                           "LocalSearch.PermissionNotice.Retry", "LocalSearch.PermissionNotice.Dismiss"] {
+            #expect(stage.identifiers().contains(identifier))
+        }
+        #expect(stage.treeText().contains("macOS blocked access to this folder."))
+        #expect(stage.treeText().contains("Allow Rapid-MLX under Privacy & Security › Files and Folders (or Full Disk Access for Whole Mac), then try again."))
+        #expect(stage.identifiers().contains("LocalSearch.AddFolder.Desktop"))
+        try stage.press("LocalSearch.PermissionNotice.Dismiss")
+        try await stage.waitForIdentifierGone("LocalSearch.PermissionNotice.Retry")
+        #expect(!model.permissionNotice)
     }
 }

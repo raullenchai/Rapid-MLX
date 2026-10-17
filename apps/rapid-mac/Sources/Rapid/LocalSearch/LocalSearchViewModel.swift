@@ -25,6 +25,8 @@ final class LocalSearchViewModel {
     var focusRequest = 0
     var selection: String?
     var pendingRemoval: LocalSearchFolder?
+    private(set) var permissionNotice = false
+    func dismissPermissionNotice() { permissionNotice = false }
     private(set) var isMutating = false
     var isIndexing: Bool { status?.needsPolling == true }
     var emptyResultsAction: EmptyResultsAction {
@@ -170,6 +172,7 @@ final class LocalSearchViewModel {
         isMutating = false
         retryAction = nil
         pendingRemoval = nil
+        permissionNotice = false
         operationError = false
     }
     private func validateMutation(_ token: Int) throws {
@@ -283,6 +286,13 @@ final class LocalSearchViewModel {
         state = .error(String(localized: "This file could not be opened. It may have moved or its drive may be disconnected. Reconnect the drive, or search again to refresh results."))
     }
     private func report(_ error: Error, operation: Bool = true) {
+        if operation, case LocalSearchClient.Failure.http(_, _, code: "folder_permission_denied") = error {
+            permissionNotice = true
+            operationError = false
+            if case .error = state { deriveState() }
+            return
+        }
+        permissionNotice = false
         operationError = operation
         if case LocalSearchClient.Failure.unsupported = error { state = .unsupported }
         else { state = .error(error.localizedDescription) }
@@ -314,6 +324,7 @@ final class LocalSearchViewModel {
                 try await action()
                 try self.validateMutation(token)
                 self.retryAction = nil
+                self.permissionNotice = false
                 self.operationError = false
                 await self.refresh()
                 if case .error = self.state { return true }

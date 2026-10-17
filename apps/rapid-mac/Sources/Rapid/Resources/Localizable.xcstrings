@@ -2,6 +2,36 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "macOS blocked access to this folder.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 阻止了对此文件夹的访问。"
+          }
+        }
+      }
+    },
+    "Allow Rapid-MLX under Privacy & Security › Files and Folders (or Full Disk Access for Whole Mac), then try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在“隐私与安全性”›“文件与文件夹”中允许 Rapid-MLX 访问（搜索整台 Mac 时需开启“完全磁盘访问权限”），然后重试。"
+          }
+        }
+      }
+    },
+    "Open Privacy Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开隐私设置"
+          }
+        }
+      }
+    },
     "Text size" : {
       "localizations" : {
         "zh-Hans" : {
