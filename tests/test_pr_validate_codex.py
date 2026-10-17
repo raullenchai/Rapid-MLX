@@ -330,13 +330,23 @@ class TestModelPinning:
         the ``@property`` and every other module global consistently.
         """
         import importlib
+        import os
+        from unittest import mock
 
         import scripts.pr_validate.steps.codex_review as _cr
 
+        # Capture the ambient override now: the shared ``monkeypatch`` is
+        # often instantiated by earlier autouse fixtures and so is undone
+        # *after* this teardown, which would reload under the test's env.
+        ambient = os.environ.get("PR_VALIDATE_CODEX_MODEL")
         try:
             yield
         finally:
-            importlib.reload(_cr)
+            with mock.patch.dict(os.environ):
+                os.environ.pop("PR_VALIDATE_CODEX_MODEL", None)
+                if ambient is not None:
+                    os.environ["PR_VALIDATE_CODEX_MODEL"] = ambient
+                importlib.reload(_cr)
 
     def test_codex_model_constant_matches_documented(self, monkeypatch):
         # Default (no override) must be the pinned gpt-5.6-sol id.
