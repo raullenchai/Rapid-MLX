@@ -418,7 +418,17 @@ for this alias (the checkpoint has no draft model or MTP head).
 | **Pixtral** | `pixtral-12b-4bit`, `pixtral-12b-8bit` |
 | **Molmo** | `Molmo-7B-D-0924-4bit`, `Molmo-7B-D-0924-8bit` |
 | **Phi-3 Vision** | `Phi-3-vision-128k-instruct-4bit` |
+| **MiniCPM-V 4.7** | `minicpm-v4.7-1b-8bit` (dense), `minicpm-v4.7-35b-a3b-mxfp4` (MoE) |
 | **DeepSeek-VL** | `deepseek-vl-7b-chat-4bit`, `deepseek-vl2-small-4bit` |
+
+MiniCPM-V 4.7 supports image input only, XML tool calls, and optional
+thinking through the native MLLM lane. These experimental aliases keep
+speculative decoding disabled; bundled MTP weights are not used. Both
+checkpoints passed image Q&A (streaming and non-streaming), text-only chat,
+and tool-call verification on a Mac Studio M3 Ultra. Default chat is
+non-thinking. Video input through `/v1/chat/completions` is not yet supported
+or verified end to end for either alias; it is out of scope for PR #4745 and
+tracked as a follow-up. See the [verification record](../engineering/design/2026-10-16-minicpmv4_7-support.md#real-checkpoint-verification).
 
 ### Recommended VLM Models
 

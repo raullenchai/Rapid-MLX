@@ -112,6 +112,7 @@ MLLM_NAME_PATTERNS = (
     "medgemma",
     "pixtral",
     "molmo",
+    "minicpm-v",
     "phi3-vision",
     "phi-3-vision",
     "cogvlm",

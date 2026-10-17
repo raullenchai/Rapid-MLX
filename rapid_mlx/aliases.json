@@ -2735,5 +2735,29 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false
+  },
+  "minicpm-v4.7-1b-8bit": {
+    "hf_path": "mlx-community/MiniCPM-V-4.7-1B-8bit",
+    "supports_image_input": true,
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "experimental": true
+  },
+  "minicpm-v4.7-35b-a3b-mxfp4": {
+    "hf_path": "mlx-community/MiniCPM-V-4.7-35B-A3B-mxfp4",
+    "supports_image_input": true,
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "experimental": true
   }
 }

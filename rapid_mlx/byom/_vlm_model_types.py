@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model types the pinned ``mlx-vlm==0.7.2`` runtime can construct.
+"""Model types the pinned ``mlx-vlm==0.7.2`` lane can construct.
 
 Generated from the installed package (``mlx_vlm/models``, the speculative
 drafters and ``MODEL_REMAPPING``). The BYOM preflight uses it only when
 ``mlx-vlm`` (the optional ``[vision]`` extra) is not installed, so a checkpoint
 the extra WOULD load is never reported as an unsupported architecture.
 ``tests/test_byom_preflight.py`` pins it against the live package.
+MiniCPM-V 4.7 is an explicit vendored addition to the installed inventory.
 """
 
 MLX_VLM_PIN = "0.7.2"
@@ -183,6 +184,7 @@ MLX_VLM_MODEL_TYPES: frozenset[str] = frozenset(
         "minicpm3",
         "minicpmo",
         "minicpmv4_6",
+        "minicpmv4_7",
         "minimax",
         "minimax_h3",
         "minimax_m2",

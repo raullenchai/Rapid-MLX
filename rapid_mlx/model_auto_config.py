@@ -281,6 +281,30 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
+    # MiniCPM-V 4.7 uses Qwen3.5 backbones and parameterized XML tools.
+    # Match before older MiniCPM text families; retain the dense/MoE serving
+    # policy used by the corresponding Qwen3.5 backbones.
+    (
+        re.compile(r"minicpm[-_]v[-_]?4[._]7[-_].*(?:a3b|moe)", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            is_moe=True,
+            supports_spec_decode=False,
+        ),
+    ),
+    (
+        re.compile(r"minicpm[-_]v[-_]?4[._]7(?:[-_]|$)", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+            is_hybrid=False,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    ),
     # Qwen3.5 MoE (A3B / A10B / generic MoE markers) — hybrid
     # GatedDeltaNet + sparse experts (model_type=qwen3_5_moe). Must come
     # before the generic Qwen3 regex. r6-A R6-C1: the prior bare
@@ -1255,6 +1279,19 @@ def _detect_metadata_config(
             experimental=True,
         )
         reasons.append("experimental Qwen4-Exp hybrid MoE architecture")
+    elif "minicpmv4_7" in model_types:
+        is_moe = (config.get("text_config") or {}).get("model_type") == (
+            "qwen3_5_moe_text"
+        )
+        settings.update(
+            is_hybrid=is_moe,
+            is_hybrid_explicit=True,
+            is_moe=is_moe,
+            supports_spec_decode=False,
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+        )
+        reasons.append("MiniCPM-V 4.7 architecture")
     elif "qwen3_5_moe" in model_types:
         settings.update(
             is_hybrid=True,

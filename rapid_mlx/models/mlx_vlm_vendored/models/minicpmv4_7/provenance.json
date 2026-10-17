@@ -1,0 +1,54 @@
+{
+  "upstream_commit": "b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0",
+  "files": {
+    "__init__.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/__init__.py",
+      "upstream_sha256": "2ef37aee2fe78c20d991d016c29dcff79178892127ae2f9b779f613736b93f68",
+      "vendored_sha256": "47aef365fdfa1648a801b78c8e0cdaf15fa961019c82dada96a586dee6de3c1f"
+    },
+    "config.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/config.py",
+      "upstream_sha256": "584b6ef9ddf700030346895e21851806b1aa9f223c0c4a732df2bb6ba9522778",
+      "vendored_sha256": "151a649c2e547a660c6833d9da06de348b71f427602a5cce951dff34cc963384"
+    },
+    "language.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/language.py",
+      "upstream_sha256": "790769ce0dc543e5cc481cde1ac3084b434684fbbc4d948203d4efbfeb417fb5",
+      "vendored_sha256": "b74c4a8138c8e1e7e202dffa6fed9ea4f921ecd9ee81ba6a43224173114e0e38"
+    },
+    "minicpmv4_7.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/minicpmv4_7.py",
+      "upstream_sha256": "d52b40283d9dfc62bb0e06df94814b21263d7ff35d90b1bf59741c681e35fe48",
+      "vendored_sha256": "422ddd75217d3371f52a2e5c32ca27535c354f3c086d6ebbd543ebd7f5508514"
+    },
+    "processing_minicpmv4_7.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/processing_minicpmv4_7.py",
+      "upstream_sha256": "7a2db85f38d054836463f4a664e3232ab6192f9e718c1bdc5297c308ee1d6dfe",
+      "vendored_sha256": "9e5e1430c79265eebba198b30ea0c932801539ed50c1a1c2ee3a34de86bc72a9"
+    },
+    "rope.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_7/rope.py",
+      "upstream_sha256": "5fb62dd20444ea64c689d19bfa3e7f3667632977e4d8d548be0d4f77a7c3755b",
+      "vendored_sha256": "5ad65798af5ac9c86b8f9a63d4434e0bb3c3cbcd27831b12cd62860e305b90d7"
+    },
+    "_config.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_6/config.py",
+      "upstream_sha256": "235c387701fffd6e963e4176653080e87730576306c61a2cbda347b52ab8d7d0",
+      "vendored_sha256": "b1a4de3f706ffe7f9b1d481fc46b12a311e855a66dcbb2fe887f0c52d924d4cf"
+    },
+    "_vision_compat.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_6/minicpmv4_6.py",
+      "upstream_sha256": "885d10fe9ce19cdf741c8ba3b7d3b39a0814039361056b40d8aa231c450d48bd",
+      "region_sha256": "92adcf2cec86add032dfb3f5751ca4a60bb1823a96765937634c9667b9710f82",
+      "region": "Model.get_vision_embedding + Model.get_input_embeddings",
+      "vendored_sha256": "43adb2e6983ac7b48985766edb60c4799392959c4ceb72e0e00709a3a156ccbc"
+    },
+    "_vision.py": {
+      "upstream_path": "mlx_vlm/models/minicpmv4_6/vision.py",
+      "upstream_sha256": "d20b200a693eb5792996a97a9b57fc221ae2831a2b2b50ff06ba448c8759498a",
+      "region": "VisionModel",
+      "region_sha256": "7e47dc7221da8d53987924c89ea347e896c00887210665bd52552fa1e813d85f",
+      "vendored_sha256": "3ffd6f80bb4edb3836b6f2aa694ca15a083f50ce4606464dc2a9899a840fde80"
+    }
+  }
+}

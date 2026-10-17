@@ -82,6 +82,21 @@ omit =
     rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/__init__.py
     rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/config.py
     rapid_mlx/models/mlx_vlm_vendored/speculative/drafters/dflash2/dflash2.py
+    # Pinned MiniCPM-V 4.7 architecture closure. The complete file inventory
+    # and reconstructed upstream hashes are checked on Linux; copied vision
+    # regions have exact hashes and synthetic forward probes in the MLX lane.
+    # The processor's request-local thread-safety deviation has Linux behavior
+    # tests, as with inputs.py above. Enumerate copies so Rapid-owned loader,
+    # routing seams and future modules remain measured by default.
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/__init__.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/_config.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/_vision.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/_vision_compat.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/config.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/language.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/minicpmv4_7.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/processing_minicpmv4_7.py
+    rapid_mlx/models/mlx_vlm_vendored/models/minicpmv4_7/rope.py
     # Test-file mirrors under the package: ``rapid_mlx/_integration_tests``
     # is a symlink farm pointing at ``tests/integrations/``. They are test
     # code — CI executes them via tests/integrations/, not through the

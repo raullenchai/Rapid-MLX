@@ -11,7 +11,28 @@ preprocessing, and the speculative-decode runtime).
 Design note: ``docs/engineering/design/2026-09-18-vendor-mllm-primitives.md``.
 Upstream: https://github.com/Blaizzy/mlx-vlm/tree/v0.7.2
 
-Provenance contract: every file here is a copy of the upstream
+MiniCPM-V 4.7 exception: ``models/minicpmv4_7/`` is sourced from commit
+``b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0`` (including upstream #2511
+and #2514), while the installed dependency remains 0.7.2. Its MIT notice
+is in ``models/minicpmv4_7/LICENSE``; the original Apache-2.0 notice in
+``rope.py`` is retained. Per-file upstream SHA256 inventory entries and
+vendored-byte digests are in ``models/minicpmv4_7/provenance.json``.
+The six package files have headers and marked import redirects.
+``processing_minicpmv4_7.py`` also carries a marked
+``VENDOR-DEVIATION(thread-safety)``: differing request modes use shallow copies
+of the processor and its image/video components, leaving shared modes untouched.
+Matching configured modes call through without copying or mode assignment.
+``_config.py`` copies the newer 4.6 config (MoE parsing hook);
+``_vision_compat.py`` copies only the newer 4.6 model's two embedding
+methods (vision dtype and request downsampling). Both carry marked
+redirect/subset deviations. ``_vision.py`` copies only the newer VisionModel
+class, accepting the 4.7 vision type with pinned layer implementations.
+All remaining 4.6/Qwen3.5/base/processor
+dependencies resolve to the installed pin. Registration uses the existing
+architecture-module binding seam; importing the package installs its
+processor through the pinned composable AutoProcessor hook.
+
+Provenance contract: except for the versioned addition above, every file here is a copy of the upstream
 ``mlx-vlm==0.7.2`` source except *import redirects* and *in-source
 ``VENDOR-DEVIATION`` hunks*, each documented in the file's own body and in
 the inventory below. A future behavior change must re-qualify against the

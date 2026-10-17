@@ -1083,6 +1083,7 @@ MLLM_PATTERNS = [
     "CogVLM",  # CogVLM
     "internvl",
     "InternVL",  # InternVL
+    "minicpm-v",  # MiniCPM-V, including 4.7 dense and MoE
     "deepseek-vl",
     "DeepSeek-VL",  # DeepSeek-VL
     # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.

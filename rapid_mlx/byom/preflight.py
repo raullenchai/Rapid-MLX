@@ -51,7 +51,8 @@ _CHAT_ARCH_SUFFIXES = ("ForConditionalGeneration",)
 # Model types Rapid-MLX registers into ``mlx_lm.models`` itself (see
 # ``rapid_mlx/utils/tokenizer.py::_register_vendored_archs`` and the
 # self-registering modules under ``rapid_mlx/models``), plus the natively
-# converted DeepSeek V4.1 checkpoint. ``tests/test_byom_preflight.py`` scans the
+# converted DeepSeek V4.1 checkpoint and vendored multimodal architectures.
+# ``tests/test_byom_preflight.py`` scans the
 # package for registrations so this cannot fall behind.
 RAPID_MODEL_TYPES: frozenset[str] = frozenset(
     {
@@ -63,6 +64,7 @@ RAPID_MODEL_TYPES: frozenset[str] = frozenset(
         "gpt_oss_puzzle",
         "hy_v3",
         "k2_horizon",
+        "minicpmv4_7",
         "muse_glimmer",
         "nemotron_h_puzzle",
         "nemotron_labs_diffusion",

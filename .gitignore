@@ -119,6 +119,7 @@ gsm8k_*.json
 *.jinja
 !rapid_mlx/templates/*.jinja
 !tests/fixtures/*.jinja
+!tests/fixtures/minicpmv4_7/*.jinja
 
 # Aider
 .aider*

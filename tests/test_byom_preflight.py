@@ -180,7 +180,7 @@ def test_supported_model_types(monkeypatch, tmp_path):
     dirs = {"mlx_lm": lm, "mlx_vlm": vlm}
     monkeypatch.setattr(pf, "_package_dir", lambda name: dirs.get(name))
     types_ = pf.supported_model_types()
-    assert {"llama", "mistral", "gemma4", "deepseek_v4"} <= types_
+    assert {"llama", "mistral", "gemma4", "deepseek_v4", "minicpmv4_7"} <= types_
     assert "qwen3_vl" not in types_
 
     # mlx-vlm (the optional [vision] extra) absent: the pinned snapshot stands
@@ -299,7 +299,8 @@ def test_vlm_snapshot_matches_pinned_runtime():
 
     if importlib.metadata.version("mlx-vlm") != pin:
         pytest.skip("installed mlx-vlm is not the pinned release")
-    assert set(snap.MLX_VLM_MODEL_TYPES) == live
+    # MiniCPM-V 4.7 is a vendored addition; the installed runtime stays pinned.
+    assert set(snap.MLX_VLM_MODEL_TYPES) == live | {"minicpmv4_7"}
 
 
 # --------------------------------------------------------------- inspection
