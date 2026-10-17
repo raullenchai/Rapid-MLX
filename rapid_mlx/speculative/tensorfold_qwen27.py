@@ -12,6 +12,7 @@ import concurrent.futures
 import functools
 import importlib.metadata
 import json
+import logging
 import platform
 import sys
 import threading
@@ -29,6 +30,8 @@ from .tensorfold_runtime import (
     SUPPORTED_RUNTIME_URL,
     SUPPORTED_VERSION,
 )
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_MODEL_TYPE = "qwen3_5"
 SUPPORTED_TARGET = "Vontra/Qwen3.8-27B-MLX-4bit"
@@ -229,7 +232,7 @@ def require_environment(
 
 
 class TensorFoldQwen27Backend:
-    """One-lane adapter around a pinned TensorFold ``ChatApp``.
+    """Request adapter around a pinned TensorFold ``ChatApp``.
 
     ``app`` is injectable so lifecycle and protocol contracts are testable
     without loading model weights.  Production construction is deliberately
@@ -241,11 +244,13 @@ class TensorFoldQwen27Backend:
     ):
         self._app = app
         self._executor = executor or concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="tensorfold-qwen27"
+            max_workers=max(1, int(getattr(app, "max_batch_size", 1))),
+            thread_name_prefix="tensorfold-qwen27",
         )
         self._owns_executor = executor is None
         self._closed = False
         self._active: dict[str, Any] = {}
+        self._provider_iterators: set[Any] = set()
         self._lock = threading.Lock()
 
     @classmethod
@@ -257,8 +262,12 @@ class TensorFoldQwen27Backend:
         served_name: str,
         context_window: int = 8192,
         max_tokens: int = 4096,
+        lanes: int = 1,
     ) -> TensorFoldQwen27Backend:
         """Load the pinned family/app boundary used by the proof."""
+        from .tensorfold_concurrency import request_lanes
+
+        lanes = request_lanes("qwen3.8-27b-tensorfold", lanes)
         require_runtime()
         require_environment()
         from tensorfold.engine.lane_engine import LaneEngine
@@ -279,7 +288,11 @@ class TensorFoldQwen27Backend:
         # quantization block. TensorFold performs the qualified 4-bit packing
         # here; passing any other width is outside this adapter's contract.
         model, tokenizer = package.load(
-            target, lane_kernels="auto", drafter=str(drafter), drafter_bits=4
+            target,
+            lane_kernels="auto",
+            drafter=str(drafter),
+            drafter_bits=4,
+            **({"parallel": lanes} if lanes > 1 else {}),
         )
         # The runtime's bare engine defaults to a 2048-token grid. Without
         # message cuts, a shorter prompt's reusable history floors to zero
@@ -287,12 +300,19 @@ class TensorFoldQwen27Backend:
         # TensorFold serving so recurrent state resumes at an exact cut.
         openers, assistant = message_markers(tokenizer)
         plan = PrefillPlan(LaneEngine.prefill_step, openers, 256, assistant)
+        fraction = None
+        if lanes > 1:
+            from tensorfold.server.memory_budget import model_fraction
+
+            fraction = model_fraction(package)
+
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
             engine_factory=functools.partial(LaneEngine, prefill_plan=plan),
-            lanes=1,
+            lanes=lanes,
+            **({"memory_fraction": fraction} if lanes > 1 else {}),
             context_window=int(context_window),
             default_max_tokens=int(max_tokens),
             snapshot_dir=None,
@@ -406,8 +426,8 @@ class TensorFoldQwen27Backend:
         return True
 
     def close(self) -> None:
-        self._closed = True
         with self._lock:
+            self._closed = True
             active = list(self._active.values())
         for cancellation in active:
             cancellation.cancel()
@@ -420,4 +440,17 @@ class TensorFoldQwen27Backend:
                 scheduler.stop()
         if self._owns_executor:
             self._executor.shutdown(wait=True)
+        # Finalize suspended providers even when the executor is borrowed.
+        # A borrowed executor may still be pulling a running generator; its
+        # close raises, but cancellation lets its own finally clean up later.
+        with self._lock:
+            iterators = list(self._provider_iterators)
+            self._provider_iterators.clear()
+        for iterator in iterators:
+            try:
+                iterator.close()
+            except Exception:
+                logger.warning(
+                    "Failed to close TensorFold provider iterator", exc_info=True
+                )
         self._app = None

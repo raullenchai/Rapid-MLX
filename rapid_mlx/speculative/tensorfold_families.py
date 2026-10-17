@@ -227,7 +227,7 @@ def _prompt_cache_bytes() -> int:
 
 
 class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
-    """One-lane Rapid boundary around a profile's pinned TensorFold family."""
+    """Rapid boundary around a profile's pinned TensorFold family."""
 
     profile: TensorFoldFamilyProfile
 
@@ -240,8 +240,12 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         served_name: str,
         context_window: int = 0,
         max_tokens: int = 4096,
+        lanes: int = 1,
     ) -> TensorFoldFamilyBackend:
+        from .tensorfold_concurrency import request_lanes
+
         profile = cls.profile
+        lanes = request_lanes(profile.profile_id, lanes)
         require_runtime()
         require_environment()
         require_memory(profile)
@@ -277,7 +281,7 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         from tensorfold.server.residency import wire_resident
 
         memory_limit = configure_mlx(mx, 8 * _GIB, fraction=model_fraction(package))
-        options: dict[str, Any] = {"lane_kernels": "auto", "parallel": 1}
+        options: dict[str, Any] = {"lane_kernels": "auto", "parallel": lanes}
         if drafter is not None:
             options["drafter"] = str(drafter)
             options["drafter_bits"] = profile.drafter_bits
@@ -308,7 +312,8 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 tokenizer,
                 served_name=served_name,
                 engine_factory=engine_factory,
-                lanes=1,
+                lanes=lanes,
+                **({"memory_fraction": model_fraction(package)} if lanes > 1 else {}),
                 max_rows=int(settings.get("max_rows", 16)),
                 max_draft=int(settings.get("max_draft", 32)),
                 default_max_tokens=int(max_tokens),

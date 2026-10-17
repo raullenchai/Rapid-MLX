@@ -200,7 +200,8 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
     assert app.closed
 
 
-def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("lanes", [1, 4])
+def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 
     target = tmp_path / "target"
@@ -222,6 +223,7 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
             # a keyword was passed. The default runtime factory loses reply
             # cuts for short prompts.
             self.engine = kwargs["engine_factory"](model)
+            self.max_batch_size = kwargs["lanes"]
             self.scheduler = FakeScheduler()
 
     class LaneEngine:
@@ -255,6 +257,9 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(sys.modules, "tensorfold.server.app", app_module)
     monkeypatch.setitem(sys.modules, "tensorfold.engine.lane_engine", lane_module)
     monkeypatch.setitem(sys.modules, "tensorfold.engine.prefill_plan", plan_module)
+    budget = types.ModuleType("tensorfold.server.memory_budget")
+    budget.model_fraction = lambda _package: 0.7
+    monkeypatch.setitem(sys.modules, "tensorfold.server.memory_budget", budget)
     monkeypatch.setattr(adapter, "require_runtime", lambda: None)
     monkeypatch.setattr(adapter, "require_environment", lambda: None)
     monkeypatch.setattr(adapter, "validate_pair", lambda *_args: None)
@@ -265,7 +270,12 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path) -> None:
         served_name="served",
         context_window=1024,
         max_tokens=7,
+        lanes=lanes,
     )
+    assert loaded.get("parallel") == (lanes if lanes > 1 else None)
+    assert loaded["app"]["lanes"] == lanes
+    assert loaded["app"].get("memory_fraction") == (0.7 if lanes > 1 else None)
+    assert backend._executor._max_workers == lanes
     assert loaded["path"] == target
     assert loaded["drafter"] == str(drafter)
     assert loaded["drafter_bits"] == 4

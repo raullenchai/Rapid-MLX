@@ -154,7 +154,12 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
         served_name: str,
         context_window: int = 8192,
         max_tokens: int = 4096,
+        lanes: int = 1,
     ) -> TensorFoldGLM53Backend:
+        from .tensorfold_concurrency import request_lanes
+
+        # Match the shared loader contract without enabling unqualified lanes.
+        request_lanes("glm5.3-flash-tensorfold", lanes)
         require_runtime()
         require_environment()
         target = Path(target_dir)

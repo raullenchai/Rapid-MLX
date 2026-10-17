@@ -225,6 +225,7 @@ def _install_fake_tensorfold(monkeypatch, family, seen: dict) -> None:
         def __init__(self, model, tokenizer, **kwargs):
             seen.update(app_model=model, app_tokenizer=tokenizer, app=kwargs)
             self.scheduler = SimpleNamespace(stop=lambda: None)
+            self.max_batch_size = kwargs["lanes"]
 
     def choose(make_engine, steps, budget, tokens, window):
         make_engine(steps[0])
@@ -264,8 +265,9 @@ def _install_fake_tensorfold(monkeypatch, family, seen: dict) -> None:
 
 
 @pytest.mark.parametrize("paired", [False, True])
+@pytest.mark.parametrize("lanes", [1, 4])
 def test_loader_follows_the_upstream_serve_construction(
-    monkeypatch, tmp_path: Path, paired: bool
+    monkeypatch, tmp_path: Path, paired: bool, lanes: int
 ) -> None:
     profile = families.PROFILES[MTP_IDS[0]]
     if paired:
@@ -318,8 +320,9 @@ def test_loader_follows_the_upstream_serve_construction(
         served_name="served",
         context_window=4096,
         max_tokens=256,
+        lanes=lanes,
     )
-    expected = {"lane_kernels": "auto", "parallel": 1}
+    expected = {"lane_kernels": "auto", "parallel": lanes}
     if paired:
         expected.update(drafter=str(tmp_path / "drafter"), drafter_bits=8)
     assert seen["load_kwargs"] == expected
@@ -331,7 +334,9 @@ def test_loader_follows_the_upstream_serve_construction(
     assert seen["wired"] == seen["budget"] == 37 * 1024**3
     assert (seen["cache"], seen["fraction"]) == (8 * 1024**3, 0.7)
     app = seen["app"]
-    assert (app["max_rows"], app["max_draft"], app["lanes"]) == (12, 11, 1)
+    assert (app["max_rows"], app["max_draft"], app["lanes"]) == (12, 11, lanes)
+    assert app.get("memory_fraction") == (0.7 if lanes > 1 else None)
+    assert backend._executor._max_workers == lanes
     assert app["context_window"] == 4096 and app["fit_context"] is False
     assert app["default_max_tokens"] == 256
     assert app["enable_thinking"] is True

@@ -13,7 +13,7 @@ import queue
 import secrets
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
@@ -151,16 +151,68 @@ class TensorFoldRequestProvider:
         backend: TensorFoldQwen27Backend,
         *,
         audit_path: str | None = None,
+        close_cancellable: bool = False,
         sampling_defaults: dict[str, float | int] | None = None,
     ) -> None:
         self.backend = backend
+        self._close_cancellable = close_cancellable
         self._sampling_defaults = dict(sampling_defaults or {})
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
-        self.last_token_ids: list[int] = []
-        self.last_outputs: list[RequestOutput] = []
+        self._results = threading.local()
 
-    def _outputs(self, prompt: str, **kwargs: Any) -> Iterator[RequestOutput]:
+    @property
+    def last_token_ids(self) -> list[int]:
+        """Thread-local qualification diagnostics; never used to build a reply."""
+        return getattr(self._results, "tokens", [])
+
+    @last_token_ids.setter
+    def last_token_ids(self, value: list[int]) -> None:
+        self._results.tokens = value
+
+    @property
+    def last_outputs(self) -> list[RequestOutput]:
+        return getattr(self._results, "outputs", [])
+
+    @last_outputs.setter
+    def last_outputs(self, value: list[RequestOutput]) -> None:
+        self._results.outputs = value
+
+    def _outputs(
+        self, prompt: str, **kwargs: Any
+    ) -> Generator[RequestOutput, None, None]:
+        return self._track_iterator(self._job_outputs(prompt, **kwargs))
+
+    def _track_iterator(
+        self, iterator: Generator[Any, None, None]
+    ) -> Generator[Any, None, None]:
+        if not self._close_cancellable:
+            return iterator
+
+        def tracked() -> Generator[Any, None, None]:
+            try:
+                yield  # Prime cleanup without pulling the inner iterator.
+                # Own close explicitly; yield-from would also close the inner.
+                for item in iterator:
+                    yield item
+            finally:
+                try:
+                    iterator.close()
+                finally:
+                    with self.backend._lock:
+                        self.backend._provider_iterators.discard(wrapper)
+
+        wrapper = tracked()
+        with self.backend._lock:
+            if self.backend._closed:
+                raise RuntimeError("TensorFold backend is closed")
+            next(wrapper)
+            self.backend._provider_iterators.add(wrapper)
+        return wrapper
+
+    def _job_outputs(
+        self, prompt: str, **kwargs: Any
+    ) -> Generator[RequestOutput, None, None]:
         from tensorfold.engine.lane_engine import SuffixLookupProposer
         from tensorfold.server.cancellation import Cancellation
         from tensorfold.server.scheduler import ChatJob
@@ -225,9 +277,20 @@ class TensorFoldRequestProvider:
         decoded = ""
         incremental = _StableIncrementalText(tokenizer, app.tokenizer_lock)
         outputs: list[RequestOutput] = []
-        app.scheduler.submit(job)
+        registered = False
         try:
+            if self._close_cancellable:
+                # Registration and closing share one lock: close either sees
+                # this cancellation or submission is refused before it starts.
+                with self.backend._lock:
+                    if self.backend._closed:
+                        raise RuntimeError("TensorFold backend is closed")
+                    self.backend._active[request_id] = cancellation
+                    registered = True
+            app.scheduler.submit(job)
             while True:
+                if self._close_cancellable:
+                    cancellation.check()
                 try:
                     chunk = job.chunks.get(timeout=0.05)
                 except queue.Empty:
@@ -307,13 +370,21 @@ class TensorFoldRequestProvider:
             outputs.append(terminal)
         finally:
             cancellation.cancel()
+            if registered:
+                with self.backend._lock:
+                    self.backend._active.pop(request_id, None)
             self.last_token_ids = list(collected)
             self.last_outputs = outputs
             if self._audit_path:
                 encoded = ",".join(str(token) for token in collected).encode()
                 record = {
                     "request_id": request_id,
+                    "request_sha256": hashlib.sha256(
+                        json.dumps(kwargs.get("messages"), sort_keys=True).encode()
+                    ).hexdigest(),
                     "token_ids": collected,
+                    "prompt_tokens": len(prompt_ids),
+                    "cached_tokens": int(job.cached_tokens),
                     "token_sha256": hashlib.sha256(encoded).hexdigest(),
                 }
                 with (
@@ -324,28 +395,38 @@ class TensorFoldRequestProvider:
 
     def stream_generate(
         self, _model: Any, _processor: Any, prompt: str, **kwargs: Any
-    ) -> Iterator[ProviderChunk]:
-        for output in self._outputs(prompt, **kwargs):
-            if output.finished:
-                continue
-            yield ProviderChunk(
-                text=output.new_text,
-                token=(output.new_token_ids[0] if output.new_token_ids else -1),
-                generation_tokens=output.completion_tokens,
-                prompt_tokens=output.prompt_tokens,
-            )
+    ) -> Generator[ProviderChunk, None, None]:
+        return self._track_iterator(self._stream_chunks(prompt, **kwargs))
+
+    def _stream_chunks(
+        self, prompt: str, **kwargs: Any
+    ) -> Generator[ProviderChunk, None, None]:
+        iterator = self._outputs(prompt, **kwargs)
+        try:
+            for output in iterator:
+                if output.finished:
+                    continue
+                yield ProviderChunk(
+                    text=output.new_text,
+                    token=(output.new_token_ids[0] if output.new_token_ids else -1),
+                    generation_tokens=output.completion_tokens,
+                    prompt_tokens=output.prompt_tokens,
+                )
+        finally:
+            if self._close_cancellable:
+                iterator.close()
 
     def generate(
         self, _model: Any, _processor: Any, prompt: str, **kwargs: Any
     ) -> ProviderResult:
         text = ""
         prompt_tokens = 0
+        tokens: list[int] = []
         for output in self._outputs(prompt, **kwargs):
             text = output.output_text
             prompt_tokens = output.prompt_tokens
-        return ProviderResult(
-            text, list(self.last_token_ids), len(self.last_token_ids), prompt_tokens
-        )
+            tokens = output.output_token_ids
+        return ProviderResult(text, list(tokens), len(tokens), prompt_tokens)
 
 
 def validate_http_request(
@@ -518,26 +599,37 @@ def run_tensorfold_qwen27_server(
     supports_reasoning_budget: bool = False,
     **_ignored: Any,
 ) -> None:
-    """Load the pinned pair and serve the experimental serial text API."""
+    """Load the pinned profile; concurrency requires an explicit qualified opt-in."""
     if main_model_revision is not None or drafter_revision is not None:
         raise RuntimeError("tensorfold backend requires pinned local snapshot paths")
     if tool_call_parser is not None:
         raise RuntimeError("tensorfold backend does not support tool parsing")
+    from .tensorfold_concurrency import request_lanes
+
+    lanes = request_lanes(profile_id)
     backend = backend_class.load(
         main_model_repo,
         drafter_repo,
         served_name=served_model_name,
         max_tokens=default_max_tokens,
+        **({"lanes": lanes} if lanes > 1 else {}),
     )
     # Qualification-only token evidence. Unset by default so production
     # requests never persist generated token IDs.
     provider = TensorFoldRequestProvider(
         backend,
         audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
+        close_cancellable=lanes > 1,
         sampling_defaults=_model_sampling_defaults(main_model_repo),
     )
     from rapid_mlx.api.models import ModelInfo, SpeculativeDecodingInfo
     from rapid_mlx.speculative.dflash.server import _build_app
+
+    execution_policy = None
+    if lanes > 1:
+        from rapid_mlx.speculative.dflash.server import BackendExecutionPolicy
+
+        execution_policy = BackendExecutionPolicy(lanes, backend._executor)
 
     speculative_info = SpeculativeDecodingInfo(
         configured=True,
@@ -573,9 +665,10 @@ def run_tensorfold_qwen27_server(
         max_request_bytes=max_request_bytes,
         body_receive_timeout_seconds=body_receive_timeout_seconds,
         default_timeout=default_timeout,
-        # TensorFold exposes one serial lane. Keep admission aligned with that
-        # runtime capacity even when the shared CLI default is much larger.
-        max_concurrent_requests=_MAX_CONCURRENT_REQUESTS,
+        # Admission and execution capacity must agree with the runtime lanes.
+        # With the opt-in unset, keep the existing serial HTTP policy.
+        max_concurrent_requests=lanes,
+        execution_policy=execution_policy,
         cors_policy=cors_policy,
         tool_call_parser=None,
         reasoning_parser_name=reasoning_parser_name,
@@ -591,8 +684,7 @@ def run_tensorfold_qwen27_server(
             pool_worker=os.environ.get("RAPID_MLX_QUICKSILVER_POOL") == "1",
         ),
         backend_name=backend_label,
-        # One request holds the only lane, so a prompt past the model's
-        # window must be refused before it is prefilled.
+        # Refuse prompts past the model window before prefill.
         enforce_model_window=True,
         speculative_info=speculative_info,
         model_info=model_info,
@@ -634,7 +726,7 @@ def run_tensorfold_qwen27_server(
                     "tools": False,
                     "media": False,
                     "grammar": False,
-                    "max_concurrency": _MAX_CONCURRENT_REQUESTS,
+                    "max_concurrency": lanes,
                 },
             }
         },

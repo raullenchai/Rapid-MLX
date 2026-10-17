@@ -581,13 +581,19 @@ def glm_loader_runtime(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("lane_options", [{}, {"lanes": 1}])
 def test_glm_loader_uses_family_memory_and_lane_contracts(
-    glm_loader_runtime, tmp_path
+    glm_loader_runtime, tmp_path, lane_options
 ) -> None:
     adapter, seen = glm_loader_runtime.adapter, glm_loader_runtime.seen
     family = glm_loader_runtime.family
     backend = adapter.TensorFoldGLM53Backend.load(
-        str(tmp_path), "", served_name="glm", context_window=4096, max_tokens=256
+        str(tmp_path),
+        "",
+        served_name="glm",
+        context_window=4096,
+        max_tokens=256,
+        **lane_options,
     )
     assert seen["load_kwargs"] == {"mtp_drafts": 3}
     assert seen["released"] is True
@@ -609,6 +615,16 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     with pytest.raises(adapter.TensorFoldUnavailable, match="did not select"):
         adapter.TensorFoldGLM53Backend.load(str(tmp_path), "", served_name="glm")
     assert seen["events"] == ["stop"]
+
+
+@pytest.mark.parametrize("lanes", [2, 4, 8])
+def test_glm_loader_refuses_unqualified_lanes(glm_loader_runtime, tmp_path, lanes):
+    adapter, seen = glm_loader_runtime.adapter, glm_loader_runtime.seen
+    with pytest.raises(ValueError, match="has not qualified"):
+        adapter.TensorFoldGLM53Backend.load(
+            str(tmp_path), served_name="glm", lanes=lanes
+        )
+    assert seen == {}
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])

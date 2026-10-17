@@ -482,6 +482,26 @@ async def _send_json_error(
         logger.debug("DFlash %d send failed (client already disconnected)", status_code)
 
 
+@dataclass(frozen=True)
+class BackendExecutionPolicy:
+    """A backend-owned scheduler's HTTP capacity and thread-safe request executor.
+
+    Opting in bypasses the serial GPU lock. The backend owns the executor's
+    lifecycle and must keep all model work on its own scheduler thread.
+    """
+
+    capacity: int
+    executor: concurrent.futures.Executor
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.capacity, bool)
+            or not isinstance(self.capacity, int)
+            or self.capacity < 1
+        ):
+            raise ValueError("backend execution capacity must be a positive integer")
+
+
 class _DFlashStreamLease:
     """Keep DFlash resources owned until a cancelled worker is cleaned up."""
 
@@ -490,7 +510,12 @@ class _DFlashStreamLease:
         loop: asyncio.AbstractEventLoop,
         reservation: _DFlashAdmissionReservation | None,
         deadline: float | None,
+        execution_policy: BackendExecutionPolicy | None = None,
     ) -> None:
+        self._executor = (
+            execution_policy.executor if execution_policy else _dflash_executor
+        )
+        self._lock = None if execution_policy else _dflash_lock
         self._loop = loop
         self._reservation = reservation
         self._deadline = deadline
@@ -503,15 +528,20 @@ class _DFlashStreamLease:
         self._generator: Any | None = None
 
     async def __aenter__(self) -> _DFlashStreamLease:
+        if self._lock is None:
+            self.timed_out = (
+                self._deadline is not None and self._deadline <= self._loop.time()
+            )
+            return self
         if self._deadline is None:
-            await _dflash_lock.acquire()
+            await self._lock.acquire()
         else:
             remaining = self._deadline - self._loop.time()
             if remaining <= 0:
                 self.timed_out = True
                 return self
             try:
-                await asyncio.wait_for(_dflash_lock.acquire(), timeout=remaining)
+                await asyncio.wait_for(self._lock.acquire(), timeout=remaining)
             except asyncio.TimeoutError:
                 self.timed_out = True
                 return self
@@ -581,6 +611,17 @@ class _DFlashStreamLease:
 
     async def _close_generator_and_release(self) -> None:
         generator = self._generator
+        if (
+            self._lock is None
+            and inspect.isgenerator(generator)
+            and inspect.getgeneratorstate(generator)
+            in (inspect.GEN_CLOSED, inspect.GEN_CREATED)
+        ):
+            # A backend can join its executor during shutdown before deferred
+            # cleanup callbacks run. These states execute no generator body,
+            # so no executor submission or model work is needed to close them.
+            generator.close()
+            self._generator = generator = None
         if generator is not None:
 
             def _close_gen() -> None:
@@ -591,7 +632,7 @@ class _DFlashStreamLease:
                         "DFlash generator close raised; ignoring", exc_info=True
                     )
 
-            close_future = self._loop.run_in_executor(_dflash_executor, _close_gen)
+            close_future = self._loop.run_in_executor(self._executor, _close_gen)
             try:
                 # codex round-6 #2: bound the close wait. ``generator.close()``
                 # runs the generator's finally blocks (mlx-vlm GPU teardown),
@@ -638,8 +679,8 @@ class _DFlashStreamLease:
         if self._released:
             return
         self._released = True
-        if self._lock_acquired:
-            _dflash_lock.release()
+        if self._lock_acquired and self._lock is not None:
+            self._lock.release()
             self._lock_acquired = False
         if self._reservation is not None:
             self._reservation.release(force=True)
@@ -687,8 +728,13 @@ def _build_app(
     telemetry_model: str | None = None,
     runtime_status_extra: dict[str, Any] | None = None,
     enforce_model_window: bool = False,
+    execution_policy: BackendExecutionPolicy | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
+
+    A backend with its own scheduler may inject ``execution_policy``. Only
+    that opt-in delegates capacity and dispatch to the backend; omitted
+    policies retain the serial lock, worker and cleanup behavior.
 
     Per-app model state (``model``, ``processor``, ``runtime``,
     ``served_model_name``) is captured by closure. The security policy
@@ -703,6 +749,13 @@ def _build_app(
     multi-model deployment would still share that worker; one model
     can't run while another's generator is mid-step.
     """
+    if execution_policy is not None and (
+        stream_generate_fn is None or generate_fn is None
+    ):
+        raise ValueError(
+            "self-scheduled backends must provide both generation callbacks"
+        )
+
     # DFlash owns a separate FastAPI application, so it cannot inherit the
     # unified server's dependencies or middleware implicitly. Copy the
     # already-resolved security settings into the shared config singleton
@@ -789,7 +842,10 @@ def _build_app(
     # DFlash has one GPU worker and serializes generation with
     # ``_dflash_lock``. Bound its waiting room as well so a burst cannot
     # accumulate an unbounded number of requests and their parsed bodies.
-    admission = _DFlashAdmission(max_concurrent_requests, backend_name)
+    admission = _DFlashAdmission(
+        execution_policy.capacity if execution_policy else max_concurrent_requests,
+        backend_name,
+    )
     app.state.dflash_admission = admission
     # D-ANTHRO-VALIDATION F11: install the shared exception handlers so
     # Pydantic validation errors return the canonical
@@ -1345,6 +1401,7 @@ def _build_app(
                         stream_generate_fn=stream_generate_fn,
                         backend_name=backend_name,
                         strict_openai_streaming=strict_openai_streaming,
+                        execution_policy=execution_policy,
                     ),
                     reservation,
                 ),
@@ -1374,6 +1431,7 @@ def _build_app(
                 enable_thinking=effective_thinking,
                 generate_fn=generate_fn,
                 backend_name=backend_name,
+                execution_policy=execution_policy,
             )
         finally:
             reservation.release()
@@ -1532,6 +1590,7 @@ async def _stream_completion(
     stream_generate_fn: Any | None = None,
     backend_name: str = "DFlash",
     strict_openai_streaming: bool = False,
+    execution_policy: BackendExecutionPolicy | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream OpenAI-format chunks. Generation happens under the serial
     lock; chunks are forwarded as ``data: ...\\n\\n`` SSE events.
@@ -1611,7 +1670,8 @@ async def _stream_completion(
     if deadline is None and timeout and timeout > 0:
         deadline = loop.time() + timeout
     timed_out = object()
-    lease = _DFlashStreamLease(loop, admission_reservation, deadline)
+    lease = _DFlashStreamLease(loop, admission_reservation, deadline, execution_policy)
+    executor = execution_policy.executor if execution_policy else _dflash_executor
 
     # F2: decouple generation from socket writes. Generation runs in a
     # dedicated producer task that OWNS the lease (serial GPU lock +
@@ -1761,7 +1821,7 @@ async def _stream_completion(
             # remains.
             if deadline is not None and deadline - loop.time() <= 0:
                 return timed_out
-            future = loop.run_in_executor(_dflash_executor, func)
+            future = loop.run_in_executor(executor, func)
             lease.track_future(future, makes_generator=makes_generator)
             if deadline is None:
                 # F3: shield so a client cancellation during this bare
@@ -2203,6 +2263,7 @@ async def _non_stream_completion(
     enable_thinking: bool = False,
     generate_fn: Any | None = None,
     backend_name: str = "DFlash",
+    execution_policy: BackendExecutionPolicy | None = None,
 ) -> ChatCompletionResponse:
     """Run generation under the serial lock and enforce a safe deadline.
 
@@ -2250,12 +2311,15 @@ async def _non_stream_completion(
     # only derive from the relative ``timeout`` when a direct caller omitted it.
     if deadline is None and timeout and timeout > 0:
         deadline = loop.time() + timeout
+    serial_lock = None if execution_policy else _dflash_lock
+    executor = execution_policy.executor if execution_policy else _dflash_executor
     lock_acquired = False
     worker_future: asyncio.Future[Any] | None = None
 
     def _release_after_worker(_future: asyncio.Future[Any]) -> None:
         """Run in the event loop after a timed-out worker exits."""
-        _dflash_lock.release()
+        if serial_lock is not None:
+            serial_lock.release()
         admission_reservation.release(force=True)
 
     def _defer_worker_cleanup() -> None:
@@ -2275,11 +2339,12 @@ async def _non_stream_completion(
         remaining = _remaining()
         if remaining is not None and remaining <= 0:
             raise asyncio.TimeoutError
-        if remaining is None:
-            await _dflash_lock.acquire()
-        else:
-            await asyncio.wait_for(_dflash_lock.acquire(), timeout=remaining)
-        lock_acquired = True
+        if serial_lock is not None:
+            if remaining is None:
+                await serial_lock.acquire()
+            else:
+                await asyncio.wait_for(serial_lock.acquire(), timeout=remaining)
+            lock_acquired = True
 
         # mlx-vlm's ``generate`` blocks; offload to the dedicated
         # single-thread DFlash executor so every mlx-vlm call lands on
@@ -2305,7 +2370,7 @@ async def _non_stream_completion(
         remaining = _remaining()
         if remaining is not None and remaining <= 0:
             raise asyncio.TimeoutError
-        worker_future = loop.run_in_executor(_dflash_executor, _generate_safely)
+        worker_future = loop.run_in_executor(executor, _generate_safely)
         if remaining is None:
             result = await asyncio.shield(worker_future)
         else:
@@ -2313,19 +2378,19 @@ async def _non_stream_completion(
                 asyncio.shield(worker_future), timeout=remaining
             )
     except asyncio.TimeoutError as exc:
-        if lock_acquired and worker_future is not None:
+        if worker_future is not None:
             _defer_worker_cleanup()
         raise HTTPException(
             status_code=504,
             detail=f"{backend_name} request timed out after {_format_timeout_seconds(timeout_label)}.",
         ) from exc
     except asyncio.CancelledError:
-        if lock_acquired and worker_future is not None:
+        if worker_future is not None:
             _defer_worker_cleanup()
         raise
     finally:
-        if lock_acquired:
-            _dflash_lock.release()
+        if lock_acquired and serial_lock is not None:
+            serial_lock.release()
 
     if isinstance(result, Exception):
         logger.exception(
