@@ -34,3 +34,4 @@ content for a file-edit task.
 
 See Aider's [OpenAI-compatible endpoint guide](https://aider.chat/docs/llms/openai-compat.html)
 and [configuration guide](https://aider.chat/docs/config/aider_conf.html).
+
