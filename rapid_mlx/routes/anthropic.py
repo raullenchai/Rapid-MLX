@@ -1291,6 +1291,19 @@ async def create_anthropic_message(
                 finish_reason=output.finish_reason,
             )
 
+        if tool_calls and (
+            openai_request.tool_choice == "required"
+            or (
+                isinstance(openai_request.tool_choice, dict)
+                and openai_request.tool_choice.get("type") == "function"
+            )
+        ):
+            from .chat import _strip_truncated_forced_xml_call
+
+            final_content = _strip_truncated_forced_xml_call(
+                final_content, {call.function.name for call in tool_calls}
+            )
+
         openai_response = ChatCompletionResponse(
             model=cfg.model_name or openai_request.model,
             choices=[

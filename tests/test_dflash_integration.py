@@ -1699,6 +1699,72 @@ def test_chat_completions_parses_tool_calls(monkeypatch) -> None:
 
 
 @_skip_without_mlx_vlm
+@pytest.mark.parametrize("generation_tokens", [16, 3])
+def test_chat_completions_truncated_tool_after_reasoning(
+    monkeypatch, generation_tokens
+):
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    visible = 'Let me check.\n<tool_call>{"name": "get_weather", "argu'
+    monkeypatch.setattr(
+        mlx_vlm.prompt_utils, "apply_chat_template", lambda *a, **k: "prompt"
+    )
+    monkeypatch.setattr(
+        mlx_vlm,
+        "generate",
+        lambda *a, **k: SimpleNamespace(
+            text="<think>plan</think>" + visible,
+            prompt_tokens=8,
+            generation_tokens=generation_tokens,
+        ),
+    )
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(), kind="dflash", drafter_repo="test-drafter"
+        ),
+        served_model_name="test-model",
+        default_max_tokens=512,
+        cors_origins=["*"],
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+    )
+    response = TestClient(app, base_url="http://127.0.0.1").post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "max_tokens": 16,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    choice = response.json()["choices"][0]
+    content = choice["message"]["content"]
+    if generation_tokens == 16:
+        assert choice["finish_reason"] == "length"
+        assert content.strip() == "Let me check."
+        assert "<tool_call>" not in content
+    else:
+        assert choice["finish_reason"] == "stop"
+        assert content == visible
+
+
+@_skip_without_mlx_vlm
 def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
     """DFlash streaming emits structured deltas, not raw tool markup."""
     import json

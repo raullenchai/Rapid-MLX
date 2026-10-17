@@ -114,8 +114,17 @@ def _reply(
             {"name": t["function"]["name"], "input_schema": t["function"]["parameters"]}
             for t in tools
         ]
-        body["tool_choice"] = {"type": choice}
+        body["tool_choice"] = (
+            {"type": "tool", "name": choice["function"]["name"]}
+            if isinstance(choice, dict)
+            else {"type": choice}
+        )
     elif route == "responses":
+        if isinstance(choice, dict):
+            body["tool_choice"] = {
+                "type": "function",
+                "name": choice["function"]["name"],
+            }
         body["input"] = "Weather?"
         body["max_output_tokens"] = body.pop("max_tokens")
         body.pop("messages")
@@ -128,6 +137,39 @@ def _reply(
     response = http.post("/v1/" + path, json=body)
     assert response.status_code == 200, response.text
     if stream:
+        if route != "chat":
+            events = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: {")
+            ]
+            if route == "messages":
+                return (
+                    "".join(e.get("delta", {}).get("text", "") for e in events),
+                    [
+                        e["content_block"]
+                        for e in events
+                        if e.get("content_block", {}).get("type") == "tool_use"
+                    ],
+                    next(
+                        e["delta"]["stop_reason"]
+                        for e in events
+                        if e["type"] == "message_delta"
+                    ),
+                )
+            return (
+                "".join(
+                    e["delta"]
+                    for e in events
+                    if e["type"] == "response.output_text.delta"
+                ),
+                [
+                    e["item"]
+                    for e in events
+                    if e.get("item", {}).get("type") == "function_call"
+                ],
+                events[-1]["response"]["status"],
+            )
         choices = [
             c
             for line in response.text.splitlines()
@@ -912,11 +954,16 @@ def test_inches_after_json_example(client, parser, route):
 
 @pytest.mark.parametrize("parser", PARSERS)
 @pytest.mark.parametrize("route", ROUTES)
-def test_literal_opener_in_truncated_json_limitation(client, parser, route):
+@pytest.mark.parametrize("reasoning", [False, True])
+def test_literal_opener_in_truncated_json(client, parser, route, reasoning):
     client[1].tool_call_parser = parser
-    raw = '<tool_call>{"name":"get_weather","arguments":{"city":"<tool_call>'
-    # Last-opener cleanup deliberately leaves the outer payload visible.
-    assert _reply(client, route, raw)[0] == raw[: -len("<tool_call>")]
+    if reasoning:
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        client[1].reasoning_parser_name = "qwen3"
+        client[1].reasoning_parser = Qwen3ReasoningParser(None)
+    raw = 'Narration.\n<tool_call>{"name":"get_weather","arguments":{"city":"see <tool_call>'
+    assert _reply(client, route, raw)[0] == "Narration."
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -1062,3 +1109,151 @@ def test_markdown_tracks_closed_wrapper_contents(client, parser, prefix, kept):
     raw = prefix + "<tool_call>"
     cls = ToolParserManager.get_tool_parser(parser)
     assert cls.strip_trailing_tool_envelope(raw) == (raw if kept else prefix)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("reasoning", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_forced_json_stop_4663(client, route, reasoning, stream):
+    if reasoning:
+        from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        client[1].reasoning_parser_name = "qwen3"
+        client[1].reasoning_parser = Qwen3ReasoningParser(None)
+    client[1].tool_call_parser = "hermes"
+    raw = '<tool_call> {"name": "get_weather", "'
+    content, calls, _ = _reply(
+        client,
+        route,
+        raw,
+        finish_reason="stop",
+        stream=stream,
+        choice={"type": "function", "function": {"name": "get_weather"}},
+    )
+    assert calls
+    assert content == ""
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 200])
+def test_forced_json_stop_stream_4663(client, chunk_size):
+    client[1].tool_call_parser = "hermes"
+    raw = '<tool_call> {"name": "get_weather", "'
+    content, calls, finish = _reply(
+        client,
+        "chat",
+        raw,
+        stream=True,
+        finish_reason="stop",
+        chunks=[raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)],
+        choice={"type": "function", "function": {"name": "get_weather"}},
+    )
+    assert calls
+    assert finish == "tool_calls"
+    assert content == ""
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '<tool_call> {"name": "get_weather", "',
+        'Narration.\n<tool_call>{"name":"get_wea',
+        '<tool_call>{"name":"get_weather","arguments":{"text":"see <tool_call>',
+    ],
+)
+def test_forced_json_cleanup_evidence_4663(raw):
+    from rapid_mlx.routes.chat import _strip_truncated_forced_xml_call
+
+    assert _strip_truncated_forced_xml_call(raw, {"get_weather"}) == (
+        "Narration." if raw.startswith("Narration.") else ""
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("plain prose", "plain prose"),
+        (
+            'Use <tool_call> in prose.\n<tool_call>{"name":"get_weather","arguments":{"x":"a\\\\b\\" <tool_call>',
+            "Use <tool_call> in prose.\n",
+        ),
+        (
+            '<tool_call>{"name":"get_weather"}\n<tool_call>{"name":"get_weather","arguments":',
+            '<tool_call>{"name":"get_weather"}\n',
+        ),
+        (
+            '<tool_call>{"name":"get_weather"</tool_call>\n<tool_call>',
+            '<tool_call>{"name":"get_weather"</tool_call>\n',
+        ),
+        ('<tool_call>{"name":"get_weather","arguments":{"x":"<tool_call>"}}', None),
+    ],
+)
+def test_json_opener_state(raw, expected):
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
+        _strip_trailing_tool_envelope,
+    )
+
+    assert _strip_trailing_tool_envelope(raw) == (raw if expected is None else expected)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        "Narration.",
+        "<tool_call>",
+        "Use <tool_call> in prose.",
+        '<tool_call>{"name":"other","arguments":',
+        '<tool_call>{"name":"get_weather_extra","arguments":',
+        '<tool_call>{"name":"","arguments":',
+        '<tool_call>{"name":"other',
+        '<tool_call>{"name":"get_weather"}',
+        '<tool_call>{"name":"get_weather"</tool_call>',
+        '```json\n<tool_call>{"name":"get_weather","arguments":\n```',
+        'Example: `<tool_call>{"name":"get_weather","arguments":`',
+    ],
+)
+def test_forced_json_cleanup_preserves_nonmatching_4663(raw):
+    from rapid_mlx.routes.chat import _strip_truncated_forced_xml_call
+
+    assert _strip_truncated_forced_xml_call(raw, {"get_weather"}) == (raw or "")
+
+
+@pytest.mark.parametrize("terminal_lane", ["finish", "finalize"])
+@pytest.mark.parametrize("payload", ['{"name":"get_weather", "', '{"name":"get_wea'])
+def test_forced_terminal_json_replay_4663(client, monkeypatch, terminal_lane, payload):
+    from dataclasses import replace
+
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    raw = "<tool_call>" + payload
+    original_process = StreamingPostProcessor.process_chunk
+    original_finalize = StreamingPostProcessor.finalize
+
+    def process(self, output):
+        for event in original_process(self, output):
+            if terminal_lane == "finish" and event.type == "finish":
+                event = replace(event, content=raw)
+            yield event
+
+    def finalize(self):
+        yield from original_finalize(self)
+        if terminal_lane == "finalize":
+            yield StreamEvent(type="content", content=raw)
+
+    # Exercise terminal held content independently of parser chunk buffering.
+    monkeypatch.setattr(StreamingPostProcessor, "process_chunk", process)
+    monkeypatch.setattr(StreamingPostProcessor, "finalize", finalize)
+    client[1].tool_call_parser = "hermes"
+    content, calls, finish = _reply(
+        client,
+        "chat",
+        "",
+        stream=True,
+        finish_reason="stop",
+        choice={"type": "function", "function": {"name": "get_weather"}},
+    )
+    assert calls
+    assert finish == "tool_calls"
+    assert content == ""

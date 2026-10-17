@@ -2854,7 +2854,7 @@ def _strip_forced_tool_section(text: str | None) -> str:
 
 
 def _strip_truncated_forced_xml_call(text: str | None, tool_names: set[str]) -> str:
-    """Remove an unclosed XML tail only for an actually produced forced call.
+    """Remove an unclosed XML or JSON tail for an actually produced forced call.
 
     A line-start envelope alone may be a documentation example. The structured
     call's name supplies the evidence needed to discard a truncated prefill.
@@ -2862,6 +2862,24 @@ def _strip_truncated_forced_xml_call(text: str | None, tool_names: set[str]) -> 
     """
     if not text:
         return text or ""
+    from ..tool_parsers.qwen3coder_tool_parser import _strip_trailing_tool_envelope
+
+    cleaned = _strip_trailing_tool_envelope(text, tool_names)
+    if cleaned != text:
+        header = re.match(
+            r'<tool_call>\s*\{\s*"name"\s*:\s*"([^"\\]*)("|\Z)',
+            text[len(cleaned) :],
+        )
+        if (
+            header
+            and header.group(1)
+            and any(
+                name == header.group(1)
+                or (not header.group(2) and name.startswith(header.group(1)))
+                for name in tool_names
+            )
+        ):
+            return cleaned.rstrip()
     match = re.search(
         r"(?:^|\n)[ \t]*<tool_call>\s*<function=([^<>\s]+)>"
         r"(?:(?!</function>|</tool_call>).)*\Z",

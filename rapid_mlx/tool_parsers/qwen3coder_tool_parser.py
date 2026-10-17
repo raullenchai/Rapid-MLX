@@ -222,12 +222,43 @@ class _MarkdownCodeTracker:
 
 def _strip_trailing_tool_envelope(text: str, declared: set[str] | None = None) -> str:
     """Hide only an unfinished last envelope outside Markdown, in O(n)."""
-    opener = text.rfind("<tool_call>")
+    opener = -1
+    depth = 0
+    in_string = escaped = pending_payload = False
+    cursor = 0
+    # Only JSON payloads establish string context. Quotes in ordinary prose
+    # must not hide a later real opener; literal openers in arguments must.
+    while cursor < len(text):
+        char = text[cursor]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == "<" and text.startswith("<tool_call>", cursor):
+            opener = cursor
+            depth = 0
+            pending_payload = True
+            cursor += len("<tool_call>")
+            continue
+        elif pending_payload:
+            if not char.isspace():
+                pending_payload = False
+                depth = int(char == "{")
+        elif depth:
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            elif char == "<" and text.startswith("</tool_call>", cursor):
+                depth = 0
+        cursor += 1
     if opener == -1 or _MarkdownCodeTracker().inside(text, opener, buffered=True):
         return text
-    # Accepted limitation: an opener inside a truncated JSON string selects
-    # that inner opener, leaving the outer payload visible. No earlier JSON
-    # state is tracked; changing this rule requires a deliberate compatibility fix.
     payload = text[opener + len("<tool_call>") :].lstrip()
     if not payload or "<function=".startswith(payload):
         return text[:opener]
