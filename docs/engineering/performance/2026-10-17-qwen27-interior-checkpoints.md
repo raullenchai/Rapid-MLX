@@ -3,7 +3,8 @@
 Owner: Vector. Qualification: 2026-10-17, Mac Studio M3 Ultra, 256 GiB.
 Implementation: `54b5312451f67f351d4a805eb241d793f327479d`.
 
-**Verdict: works with native-token parity, with the extra cut limited to lane 1.**
+**Measured result: native-token parity with one lane. Current policy has an
+explicit pressure limitation and does not establish universal main equivalence.**
 Base: `7be1c00fe45fa0f7c2ee23804075f81f9d1a3aff`. Measurements started on
 `76b8296cd1cf3a009de045d719dd4823974afae2`. Main advanced during the
 campaign with release notes, an unrelated model profile, and a Desktop video fix.
@@ -67,54 +68,64 @@ that a single scheduler thread makes interleaved lifecycles atomic.
 
 ## Retention policy
 
-The adapter owns at most one optional cut. It considers the latest existing
-full-step grid start strictly before both the final message boundary and the
-last original scheduler selection, excluding all original selections. An aligned
-history boundary therefore does not hide an earlier eligible interior. The
-final supplied message must span at least two 2,048-token steps, the scheduler
-must already request retention, and the cut must be beyond the restored state.
-Admission requires space for the current store, all original selections, and one extra slot.
-Pinned entries count conservatively in this admission test.
+The adapter owns at most one fresh optional cut and one resumed cut. A compatible
+request restoring exactly the fresh cut moves it to resumed ownership without
+reinsertion or copying. A resumed cut survives incompatible prompts because it
+may represent real shortened history. It remains adapter-owned and releases
+first under pressure, before the fresh cut. Resuming a second fresh cut releases
+the previous resumed cut to bound ownership to one of each. Only a compatible
+scheduler selection at that length relinquishes ordinary ownership; a pinned
+entry is always protected. Missing entries clear stale ownership.
 
-After prefill, the wrapper checks the actual byte sizes of every pending
-snapshot plus the resident store. It keeps the extra only when the complete
-set fits the existing eight ordinary slots and 16 GiB budget. The runtime
-retains its three reserved system slots. The optional state is released before
-inserting original selections if slot or byte pressure would otherwise cause
-it to displace them. Release uses exact-prefix `peek` and public
-`match(..., take=True)` for the owned cut; it never chooses an arbitrary victim
-or removes a pinned system entry.
+Candidate selection uses the latest existing full-step grid start strictly
+before the final message boundary and last original selection, excluding all
+original selections. The final message must span two 2,048-token steps and the
+scheduler must already request retention. Admission counts the entire current
+store (including both owners and pinned entries), original selections, and one
+new optional slot. This conservatively counts replacements and pinned slots.
+Before native begin_stream, original-slot pressure releases resumed then fresh
+ownership. In retain()'s finally, actual pending snapshot bytes and slots are
+checked again before admission of the new extra, releasing resident owners in
+the same order. An extra that still cannot fit is removed from the pending list;
+original selections and interrupted-prefill progress remain intact.
 
-An incompatible prompt or a changed candidate releases the optional cut while
-it remains adapter-owned. When a compatible prompt resumes exactly from that
-cut, ownership is relinquished before prefill, without reinsertion or an extra
-copy. The entry then follows the store's normal eviction policy and cannot be
-deleted by a later adapter release. This protects shortened-history regeneration.
-Assistant markers do not prove chat history: raw completions can contain them.
+The scheduler consumes the wrapper generator with next/throw
+(`server/prompt_fill.py:174-181`), then calls _end_fill and _keep_checkpoints
+(`:195-224`). Preemption closes the generator before transfer (`:231-242`).
+Thus the hook's finally completes before the scheduler takes
+history_checkpoints and inserts snapshots (`server/scheduler.py:539-548`).
+Release uses public exact-length peek/match(take=True), checking pinning first;
+it neither chooses an arbitrary victim nor modifies native eviction priority.
 
-The pinned scheduler knows `job.history_len`, selects/floors checkpoints, and
+The public hook lacks authoritative history length: the scheduler selects and
 filters restored positions (`server/checkpoints.py:28-37`,
-`server/prompt_fill.py:97-99`). It constructs `LaneStream` without history length
-or a job reference and forwards only cache, restored count, and selections to
-`begin_stream` (`server/prompt_fill.py:103-125`,
-`engine/lane_engine.py:179-221`). There is no authoritative history signal in
-these public hook inputs. Consequently, a raw completion resuming the cut also
-relinquishes ownership. That residual state is bounded by ordinary store
-slots/bytes and eviction; it is neither pinned nor reinserted. The adapter owns
-at most one optional cut, but previously relinquished entries may coexist.
-Cancellation preserves runtime retry progress and original snapshots. A restored
-cut is already relinquished, so the former retry-ownership branch is unnecessary:
-retry progress starts at the restored count or later
-(`engine/family_prefill.py:165,192-197`). The store is reached
-through a weak reference so keeping the factory does not retain model caches
-after backend close. Administrative transfer lookups increment runtime hit
-counters, so reuse below comes from terminal provider `cached_tokens`, not the
-store's lookup hit counter. Optional releases and native evictions are reported
-separately.
+`server/prompt_fill.py:97-125`), then supplies a LaneStream without job/history
+(`engine/lane_engine.py:179-221`). Raw assistant markers cannot prove history.
+Resumed ownership resolves the two reported sequences but cannot promise equal
+reuse for every pressure sequence; the concrete remaining counterexample is
+recorded below. The store is reached through a weak reference and is not held
+by the engine factory after backend close. Multiple lanes use the native engine.
 
-The wrapper was reviewed for simplification; the marker inference and its
-metadata reinsertion were removed. Its checks cover distinct admission, release, history promotion, interruption, pinning,
-and lifecycle cases. The lane gate avoids adding a new synchronization mechanism.
+### Product request paths
+
+The CLI routes this backend to the HTTP provider
+(`rapid_mlx/cli.py:6949-6950,7016`). Its _prompt_boundaries renders messages
+without the generation suffix and computes shared system lengths
+(`rapid_mlx/speculative/tensorfold_qwen27_server.py:76-121`). The provider builds
+ChatJob(history_len=..., shared_prefix_lens=...) and submits directly to the
+scheduler (`:252-290`). **This product path produces scheduler selections.**
+The measured campaign invoked the CLI HTTP route; its saved command receipts
+and public Scheduler.submit audits record nonzero history/shared lengths.
+
+The separate TensorFoldQwen27Backend.stream convenience API calls
+app.chat([], prompt=list(prompt_ids))
+(`rapid_mlx/speculative/tensorfold_qwen27.py:552-554`). Runtime
+`server/prompts.py:15-17,72-79` returns a RenderedPrompt with default history zero
+for explicit prompt requests; `server/app.py:317` sets system_len to zero.
+Consequently choose_checkpoints selects nothing for that cold path, and this
+adapter admits no optional cut. Matching main there means boundary-only native
+behavior, with no claimed interior-edit acceleration. These statements apply
+to the qualified pinned runtime, not to a different message-based caller.
 
 ## Measurement method
 
@@ -247,14 +258,18 @@ Final retained/MLX peak values are medians across fresh cache-on processes; maxi
 | long-system-cold | 7970 | 0 → 0 | 26.123 → 25.597 | 25.862 → 25.449 | 1/1 / 1/1 |
 | long-system-edit | 7970 | 6144 → 6144 | 6.588 → 6.579 | 26.580 → 26.488 | 1/1 / 1/1 |
 
-The guarded policy intentionally releases the S3 interior on intervening short turns; S4 remains a miss. This is the expected difference from the original two-cut pilot, which held interiors from several histories.
+The measured implementation released the S3 interior on intervening short turns;
+S4 was a miss. The later offline ownership changes can preserve it, as detailed
+below; these timings describe the measured implementation.
 
 | Original matrix, cache on | Final evictions | Final retained GiB | Maximum retained GiB | MLX peak GiB | Optional releases |
 |---|---|---|---|---|---|
 | before | 0 | 7.7138 | 7.7138 | 26.6771 | 0 |
 | fixed | 0 | 7.7138 | 7.7138 | 26.4421 | 3 |
 
-At the 6,144-token retained cut the observed snapshot charge is 661,403,648 bytes (0.6160 GiB). The adapter retains at most one optional state; later ordinary boundaries and existing system states retain their own runtime accounting.
+At the 6,144-token retained cut the observed snapshot charge is 661,403,648 bytes (0.6160 GiB). The measured adapter retained at most one optional state. Current ownership can
+retain one fresh plus one resumed state; later ordinary boundaries and system
+states retain native accounting. No new peak-memory measurement is claimed.
 
 Across paired mixed phases, the largest observed fixed-minus-before increase is 0.6160 GiB charged retained bytes, 0.7139 GiB MLX active, and 0.3645 GiB cumulative MLX peak. These are phase comparisons, distinct from each fresh process's eventual peak above.
 
@@ -281,8 +296,9 @@ Across paired mixed phases, the largest observed fixed-minus-before increase is 
 
 This is latest-message retention, not a promise to keep interiors in every
 conversation. Unresumed optional cuts are released on incompatible turns. Cuts
-used to resume become ordinary eviction-managed entries; later edits may reuse
-them while resident. Earlier-message edits can still miss. Edits before the
+used to resume remain owned across incompatible turns, but are released first
+under pressure or when another fresh cut resumes; later edits may reuse them
+while resident. Earlier-message edits can still miss. Edits before the
 retained tail cut also miss. System-message reuse remains controlled by the existing system
 checkpoints. The measured byte cost is workload-specific and residency remains
 conditional. Multiple lanes preserve boundary-only retention and do not gain
@@ -440,3 +456,48 @@ check pass for all 12 TensorFold Python files. The pinned Python 3.11 mypy
 budget passes with 839 grandfathered errors across 161 files and no growth.
 Both restored-cut regression variants fail against the reviewed adapter and
 pass with the correction. No coverage exclusions or budget changes were added.
+
+### Round-3 resumed ownership correction
+
+The former relinquish-on-resume policy allowed an unowned surplus entry to
+trigger native eviction of the original 7,950-token boundary. With resumed
+ownership, the real-plan/store/choose_checkpoints regression now matches main:
+opening 7,960 tokens, same-length edit at 7,900, six unrelated 1,000-token
+chats, then original regeneration yields 7,950 reused tokens and zero evictions
+on both. The same test covers byte pressure and a raw completion containing an
+assistant marker. All four variants fail against d98c3f9f2 (one eviction and
+6,144 reuse) and pass after this change. Shortened-history probe-2 still
+regenerates from 6,144 on both after one unrelated chat without pressure. The
+aligned 8,202-token boundary still admits 6,144. These use the pinned native
+plan/store/selection function with scalar snapshot placeholders, without models.
+
+**Remaining compatibility limit:** HEAD can reuse less than main. A runtime-backed
+regression first stores a 990-token history and its 1,990-token continuation
+(creating-prompt lengths 1,000 and 2,000), then the 7,960-token opening, then its
+6,210-token shortened chat with history 6,200 (floored to 6,144), then five
+unrelated short chats. On pressure main preferentially evicts the older
+superseded 990-token entry (`server/checkpoints.py:275-283`); HEAD releases its
+ambiguous resumed 6,144-token cut. Shortened-chat regeneration then reuses
+**6,144 on main, zero on HEAD**. Also, resuming a second fresh cut releases the
+previous resumed cut even without store pressure to enforce the one-resumed
+limit. That too can lose real history. The hook has no authoritative signal to
+promote either ambiguous state. This requested policy therefore fixes the
+reported oscillation sequences but does **not** satisfy the locked contract's
+universal no-loss requirement. It is not a merge-ready equivalence claim.
+
+Round-3 replay compares d98c3f9f2 with this implementation over 22 files / 436
+requests. 132 request records differ in eight files; 14 files are identical.
+Candidates, original selections, selected/retained snapshots and every reuse
+count are unchanged. Differences: resumed ownership 44 records, releases 88,
+native evictions 86, inventories/bytes 32. Byte deltas are +118,947,840 on 24,
++136,052,736 on six, and -661,403,648 on two requests. These are policy replay
+results, not fresh latency/parity measurements. The old d98c3f9f2 replay already
+differs from the measured fixed run at S4 (6,144 versus measured zero); this is
+the documented round-2 change, not a new replay discrepancy. Full output:
+`review/round3-fixture-equivalence.json`; reproducible script:
+`review/round3_fixture_equivalence.py`, both under the existing scratch root.
+
+Fresh round-3 checks: 238 TensorFold tests pass; diff-cover against origin/main
+reports 78 changed executable lines, zero missing, 100%. Ruff check and format check pass for all 12 TensorFold Python files. Pinned
+Python 3.11 mypy reports 839 grandfathered errors across 161 files, no growth. Historical check counts
+above belong to their respective implementations. No models or servers ran.
