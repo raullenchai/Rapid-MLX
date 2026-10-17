@@ -3,8 +3,9 @@
 Owner: Vector. Qualification: 2026-10-17, Mac Studio M3 Ultra, 256 GiB.
 Implementation: `54b5312451f67f351d4a805eb241d793f327479d`.
 
-**Measured result: native-token parity with one lane. Current policy has an
-explicit pressure limitation and does not establish universal main equivalence.**
+**Measured result: native-token parity with one lane. The current history-aware
+policy has model-free replay and pressure-regression evidence; timings below
+belong to the measured implementation above.**
 Base: `7be1c00fe45fa0f7c2ee23804075f81f9d1a3aff`. Measurements started on
 `76b8296cd1cf3a009de045d719dd4823974afae2`. Main advanced during the
 campaign with release notes, an unrelated model profile, and a Desktop video fix.
@@ -68,43 +69,38 @@ that a single scheduler thread makes interleaved lifecycles atomic.
 
 ## Retention policy
 
-The adapter owns at most one fresh optional cut and one resumed cut. A compatible
-request restoring exactly the fresh cut moves it to resumed ownership without
-reinsertion or copying. A resumed cut survives incompatible prompts because it
-may represent real shortened history. It remains adapter-owned and releases
-first under pressure, before the fresh cut. Resuming a second fresh cut releases
-the previous resumed cut to bound ownership to one of each. Only a compatible
-scheduler selection at that length relinquishes ordinary ownership; a pinned
-entry is always protected. Missing entries clear stale ownership.
+The adapter owns at most one optional cut. A compatible request restoring that
+exact cut promotes it only if the cold scheduler would have retained it:
+`0 < h < len(ids)` and `prompt_chunks(ids).floor(h) == len(owned)`. The
+adapter-owned registry supplies the submitted job's actual history length;
+missing IDs mean zero. With no cached state and no last prompt,
+`choose_checkpoints(h, 0, None, ids)` selects only valid h
+(`server/checkpoints.py:28-37`); `server/prompt_fill.py:97-99` floors and filters
+those positions. Raw assistant markers have no role in promotion.
 
-Candidate selection uses the latest existing full-step grid start strictly
-before the final message boundary and last original selection, excluding all
-original selections. The final message must span two 2,048-token steps and the
-scheduler must already request retention. Admission counts the entire current
-store (including both owners and pinned entries), original selections, and one
-new optional slot. This conservatively counts replacements and pinned slots.
-Before native begin_stream, original-slot pressure releases resumed then fresh
-ownership. In retain()'s finally, actual pending snapshot bytes and slots are
-checked again before admission of the new extra, releasing resident owners in
-the same order. An extra that still cannot fit is removed from the pending list;
-original selections and interrupted-prefill progress remain intact.
+Promotion replaces the exact resident key through public `store.insert`, using
+its existing cache and the current prompt. This copies no arrays and replaces
+rather than double-charges the entry (`server/checkpoints.py:232-245`). It also
+sets the creation length (`born`) that main would store: merely relinquishing
+ownership leaves the old length, which changes preferential eviction
+(`:275-283`). Native match already refreshes recency/last_prompt (`:192-210`).
+Pinned entries are protected; missing entries clear stale ownership.
 
-The scheduler consumes the wrapper generator with next/throw
-(`server/prompt_fill.py:174-181`), then calls _end_fill and _keep_checkpoints
-(`:195-224`). Preemption closes the generator before transfer (`:231-242`).
-Thus the hook's finally completes before the scheduler takes
-history_checkpoints and inserts snapshots (`server/scheduler.py:539-548`).
-Release uses public exact-length peek/match(take=True), checking pinning first;
-it neither chooses an arbitrary victim nor modifies native eviction priority.
+Every other restored cut remains optional and releases on an incompatible
+prompt or when a later native boundary supersedes it. There is no second resumed owner. Candidate selection uses the latest
+existing full-step grid start strictly before the final message boundary and
+last original selection, excluding all original selections. The final message
+must span two 2,048-token steps and the scheduler must already request retention.
+Admission conservatively counts all current entries, original selections, and
+one extra slot. Before begin_stream and again in the generator's finally,
+slot/byte pressure releases the optional resident before native insertion.
+Pending snapshots use their actual charged sizes. An extra that cannot fit is
+removed; original/system and interrupted-prefill progress remain intact.
 
-The public hook lacks authoritative history length: the scheduler selects and
-filters restored positions (`server/checkpoints.py:28-37`,
-`server/prompt_fill.py:97-125`), then supplies a LaneStream without job/history
-(`engine/lane_engine.py:179-221`). Raw assistant markers cannot prove history.
-Resumed ownership resolves the two reported sequences but cannot promise equal
-reuse for every pressure sequence; the concrete remaining counterexample is
-recorded below. The store is reached through a weak reference and is not held
-by the engine factory after backend close. Multiple lanes use the native engine.
+Release uses public exact-length peek/match(take=True), checking pinning first.
+The scheduler exhausts/throws/closes the wrapper before transferring snapshots
+(`server/prompt_fill.py:174-224,231-242`; `server/scheduler.py:539-548`). The
+store getter remains weak; no runtime source or private method is replaced.
 
 ### Product request paths
 
@@ -113,13 +109,17 @@ The CLI routes this backend to the HTTP provider
 without the generation suffix and computes shared system lengths
 (`rapid_mlx/speculative/tensorfold_qwen27_server.py:76-121`). The provider builds
 ChatJob(history_len=..., shared_prefix_lens=...) and submits directly to the
-scheduler (`:252-290`). **This product path produces scheduler selections.**
+scheduler. Before submission it registers `job_id -> history_len`, removing
+the entry in finally on completion, cancellation, submission failure, or worker
+error. Runtime `server/prompt_fill.py:104-105` constructs
+`LaneStream(stream_id=job.job_id)` and `:124-125` passes it to begin_stream.
+**This product path supplies authoritative history to the hook.**
 The measured campaign invoked the CLI HTTP route; its saved command receipts
 and public Scheduler.submit audits record nonzero history/shared lengths.
 
 The separate TensorFoldQwen27Backend.stream convenience API calls
 app.chat([], prompt=list(prompt_ids))
-(`rapid_mlx/speculative/tensorfold_qwen27.py:552-554`). Runtime
+(in `rapid_mlx/speculative/tensorfold_qwen27.py`). Runtime
 `server/prompts.py:15-17,72-79` returns a RenderedPrompt with default history zero
 for explicit prompt requests; `server/app.py:317` sets system_len to zero.
 Consequently choose_checkpoints selects nothing for that cold path, and this
@@ -259,47 +259,55 @@ Final retained/MLX peak values are medians across fresh cache-on processes; maxi
 | long-system-edit | 7970 | 6144 → 6144 | 6.588 → 6.579 | 26.580 → 26.488 | 1/1 / 1/1 |
 
 The measured implementation released the S3 interior on intervening short turns;
-S4 was a miss. The later offline ownership changes can preserve it, as detailed
-below; these timings describe the measured implementation.
+S4 was a miss. The current policy also misses there, matching main; these timings describe
+the measured implementation.
 
 | Original matrix, cache on | Final evictions | Final retained GiB | Maximum retained GiB | MLX peak GiB | Optional releases |
 |---|---|---|---|---|---|
 | before | 0 | 7.7138 | 7.7138 | 26.6771 | 0 |
 | fixed | 0 | 7.7138 | 7.7138 | 26.4421 | 3 |
 
-At the 6,144-token retained cut the observed snapshot charge is 661,403,648 bytes (0.6160 GiB). The measured adapter retained at most one optional state. Current ownership can
-retain one fresh plus one resumed state; later ordinary boundaries and system
-states retain native accounting. No new peak-memory measurement is claimed.
+At the 6,144-token retained cut the observed snapshot charge is 661,403,648 bytes
+(0.6160 GiB). The current adapter retains at most one optional state; promoted
+history and system states use native accounting. No new peak-memory measurement
+is claimed.
 
 Across paired mixed phases, the largest observed fixed-minus-before increase is 0.6160 GiB charged retained bytes, 0.7139 GiB MLX active, and 0.3645 GiB cumulative MLX peak. These are phase comparisons, distinct from each fresh process's eventual peak above.
 
 ## Model-free verification
 
-- `tests/test_tensorfold_*`: 228 passed after the offline review corrections. The lane-factory regression fails for
-  lanes 2/4/8 before the decision and passes afterward; lane 1 passes in both.
-  The existing guard regressions cover full slots, actual pending bytes,
-  pressure release, compatible edits, short turns, history promotion, pinning,
-  cancellation/retry progress, cache-off forwarding, and factory lifetime.
-  A focused full-slot factory replay fails against the rebased two-cut pilot
-  (`[4096, 6144, 7950]` instead of `[7950]`) and passes against this guard.
-- Fresh coverage of all `tests/test_tensorfold_*.py` with
-  `--cov=rapid_mlx.speculative.tensorfold_qwen27`, followed by
-  `diff-cover --compare-branch=origin/main --fail-under=100`: 75 changed
-  executable lines, zero missing, 100%.
-- Ruff check and format check pass across all 12 TensorFold source/test files.
-- `scripts/check_mypy_error_budget.py` passes in its pinned Python 3.11
-  environment: 839 grandfathered diagnostics across 161 files, no growth. The
-  touched adapter has zero errors and no baseline allocation. No mypy budget
-  or coverage exemptions were added.
+The real pinned plan, store, and choose_checkpoints cover shortened-history
+probe-2, same-length-edit probe-3 under slot/byte pressure, raw markers with
+history zero, the aligned 8,202-token boundary, and the former superseded-history
+counterexample. Probe-2 regenerates 6,144 on both main and the hook; probe-3
+regenerates 7,950 with zero evictions on both. With an older superseded 990-token
+entry, shortened history still regenerates 6,144 on both under pressure.
+The latter fails against previous HEAD (zero reuse). A further continuation
+regression catches stale creation metadata: without refreshing born, native
+pressure yields 7,950 on main versus 6,144 on the hook; promotion now preserves
+7,950 on both with identical native eviction counts.
+
+Registry tests check submission sees the exact job ID/history pair and cleanup
+on success, generator close, worker error, and submit error. Missing IDs default
+to zero. History-floor tests include zero, before/exactly at/after the cut, and
+invalid prompt-end/out-of-range history. Existing tests preserve pinning,
+interrupted prefill, byte/slot headroom, cache-off, lane gating and weak lifetime.
+No new coverage exemptions or mypy budget allocations are used.
+
+Current verification: 241 TensorFold tests pass; fresh diff-cover against
+origin/main is 100% with zero missing changed lines for both adapter files.
+Ruff check/format pass across all 12 TensorFold Python files. The pinned
+Python 3.11 mypy budget remains 839 grandfathered errors across 161 files,
+with no growth.
 
 ## Limits
 
 This is latest-message retention, not a promise to keep interiors in every
-conversation. Unresumed optional cuts are released on incompatible turns. Cuts
-used to resume remain owned across incompatible turns, but are released first
-under pressure or when another fresh cut resumes; later edits may reuse them
-while resident. Earlier-message edits can still miss. Edits before the
-retained tail cut also miss. System-message reuse remains controlled by the existing system
+conversation. Optional cuts, including raw or edited resumes without a matching
+history floor, release on incompatible turns, when a later native boundary
+supersedes them, or first under pressure. Promoted
+history has native eviction behavior. Earlier-message edits and edits before the
+retained tail cut can still miss. System-message reuse remains controlled by the existing system
 checkpoints. The measured byte cost is workload-specific and residency remains
 conditional. Multiple lanes preserve boundary-only retention and do not gain
 this interior-edit speedup. No multi-lane interior-cut performance claim is made.
@@ -376,130 +384,43 @@ interrupted before inference to bypass a spurious large-download confirmation;
 the successful campaign uses `RAPID_MLX_AUTO_PULL=1` together with offline mode
 and disabled downloads. That interruption is excluded from measurement.
 
-## Offline review corrections
+## Offline policy evidence
 
-Two model-free regressions failed against the reviewed implementation and pass
-with the corrections. The real pinned `PrefillPlan` for 8,202 tokens with message
-openers at 0, 33, and 8,192 produces starts `[0, 2048, 4096, 6144, 8192]`.
-With original selection `[8192]`, the adapter now retains 6,144 as well; editing
-token 7,900 resumes 6,144. A raw completion extending that optional prefix with
-56 tokens, an assistant marker, and eight tokens has no scheduler selection.
-The round-1 correction kept this state optional; round 2 supersedes that policy
-with conservative relinquishment on resume, as described above.
+No models were loaded or servers started for the history-registry correction.
+The 22 saved campaign files (436 requests) are replayed with audited token IDs,
+history/shared lengths, the pinned real plan/store/choose_checkpoints, and scalar
+snapshots sized `258750464 + 65536 * prefix_length` bytes, verified against every
+recorded snapshot size. Replay compares the native main-equivalent baseline,
+previous HEAD `2ff83ddb2`, and the current adapter. It checks policy decisions,
+retained inventories including creation metadata, bytes, and reuse; it does not
+remeasure latency or output parity. Historical model tables remain unchanged.
 
-The round-1 offline replay compared the reviewed and corrected hooks over all 436
-recorded requests in 22 rebased campaign files, using their audited prompt token
-IDs/history/shared lengths, the real pinned plan/store/selection function, and
-scalar snapshots. Snapshot sizes follow `258750464 + 65536 * prefix_length`
-bytes, verified against every recorded snapshot size. The old-hook replay
-matches every recorded fixed-run reuse count. This checks retention decisions;
-it does not remeasure latency or execute model inference.
+The aligned thinking prompt admits 6,144 as well as 8,192; that admission was
+never remeasured. Its next short request releases the optional state. Historical
+S4 measured zero reuse, equal to main and the current policy. Previous HEAD
+reused 6,144 there by preserving surplus across intervening conversations.
+These corrections have replay evidence only.
 
-The fixtures are **not all equivalent**: `setup-thinking` in each of
-`before-on-0-requests.json` and `fixed-on-0-requests.json` changes candidate
-8,192 to 6,144 and selected/retained lengths `[8192]` to `[6144, 8192]`.
-Retained bytes increase from 3,945,207,808 to 4,606,611,456 for that request.
-The next request, `S5a`, releases the optional cut and restores the previous
-inventory/bytes. Its cumulative release counter, and those of `S6`,
-`near-start`, `long-system-cold`, and `long-system-edit`, increase by one in
-both files. All replayed reuse counts are unchanged. The other 20 files have
-identical candidate/admission, ownership, inventory, bytes, and release results.
-Removing only the marker heuristic changed none of those 436 requests. Round 2
-fixes the resulting shortened-history ownership gap; the current replay below
-supersedes the round-1 ownership and release results.
+Reproduce locally with the existing scratch environment:
+`PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /private/tmp/tensorfold-qwen27-cuts-pilot/venv/bin/python /private/tmp/tensorfold-qwen27-cuts-pilot/review/round4_fixture_equivalence.py`.
+Full decisions and differences: `review/round4-fixture-equivalence.json` under
+the same scratch root. These files are subject to host retention.
 
-No models were loaded or servers started for these corrections. The changed
-`setup-thinking` admission was not remeasured: it requests an existing grid
-start, the same mechanism whose token parity the S3 and mixed-edit runs
-verified, it fits the slot and byte budget, and the next request releases it
-with reuse unchanged. Its latency and parity for that request are therefore
-inferred, not measured.
+Current replay: versus previous HEAD, 48 request records differ in eight files;
+14 files are identical. No request reuses less than main. S4 in the two
+single-conversation files changes 6,144 to zero versus previous HEAD, matching
+main and the original measurement. Every other reuse count is unchanged.
+Original selections, candidates, and native eviction counts are unchanged.
+Selected/retained snapshots gain 6,144 for S4 and near-start in those two files
+(four records). Inventories change on 34 records; charged bytes decrease by
+661,403,648 on 32 records. Ownership fields change on 12 records, removed resumed
+ownership on 44, cumulative releases on 40.
 
-### Round-2 ownership correction and replay
-
-The real scheduler regression covers both history length 6,200 and raw history
-length zero with identical marker-containing prompts. The shortened chat now
-resumes 6,144, relinquishes ownership with an empty scheduler selection, survives
-an unrelated conversation, and regenerates from 6,144, equal to main. Main's cold
-shortened request selects/stores 6,144; the hooked request already has that state.
-The runtime-unreachable test passing selection `(6144,)` alongside restored
-count 6,144 was removed. A cold raw request covers the empty-selection delegate.
-
-A fresh old-versus-new replay compares round-2 reviewed commit `c18564a19` with
-this correction: 22 files, 436 requests, 132 request records differ across eight
-files; 14 files are identical. Every candidate and original scheduler selection
-is unchanged. Reuse improves from zero to 6,144 for `S4` in
-`before-on-0-requests.json` and `fixed-on-0-requests.json`; all other restored
-counts are identical, with no reuse regression. For `S4` and `near-start` in
-those two files, selected/retained snapshots change from `[6144, 7951]` to
-`[7951]`. The existing unowned entry prevents a redundant optional copy.
-
-Differences by field: ownership 12 requests, cumulative releases 124, inventory
-66, retained bytes 64, selected/retained snapshots four, restored counts two.
-The six `multi-mixed-k4-{before,fixed}-on-{0,1,2}-requests.json` files each have
-17 differing records; the two single-conversation files each have 15. Byte
-deltas are +661,403,648 on 34 requests, -118,947,840 on 24, and -136,052,736 on
-six; all other byte totals match. Extra ordinary resident state, including raw
-completions, is an explicit limit of conservative relinquishment. The old replay
-still matches every recorded fixed-run reuse count. Historical common-inventory
-and latency/parity results above describe the measured implementation; these
-ownership changes have model-free replay evidence only, with no new model run.
-
-Reproduce from the worktree with the existing scratch environment:
-`PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /private/tmp/tensorfold-qwen27-cuts-pilot/venv/bin/python /private/tmp/tensorfold-qwen27-cuts-pilot/review/round2_fixture_equivalence.py`.
-The full per-request differences are in `review/round2-fixture-equivalence.json`
-under that scratch directory. No models were loaded or servers started.
-
-Round-2 verification: all 229 `tests/test_tensorfold_*.py` tests pass; fresh
-changed-line coverage is 75 lines, zero missing, 100%. Ruff check and format
-check pass for all 12 TensorFold Python files. The pinned Python 3.11 mypy
-budget passes with 839 grandfathered errors across 161 files and no growth.
-Both restored-cut regression variants fail against the reviewed adapter and
-pass with the correction. No coverage exclusions or budget changes were added.
-
-### Round-3 resumed ownership correction
-
-The former relinquish-on-resume policy allowed an unowned surplus entry to
-trigger native eviction of the original 7,950-token boundary. With resumed
-ownership, the real-plan/store/choose_checkpoints regression now matches main:
-opening 7,960 tokens, same-length edit at 7,900, six unrelated 1,000-token
-chats, then original regeneration yields 7,950 reused tokens and zero evictions
-on both. The same test covers byte pressure and a raw completion containing an
-assistant marker. All four variants fail against d98c3f9f2 (one eviction and
-6,144 reuse) and pass after this change. Shortened-history probe-2 still
-regenerates from 6,144 on both after one unrelated chat without pressure. The
-aligned 8,202-token boundary still admits 6,144. These use the pinned native
-plan/store/selection function with scalar snapshot placeholders, without models.
-
-**Remaining compatibility limit:** HEAD can reuse less than main. A runtime-backed
-regression first stores a 990-token history and its 1,990-token continuation
-(creating-prompt lengths 1,000 and 2,000), then the 7,960-token opening, then its
-6,210-token shortened chat with history 6,200 (floored to 6,144), then five
-unrelated short chats. On pressure main preferentially evicts the older
-superseded 990-token entry (`server/checkpoints.py:275-283`); HEAD releases its
-ambiguous resumed 6,144-token cut. Shortened-chat regeneration then reuses
-**6,144 on main, zero on HEAD**. Also, resuming a second fresh cut releases the
-previous resumed cut even without store pressure to enforce the one-resumed
-limit. That too can lose real history. The hook has no authoritative signal to
-promote either ambiguous state. This requested policy therefore fixes the
-reported oscillation sequences but does **not** satisfy the locked contract's
-universal no-loss requirement. It is not a merge-ready equivalence claim.
-
-Round-3 replay compares d98c3f9f2 with this implementation over 22 files / 436
-requests. 132 request records differ in eight files; 14 files are identical.
-Candidates, original selections, selected/retained snapshots and every reuse
-count are unchanged. Differences: resumed ownership 44 records, releases 88,
-native evictions 86, inventories/bytes 32. Byte deltas are +118,947,840 on 24,
-+136,052,736 on six, and -661,403,648 on two requests. These are policy replay
-results, not fresh latency/parity measurements. The old d98c3f9f2 replay already
-differs from the measured fixed run at S4 (6,144 versus measured zero); this is
-the documented round-2 change, not a new replay discrepancy. Full output:
-`review/round3-fixture-equivalence.json`; reproducible script:
-`review/round3_fixture_equivalence.py`, both under the existing scratch root.
-
-Fresh round-3 checks: 238 TensorFold tests pass; diff-cover against origin/main
-reports 85 changed executable lines, zero missing, 100% after the implementation
-commit (the pre-commit combined diff counted 78). Ruff check and format check
-pass for all 12 TensorFold Python files. Pinned Python 3.11 mypy reports 839
-grandfathered errors across 161 files, no growth. Historical check counts
-above belong to their respective implementations. No models or servers ran.
+Against the native baseline, eight interior-edit requests improve zero to
+6,144, with no reuse regression. Optional state adds 661,403,648 bytes on 64
+request records. All common K=4 follow-up/regenerate inventories, charged bytes,
+reuse, and native eviction counts equal main after every operation. Replay
+counts administrative releases separately. Previous HEAD already disagrees
+with the historical fixed measurement only at S4; this is accounted for above.
+The policy is tested with scalar caches; full scheduler memory admission and
+model execution are not requalified by this replay.

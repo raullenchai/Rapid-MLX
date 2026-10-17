@@ -341,6 +341,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
 
         def submit(self, job):
             self.job = job
+            assert provider.backend._history_lengths == {job.job_id: job.history_len}
             job.chunks.put([21, 22])
             job.chunks.put(None)
 
@@ -356,8 +357,9 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     )
     audit = tmp_path / "tokens.ndjson"
     provider = TensorFoldRequestProvider(
-        SimpleNamespace(_app=app), audit_path=str(audit)
+        SimpleNamespace(_app=app, _history_lengths={}), audit_path=str(audit)
     )
+    assert provider.backend._history_lengths == {}
     app.tokenizer.apply_chat_template = lambda messages, **kwargs: "history"
     app.tokenizer.encode = lambda text: [10] if text == "history" else [10, 11]
     app.system_prefix_len = lambda *args, **kwargs: 0
@@ -411,7 +413,8 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
 
     # Truncation the request omits comes from the model; what it sets wins.
     provider = TensorFoldRequestProvider(
-        SimpleNamespace(_app=app), sampling_defaults={"top_k": 20, "top_p": 0.95}
+        SimpleNamespace(_app=app, _history_lengths={}),
+        sampling_defaults={"top_k": 20, "top_p": 0.95},
     )
     list(provider.stream_generate(None, None, "prompt", temperature=0.7, seed=1))
     assert scheduler.job.sampling[0] == {
@@ -517,7 +520,7 @@ def test_provider_closed_timeout_error_and_generate(
         scheduler=SimpleNamespace(submit=lambda _j: None),
         _resolve_sampling=lambda *a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app, _history_lengths={}))
     with pytest.raises(RuntimeError, match="worker stopped"):
         list(provider.generate(None, None, "x", max_tokens=1))
 
@@ -571,6 +574,8 @@ def test_provider_timeout_worker_error_and_generate_success(
 
     class Scheduler:
         def submit(self, job):
+            assert provider.backend._history_lengths == {job.job_id: job.history_len}
+
             def finish():
                 job.chunks.put([2])
                 job.chunks.put(None)
@@ -588,14 +593,32 @@ def test_provider_timeout_worker_error_and_generate_success(
         scheduler=Scheduler(),
         _resolve_sampling=lambda *_a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app, _history_lengths={}))
     result = provider.generate(None, None, "x", max_tokens=1)
     assert result.text == "x"
     assert result.generation_tokens == 1
+    assert provider.backend._history_lengths == {}
+    iterator = provider._outputs("x", max_tokens=1)
+    next(iterator)
+    assert len(provider.backend._history_lengths) == 1
+    iterator.close()
+    assert provider.backend._history_lengths == {}
+
+    def reject(job):
+        assert provider.backend._history_lengths == {job.job_id: job.history_len}
+        raise RuntimeError("submit failed")
+
+    scheduler = app.scheduler
+    app.scheduler = SimpleNamespace(submit=reject)
+    with pytest.raises(RuntimeError, match="submit failed"):
+        list(provider._outputs("x", max_tokens=1))
+    assert provider.backend._history_lengths == {}
+    app.scheduler = scheduler
 
     ChatJob.next_error = RuntimeError("job failed")
     with pytest.raises(RuntimeError, match="job failed"):
         list(provider._outputs("x", max_tokens=1))
+    assert provider.backend._history_lengths == {}
 
     terminal = RequestOutput(request_id="r", finished=True)
     provider._outputs = lambda *_a, **_k: iter([terminal])
@@ -687,7 +710,7 @@ def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -
         scheduler=Scheduler(),
         _resolve_sampling=lambda *_a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app, _history_lengths={}))
     if error:
         with pytest.raises(RuntimeError, match=error):
             list(provider._outputs("prompt", max_tokens=2))

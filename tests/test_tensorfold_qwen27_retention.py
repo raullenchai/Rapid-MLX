@@ -100,7 +100,7 @@ class Engine:
 
 
 def run(engine, ids, *, cached=0, selected=(7950,), cache=None):
-    stream = SimpleNamespace(prompt_ids=ids, history_checkpoints=[])
+    stream = SimpleNamespace(stream_id="test", prompt_ids=ids, history_checkpoints=[])
     steps = engine.begin_stream(
         stream, cache=cache, cached_tokens=cached, checkpoints_at=selected
     )
@@ -120,7 +120,7 @@ def keep(store, stream):
 
 def setup_cut(engine_type=Engine):
     store = Store()
-    engine = _checkpoint_engine(engine_type, lambda: store)()
+    engine = _checkpoint_engine(engine_type, lambda: store, {})()
     first = run(engine, prompt())
     keep(store, first)
     return store, engine
@@ -147,7 +147,7 @@ def test_no_extra_copy_when_original_selections_fill_slots(count):
     store = Store()
     for c in range(count):
         store.insert([200 + c], [1], last_prompt=[200 + c, 0])
-    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
     result = run(engine, prompt())
     assert engine.calls[-1]["checkpoints_at"] == (7950,)
     assert [len(tokens) for tokens, _ in result.history_checkpoints] == [7950]
@@ -158,7 +158,7 @@ def test_no_extra_copy_when_original_selections_fill_slots(count):
 def test_byte_admission_drops_extra_but_keeps_every_original(current_bytes):
     store = Store(1000)
     store.insert([200], [current_bytes], last_prompt=[200, 0])
-    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
     engine.snapshot_bytes = {6144: 300, 7950: 200}
     result = run(engine, prompt())
     assert engine.calls[-1]["checkpoints_at"] == [6144, 7950]
@@ -177,8 +177,8 @@ def test_kept_cut_released_before_original_insert_under_pressure(byte_pressure):
         for c in range(6):
             store.insert([200 + c], [1], last_prompt=[200 + c, 0])
     boundaries = set(store.entries) - {tuple(engine.interior_tokens)}
-    # A longer suffix resumes the native history, leaving the optional cut
-    # owned until pending original snapshots force its release.
+    # A later native history supersedes the optional cut before any pending
+    # original insertion can exert pressure.
     ids = prompt() + [100] * 4000
     starts = engine.prompt_chunks(ids)
     chosen = checkpoints.choose_checkpoints(11000, 7950, prompt(), ids)
@@ -199,30 +199,18 @@ def test_resumed_latest_edit_keeps_expendable_ownership():
     key = tuple(engine.interior_tokens)
     edited = run(engine, prompt(edit=True), cached=6144)
     keep(store, edited)
-    assert engine.interior_tokens is None
+    assert engine.interior_tokens == list(key)
     assert key in store.entries
-    assert tuple(engine.resumed_tokens) == key
+    assert tuple(engine.interior_tokens) == key
     again = run(engine, prompt(edit=True), cached=7950, selected=())
     assert again.history_checkpoints == []
     assert engine.interior_tokens is None
-    assert engine.interior_releases == 0
-
-
-def test_resumed_short_final_message_keeps_expendable_ownership():
-    store, engine = setup_cut()
-    old_boundary = tuple(prompt()[:7950])
-    result = run(engine, prompt(short_final=True), cached=6144)
-    assert engine.interior_tokens is None
-    assert old_boundary in store.entries
-    assert engine.resumed_tokens == prompt()[:6144]
-    assert engine.interior_releases == 0
-    assert tuple(prompt()[:6144]) in store.entries
-    assert [len(tokens) for tokens, _ in result.history_checkpoints] == [7950]
+    assert engine.interior_releases == 1
 
 
 def test_original_or_pinned_checkpoint_is_never_owned_or_removed():
     store = Store()
-    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
     original = run(engine, prompt(), selected=(6144, 7950))
     assert engine.interior_tokens == prompt()[:4096]
     assert [len(tokens) for tokens, _ in original.history_checkpoints] == [
@@ -236,7 +224,6 @@ def test_original_or_pinned_checkpoint_is_never_owned_or_removed():
     store.insert(entry.tokens, entry.cache, last_prompt=entry.last_prompt, pinned=True)
     run(engine, prompt(1))
     assert key in store.entries
-    assert engine.resumed_tokens is None
     assert store.entries[key].pinned
     assert list(key) not in store.transfers
 
@@ -245,8 +232,10 @@ def test_original_or_pinned_checkpoint_is_never_owned_or_removed():
 @pytest.mark.parametrize("abort", ["close", "throw"])
 def test_close_preserves_runtime_progress_and_originals(stop_after, expected, abort):
     store = Store()
-    engine = _checkpoint_engine(Engine, lambda: store)()
-    stream = SimpleNamespace(prompt_ids=prompt(), history_checkpoints=[])
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
+    stream = SimpleNamespace(
+        stream_id="test", prompt_ids=prompt(), history_checkpoints=[]
+    )
     steps = engine.begin_stream(stream, checkpoints_at=[7950])
     for _ in range(stop_after):
         next(steps)
@@ -260,12 +249,12 @@ def test_close_preserves_runtime_progress_and_originals(stop_after, expected, ab
 
 
 def test_cache_off_and_already_cached_prefix_forward_unchanged():
-    engine = _checkpoint_engine(Engine, lambda: None)()
+    engine = _checkpoint_engine(Engine, lambda: None, {})()
     cache = object()
     run(engine, prompt(), cached=6144, selected=(), cache=cache)
     assert engine.calls[-1] == dict(cache=cache, cached_tokens=6144, checkpoints_at=())
     store = Store()
-    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
     result = run(engine, prompt(), cached=6144)
     assert [len(tokens) for tokens, _ in result.history_checkpoints] == [7950]
     assert engine.interior_tokens is None
@@ -276,46 +265,35 @@ def test_raw_completion_resuming_cut_keeps_expendable_ownership():
     key = tuple(engine.interior_tokens)
     raw = prompt()[:6200]
     run(engine, raw, cached=6144, selected=())
-    assert engine.interior_tokens is None
+    assert engine.interior_tokens == list(key)
     assert key in store.entries
-    assert tuple(engine.resumed_tokens) == key
+    assert tuple(engine.interior_tokens) == key
 
 
 def test_release_without_owned_cut_does_not_touch_store():
     store = Store()
-    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
     engine._release_interior(store)
     assert store.transfers == []
     assert engine.interior_releases == 0
-
-
-def test_missing_assistant_marker_does_not_change_resumed_cut_policy():
-    store, engine = setup_cut()
-    key = tuple(engine.interior_tokens)
-    engine.prefill_plan = SimpleNamespace(openers=(10,), assistant=())
-    shortened = prompt()[:6144] + [100] * 56 + [10, 11] + [0] * 6
-    shortened[6150] = 10
-    run(engine, shortened, cached=6144, selected=())
-    assert engine.interior_tokens is None
-    assert key in store.entries
-    assert tuple(engine.resumed_tokens) == key
-    assert store.transfers == []
 
 
 def test_interrupted_resumed_cut_keeps_ownership():
     # Cancellation keeps ownership of the restored cut.
     store, engine = setup_cut()
     tokens = engine.interior_tokens
-    stream = SimpleNamespace(prompt_ids=prompt(edit=True), history_checkpoints=[])
+    stream = SimpleNamespace(
+        stream_id="test", prompt_ids=prompt(edit=True), history_checkpoints=[]
+    )
     steps = engine.begin_stream(stream, cached_tokens=6144, checkpoints_at=[7950])
-    assert engine.interior_tokens is None
+    assert engine.interior_tokens == tokens
     next(steps)
     steps.close()
-    assert engine.interior_tokens is None
+    assert engine.interior_tokens == tokens
     keep(store, stream)
     run(engine, prompt(1))
-    assert tuple(tokens) in store.entries
-    assert tokens not in store.transfers
+    assert tuple(tokens) not in store.entries
+    assert tokens in store.transfers
 
 
 class PlannedEngine(Engine):
@@ -333,7 +311,8 @@ class PlannedEngine(Engine):
 def test_aligned_history_boundary_keeps_latest_eligible_interior():
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-    engine = _checkpoint_engine(PlannedEngine, lambda: store)()
+    histories = {}
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, histories)()
     ids = [100] * 8202
     for at in (0, 33, 8192):
         ids[at] = 10
@@ -355,24 +334,16 @@ def test_aligned_history_boundary_keeps_latest_eligible_interior():
 def test_scheduler_restored_cut_survives_other_chat_and_regeneration(history):
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-    engine = _checkpoint_engine(PlannedEngine, lambda: store)()
+    histories = {}
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, histories)()
 
-    def request(engine, store, ids, history):
-        starts = engine.prompt_chunks(ids)
-        hit = store.match(ids, usable=lambda n: n in starts)
-        cached, cache, last = hit if hit else (0, None, None)
-        chosen = checkpoints.choose_checkpoints(history, cached, last, ids)
-        selected = sorted(
-            at for at in {starts.floor(n) for n in chosen} if cached < at < len(ids)
-        )
-        stream = run(engine, ids, cached=cached, cache=cache, selected=selected)
-        keep(store, stream)
-        return cached, selected
+    request = runtime_request
 
     # Compare main and the hook using actual scheduler selections, including
     # raw completions containing the same assistant marker as shortened chats.
     main_store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
     main = PlannedEngine()
+    engine.test_histories = histories
     for current, cache_store in ((main, main_store), (engine, store)):
         request(current, cache_store, prompt(), 7950)
     owned = engine.interior_tokens.copy()
@@ -384,25 +355,26 @@ def test_scheduler_restored_cut_survives_other_chat_and_regeneration(history):
         0,
         [6144] if history else [],
     )
-    assert engine.interior_tokens is None
+    assert engine.interior_tokens == (None if history else owned)
     assert engine.interior_releases == 0
-    assert engine.resumed_tokens == owned
-    # The native match updates last_prompt; the hook neither reinserts nor
-    # replaces that entry or its cache.
-    assert store.peek(shortened, usable=lambda n: n == 6144) is entry
-    assert entry.last_prompt == shortened
+    promoted = store.peek(shortened, usable=lambda n: n == 6144)
+    assert promoted.cache is entry.cache
+    assert promoted.last_prompt == shortened
+    assert promoted.born == (len(shortened) if history else len(prompt()))
+    entry = promoted
     for current, cache_store in ((main, main_store), (engine, store)):
         request(current, cache_store, prompt(1), 7950)
-    assert store.peek(shortened, usable=lambda n: n == 6144) is entry
-    assert engine.interior_releases == 0
-    assert request(engine, store, shortened, history)[0] == 6144
+    assert (store.peek(shortened, usable=lambda n: n == 6144) is entry) == bool(history)
+    assert engine.interior_releases == (0 if history else 1)
+    assert request(engine, store, shortened, history)[0] == (6144 if history else 0)
     assert request(main, main_store, shortened, history)[0] == (6144 if history else 0)
 
 
 def test_cold_raw_completion_delegates_empty_scheduler_selection():
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-    engine = _checkpoint_engine(PlannedEngine, lambda: store)()
+    histories = {}
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, histories)()
     ids = prompt()
     selected = checkpoints.choose_checkpoints(0, 0, None, ids)
     assert selected == []
@@ -414,6 +386,8 @@ def test_cold_raw_completion_delegates_empty_scheduler_selection():
 
 
 def runtime_request(engine, store, ids, history):
+    histories = getattr(engine, "test_histories", {})
+    histories["test"] = history
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     chunks = engine.prompt_chunks(ids)
     hit = store.match(ids, usable=lambda n: n in chunks)
@@ -424,6 +398,7 @@ def runtime_request(engine, store, ids, history):
     )
     stream = run(engine, ids, cached=cached, cache=cache, selected=selected)
     keep(store, stream)
+    histories.pop("test", None)
     return cached, selected
 
 
@@ -443,6 +418,7 @@ def test_resumed_cut_released_before_native_pressure_matches_main(
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     results = []
     for wrapped in (False, True):
+        histories = {}
         store = checkpoints.CheckpointStore(
             8,
             copier=list,
@@ -450,10 +426,11 @@ def test_resumed_cut_released_before_native_pressure_matches_main(
             budget_bytes=800 if byte_pressure else None,
         )
         engine = (
-            _checkpoint_engine(PlannedEngine, lambda store=store: store)
+            _checkpoint_engine(PlannedEngine, lambda store=store: store, histories)
             if wrapped
             else PlannedEngine
         )()
+        engine.test_histories = histories
         runtime_request(engine, store, prompt(), 7950)
         if history:
             edited = prompt(edit=True)
@@ -467,76 +444,21 @@ def test_resumed_cut_released_before_native_pressure_matches_main(
             (store.evictions, runtime_request(engine, store, prompt(), 7950)[0])
         )
     assert results == [(0, 7950), (0, 7950)]
-    assert engine.resumed_tokens is None
     assert engine.interior_releases >= 1
 
 
-def test_resumed_and_fresh_cut_coexist_and_resumed_releases_first():
-    store, engine = setup_cut()
-    owned = engine.interior_tokens.copy()
-    keep(store, run(engine, prompt(edit=True), cached=6144))
-    keep(store, run(engine, prompt(1)))
-    assert engine.resumed_tokens == owned
-    assert engine.interior_tokens == prompt(1)[:6144]
-    # Fill the remaining slots without invoking native eviction. The next
-    # original needs one slot; begin_stream must release resumed ownership first.
-    for c in range(3):
-        store.insert([200 + c], [1], last_prompt=[200 + c, 0])
-    run(engine, prompt(1), cached=7950, selected=(7990,))
-    assert engine.resumed_tokens is None
-    assert engine.interior_tokens == prompt(1)[:6144]
-    assert store.transfers == [owned]
-
-
-def test_resumed_pressure_in_finally_with_new_optional_admission():
-    store, engine = setup_cut()
-    owned = engine.interior_tokens.copy()
-    keep(store, run(engine, prompt(edit=True), cached=6144))
-    store.budget_bytes = 450
-    result = run(engine, prompt(1))
-    assert engine.resumed_tokens is None
-    assert engine.interior_tokens == prompt(1)[:6144]
-    assert store.transfers == [owned]
-    keep(store, result)
-    assert store.nbytes == 400
-
-
-def test_explicit_original_selection_promotes_only_matching_owned_tokens():
-    store, engine = setup_cut()
-    owned = engine.interior_tokens.copy()
-    keep(store, run(engine, prompt(edit=True), cached=6144))
-    # Exercise the public hook selection contract directly. The native scheduler
-    # filters restored positions; this is not evidence of genuine chat history.
-    keep(store, run(engine, prompt(), selected=(6144, 7950)))
-    assert engine.resumed_tokens is None
-    run(engine, prompt(1))
-    assert tuple(owned) in store.entries
-
-
-def test_two_resumes_bound_ownership_to_one_resumed_cut():
-    store, engine = setup_cut()
-    first = engine.interior_tokens.copy()
-    keep(store, run(engine, prompt(edit=True), cached=6144))
-    keep(store, run(engine, prompt(1)))
-    second = engine.interior_tokens.copy()
-    keep(store, run(engine, prompt(1, edit=True), cached=6144))
-    assert engine.resumed_tokens == second
-    assert engine.interior_tokens is None
-    assert store.transfers == [first]
-
-
-def test_pressure_can_lose_ambiguous_real_shortened_history():
-    # The public hook cannot tell this cut from raw-completion surplus. Record
-    # the remaining limit explicitly rather than claiming universal main parity.
+def test_shortened_history_with_superseded_boundary_matches_main_under_pressure():
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
     results = []
     for wrapped in (False, True):
+        histories = {}
         store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
         engine = (
-            _checkpoint_engine(PlannedEngine, lambda store=store: store)
+            _checkpoint_engine(PlannedEngine, lambda store=store: store, histories)
             if wrapped
             else PlannedEngine
         )()
+        engine.test_histories = histories
         earlier = short_prompt(20)
         runtime_request(engine, store, earlier, 990)
         extended = earlier + [220] * 990 + [10, 11] + [220] * 8
@@ -547,4 +469,71 @@ def test_pressure_can_lose_ambiguous_real_shortened_history():
         for c in range(5):
             runtime_request(engine, store, short_prompt(c), 990)
         results.append(runtime_request(engine, store, shortened, 6200)[0])
-    assert results == [6144, 0]
+    assert results == [6144, 6144]
+
+
+@pytest.mark.parametrize("history", [0, 6143, 6144, 6200, 6210, 7000])
+def test_promotion_mirrors_cold_scheduler_history_floor(history):
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    histories = {}
+    store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, histories)()
+    engine.test_histories = histories
+    runtime_request(engine, store, prompt(), 7950)
+    owned = engine.interior_tokens.copy()
+    shortened = owned + [100] * 56 + [10, 11] + [100] * 8
+    chunks = engine.prompt_chunks(shortened)
+    cold = {
+        chunks.floor(n)
+        for n in checkpoints.choose_checkpoints(history, 0, None, shortened)
+    } - {0}
+    runtime_request(engine, store, shortened, history)
+    assert (engine.interior_tokens is None) == (6144 in cold)
+
+
+def test_missing_stream_id_registry_entry_defaults_to_zero():
+    store, engine = setup_cut(PlannedEngine)
+    owned = engine.interior_tokens.copy()
+    shortened = owned + [100] * 56 + [10, 11] + [100] * 8
+    run(engine, shortened, cached=6144, selected=())
+    assert engine.interior_tokens == owned
+    run(engine, prompt(1))
+    assert tuple(owned) not in store.entries
+
+
+def test_promoted_creation_length_preserves_native_eviction_order():
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    results = []
+    for wrapped in (False, True):
+        histories = {}
+        store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
+        engine = (
+            _checkpoint_engine(PlannedEngine, lambda store=store: store, histories)
+            if wrapped
+            else PlannedEngine
+        )()
+        engine.test_histories = histories
+        runtime_request(engine, store, prompt(), 7950)
+        shortened = prompt()[:6144] + [100] * 56 + [10, 11] + [100] * 8
+        runtime_request(engine, store, shortened, 6200)
+        continuation = shortened + [100] * 980 + [10, 11] + [100] * 8
+        runtime_request(engine, store, continuation, 7190)
+        for c in range(6):
+            runtime_request(engine, store, short_prompt(c), 990)
+        results.append(
+            (store.evictions, runtime_request(engine, store, prompt(), 7950)[0])
+        )
+    assert results == [(1, 7950), (1, 7950)]
+
+
+def test_pending_bytes_release_resumed_optional_before_original_transfer():
+    store, engine = setup_cut()
+    owned = engine.interior_tokens.copy()
+    store.budget_bytes = 350
+    engine.snapshot_bytes = {7950: 200}
+    edited = run(engine, prompt(edit=True), cached=6144)
+    assert engine.interior_tokens is None
+    assert store.transfers == [owned]
+    assert [len(tokens) for tokens, _ in edited.history_checkpoints] == [7950]
+    keep(store, edited)
+    assert store.nbytes == 300

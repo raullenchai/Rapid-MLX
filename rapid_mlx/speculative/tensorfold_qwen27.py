@@ -232,18 +232,18 @@ def require_environment(
         )
 
 
-def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any:
-    """Keep a fresh and a resumed cut expendable before native insertion."""
+def _checkpoint_engine(
+    engine_type: Any, store_getter: Callable[[], Any], history_lengths: dict[str, int]
+) -> Any:
+    """Keep one optional cut unless the cold scheduler would store it as history."""
 
     class CheckpointEngine(engine_type):
         interior_tokens = None
-        resumed_tokens = None
         interior_releases = 0
 
-        def _release_interior(self, store, *, resumed=False):
-            field = "resumed_tokens" if resumed else "interior_tokens"
-            tokens = getattr(self, field)
-            setattr(self, field, None)
+        def _release_interior(self, store):
+            tokens = self.interior_tokens
+            self.interior_tokens = None
             if tokens is None:
                 return
             # Public take transfers precisely this owned prefix; it does not
@@ -276,40 +276,33 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 )
             original = set(checkpoints_at)
             ids = stream.prompt_ids
-            for field in ("resumed_tokens", "interior_tokens"):
-                owned = getattr(self, field)
-                if owned is None:
-                    continue
-                entry = store.peek(
-                    [*owned, 0], usable=lambda n, length=len(owned): n == length
-                )
+            owned = self.interior_tokens
+            if owned is not None:
+                entry = store.peek([*owned, 0], usable=lambda n: n == len(owned))
                 compatible = ids[: len(owned)] == owned
-                if (
-                    entry is None
-                    or entry.pinned
-                    or (compatible and len(owned) in original)
-                ):
-                    setattr(self, field, None)
-                elif (
-                    field == "interior_tokens"
-                    and compatible
-                    and cached_tokens == len(owned)
-                ):
-                    # The public hook cannot distinguish a real restored history
-                    # from a raw completion. Preserve it across unrelated turns,
-                    # but retain ownership so it remains expendable under pressure.
-                    self._release_interior(store, resumed=True)
-                    self.resumed_tokens = owned
+                # Cold choose_checkpoints(h, 0, None, ids) selects only h
+                # (checkpoints.py:28-37); prompt_fill.py:97-99 floors it.
+                history = history_lengths.get(stream.stream_id, 0)
+                if entry is None or entry.pinned:
                     self.interior_tokens = None
+                elif (
+                    compatible
+                    and cached_tokens == len(owned)
+                    and 0 < history < len(ids)
+                    and self.prompt_chunks(ids).floor(history) == len(owned)
+                ):
+                    # Public insert replaces this exact key without copying.
+                    # Match refreshed last_prompt, but only insert refreshes born,
+                    # which native eviction uses (checkpoints.py:244,275-283).
+                    store.insert(owned, entry.cache, last_prompt=ids)
+                    self.interior_tokens = None
+                elif not compatible or cached_tokens > len(owned):
+                    # A later native boundary supersedes this optional tail.
+                    self._release_interior(store)
             # Reserve original insertions before considering another optional cut.
-            for resumed in (True, False):
-                if not self._retention_fits(store, (), len(original)):
-                    self._release_interior(store, resumed=resumed)
-            if (
-                not original
-                and self.interior_tokens is None
-                and self.resumed_tokens is None
-            ):
+            if not self._retention_fits(store, (), len(original)):
+                self._release_interior(store)
+            if not original and self.interior_tokens is None:
                 return super().begin_stream(
                     stream,
                     cache=cache,
@@ -332,11 +325,6 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 ]
                 if grid:
                     candidate = grid[-1]
-            owned = self.interior_tokens
-            if owned is not None and (
-                candidate != len(owned) or ids[: len(owned)] != owned
-            ):
-                self._release_interior(store)
             added = None
             if (
                 original
@@ -353,11 +341,7 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                 cached_tokens=cached_tokens,
                 checkpoints_at=checkpoints_at,
             )
-            if (
-                added is None
-                and self.interior_tokens is None
-                and self.resumed_tokens is None
-            ):
+            if added is None and self.interior_tokens is None:
                 return steps
 
             def retain():
@@ -370,9 +354,8 @@ def _checkpoint_engine(engine_type: Any, store_getter: Callable[[], Any]) -> Any
                     snapshots = stream.history_checkpoints
                     # Exhaustion/throw/close runs this before the scheduler takes
                     # history_checkpoints. Drop resident surplus before any insert.
-                    for resumed in (True, False):
-                        if not self._retention_fits(store, snapshots):
-                            self._release_interior(store, resumed=resumed)
+                    if not self._retention_fits(store, snapshots):
+                        self._release_interior(store)
                     if added is not None:
                         extra = next(
                             (pair for pair in snapshots if len(pair[0]) == added), None
@@ -412,6 +395,7 @@ class TensorFoldQwen27Backend:
         self, app: Any, *, executor: concurrent.futures.Executor | None = None
     ):
         self._app = app
+        self._history_lengths: dict[str, int] = {}
         self._executor = executor or concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(getattr(app, "max_batch_size", 1))),
             thread_name_prefix="tensorfold-qwen27",
@@ -475,12 +459,13 @@ class TensorFoldQwen27Backend:
 
             fraction = model_fraction(package)
 
+        history_lengths: dict[str, int] = {}
         store_ref: Callable[[], Any] = lambda: None
         # The scheduler interleaves unfinished prefills when lanes > 1.
         # Admission and later transfer are not one transaction: the optional
         # cut's ownership/headroom policy therefore requires a single lane.
         engine_type = (
-            _checkpoint_engine(LaneEngine, lambda: store_ref())
+            _checkpoint_engine(LaneEngine, lambda: store_ref(), history_lengths)
             if lanes == 1
             else LaneEngine
         )
@@ -500,7 +485,9 @@ class TensorFoldQwen27Backend:
         )
         if app.checkpoints is not None:
             store_ref = weakref.ref(app.checkpoints)
-        return cls(app)
+        backend = cls(app)
+        backend._history_lengths = history_lengths
+        return backend
 
     async def stream(
         self,
