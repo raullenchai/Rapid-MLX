@@ -97,6 +97,34 @@ class _DefaultArrayOps:
     def concat(self, rows: list[Any]):
         return self.mx.concatenate(rows, axis=0)
 
+    def select_rows(self, sources: list[Any], indices: list[int]):
+        # Keep row slicing for ragged snapshots: measured full-state selection
+        # copies more recurrent-state data and is slower on the qualified host.
+        return self.concat(
+            [sources[source][row : row + 1] for row, source in enumerate(indices)]
+        )
+
+    def roll_kv(self, keys: Any, values: Any, shifts: Any, *, stop: int):
+        # Roll the live prefix and keep the reserved tail exactly unchanged.
+        # A full-capacity gather avoids the prefix copy and slice assignment;
+        # K/V share the same index even when their head dimensions differ.
+        indices: dict[int, Any] = {}
+        rolled = []
+        for value in (keys, values):
+            if value is None or stop <= 0:
+                rolled.append(value)
+                continue
+            size = value.shape[2]
+            if size not in indices:
+                positions = self.mx.arange(size)
+                indices[size] = self.mx.where(
+                    positions < stop,
+                    (positions - shifts[:, None]) % stop,
+                    positions,
+                )[:, None, :, None]
+            rolled.append(self.mx.take_along_axis(value, indices[size], axis=2))
+        return tuple(rolled)
+
     def roll_rows(self, value: Any, shifts: Any, *, axis: int, stop: int):
         if value is None or stop <= 0:
             return value
@@ -106,12 +134,20 @@ class _DefaultArrayOps:
         return value
 
 
-def _snapshot_rows(
+class _ArraysTrimPlan(list[int]):
+    """Validated source references and row choices; no device work in preflight."""
+
+    def __init__(self, drops: list[int], sources: list[Any], indices: list[int]):
+        super().__init__(drops)
+        self.sources = sources
+        self.indices = indices
+
+
+def _snapshot_plan(
     cache: Any,
     drops: list[int],
     verify_size: int,
-    ops: Any,
-) -> list[Any]:
+) -> _ArraysTrimPlan:
     snapshots = getattr(cache, "rollback_state", None)
     if snapshots is None:
         raise RaggedCacheUnsupportedError("recurrent cache has no rollback snapshots")
@@ -129,7 +165,9 @@ def _snapshot_rows(
         boundaries = [snapshots]
         slot_count = len(snapshots)
 
-    selected: list[list[Any]] = [[] for _ in range(slot_count)]
+    sources: list[Any] = []
+    source_ids: dict[int, int] = {}
+    indices: list[int] = []
     for row, drop in enumerate(drops):
         if drop == 0:
             source = cache.cache
@@ -147,17 +185,46 @@ def _snapshot_rows(
                     "legacy recurrent snapshot can only rewind one token"
                 )
             source = boundaries[0]
+        source_id = id(source)
+        if source_id in source_ids:
+            indices.append(source_ids[source_id])
+            continue
+        if len(source) != slot_count:
+            raise RaggedCacheUnsupportedError("recurrent rollback slot counts diverge")
         for slot, value in enumerate(source):
             if value is None:
                 raise RaggedCacheUnsupportedError(
                     f"recurrent rollback slot {slot} is None for row {row}"
                 )
-            if not hasattr(value, "shape") or int(value.shape[0]) != batch:
+            if (
+                not hasattr(value, "shape")
+                or not value.shape
+                or int(value.shape[0]) != batch
+            ):
                 raise RaggedCacheUnsupportedError(
                     f"recurrent rollback slot {slot} does not cover {batch} rows"
                 )
-            selected[slot].append(value[row : row + 1])
-    return [ops.concat(rows) for rows in selected]
+            if sources and value.shape != sources[0][slot].shape:
+                raise RaggedCacheUnsupportedError(
+                    f"recurrent rollback slot {slot} shapes diverge"
+                )
+        source_ids[source_id] = len(sources)
+        indices.append(len(sources))
+        sources.append(source)
+    return _ArraysTrimPlan(drops, sources, indices)
+
+
+def _snapshot_rows(plan: _ArraysTrimPlan, ops: Any) -> list[Any]:
+    if len(plan.sources) == 1:
+        return list(plan.sources[0])
+    if not hasattr(ops, "select_rows"):
+        return [
+            ops.concat(
+                [slot[source][row : row + 1] for row, source in enumerate(plan.indices)]
+            )
+            for slot in zip(*plan.sources)
+        ]
+    return [ops.select_rows(list(slot), plan.indices) for slot in zip(*plan.sources)]
 
 
 def _arrays_preflight(self, n, *, verify_size: int, validate: bool = True):
@@ -167,18 +234,21 @@ def _arrays_preflight(self, n, *, verify_size: int, validate: bool = True):
     if verify_size < 1:
         raise ValueError("verify_size must be a positive integer")
     drops = _drop_vector(n, int(self.batch_size), "ArraysCache.trim_ragged")
-    _snapshot_rows(self, drops, verify_size, self._rapid_ragged_ops)
-    return drops
+    return _snapshot_plan(self, drops, verify_size)
 
 
-def _arrays_trim(self, n, *, verify_size: int, validate: bool = True):
-    drops = self.preflight_ragged_trim(n, verify_size=verify_size, validate=validate)
+def _arrays_trim(self, n, *, verify_size: int, validate: bool = True, _plan=None):
+    drops = (
+        self.preflight_ragged_trim(n, verify_size=verify_size, validate=validate)
+        if _plan is None
+        else _plan
+    )
     if max(drops, default=0) == 0:
         self.rollback_state = None
-        return drops
-    self.cache = _snapshot_rows(self, drops, verify_size, self._rapid_ragged_ops)
+        return list(drops)
+    self.cache = _snapshot_rows(drops, self._rapid_ragged_ops)
     self.rollback_state = None
-    return drops
+    return list(drops)
 
 
 def _batch_kv_preflight(self, n, *, verify_size=None, validate: bool = True):
@@ -206,7 +276,8 @@ def _batch_kv_preflight(self, n, *, verify_size=None, validate: bool = True):
                 f"{type(self).__name__} extends BatchKVCache without declaring "
                 "_RAGGED_TRIM_AUX_ARRAYS or _trim_ragged_aux"
             )
-    batch = len(self._rapid_ragged_ops.tolist(self.offset))
+    offsets = self._rapid_ragged_ops.tolist(self.offset)
+    batch = len(offsets)
     drops = _drop_vector(n, batch, "BatchKVCache.trim_ragged")
     if getattr(self, "_right_padding", None) is not None:
         raise RaggedCacheUnsupportedError(
@@ -215,7 +286,6 @@ def _batch_kv_preflight(self, n, *, verify_size=None, validate: bool = True):
     if max(drops, default=0) > int(self._idx):
         raise ValueError("ragged rollback exceeds the shared KV cursor")
     if validate:
-        offsets = self._rapid_ragged_ops.tolist(self.offset)
         if any(offset - drop < 0 for offset, drop in zip(offsets, drops)):
             raise ValueError("ragged rollback would move a KV row before token zero")
     uniform = min(drops, default=0)
@@ -232,9 +302,11 @@ def _batch_kv_preflight(self, n, *, verify_size=None, validate: bool = True):
     return drops, uniform, residual, aux_spec, aux_hook
 
 
-def _batch_kv_trim(self, n, *, verify_size=None, validate: bool = True):
-    drops, uniform, residual, aux_spec, aux_hook = self.preflight_ragged_trim(
-        n, verify_size=verify_size, validate=validate
+def _batch_kv_trim(self, n, *, verify_size=None, validate: bool = True, _plan=None):
+    drops, uniform, residual, aux_spec, aux_hook = (
+        self.preflight_ragged_trim(n, verify_size=verify_size, validate=validate)
+        if _plan is None
+        else _plan
     )
     invalidate = getattr(self, "_invalidate_attention_groups", None)
     if callable(invalidate):
@@ -244,12 +316,17 @@ def _batch_kv_trim(self, n, *, verify_size=None, validate: bool = True):
         self.offset = self.offset - uniform
     if max(residual, default=0):
         shifts = self._rapid_ragged_ops.vector(residual)
-        self.keys = self._rapid_ragged_ops.roll_rows(
-            self.keys, shifts, axis=2, stop=self._idx
-        )
-        self.values = self._rapid_ragged_ops.roll_rows(
-            self.values, shifts, axis=2, stop=self._idx
-        )
+        if hasattr(self._rapid_ragged_ops, "roll_kv"):
+            self.keys, self.values = self._rapid_ragged_ops.roll_kv(
+                self.keys, self.values, shifts, stop=self._idx
+            )
+        else:
+            self.keys = self._rapid_ragged_ops.roll_rows(
+                self.keys, shifts, axis=2, stop=self._idx
+            )
+            self.values = self._rapid_ragged_ops.roll_rows(
+                self.values, shifts, axis=2, stop=self._idx
+            )
         if aux_hook is not None:
             aux_hook(
                 self,
@@ -295,8 +372,12 @@ def _qsa_preflight(self, n, *, verify_size=None, validate: bool = True):
     return drops
 
 
-def _qsa_trim(self, n, *, verify_size=None, validate: bool = True):
-    drops = self.preflight_ragged_trim(n, verify_size=verify_size, validate=validate)
+def _qsa_trim(self, n, *, verify_size=None, validate: bool = True, _plan=None):
+    drops = (
+        self.preflight_ragged_trim(n, verify_size=verify_size, validate=validate)
+        if _plan is None
+        else _plan
+    )
     self._offsets = [offset - drop for offset, drop in zip(self._offsets, drops)]
     self._compressed_counts = [
         offset // self.compress_ratio for offset in self._offsets
@@ -471,6 +552,8 @@ def _call_ragged_method(
     it is accepted.  mlx-lm's cache classes expose ``(n, *, validate)``; some
     Rapid/test caches also take a ``verify_size`` hint.  Introspecting keeps one
     adapter working across both without assuming an ABI the real cache lacks."""
+    if getattr(method, _ADAPTER_MARKER, False):
+        return method(values, verify_size=verify_size, validate=validate)
     try:
         accepts_verify = "verify_size" in inspect.signature(method).parameters
     except (TypeError, ValueError):
@@ -489,25 +572,55 @@ def preflight_ragged_cache(
 ) -> list[int]:
     """Preflight a cache tree without mutating any member."""
 
-    values = list(drops)
+    return _prepare_ragged_cache(
+        cache, list(drops), verify_size=verify_size, validate=validate, steps=None
+    )
+
+
+def _prepare_ragged_cache(
+    cache: Any,
+    values: list[int],
+    *,
+    verify_size: int,
+    validate: bool,
+    steps: list[tuple[Any, Any]] | None,
+) -> list[int]:
+    """Validate the tree, optionally retaining each leaf's plan for immediate apply."""
     children = _cache_children(cache)
     if children:
         for child in children:
-            preflight_ragged_cache(
-                child, values, verify_size=verify_size, validate=validate
+            _prepare_ragged_cache(
+                child,
+                values,
+                verify_size=verify_size,
+                validate=validate,
+                steps=steps,
             )
         return values
     _reject_unsupported_shape(cache)
     preflight = getattr(cache, "preflight_ragged_trim", None)
-    if not callable(preflight):
+    trim = getattr(cache, "trim_ragged", None)
+    if not callable(preflight) or (steps is not None and not callable(trim)):
         raise RaggedCacheUnsupportedError(
             f"cache {type(cache).__name__} has no ragged rollback adapter"
         )
     result = _call_ragged_method(
         preflight, values, verify_size=verify_size, validate=validate
     )
+    if steps is not None:
+        steps.append((trim, result))
     normalized = result[0] if isinstance(result, tuple) and len(result) == 5 else result
     return [int(value) for value in normalized]
+
+
+def _apply_ragged_steps(
+    steps: list[tuple[Any, Any]], values: list[int], *, verify_size: int
+) -> None:
+    for trim, plan in steps:
+        if getattr(trim, _ADAPTER_MARKER, False):
+            trim(values, verify_size=verify_size, validate=False, _plan=plan)
+        else:
+            _call_ragged_method(trim, values, verify_size=verify_size, validate=False)
 
 
 def trim_ragged_cache(
@@ -520,19 +633,11 @@ def trim_ragged_cache(
     """Atomically preflight a cache tree, then apply the per-row rewind."""
 
     values = list(drops)
-    preflight_ragged_cache(cache, values, verify_size=verify_size, validate=validate)
-
-    def apply(node: Any) -> None:
-        children = _cache_children(node)
-        if children:
-            for child in children:
-                apply(child)
-            return
-        _call_ragged_method(
-            node.trim_ragged, values, verify_size=verify_size, validate=False
-        )
-
-    apply(cache)
+    steps: list[tuple[Any, Any]] = []
+    _prepare_ragged_cache(
+        cache, values, verify_size=verify_size, validate=validate, steps=steps
+    )
+    _apply_ragged_steps(steps, values, verify_size=verify_size)
     return values
 
 
@@ -627,6 +732,32 @@ class RapidRaggedCacheAdapter:
         target, draft = _cache_pair(caches)
         target_values = list(target_drops)
         draft_values = list(draft_drops)
+        if (
+            self._preflight is preflight_ragged_cache
+            and self._trim is trim_ragged_cache
+        ):
+            # Plans live only for this transaction: no cached validation can
+            # survive a forward pass or be reused against another cache tree.
+            target_steps: list[tuple[Any, Any]] = []
+            draft_steps: list[tuple[Any, Any]] = []
+            _prepare_ragged_cache(
+                target,
+                target_values,
+                verify_size=verify_width,
+                validate=True,
+                steps=target_steps,
+            )
+            if any(draft_values):
+                _prepare_ragged_cache(
+                    draft,
+                    draft_values,
+                    verify_size=verify_width,
+                    validate=True,
+                    steps=draft_steps,
+                )
+            _apply_ragged_steps(target_steps, target_values, verify_size=verify_width)
+            _apply_ragged_steps(draft_steps, draft_values, verify_size=verify_width)
+            return
         self._preflight(target, target_values, verify_size=verify_width, validate=True)
         if any(draft_values):
             self._preflight(
