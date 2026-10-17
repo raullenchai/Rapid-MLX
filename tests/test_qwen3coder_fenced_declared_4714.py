@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Declared XML calls inside Markdown are examples, including at stream EOF."""
 
+import json
+
 import pytest
 
 from rapid_mlx.config import get_config
@@ -27,6 +29,22 @@ REQUEST = {
                 },
             },
         }
+    ],
+}
+MULTI_TOOL_REQUEST = {
+    "tool_choice": "auto",
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "run",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                },
+            },
+        },
+        REQUEST["tools"][0],
     ],
 }
 EXAMPLE = f"Here is the format:\n```xml\n{CALL}\n```\n"
@@ -127,6 +145,47 @@ def test_stray_backtick_does_not_hide_declared_call(size):
     )
     assert got_calls == [("get_weather", '{"city": "Rome"}')]
     assert got_content == prefix
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13, 10000])
+@pytest.mark.parametrize(
+    "run_call, code",
+    [
+        (
+            "<function=run><parameter=code>\n```python\nprint(1)\n"
+            "</parameter></function>",
+            "```python\nprint(1)",
+        ),
+        (
+            "<tool_call>\n<function=run><parameter=code>\n```python\nprint(1)\n"
+            "</parameter></function>\n</tool_call>",
+            "```python\nprint(1)",
+        ),
+        (
+            "<function=run><parameter=code>\n```python\nprint(1)\n```\n"
+            "</parameter></function>",
+            "```python\nprint(1)\n```",
+        ),
+    ],
+    ids=["bare-unclosed", "wrapped-unclosed", "bare-closed"],
+)
+def test_fence_inside_call_does_not_hide_following_call(run_call, code, size):
+    text = run_call + CALL
+    got_calls, got_content = (
+        non_stream(text, MULTI_TOOL_REQUEST)
+        if size is None
+        else stream(text, MULTI_TOOL_REQUEST, size)
+    )
+    assert got_calls == [
+        ("run", json.dumps({"code": code})),
+        ("get_weather", '{"city": "Paris"}'),
+    ]
+    assert got_content == ""
+
+
+@pytest.mark.parametrize("text", ["<funx", "<fun"])
+def test_partial_bare_opener_is_released_as_content(text):
+    assert stream(text, MULTI_TOOL_REQUEST, 1) == ([], text)
 
 
 def test_fenced_opener_token_id_stays_content():

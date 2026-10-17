@@ -622,13 +622,16 @@ def test_streaming_unchanged_against_base():
                                 "_function_start_positions",
                                 "_content_without_admitted_calls",
                                 "__init__",
+                                "_reset_streaming_state",
                                 "inside_fence",
+                                "skip_fence_span",
                                 "_fence_state",
                                 "_restore_fence_state",
                                 "_feed_fence",
                                 "_finish_fence_line",
                                 "_fence_result",
                                 "mask_markdown_fenced_regions",
+                                "flush_held_content",
                                 "_streaming_step_once",
                             }
                         )

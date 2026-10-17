@@ -155,6 +155,11 @@ class _MarkdownCodeTracker:
         self._fence_committed = max(self._fence_committed, cursor)
         return self._fence_result()
 
+    def skip_fence_span(self, text: str, start: int, end: int) -> None:
+        """Advance across recognized non-content without reading its fences."""
+        self.inside_fence(text, start)
+        self._fence_committed = max(self._fence_committed, end)
+
     def _fence_state(self) -> tuple[str | None, str, int, str | None, int, bool]:
         return (
             self._fence_only,
@@ -696,6 +701,7 @@ class Qwen3CoderToolParser(ToolParser):
         self._streaming_request = None
         self._pending_tool_start: int | None = None
         self._pending_tool_wrapped = False
+        self._pending_partial_opener = False
         self.prev_tool_call_arr = []
         self.in_param_emitted_chars = 0
         self.in_param_opened = False
@@ -1102,12 +1108,20 @@ class Qwen3CoderToolParser(ToolParser):
         # otherwise both delimiters belong to the rejected content sibling.
         search_from = 0
         range_index = 0
+        fence_range_index = 0
         wrapper_ranges: list[tuple[int, int]] = []
         fence_tracker = _MarkdownCodeTracker()
         while True:
             wrapper_start = model_output.find(self.tool_call_start_token, search_from)
             if wrapper_start < 0:
                 break
+            while (
+                fence_range_index < len(ranges)
+                and ranges[fence_range_index][1] <= wrapper_start
+            ):
+                start, end = ranges[fence_range_index]
+                fence_tracker.skip_fence_span(model_output, start, end)
+                fence_range_index += 1
             if fence_tracker.inside_fence(model_output, wrapper_start):
                 search_from = wrapper_start + len(self.tool_call_start_token)
                 continue
@@ -1473,16 +1487,20 @@ class Qwen3CoderToolParser(ToolParser):
         return _strip_trailing_tool_envelope(text, declared)
 
     def flush_held_content(self, full_text: str) -> str:
-        """Text of an undeclared-tool block still held when the stream ends.
+        """Release non-call content still held when the stream ends.
 
-        The block never completed, so it is not a lone canonical block and,
-        as in non-streaming, it is returned as content (#4038).
+        An incomplete undeclared block is not canonical, and a partial bare
+        opener is ordinary text. Return either unchanged.
         """
-        if self._undeclared_start is None:
-            return ""
-        held: str = self._undeclared_text[self._undeclared_start :]
-        self._undeclared_start = None
-        return held
+        if self._undeclared_start is not None:
+            held: str = self._undeclared_text[self._undeclared_start :]
+            self._undeclared_start = None
+            return held
+        if self._pending_partial_opener and self._pending_tool_start is not None:
+            start = self._undeclared_offset + self._pending_tool_start
+            self._pending_partial_opener = False
+            return full_text[start:]
+        return ""
 
     # --- streaming helpers -----------------------------------------------
     #
@@ -1552,6 +1570,16 @@ class Qwen3CoderToolParser(ToolParser):
             and self.tool_call_start_token_id in delta_token_ids
         ):
             return len(previous_text)
+        if self._undeclared_blocked:
+            return -1
+        partial_start = max(0, len(current_text) - len(self.tool_call_prefix) + 1)
+        for pos in range(partial_start, len(current_text)):
+            tail = current_text[pos:]
+            if self.tool_call_prefix.startswith(tail) and not self._code_tracker.inside_fence(
+                self._stream_text, self._undeclared_offset + pos
+            ):
+                self._pending_partial_opener = True
+                return pos
         return -1
 
     def _top_level_function_close(self, text: str, start: int) -> int:
@@ -1687,6 +1715,13 @@ class Qwen3CoderToolParser(ToolParser):
                 next_param = text.find(self.parameter_prefix, i)
                 continue
             positions.append(next_func)
+            close_pos = self._top_level_function_close(text, next_func)
+            if close_pos >= 0:
+                i = close_pos + len(self.function_end_token)
+                code.skip_fence_span(text, next_func, i)
+                next_func = text.find(self.tool_call_prefix, i)
+                next_param = text.find(self.parameter_prefix, i)
+                continue
             i = next_func + prefix_len
             next_func = text.find(self.tool_call_prefix, i)
         return positions
@@ -1976,7 +2011,13 @@ class Qwen3CoderToolParser(ToolParser):
         # value can't corrupt the slice.
         function_starts = self._function_start_positions(current_text)
         if self.current_tool_index >= len(function_starts):
+            if self._pending_partial_opener and self._pending_tool_start is not None:
+                held = current_text[self._pending_tool_start :]
+                if not self.tool_call_prefix.startswith(held):
+                    self._advance_past(0)
+                    return {"content": held}
             return None
+        self._pending_partial_opener = False
 
         tool_start_idx = function_starts[self.current_tool_index]
         func_close_idx = self._top_level_function_close(current_text, tool_start_idx)
