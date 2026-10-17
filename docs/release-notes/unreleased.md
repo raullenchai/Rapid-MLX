@@ -11,6 +11,8 @@
 
 - **Smaller Desktop download**: the bundled runtime no longer ships build-only headers, test suites, or Intel code slices, trimming about 14 MB from the DMG, about 110 MB and 11,000 files from the installed app.
 
+- **Local Search works on stock Macs**: the default index location and index folders under `/tmp` or `/var` no longer fail with a 503 because of standard macOS deny ACLs or directory aliases. Unsafe ancestor permissions still fail with a message naming the affected path.
+
 - **Desktop no longer quits when you open a generated video**: clicking a finished video's preview now plays it in the app instead of crashing Rapid-MLX Desktop.
 - **TensorFold lane setting no longer ignored**: setting `RAPID_MLX_TENSORFOLD_LANES` above 1, or to an invalid value, on a model that is not served through a qualified TensorFold profile now stops `rapid-mlx serve` at startup with an error instead of being silently ignored.
 

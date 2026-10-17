@@ -347,8 +347,16 @@ def test_unsafe_index_refused_with_readable_status(
 
         monkeypatch.setattr(os, "fchmod", cannot_repair)
     elif unsafe == "symlink_directory":
-        directory.rmdir()
-        directory.symlink_to(tmp_path, target_is_directory=True)
+        from rapid_mlx.local_search import store as module
+
+        prepare = module._prepare_index
+
+        def swap_after_resolution(resolved):
+            directory.rmdir()
+            directory.symlink_to(tmp_path, target_is_directory=True)
+            prepare(resolved)
+
+        monkeypatch.setattr(module, "_prepare_index", swap_after_resolution)
     elif unsafe.startswith("symlink_"):
         suffix = {"database": "", "wal": "-wal", "shm": "-shm", "journal": "-journal"}[
             unsafe.removeprefix("symlink_")
@@ -358,6 +366,7 @@ def test_unsafe_index_refused_with_readable_status(
         from rapid_mlx.local_search import store as module
 
         monkeypatch.setattr(module.sys, "platform", "darwin")
+        monkeypatch.setattr(module, "_ancestor_acl_dangerous", lambda _: False)
         target = directory.stat().st_ino
 
         def probe(fd):
@@ -8344,6 +8353,7 @@ def test_index_acl_repair_precedes_file_creation(tmp_path, monkeypatch, precreat
     acls = {path.parent, *files}
     probes, stripped = [], []
     monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "_ancestor_acl_dangerous", lambda _: False)
 
     def target_for(fd):
         info = os.fstat(fd)
@@ -8414,6 +8424,7 @@ def test_index_acl_foreign_owner_is_not_modified(tmp_path, monkeypatch, target):
         return info
 
     monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "_ancestor_acl_dangerous", lambda _: False)
     monkeypatch.setattr(os, "fstat", owner)
     monkeypatch.setattr(module, "_acl_present", lambda _: False)
 
@@ -8549,11 +8560,263 @@ def test_index_acl_absent_needs_no_removal(tmp_path, monkeypatch):
         os.close(fd)
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="real macOS extended ACLs")
+@pytest.mark.parametrize(
+    "entry,dangerous",
+    [("everyone deny delete", False), ("everyone allow add_subdirectory", True)],
+)
+def test_index_real_darwin_ancestor_acl(tmp_path, entry, dangerous):
+    ancestor = tmp_path / "home"
+    ancestor.mkdir(mode=0o700)
+    subprocess.run(["/bin/chmod", "+a", entry, str(ancestor)], check=True)
+    try:
+        path = ancestor / "index" / "index.sqlite3"
+        if dangerous:
+            with pytest.raises(
+                PermissionError, match="replaced by another account"
+            ) as error:
+                Store(path, "test")
+            assert str(ancestor) in str(error.value)
+            assert "ACL" in str(error.value)
+        else:
+            store = Store(path, "test")
+            try:
+                assert (
+                    store.db.execute(
+                        "SELECT value FROM meta WHERE key='model_id'"
+                    ).fetchone()[0]
+                    == "test"
+                )
+            finally:
+                store.close()
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(ancestor)], check=True)
+
+
+def test_index_resolves_symlinked_component(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    path = link / "index" / "index.sqlite3"
+    store = Store(path, "test")
+    try:
+        assert store.path == path.resolve()
+        assert (real / "index" / "index.sqlite3").is_file()
+        assert store.db.execute("PRAGMA database_list").fetchone()[2] == str(
+            path.resolve()
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("change", ["vanished", "symlink", "file"])
+def test_index_stable_component_changed_after_resolution(tmp_path, monkeypatch, change):
+    from rapid_mlx.local_search import store as module
+
+    ancestor = tmp_path / "ancestor"
+    directory = ancestor / "index"
+    directory.mkdir(parents=True, mode=0o700)
+    saved = tmp_path / "saved"
+    original_open = os.open
+    changed = False
+
+    def swap(path, flags, *args, **kwargs):
+        nonlocal changed
+        if path == "ancestor" and kwargs.get("dir_fd") is not None and not changed:
+            changed = True
+            ancestor.rename(saved)
+            if change == "symlink":
+                ancestor.symlink_to(saved, target_is_directory=True)
+            elif change == "file":
+                ancestor.touch()
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", swap)
+    if change == "vanished":
+        with pytest.raises(FileNotFoundError) as error:
+            Store(directory / "index.sqlite3", "test")
+        assert error.value.errno == errno.ENOENT
+        return
+    with pytest.raises(
+        PermissionError, match="ancestor.*changed or is a symlink"
+    ) as error:
+        Store(directory / "index.sqlite3", "test")
+    assert "[Errno" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "error_number",
+    [errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR, errno.ELOOP],
+)
+def test_index_stable_component_open_errors(tmp_path, monkeypatch, error_number):
+    from rapid_mlx.local_search import store as module
+
+    directory = tmp_path / "ancestor" / "index"
+    directory.mkdir(parents=True, mode=0o700)
+    original_open = module.os.open
+    original_error = OSError(error_number, os.strerror(error_number), "ancestor")
+
+    def fail_component(path, flags, *args, **kwargs):
+        if path == "ancestor" and kwargs.get("dir_fd") is not None:
+            raise original_error
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", fail_component)
+    if error_number in {errno.ENOTDIR, errno.ELOOP}:
+        with pytest.raises(
+            PermissionError, match="ancestor.*changed or is a symlink"
+        ) as error:
+            Store(directory / "index.sqlite3", "test")
+        assert error.value.__cause__ is original_error
+    else:
+        with pytest.raises(OSError) as error:
+            Store(directory / "index.sqlite3", "test")
+        assert error.value is original_error
+
+
+def test_index_ancestor_acl_probe_disabled_off_darwin(monkeypatch):
+    import ctypes
+
+    from rapid_mlx.local_search import store as module
+
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        ctypes, "CDLL", lambda *a, **k: pytest.fail("ACL probe off darwin")
+    )
+    assert not module._ancestor_acl_dangerous(-1)
+
+
+@pytest.mark.parametrize(
+    "tags,failure,expected",
+    [
+        ([2, 2], None, False),
+        ([1], None, True),
+        ([2, 1], None, True),
+        ([99], None, True),
+        ([], None, False),
+        ([], "missing", False),
+        ([], "get_fd", PermissionError),
+        ([2], "get_entry", PermissionError),
+        ([2], "get_tag", PermissionError),
+        ([2], "free", PermissionError),
+    ],
+)
+def test_index_ancestor_acl_classifier(monkeypatch, tags, failure, expected):
+    import ctypes
+    import errno
+
+    from rapid_mlx.local_search import store as module
+
+    positions, freed = [], []
+
+    def get_acl(fd):
+        assert fd == 42
+        if failure in {"missing", "get_fd"}:
+            ctypes.set_errno(errno.ENOENT if failure == "missing" else errno.EACCES)
+            return None
+        return 123
+
+    def get_entry(acl, position, entry):
+        assert acl == 123
+        assert position == (0 if not positions else -1)
+        index = len(positions)
+        positions.append(position)
+        if failure == "get_entry" or index == len(tags):
+            ctypes.set_errno(errno.EACCES if failure == "get_entry" else errno.EINVAL)
+            return -1
+        entry._obj.value = index + 1
+        return 0
+
+    def get_tag(entry, tag):
+        if failure == "get_tag":
+            return -1
+        tag._obj.value = tags[entry.value - 1]
+        return 0
+
+    class LibC:
+        acl_get_fd = _FakeCFunction(get_acl)
+        acl_get_entry = _FakeCFunction(get_entry)
+        acl_get_tag_type = _FakeCFunction(get_tag)
+        acl_free = _FakeCFunction(
+            lambda acl: freed.append(acl) or (1 if failure == "free" else 0)
+        )
+
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: LibC())
+    if expected is PermissionError:
+        with pytest.raises(PermissionError, match="inspect local-search ancestor ACL"):
+            module._ancestor_acl_dangerous(42)
+    else:
+        assert module._ancestor_acl_dangerous(42) is expected
+    assert freed == ([] if failure in {"missing", "get_fd"} else [123])
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["foreign_owner", "writable", "sticky_foreign_child"]
+)
+def test_index_ancestor_error_names_path_and_reason(tmp_path, monkeypatch, unsafe):
+    from rapid_mlx.local_search import store as module
+
+    ancestor = tmp_path / "ancestor"
+    directory = ancestor / "index"
+    directory.mkdir(parents=True, mode=0o700)
+    if unsafe != "foreign_owner":
+        ancestor.chmod(0o1777 if unsafe == "sticky_foreign_child" else 0o777)
+    target = (directory if unsafe == "sticky_foreign_child" else ancestor).stat().st_ino
+    original_fstat = os.fstat
+
+    def foreign_owner(fd):
+        info = original_fstat(fd)
+        if unsafe != "writable" and info.st_ino == target:
+            values = list(info)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(module.os, "fstat", foreign_owner)
+    with pytest.raises(PermissionError, match="replaced by another account") as error:
+        Store(directory / "index.sqlite3", "test")
+    assert str(ancestor) in str(error.value)
+    reason = (
+        "foreign owner"
+        if unsafe == "foreign_owner"
+        else "group- or world-writable without sticky ownership"
+    )
+    assert reason in str(error.value)
+
+
+def test_index_worker_writer_uses_resolved_path(tmp_path, monkeypatch):
+    from rapid_mlx.local_search import store as module
+
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    worker = module.StoreWorker(link / "index" / "index.sqlite3", "test")
+    try:
+        resolved = worker._store.path
+        link.unlink()
+        connect = sqlite3.connect
+        opened = []
+
+        def writer_connect(path):
+            opened.append(path)
+            return connect(path)
+
+        monkeypatch.setattr(module.sqlite3, "connect", writer_connect)
+        monkeypatch.setattr(module.Store, "_write_replace", lambda *a, **k: "written")
+        assert worker._write_file((), {}, 0) == "written"
+        assert opened == [resolved]
+    finally:
+        worker.close()
+
+
 def test_index_refuses_acl_on_ancestor(tmp_path, monkeypatch):
     from rapid_mlx.local_search import store as module
 
     monkeypatch.setattr(module.sys, "platform", "darwin")
-    monkeypatch.setattr(module, "_acl_present", lambda _: True)
+    monkeypatch.setattr(module, "_ancestor_acl_dangerous", lambda _: True)
     with pytest.raises(PermissionError, match="replaced by another account"):
         Store(tmp_path / "index" / "index.sqlite3", "test")
 
@@ -8566,6 +8829,7 @@ def test_index_refuses_acl_remaining_on_file(tmp_path, monkeypatch):
     path.touch(mode=0o600)
     target = path.stat().st_ino
     monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "_ancestor_acl_dangerous", lambda _: False)
     monkeypatch.setattr(
         module, "_acl_present", lambda fd: os.fstat(fd).st_ino == target
     )

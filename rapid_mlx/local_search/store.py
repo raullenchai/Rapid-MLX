@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -75,6 +76,55 @@ def _acl_present(fd: int) -> bool:
     return True
 
 
+def _ancestor_acl_dangerous(fd: int) -> bool:
+    """Only deny-only macOS ACLs are safe on the stable ancestor chain."""
+    if sys.platform != "darwin":
+        return False
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.acl_get_fd.argtypes = [ctypes.c_int]
+    libc.acl_get_fd.restype = ctypes.c_void_p
+    libc.acl_get_entry.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    libc.acl_get_entry.restype = ctypes.c_int
+    libc.acl_get_tag_type.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+    libc.acl_get_tag_type.restype = ctypes.c_int
+    libc.acl_free.argtypes = [ctypes.c_void_p]
+    libc.acl_free.restype = ctypes.c_int
+    message = "Could not inspect local-search ancestor ACL"
+    ctypes.set_errno(0)
+    acl = libc.acl_get_fd(fd)
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:
+            return False
+        raise PermissionError(message)
+    try:
+        entry = ctypes.c_void_p()
+        tag = ctypes.c_int()
+        position = 0  # ACL_FIRST_ENTRY
+        while True:
+            ctypes.set_errno(0)
+            if libc.acl_get_entry(acl, position, ctypes.byref(entry)) != 0:
+                # Darwin reports end-of-entries as EINVAL, not POSIX's zero.
+                if ctypes.get_errno() == errno.EINVAL:
+                    return False
+                raise PermissionError(message)
+            if libc.acl_get_tag_type(entry, ctypes.byref(tag)) != 0:
+                raise PermissionError(message)
+            # ACL_EXTENDED_DENY is 2; ALLOW (1) and unknown tags fail closed.
+            if tag.value != 2:
+                return True
+            position = -1  # ACL_NEXT_ENTRY
+    finally:
+        if libc.acl_free(acl) != 0:
+            raise PermissionError(message)
+
+
 def _remove_acl(fd: int) -> None:
     if sys.platform != "darwin" or not _acl_present(fd):
         return
@@ -103,31 +153,43 @@ def _open_stable_directory(path: Path) -> int:
     """Open a path whose components cannot be replaced by another account."""
     absolute = path.absolute()
     current = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    ancestor = Path(absolute.anchor)
     try:
         for part in absolute.parts[1:]:
-            child = os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current
-            )
+            component = ancestor / part
+            try:
+                child = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current
+                )
+            except OSError as exc:
+                if exc.errno not in {errno.ENOTDIR, errno.ELOOP}:
+                    raise
+                raise PermissionError(
+                    f"Local-search index path component {component} changed or is a symlink"
+                ) from exc
             try:
                 parent = os.fstat(current)
                 owner = os.fstat(child).st_uid
-                if parent.st_uid not in {0, os.geteuid()} or (
-                    sys.platform == "darwin" and _acl_present(current)
-                ):
-                    raise PermissionError(
-                        "Local-search index path can be replaced by another account"
-                    )
+                reason = None
+                if parent.st_uid not in {0, os.geteuid()}:
+                    reason = "foreign owner"
+                elif _ancestor_acl_dangerous(current):
+                    reason = "ACL that grants access to other accounts"
                 writable = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
                 sticky_owner = parent.st_mode & stat.S_ISVTX and owner == os.geteuid()
                 if writable and not sticky_owner:
+                    reason = "group- or world-writable without sticky ownership"
+                if reason:
                     raise PermissionError(
-                        "Local-search index path can be replaced by another account"
+                        "Local-search index path can be replaced by another account: "
+                        f"{ancestor} ({reason})"
                     )
             except Exception:
                 os.close(child)
                 raise
             os.close(current)
             current = child
+            ancestor = component
         return current
     except Exception:
         os.close(current)
@@ -195,6 +257,12 @@ class SchemaVersionError(ValueError):
 
 class Store:
     def __init__(self, path: Path, model_id: str):
+        if path.is_symlink():
+            raise PermissionError(
+                f"Local-search index file {path} is a symlink; "
+                "choose a dedicated index directory"
+            )
+        path = path.resolve()
         _prepare_index(path)
         self.path = path
         # SQLite's Unix VFS creates WAL/SHM/rollback journals with the database
@@ -1419,7 +1487,7 @@ class StoreWorker:
         # A WAL writer publishes atomically; searches use the separate owning
         # reader connection and never queue behind a whole-file FTS transaction.
         writer = Store.__new__(Store)
-        writer.db = sqlite3.connect(self.path)
+        writer.db = sqlite3.connect(self._store.path)
         writer.db.row_factory = sqlite3.Row
         writer.db.execute("PRAGMA foreign_keys=ON")
         try:
