@@ -26,6 +26,28 @@ GEMMA = '<|tool_call>call:send_email{body:<|"|>hello<|"|>}<tool_call|>'
 VALID = '<tool_call><function=write_file>{"path":"x"}</function></tool_call>'
 
 
+@pytest.mark.parametrize("closer", ["</function>", "</tool_call>"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_nemotron_buffered_chat_preserves_post_call_literal_closer(wrapped, closer):
+    """Exercise the fresh-parser helper used by non-stream chat/completions."""
+    cfg = reset_config()
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "nemotron"
+    function = "<function=write_file><parameter=path>x</parameter></function>"
+    prefix = "<tool_call>" + function + "</tool_call>" if wrapped else function
+    tail = f"Explain {closer} literally."
+    try:
+        content, calls = helpers._parse_tool_calls_with_parser(
+            prefix + " " + tail, _Request()
+        )
+        assert content == tail
+        assert len(calls) == 1
+        assert calls[0].function.name == "write_file"
+        assert json.loads(calls[0].function.arguments) == {"path": "x"}
+    finally:
+        reset_config()
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "parser,text,expected,valid",
@@ -1115,7 +1137,7 @@ def test_channel_complete_router_calls_filter_before_assigning_wire_indices(
 def test_nemotron_incomplete_call_has_no_safe_accounting_boundary(text):
     from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
 
-    assert NemotronToolParser._safe_accounting_boundary(text) == 0
+    assert NemotronToolParser()._safe_accounting_boundary(text) == 0
 
 
 def test_rejected_channel_call_preserves_held_reasoning_on_finalize():
