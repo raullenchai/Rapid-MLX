@@ -620,7 +620,15 @@ def test_streaming_unchanged_against_base():
                                 "_first_opener_pos",
                                 "_new_opener_position",
                                 "_function_start_positions",
-                                "has_markdown_tool_example",
+                                "_content_without_admitted_calls",
+                                "__init__",
+                                "inside_fence",
+                                "_fence_state",
+                                "_restore_fence_state",
+                                "_feed_fence",
+                                "_finish_fence_line",
+                                "_fence_result",
+                                "mask_markdown_fenced_regions",
                                 "_streaming_step_once",
                             }
                         )
@@ -654,7 +662,8 @@ def test_streaming_unchanged_against_base():
                 for node in tree.body
                 if not (
                     isinstance(node, ast.FunctionDef)
-                    and node.name == "_strip_trailing_tool_envelope"
+                    and node.name
+                    in {"_strip_trailing_tool_envelope", "_mask_markdown_fences"}
                 )
             ]
             return ast.dump(tree, include_attributes=False)

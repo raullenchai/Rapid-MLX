@@ -95,6 +95,13 @@ class _MarkdownCodeTracker:
         self._committed = 0
         self._fence: str | None = None
         self._line = ""
+        self._fence_committed = 0
+        self._fence_only: str | None = None
+        self._fence_line_phase = "indent"
+        self._fence_line_indent = 0
+        self._fence_line_marker: str | None = None
+        self._fence_line_run = 0
+        self._fence_line_tail_nonspace = False
 
     def inside(self, text: str, pos: int, *, buffered: bool = False) -> bool:
         if buffered:
@@ -123,6 +130,92 @@ class _MarkdownCodeTracker:
             cursor = close + len(self._CLOSE)
         self._committed = max(self._committed, cursor)
         return self._result()
+
+    def inside_fence(self, text: str, pos: int) -> bool:
+        """Whether ``pos`` is in a fenced block, ignoring inline backticks."""
+        if pos < self._fence_committed:
+            return _MarkdownCodeTracker().inside_fence(text, pos)
+        cursor = self._fence_committed
+        while cursor < pos:
+            start = text.find(self._OPEN, cursor, pos)
+            if start == -1:
+                self._feed_fence(text[cursor:pos])
+                cursor = pos
+                break
+            self._feed_fence(text[cursor:start])
+            close = text.find(self._CLOSE, start + len(self._OPEN), pos)
+            if close == -1 or close + len(self._CLOSE) > pos:
+                self._fence_committed = start
+                state = self._fence_state()
+                self._feed_fence(text[start:pos])
+                result = self._fence_result()
+                self._restore_fence_state(state)
+                return result
+            cursor = close + len(self._CLOSE)
+        self._fence_committed = max(self._fence_committed, cursor)
+        return self._fence_result()
+
+    def _fence_state(self) -> tuple[str | None, str, int, str | None, int, bool]:
+        return (
+            self._fence_only,
+            self._fence_line_phase,
+            self._fence_line_indent,
+            self._fence_line_marker,
+            self._fence_line_run,
+            self._fence_line_tail_nonspace,
+        )
+
+    def _restore_fence_state(
+        self, state: tuple[str | None, str, int, str | None, int, bool]
+    ) -> None:
+        (
+            self._fence_only,
+            self._fence_line_phase,
+            self._fence_line_indent,
+            self._fence_line_marker,
+            self._fence_line_run,
+            self._fence_line_tail_nonspace,
+        ) = state
+
+    def _feed_fence(self, chunk: str) -> None:
+        for char in chunk:
+            if char == "\n":
+                self._finish_fence_line()
+                continue
+            if self._fence_line_phase == "indent":
+                if char == " " and self._fence_line_indent < 3:
+                    self._fence_line_indent += 1
+                elif char in "`~":
+                    self._fence_line_phase = "run"
+                    self._fence_line_marker = char
+                    self._fence_line_run = 1
+                else:
+                    self._fence_line_phase = "invalid"
+            elif self._fence_line_phase == "run":
+                if char == self._fence_line_marker:
+                    self._fence_line_run += 1
+                else:
+                    self._fence_line_phase = "tail"
+                    self._fence_line_tail_nonspace = not char.isspace()
+            elif self._fence_line_phase == "tail" and not char.isspace():
+                self._fence_line_tail_nonspace = True
+
+    def _finish_fence_line(self) -> None:
+        marker = self._fence_line_marker
+        if marker is not None and self._fence_line_run >= 3:
+            if self._fence_only is None:
+                self._fence_only = marker * self._fence_line_run
+            elif (
+                marker == self._fence_only[0]
+                and self._fence_line_run >= len(self._fence_only)
+                and not self._fence_line_tail_nonspace
+            ):
+                self._fence_only = None
+        self._fence_line_phase = "indent"
+        self._fence_line_indent = 0
+        self._fence_line_marker = None
+        self._fence_line_run = 0
+        self._fence_line_tail_nonspace = False
 
     def _inside_buffered(self, text: str, pos: int) -> bool:
         """One linear query; retain multiline inline spans without changing streams."""
@@ -218,6 +311,35 @@ class _MarkdownCodeTracker:
                 opener_length = None
             cursor = end
         return opener_length is not None
+
+    def _fence_result(self) -> bool:
+        """Fence state at the current cursor without scanning inline spans."""
+        return self._fence_only is not None or self._fence_line_run >= 3
+
+
+def _mask_markdown_fences(text: str) -> str:
+    """Blank fenced regions while preserving offsets and line endings."""
+    masked: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines(keepends=True):
+        match = _MARKDOWN_FENCE_RE.match(line)
+        in_fence = fence is not None
+        if fence is None and match:
+            fence = match.group(1)
+            in_fence = True
+        elif (
+            fence is not None
+            and match
+            and match.group(1)[0] == fence[0]
+            and len(match.group(1)) >= len(fence)
+            and not line[match.end() :].strip()
+        ):
+            fence = None
+        if in_fence:
+            masked.append("".join(char if char in "\r\n" else " " for char in line))
+        else:
+            masked.append(line)
+    return "".join(masked)
 
 
 def _strip_trailing_tool_envelope(text: str, declared: set[str] | None = None) -> str:
@@ -981,10 +1103,14 @@ class Qwen3CoderToolParser(ToolParser):
         search_from = 0
         range_index = 0
         wrapper_ranges: list[tuple[int, int]] = []
+        fence_tracker = _MarkdownCodeTracker()
         while True:
             wrapper_start = model_output.find(self.tool_call_start_token, search_from)
             if wrapper_start < 0:
                 break
+            if fence_tracker.inside_fence(model_output, wrapper_start):
+                search_from = wrapper_start + len(self.tool_call_start_token)
+                continue
             inner_start = wrapper_start + len(self.tool_call_start_token)
             wrapper_close = model_output.find(self.tool_call_end_token, inner_start)
             if wrapper_close < 0:
@@ -1386,7 +1512,7 @@ class Qwen3CoderToolParser(ToolParser):
             if not positions:
                 return len(text)
             pos = min(positions)
-            if not tracker.inside(text, pos):
+            if not tracker.inside_fence(text, pos):
                 return pos
             cursor = pos + 1
         return len(text)
@@ -1404,6 +1530,7 @@ class Qwen3CoderToolParser(ToolParser):
         """
         start = len(previous_text)
         cursor = start
+        opener_in_fence = False
         while cursor < len(current_text):
             positions = [
                 pos
@@ -1413,13 +1540,15 @@ class Qwen3CoderToolParser(ToolParser):
             if not positions:
                 break
             pos = min(positions)
-            if not self._code_tracker.inside(
+            if not self._code_tracker.inside_fence(
                 self._stream_text, self._undeclared_offset + pos
             ):
                 return pos
+            opener_in_fence = True
             cursor = pos + 1
         if (
-            self.tool_call_start_token_id is not None
+            not opener_in_fence
+            and self.tool_call_start_token_id is not None
             and self.tool_call_start_token_id in delta_token_ids
         ):
             return len(previous_text)
@@ -1532,12 +1661,21 @@ class Qwen3CoderToolParser(ToolParser):
         param_open_len = len(self.parameter_prefix)
         param_close_len = len(self.parameter_end_token)
         code = _MarkdownCodeTracker()
+        next_func = text.find(self.tool_call_prefix)
+        next_param = text.find(self.parameter_prefix)
         while i < n:
-            next_func = text.find(self.tool_call_prefix, i)
-            next_param = text.find(self.parameter_prefix, i)
-            if next_func == -1:
+            candidates = [pos for pos in (next_func, next_param) if pos >= 0]
+            if not candidates:
                 return positions
-            if next_param != -1 and next_param < next_func:
+            next_marker = min(candidates)
+            if code.inside_fence(text, next_marker):
+                i = next_marker + 1
+                if next_marker == next_func:
+                    next_func = text.find(self.tool_call_prefix, i)
+                else:
+                    next_param = text.find(self.parameter_prefix, i)
+                continue
+            if next_marker == next_param:
                 header_end = text.find(">", next_param + param_open_len)
                 if header_end == -1:
                     return positions
@@ -1545,22 +1683,18 @@ class Qwen3CoderToolParser(ToolParser):
                 if close_pos == -1:
                     return positions
                 i = close_pos + param_close_len
+                next_func = text.find(self.tool_call_prefix, i)
+                next_param = text.find(self.parameter_prefix, i)
                 continue
-            if not code.inside(text, next_func):
-                positions.append(next_func)
+            positions.append(next_func)
             i = next_func + prefix_len
+            next_func = text.find(self.tool_call_prefix, i)
         return positions
 
     @staticmethod
-    def has_markdown_tool_example(text: str) -> bool:
-        """Whether an XML function opener occurs inside Markdown code."""
-        tracker = _MarkdownCodeTracker()
-        cursor = 0
-        while (pos := text.find("<function=", cursor)) >= 0:
-            if tracker.inside(text, pos):
-                return True
-            cursor = pos + len("<function=")
-        return False
+    def mask_markdown_fenced_regions(text: str) -> str:
+        """Mask fenced examples before cross-format recovery."""
+        return _mask_markdown_fences(text)
 
     def extract_tool_calls_streaming(
         self,
@@ -1827,7 +1961,7 @@ class Qwen3CoderToolParser(ToolParser):
                         trailing.endswith(self.tool_call_end_token)
                         or trailing.endswith(self.function_end_token)
                     )
-                    and not self._code_tracker.inside(
+                    and not self._code_tracker.inside_fence(
                         self._stream_text, len(self._stream_text)
                     )
                 ):

@@ -38,6 +38,15 @@ def test_first_visible_opener_without_markup():
     assert parser._first_opener_pos("plain") == len("plain")
 
 
+def test_fence_tracker_handles_current_line_and_out_of_order_queries():
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import _MarkdownCodeTracker
+
+    text = "```xml <function=get_weather>\nafter"
+    tracker = _MarkdownCodeTracker()
+    assert tracker.inside_fence(text, len(text))
+    assert tracker.inside_fence(text, text.index("<function="))
+
+
 @pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13, 10000])
 @pytest.mark.parametrize(
     "text, content, calls",
@@ -46,7 +55,6 @@ def test_first_visible_opener_without_markup():
         (f"```xml\n{CALL}\n```", f"```xml\n{CALL}\n```", 0),
         (f"Example:\n~~~xml\n{CALL}\n~~~\n", f"Example:\n~~~xml\n{CALL}\n~~~\n", 0),
         (f"Example:\n```xml\n{BARE}\n```\n", f"Example:\n```xml\n{BARE}\n```\n", 0),
-        (f"Example: `{BARE}`", f"Example: `{BARE}`", 0),
         (f"Example:\n```xml\n{CALL}", f"Example:\n```xml\n{CALL}", 0),
         (
             "Example:\n```xml\n<tool_call>\n<function=get_weather>",
@@ -85,6 +93,64 @@ def test_service_does_not_reextract_example(monkeypatch):
     content, calls = helpers._parse_tool_calls_with_parser(EXAMPLE, Request())
     assert content == EXAMPLE
     assert not calls
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13, 10000])
+def test_unclosed_parameter_in_fence_does_not_consume_later_call(size):
+    example = (
+        "```xml\n<tool_call>\n<function=get_weather>\n"
+        "<parameter=city>Paris\n```\n"
+    )
+    real_call = CALL.replace("Paris", "Rome")
+    text = example + real_call
+    got_calls, got_content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert got_calls == [("get_weather", '{"city": "Rome"}')]
+    assert got_content == example
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 7, 13, 10000])
+def test_cross_format_recovery_ignores_only_fenced_span(size):
+    text = EXAMPLE + '[Calling tool: get_weather({"city":"Rome"})]'
+    got_calls, _ = stream(text, REQUEST, size)
+    assert got_calls == [("get_weather", '{"city": "Rome"}')]
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13, 10000])
+def test_stray_backtick_does_not_hide_declared_call(size):
+    prefix = "I will check ` shortly. "
+    real_call = CALL.replace("Paris", "Rome")
+    text = prefix + real_call
+    got_calls, got_content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert got_calls == [("get_weather", '{"city": "Rome"}')]
+    assert got_content == prefix
+
+
+def test_fenced_opener_token_id_stays_content():
+    parser = Qwen3CoderToolParser(None)
+    parser.tool_call_start_token_id = 42
+    text = f"```xml\n{CALL}\n```"
+    result = parser.extract_tool_calls_streaming(
+        "", text, text, delta_token_ids=[42], request=REQUEST
+    )
+    assert result == {"content": text}
+
+
+def test_streaming_advance_waits_for_next_function_body():
+    parser = Qwen3CoderToolParser(None)
+    text = CALL + CALL
+    parser._stream_text = text
+    parser.is_tool_call_started = True
+    parser.json_closed = True
+    parser.current_tool_index = 0
+    assert (
+        parser._streaming_step_once("", text, text, [], REQUEST, {"get_weather"})
+        is None
+    )
+    assert parser.current_tool_index == 1
 
 
 @pytest.mark.parametrize("real_call", [False, True])

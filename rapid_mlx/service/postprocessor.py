@@ -3923,11 +3923,13 @@ class StreamingPostProcessor:
             or "[Calling" in _fallback_text
             or LFM_CALL_START.search(_fallback_text) is not None
         )
-        _markdown_example_check = getattr(
-            type(self.tool_parser), "has_markdown_tool_example", None
+        _markdown_fence_mask = getattr(
+            type(self.tool_parser), "mask_markdown_fenced_regions", None
         )
-        _has_markdown_tool_example = bool(
-            _markdown_example_check and _markdown_example_check(_fallback_text)
+        _cross_format_text = (
+            _markdown_fence_mask(_fallback_text)
+            if _markdown_fence_mask
+            else _fallback_text
         )
         if (
             self.tool_parser
@@ -3997,12 +3999,7 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            elif not _has_markdown_tool_example and not getattr(
-                self.tool_parser, "_undeclared_dropped", 0
-            ):
-                # The XML parser's Markdown/name boundary is authoritative,
-                # matching the non-stream helper; generic recovery would
-                # promote literal examples to executable calls (#4714).
+            elif not getattr(self.tool_parser, "_undeclared_dropped", 0):
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
                 # scans every known format and recovers calls the per-parser path
@@ -4014,7 +4011,7 @@ class StreamingPostProcessor:
                 # non-stream try/except — a parser bug must not abort the stream.
                 # See #425.
                 try:
-                    _, fb_tcs = parse_tool_calls(_fallback_text, self.request)
+                    _, fb_tcs = parse_tool_calls(_cross_format_text, self.request)
                 except Exception as e:
                     logger.warning(
                         "finalize cross-format fallback parser raised: %s", e
