@@ -466,12 +466,20 @@ class TensorFoldQwen27Backend:
             fraction = model_fraction(package)
 
         store_ref: Callable[[], Any] = lambda: None
+        # The scheduler interleaves unfinished prefills when lanes > 1.
+        # Admission and later transfer are not one transaction: the optional
+        # cut's ownership/headroom policy therefore requires a single lane.
+        engine_type = (
+            _checkpoint_engine(LaneEngine, lambda: store_ref())
+            if lanes == 1
+            else LaneEngine
+        )
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
             engine_factory=functools.partial(
-                _checkpoint_engine(LaneEngine, lambda: store_ref()),
+                engine_type,
                 prefill_plan=plan,
             ),
             lanes=lanes,

@@ -272,3 +272,40 @@ def test_raw_completion_does_not_promote_an_interior_to_history():
     run(engine, raw, cached=6144, selected=())
     assert engine.interior_tokens is None
     assert key not in store.entries
+
+
+def test_release_without_owned_cut_does_not_touch_store():
+    store = Store()
+    engine = _checkpoint_engine(Engine, lambda: store)()
+    engine._release_interior(store)
+    assert store.transfers == []
+    assert engine.interior_releases == 0
+
+
+def test_missing_assistant_marker_does_not_promote_restored_cut():
+    store, engine = setup_cut()
+    key = tuple(engine.interior_tokens)
+    engine.prefill_plan = SimpleNamespace(openers=(10,), assistant=())
+    shortened = prompt()[:6144] + [100] * 56 + [10, 11] + [0] * 6
+    shortened[6150] = 10
+    run(engine, shortened, cached=6144, selected=())
+    assert engine.interior_tokens is None
+    assert key not in store.entries
+    assert store.transfers == [list(key)]
+
+
+def test_interrupted_existing_cut_becomes_runtime_progress():
+    # A cancelled prefill can return the restored cut as its retry progress.
+    # It must then outlive the adapter's next incompatible prompt.
+    store, engine = setup_cut()
+    tokens = engine.interior_tokens
+    stream = SimpleNamespace(prompt_ids=prompt(edit=True), history_checkpoints=[])
+    steps = engine.begin_stream(stream, cached_tokens=6144, checkpoints_at=[7950])
+    next(steps)
+    stream.history_checkpoints.append((tokens, [100]))
+    steps.close()
+    assert engine.interior_tokens is None
+    keep(store, stream)
+    run(engine, prompt(1))
+    assert tuple(tokens) in store.entries
+    assert tokens not in store.transfers

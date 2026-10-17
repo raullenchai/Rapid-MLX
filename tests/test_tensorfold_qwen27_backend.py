@@ -201,7 +201,7 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
     assert app.closed
 
 
-@pytest.mark.parametrize("lanes", [1, 4])
+@pytest.mark.parametrize("lanes", [1, 2, 4, 8])
 def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 
@@ -300,6 +300,10 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
     assert loaded["app"]["snapshot_dir"] is None
     assert loaded["marker_tokenizer"] is loaded["tokenizer"]
     assert loaded["engine_model"] is loaded["model"]
+    # Multi-lane prefills interleave before checkpoint transfer. They must use
+    # the native engine, with no optional state or shared-store observations.
+    assert (type(backend._app.engine) is LaneEngine) == (lanes > 1)
+    assert hasattr(backend._app.engine, "interior_tokens") == (lanes == 1)
     # Extra interior copies can evict the histories needed by other chats.
     prompt_ids = [0] * 7960
     for at in (0, 33, 7950):
