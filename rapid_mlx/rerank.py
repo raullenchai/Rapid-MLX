@@ -21,6 +21,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -295,7 +296,7 @@ class RerankScores:
     prompt_tokens: int
 
 
-def _read_model_config(model_name: str) -> dict:
+def _read_model_config(model_name: str) -> dict[str, Any]:
     local = Path(os.path.expanduser(model_name))
     if local.is_dir():
         config_path = local / "config.json"
@@ -303,7 +304,8 @@ def _read_model_config(model_name: str) -> dict:
         from . import model_downloads
 
         config_path = Path(model_downloads.hf_hub_download(model_name, "config.json"))
-    return json.loads(config_path.read_text(encoding="utf-8"))
+    config: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
+    return config
 
 
 class _ClassificationHead(nn.Module):
@@ -453,8 +455,9 @@ class RerankEngine:
         self.prompt: str | None = None
         self.family: RerankFamily | None = None
         self._max_length_setting = normalize_max_length(max_length)
-        self._model = None
-        self._tokenizer = None
+        # One of several model and tokenizer classes, depending on the family.
+        self._model: Any = None
+        self._tokenizer: Any = None
         self._answer_ids: list[int] = []
         self._marker_ids: tuple[int, int] = (0, 0)
         self._context_length = 0
@@ -469,6 +472,12 @@ class RerankEngine:
     @property
     def accepts_instruction(self) -> bool:
         return self.family is not None and self.family.accepts_instruction
+
+    @property
+    def _loaded_family(self) -> RerankFamily:
+        family = self.family
+        assert family is not None, "rerank model is not loaded"
+        return family
 
     def load(self) -> None:
         from . import model_downloads
@@ -489,6 +498,8 @@ class RerankEngine:
 
         logger.info("Loading rerank model: %s (%s)", self.model_name, family.label)
         start = time.perf_counter()
+        # Untyped config.json value, validated by _resolve_max_length.
+        model_max: Any
         if family.scoring == "generative":
             from mlx_lm import load as load_lm
 
@@ -518,6 +529,7 @@ class RerankEngine:
                 )
             answer_ids.append(int(ids[0]))
         if family.scoring == "listwise":
+            assert family.marker_tokens is not None
             markers = []
             for token in family.marker_tokens:
                 ids = list(tokenizer.encode(token, add_special_tokens=False))
@@ -546,11 +558,17 @@ class RerankEngine:
         )
 
     def _resolve_max_length(self, declared: object) -> int:
-        valid = isinstance(declared, int) and not isinstance(declared, bool)
-        model_max = declared if valid and declared > 0 else None
+        model_max = (
+            declared
+            if isinstance(declared, int)
+            and not isinstance(declared, bool)
+            and declared > 0
+            else None
+        )
         setting = self._max_length_setting
-        if setting == "auto":
-            auto = self.family.auto_max_length
+        # normalize_max_length returns "auto" as its only string value.
+        if isinstance(setting, str):
+            auto = self._loaded_family.auto_max_length
             return min(model_max or auto, auto)
         if model_max is not None and setting > model_max:
             logger.warning(
@@ -568,12 +586,14 @@ class RerankEngine:
     ) -> tuple[list[int], list[int]]:
         """Token ids before and after the document for this family's format."""
         tokenizer = self._tokenizer
-        family_id = self.family.family_id
+        family_id = self._loaded_family.family_id
 
         def encode(text: str) -> list[int]:
             return list(tokenizer.encode(text, add_special_tokens=False))
 
         if family_id == "bge2":
+            # bge2 has a default instruction, so this is never None.
+            assert instruction is not None
             head = [tokenizer.bos_token_id] + encode(f"A: {query}") + encode("\n")
             return head, encode("\n") + encode(instruction)
         if family_id == "mxbai2":
@@ -583,6 +603,7 @@ class RerankEngine:
             prefix = _CHATML_PREFIX.format(system=_QWEN2_DEFAULT_SYSTEM_PROMPT)
             head = encode(prefix) + encode(query_prompt) + encode("\n")
             # mxbai2 was trained with its judging prompt after the document.
+            assert self.prompt is not None
             tail = encode(self.prompt) + encode(_CHATML_SUFFIX)
             return head, encode("\n") + tail
         if family_id == "roberta":
@@ -618,7 +639,7 @@ class RerankEngine:
                 observed_tokens=len(head) + len(tail),
                 allowed_tokens=self.max_length,
             )
-        prefix = self.family.document_prefix
+        prefix = self._loaded_family.document_prefix
         sequences = []
         truncated = 0
         for index, document in enumerate(documents):
@@ -672,7 +693,7 @@ class RerankEngine:
         padded = mx.array(
             [ids + [self._pad_id] * (width - len(ids)) for ids in sequences]
         )
-        if self.family.scoring == "cross-encoder":
+        if self._loaded_family.scoring == "cross-encoder":
             mask = mx.array(
                 [[1] * len(ids) + [0] * (width - len(ids)) for ids in sequences]
             )
@@ -685,7 +706,8 @@ class RerankEngine:
             else:
                 scores = mx.sigmoid(logits[:, 0])
         mx.eval(scores)
-        return scores.tolist()
+        values: list[float] = scores.tolist()
+        return values
 
     def _truncate_listwise(
         self, text: str, limit: int, index: int | None
@@ -706,7 +728,9 @@ class RerankEngine:
     def _listwise_prompt(
         self, query: str, documents: list[str], instruction: str | None
     ) -> str:
-        doc_token, query_token = self.family.marker_tokens
+        marker_tokens = self._loaded_family.marker_tokens
+        assert marker_tokens is not None
+        doc_token, query_token = marker_tokens
 
         def clean(text: str) -> str:
             return text.replace(doc_token, "").replace(query_token, "")
@@ -751,8 +775,12 @@ class RerankEngine:
     ) -> RerankScores:
         """jina-reranker-v3 ``rerank()``: blocks of documents, then a rescore
         against the block-weighted query state."""
+        family = self._loaded_family
+        assert family.max_query_tokens is not None
+        assert family.max_block_documents is not None
+        max_block_documents = family.max_block_documents
         query, query_length, _ = self._truncate_listwise(
-            query, self.family.max_query_tokens, None
+            query, family.max_query_tokens, None
         )
         truncated = 0
         docs, lengths = [], []
@@ -780,10 +808,7 @@ class RerankEngine:
         for index, length in enumerate(lengths):
             block.append(index)
             capacity -= length
-            if (
-                len(block) >= self.family.max_block_documents
-                or capacity <= self.max_length
-            ):
+            if len(block) >= max_block_documents or capacity <= self.max_length:
                 blocks.append(block)
                 block = []
                 capacity = self._context_length - 2 * query_length
@@ -823,11 +848,11 @@ class RerankEngine:
             self.load()
         if instruction and not self.accepts_instruction:
             raise RerankInstructionNotSupportedError(
-                f"{self.family.label} rerankers take no instruction."
+                f"{self._loaded_family.label} rerankers take no instruction."
             )
         if not documents:
             return RerankScores(scores=[], prompt_tokens=0)
-        if self.family.scoring == "listwise":
+        if self._loaded_family.scoring == "listwise":
             try:
                 return self._score_listwise(
                     query, documents, instruction or self.instruction

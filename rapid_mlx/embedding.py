@@ -371,6 +371,7 @@ class EmbeddingEngine:
                 an input exceeds ``effective_max_length``.
         """
         self._ensure_loaded()
+        assert self._model is not None and self._tokenizer is not None
 
         if isinstance(texts, str):
             texts = [texts]
@@ -412,7 +413,7 @@ class EmbeddingEngine:
         embeds: mx.array = output.text_embeds
 
         # Convert to Python lists for JSON serialization
-        result = embeds.tolist()
+        result: list[list[float]] = embeds.tolist()
 
         # Release the Metal buffers this pass allocated (issue #1380). MLX
         # keeps freed buffers in its allocator pool keyed by size, and the
@@ -523,6 +524,7 @@ class EmbeddingEngine:
                 an input exceeds ``effective_max_length``.
         """
         self._ensure_loaded()
+        assert self._model is not None
 
         if not token_batches:
             return []
@@ -560,7 +562,7 @@ class EmbeddingEngine:
 
         output = self._model(input_ids, attention_mask=attention_mask)
         embeds: mx.array = output.text_embeds
-        result = embeds.tolist()
+        result: list[list[float]] = embeds.tolist()
         # Same allocator-pool release as embed() (issue #1380): drop the
         # per-batch Metal buffers now that the vectors are Python lists.
         mx.clear_cache()
@@ -582,6 +584,7 @@ class EmbeddingEngine:
         total = 0
         for text in texts:
             try:
+                assert self._tokenizer is not None
                 tokens = self._tokenizer.encode(text)
                 if isinstance(tokens, list) or hasattr(tokens, "__len__"):
                     n = len(tokens)
