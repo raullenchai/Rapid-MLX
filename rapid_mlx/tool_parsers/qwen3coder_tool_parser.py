@@ -1575,7 +1575,9 @@ class Qwen3CoderToolParser(ToolParser):
         partial_start = max(0, len(current_text) - len(self.tool_call_prefix) + 1)
         for pos in range(partial_start, len(current_text)):
             tail = current_text[pos:]
-            if self.tool_call_prefix.startswith(tail) and not self._code_tracker.inside_fence(
+            if self.tool_call_prefix.startswith(
+                tail
+            ) and not self._code_tracker.inside_fence(
                 self._stream_text, self._undeclared_offset + pos
             ):
                 self._pending_partial_opener = True

@@ -116,8 +116,7 @@ def test_service_does_not_reextract_example(monkeypatch):
 @pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13, 10000])
 def test_unclosed_parameter_in_fence_does_not_consume_later_call(size):
     example = (
-        "```xml\n<tool_call>\n<function=get_weather>\n"
-        "<parameter=city>Paris\n```\n"
+        "```xml\n<tool_call>\n<function=get_weather>\n<parameter=city>Paris\n```\n"
     )
     real_call = CALL.replace("Paris", "Rome")
     text = example + real_call
@@ -213,14 +212,14 @@ def test_streaming_advance_waits_for_next_function_body():
 
 
 @pytest.mark.parametrize("real_call", [False, True])
-def test_chat_completions_preserves_example(real_call):
+def test_chat_completions_preserves_example(real_call, monkeypatch):
     # The route strips outer whitespace from all assistant responses.
     example = EXAMPLE.rstrip()
     client = _make_client(
         _RecordingEngine(text=example + ("\n" + CALL if real_call else "")),
         tool_call_parser="qwen3_coder_xml",
     )
-    get_config().enable_auto_tool_choice = True
+    monkeypatch.setattr(get_config(), "enable_auto_tool_choice", True)
     response = client.post(
         "/v1/chat/completions",
         json={
