@@ -124,7 +124,9 @@ def test_real_distributions_ship_every_tracked_license_file(tmp_path):
         sdist_names = set(archive.getnames())
     top = sdist.name.removesuffix(".tar.gz")
     missing = []
-    for package, relative in sorted(_tracked_license_files()):
+    inventory = _tracked_license_files()
+    assert inventory and ("rapid_mlx", "spec_decode/mtp/LICENSE-MTPLX") in inventory
+    for package, relative in sorted(inventory):
         path = f"{package}/{relative}"
         if path not in wheel_names:
             missing.append(f"wheel: {path}")
