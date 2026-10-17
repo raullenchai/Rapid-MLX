@@ -384,6 +384,10 @@ def test_serve_audio_alias_refuses_when_model_downloads_disabled(monkeypatch, ca
 
 
 def test_main_refuses_uncached_repo_when_model_downloads_disabled(monkeypatch, capsys):
+    from rapid_mlx import model_downloads
+
+    # main() configures a process-wide switch; restore it after this invocation.
+    monkeypatch.setattr(model_downloads, "_cli_disabled", False)
     monkeypatch.setattr(
         sys,
         "argv",

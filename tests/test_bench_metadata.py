@@ -43,7 +43,7 @@ class TestMetadataEmission:
         assert discovered == meta.JSON_BENCH_SCRIPTS | meta.NON_JSON_BENCH_SCRIPTS
         assert not meta.JSON_BENCH_SCRIPTS & meta.NON_JSON_BENCH_SCRIPTS
 
-    @pytest.mark.parametrize("script_name", meta.JSON_BENCH_SCRIPTS)
+    @pytest.mark.parametrize("script_name", sorted(meta.JSON_BENCH_SCRIPTS))
     def test_json_emitter_uses_central_writer(self, script_name):
         script = ROOT / "scripts" / script_name
         tree = ast.parse(script.read_text(), filename=str(script))

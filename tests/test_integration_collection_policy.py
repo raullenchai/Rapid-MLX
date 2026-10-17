@@ -42,6 +42,10 @@ def test_integration_requires_explicit_server_url(
             "-o",
             "addopts=",
             f"--junitxml={tmp_path / 'results.xml'}",
+            # Nested sessions must not race the outer workers' shared numbered
+            # temp-root retention cleanup after their test bodies have finished.
+            "--basetemp",
+            str(tmp_path / "pytest-temp"),
             str(tmp_path / "test_probe.py"),
             *arguments,
         ],

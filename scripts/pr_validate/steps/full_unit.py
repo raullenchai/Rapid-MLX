@@ -13,9 +13,11 @@ broken that's a separate problem and we want to surface it loudly.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 
+from .._xdist import pytest_parallel_args
 from ..base import Step, StepResult
 from ..context import Context
 
@@ -31,6 +33,9 @@ class FullUnitStep(Step):
     def run(self, ctx: Context) -> StepResult:
         log_path = ctx.artifact_path("full-unit.log")
 
+        parallel_args, note = pytest_parallel_args()
+        ctx.run_log(note)
+
         # Mirror what we run by hand. Two ignores: integrations needs a
         # live server (covered in step 5), and test_event_loop is the
         # long-running soak — separate budget.
@@ -43,6 +48,8 @@ class FullUnitStep(Step):
             "--ignore=tests/test_event_loop.py",
             "-q",
             "--no-header",
+            "-rfE",
+            *parallel_args,
             # Don't stop on first failure — we want the full count for
             # the scorecard ("3 failed, 2080 passed" is more actionable
             # than "1 failed, ???? passed").
@@ -50,7 +57,7 @@ class FullUnitStep(Step):
         proc = subprocess.run(  # noqa: S603
             cmd, capture_output=True, text=True, cwd=str(ctx.repo_root)
         )
-        log_path.write_text((proc.stdout or "") + (proc.stderr or ""))
+        log_path.write_text(note + "\n" + (proc.stdout or "") + (proc.stderr or ""))
 
         # Pull the summary line: pytest ends with a line like
         # "==== 3 failed, 2080 passed, 17 skipped in 25.56s ===="
@@ -60,39 +67,41 @@ class FullUnitStep(Step):
             return StepResult(
                 name=self.name,
                 status="pass",
-                summary=summary_line or "all tests passed",
+                summary=f"{summary_line or 'all tests passed'}; {note}",
+                details=note,
                 artifacts=[str(log_path)],
             )
 
-        # On failure, extract the per-test FAILED lines for the
+        # On failure, extract the per-test FAILED and ERROR lines for the
         # scorecard's detail block — much more useful than dumping the
         # whole log inline.
         failed = _extract_failed_lines(proc.stdout)
-        details = ["**Failed tests:**\n```", *failed[:30], "```"]
+        details = [note, "**Failed tests:**\n```", *failed[:30], "```"]
         if len(failed) > 30:
             details.append(f"\n…and {len(failed) - 30} more — see {log_path}")
 
         return StepResult(
             name=self.name,
             status="fail",
-            summary=summary_line or f"pytest exited {proc.returncode}",
+            summary=f"{summary_line or f'pytest exited {proc.returncode}'}; {note}",
             details="\n".join(details),
             artifacts=[str(log_path)],
         )
 
 
 def _last_summary_line(stdout: str) -> str:
-    """Pytest writes its overall summary as the very last non-empty
-    line wrapped in '====' decorations. Return without decorations."""
+    """Return the final outcome summary, with or without pytest decorations."""
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
-        if line.startswith("=") and ("passed" in line or "failed" in line):
+        if re.search(
+            r"\b\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?)\b", line
+        ) and re.search(r"\bin \d", line):
             return line.strip("= ").strip()
     return ""
 
 
 def _extract_failed_lines(stdout: str) -> list[str]:
-    """Return the lines pytest's short summary section labels FAILED."""
+    """Return the lines pytest's short summary section labels FAILED or ERROR."""
     out = []
     in_summary = False
     for line in (stdout or "").splitlines():
@@ -102,6 +111,6 @@ def _extract_failed_lines(stdout: str) -> list[str]:
         if in_summary:
             if line.startswith("="):
                 break
-            if line.startswith("FAILED"):
+            if line.startswith(("FAILED", "ERROR")):
                 out.append(line)
     return out

@@ -91,23 +91,73 @@ def _claim_exact_loopback_port(stack: ExitStack, port: int) -> None:
 
 
 @pytest.fixture
-def scan_base() -> int:
-    """Return an OS-selected base whose full candidate range is available."""
+def scan_base(monkeypatch) -> int:
+    """Exercise consecutive-port policy without racing other kernel bind(0)s.
 
-    for _attempt in range(100):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as seed:
-            seed.bind(("127.0.0.1", 0))
-            base = seed.getsockname()[1]
-        if base + cli.DEFAULT_SERVE_PORT_CANDIDATES > 65536:
-            continue
-        try:
-            with ExitStack() as probes:
-                for port in range(base, base + cli.DEFAULT_SERVE_PORT_CANDIDATES):
-                    _claim_exact_loopback_port(probes, port)
-        except OSError:
-            continue
-        return base
-    pytest.fail("could not reserve an ephemeral serve-port scan range")
+    Keep the real collision-probe code, with deterministic socket binding state.
+    The uvicorn collision tests below still use live ephemeral listeners.
+    """
+    bound = set()
+    next_port = 40000
+
+    class ProbeSocket:
+        address = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def setsockopt(self, *args):
+            pass
+
+        def bind(self, address):
+            nonlocal next_port
+            host, port = address
+            if port == 0:
+                port = next_port
+                next_port += cli.DEFAULT_SERVE_PORT_CANDIDATES
+            address = (host, port)
+            if address in bound:
+                raise OSError(errno.EADDRINUSE, "address in use")
+            self.address = address
+            bound.add(address)
+
+        def listen(self, *args):
+            pass
+
+        def getsockname(self):
+            return self.address
+
+        def close(self):
+            if self.address is not None:
+                bound.remove(self.address)
+                self.address = None
+
+    monkeypatch.setattr(socket, "socket", ProbeSocket)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as seed:
+        seed.bind(("127.0.0.1", 0))
+        return seed.getsockname()[1]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0", ""])
+def test_live_port_probe_detects_loopback_listener(host, capsys):
+    """Retain real kernel coverage separately from deterministic scan policy."""
+    listener, port = _claim_loopback_port()
+    with listener:
+        # A wildcard bind reports itself as "0.0.0.0" when the kernel rejects it
+        # (Linux); otherwise the loopback-shadow probe reports the listener.
+        assert cli._port_collision_host(host, port) in {host or "0.0.0.0", "127.0.0.1"}
+        with pytest.raises(SystemExit) as exc:
+            cli._port_preflight_or_die(
+                host, port, model="qwen3.5-4b-4bit", port_explicit=True
+            )
+    assert exc.value.code == 1
+    assert f"Port {port} is already in use" in capsys.readouterr().out
 
 
 def test_implicit_busy_default_selects_next_port_and_stamps_user_urls(
@@ -210,13 +260,10 @@ def test_implicit_wildcard_scan_detects_loopback_shadow(capsys, scan_base):
     ]
 
 
-def test_explicit_free_port_has_no_substitution_notice(capsys):
+def test_explicit_free_port_has_no_substitution_notice(capsys, scan_base):
     """A user-selected free port passes through without fallback output."""
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-
+    port = scan_base
     assert (
         cli._resolve_serve_port(
             "127.0.0.1",

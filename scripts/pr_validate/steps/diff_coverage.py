@@ -49,6 +49,7 @@ import time
 import traceback
 from pathlib import Path
 
+from .._xdist import pytest_parallel_args
 from ..base import Step, StepResult
 from ..context import Context
 
@@ -63,11 +64,14 @@ _COV_PACKAGE = "rapid_mlx"
 # full suite is ~3 min today) — a false timeout would just silently drop a
 # measurement, so err long.
 _PYTEST_TIMEOUT_S = 1800
+# Bounds only the diff-cover CLI (it scores an existing coverage.xml); the
+# instrumented pytest suite above is bounded by _PYTEST_TIMEOUT_S.
 _DIFF_COVER_TIMEOUT_S = 180
 
 # pytest exit codes that still yield a trustworthy coverage.xml. 0 = all
-# passed; 1 = tests ran but some FAILED — coverage is a complete record of
-# the lines that executed either way (pytest-cov writes on session finish
+# passed; 1 = tests ran but some FAILED — absent worker data loss (checked
+# below), coverage is a complete record of the lines that executed either
+# way (pytest-cov writes on session finish
 # regardless of outcomes). 2 = interrupted, 3 = internal error, 4 = usage
 # error, 5 = no tests collected — those leave no dependable coverage, so we
 # skip on them. Accepting exit 1 is deliberate: an ADVISORY baseline
@@ -97,6 +101,36 @@ _CAPTURE_BLOCK_BYTES = 65536  # pipe read granularity
 # Keep the diagnostic log readable — we tail (not head) subprocess output so
 # the most recent lines (pytest's failure summary) always survive truncation.
 _LOG_TAIL_CHARS = 4000
+
+
+# Line-start diagnostics xdist / pytest-cov print when a worker's results or
+# coverage data are lost.
+_WORKER_LOSS_RE = re.compile(
+    r"^(?:\[gw\d+\] node down:|replacing crashed worker gw\d+|"
+    r"worker '?gw\d+'? crashed|maximum crashed workers reached:|"
+    r"The following workers failed to return coverage data)"
+)
+# pytest's FAILURES / ERRORS sections replay captured test output verbatim.
+_CAPTURED_SECTIONS = {"FAILURES", "ERRORS"}
+_SECTION_RE = re.compile(r"^=+ (.+?) =+$")
+
+
+def _worker_data_lost(stdout: str | None, stderr: str | None) -> bool:
+    """True if the plugins themselves reported lost worker data.
+
+    Lines inside the FAILURES / ERRORS sections are a test's own captured
+    output, so a test that prints similar words cannot discard a valid
+    measurement.
+    """
+    in_captured = False
+    for line in (stdout or "").splitlines():
+        header = _SECTION_RE.match(line)
+        if header:
+            in_captured = header.group(1).strip() in _CAPTURED_SECTIONS
+            continue
+        if not in_captured and _WORKER_LOSS_RE.match(line):
+            return True
+    return any(_WORKER_LOSS_RE.match(line) for line in (stderr or "").splitlines())
 
 
 class DiffCoverageStep(Step):
@@ -201,6 +235,8 @@ class DiffCoverageStep(Step):
         #    early and hand us partial exit-1 coverage that we would then
         #    publish as the PR's number. With this override the argv here is the
         #    complete, self-contained spec of the run (codex #1220 r17).
+        parallel_args, parallel_note = pytest_parallel_args()
+        ctx.run_log(parallel_note)
         pytest_cmd = [
             sys.executable,
             "-m",
@@ -218,6 +254,7 @@ class DiffCoverageStep(Step):
             "--no-header",
             "-p",
             "no:cacheprovider",
+            *parallel_args,
         ]
         ctx.run_log("diff_coverage: running instrumented suite (advisory)…")
         try:
@@ -237,8 +274,8 @@ class DiffCoverageStep(Step):
         # 3. Coverage trust model (see ``_PYTEST_COVERAGE_VALID_EXITS``). We
         #    accept exit 0 (all passed) and exit 1 (some tests failed but the
         #    run completed and coverage.xml is a valid record of executed
-        #    lines) and skip only on 2-5 (interrupted / internal error /
-        #    usage error / no tests) — those leave no dependable coverage. A
+        #    lines, unless worker data was lost) and skip on 2-5 (interrupted /
+        #    internal error / usage error / no tests) — no dependable coverage. A
         #    failing test that WAS meant to exercise the changed lines simply
         #    leaves them uncovered, which is honest advisory signal, not
         #    contamination; the caveat below flags that the % may under-count.
@@ -251,6 +288,16 @@ class DiffCoverageStep(Step):
                 log_path if wrote else None,
             )
         suite_had_failures = pytest_proc.returncode == 1
+
+        # xdist can replace a crashed worker and exit 1 while pytest-cov
+        # still writes XML from surviving workers. That data is incomplete.
+        if _worker_data_lost(pytest_proc.stdout, pytest_proc.stderr):
+            wrote = _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
+            return self._skip(
+                "advisory coverage skipped (xdist worker crash or missing "
+                "worker coverage data — coverage may be incomplete)",
+                log_path if wrote else None,
+            )
 
         if not xml_path.exists():
             wrote = _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
