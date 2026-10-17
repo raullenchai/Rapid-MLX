@@ -8,3 +8,4 @@
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.
 
 - **Desktop no longer quits when you open a generated video**: clicking a finished video's preview now plays it in the app instead of crashing Rapid-MLX Desktop.
+- **XML tool-call examples stay visible**: Markdown code examples remain content even when they name an available tool, including in streamed replies; real calls after a closed code fence still execute.

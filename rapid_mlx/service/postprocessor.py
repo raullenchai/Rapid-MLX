@@ -3923,6 +3923,12 @@ class StreamingPostProcessor:
             or "[Calling" in _fallback_text
             or LFM_CALL_START.search(_fallback_text) is not None
         )
+        _markdown_example_check = getattr(
+            type(self.tool_parser), "has_markdown_tool_example", None
+        )
+        _has_markdown_tool_example = bool(
+            _markdown_example_check and _markdown_example_check(_fallback_text)
+        )
         if (
             self.tool_parser
             and _fallback_text
@@ -3991,7 +3997,12 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            elif not getattr(self.tool_parser, "_undeclared_dropped", 0):
+            elif not _has_markdown_tool_example and not getattr(
+                self.tool_parser, "_undeclared_dropped", 0
+            ):
+                # The XML parser's Markdown/name boundary is authoritative,
+                # matching the non-stream helper; generic recovery would
+                # promote literal examples to executable calls (#4714).
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
                 # scans every known format and recovers calls the per-parser path

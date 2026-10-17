@@ -576,7 +576,7 @@ def _stream_snapshots():
 
 
 def test_streaming_unchanged_against_base():
-    """All streaming definitions are identical; compare review events as well."""
+    """Unrelated streaming definitions stay identical to origin/main."""
     import ast
     import os
     import subprocess
@@ -612,7 +612,17 @@ def test_streaming_unchanged_against_base():
                         for method in node.body
                         if not (
                             isinstance(method, ast.FunctionDef)
-                            and method.name == "strip_trailing_tool_envelope"
+                            and method.name
+                            in {
+                                "strip_trailing_tool_envelope",
+                                # #4714 intentionally changes these scans;
+                                # dedicated fence tests pin their output.
+                                "_first_opener_pos",
+                                "_new_opener_position",
+                                "_function_start_positions",
+                                "has_markdown_tool_example",
+                                "_streaming_step_once",
+                            }
                         )
                     ]
             # The opt-in buffered Markdown query leaves the original streaming

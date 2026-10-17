@@ -1375,15 +1375,21 @@ class Qwen3CoderToolParser(ToolParser):
         opener is present so callers can use it as an unconditional slice
         endpoint.
         """
-        tc = text.find(self.tool_call_start_token)
-        fn = text.find(self.tool_call_prefix)
-        if tc == -1 and fn == -1:
-            return len(text)
-        if tc == -1:
-            return fn
-        if fn == -1:
-            return tc
-        return min(tc, fn)
+        tracker = _MarkdownCodeTracker()
+        cursor = 0
+        while cursor < len(text):
+            positions = [
+                pos
+                for marker in (self.tool_call_start_token, self.tool_call_prefix)
+                if (pos := text.find(marker, cursor)) >= 0
+            ]
+            if not positions:
+                return len(text)
+            pos = min(positions)
+            if not tracker.inside(text, pos):
+                return pos
+            cursor = pos + 1
+        return len(text)
 
     def _new_opener_position(
         self, previous_text: str, current_text: str, delta_token_ids: Sequence[int]
@@ -1397,13 +1403,21 @@ class Qwen3CoderToolParser(ToolParser):
         transition out of content-only mode.
         """
         start = len(previous_text)
-        positions = [
-            pos
-            for marker in (self.tool_call_start_token, self.tool_call_prefix)
-            if (pos := current_text.find(marker, start)) >= 0
-        ]
-        if positions:
-            return min(positions)
+        cursor = start
+        while cursor < len(current_text):
+            positions = [
+                pos
+                for marker in (self.tool_call_start_token, self.tool_call_prefix)
+                if (pos := current_text.find(marker, cursor)) >= 0
+            ]
+            if not positions:
+                break
+            pos = min(positions)
+            if not self._code_tracker.inside(
+                self._stream_text, self._undeclared_offset + pos
+            ):
+                return pos
+            cursor = pos + 1
         if (
             self.tool_call_start_token_id is not None
             and self.tool_call_start_token_id in delta_token_ids
@@ -1517,6 +1531,7 @@ class Qwen3CoderToolParser(ToolParser):
         prefix_len = len(self.tool_call_prefix)
         param_open_len = len(self.parameter_prefix)
         param_close_len = len(self.parameter_end_token)
+        code = _MarkdownCodeTracker()
         while i < n:
             next_func = text.find(self.tool_call_prefix, i)
             next_param = text.find(self.parameter_prefix, i)
@@ -1531,9 +1546,21 @@ class Qwen3CoderToolParser(ToolParser):
                     return positions
                 i = close_pos + param_close_len
                 continue
-            positions.append(next_func)
+            if not code.inside(text, next_func):
+                positions.append(next_func)
             i = next_func + prefix_len
         return positions
+
+    @staticmethod
+    def has_markdown_tool_example(text: str) -> bool:
+        """Whether an XML function opener occurs inside Markdown code."""
+        tracker = _MarkdownCodeTracker()
+        cursor = 0
+        while (pos := text.find("<function=", cursor)) >= 0:
+            if tracker.inside(text, pos):
+                return True
+            cursor = pos + len("<function=")
+        return False
 
     def extract_tool_calls_streaming(
         self,
@@ -1794,9 +1821,15 @@ class Qwen3CoderToolParser(ToolParser):
                 # emit an empty tail. ``</function>`` is the actual tool
                 # close; ``</tool_call>`` may follow as optional framing.
                 trailing = current_text.rstrip()
-                if delta_text.strip() == "" and (
-                    trailing.endswith(self.tool_call_end_token)
-                    or trailing.endswith(self.function_end_token)
+                if (
+                    delta_text.strip() == ""
+                    and (
+                        trailing.endswith(self.tool_call_end_token)
+                        or trailing.endswith(self.function_end_token)
+                    )
+                    and not self._code_tracker.inside(
+                        self._stream_text, len(self._stream_text)
+                    )
                 ):
                     return None
                 return {"content": delta_text}
