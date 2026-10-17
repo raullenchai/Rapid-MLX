@@ -9,6 +9,7 @@ import logging
 import math
 import struct
 import time
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -203,15 +204,16 @@ async def create_embeddings(
             texts = [raw_input]
         elif isinstance(raw_input, list) and not raw_input:
             raise HTTPException(status_code=400, detail="Input must not be empty")
+        # mypy cannot narrow list element types through all(isinstance(...)).
         elif isinstance(raw_input, list) and all(isinstance(x, str) for x in raw_input):
-            texts = raw_input
+            texts = cast(list[str], raw_input)
         elif isinstance(raw_input, list) and all(isinstance(x, int) for x in raw_input):
-            token_batches = [list(raw_input)]
+            token_batches = [list(cast(list[int], raw_input))]
         elif isinstance(raw_input, list) and all(
             isinstance(x, list) and all(isinstance(t, int) for t in x)
             for x in raw_input
         ):
-            token_batches = [list(x) for x in raw_input]
+            token_batches = [list(cast(list[int], x)) for x in raw_input]
         else:
             raise HTTPException(
                 status_code=400,
@@ -250,6 +252,7 @@ async def create_embeddings(
                 )
                 n_inputs = len(token_batches)
             else:
+                assert texts is not None
                 embedding_engine = cfg.embedding_engine
 
                 def count_and_embed():
