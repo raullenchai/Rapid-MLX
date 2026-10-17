@@ -279,6 +279,18 @@ media row. Return opens the selection, Space previews, Cmd-Return reveals in
 Finder, and Cmd-C copies its path. Section headers are accessible to VoiceOver.
 Older engines without `groups` retain the flat results view.
 
+When the final normal result list is empty and semantic search is available,
+Search returns up to three closest files (also bounded by `limit`), ordered by
+positive semantic similarity. Folder and kind filters, per-file grouping, and
+file-safety checks still apply. These weak suggestions use the existing string
+array field `"matched": ["closest"]`; no new required fields are added, so older
+clients can decode them. Their `score` is semantic similarity, not a relevance
+probability. Normal hits retain their existing admission, ranking, and markers;
+closest files are never mixed into normal hits. Keyword-only mode still returns
+an empty list when nothing matches. Group previews contain only these same
+closest files when requested. Desktop labels an entirely closest result list
+“No exact matches · Closest files” and retains the empty state for zero results.
+
 Results contain
 `path`, `folder_id`, `title`, `snippet`, `highlights`, `score`, `matched`, `page`,
 `line`, `modified_at` (Unix seconds), `size` (bytes), `kind`, and `timestamp`.
@@ -293,7 +305,7 @@ places them in the image or video group when recognized, otherwise the text
 empty `highlights`, null `page`/`line`, and matches on visual semantics and/or
 filename keywords. Video results collapse to the best qualifying frame per file;
 its timestamp survives filename keyword fusion. Scores are bounded
-0–1 ranking scores; `matched` contains `semantic`, `keyword`, or both. Hybrid
+0–1 ranking scores; normal hits have `matched` containing `semantic`, `keyword`, or both. Hybrid
 search preserves explicit lexical evidence before fusing weaker matches. A term
 is distinctive when it occurs in at most `max(1, floor(0.10 × indexed files))`
 files with chunks, across the whole index. Repeated chunks, keyword-only tails,

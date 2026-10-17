@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from itertools import islice
 from pathlib import Path
 from typing import Protocol
 
@@ -42,6 +43,7 @@ from .extraction import (
 from .parsing import parse_document
 from .search import (
     KINDS,
+    SEMANTIC_FALLBACK_FILES,
     fuse,
     grouped_rankings,
     query_statistics,
@@ -1114,6 +1116,43 @@ class LocalSearch:
             hits.append(hit)
             if not include_groups and len(hits) == limit:
                 break
+        if not hits and mode == "hybrid" and semantic_scores is not None:
+            # Reuse scoped scores and per-file/safety checks only on empty results.
+            hits = await asyncio.to_thread(
+                lambda: list(
+                    islice(
+                        admitted(
+                            (i, score, ["closest"])
+                            for i, score in sorted(
+                                semantic_scores.items(),
+                                key=lambda item: (-item[1], item[0]),
+                            )
+                            if score > 0
+                        ),
+                        min(limit, SEMANTIC_FALLBACK_FILES),
+                    )
+                )
+            )
+            fallback: dict[str, object] = {
+                "results": [await result(hit) for hit in hits],
+                "mode": mode,
+            }
+            if include_groups:
+                fallback_groups: list[dict[str, object]] = []
+                for kind in dict.fromkeys(rows[hit[0]]["kind"] for hit in hits):
+                    group = [hit for hit in hits if rows[hit[0]]["kind"] == kind]
+                    fallback_groups.append(
+                        {
+                            "kind": kind,
+                            "results": [
+                                await result(hit) for hit in group[:group_limit]
+                            ],
+                            "total": len(group),
+                        }
+                    )
+                fallback["groups"] = fallback_groups
+            fallback["took_ms"] = (time.perf_counter() - start) * 1000
+            return fallback
         response: dict[str, object] = {
             "results": [await result(hit) for hit in hits[:limit]],
             "mode": mode,

@@ -1454,3 +1454,56 @@ extension LocalSearchClientTests {
         #expect(!model.permissionNotice)
     }
 }
+
+extension LocalSearchDecodingTests {
+    @Test(arguments: [["closest"], ["semantic"], ["keyword"], ["semantic", "keyword"]])
+    func closestMarkerDecodesWithoutChangingLegacyResults(matched: [String]) throws {
+        let payload: [String: Any] = ["path": "/tmp/a.txt", "folder_id": "f", "title": "a",
+            "snippet": "text", "highlights": [], "score": 0.2, "matched": matched,
+            "modified_at": 0, "size": 4]
+        let result = try LocalSearchClient.decode(LocalSearchResult.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        #expect(result.matched == matched)
+        #expect(result.isClosest == (matched == ["closest"]))
+    }
+}
+
+extension LocalSearchAccessibilityTests {
+    @Test func closestHeaderTracksRenderedResults() async throws {
+        let status = searchStatus(folders: [searchFolder()])
+        let model = LocalSearchViewModel(fetchStatus: { _ in status }, fetchSearch: { query, _ in
+            func hit(_ name: String, _ matched: [String]) -> LocalSearchResult {
+                .init(path: "/tmp/" + name, folderId: "folder", title: name,
+                    snippet: name, highlights: [], score: 0.2, matched: matched,
+                    page: nil, line: nil, modifiedAt: 0, size: 4)
+            }
+            let results: [LocalSearchResult] = switch query {
+            case "closest": [hit("weak-a", ["closest"]), hit("weak-b", ["closest"])]
+            case "mixed": [hit("mixed-a", ["closest"]), hit("mixed-b", ["keyword"])]
+            case "normal": [hit("normal-a", ["semantic"])]
+            default: []
+            }
+            return .init(results: results, tookMs: 0, mode: "hybrid")
+        })
+        let server = ServerManager(testingState: .ready(alias: "test"), binaryPath: URL(fileURLWithPath: "/usr/bin/true"))
+        let stage = GoldenStage(LocalSearchView(server: server, model: model, onStartModel: { true })
+            .environment(DownloadManager()))
+        defer { model.disappear() }
+        try await stage.waitForIdentifier("LocalSearch.QueryField")
+        try stage.setValue("closest", for: "LocalSearch.QueryField")
+        try await stage.waitForIdentifier("LocalSearch.ClosestHeader")
+        #expect(stage.tree().first { $0.id == "LocalSearch.ClosestHeader" }?.text == "No exact matches · Closest files")
+        try await stage.waitForIdentifier("LocalSearch.Result.0")
+        for query in ["mixed", "normal"] {
+            try stage.setValue(query, for: "LocalSearch.QueryField")
+            // Wait for this response to reach the rendered AX tree, not only
+            // the observable model, before checking the header's absence.
+            try await stage.wait(for: "\(query) rows rendered") { stage.treeText().contains(query + "-a") }
+            #expect(!stage.identifiers().contains("LocalSearch.ClosestHeader"))
+        }
+        try stage.setValue("empty", for: "LocalSearch.QueryField")
+        try await stage.wait(for: "empty state rendered") { stage.treeText().contains("No files found") }
+        #expect(!stage.identifiers().contains("LocalSearch.ClosestHeader"))
+        #expect(!stage.identifiers().contains("LocalSearch.Result.0"))
+    }
+}

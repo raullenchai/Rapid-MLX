@@ -142,6 +142,11 @@ struct LocalSearchView: View {
                             .opacity(model.isIndexing ? 1 : 0)
                             .accessibilityHidden(!model.isIndexing)
                             .accessibilityIdentifier("LocalSearch.IncompleteResults")
+                        if !model.displayedResults.isEmpty && model.displayedResults.allSatisfy(\.isClosest) {
+                            Text(String(localized: "No exact matches · Closest files"))
+                                .font(.rapid(.caption)).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("LocalSearch.ClosestHeader")
+                        }
                         resultsContent
                     }
                     .multilineTextAlignment(.leading)

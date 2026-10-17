@@ -75,6 +75,7 @@ struct LocalSearchResult: Decodable, Identifiable, Sendable, Equatable {
         let baseID = kind == .text ? documentID : "\(documentID):\(kind.rawValue):\(timestamp ?? -1)"
         return duplicateOrdinal == 0 ? baseID : "\(baseID):duplicate:\(duplicateOrdinal)"
     }
+    var isClosest: Bool { matched == ["closest"] }
     var duplicateOrdinal: Int = 0
     let path: String
     let folderId: String

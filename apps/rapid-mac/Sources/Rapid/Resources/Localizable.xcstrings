@@ -2,36 +2,6 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
-    "macOS blocked access to this folder.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "macOS 阻止了对此文件夹的访问。"
-          }
-        }
-      }
-    },
-    "Allow Rapid-MLX under Privacy & Security › Files and Folders (or Full Disk Access for Whole Mac), then try again.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请在“隐私与安全性”›“文件与文件夹”中允许 Rapid-MLX 访问（搜索整台 Mac 时需开启“完全磁盘访问权限”），然后重试。"
-          }
-        }
-      }
-    },
-    "Open Privacy Settings": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "打开隐私设置"
-          }
-        }
-      }
-    },
     "Text size" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3130,6 +3100,16 @@
         }
       }
     },
+    "Allow Rapid-MLX under Privacy & Security › Files and Folders (or Full Disk Access for Whole Mac), then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“隐私与安全性”›“文件与文件夹”中允许 Rapid-MLX 访问（搜索整台 Mac 时需开启“完全磁盘访问权限”），然后重试。"
+          }
+        }
+      }
+    },
     "Allow agent action?" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5900,6 +5880,16 @@
         }
       }
     },
+    "No exact matches · Closest files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无精确匹配 · 最接近的文件"
+          }
+        }
+      }
+    },
     "No image editing models available" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6136,6 +6126,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开 MCP 连接器"
+          }
+        }
+      }
+    },
+    "Open Privacy Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开隐私设置"
           }
         }
       }
@@ -8856,6 +8856,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "例如 qwen3.6-35b"
+          }
+        }
+      }
+    },
+    "macOS blocked access to this folder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 阻止了对此文件夹的访问。"
           }
         }
       }
