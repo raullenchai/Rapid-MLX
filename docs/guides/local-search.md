@@ -140,8 +140,15 @@ files. Active indexing of an absorbed root is cancelled and queued under the new
 root. Removing that root removes all its files, including the absorbed files.
 Indexing commits each file
 atomically, reuses unchanged content, removes deleted files, and resumes on
-server restart. Reindex explicitly after changing files; there is no filesystem
-watcher in this pilot. Only one folder indexes at a time. Removing an active
+server restart. While the engine is running, a background pass every minute
+queues folders last indexed more than 30 minutes ago, when indexing is idle.
+Opening Local Search also silently requests a rescan of each non-root folder
+last indexed more than 2 minutes ago when none is indexing or queued. The Whole
+Mac root (`/`) is excluded from this on-appear refresh to avoid walking the whole
+disk on every visit. Unchanged
+files keep their existing rows and embeddings. Reindex remains available for an
+immediate rescan; there is no filesystem watcher in this pilot. Only one folder
+indexes at a time. Removing an active
 folder cancels its indexing; server shutdown also cancels work between batches.
 Changing the stored model id or chunking version invalidates affected vectors
 while preserving keyword text until rebuilding finishes. Schema 2 and chunking 3

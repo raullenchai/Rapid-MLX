@@ -118,7 +118,25 @@ final class LocalSearchViewModel {
     }
     func appear(endpoint: LocalSearchClient.Endpoint?) async {
         visible = true
+        let token = sessionGeneration + 1
         await connect(endpoint)
+        guard visible, sessionGeneration == token, !Task.isCancelled,
+              let endpoint = self.endpoint, let status, status.enabled, !status.needsPolling else { return }
+        let staleFolders = status.folders.filter {
+            guard $0.path != "/", let indexedAt = $0.lastIndexedAt else { return false }
+            return Date().timeIntervalSince1970 - indexedAt > 120
+        }
+        guard !staleFolders.isEmpty else { return }
+        do {
+            for folder in staleFolders {
+                guard visible, sessionGeneration == token, !Task.isCancelled else { return }
+                try await client.reindex(id: folder.id, endpoint: endpoint)
+            }
+            guard visible, sessionGeneration == token, !Task.isCancelled else { return }
+            await refresh()
+        } catch {
+            NSLog("Local Search automatic refresh failed: %@", String(describing: error))
+        }
     }
     func connect(_ endpoint: LocalSearchClient.Endpoint?) async {
         sessionGeneration += 1

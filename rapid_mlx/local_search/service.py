@@ -54,6 +54,8 @@ from .store import StoreWorker, bounded_terms
 
 logger = logging.getLogger(__name__)
 
+REFRESH_TICK_SECONDS = 60.0
+
 
 class ModelLoadError(RuntimeError):
     """Model loading failed or no sanctioned worker is available."""
@@ -171,6 +173,7 @@ class LocalSearch:
         model_worker=None,
         batch_size=4,
         yield_seconds=0.01,
+        refresh_interval=1800,
     ):
         self.model_id = model_id
         self.store = StoreWorker(directory / "index.sqlite3", model_id)
@@ -185,6 +188,8 @@ class LocalSearch:
         self._attempted_checkpoints: dict[str, tuple | None] = {}
         self.batch_size = max(1, min(4, batch_size))
         self.yield_seconds = yield_seconds
+        self.refresh_interval = refresh_interval
+        self.refresh_task: asyncio.Task | None = None
         self.pending: list[str] = []
         self.task: asyncio.Task | None = None
         self.progress = self._idle()
@@ -202,6 +207,32 @@ class LocalSearch:
 
     def start(self):
         self.task = asyncio.create_task(self._resume())
+        self.refresh_task = asyncio.create_task(self._refresh_loop())
+
+    async def _refresh_loop(self):
+        """Check for stale folders at most one minute after the interval elapses."""
+        while not self.closed:
+            await asyncio.sleep(min(self.refresh_interval, REFRESH_TICK_SECONDS))
+            try:
+                await self._refresh_stale()
+            except Exception as exc:
+                logger.warning("Local-search automatic refresh failed: %s", exc)
+
+    async def _refresh_stale(self):
+        # queue() does not take _coordination, as in add_folder(), so selecting
+        # and queueing under this lock is safe and atomic with add/delete and
+        # the worker's claim.
+        async with self._coordination:
+            if self.closed or self.progress["active"]:
+                return
+            cutoff = time.time() - self.refresh_interval
+            for folder in await self.folders():
+                if (
+                    folder["id"] not in self.pending
+                    and folder["state"] not in {"indexing", "queued"}
+                    and (folder["last_indexed_at"] or 0) < cutoff
+                ):
+                    await self.queue(folder["id"])
 
     async def _resume(self):
         for folder in await self.store.call("folders"):
@@ -332,6 +363,12 @@ class LocalSearch:
 
     async def close(self):
         self.closed = True
+        if self.refresh_task is not None:
+            self.refresh_task.cancel()
+            try:
+                await self.refresh_task
+            except asyncio.CancelledError:
+                pass
         await self._cancel_worker()
         try:
             if self.engine is not None:

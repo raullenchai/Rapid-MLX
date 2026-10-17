@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
@@ -1374,6 +1375,245 @@ def test_incremental_add_modify_delete_hash_and_restart(tmp_path):
         await restarted.wait_idle()
         assert len(fake.calls) == 4 and len(restarted.store.vectors) == 1
         await restarted.close()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_pass_selects_only_stale_idle_folders(tmp_path, monkeypatch):
+    async def scenario():
+        search = engine(tmp_path)
+        monkeypatch.setattr(
+            "rapid_mlx.local_search.service.time", SimpleNamespace(time=lambda: 10000)
+        )
+        search.folders = AsyncMock(
+            return_value=[
+                {"id": fid, "state": state, "last_indexed_at": timestamp}
+                for fid, state, timestamp in [
+                    ("stale", "idle", 8199),
+                    ("never", "idle", None),
+                    ("fresh", "idle", 8201),
+                    ("boundary", "idle", 8200),
+                    ("indexing", "indexing", 0),
+                    ("queued", "queued", 0),
+                    ("pending", "idle", 0),
+                ]
+            ]
+        )
+        assert search.refresh_interval == 1800
+        search.pending = ["pending"]
+        search.queue = AsyncMock()
+        try:
+            await search._refresh_stale()
+            assert [call.args[0] for call in search.queue.await_args_list] == [
+                "stale",
+                "never",
+            ]
+            search.queue.reset_mock()
+            search.progress["active"] = True
+            await search._refresh_stale()
+            search.queue.assert_not_awaited()
+            search.progress["active"] = False
+            await search.close()
+            await search._refresh_stale()
+            search.queue.assert_not_awaited()
+            assert search.folders.await_count == 1
+        finally:
+            if not search.closed:
+                await search.close()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_stale_with_real_queue_does_not_deadlock(tmp_path, monkeypatch):
+    async def scenario():
+        root = folder(tmp_path)
+        (root / "first.txt").write_text("apple")
+        search = engine(tmp_path)
+        release = asyncio.Event()
+
+        async def blocked_index(_folder):
+            await release.wait()
+
+        try:
+            fid = (await search.add_folder(str(root)))[0]["id"]
+            await search.wait_idle()
+            indexed_at = (await search.folder(fid))["last_indexed_at"]
+            monkeypatch.setattr(
+                "rapid_mlx.local_search.service.time",
+                SimpleNamespace(time=lambda: indexed_at + search.refresh_interval + 1),
+            )
+            monkeypatch.setattr(search, "_index", blocked_index)
+
+            await asyncio.wait_for(search._refresh_stale(), timeout=5)
+
+            assert fid in search.pending or (
+                search.task is not None and not search.task.done()
+            )
+            assert (await search.folder(fid))["state"] in {"queued", "indexing"}
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_loop_queues_folder_that_becomes_stale_between_ticks(
+    tmp_path, monkeypatch
+):
+    async def scenario():
+        search = engine(tmp_path, refresh_interval=1800)
+        now = 1800.0
+        tick = 60.0
+        sleeps = []
+        search.folders = AsyncMock(
+            return_value=[{"id": "folder", "state": "idle", "last_indexed_at": 61}]
+        )
+
+        async def advance_clock(delay):
+            nonlocal now
+            sleeps.append(delay)
+            assert delay == tick
+            assert len(sleeps) <= 2
+            if len(sleeps) == 2:
+                # The first tick was at age 1799, just before the stale threshold.
+                search.queue.assert_not_awaited()
+                assert search.folders.await_count == 1
+            now += delay
+
+        async def queued(_folder_id):
+            search.closed = True
+
+        search.queue = AsyncMock(side_effect=queued)
+        monkeypatch.setattr("rapid_mlx.local_search.service.REFRESH_TICK_SECONDS", tick)
+        monkeypatch.setattr(
+            "rapid_mlx.local_search.service.time", SimpleNamespace(time=lambda: now)
+        )
+        monkeypatch.setattr(
+            "rapid_mlx.local_search.service.asyncio",
+            SimpleNamespace(sleep=advance_clock, to_thread=asyncio.to_thread),
+        )
+        try:
+            await search._refresh_loop()
+            assert sleeps == [tick, tick]
+            assert now - 61 == 1859 < search.refresh_interval + tick
+            search.queue.assert_awaited_once_with("folder")
+        finally:
+            search.closed = False
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_loop_recovers_after_store_error(tmp_path, caplog):
+    async def scenario():
+        search = engine(tmp_path, refresh_interval=0.01)
+        search.folders = AsyncMock(
+            side_effect=[
+                RuntimeError("store unavailable"),
+                [{"id": "stale", "state": "idle", "last_indexed_at": 0}],
+            ]
+        )
+        queued = asyncio.Event()
+        search.queue = AsyncMock(side_effect=lambda _: queued.set())
+        task = asyncio.create_task(search._refresh_loop())
+        search.refresh_task = task
+        try:
+            await asyncio.wait_for(queued.wait(), SYNC_TIMEOUT)
+            assert search.folders.await_count == 2
+            search.queue.assert_awaited_once_with("stale")
+            assert not task.done()
+            assert (
+                "Local-search automatic refresh failed: store unavailable"
+                in caplog.text
+            )
+            assert any(
+                record.name == "rapid_mlx.local_search.service"
+                and record.levelname == "WARNING"
+                for record in caplog.records
+            )
+        finally:
+            await search.close()
+        assert task.cancelled()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_discovers_new_files_without_reembedding_or_rewriting_unchanged(
+    tmp_path, monkeypatch
+):
+    async def scenario():
+        root = folder(tmp_path)
+        (root / "first.txt").write_text("apple")
+        fake = FakeEmbedder()
+        search = engine(tmp_path, fake)
+        try:
+            fid = (await search.add_folder(str(root)))[0]["id"]
+            await search.wait_idle()
+            indexed_at = (await search.folder(fid))["last_indexed_at"]
+            monkeypatch.setattr(
+                "rapid_mlx.local_search.service.time",
+                SimpleNamespace(time=lambda: indexed_at + search.refresh_interval + 1),
+            )
+            store_call = search.store.call
+            replacements = []
+
+            async def observe_replace(name, *args, **kwargs):
+                if name == "replace":
+                    replacements.append(args[1])
+                return await store_call(name, *args, **kwargs)
+
+            monkeypatch.setattr(search.store, "call", observe_replace)
+            await search._refresh_stale()
+            await search.wait_idle()
+            assert len(fake.calls) == 1
+            assert replacements == []
+            # Age the next pass too; no manual queue/reindex is used.
+            monkeypatch.setattr(
+                "rapid_mlx.local_search.service.time",
+                SimpleNamespace(
+                    time=lambda: indexed_at + 2 * (search.refresh_interval + 1),
+                    perf_counter=time.perf_counter,
+                ),
+            )
+            new_file = root / "today-memo.txt"
+            new_file.write_text("banana memorandum")
+            await search._refresh_stale()
+            await search.wait_idle()
+            assert fake.calls == [
+                ["title: first | text: apple"],
+                ["title: today-memo | text: banana memorandum"],
+            ]
+            assert replacements == [new_file]
+            results = await search.search("memorandum", 10, None)
+            assert results["results"][0]["path"] == str(new_file)
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+def test_refresh_loop_sleeps_when_empty_and_stops_on_close(tmp_path, monkeypatch):
+    async def scenario():
+        search = engine(tmp_path, refresh_interval=0.01)
+        passed = asyncio.Event()
+        original = search._refresh_stale
+
+        async def observed_pass():
+            await original()
+            passed.set()
+
+        monkeypatch.setattr(search, "_refresh_stale", observed_pass)
+        search.start()
+        try:
+            await search.wait_idle()
+            await asyncio.wait_for(passed.wait(), SYNC_TIMEOUT)
+            assert not search.pending
+            assert not search.progress["active"]
+            task = search.refresh_task
+        finally:
+            await search.close()
+        assert task.cancelled()
+        # Also exercise a loop entered after shutdown: no sleep or store work.
+        await search._refresh_loop()
 
     asyncio.run(scenario())
 

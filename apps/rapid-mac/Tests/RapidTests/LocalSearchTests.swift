@@ -742,6 +742,56 @@ extension LocalSearchViewModelTests {
 }
 
 extension LocalSearchClientTests {
+    @MainActor
+    @Test(arguments: [true, false])
+    func appearanceRefreshesOnlyStaleNonRootFoldersAndFailureIsSilent(succeeds: Bool) async throws {
+        let folders = ["root", "first", "second", "fresh"].map { id in
+            LocalSearchFolder(id: id, path: id == "root" ? "/" : "/tmp/\(id)", state: .idle,
+                filesIndexed: 1, filesSkipped: 0, chunks: 1,
+                lastIndexedAt: Date().timeIntervalSince1970 - (id == "fresh" ? 30 : 180), error: nil)
+        }
+        let snapshot = searchStatus(folders: folders)
+        let recorder = LocalSearchURLProtocol.recorder
+        recorder.reply(status: succeeds ? 200 : 500)
+        let before = recorder.captured.count
+        let model = LocalSearchViewModel(client: client(), fetchStatus: { _ in snapshot })
+        await model.appear(endpoint: .init(port: 8000, bearer: nil))
+        defer { model.disappear() }
+        let requests = Array(recorder.captured.dropFirst(before))
+        #expect(requests.count == (succeeds ? 2 : 1))
+        #expect(try requests.map { try body($0)["folder_id"] as? String } == (succeeds ? ["first", "second"] : ["first"]))
+        for request in requests {
+            #expect(request.url?.path == "/v1/local-search/reindex")
+            #expect(request.httpMethod == "POST")
+        }
+        #expect(model.state == .ready)
+        #expect(model.status?.folders == snapshot.folders)
+        #expect(model.results.isEmpty)
+        #expect(!model.isMutating)
+        await model.refresh()
+        await model.refresh()
+        #expect(recorder.captured.count == before + requests.count)
+    }
+
+    @MainActor
+    @Test(arguments: ["root", "fresh", "active", "queued", "indexing", "never", "empty"])
+    func appearanceSkipsRootFreshOrBusyFolders(scenario: String) async {
+        let folder = LocalSearchFolder(id: "folder", path: scenario == "root" ? "/" : "/tmp/docs",
+            state: scenario == "queued" ? .queued : scenario == "indexing" ? .indexing : .idle,
+            filesIndexed: 1, filesSkipped: 0, chunks: 1,
+            lastIndexedAt: scenario == "never" ? nil : Date().timeIntervalSince1970 - (scenario == "fresh" ? 30 : 180),
+            error: nil)
+        let snapshot = searchStatus(folders: scenario == "empty" ? [] : [folder], active: scenario == "active")
+        let recorder = LocalSearchURLProtocol.recorder
+        recorder.reply()
+        let before = recorder.captured.count
+        let model = LocalSearchViewModel(client: client(), fetchStatus: { _ in snapshot })
+        await model.appear(endpoint: .init(port: 8000, bearer: nil))
+        defer { model.disappear() }
+        #expect(recorder.captured.count == before)
+        #expect(model.status?.folders == snapshot.folders)
+    }
+
     @Test @MainActor func harnessFolderWaitsForRunningEngineAndAddsOnce() async {
         let client = client()
         LocalSearchURLProtocol.recorder.reply()
