@@ -5,6 +5,8 @@
 
 ## Highlights
 
+- Vision-model servers now restore text-only prompt-prefix caches across restarts; image-bearing prefixes are never persisted.
+
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.
 
 - **Local web pages work from `localhost` and `127.0.0.1` alike**: a page served from `http://localhost:<port>` can call the server on the same port even when it is addressed as `127.0.0.1` or `[::1]`; other origins stay blocked.

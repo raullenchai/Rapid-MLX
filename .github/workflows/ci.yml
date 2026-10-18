@@ -567,6 +567,7 @@ jobs:
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
             tests/test_mllm_batch_generator.py \
+            tests/test_mllm_prefix_cache_persistence.py \
             tests/test_mllm_gemma4_prefill.py \
             tests/test_mllm_sampling_parity.py \
             tests/test_mllm_singleton_fastpath.py \

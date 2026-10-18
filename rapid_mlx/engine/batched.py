@@ -18,6 +18,7 @@ import copy
 import functools
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -4758,6 +4759,17 @@ class BatchedEngine(BaseEngine):
         lifespan SIGTERM-grace deadline can short-circuit a multi-GB
         flush; see ``EngineCore.save_cache_to_disk`` for details.
         """
+        if self._is_mllm:
+            scheduler = getattr(self, "_mllm_scheduler", None)
+            save = getattr(scheduler, "save_prefix_cache_to_disk", None)
+            if save is not None:
+                return bool(
+                    save(cache_dir.rstrip(os.sep) + ".mllm-exact", should_abort)
+                )
+            logger.info(
+                "[cache_persist] vision lane: no exact prefix scheduler available"
+            )
+            return False
         if self._engine and not self._is_mllm:
             return self._engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
         return False
@@ -4775,6 +4787,12 @@ class BatchedEngine(BaseEngine):
         ``protected_import`` (#1111 codex r3): True for explicit HTTP import
         (pin), False for startup auto-load (obey the retention bound).
         """
+        if self._is_mllm:
+            scheduler = getattr(self, "_mllm_scheduler", None)
+            load = getattr(scheduler, "load_prefix_cache_from_disk", None)
+            if load is not None:
+                return int(load(cache_dir.rstrip(os.sep) + ".mllm-exact"))
+            return 0
         if self._engine and not self._is_mllm:
             return self._engine.load_cache_from_disk(
                 cache_dir, replace=replace, protected_import=protected_import

@@ -21,8 +21,10 @@ import contextlib
 import copy
 import importlib
 import inspect
+import json
 import logging
 import os
+import shutil
 import sys
 import textwrap
 import threading
@@ -33,6 +35,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
+from pathlib import Path
 from typing import Any, cast
 
 import mlx.core as mx
@@ -3062,6 +3065,151 @@ class MLLMBatchGenerator:
         self._evict_text_exact_to_fit(
             max_bytes - media_bytes, cache, allow_empty=bool(media_entries)
         )
+
+    def _exact_persistence_context(self) -> tuple[Any, set[int]] | None:
+        """Resolve the text-only persistence guard; unknown media IDs fail closed."""
+        from .models.mlx_vlm_vendored import apc
+
+        cache = self._prefix_cache
+        if (
+            cache is None
+            or self._prefix_cache_mode != "exact"
+            or not self._prefix_cache_enabled
+        ):
+            logger.info("[cache_persist] vision lane: exact prefix cache is disabled")
+            return None
+        try:
+            media_ids = apc.multimodal_token_ids_from_config(self.model.config)
+        except (AttributeError, TypeError, ValueError):
+            media_ids = set()
+        if not media_ids:
+            logger.info(
+                "[cache_persist] vision lane: skipped %d entries: unresolved media token IDs",
+                len(cache._exact_cache),
+            )
+            return None
+        return cache, media_ids
+
+    def _persistable_exact_entry(self, entry: Any, media_ids: set[int]) -> bool:
+        from .models.mlx_vlm_vendored import apc
+
+        if entry.extra_hash != self._prefix_cache_extra_hash:
+            logger.info(
+                "[cache_persist] vision lane: skipped 1 entry: foreign extra_hash"
+            )
+            return False
+        if apc.prefix_contains_media_tokens(
+            entry.token_ids, len(entry.token_ids), media_ids
+        ):
+            logger.info("[cache_persist] vision lane: skipped 1 entry: media tokens")
+            return False
+        return True
+
+    def save_exact_prefix_cache_to_disk(
+        self, cache_dir: str | Path, should_abort: Callable[[float], bool] | None = None
+    ) -> bool:
+        """Snapshot text-only exact APC entries during lifespan shutdown.
+
+        Called on the scheduler's MLX step executor, never from the request path.
+        Tensor serialization remains owned by the vendored exact_cache_v1 store.
+        """
+        from .models.mlx_vlm_vendored import apc
+
+        context = self._exact_persistence_context()
+        if context is None:
+            return False
+        cache, media_ids = context
+        target = Path(cache_dir)
+        staging = Path(str(target) + ".new")
+        old = Path(str(target) + ".old")
+        shutil.rmtree(staging, ignore_errors=True)
+        store = apc.DiskBlockStore(staging)
+        saved: list[int] = []
+        try:
+            with cache.lock:
+                entries = list(reversed(cache._exact_cache.items()))
+            for key, entry in entries:
+                if not self._persistable_exact_entry(entry, media_ids):
+                    continue
+                # Conservative shutdown write-throughput estimate.
+                predicted = self._exact_entry_bytes(entry.prompt_cache) / (100 << 20)
+                if should_abort is not None and should_abort(predicted):
+                    break
+                if store.save_exact_cache(
+                    key,
+                    entry.token_ids,
+                    entry.extra_hash,
+                    entry.prompt_cache,
+                    synchronous=True,
+                ):
+                    saved.append(key)
+        finally:
+            store.close()
+        if not saved:
+            shutil.rmtree(staging)
+            logger.info(
+                "[cache_persist] vision lane: no text-only exact prefix entries to persist"
+            )
+            return False
+        # This index also marks a complete (possibly deadline-limited) snapshot.
+        index = staging / "index.json.tmp"
+        index.write_text(json.dumps(saved))
+        index.rename(staging / "index.json")
+        shutil.rmtree(old, ignore_errors=True)
+        if target.exists():
+            target.rename(old)
+        staging.rename(target)
+        shutil.rmtree(old, ignore_errors=True)
+        return True
+
+    def load_exact_prefix_cache_from_disk(self, cache_dir: str | Path) -> int:
+        """Restore missing text-only entries on the scheduler's MLX step executor."""
+        from .models.mlx_vlm_vendored import apc
+
+        context = self._exact_persistence_context()
+        if context is None:
+            return 0
+        cache, media_ids = context
+        target = Path(cache_dir)
+        if not (target / "index.json").is_file():
+            for suffix in (".new", ".old"):
+                candidate = Path(str(target) + suffix)
+                if (candidate / "index.json").is_file():
+                    shutil.rmtree(target, ignore_errors=True)
+                    candidate.rename(target)
+                    break
+            else:
+                return 0
+        keys = json.loads((target / "index.json").read_text())
+        store = apc.DiskBlockStore(target)
+        loaded = 0
+        try:
+            # Prefer the newest disk entries within the remaining capacity, then
+            # insert newest-last without evicting any already-live entry.
+            restored: list[tuple[int, Any]] = []
+            for key in keys:
+                with cache.lock:
+                    if key in cache._exact_cache:
+                        continue
+                    if (
+                        len(cache._exact_cache) + len(restored)
+                        >= cache._exact_cache_max
+                    ):
+                        break
+                snapshot = store.load_exact_cache(key)
+                if snapshot is None:
+                    continue
+                entry = apc.APCExactCacheEntry(*snapshot)
+                if self._persistable_exact_entry(entry, media_ids):
+                    restored.append((key, entry))
+            with cache.lock:
+                for key, entry in reversed(restored):
+                    cache._exact_cache[key] = entry
+                    loaded += 1
+            self._enforce_exact_cache_budget(cache)
+        finally:
+            store.close()
+        return loaded
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""
