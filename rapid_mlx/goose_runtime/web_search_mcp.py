@@ -186,6 +186,7 @@ def _handle(message: dict) -> dict | None:
     method = message.get("method")
     if "id" not in message:
         return None
+    result: dict[str, object]
     if method == "initialize":
         result = {
             "protocolVersion": "2025-03-26",
