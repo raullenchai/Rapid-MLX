@@ -430,31 +430,22 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
         shutil.rmtree(home)
         os.makedirs(home)
         with open(os.path.join(home, ".profile"), "w", encoding="utf-8") as handle:
-            handle.write("export REFRESHED_CONFIG=1\n")
+            handle.write(
+                "export EARLY_OPEN=$(command -v open)\nexport REFRESHED_CONFIG=1\n"
+            )
         with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as handle:
-            handle.write("export ZSH_REFRESHED_CONFIG=1\n")
+            handle.write(
+                "export ZSH_EARLY_OPEN=$(command -v open)\nexport ZSH_REFRESHED_CONFIG=1\n"
+            )
 
     def _e2e(*_args, env_overrides=None, **_kwargs):
         env = os.environ | env_overrides
         for shell in ("/bin/sh", "/bin/bash"):
             result = subprocess.run(
-                [shell, "-lc", "command -v open; printf '%s' \"$REFRESHED_CONFIG\""],
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            seen.append(result.stdout)
-            assert result.stdout.splitlines()[0] == os.path.join(
-                os.path.dirname(env_overrides["BROWSER"]), "open"
-            )
-            assert result.stdout.endswith("1")
-        if sys.platform == "darwin":
-            result = subprocess.run(
                 [
-                    "/bin/zsh",
-                    "-lic",
-                    'command -v open; printf "%s" "$ZSH_REFRESHED_CONFIG"',
+                    shell,
+                    "-lc",
+                    'command -v open; printf \'%s\\n%s\' "$EARLY_OPEN" "$REFRESHED_CONFIG"',
                 ],
                 env=env,
                 check=True,
@@ -465,6 +456,25 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
             assert result.stdout.splitlines()[0] == os.path.join(
                 os.path.dirname(env_overrides["BROWSER"]), "open"
             )
+            assert result.stdout.splitlines()[1] == result.stdout.splitlines()[0]
+            assert result.stdout.endswith("1")
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                [
+                    "/bin/zsh",
+                    "-lic",
+                    'command -v open; printf "%s\\n%s" "$ZSH_EARLY_OPEN" "$ZSH_REFRESHED_CONFIG"',
+                ],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            seen.append(result.stdout)
+            assert result.stdout.splitlines()[0] == os.path.join(
+                os.path.dirname(env_overrides["BROWSER"]), "open"
+            )
+            assert result.stdout.splitlines()[1] == result.stdout.splitlines()[0]
             assert result.stdout.endswith("1")
         return TestResult("e2e_chat", TestStatus.PASS)
 

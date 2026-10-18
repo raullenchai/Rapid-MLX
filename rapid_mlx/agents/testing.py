@@ -997,8 +997,13 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
         # file is ours so config refresh's .profile exports remain visible.
         if name == ".bash_profile" and not existing:
             existing = '. "$HOME/.profile"\n'
-        if script not in existing:
-            profile.write_text(existing + "\n" + script, encoding="utf-8")
+        # Guard startup commands themselves, then restore the shim if those
+        # commands change PATH before the agent command runs.
+        if not (existing.startswith(script) and existing.endswith(script)):
+            suffix = ("\n" if existing and not existing.endswith("\n") else "") + script
+            profile.write_text(
+                script + existing + (suffix if existing else ""), encoding="utf-8"
+            )
     return {
         "ZDOTDIR": str(home),
         "BASH_ENV": str(path_script),
