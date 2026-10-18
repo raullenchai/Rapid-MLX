@@ -206,6 +206,76 @@ def test_embeddings_pretokenized_input_uses_retrieval_worker(monkeypatch):
     engine.embed_tokens.assert_called_once_with([[101, 102]])
 
 
+def test_embeddings_dimensions_truncate_and_renormalize(monkeypatch):
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed.return_value = [[3.0, 4.0, 12.0]]
+    engine.count_tokens.return_value = 1
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": "stub-embed", "input": "a", "dimensions": 2},
+        )
+    finally:
+        restore()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["embedding"] == pytest.approx([0.6, 0.8])
+
+
+def test_embeddings_reject_dimensions_above_native_size(monkeypatch):
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed.return_value = [[1.0, 0.0]]
+    engine.count_tokens.return_value = 1
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": "stub-embed", "input": "a", "dimensions": 3},
+        )
+    finally:
+        restore()
+
+    assert response.status_code == 400
+    assert "native embedding size of 2" in str(response.json())
+
+
+def test_embeddings_base64_encoding_contains_float32_vector(monkeypatch):
+    import base64
+    import struct
+
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed.return_value = [[0.25, -0.5]]
+    engine.count_tokens.return_value = 1
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            json={
+                "model": "stub-embed",
+                "input": "a",
+                "encoding_format": "base64",
+            },
+        )
+    finally:
+        restore()
+
+    assert response.status_code == 200, response.text
+    encoded = response.json()["data"][0]["embedding"]
+    assert struct.unpack("<2f", base64.b64decode(encoded)) == pytest.approx(
+        (0.25, -0.5)
+    )
+
+
 class _ChatWorker:
     def __init__(self):
         self.calls = 0

@@ -626,6 +626,8 @@ jobs:
             tests/test_mtp_greedy_determinism.py \
             tests/test_mtp_park_pipeline.py \
             tests/test_embedding_gemma2.py \
+            tests/test_embeddings_route.py \
+            tests/test_rerank.py \
             tests/test_mtp_nongreedy_distribution.py \
             tests/test_speculative_request_policy.py \
             tests/test_deepseek_v4_vendored.py \

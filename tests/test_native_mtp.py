@@ -587,6 +587,7 @@ def test_native_mtp_preflight_rejects_all_unsupported_features(capsys) -> None:
         mtp_backend="native",
         mcp_config="mcp.json",
         embedding_model="org/embed",
+        rerank_model="org/reranker",
         enable_disk_stream=True,
         mllm=True,
         mtp_continuous_batching=True,
@@ -600,6 +601,7 @@ def test_native_mtp_preflight_rejects_all_unsupported_features(capsys) -> None:
     for expected in (
         "--mcp-config",
         "--embedding-model",
+        "--rerank-model",
         "--disk-stream",
         "--mllm",
         "continuous MTP",

@@ -29,6 +29,7 @@ import importlib
 import os
 import sys
 from contextlib import nullcontext
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -132,6 +133,26 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
     ):
         server.main()
     return captured
+
+
+def test_server_main_preloads_configured_reranker():
+    loaded = []
+    server = _server_module()
+    scheduler_stub = ModuleType("rapid_mlx.scheduler")
+    scheduler_stub.SchedulerConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+
+    with (
+        mock.patch.dict(sys.modules, {"rapid_mlx.scheduler": scheduler_stub}),
+        mock.patch(
+            "rapid_mlx.cli._load_rerank_model_or_exit",
+            lambda args, loader: loaded.append((args.rerank_model, loader)),
+        ),
+    ):
+        _run_server_main_capturing_config(
+            ["--model", "qwen3.5-4b-4bit", "--rerank-model", "org/reranker"]
+        )
+
+    assert loaded == [("org/reranker", server.load_rerank_model)]
 
 
 def _run_server_main_capturing_scheduler(

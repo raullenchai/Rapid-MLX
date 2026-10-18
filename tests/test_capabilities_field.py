@@ -21,6 +21,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+def test_locked_rerank_id_falls_back_when_server_import_fails(monkeypatch):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models as models_route
+
+    cfg = get_config()
+    previous = cfg.rerank_model_locked
+    cfg.rerank_model_locked = None
+    monkeypatch.setitem(__import__("sys").modules, "rapid_mlx.server", None)
+    try:
+        assert models_route._locked_rerank_id() is None
+    finally:
+        cfg.rerank_model_locked = previous
+
+
 def _mount_models_app(monkeypatch, **cfg_overrides):
     """Mount the models router with controlled config + server state."""
     from rapid_mlx.config import get_config

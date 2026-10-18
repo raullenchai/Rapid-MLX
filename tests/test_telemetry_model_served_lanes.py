@@ -137,6 +137,7 @@ def loopback_model_served(monkeypatch, tmp_path):
         ("diffusion", "diffusion-gemma-26b-4bit", "text-diffusion"),
         ("audio", "kokoro", "audio"),
         ("embedding", "embeddinggemma-300m-6bit", "embedding"),
+        ("rerank", "qwen3-reranker-0.6b", "other"),
     ],
 )
 def test_every_lane_queues_exactly_one_model_served_on_loopback(
@@ -150,6 +151,9 @@ def test_every_lane_queues_exactly_one_model_served_on_loopback(
     elif lane == "audio":
         server._emit_audio_model_served_once(engine, model_ref)
         server._emit_audio_model_served_once(engine, model_ref)
+    elif lane == "rerank":
+        server._emit_rerank_model_served_once(model_ref)
+        server._emit_rerank_model_served_once(model_ref)
     else:
         server._emit_embedding_model_served_once(engine, model_ref)
         server._emit_embedding_model_served_once(engine, model_ref)

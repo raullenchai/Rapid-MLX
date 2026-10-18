@@ -413,6 +413,7 @@ def test_cli_preflight_rejects_unsupported_server_features(capsys) -> None:
         no_mllm=True,
         mcp_config="mcp.json",
         embedding_model="embed/model",
+        rerank_model="rerank/model",
         enable_auto_tool_choice=True,
     )
     with pytest.raises(SystemExit) as exc_info:
@@ -423,6 +424,7 @@ def test_cli_preflight_rejects_unsupported_server_features(capsys) -> None:
         "--no-mllm",
         "--mcp-config",
         "--embedding-model",
+        "--rerank-model",
         "--enable-auto-tool-choice",
     ):
         assert option in error

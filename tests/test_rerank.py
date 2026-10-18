@@ -90,6 +90,43 @@ def test_engine_empty_documents_score_nothing():
     assert _engine(_FullLogitsModel()).score("q", []).scores == []
 
 
+def test_score_lazily_loads_before_handling_empty_documents(monkeypatch):
+    from rapid_mlx import rerank
+
+    engine = rerank.RerankEngine("fake/reranker")
+    loaded = []
+
+    def load():
+        loaded.append(engine.model_name)
+        engine._model = _FullLogitsModel()
+        engine._tokenizer = _FakeTokenizer()
+        engine.family = rerank.FAMILIES["qwen3"]
+        engine._answer_ids = [YES, NO]
+        engine.max_length = 32
+
+    monkeypatch.setattr(engine, "load", load)
+    assert engine.score("q", []).scores == []
+    assert loaded == ["fake/reranker"]
+
+
+def test_score_flushes_full_microbatches(monkeypatch):
+    from rapid_mlx import rerank
+
+    engine = _engine(_FullLogitsModel())
+    monkeypatch.setattr(rerank, "_MAX_BATCH_SEQUENCES", 1)
+    calls = []
+    original = engine._score_batch
+
+    def record(sequences):
+        calls.append(len(sequences))
+        return original(sequences)
+
+    monkeypatch.setattr(engine, "_score_batch", record)
+    result = engine.score("q", ["!", "!!"])
+    assert result.scores[1] > result.scores[0]
+    assert calls == [1, 1]
+
+
 def test_engine_truncates_long_documents_and_counts_them():
     engine = _engine(_FullLogitsModel())
     head = len(engine._prompt_parts("q", "inst")[0])
@@ -519,6 +556,50 @@ def test_engine_load_rejects_multi_answer_token(monkeypatch):
         engine.load()
 
 
+def test_engine_load_rejects_qwen_without_chat_template(monkeypatch):
+    import mlx_lm
+
+    from rapid_mlx import rerank
+
+    tokenizer = _FakeTokenizer()
+    tokenizer.chat_template = None
+    monkeypatch.setattr(
+        rerank,
+        "_read_model_config",
+        lambda _name: _causal("qwen3", "Qwen3ForCausalLM"),
+    )
+    monkeypatch.setattr(mlx_lm, "load", lambda _name: (object(), tokenizer))
+
+    with pytest.raises(rerank.UnsupportedRerankModelError, match="no chat template"):
+        rerank.RerankEngine(RERANK_ID).load()
+
+
+def test_engine_loads_cross_encoder_context_and_default_padding(monkeypatch):
+    from rapid_mlx import rerank
+
+    class Tokenizer:
+        pad_token_id = None
+        eos_token_id = None
+
+    config = {
+        "model_type": "xlm-roberta",
+        "architectures": ["XLMRobertaForSequenceClassification"],
+        "max_position_embeddings": 514,
+        "pad_token_id": 1,
+    }
+    model = object()
+    monkeypatch.setattr(rerank, "_read_model_config", lambda _name: config)
+    monkeypatch.setattr(
+        rerank, "_load_cross_encoder", lambda _name, _config: (model, Tokenizer())
+    )
+
+    engine = rerank.RerankEngine("BAAI/bge-reranker-v2-m3")
+    engine.load()
+    assert engine._model is model
+    assert engine.max_length == 512
+    assert engine._pad_id == 0
+
+
 _TINY_XLMR = {
     "model_type": "xlm-roberta",
     "architectures": ["XLMRobertaForSequenceClassification"],
@@ -579,6 +660,70 @@ def test_cross_encoder_requires_embeddings_extra(monkeypatch):
     )
     with pytest.raises(rerank.UnsupportedRerankModelError, match="embeddings"):
         rerank._load_cross_encoder("BAAI/bge-reranker-v2-m3", _TINY_XLMR)
+
+
+def test_read_model_config_supports_local_and_hub_paths(monkeypatch, tmp_path):
+    import json
+
+    from rapid_mlx import model_downloads, rerank
+
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "config.json").write_text(json.dumps({"source": "local"}))
+    remote = tmp_path / "downloaded-config.json"
+    remote.write_text(json.dumps({"source": "hub"}))
+    calls = []
+    monkeypatch.setattr(
+        model_downloads,
+        "hf_hub_download",
+        lambda model, filename: calls.append((model, filename)) or str(remote),
+    )
+
+    assert rerank._read_model_config(str(local)) == {"source": "local"}
+    assert rerank._read_model_config("org/reranker") == {"source": "hub"}
+    assert calls == [("org/reranker", "config.json")]
+
+
+def test_cross_encoder_rejects_multilabel_checkpoint(monkeypatch):
+    import importlib.util
+
+    from rapid_mlx import rerank
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
+    with pytest.raises(rerank.UnsupportedRerankModelError, match="more than one label"):
+        rerank._load_cross_encoder("org/classifier", {**_TINY_XLMR, "num_labels": 2})
+
+
+def test_cross_encoder_downloads_remote_checkpoint(monkeypatch, tmp_path):
+    pytest.importorskip("mlx_embeddings")
+    import mlx.core as mx
+    import transformers
+    from mlx.utils import tree_flatten
+    from mlx_embeddings.models import xlm_roberta
+
+    from rapid_mlx import model_downloads, rerank
+
+    args = xlm_roberta.ModelArgs.from_dict({**_TINY_XLMR, "add_pooling_layer": False})
+    reference = rerank._CrossEncoder(xlm_roberta.Model(args), args.hidden_size)
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"), dict(tree_flatten(reference.parameters()))
+    )
+    seen = []
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda model, *, allow_patterns: (
+            seen.append((model, allow_patterns)) or str(tmp_path)
+        ),
+    )
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda path: ("tokenizer", path)
+    )
+
+    model, tokenizer = rerank._load_cross_encoder("org/remote-xlm", _TINY_XLMR)
+    assert isinstance(model, rerank._CrossEncoder)
+    assert tokenizer == ("tokenizer", str(tmp_path))
+    assert seen == [("org/remote-xlm", rerank._CROSS_ENCODER_FILES)]
 
 
 class _MarkerTokenizer(_CharTokenizer):
@@ -850,6 +995,87 @@ def test_jina_loads_transformers_projector_names(monkeypatch, tmp_path):
     assert mx.array_equal(
         model.projector.layers[2].weight, reference.projector.layers[2].weight
     )
+
+
+def test_jina_remote_download_and_bad_weight_layout(monkeypatch, tmp_path):
+    import mlx_lm.utils
+
+    from rapid_mlx import model_downloads, rerank
+
+    seen = []
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda model, *, allow_patterns: (
+            seen.append((model, allow_patterns)) or str(tmp_path)
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_lm.utils,
+        "load_model",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("projector mismatch")),
+    )
+
+    with pytest.raises(rerank.UnsupportedRerankModelError, match="projector mismatch"):
+        rerank._load_jina("org/remote-jina")
+    assert seen == [("org/remote-jina", rerank._JINA3_FILES)]
+
+
+def test_engine_loads_listwise_markers_and_eos_padding(monkeypatch):
+    from rapid_mlx import rerank
+
+    class Tokenizer:
+        eos_token_id = 9
+
+        def encode(self, token, add_special_tokens=False):
+            assert add_special_tokens is False
+            return {
+                "<|embed_token|>": [10],
+                "<|rerank_token|>": [11],
+            }[token]
+
+    monkeypatch.setattr(
+        rerank,
+        "_read_model_config",
+        lambda _name: {
+            "model_type": "qwen3",
+            "architectures": ["JinaForRanking"],
+            "max_position_embeddings": 4096,
+        },
+    )
+    monkeypatch.setattr(rerank, "_load_jina", lambda _name: (object(), Tokenizer()))
+
+    engine = rerank.RerankEngine("org/jina")
+    engine.load()
+    assert engine.family is rerank.FAMILIES["jina3"]
+    assert engine._marker_ids == (10, 11)
+    assert engine._context_length == 4096
+    assert engine._pad_id == 9
+
+
+def test_engine_rejects_multitoken_listwise_marker(monkeypatch):
+    from rapid_mlx import rerank
+
+    class Tokenizer:
+        pad_token_id = 0
+
+        def encode(self, _token, add_special_tokens=False):
+            assert add_special_tokens is False
+            return [10, 11]
+
+    monkeypatch.setattr(
+        rerank,
+        "_read_model_config",
+        lambda _name: {
+            "model_type": "qwen3",
+            "architectures": ["JinaForRanking"],
+            "max_position_embeddings": 4096,
+        },
+    )
+    monkeypatch.setattr(rerank, "_load_jina", lambda _name: (object(), Tokenizer()))
+
+    with pytest.raises(rerank.UnsupportedRerankModelError, match="marker token"):
+        rerank.RerankEngine("org/jina").load()
 
 
 @pytest.mark.parametrize(
