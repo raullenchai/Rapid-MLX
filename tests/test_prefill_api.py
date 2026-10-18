@@ -328,6 +328,57 @@ async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_cancelled_replacement_does_not_launch_or_consume_revision(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    launched = []
+
+    async def warm(_engine, body):
+        launched.append(body.revision)
+        if body.revision == 1:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release_cleanup.wait()
+                raise
+        return {"status": "prefilled"}
+
+    monkeypatch.setattr(api, "_warm", warm)
+    first_body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "partial"}],
+        draft_key="cancel-replace",
+        revision=1,
+    )
+    second_body = first_body.model_copy(update={"revision": 2})
+    first = asyncio.create_task(api.prefill(first_body, ConnectedRequest()))
+    await started.wait()
+    second = asyncio.create_task(api.prefill(second_body, ConnectedRequest()))
+    await cleaning.wait()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert launched == [1]
+    assert api._draft_revisions["cancel-replace"][0] == 1
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+
+@pytest.mark.asyncio
 async def test_draft_requires_disk_consent_before_engine_work(monkeypatch):
     engine = FakeEngine()
     monkeypatch.setattr(
