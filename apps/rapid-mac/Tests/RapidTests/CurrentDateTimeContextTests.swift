@@ -437,8 +437,15 @@ struct CurrentDateContextWireTests {
         // a minute boundary the send legitimately appends a current-time line.
         let expected = "what is the date today\n\n" + ChatViewModel.clockContext(at: row.createdAt)
         #expect(user.hasPrefix(expected))
-        let rest = user.dropFirst(expected.count)
-        #expect(rest.isEmpty || rest.hasPrefix("\n(Current time: "))
+        // The request instant follows the row's createdAt by milliseconds, so
+        // the only valid extra line names the very next minute.
+        let nextMinute = Date(
+            timeIntervalSinceReferenceDate:
+                (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60 + 60
+        )
+        let rest = String(user.dropFirst(expected.count))
+        #expect(rest.isEmpty
+            || rest == ChatViewModel.answeringNowLine(asked: row.createdAt, answeringAt: nextMinute))
     }
     @MainActor
     @Test("An edited send gets the live clock; regenerate keeps the original ask time")

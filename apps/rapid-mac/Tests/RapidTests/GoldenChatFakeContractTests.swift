@@ -51,8 +51,15 @@ struct GoldenChatFakeContractTests {
         // A send that straddles a minute boundary may append a current-time line.
         let expected = "probe prompt\n\n" + ChatViewModel.clockContext(at: row.createdAt)
         #expect(recorded.hasPrefix(expected))
-        let rest = recorded.dropFirst(expected.count)
-        #expect(rest.isEmpty || rest.hasPrefix("\n(Current time: "))
+        // The request instant follows the row's createdAt by milliseconds, so
+        // the only valid extra line names the very next minute.
+        let nextMinute = Date(
+            timeIntervalSinceReferenceDate:
+                (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60 + 60
+        )
+        let rest = String(recorded.dropFirst(expected.count))
+        #expect(rest.isEmpty
+            || rest == ChatViewModel.answeringNowLine(asked: row.createdAt, answeringAt: nextMinute))
     }
 
     @MainActor
