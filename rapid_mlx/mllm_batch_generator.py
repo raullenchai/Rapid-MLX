@@ -3251,16 +3251,29 @@ class MLLMBatchGenerator:
                             and free_now < cache._disk_min_free_ram_bytes + entry_bytes
                         ):
                             break
-                    snapshot = store.load_exact_cache(key)
-                    if snapshot is None:
-                        continue
-                    entry = apc.APCExactCacheEntry(*snapshot)
-                    if self._persistable_exact_entry(entry, media_ids):
-                        restored.append((key, entry))
-                        restored_bytes += entry_bytes
-                    del snapshot, entry
+                    try:
+                        snapshot = store.load_exact_cache(key)
+                        if snapshot is None:
+                            continue
+                        entry = apc.APCExactCacheEntry(*snapshot)
+                        if self._persistable_exact_entry(entry, media_ids):
+                            restored.append((key, entry))
+                            restored_bytes += entry_bytes
+                        del snapshot, entry
+                    except Exception as exc:
+                        logger.warning(
+                            "[cache_persist] vision lane: skipped unreadable "
+                            "snapshot entry: %s",
+                            exc,
+                        )
                 with cache.lock:
                     for key, entry in reversed(restored):
+                        # Never replace an entry that became live meanwhile.
+                        if (
+                            key in cache._exact_cache
+                            or len(cache._exact_cache) >= cache._exact_cache_max
+                        ):
+                            continue
                         cache._exact_cache[key] = entry
                         loaded += 1
                 self._enforce_exact_cache_budget(cache)

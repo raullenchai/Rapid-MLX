@@ -503,7 +503,7 @@ def test_save_rollback_oserror_keeps_backup_recoverable(tmp_path, monkeypatch, c
     assert "snapshot rollback failed: rename unavailable" in caplog.text
 
 
-@pytest.mark.parametrize("failure", ["construction", "entry", ".new", ".old", "close"])
+@pytest.mark.parametrize("failure", ["construction", ".new", ".old", "close"])
 def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, failure):
     source = generator()
     add(source)
@@ -517,18 +517,10 @@ def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, fail
     fresh = generator()
     live_key = add(fresh, (7, 8, 9), tag=42)
     live = fresh._prefix_cache._exact_cache[live_key]
-    original_load = apc.DiskBlockStore.load_exact_cache
     original_close = apc.DiskBlockStore.close
-    calls = []
 
     def fail(*args, **kwargs):
         raise OSError("injected snapshot failure")
-
-    def load(store, key):
-        calls.append(key)
-        if len(calls) == 2:
-            fail()
-        return original_load(store, key)
 
     def close(store):
         original_close(store)
@@ -537,8 +529,6 @@ def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, fail
     with monkeypatch.context() as patch:
         if failure == "construction":
             patch.setattr(apc, "DiskBlockStore", fail)
-        elif failure == "entry":
-            patch.setattr(apc.DiskBlockStore, "load_exact_cache", load)
         elif failure == "close":
             patch.setattr(apc.DiskBlockStore, "close", close)
         else:
@@ -552,3 +542,42 @@ def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, fail
     assert (snapshot_path / "index.json").read_bytes() == before
     assert "snapshot load failed: injected snapshot failure" in caplog.text
     assert caplog.records[-1].levelname == "WARNING"
+
+
+def test_unreadable_entry_is_skipped_and_others_restore(tmp_path, monkeypatch, caplog):
+    source = generator()
+    first = add(source)
+    second = add(source, (4, 5, 6), tag=2)
+    assert source.save_exact_prefix_cache_to_disk(tmp_path / "cache")
+    real_load = apc.DiskBlockStore.load_exact_cache
+
+    def flaky(store, key, **kwargs):
+        if key == second:
+            raise ValueError("corrupt tensor header")
+        return real_load(store, key, **kwargs)
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", flaky)
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(tmp_path / "cache") == 1
+    assert list(fresh._prefix_cache._exact_cache) == [first]
+    assert "skipped unreadable snapshot entry: corrupt tensor header" in caplog.text
+
+
+def test_entry_that_becomes_live_during_restore_is_not_overwritten(
+    tmp_path, monkeypatch
+):
+    source = generator()
+    key = add(source)
+    assert source.save_exact_prefix_cache_to_disk(tmp_path / "cache")
+    fresh = generator()
+    real_load = apc.DiskBlockStore.load_exact_cache
+
+    def racing(store, cache_hash, **kwargs):
+        snapshot = real_load(store, cache_hash, **kwargs)
+        add(fresh, tag=5)  # a live store of the same prefix lands meanwhile
+        return snapshot
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", racing)
+    assert fresh.load_exact_prefix_cache_from_disk(tmp_path / "cache") == 0
+    live = fresh._prefix_cache._exact_cache[key]
+    assert mx.array_equal(live.prompt_cache[1].cache[0], mx.full((1, 2), 5.0))
