@@ -96,23 +96,6 @@ struct RapidClientHeaderTests {
         try expectDesktopHeader(at: 1, "GET /v1/videos/capabilities (shared builder)")
     }
 
-    @Test("AgentRuntimeClient stamps the header")
-    func agentRuntimeClient() async throws {
-        let client = AgentRuntimeClient(
-            baseURL: URL(string: "http://127.0.0.1:8123")!,
-            session: makeSession()
-        )
-        let runID = "3f1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071"
-        RapidClientHeaderStubProtocol.response = (
-            200,
-            Data(#"{"run_id":"\#(runID)","status":"ready","events":[],"next_after":0}"#.utf8)
-        )
-
-        _ = try await client.events(runID: runID, after: 0, bearerToken: "secret")
-
-        try expectDesktopHeader("GET /v1/agent/runs/<id>/events")
-    }
-
     @Test("ServerProfileFetcher stamps the header")
     func serverModelProfile() async throws {
         let session = makeSession()

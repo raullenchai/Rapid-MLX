@@ -1,3 +1,5 @@
+> Retired 2026-10-18: Personal Intelligence was removed from Rapid-MLX; this record is historical.
+
 # Personal Intelligence top-model qualification
 
 Date: 2026-09-15

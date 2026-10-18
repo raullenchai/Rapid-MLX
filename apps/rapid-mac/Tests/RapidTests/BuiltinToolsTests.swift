@@ -162,7 +162,11 @@ final class BuiltinToolsTests {
     func disabledToolIsStrippedFromWire() {
         let registry = makeRegistry()
         let total = registry.definitions.count
-        let vm = ChatViewModel(tools: registry, toolDefaults: freshDefaults())
+        let defaults = freshDefaults()
+        for name in ["local_search", "local_read", "local_write", "local_trash", "local_run"] {
+            defaults.set(true, forKey: "rapid.tools.enabled.\(name)")
+        }
+        let vm = ChatViewModel(tools: registry, toolDefaults: defaults)
         #expect(vm.enabledDefinitions.count == total)
         vm.setToolEnabled("browse", false)
         #expect(!vm.enabledDefinitions.contains { $0.function.name == "browse" })
@@ -180,64 +184,25 @@ final class BuiltinToolsTests {
         #expect(!second.enabledDefinitions.contains { $0.function.name == "weather" })
     }
 
-    @Test("An untouched tool defaults to enabled so a shipped tool needs no opt-in")
-    func unsetToolDefaultsToEnabled() {
+    @Test("Fresh defaults enable online and attachment tools and disable local workspace tools")
+    func freshToolDefaults() {
         let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
-        #expect(vm.disabledTools.isEmpty)
-    }
-
-    @Test("Personal Intelligence projects only enabled agent-safe built-ins")
-    func personalIntelligenceToolProjection() {
-        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
-        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
-            "web_search", "browse", "weather",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
-        ])
-
-        vm.setToolEnabled("browse", false)
-        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
-            "web_search", "weather",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
+        #expect(vm.disabledTools == ["local_search", "local_read", "local_write", "local_trash", "local_run"])
+        #expect(Set(vm.enabledDefinitions.map { $0.function.name }) == [
+            "web_search", "browse", "weather", "read_document",
         ])
     }
 
-    @Test("Personal Intelligence refuses invalid arguments before dispatch")
-    func personalIntelligenceRejectsInvalidArguments() async throws {
-        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
-        let action = try JSONDecoder().decode(
-            AgentPendingAction.self,
-            from: Data(#"{"call_id":"bad","name":"weather","arguments":{},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
-        )
-
-        let result = await vm.executePersonalIntelligenceTool(
-            action,
-            advertised: vm.personalIntelligenceDefinitions
-        )
-
-        #expect(result.isError)
-        #expect(!result.executed)
-        #expect(result.content.contains("location"))
+    @Test("Explicit true preserves local tool opt-in and explicit false disables an online tool")
+    func explicitToolDefaultsWin() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: "rapid.tools.enabled.local_write")
+        defaults.set(false, forKey: "rapid.tools.enabled.web_search")
+        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: defaults)
+        let enabled = Set(vm.enabledDefinitions.map { $0.function.name })
+        #expect(enabled.contains("local_write"))
+        #expect(!enabled.contains("web_search"))
     }
-
-    @Test("Personal Intelligence records a declined browse as unexecuted")
-    func personalIntelligenceRecordsDeclinedBrowse() async throws {
-        let registry = DeclinedBrowseRegistry()
-        let vm = ChatViewModel(tools: registry, toolDefaults: freshDefaults())
-        let action = try JSONDecoder().decode(
-            AgentPendingAction.self,
-            from: Data(#"{"call_id":"declined","name":"browse","arguments":{"url":"https://example.com"},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
-        )
-
-        let result = await vm.executePersonalIntelligenceTool(
-            action,
-            advertised: registry.definitions
-        )
-
-        #expect(result.isError)
-        #expect(!result.executed)
-    }
-
-    // MARK: - Dispatch refusal
 
     @Test("A call for a tool that wasn't advertised this round is refused, not run")
     func unadvertisedToolIsRefused() {

@@ -42,7 +42,7 @@ from .models import (
     ToolRisk,
     ToolSpec,
 )
-from .profiles import resolve_agent_profile, resolve_personal_intelligence_qualification
+from .profiles import resolve_agent_profile
 from .runtime import AgentRuntime, AgentRuntimeError
 
 logger = logging.getLogger(__name__)
@@ -2007,7 +2007,6 @@ class AgentRunView(_WireModel):
     id: str
     model: str
     profile: str
-    personal_intelligence_qualification: str | None = None
     status: AgentRunStatus
     model_turns: int
     tool_rounds: int
@@ -2711,7 +2710,6 @@ class _ServerRun:
     tools: tuple[ToolSpec, ...]
     registry: ToolRegistry
     model_generation: Any
-    personal_intelligence_qualification: str | None
     messages: list[dict[str, Any]]
     output: str | None = None
     pending_action: AgentToolCall | None = None
@@ -2799,12 +2797,6 @@ class AgentServerService:
                 tool_call_parser=profile_tool_call_parser,
             )
             public_model = request_model or model
-            qualification = resolve_personal_intelligence_qualification(
-                public_model,
-                backing_model=model,
-                model_config=profile_model_config,
-                tool_call_parser=profile_tool_call_parser,
-            )
             effective_request = request.model_copy(
                 update={
                     "max_tokens": min(request.max_tokens, profile.max_output_tokens)
@@ -2836,9 +2828,6 @@ class AgentServerService:
                 tools=tuple(tools),
                 registry=run_registry,
                 model_generation=model_generation,
-                personal_intelligence_qualification=(
-                    qualification.id if qualification is not None else None
-                ),
                 messages=(
                     [
                         {
@@ -3229,7 +3218,7 @@ class AgentServerService:
                             # route correctly rejects that output with 422;
                             # give the model one bounded correction rather than
                             # turning a harmless formatting miss into a dead
-                            # Personal Intelligence session.
+                            # client session.
                             retryable_client_tool = (
                                 entry.settings.execution == "client"
                                 and len(visible) == 1
@@ -4345,9 +4334,6 @@ class AgentServerService:
             id=entry.run.id,
             model=entry.run.model,
             profile=entry.run.profile.name,
-            personal_intelligence_qualification=(
-                entry.personal_intelligence_qualification
-            ),
             status=entry.run.status,
             model_turns=entry.run.model_turns,
             tool_rounds=entry.run.tool_rounds,

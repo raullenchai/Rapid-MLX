@@ -47,8 +47,6 @@ CLIENT_FIELDS: dict[str, str] = {
     "tool_call_parser": "whether it can emit OpenAI-shape tool_calls",
     "capabilities": "text / tools / vision, for request shaping",
     "recommended_sampling": "per-model sampling a client should adopt",
-    "personal_intelligence_profile": "qualified model-specific Rapid harness",
-    "personal_intelligence_qualification": "exact admitted artifact/parser/harness record",
 }
 
 #: Fields whose ``None`` must reach the wire as an explicit ``null``.
@@ -58,8 +56,6 @@ TRISTATE_FIELDS = (
     "tool_call_parser",
     "context_window",
     "max_model_len",
-    "personal_intelligence_profile",
-    "personal_intelligence_qualification",
 )
 
 
@@ -131,3 +127,8 @@ def test_contract_fields_are_documented_here() -> None:
     Cheap guard against the two lists drifting apart as fields are added.
     """
     assert set(TRISTATE_FIELDS) <= set(CLIENT_FIELDS)
+
+
+def test_model_cards_omit_retired_qualification_fields() -> None:
+    payload = json.loads(ModelInfo(id="m").model_dump_json())
+    assert not any(key.startswith("personal_intelligence_") for key in payload)

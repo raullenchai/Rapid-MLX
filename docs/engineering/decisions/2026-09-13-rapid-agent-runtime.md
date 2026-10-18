@@ -139,6 +139,8 @@ is data in `AgentProfile`, so Qwen and future compact models reuse the same
 runtime. The server becomes the owner of run state, while the GUI stays the
 owner of macOS presentation and client-local tool execution.
 
+> Retired 2026-10-18: Personal Intelligence was removed from Rapid-MLX; this record is historical.
+
 Product qualification is also server-owned. `/v1/models/{id}` publishes an
 additive `personal_intelligence_profile` only for exact model identities whose
 model, parser, prompt, and limits have passed the qualification harness and

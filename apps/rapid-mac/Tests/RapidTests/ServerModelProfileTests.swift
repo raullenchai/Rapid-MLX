@@ -51,7 +51,7 @@ final class ServerModelProfileTests {
 
     // MARK: - Decoding
 
-    @Test("Full vendor-extension response decodes every field")
+    @Test("Vendor extensions decode while legacy qualification keys are ignored")
     func decodesFullResponse() throws {
         let json = """
         {
@@ -94,8 +94,6 @@ final class ServerModelProfileTests {
         #expect(profile.isMoe == false)
         #expect(profile.toolCallParser == "hermes")
         #expect(profile.reasoningParser == "qwen3")
-        #expect(profile.personalIntelligenceProfile == "qwen3.5-4b")
-        #expect(profile.personalIntelligenceQualification == "qwen3.5-4b-q4-v1")
         #expect(profile.capabilities == ["text", "vision", "tools"])
         #expect(profile.servingLane == "vision")
         #expect(profile.servingLaneReason == "vision_hybrid_runtime_supported")
@@ -130,7 +128,6 @@ final class ServerModelProfileTests {
         #expect(profile.recommendedSampling == nil)
         #expect(profile.isHybrid == nil)
         #expect(profile.toolCallParser == nil)
-        #expect(profile.personalIntelligenceProfile == nil)
         #expect(profile.capabilities == nil)
         #expect(profile.servingLane == nil)
         #expect(profile.servingLaneReason == nil)

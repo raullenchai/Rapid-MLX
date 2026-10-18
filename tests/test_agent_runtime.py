@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
-import json
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
 
 from rapid_mlx.agent_runtime import (
-    PERSONAL_INTELLIGENCE_QUALIFICATIONS,
     AgentEvent,
     AgentModelTurn,
     AgentProfile,
@@ -24,7 +21,6 @@ from rapid_mlx.agent_runtime import (
     ToolRisk,
     ToolSpec,
     resolve_agent_profile,
-    resolve_personal_intelligence_profile,
 )
 
 
@@ -61,34 +57,6 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         assert profile.max_visible_tools == 8
         assert profile.max_tool_rounds == 12
 
-    for model, backing_model, expected in (
-        (
-            "qwen3.5-4b-4bit",
-            "mlx-community/Qwen3.5-4B-MLX-4bit",
-            "qwen3.5-4b",
-        ),
-        (
-            "mlx-community/Qwen3.5-4B-MLX-4bit",
-            "mlx-community/Qwen3.5-4B-MLX-4bit",
-            "qwen3.5-4b",
-        ),
-        (
-            "qwen3.5-9b-4bit",
-            "mlx-community/Qwen3.5-9B-4bit",
-            "qwen3.5-9b",
-        ),
-        (
-            "mlx-community/Qwen3.5-9B-4bit",
-            "mlx-community/Qwen3.5-9B-4bit",
-            "qwen3.5-9b",
-        ),
-    ):
-        profile = resolve_personal_intelligence_profile(
-            model, backing_model=backing_model, tool_call_parser="hermes"
-        )
-        assert profile is not None
-        assert profile.name == expected
-
     assert resolve_agent_profile("qwen3.5-4b-4bit").name == "qwen3.5-4b"
     assert resolve_agent_profile("qwen3.5-9b-4bit").name == "qwen3.5-9b"
 
@@ -114,144 +82,6 @@ def test_minicpm_profile_is_alias_and_repo_aware():
 )
 def test_usage_union_has_an_explicit_candidate_profile(model, profile_name):
     assert resolve_agent_profile(model).name == profile_name
-    # Candidate registration is not product qualification.
-    assert resolve_personal_intelligence_profile(model) is None
-
-
-def test_personal_intelligence_requires_a_qualified_model_profile():
-    for model in (
-        "minicpm5-2b-4bit",
-        "openbmb/MiniCPM5-2B-MLX",
-    ):
-        profile = resolve_personal_intelligence_profile(
-            model,
-            backing_model="openbmb/MiniCPM5-2B-MLX",
-            tool_call_parser="minicpm",
-        )
-        assert profile is not None
-        assert profile.name == "minicpm5-2b"
-
-    # Q8 shares the parser and harness, but not Q4's strict receipt.
-    assert (
-        resolve_personal_intelligence_profile(
-            "mlx-community/MiniCPM5-2B-8bit", tool_call_parser="minicpm"
-        )
-        is None
-    )
-
-    # Tool-capable and generic-runtime-compatible are not product qualification.
-    assert resolve_personal_intelligence_profile("minicpm5-2b-4bit") is None
-    assert (
-        resolve_personal_intelligence_profile(
-            "minicpm5-2b-4bit", tool_call_parser="hermes"
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "qwen3.5-4b-4bit", tool_call_parser="minicpm"
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "gemma-4-e2b-4bit", tool_call_parser="gemma4"
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "openbmb/MiniCPM5-2B-bf16", tool_call_parser="minicpm"
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "/models/minicpm5-2b-copy", tool_call_parser="minicpm"
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "minicpm5-2b-4bit",
-            backing_model="minicpm5-2b-4bit",
-            tool_call_parser="minicpm",
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "minicpm5-2b-4bit",
-            backing_model="someone/other-weights",
-            tool_call_parser="minicpm",
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "minicpm5-2b-4bit",
-            backing_model="mlx-community/MiniCPM5-2B-8bit",
-            tool_call_parser="minicpm",
-        )
-        is None
-    )
-    assert (
-        resolve_personal_intelligence_profile(
-            "mlx-community/MiniCPM5-2B-8bit",
-            backing_model="openbmb/MiniCPM5-2B-MLX",
-            tool_call_parser="minicpm",
-        )
-        is None
-    )
-
-
-def test_personal_intelligence_qualifications_are_unique_and_evidence_backed():
-    root = Path(__file__).resolve().parents[1]
-    qualification_ids = [item.id for item in PERSONAL_INTELLIGENCE_QUALIFICATIONS]
-    assert len(qualification_ids) == len(set(qualification_ids))
-
-    public_identities: list[str] = []
-    for qualification in PERSONAL_INTELLIGENCE_QUALIFICATIONS:
-        assert qualification.profile.name != "default"
-        assert qualification.tool_call_parser
-        evidence = Path(qualification.evidence)
-        assert not evidence.is_absolute()
-        resolved_evidence = (root / evidence).resolve()
-        resolved_evidence.relative_to(root / "docs" / "engineering" / "performance")
-        assert resolved_evidence.suffix == ".md"
-        assert resolved_evidence.is_file()
-        receipt = Path(qualification.receipt)
-        assert not receipt.is_absolute()
-        resolved_receipt = (root / receipt).resolve()
-        resolved_receipt.relative_to(root / "reports" / "benchmarks")
-        assert resolved_receipt.suffix == ".json"
-        receipt_data = json.loads(resolved_receipt.read_text())
-        receipt_model = receipt_data["model"].casefold().replace("_", "-")
-        assert receipt_model in {
-            identity.casefold().replace("_", "-")
-            for identity in qualification.public_identities
-        }
-        assert receipt_data["qualified"] is True
-        assert receipt_data["passed"] == receipt_data["total"] == 15
-        assert all(receipt_data["identity"]["checks"].values())
-        model_card = receipt_data["identity"]["model_card"]
-        assert model_card["personal_intelligence_profile"] == qualification.profile.name
-        assert model_card["tool_call_parser"] == qualification.tool_call_parser
-        assert model_card["personal_intelligence_qualification"] == qualification.id
-        public_identities.extend(
-            identity.casefold().replace("_", "-")
-            for identity in qualification.public_identities
-        )
-        for public_identity in qualification.public_identities:
-            for backing_identity in qualification.backing_identities:
-                resolved = resolve_personal_intelligence_profile(
-                    public_identity,
-                    backing_model=backing_identity,
-                    tool_call_parser=qualification.tool_call_parser,
-                )
-                assert resolved == qualification.profile
-
-    assert len(public_identities) == len(set(public_identities))
 
 
 def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():

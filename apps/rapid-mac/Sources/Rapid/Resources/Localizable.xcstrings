@@ -3110,16 +3110,6 @@
         }
       }
     },
-    "Allow agent action?" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "允许智能体执行此操作？"
-          }
-        }
-      }
-    },
     "Allow for this session" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4326,16 +4316,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "忽略更新 v%@"
-          }
-        }
-      }
-    },
-    "Don't Allow" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "不允许"
           }
         }
       }
@@ -6000,16 +5980,6 @@
         }
       }
     },
-    "Not now" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "以后再说"
-          }
-        }
-      }
-    },
     "Not ready to send yet." : {
       "localizations" : {
         "zh-Hans" : {
@@ -6270,62 +6240,12 @@
         }
       }
     },
-    "Personal Intelligence" : {
+    "Rapid wants to use its local workspace on this Mac." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Personal Intelligence"
-          }
-        }
-      }
-    },
-    "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Personal Intelligence 目前仅支持纯文本任务。请移除附件或将其关闭。"
-          }
-        }
-      }
-    },
-    "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Personal Intelligence 目前仅支持纯文本任务。关闭后才能附加文件或照片。"
-          }
-        }
-      }
-    },
-    "Personal Intelligence hasn’t been tuned for %@ yet. Regular chat is still available." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Personal Intelligence 尚未针对 %@ 调优。仍可使用普通对话。"
-          }
-        }
-      }
-    },
-    "Personal Intelligence stayed off because this conversation has attachments." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "由于此对话包含附件，Personal Intelligence 保持关闭。"
-          }
-        }
-      }
-    },
-    "Personal Intelligence wants to use Rapid's local workspace on this Mac." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Personal Intelligence 想要使用 Rapid 在这台 Mac 上的本地工作区。"
+            "value" : "Rapid 想要使用这台 Mac 上的本地工作区。"
           }
         }
       }
@@ -6800,16 +6720,6 @@
         }
       }
     },
-    "Remove attachments before turning on Personal Intelligence." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "开启 Personal Intelligence 前请先移除附件。"
-          }
-        }
-      }
-    },
     "Remove from Folder" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7066,16 +6976,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "允许前请核对确切的路径、内容、命令和参数。"
-          }
-        }
-      }
-    },
-    "Review this action before it runs." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请在运行前检查此操作。"
           }
         }
       }
@@ -8070,16 +7970,6 @@
         }
       }
     },
-    "The agent task could not be completed." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "智能体任务未能完成。"
-          }
-        }
-      }
-    },
     "The conversations in it are kept and move back into the date list." : {
       "localizations" : {
         "zh-Hans" : {
@@ -8606,16 +8496,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "使用默认值"
-          }
-        }
-      }
-    },
-    "Use your Mac’s tools and local context to get things done." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "使用 Mac 上的工具和本地上下文来完成任务。"
           }
         }
       }
@@ -9400,12 +9280,12 @@
         }
       }
     },
-    "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry." : {
+    "Rapid-MLX is local-first. Models run on your Mac, and prompts, attachments, and responses stay here unless you use an online tool such as web search or browsing. Anonymous metadata telemetry is on by default; turn it off here, with rapid-mlx telemetry off, or at https://rapidmlx.com/docs/telemetry." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rapid-MLX 以本地优先。提示词、附件和模型回复绝不会离开你的 Mac。匿名元数据遥测默认开启；可以在这里关闭，也可以运行 rapid-mlx telemetry off，或参阅 https://rapidmlx.com/docs/telemetry。"
+            "value" : "Rapid-MLX 优先使用本地处理。模型在你的 Mac 上运行；除非使用网页搜索或浏览等在线工具，否则提示词、附件和回复都会留在本机。匿名元数据遥测默认开启；你可以在此处关闭，运行 rapid-mlx telemetry off，或访问 https://rapidmlx.com/docs/telemetry 了解详情。"
           }
         }
       }
@@ -17399,6 +17279,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rapid 找不到此任务所需的应用：%1$@ 请重试。"
+          }
+        }
+      }
+    },
+    "It is loaded on this Mac and answering locally. Online tools such as web search send only what they need to their service." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型已加载到这台 Mac 上，并在本地回答问题。网页搜索等在线工具只会向其服务发送所需的信息。"
+          }
+        }
+      }
+    },
+    "Your AI runs\non this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 AI\n在这台 Mac 上运行。"
           }
         }
       }

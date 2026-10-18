@@ -128,7 +128,6 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert done.profile == "minicpm5-2b"
-    assert done.personal_intelligence_qualification == "minicpm5-2b-q4-v1"
     assert done.output == "Done."
     assert done.pending_action is None
     wire = (await service.events(done.id)).model_dump_json()
@@ -991,7 +990,7 @@ def test_multiple_weather_targets_are_planned_individually():
     ) == ({"location": "Springfield, IL"}, {"location": "Boston"})
 
 
-def test_personal_intelligence_defensive_planning_branches():
+def test_client_defensive_planning_branches():
     """Malformed history and exhausted plans fail closed without model-visible noise."""
 
     call = AgentToolCall(id="call", name="weather", arguments={"location": "Paris"})

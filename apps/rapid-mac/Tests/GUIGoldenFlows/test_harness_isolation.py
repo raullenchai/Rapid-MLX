@@ -46,8 +46,6 @@ class HarnessIsolationTests(unittest.TestCase):
             "rapid.server.confirm_active_request_switch.v1",
             "rapid.picker.show_all_models.v1",
             "Rapid.showLogs",
-            "Rapid.personalIntelligence.introductionCompleted",
-            "Rapid.personalIntelligence.preferredEnabled",
             "rapid.memory.enabled",
             "dictation.enabled",
             "dictation.archiveAudio",
@@ -121,12 +119,6 @@ class HarnessIsolationTests(unittest.TestCase):
                 "UI/ContentView.swift",
                 "ContentView.showLogsKey",
             ),
-            (
-                "AgentRuntime/AgentRuntimeClient.swift",
-                "introductionCompletedKey",
-                "UI/ChatView.swift",
-                "PersonalIntelligenceConfig.introductionCompletedKey",
-            ),
         ):
             record(
                 constant(source(key_source), key_constant),
@@ -138,18 +130,6 @@ class HarnessIsolationTests(unittest.TestCase):
                     + r"\)\s*private var \w+(?:\s*:\s*Bool)?\s*=\s*(true|false)\b",
                 ),
             )
-
-        text = source("AgentRuntime/AgentRuntimeClient.swift")
-        record(
-            constant(text, "preferredEnabledKey"),
-            "bool",
-            capture(text, r"\bstatic let defaultPreferredEnabled\s*=\s*(true|false)\b"),
-        )
-        self.assertRegex(
-            source("UI/ChatView.swift"),
-            r"@AppStorage\(PersonalIntelligenceConfig.preferredEnabledKey\)"
-            r"\s*private var \w+\s*=\s*PersonalIntelligenceConfig.defaultPreferredEnabled\b",
-        )
 
         text = source("Dictation/DictationController.swift")
         record(
@@ -203,19 +183,24 @@ class HarnessIsolationTests(unittest.TestCase):
         )
         record(key, "bool", value)
 
-        # Tools use a computed key and a disabled set rather than a default
-        # literal. Parse the whole exclusion branch: absent flags never enter
-        # the set, and explicit false is the only value that disables a tool.
+        # Derive opt-in names from the source and verify the fallback expression.
         text = source("Chat/ChatViewModel.swift")
         template = capture(
             text,
             r'private static func toolEnabledKey\(_ name: String\) -> String \{\s*"([^"\n]+)"\s*\}',
         )
-        disabled_value = capture(
-            text,
-            r"if let raw = toolDefaults.object\(forKey: Self.toolEnabledKey\(def.function.name\)\) as\? Bool,"
-            r"\s*raw == (false) \{\s*disabled.insert\(def.function.name\)\s*\}",
+        local_tools = set(
+            re.findall(
+                r'"([^"\n]+)"',
+                capture(text, r"let localTools: Set<String> = \[([\s\S]*?)\]"),
+            )
         )
+        self.assertRegex(
+            text,
+            r"let enabled = toolDefaults.object\(forKey: Self.toolEnabledKey\(name\)\) as\? Bool"
+            r"\s*\?\? !localTools.contains\(name\)",
+        )
+        self.assertIn("if !enabled { disabled.insert(name) }", text)
         self.assertIn("var disabled = Set<String>()", text)
         self.assertIn("self.disabledTools = disabled", text)
         for name in (
@@ -232,7 +217,7 @@ class HarnessIsolationTests(unittest.TestCase):
             record(
                 template.replace(r"\(name)", name),
                 "bool",
-                str(not json.loads(disabled_value)).lower(),
+                str(name not in local_tools).lower(),
             )
 
         # No explicit scalar default: UserDefaults.bool returns false on an

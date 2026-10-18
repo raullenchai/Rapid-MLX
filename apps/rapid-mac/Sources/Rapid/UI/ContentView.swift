@@ -2315,7 +2315,7 @@ private struct LocalToolApprovalDialog: ViewModifier {
             if let request = store.pendingRequest {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(request.title).font(.rapid(.headline))
-                    Text("Personal Intelligence wants to use Rapid's local workspace on this Mac.")
+                    Text("Rapid wants to use its local workspace on this Mac.")
                         .font(.rapid(.callout)).foregroundStyle(.secondary)
                     ScrollView {
                         Text(request.argumentsPreview)

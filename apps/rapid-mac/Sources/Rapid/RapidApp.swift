@@ -172,6 +172,7 @@ struct RapidApp: App {
         // fatalError under bad disk / permissions state, and we want
         // those abortions to leave a marker for the next launch.
         CrashReporter.install()
+        LegacyPreferenceCleanup.run()
         // Reconcile the local sender gate before any launch task can emit. A
         // missing policy revision remains fail-closed until the startup task
         // persists it successfully.

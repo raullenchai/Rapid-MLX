@@ -1964,7 +1964,7 @@ struct QuickstartView: View {
                 CheetahLogo(size: 156)
                     .padding(.bottom, 30)
 
-                OnboardingDisplayTitle(text: "Nothing you type\nleaves this Mac.", size: 52)
+                OnboardingDisplayTitle(text: String(localized: "Your AI runs\non this Mac."), size: 52)
 
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Models run locally on Apple Silicon. You download one model "
@@ -4211,8 +4211,7 @@ struct QuickstartView: View {
             tone: .ready,
             kicker: "SETUP COMPLETE",
             title: "\(coordinator.selection.displayName) is ready.",
-            message: "It is loaded on this Mac and answering locally. "
-                + "Nothing you type from here leaves the machine."
+            message: String(localized: "It is loaded on this Mac and answering locally. Online tools such as web search send only what they need to their service.")
         ) {
             OnboardingActionLane {
                 Button("Start chatting") {

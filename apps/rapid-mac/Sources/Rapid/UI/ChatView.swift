@@ -262,18 +262,6 @@ struct ChatView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(QuickstartCoordinator.self) private var quickstart
 
-    @AppStorage(PersonalIntelligenceConfig.introductionCompletedKey)
-    private var personalIntelligenceIntroductionCompleted = false
-    @AppStorage(PersonalIntelligenceConfig.preferredEnabledKey)
-    private var personalIntelligencePreferred =
-        PersonalIntelligenceConfig.defaultPreferredEnabled
-    @State private var agentSession = AgentSessionController()
-    @State private var personalIntelligenceStates =
-        PersonalIntelligenceConfig.loadConversationStates()
-    @State private var showsPersonalIntelligenceInfo = false
-    @State private var personalIntelligencePopoverShowsActions = false
-    @State private var personalIntelligencePopoverOpenedByHover = false
-    @State private var showsAgentApproval = false
     @State private var draft: String = ""
     @State private var attachmentDrafts = ChatAttachmentDraftStore()
     /// A rejected photo is a capability explanation, not an attachment
@@ -319,32 +307,6 @@ struct ChatView: View {
     private var attachmentDraft: ChatAttachmentDraft {
         get { attachmentDrafts[viewModel.activeConversationID] }
         nonmutating set { attachmentDrafts[viewModel.activeConversationID] = newValue }
-    }
-    private var personalIntelligenceSupportsModel: Bool {
-        PersonalIntelligenceConfig.supportsModel(
-            alias,
-            serverProfile: server.activeModelProfile
-        )
-    }
-
-    private var personalIntelligenceBinding: PersonalIntelligenceRunBinding {
-        let profile = server.activeModelProfile
-        return PersonalIntelligenceRunBinding(
-            conversationID: viewModel.activeConversationID,
-            selectedAlias: alias,
-            serverModelID: profile?.id,
-            parser: profile?.toolCallParser,
-            profile: profile?.personalIntelligenceProfile,
-            qualification: profile?.personalIntelligenceQualification
-        )
-    }
-    private var agentModeEnabled: Bool {
-        PersonalIntelligenceConfig.isEnabled(
-            conversationEnabled:
-                personalIntelligenceStates[viewModel.activeConversationID] ?? false,
-            alias: alias,
-            serverProfile: server.activeModelProfile
-        )
     }
     private var photoAvailability: PhotoCapabilityNotice.Availability {
         PhotoCapabilityNotice.Availability(
@@ -413,77 +375,15 @@ struct ChatView: View {
             composeFocusToken &+= 1
         }
         .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
-        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
-            reconcilePersonalIntelligenceStates()
-        }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             pruneAttachmentDrafts()
             photoCapabilityNotice.dismiss()
         }
-        .onChange(of: viewModel.activeConversationID) { _, _ in
-            let activeID = viewModel.activeConversationID
-            reconcilePersonalIntelligenceStates(
-                newlyCreatedConversationIDs:
-                    viewModel.locallyCreatedConversationID == activeID ? [activeID] : []
-            )
-        }
         .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
-        .onChange(of: personalIntelligenceBinding) { oldBinding, newBinding in
-            if newBinding.invalidatesRun(boundTo: oldBinding) {
-                // The run belongs to its conversation and the entire exact
-                // model binding. One observer covers both kinds of ownership
-                // transition so neither cancellation path can drift.
-                stopAgentIfNeeded()
-            }
-        }
-        .onChange(of: personalIntelligenceSupportsModel) { _, supported in
-            if !supported {
-                stopAgentIfNeeded()
-            } else if attachmentDraft.hasAttachments,
-                      personalIntelligenceStates[viewModel.activeConversationID] == true {
-                // An unsupported model temporarily exposes ordinary Chat's
-                // attachment path. Returning to a qualified model must not
-                // silently reactivate Personal Intelligence around files the
-                // user staged in the meantime.
-                setPersonalIntelligence(false)
-                attachmentDraft.notice =
-                    String(localized: "Personal Intelligence stayed off because this conversation has attachments.")
-            }
-        }
         .onChange(of: photoAvailability) { _, availability in
             photoCapabilityNotice.reconcile(with: availability)
         }
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
-        .onChange(of: showsPersonalIntelligenceInfo) { _, shown in
-            if !shown {
-                personalIntelligencePopoverShowsActions = false
-                personalIntelligencePopoverOpenedByHover = false
-            }
-        }
-        .onChange(of: agentSession.phase) { _, phase in
-            reconcileAgentPhase(phase)
-        }
-        .onDisappear {
-            stopAgentIfNeeded()
-        }
-        .onAppear {
-            reconcilePersonalIntelligenceStates()
-        }
-        .alert(
-            agentApprovalTitle,
-            isPresented: $showsAgentApproval
-        ) {
-            Button("Don't Allow", role: .cancel) {
-                agentSession.resolvePendingApproval(approved: false)
-            }
-            .accessibilityIdentifier("ChatView.AgentApprovalDeny")
-            Button("Allow") {
-                agentSession.resolvePendingApproval(approved: true)
-            }
-            .accessibilityIdentifier("ChatView.AgentApprovalAllow")
-        } message: {
-            Text(agentApprovalMessage)
-        }
     }
 
     // MARK: - Transcript
@@ -873,12 +773,7 @@ struct ChatView: View {
             // the same fact twice. Once the model is ready the slot
             // reverts to turn-level errors (a 500 from a healthy server),
             // which readiness has no opinion about.
-            if agentSession.isActive, let progress = agentSession.progressText {
-                InlineNotice(message: progress, tone: .info)
-                    .frame(maxWidth: contentMaxWidth)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier("ChatView.AgentProgress")
-            } else if !readiness.isReady && !showsLifecycleBand {
+            if !readiness.isReady && !showsLifecycleBand {
                 // Suppressed while the band is open. The band renders the
                 // same ``ModelReadiness`` — same headline, same detail,
                 // same fraction — so leaving the banner here as well
@@ -991,7 +886,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(
-                viewModel.isStreaming || attachmentDraft.isImportingFiles || agentModeEnabled
+                viewModel.isStreaming || attachmentDraft.isImportingFiles
             )
             .help("Add photos or files")
             .accessibilityLabel("Add attachments")
@@ -1080,65 +975,6 @@ struct ChatView: View {
                 )
                 .id(viewModel.activeConversationID)
             }
-            Button {
-                personalIntelligencePopoverOpenedByHover = false
-                if !personalIntelligenceSupportsModel {
-                    personalIntelligencePopoverShowsActions = false
-                    showsPersonalIntelligenceInfo = true
-                } else if !personalIntelligenceIntroductionCompleted {
-                    personalIntelligencePopoverShowsActions = true
-                    showsPersonalIntelligenceInfo = true
-                } else if !agentModeEnabled, attachmentDraft.hasAttachments {
-                    attachmentDraft.notice = String(localized: "Remove attachments before turning on Personal Intelligence.")
-                } else {
-                    setPersonalIntelligence(!agentModeEnabled, updatesPreference: true)
-                    attachmentDraft.notice = nil
-                }
-            } label: {
-                PersonalIntelligenceGlyph()
-                    .fill(
-                        agentModeEnabled
-                            ? RapidTheme.onBrandPrimary
-                            : Color.secondary
-                    )
-                    .frame(width: 15, height: 15)
-                    .frame(width: 28, height: 28)
-                    .background(
-                        Circle().fill(
-                            agentModeEnabled
-                                ? RapidTheme.brandPrimary
-                                : Color.primary.opacity(0.06)
-                        )
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(viewModel.isStreaming || attachmentDraft.isImportingFiles)
-            .onHover { hovering in
-                if hovering {
-                    // Hover is explanation-only. It must never arm a consent
-                    // action that a later Return or Escape could commit.
-                    personalIntelligencePopoverShowsActions = false
-                    personalIntelligencePopoverOpenedByHover = true
-                    showsPersonalIntelligenceInfo = true
-                } else if personalIntelligencePopoverOpenedByHover,
-                          !personalIntelligencePopoverShowsActions {
-                    showsPersonalIntelligenceInfo = false
-                }
-            }
-            .popover(isPresented: $showsPersonalIntelligenceInfo, arrowEdge: .bottom) {
-                PersonalIntelligencePopover(
-                    modelAlias: alias,
-                    modelSupported: personalIntelligenceSupportsModel,
-                    showsIntroductionActions:
-                        personalIntelligencePopoverShowsActions
-                            && !personalIntelligenceIntroductionCompleted,
-                    onNotNow: declinePersonalIntelligenceIntroduction,
-                    onTurnOn: acceptPersonalIntelligenceIntroduction
-                )
-            }
-            .accessibilityLabel("Personal Intelligence")
-            .accessibilityValue(agentModeEnabled ? String(localized: "On") : String(localized: "Off"))
-            .accessibilityIdentifier("ChatView.PersonalIntelligence.Toggle")
             Spacer(minLength: 0)
             if let speculativeAvailability {
                 MetricChip(
@@ -1345,7 +1181,6 @@ struct ChatView: View {
     private var sendEnabled: Bool {
         hasDraft && readiness.sendAllowed && !attachmentDraft.isImportingFiles
             && (attachmentDraft.images.isEmpty || supportsImageInput)
-            && (!agentModeEnabled || !attachmentDraft.hasAttachments)
     }
 
     private var hasDraft: Bool {
@@ -1376,17 +1211,7 @@ struct ChatView: View {
         // flashes and VoiceOver speaks the same sentence the Send
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
-        if agentModeEnabled, attachmentDraft.hasAttachments {
-            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off.")
-            return
-        }
         photoCapabilityNotice.dismiss()
-        if agentModeEnabled {
-            guard startAgentTurn(text) else { return }
-            draft = ""
-            composeFocusToken &+= 1
-            return
-        }
         draft = ""
         let submission = attachmentDraft.takeSubmission()
         composeFocusToken &+= 1
@@ -1397,137 +1222,6 @@ struct ChatView: View {
             imageAttachments: submission.images,
             fileAttachments: submission.files
         )
-    }
-
-    @discardableResult
-    private func startAgentTurn(_ text: String) -> Bool {
-        guard !attachmentDraft.hasAttachments else {
-            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Remove the attachments or turn it off.")
-            return false
-        }
-        let goal = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !goal.isEmpty else { return false }
-        guard let harnessProfile = PersonalIntelligenceConfig.harnessProfile(
-            for: alias,
-            serverProfile: server.activeModelProfile
-        ), let qualification = server.activeModelProfile?
-            .personalIntelligenceQualification?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !qualification.isEmpty else {
-            return false
-        }
-        let session = agentSession
-        let agentTools = viewModel.personalIntelligenceDefinitions
-        let trustedInstructions = viewModel.personalIntelligenceTrustedInstructions()
-        let localContext = viewModel.personalIntelligenceLocalContext()
-        let recentUserMessages = viewModel.personalIntelligenceRecentUserMessages()
-        guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
-            session.bindingDidChange()
-        }) else { return false }
-        session.start(
-            goal: goal,
-            model: alias,
-            expectedProfile: harnessProfile,
-            expectedQualification: qualification,
-            toolNames: agentTools.map { $0.function.name },
-            trustedInstructions: trustedInstructions,
-            localContext: localContext,
-            recentUserMessages: recentUserMessages,
-            clientToolExecutor: { action in
-                await viewModel.executePersonalIntelligenceTool(
-                    action,
-                    advertised: agentTools
-                )
-            },
-            baseURL: ChatStreamClient.loopbackURL(port: server.activePort),
-            bearerToken: server.activeBearer
-        )
-        return true
-    }
-
-    private func stopAgentIfNeeded() {
-        if viewModel.hasActiveAgentTurn {
-            // Preserve a terminal result that arrived just before SwiftUI's
-            // phase observer. Otherwise cancel the still-live server run and
-            // finalize Chat's placeholder through the shared Stop contract.
-            switch agentSession.phase {
-            case .completed, .failed, .cancelled:
-                reconcileAgentPhase(agentSession.phase)
-            case .idle, .starting, .running, .awaitingApproval:
-                viewModel.stop()
-            }
-        } else if agentSession.isActive {
-            // Defensive reconciliation for an observer that started before its
-            // transcript projection could be committed.
-            agentSession.bindingDidChange()
-        }
-    }
-
-    private func setPersonalIntelligence(
-        _ enabled: Bool,
-        updatesPreference: Bool = false
-    ) {
-        if updatesPreference {
-            personalIntelligencePreferred = enabled
-        }
-        personalIntelligenceStates[viewModel.activeConversationID] =
-            enabled && personalIntelligenceSupportsModel
-        PersonalIntelligenceConfig.saveConversationStates(personalIntelligenceStates)
-    }
-
-    private func acceptPersonalIntelligenceIntroduction() {
-        guard !attachmentDraft.hasAttachments else {
-            attachmentDraft.notice =
-                String(localized: "Remove attachments before turning on Personal Intelligence.")
-            showsPersonalIntelligenceInfo = false
-            personalIntelligencePopoverShowsActions = false
-            return
-        }
-        personalIntelligenceIntroductionCompleted = true
-        personalIntelligencePreferred = true
-        setPersonalIntelligence(true)
-        showsPersonalIntelligenceInfo = false
-        personalIntelligencePopoverShowsActions = false
-    }
-
-    private func declinePersonalIntelligenceIntroduction() {
-        personalIntelligenceIntroductionCompleted = true
-        personalIntelligencePreferred = false
-        setPersonalIntelligence(false)
-        showsPersonalIntelligenceInfo = false
-        personalIntelligencePopoverShowsActions = false
-    }
-
-    private var agentApprovalTitle: String {
-        guard let action = agentSession.pendingApproval else { return String(localized: "Allow agent action?") }
-        return AgentApprovalPresentation.title(for: action)
-    }
-
-    private var agentApprovalMessage: String {
-        guard let action = agentSession.pendingApproval else {
-            return String(localized: "Review this action before it runs.")
-        }
-        return AgentApprovalPresentation.message(for: action)
-    }
-
-    private func reconcileAgentPhase(_ phase: AgentSessionController.Phase) {
-        switch phase {
-        case .awaitingApproval:
-            showsAgentApproval = true
-        case .completed:
-            showsAgentApproval = false
-            viewModel.completeAgentTurn(agentSession.run?.output ?? "")
-        case .failed:
-            showsAgentApproval = false
-            viewModel.failAgentTurn(
-                agentSession.errorMessage ?? String(localized: "The agent task could not be completed.")
-            )
-        case .cancelled:
-            showsAgentApproval = false
-            viewModel.cancelAgentTurnFromServer()
-        case .idle, .starting, .running:
-            showsAgentApproval = false
-        }
     }
 
     /// Send a suggestion chip's question.
@@ -1547,11 +1241,7 @@ struct ChatView: View {
         guard acknowledgeIfNotReady() else { return }
         photoCapabilityNotice.dismiss()
         composeFocusToken &+= 1
-        if agentModeEnabled {
-            _ = startAgentTurn(text)
-        } else {
-            viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
-        }
+        viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
     }
 
     private var attachmentStrip: some View {
@@ -1652,10 +1342,6 @@ struct ChatView: View {
 
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
-        guard !agentModeEnabled else {
-            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos.")
-            return false
-        }
         guard !attachmentDraft.isImportingFiles else { return false }
         photoCapabilityNotice.dismiss()
         // Filter before splitting, so images and documents get the same
@@ -1809,21 +1495,6 @@ struct ChatView: View {
         DocumentContentCache.shared.remove(contentsOf: discarded)
     }
 
-    private func reconcilePersonalIntelligenceStates(
-        newlyCreatedConversationIDs: Set<UUID> = []
-    ) {
-        let stored = Set(viewModel.conversations.map(\.id))
-        personalIntelligenceStates = PersonalIntelligenceConfig.reconciledConversationStates(
-            personalIntelligenceStates,
-            activeConversationID: viewModel.activeConversationID,
-            storedConversationIDs: stored,
-            newlyCreatedConversationIDs: newlyCreatedConversationIDs,
-            introductionCompleted: personalIntelligenceIntroductionCompleted,
-            preferredEnabled: personalIntelligencePreferred
-        )
-        PersonalIntelligenceConfig.saveConversationStates(personalIntelligenceStates)
-    }
-
     /// Parse candidates without losing which source produced each attachment.
     /// Failed candidates may appear anywhere in the batch, so pairing a
     /// filtered attachments array with the original URL array by index would
@@ -1887,10 +1558,6 @@ struct ChatView: View {
         }
         let pastedImage = NSImage(pasteboard: pasteboard)
         guard !urls.isEmpty || pastedImage != nil else { return false }
-        guard !agentModeEnabled else {
-            attachmentDraft.notice = String(localized: "Personal Intelligence currently supports text-only tasks. Turn it off to attach files or photos.")
-            return true
-        }
         if !urls.isEmpty {
             _ = addAttachmentURLs(urls)
         } else if let image = pastedImage,

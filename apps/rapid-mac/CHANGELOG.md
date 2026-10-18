@@ -15,6 +15,12 @@ can actually understand.
 > the app's archived `machinefi/rapid-desktop` repository, where that work
 > shipped before the app moved into this `raullenchai/Rapid-MLX` monorepo.
 
+## Unreleased
+
+- Removed Personal Intelligence from Desktop.
+- Local file and command tools in Chat now start off unless you explicitly enabled them; saved choices are preserved.
+- Clarified privacy copy to explain when online tools send data to their services.
+
 ## [Unreleased]
 
 ## [0.16.3] — 2026-10-17

@@ -885,8 +885,6 @@ rapid.server.auto_start_on_launch.v1 bool true
 rapid.server.confirm_active_request_switch.v1 bool true
 rapid.picker.show_all_models.v1 bool false
 Rapid.showLogs bool false
-Rapid.personalIntelligence.introductionCompleted bool false
-Rapid.personalIntelligence.preferredEnabled bool true
 rapid.memory.enabled bool false
 dictation.enabled bool false
 dictation.archiveAudio bool false
@@ -897,11 +895,11 @@ rapid.tools.enabled.web_search bool true
 rapid.tools.enabled.browse bool true
 rapid.tools.enabled.weather bool true
 rapid.tools.enabled.read_document bool true
-rapid.tools.enabled.local_search bool true
-rapid.tools.enabled.local_read bool true
-rapid.tools.enabled.local_write bool true
-rapid.tools.enabled.local_trash bool true
-rapid.tools.enabled.local_run bool true
+rapid.tools.enabled.local_search bool false
+rapid.tools.enabled.local_read bool false
+rapid.tools.enabled.local_write bool false
+rapid.tools.enabled.local_trash bool false
+rapid.tools.enabled.local_run bool false
 DEFAULTS
 }
 

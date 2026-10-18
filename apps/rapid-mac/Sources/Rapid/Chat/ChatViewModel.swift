@@ -129,9 +129,6 @@ final class ChatViewModel {
     /// UUID on launch (opens to an empty "Ask anything"); ``persistActive``
     /// upserts under this id once the user sends.
     private(set) var activeConversationID = UUID()
-    /// Set only by the local New Chat command. Restore/import/sync paths never
-    /// populate it, so UI preferences cannot infer consent from a list delta.
-    private(set) var locallyCreatedConversationID: UUID?
 
     /// User-authored instructions for the open conversation. They are kept
     /// outside the visible transcript and merged into the wire-only system row.
@@ -173,9 +170,9 @@ final class ChatViewModel {
     """
 
     /// Per-tool on/off flags, persisted in ``UserDefaults`` under keys of the
-    /// form ``rapid.tools.enabled.<name>``. Reads fall through to ``true``
-    /// (every tool is enabled by default) so a fresh install picks up tools we
-    /// ship without the user opting in. ``enabledDefinitions`` filters disabled
+    /// form ``rapid.tools.enabled.<name>``. Local workspace tools default to
+    /// disabled; other tools default to enabled. An explicit stored Bool wins.
+    /// ``enabledDefinitions`` filters disabled
     /// tools out before they reach the model, and the loop also gates dispatch
     /// so a model that invents a disabled name gets a clean refusal instead.
     private(set) var disabledTools: Set<String>
@@ -245,26 +242,6 @@ final class ChatViewModel {
     private(set) var lastFailureAlias: String?
 
     private var inflight: Task<Void, Never>?
-
-    /// A server-owned Agent Runtime turn projected into this transcript.
-    /// Chat remains the sole owner of message/history state while the runtime
-    /// owns planning, approvals, tools, and execution. The cancellation hook
-    /// lets every existing conversation transition stop the remote run through
-    /// the same ``cancelInflightWork`` funnel used by ordinary streaming.
-    private struct ExternalTurn {
-        let placeholderID: UUID
-        let epoch: Int
-        let alias: String
-        let cancel: @MainActor () -> Void
-    }
-
-    private var externalTurn: ExternalTurn?
-
-    /// Transcript ownership is distinct from the observed server phase. A
-    /// terminal server update can arrive one SwiftUI delivery turn before the
-    /// view projects it into Chat, so teardown must consult this source of
-    /// truth rather than only `AgentSessionController.isActive`.
-    var hasActiveAgentTurn: Bool { externalTurn != nil }
 
     /// The title / follow-up completions. One handle for both arms, so one
     /// `cancel()` stops everything this model started on its own account.
@@ -349,16 +326,16 @@ final class ChatViewModel {
         self.conversationStoreURL = conversationStoreURL
         self.onProductValueDelivered = onProductValueDelivered
         self.documentCache = documentCache
-        // Seed disabledTools from the persistent store. Anything explicitly set
-        // to ``false`` in UserDefaults goes in; unknown keys default to enabled.
+        // Preserve explicit choices; local workspace access requires opt-in.
+        let localTools: Set<String> = [
+            "local_search", "local_read", "local_write", "local_trash", "local_run",
+        ]
         var disabled = Set<String>()
         for def in tools.definitions {
-            // ``object(forKey:)`` so we can distinguish "absent" (default to
-            // enabled) from "explicitly false".
-            if let raw = toolDefaults.object(forKey: Self.toolEnabledKey(def.function.name)) as? Bool,
-               raw == false {
-                disabled.insert(def.function.name)
-            }
+            let name = def.function.name
+            let enabled = toolDefaults.object(forKey: Self.toolEnabledKey(name)) as? Bool
+                ?? !localTools.contains(name)
+            if !enabled { disabled.insert(name) }
         }
         self.disabledTools = disabled
         self.conversations = persistsConversations
@@ -392,177 +369,6 @@ final class ChatViewModel {
     /// the next turn without re-initialising the chat loop.
     var enabledDefinitions: [ToolDefinition] {
         tools.definitions.filter { !disabledTools.contains($0.function.name) }
-    }
-
-    /// The small, built-in tool surface Personal Intelligence may project to
-    /// the server-owned loop. Keep connector tools and attachment-only reads
-    /// out until their permission/context contracts are represented by that
-    /// loop. The snapshot is frozen by ChatView for the lifetime of one run.
-    var personalIntelligenceDefinitions: [ToolDefinition] {
-        let supported: Set<String> = [
-            "web_search", "browse", "weather",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
-        ]
-        return builtinDefinitions.filter {
-            supported.contains($0.function.name)
-                && !disabledTools.contains($0.function.name)
-        }
-    }
-
-    /// User-authored instruction layers remain instructions in Personal
-    /// Intelligence; they must not be mixed into quoted memory/transcript data.
-    func personalIntelligenceTrustedInstructions() -> String? {
-        let global = customInstructions.global.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        let conversation = conversationInstructions.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-
-        func section(_ tag: String, _ content: String, budget: Int) -> String? {
-            guard !content.isEmpty else { return nil }
-            let opening = "<\(tag)>\n"
-            let closing = "\n</\(tag)>"
-            let overhead = opening.unicodeScalars.count + closing.unicodeScalars.count
-            guard budget > overhead else { return nil }
-            let kept = String(
-                String.UnicodeScalarView(content.unicodeScalars.prefix(budget - overhead))
-            )
-            return opening + kept + closing
-        }
-
-        // Reserve the wire budget for the higher-priority conversation layer
-        // first, but serialize global first so normal precedence remains clear.
-        var remaining = 8_192
-        let conversationSection = section(
-            "conversation_instructions", conversation, budget: remaining
-        )
-        remaining -= conversationSection?.unicodeScalars.count ?? 0
-        if conversationSection != nil, !global.isEmpty {
-            remaining = max(0, remaining - 2) // The section separator on the wire.
-        }
-        let globalSection = section("global_user_instructions", global, budget: remaining)
-        let sections = [globalSection, conversationSection].compactMap { $0 }
-        return sections.isEmpty ? nil : sections.joined(separator: "\n\n")
-    }
-
-    /// Bounded, transient quoted context for the server-owned loop. Recent
-    /// turns win the budget from newest to oldest so a follow-up never keeps
-    /// stale history at the expense of the immediately preceding answer.
-    func personalIntelligenceLocalContext() -> String? {
-        let maximumCharacters = 24_000
-        let recentPrefix = "<recent_conversation>\n"
-        let recentSuffix = "\n</recent_conversation>"
-        var recentRemaining = maximumCharacters
-            - recentPrefix.unicodeScalars.count
-            - recentSuffix.unicodeScalars.count
-        var recentRows: [String] = []
-        for message in messages.reversed() {
-            guard recentRemaining > 0, recentRows.count < 8 else { break }
-            guard message.status == .complete,
-                  message.role == .user || message.role == .assistant else { continue }
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { continue }
-            let rowPrefix = "\(message.role.rawValue): "
-            let separatorSize = recentRows.isEmpty ? 0 : 2
-            let fixedSize = separatorSize + rowPrefix.unicodeScalars.count
-            guard recentRemaining > fixedSize else { break }
-            let keptContent = String(String.UnicodeScalarView(
-                content.unicodeScalars.prefix(recentRemaining - fixedSize)
-            ))
-            recentRows.append(rowPrefix + keptContent)
-            recentRemaining -= fixedSize + keptContent.unicodeScalars.count
-        }
-
-        let recentSection: String? = recentRows.isEmpty ? nil :
-            recentPrefix + recentRows.reversed().joined(separator: "\n\n") + recentSuffix
-        var sections: [String] = []
-        if let memory = memoryStore?.formattedForPrompt() {
-            let memorySize = memory.unicodeScalars.count
-            let recentSize = recentSection?.unicodeScalars.count ?? 0
-            let separatorSize = recentSection == nil ? 0 : 2
-            // Never cut through the memory wrapper or a durable fact. Recent
-            // conversation owns the budget; memory is included only if its
-            // complete, separately labelled block still fits.
-            if memorySize + recentSize + separatorSize <= maximumCharacters {
-                sections.append(memory)
-            }
-        }
-        if let recentSection { sections.append(recentSection) }
-
-        guard !sections.isEmpty else { return nil }
-        let context = sections.joined(separator: "\n\n")
-        assert(context.unicodeScalars.count <= maximumCharacters)
-        return context
-    }
-
-    /// Structured user-authored history for intent routing. This travels next
-    /// to the quoted model context so assistant text cannot forge a `user:`
-    /// delimiter and grant itself a local follow-up tool.
-    func personalIntelligenceRecentUserMessages() -> [String] {
-        let maximumCharacters = 24_000
-        var remaining = maximumCharacters
-        var recent: [String] = []
-        for message in messages.reversed() {
-            guard remaining > 0, recent.count < 8 else { break }
-            guard message.status == .complete, message.role == .user else { continue }
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { continue }
-            let kept = String(String.UnicodeScalarView(
-                content.unicodeScalars.prefix(remaining)
-            ))
-            recent.append(kept)
-            remaining -= kept.unicodeScalars.count
-        }
-        return recent.reversed()
-    }
-
-    /// Execute one server-issued client action through the same schema and
-    /// registry boundary ordinary Chat uses. `executed` means dispatch crossed
-    /// into the concrete built-in tool, not merely that Desktop handled it.
-    func executePersonalIntelligenceTool(
-        _ action: AgentPendingAction,
-        advertised definitions: [ToolDefinition]
-    ) async -> AgentClientToolResult {
-        guard let definition = definitions.first(where: {
-            $0.function.name == action.name
-        }) else {
-            return AgentClientToolResult(
-                content: "The requested tool is not available in this Personal Intelligence run.",
-                isError: true,
-                executed: false
-            )
-        }
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(CodableJSON.object(action.arguments)),
-              let arguments = String(data: data, encoding: .utf8) else {
-            return AgentClientToolResult(
-                content: "The tool arguments could not be encoded.",
-                isError: true,
-                executed: false
-            )
-        }
-        let call = ToolCall(id: action.callID, name: action.name, arguments: arguments)
-        let normalized: ToolCall
-        switch NativeToolCallExecutor.normalize(call, for: definition) {
-        case .success(let value):
-            normalized = value
-        case .failure(let rejection):
-            return AgentClientToolResult(
-                content: "tool '\(action.name)' error: \(rejection.reason)",
-                isError: true,
-                executed: false
-            )
-        }
-        let result = await tools.run(normalized)
-        return AgentClientToolResult(
-            content: result.content,
-            isError: result.isError,
-            executed: result.executed,
-            declined: result.failureKind == .userDeclined
-        )
     }
 
     /// Just the built-in tools, for Settings → Tools.
@@ -664,7 +470,6 @@ final class ChatViewModel {
     private func cancelInflightWork() {
         inflight?.cancel()
         inflight = nil
-        cancelExternalTurn(requestRemoteCancellation: true)
         backgroundAssist?.cancel()
         backgroundAssist = nil
         // The rail belongs to the assist, so it is torn down with it. Keeping
@@ -1111,7 +916,6 @@ final class ChatViewModel {
     /// currently open first. Cancels any in-flight stream.
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
-        locallyCreatedConversationID = nil
         cancelInflightWork()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
@@ -1316,7 +1120,6 @@ final class ChatViewModel {
         branchChoices.removeAll()
         conversationInstructions = ""
         activeConversationID = UUID()
-        locallyCreatedConversationID = activeConversationID
         lastError = nil
         lastFailureKind = nil
         lastFailureAlias = nil
@@ -1457,115 +1260,6 @@ final class ChatViewModel {
             supportsImageInput: resolvedImageCapability,
             imageMessageID: imageAttachments.isEmpty ? nil : user.id
         )
-    }
-
-    /// Open one transcript turn whose execution is owned by the Python Agent
-    /// Runtime. This intentionally mirrors only Chat's message lifecycle; it
-    /// does not duplicate the runtime state machine in Swift.
-    @discardableResult
-    func beginAgentTurn(
-        _ text: String,
-        alias: String,
-        onCancel: @escaping @MainActor () -> Void
-    ) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isStreaming else { return false }
-
-        cancelInflightWork()
-        let user = ChatMessage(role: .user, content: trimmed, status: .complete)
-        _ = appendMessage(user)
-        persistActive()
-
-        let placeholder = ChatMessage(role: .assistant, status: .streaming)
-        _ = appendMessage(placeholder)
-        lastError = nil
-        lastFailureKind = nil
-        lastFailureAlias = nil
-        lastTurnAlias = alias
-        externalTurn = ExternalTurn(
-            placeholderID: placeholder.id,
-            epoch: conversationEpoch,
-            alias: alias,
-            cancel: onCancel
-        )
-        isStreaming = true
-        return true
-    }
-
-    /// Commit the server-owned run's final answer into the existing assistant
-    /// placeholder, preserving the same persistence and background-memory
-    /// behavior as an ordinary local chat completion.
-    func completeAgentTurn(_ output: String) {
-        guard let turn = currentExternalTurn() else { return }
-        guard let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) else {
-            externalTurn = nil
-            isStreaming = false
-            return
-        }
-        var message = messages[index]
-        message.content = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if message.content.isEmpty { message.content = "Task completed." }
-        message.status = .complete
-        updateMessage(at: index, with: message)
-        externalTurn = nil
-        onProductValueDelivered(.chatReply)
-        isStreaming = false
-    }
-
-    /// Surface a runtime/transport failure on the placeholder belonging to the
-    /// same conversation epoch. Raw tool output stays server-side.
-    func failAgentTurn(_ message: String) {
-        guard let turn = currentExternalTurn() else { return }
-        let display = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallback = "The agent task could not be completed."
-        if let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) {
-            var placeholder = messages[index]
-            // The failed row already owns the recovery copy through
-            // `errorMessage`. Leaving the same string in `content` rendered it
-            // once as Markdown, once as the failure caption, and once again in
-            // the compose banner during physical Agent dogfood.
-            placeholder.content = ""
-            placeholder.errorMessage = display.isEmpty ? fallback : display
-            placeholder.status = .failed
-            updateMessage(at: index, with: placeholder)
-        }
-        // Agent failures are retained on their transcript row. Do not mirror
-        // them into the composer-level turn banner.
-        lastError = nil
-        lastFailureKind = nil
-        lastFailureAlias = nil
-        externalTurn = nil
-        isStreaming = false
-    }
-
-    /// Finalize a server-originated cancellation without sending another
-    /// cancellation request. User-initiated Stop enters through
-    /// ``cancelInflightWork`` and requests remote cancellation exactly once.
-    func cancelAgentTurnFromServer() {
-        cancelExternalTurn(requestRemoteCancellation: false)
-    }
-
-    private func currentExternalTurn() -> ExternalTurn? {
-        guard let turn = externalTurn else { return nil }
-        guard turn.epoch == conversationEpoch else {
-            externalTurn = nil
-            turn.cancel()
-            return nil
-        }
-        return turn
-    }
-
-    private func cancelExternalTurn(requestRemoteCancellation: Bool) {
-        guard let turn = externalTurn else { return }
-        externalTurn = nil
-        if turn.epoch == conversationEpoch,
-           let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) {
-            var placeholder = messages[index]
-            Self.finaliseCancellation(message: &placeholder)
-            updateMessage(at: index, with: placeholder)
-        }
-        if turn.epoch == conversationEpoch { isStreaming = false }
-        if requestRemoteCancellation { turn.cancel() }
     }
 
     /// Test seam for lifecycle assertions that need the current turn to be

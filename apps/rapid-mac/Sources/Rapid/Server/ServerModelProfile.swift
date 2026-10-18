@@ -204,12 +204,6 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
     /// the alias without grepping server logs.
     let toolCallParser: String?
     let reasoningParser: String?
-    /// Server-qualified model-specific harness for Personal Intelligence.
-    /// Missing or nil means ordinary Chat, even when tool calls are supported.
-    let personalIntelligenceProfile: String?
-    /// Versioned exact-build admission record. Together with `id`, parser,
-    /// and profile this is the live Personal Intelligence binding identity.
-    let personalIntelligenceQualification: String?
     /// Live request capabilities for this exact served id. `nil` means an
     /// older sidecar omitted the field; an empty array is authoritative.
     let capabilities: [String]?
@@ -273,8 +267,6 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         case isMoe = "is_moe"
         case toolCallParser = "tool_call_parser"
         case reasoningParser = "reasoning_parser"
-        case personalIntelligenceProfile = "personal_intelligence_profile"
-        case personalIntelligenceQualification = "personal_intelligence_qualification"
         case capabilities
         case servingLane = "serving_lane"
         case servingLaneReason = "serving_lane_reason"
@@ -304,8 +296,6 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         isMoe: Bool? = nil,
         toolCallParser: String? = nil,
         reasoningParser: String? = nil,
-        personalIntelligenceProfile: String? = nil,
-        personalIntelligenceQualification: String? = nil,
         capabilities: [String]? = nil,
         servingLane: String? = nil,
         servingLaneReason: String? = nil,
@@ -323,8 +313,6 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         self.isMoe = isMoe
         self.toolCallParser = toolCallParser
         self.reasoningParser = reasoningParser
-        self.personalIntelligenceProfile = personalIntelligenceProfile
-        self.personalIntelligenceQualification = personalIntelligenceQualification
         self.capabilities = capabilities
         self.servingLane = servingLane
         self.servingLaneReason = servingLaneReason

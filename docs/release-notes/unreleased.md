@@ -6,6 +6,7 @@
 ## Highlights
 
 - **Image endpoint authentication**: image endpoints now require the API key when `--api-key` is set.
+- **Personal Intelligence removed**: Desktop now uses the ordinary Chat path. `/v1/models` cards no longer include `personal_intelligence_profile` or `personal_intelligence_qualification`; `/v1/agent/runs` remains available with its existing runtime and client execution mode. Local file and command tools start off in Chat for anyone who had not changed them, while explicit choices are preserved. Privacy copy now explains online tool data sharing.
 
 - **Faster and bounded retrieval requests**: jina-reranker-v3 scores large requests faster. Rerank requests now default to 1000 documents and embeddings to 2048 inputs; excess returns HTTP 400 (override or disable with `--rerank-max-documents` / `--embedding-max-inputs`). Empty rerank documents or instruction return 400. A full retrieval queue returns 503 with `Retry-After: 1`.
 

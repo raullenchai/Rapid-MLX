@@ -588,7 +588,6 @@ interactive control under `Sources/` without an identifier.
 **Chat — `UI/ChatView.swift`:** `ChatView.SendOrStopButton`,
 `ChatView.AddAttachments`, `ChatView.ConversationInstructions`,
 `ChatView.Residency.{Unload,UnloadNotice.OK}`,
-`ChatView.PersonalIntelligence.Toggle`,
 `ToolCallChip.<action>`, `ToolCallChip.Toggle.<call.id>`,
 `ChatView.Message.<action>.<UUID>` (action ∈ {`EditField`, `CancelEdit`,
 `SaveEdit`, `Edit`, `Copy`, `SelectText`, `Retry`, `ReasoningDisclosure`}).
@@ -596,8 +595,6 @@ interactive control under `Sources/` without an identifier.
 `Transcript.JumpToBottom`. `UI/InstructionTextEditor.swift`:
 `ChatView.ConversationInstructions.{Save,Clear,Cancel}`,
 `Settings.Instructions.Clear`, `<id>.Count`.
-`UI/PersonalIntelligenceControl.swift`:
-`ChatView.PersonalIntelligence.{Popover,NotNow,TurnOn}`.
 
 **ContentView — `UI/ContentView.swift`:** `ContentView.Settings`,
 `ContentView.LogDrawer`, `ContentView.ToggleLogs`, `Footer.DesktopVersionPill`,
