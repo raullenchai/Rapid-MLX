@@ -4343,6 +4343,8 @@ class Scheduler:
     # __init__ still step cleanly; __init__ resolves the real value once
     # (an os.environ lookup per step would sit on the decode hot path).
     _step_timing_enabled = False
+    # Resolved lazily by ``_resolve_prefill_attention_beta`` (unset until then).
+    _prefill_attention_beta: int | None
     # Decode steps accumulated since the last recurrent-state barrier. The
     # barrier fires off THIS depth (not the global step counter) so a batch
     # size change re-evaluates the interval against the actual live chain:
@@ -9946,7 +9948,7 @@ class Scheduler:
     def _resolve_prefill_attention_beta(self) -> int | None:
         if hasattr(self, "_prefill_attention_beta"):
             return self._prefill_attention_beta
-        self._prefill_attention_beta = None
+        beta: int | None = None
         # Match KV geometry's structural/text-tower selection for config/args.
         for holder in (
             getattr(self.model, "config", None),
@@ -9967,11 +9969,10 @@ class Scheduler:
             )
             heads = _cfg_get(cfg, "num_attention_heads")
             if isinstance(heads, int) and not isinstance(heads, bool) and heads > 0:
-                self._prefill_attention_beta = (
-                    heads * 4 * _PREFILL_ATTENTION_SCORE_COPIES
-                )
+                beta = heads * 4 * _PREFILL_ATTENTION_SCORE_COPIES
                 break
-        return self._prefill_attention_beta
+        self._prefill_attention_beta = beta
+        return beta
 
     def _prefill_workspace_bytes(
         self, request: Request, *, padded_units: int = 0, padded_chunk: int = 0
