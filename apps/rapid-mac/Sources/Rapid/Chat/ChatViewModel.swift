@@ -2775,20 +2775,24 @@ final class ChatViewModel {
                 // Tools-disabled rounds can still leak calls as plain text.
                 // Handle them before refusal detection; a correction containing
                 // only a call is restored from its draft below instead.
+                // Prose above a trailing call wins over the whole-content
+                // check: both detectors can match the same reply, and the
+                // answer must survive. A Stop keeps the cancellation result.
                 if isFinalSynthesisRound,
                     epoch == conversationEpoch,
+                    !Task.isCancelled,
                     var final = currentMessage(index: currentPlaceholder)
                 {
-                    if ChatMessage.contentLooksLikeToolCallArtifact(final.content) {
-                        if draftBeforeCorrection == nil {
-                            final.content = ""
-                            updateMessage(at: currentPlaceholder, with: final)
-                            failWithToolRoundCap(at: currentPlaceholder, epoch: epoch)
-                            return
-                        }
-                    } else if ChatMessage.trailingToolCallArtifactProse(in: final.content) != nil {
+                    if ChatMessage.trailingToolCallArtifactProse(in: final.content) != nil {
                         final.toolCallArtifactSuppressed = true
                         updateMessage(at: currentPlaceholder, with: final)
+                    } else if ChatMessage.contentLooksLikeToolCallArtifact(final.content),
+                        draftBeforeCorrection == nil
+                    {
+                        final.content = ""
+                        updateMessage(at: currentPlaceholder, with: final)
+                        failWithToolRoundCap(at: currentPlaceholder, epoch: epoch)
+                        return
                     }
                 }
                 // BUG C: if this .terminal ends a grounding-correction round
@@ -2811,7 +2815,8 @@ final class ChatViewModel {
                         !Task.isCancelled
                         && !correctedText.isEmpty
                         && corrected?.status != .failed
-                        && !ChatMessage.contentLooksLikeToolCallArtifact(correctedText)
+                        && (ChatMessage.trailingToolCallArtifactProse(in: correctedText) != nil
+                            || !ChatMessage.contentLooksLikeToolCallArtifact(correctedText))
                     if !correctionUsable,
                         var restore = currentMessage(index: currentPlaceholder)
                     {
@@ -3000,10 +3005,14 @@ final class ChatViewModel {
     /// In captured synthesis requests, a system-row instruction still produced
     /// raw calls in 5/5 trials; the same text as a trailing user row produced
     /// real answers in 5/5. Append after clock/guidance stamping so it stays bare.
+    /// Only a request that ends on a tool result gets it: a turn that offered
+    /// no tools at all also runs as a "final" round, and there the user's own
+    /// message must stay last (it also anchors attachment selection).
     nonisolated static func addingToolBudgetSynthesisPreamble(
         to messages: [ChatMessage]
     ) -> [ChatMessage] {
-        messages + [ChatMessage(role: .user, content: toolBudgetSynthesisPreamble, status: .complete)]
+        guard messages.last?.role == .tool else { return messages }
+        return messages + [ChatMessage(role: .user, content: toolBudgetSynthesisPreamble, status: .complete)]
     }
 
     /// Wire-side filter — what actually ends up in the request body's ``tools``

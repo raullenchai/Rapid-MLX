@@ -53,7 +53,7 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(!model.messages.contains { $0.content.contains(Self.synthesisInstruction) })
     }
 
-    private static let artifact = """
+    nonisolated private static let artifact = """
     <tool_call>
     <function=lookup>
     <parameter=q>
@@ -90,7 +90,7 @@ struct ToolLoopBudgetIntegrationTests {
 
     // Use the parameter-block shape recognized by the existing tail detector;
     // the pure-artifact tests above retain the captured multiline payload.
-    private static let trailingArtifact = """
+    nonisolated private static let trailingArtifact = """
     <tool_call>
     <function=lookup>
     <parameter=q>x</parameter>
@@ -98,24 +98,34 @@ struct ToolLoopBudgetIntegrationTests {
     </tool_call>
     """
 
-    @Test("Final-round prose survives a trailing call with the suppression caption")
-    func finalArtifactKeepsProse() async throws {
-        ToolLoopBudgetProtocol.reset(finalAnswers: ["Here is the list.\n\n" + Self.trailingArtifact])
+    // Matches both the whole-content and the trailing detector; the prose
+    // above it must still win.
+    nonisolated private static let trailingDeepSeekMarker = "<\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}>"
+
+    @Test(
+        "Final-round prose survives a trailing call with the suppression caption",
+        arguments: [trailingArtifact, trailingDeepSeekMarker]
+    )
+    func finalArtifactKeepsProse(tail: String) async throws {
+        ToolLoopBudgetProtocol.reset(finalAnswers: ["Here is the list.\n\n" + tail])
         let model = makeModel()
         try await sendAndWait(model)
 
         let final = try #require(model.messages.last)
-        #expect(final.content == "Here is the list.\n\n" + Self.trailingArtifact)
+        #expect(final.content == "Here is the list.\n\n" + tail)
         #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: final.content) == "Here is the list.")
         #expect(final.toolCallArtifactSuppressed)
         #expect(final.status == .complete)
         #expect(model.lastError == nil)
     }
 
-    @Test("Grounding correction restores a draft on raw markup and keeps corrected prose", arguments: [false, true])
-    func groundingCorrectionHandlesArtifacts(hasProse: Bool) async throws {
+    @Test(
+        "Grounding correction restores a draft on raw markup and keeps corrected prose",
+        arguments: [(false, artifact), (true, trailingArtifact), (true, trailingDeepSeekMarker)]
+    )
+    func groundingCorrectionHandlesArtifacts(hasProse: Bool, tail: String) async throws {
         let draft = "I can't access real-time information."
-        let correction = hasProse ? "Here is the list.\n\n" + Self.trailingArtifact : Self.artifact
+        let correction = hasProse ? "Here is the list.\n\n" + tail : tail
         ToolLoopBudgetProtocol.reset(finalAnswers: [draft, correction], toolName: "web_search")
         let model = makeModel(toolName: "web_search")
         try await sendAndWait(model)
@@ -156,6 +166,16 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(result.last?.role == .user)
         #expect(result.last?.content == Self.synthesisInstruction)
         #expect(result.last?.status == .complete)
+    }
+
+    @Test("A request that does not end on a tool result gets no synthesis row")
+    func synthesisHelperSkipsToolFreeRequests() {
+        let history = [
+            ChatMessage(role: .system, content: "System instructions"),
+            ChatMessage(role: .user, content: "Describe this")
+        ]
+        #expect(ChatViewModel.addingToolBudgetSynthesisPreamble(to: history) == history)
+        #expect(ChatViewModel.addingToolBudgetSynthesisPreamble(to: []) == [])
     }
 
     @Test("Synthetic user row preserves image selection and document focus", arguments: [0, 1, 2])
