@@ -359,6 +359,56 @@ def test_empty_missing_failed_write_and_unreadable_entry(tmp_path, monkeypatch, 
     assert generator().load_exact_prefix_cache_from_disk(path) == 0
 
 
+@pytest.mark.parametrize(
+    ("contents", "reason"),
+    [
+        ("[", "Expecting value"),
+        ('{"a":1}', "list of integers"),
+        ('["x"]', "list of integers"),
+        ("null", "list of integers"),
+        ("1", "list of integers"),
+        ("[true]", "list of integers"),
+        ("[1, false]", "list of integers"),
+        ("[1.0]", "list of integers"),
+        ("[[]]", "list of integers"),
+    ],
+)
+def test_invalid_index_preserves_live_entries(tmp_path, caplog, contents, reason):
+    gen = generator()
+    key = add(gen)
+    live = gen._prefix_cache._exact_cache[key]
+    path = tmp_path / "cache"
+    path.mkdir()
+    (path / "index.json").write_text(contents)
+
+    assert gen.load_exact_prefix_cache_from_disk(path) == 0
+    assert list(gen._prefix_cache._exact_cache) == [key]
+    assert gen._prefix_cache._exact_cache[key] is live
+    assert "invalid snapshot index" in caplog.text
+    assert reason in caplog.text
+    assert caplog.records[-1].levelname == "WARNING"
+
+
+def test_unreadable_index_preserves_live_entries(tmp_path, monkeypatch, caplog):
+    gen = generator()
+    key = add(gen)
+    live = gen._prefix_cache._exact_cache[key]
+    path = tmp_path / "cache"
+    path.mkdir()
+    (path / "index.json").write_text("[]")
+
+    def fail_read(self):
+        raise OSError("snapshot read failed")
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+    assert gen.load_exact_prefix_cache_from_disk(path) == 0
+    assert list(gen._prefix_cache._exact_cache) == [key]
+    assert gen._prefix_cache._exact_cache[key] is live
+    assert "invalid snapshot index" in caplog.text
+    assert "snapshot read failed" in caplog.text
+    assert caplog.records[-1].levelname == "WARNING"
+
+
 def test_missing_scheduler_and_generator(tmp_path, caplog):
     caplog.set_level("INFO")
     sched = scheduler(None)

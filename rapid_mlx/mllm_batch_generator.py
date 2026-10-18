@@ -3180,7 +3180,15 @@ class MLLMBatchGenerator:
                     break
             else:
                 return 0
-        keys = json.loads((target / "index.json").read_text())
+        try:
+            keys = json.loads((target / "index.json").read_text())
+            if not isinstance(keys, list) or any(type(key) is not int for key in keys):
+                raise ValueError("index must be a list of integers (excluding bool)")
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "[cache_persist] vision lane: invalid snapshot index: %s", exc
+            )
+            return 0
         store = apc.DiskBlockStore(target)
         loaded = 0
         try:
