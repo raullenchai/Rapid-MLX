@@ -180,9 +180,6 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     )
     for directory in (root, root / "config", root / "config" / "custom_providers"):
         _private_directory(directory)
-    # Goose's saved native grants must not silently override approve mode.
-    permission = root / "config" / "permission.yaml"
-    permission.unlink(missing_ok=True)
     scoped_key, proxy_key = secrets.token_hex(32), secrets.token_hex(32)
     gate_port, bridge_port = _port(), _port()
     while bridge_port == gate_port:

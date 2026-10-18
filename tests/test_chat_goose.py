@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import os
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,11 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "What causes tides?")
     monkeypatch.setenv("PATH", "/opt/user-tools:/usr/bin:/bin")
+    workspace = (
+        tmp_path / "cache/workspaces" / hashlib.sha256(os.getcwd().encode()).hexdigest()
+    )
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "config/permission.yaml").write_text("native Goose grants\n")
     commands = []
     environments = []
 
@@ -89,9 +95,9 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     assert chat_goose.run(
         args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
     )
-    workspace = next((tmp_path / "cache" / "workspaces").iterdir())
     assert (workspace / "chat-contract.json").is_file()
     assert (workspace / "config/custom_providers/custom_rapid_local.json").is_file()
+    assert (workspace / "config/permission.yaml").read_text() == "native Goose grants\n"
     assert (workspace / "bash").is_file()
     assert len(commands) == 1
     assert "--no-profile" not in commands[0]
