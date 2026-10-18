@@ -13,7 +13,7 @@ def test_keyless_search_returns_source_url(monkeypatch):
                 {
                     "title": "Weather service",
                     "url": "https://forecast.weather.gov/test",
-                    "snippet": "Sunny",
+                    "snippet": "Sunny " * 500,
                 }
             ]
         }
@@ -27,6 +27,7 @@ def test_keyless_search_returns_source_url(monkeypatch):
     assert calls[0][1]["query"] == "current weather"
     assert "https://forecast.weather.gov/test" in result
     assert "Sunny" in result
+    assert len(result) < 350
 
 
 def test_brave_key_uses_api_without_exposing_key(monkeypatch):

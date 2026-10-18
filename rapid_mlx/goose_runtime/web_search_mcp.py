@@ -94,8 +94,8 @@ def _search(query: str) -> str:
     lines = []
     for index, (title, url, excerpt) in enumerate(results[:5], 1):
         if isinstance(url, str) and url.startswith(("https://", "http://")):
-            lines.append(f"[{index}] {title}\n{url}\n{str(excerpt)[:1600]}")
-    return "\n\n".join(lines) or "No search results found."
+            lines.append(f"[{index}] {title}\n{url}\n{str(excerpt)[:240]}")
+    return "\n\n".join(lines)[:4096] or "No search results found."
 
 
 def _fetch_page(url: str) -> str:
