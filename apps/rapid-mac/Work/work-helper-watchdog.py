@@ -110,7 +110,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "-c":
     clean = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"GOOSE_SERVER__SECRET_KEY", "RAPID_LOCAL_WORK_KEY"}
+        if key not in {"GOOSE_SERVER__SECRET_KEY", "RAPID_LOCAL_WORK_KEY", "WEB_SEARCH_GATE_TOKEN"}
         and not key.startswith("WORK_PROXY_")
     }
     os.execve("/bin/bash", ["/bin/bash", "-c", sys.argv[2]], clean)

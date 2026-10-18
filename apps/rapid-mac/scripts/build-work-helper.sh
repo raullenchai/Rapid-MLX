@@ -24,6 +24,8 @@ GOOSE_BIN="$(find "$TMP" -type f -name goose -print -quit)"
 cp "$GOOSE_BIN" "$HELPERS/goose"
 chmod 755 "$HELPERS/goose"
 cp "$ROOT/Work/work-inference-proxy.py" "$HELPERS/work-inference-proxy.py"
+cp "$ROOT/Work/work-web-search-mcp.py" "$HELPERS/work-web-search-mcp.py"
+cp "$ROOT/../../rapid_mlx/goose_runtime/mini-prefix.json" "$HELPERS/goose-mini-prefix.json"
 cp "$ROOT/Work/goose-prefix.json" "$HELPERS/goose-prefix.json"
 cp "$ROOT/Work/work-helper-watchdog.py" "$HELPERS/work-helper-watchdog.py"
 # Goose exposes the GOOSE_SHELL basename in the model's shell tool schema.

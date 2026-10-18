@@ -186,6 +186,36 @@ final class WorkAgent {
                                         attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: support.path)
         if Self.gooseChat { try GoosePermissionPolicy.resetNativePolicy(in: support) }
+        if Self.gooseChat {
+            let config = support.appendingPathComponent("config/config.yaml")
+            _ = try GooseToolPresentation.containedDestination(config, root: support)
+            try fileManager.createDirectory(at: config.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+            if !fileManager.fileExists(atPath: config.path) {
+                let search = resources.appendingPathComponent("Helpers/work-web-search-mcp.py")
+                func yamlString(_ value: String) throws -> String {
+                    let data = try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+                    return String(decoding: data, as: UTF8.self)
+                }
+                let platforms = ["developer", "skills", "extensionmanager", "analyze", "apps",
+                                 "summon", "tom", "todo", "chatrecall", "scheduler", "summarize",
+                                 "codemode", "orchestrator"]
+                var lines = ["extensions:"]
+                for name in platforms {
+                    lines += ["  \(name):", "    type: platform",
+                              "    enabled: \(["developer", "skills", "extensionmanager"].contains(name))"]
+                }
+                for name in ["computercontroller", "memory", "autovisualiser", "tutorial"] {
+                    lines += ["  \(name):", "    type: builtin", "    enabled: false"]
+                }
+                lines += ["  rapidweb:", "    type: stdio", "    enabled: true",
+                          "    cmd: \(try yamlString(pythonExecutable.path))",
+                          "    args: [\"-I\", \"-S\", \(try yamlString(search.path))]",
+                          "    env_keys: [\"WEB_SEARCH_GATE_PORT\", \"WEB_SEARCH_GATE_TOKEN\"]"]
+                try (lines.joined(separator: "\n") + "\n").write(to: config, atomically: true, encoding: .utf8)
+            }
+        }
         for directory in [temporary, providerDirectory] {
             if Self.gooseChat { _ = try GooseToolPresentation.containedDestination(directory, root: support) }
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -262,6 +292,11 @@ final class WorkAgent {
         env["GOOSE_MODEL"] = model
         env["GOOSE_MODE"] = Self.gooseChat ? "approve" : (Self.fullAccess ? "auto" : "approve")
         env["RAPID_LOCAL_WORK_KEY"] = Self.gooseChat ? inferenceKey : bearer
+        if Self.gooseChat {
+            let searchToken = UUID().uuidString + UUID().uuidString
+            env["WEB_SEARCH_GATE_PORT"] = String(proxyPort)
+            env["WEB_SEARCH_GATE_TOKEN"] = searchToken
+        }
         env["PATH"] = python.path + ":/usr/bin:/bin:/usr/sbin:/sbin"
         env["PYTHONPATH"] = resources.appendingPathComponent("rapid-mlx/site-packages").path
         if Self.fullAccess {
@@ -300,6 +335,17 @@ final class WorkAgent {
         proxyEnv["WORK_PROXY_BEARER"] = bearer
         if let proxyBearerFileURL { proxyEnv["WORK_PROXY_BEARER_FILE"] = proxyBearerFileURL.path }
         proxyEnv["WORK_PROXY_METRICS_KEY"] = secret
+        if Self.gooseChat {
+            proxyEnv["WORK_SEARCH_TOKEN"] = env["WEB_SEARCH_GATE_TOKEN"]
+            if let selected = UserDefaults.standard.string(forKey: "rapid.webSearch.provider"),
+               let setting = ["parallel": ("rapid.web-search.parallel", "PARALLEL_API_KEY"),
+                              "tavily": ("rapid.web-search.tavily", "TAVILY_API_KEY"),
+                              "brave": ("rapid.web-search.brave", "BRAVE_API_KEY")][selected],
+               case .found(let key) = SystemKeychain().readWithoutUserInteraction(account: setting.0),
+               !key.isEmpty {
+                proxyEnv[setting.1] = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
         try checkPreparation(prepareGeneration)
         proxyProcess = try Self.launchHelper(
             profile: Self.fullAccess ? nil : proxyProfileURL, python: pythonExecutable,
@@ -334,12 +380,14 @@ final class WorkAgent {
         }
         guard conversationRevision == requestedRevision else { throw WorkError.message("Chat start cancelled.") }
         try checkPreparation(prepareGeneration)
+        let gooseArguments = ["serve", "--host", "127.0.0.1", "--port", String(port),
+                              "--platform", Self.fullAccess ? "cli" : "desktop"]
+            + (Self.gooseChat ? [] : ["--with-builtin",
+                                       Self.builtinExtensions(gooseChat: false, fullAccess: Self.fullAccess)])
         process = try Self.launchHelper(
             profile: Self.fullAccess ? nil : gooseProfileURL, python: pythonExecutable,
             executable: goose,
-            arguments: ["serve", "--host", "127.0.0.1", "--port", String(port),
-                        "--platform", Self.fullAccess ? "cli" : "desktop", "--with-builtin",
-                        Self.builtinExtensions(gooseChat: Self.gooseChat, fullAccess: Self.fullAccess)],
+            arguments: gooseArguments,
             directory: folder, environment: env)
         let launchGeneration = generation
         process?.terminationHandler = { [weak self] _ in
@@ -380,7 +428,7 @@ final class WorkAgent {
         let generation = self.generation
         let port = proxyPort
         let prefix = Bundle.main.resourceURL!
-            .appendingPathComponent("Helpers/goose-prefix.json")
+            .appendingPathComponent("Helpers/goose-mini-prefix.json")
         isPrefixWarming = true
         prefixWarmStartedAt = Date()
         prefixWarmTask = Task {
@@ -408,9 +456,9 @@ final class WorkAgent {
         }
     }
 
-    /// A Send may join the background prefill without delaying composition.
+    /// A fast Send takes priority over speculative prefix prefill.
     func waitForPrefixWarm() async {
-        await prefixWarmTask?.value
+        prefixWarmTask?.cancel()
     }
 
     func checkPreparation(_ expected: Int) throws {
