@@ -12598,12 +12598,6 @@ def chat_command(args):
         goose_handled = False
     if goose_handled:
         return
-    if getattr(args, "output_format", "text") != "text":
-        print(
-            "  Goose stream-json is unavailable in built-in chat fallback.",
-            file=sys.stderr,
-        )
-
     print(
         f"  🐆 {BOLD}Chat{RESET} — "
         f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
