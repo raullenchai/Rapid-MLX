@@ -397,6 +397,7 @@ binary auto-routing decision has a force-on and force-off pair.
 |--------|-------------|---------|
 | `--enable-local-search` | Enable [local folder search](../guides/local-search.md) | Off |
 | `--local-search-dir` | Local-search index directory | State directory / local-search |
+| `--embedding-max-inputs` | Maximum inputs per `/v1/embeddings` request; excess returns HTTP 400 `too_many_inputs`. 0 or negative disables the limit. | 2048 |
 | `--embedding-model` | Pre-load an embedding model at startup (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2) | None |
 | `--embedding-max-length` | Max input length (tokens) for the embedding model; `auto` derives it from the model's declared maximum, or pass a positive integer for a lower operational ceiling. Inputs above the limit follow `--embedding-overflow-policy` (never truncated silently). | auto |
 | `--embedding-overflow-policy` | Overflow handling: `truncate` (discards the tail, logs a warning, increments the `rapid_mlx_embedding_truncations_total` metric) or `error` (HTTP 400 with observed and allowed token counts) | truncate |
@@ -409,9 +410,9 @@ binary auto-routing decision has a force-on and force-off pair.
 | `--rerank-model-family` | Reranker family of `--rerank-model` (see below); only needed when the model name does not reveal it, e.g. a fine-tune or a renamed local copy | None (auto-detected) |
 | `--rerank-instruction` | Default task description for requests without an `instruction` field (e.g. `Given a GitHub issue, retrieve code that fixes it`) | None (model default) |
 | `--rerank-prompt` | Judging prompt that replaces the model's own | None (model default) |
-| `--rerank-max-documents` | Max documents per `/v1/rerank` request; requests above the limit follow `--rerank-overflow-policy`. 0 or a negative value disables. | 0 |
+| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request; excess always returns HTTP 400 `too_many_documents`. 0 or negative disables the limit. | 1000 |
 | `--rerank-max-length` | Max input length (tokens) per query/document pair; `auto` uses the model family's default, or pass a positive integer. Both are capped at the model's declared maximum. Pairs above the limit follow `--rerank-overflow-policy`. | auto |
-| `--rerank-overflow-policy` | Overflow handling: `truncate` (scores only the first `--rerank-max-documents` documents or shortens the document, logs a warning) or `error` (HTTP 400 `too_many_documents` or `input_too_long`) | truncate |
+| `--rerank-overflow-policy` | Per-document token length overflow: `truncate` shortens the document and logs a warning; `error` returns HTTP 400 `input_too_long`. | truncate |
 
 A reranker's input is built from up to three texts besides the document:
 

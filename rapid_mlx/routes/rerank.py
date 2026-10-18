@@ -15,7 +15,7 @@ from ..api.models import (
 )
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
-from ._mlx_worker import run_on_mlx_worker
+from ._mlx_worker import RetrievalWorkerBusyError, run_on_mlx_worker
 
 logger = logging.getLogger(__name__)
 
@@ -105,23 +105,14 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
     rerank_engine = cfg.rerank_engine
     limit = cfg.rerank_max_documents
     if limit > 0 and len(documents) > limit:
-        if rerank_engine.overflow_policy == "error":
-            raise _invalid_request(
-                400,
-                f"Too many documents: {len(documents)} exceeds this server's limit "
-                f"of {limit} (--rerank-max-documents). Split the request into "
-                "smaller batches.",
-                "too_many_documents",
-                "documents",
-            )
-        logger.warning(
-            "Rerank request has %d documents; scoring only the first %d "
-            "(--rerank-max-documents). Set --rerank-overflow-policy error to "
-            "reject such requests instead.",
-            len(documents),
-            limit,
+        raise _invalid_request(
+            400,
+            f"Too many documents: {len(documents)} exceeds this server's limit "
+            f"of {limit} (--rerank-max-documents). Split the request into "
+            "smaller batches.",
+            "too_many_documents",
+            "documents",
         )
-        documents = documents[:limit]
     start_time = time.perf_counter()
     try:
         scored = await run_on_mlx_worker(
@@ -155,6 +146,19 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
             "restart the server with --rerank-overflow-policy truncate.",
             "input_too_long",
             "documents",
+        ) from exc
+    except RetrievalWorkerBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            detail={
+                "error": {
+                    "message": "Retrieval worker queue is full. Retry shortly.",
+                    "type": "server_error",
+                    "code": "server_busy",
+                    "param": None,
+                }
+            },
         ) from exc
     except Exception as exc:
         logger.exception("Rerank failed")

@@ -96,12 +96,13 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--reasoning-parser` | Reasoning parser (`qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`, `gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`, `ui_tars`, `vibethinker`). Auto-detected from the alias profile; explicit flag overrides. There is no literal `auto` value — omit the flag for auto-detection. | None (auto-detected) |
 | `--enable-local-search` | Enable [local folder search](local-search.md) for documents, images and sampled video frames; no automatic model downloads | Off |
 | `--local-search-dir` | Local-search SQLite index directory | State directory / local-search |
+| `--embedding-max-inputs` | Maximum inputs per `/v1/embeddings` request; excess returns HTTP 400 `too_many_inputs`. 0 or negative disables the limit. | 2048 |
 | `--embedding-model` | Pre-load an embedding model at startup; without a positional model the server runs embeddings-only (`[embeddings]` for legacy models, the base install's vision runtime for native EmbeddingGemma 2; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
 | `--rerank-model` | Pre-load a reranker for `/v1/rerank` (see the [Rerank Guide](rerank.md) for the supported families); without a positional model the server runs without a chat model | None |
 | `--rerank-model-family` | Family of `--rerank-model` when its name does not reveal it (see the [Rerank Guide](rerank.md)) | detected |
-| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request (excess handled per `--rerank-overflow-policy`); `0` or negative disables the limit | 0 |
+| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request; excess always returns HTTP 400 `too_many_documents`. 0 or negative disables the limit. | 1000 |
 | `--rerank-max-length` | Max tokens per query/document pair (`auto`: the family's default, capped at the model maximum) | auto |
-| `--rerank-overflow-policy` | `truncate` or `error` for requests over `--rerank-max-documents` and documents over `--rerank-max-length` | truncate |
+| `--rerank-overflow-policy` | Per-document token length overflow: `truncate` shortens the document and logs a warning; `error` returns HTTP 400 `input_too_long`. | truncate |
 | `--rerank-instruction` | Task description for requests without an `instruction` field | family default |
 | `--rerank-prompt` | Judging prompt that replaces the family's own (see the [Rerank Guide](rerank.md)) | family default |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |

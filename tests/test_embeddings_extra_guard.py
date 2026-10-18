@@ -623,6 +623,7 @@ class TestEmbeddingModelAliasResolution:
         assert captured["name"] == "mlx-community/embeddinggemma-300m-6bit", captured
         assert captured["lock"] is True
         assert captured["kwargs"] == {
+            "max_inputs": 2048,
             "max_length": "auto",
             "overflow_policy": "truncate",
         }

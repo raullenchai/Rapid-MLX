@@ -3332,12 +3332,12 @@ class RerankRequest(BaseModel):
 
     model: str | None = None
     query: StrictStr
-    documents: list[StrictStr | RerankDocument]
+    documents: list[StrictStr | RerankDocument] = Field(min_length=1)
     # ``None`` or ``0`` returns every document.
     top_n: StrictInt | None = Field(default=None, ge=0)
     return_documents: StrictBool = True
     # Rapid-MLX extension: task instruction for instruction-aware rerankers.
-    instruction: StrictStr | None = None
+    instruction: StrictStr | None = Field(default=None, min_length=1)
 
 
 class RerankResultDocument(BaseModel):

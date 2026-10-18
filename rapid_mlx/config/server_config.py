@@ -153,6 +153,7 @@ class ServerConfig:
     mcp_config_path: str | None = None
 
     # --- Embeddings ---
+    embedding_max_inputs: int = 2048
     embedding_engine: Any = None
     embedding_model_locked: str | None = None
 
@@ -160,7 +161,7 @@ class ServerConfig:
     rerank_engine: Any = None
     rerank_model_locked: str | None = None
     # ``--rerank-max-documents``; 0 or negative disables the limit.
-    rerank_max_documents: int = 0
+    rerank_max_documents: int = 1000
 
     # --- Auth ---
     api_key: str | None = None

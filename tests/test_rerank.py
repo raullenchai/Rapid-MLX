@@ -1462,23 +1462,23 @@ def test_rerank_max_documents_error_policy(rerank_client, limit, count, status):
         assert engine.calls == []
 
 
-def test_rerank_max_documents_truncate_policy_scores_first_n(rerank_client):
+def test_rerank_max_documents_truncate_policy_rejects_excess(rerank_client):
     engine = _StubEngine([0.1, 0.9, 0.5])
     _configure(rerank_client.cfg, engine)
     rerank_client.cfg.rerank_max_documents = 3
     resp = rerank_client.client.post(
         "/v1/rerank", json={"query": "q", "documents": ["a", "b", "c", "d", "e"]}
     )
-    assert resp.status_code == 200
-    assert engine.calls == [("q", ["a", "b", "c"], None)]
-    assert [r["index"] for r in resp.json()["results"]] == [1, 2, 0]
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "too_many_documents"
+    assert engine.calls == []
 
 
-def test_rerank_max_documents_defaults_to_unlimited():
+def test_rerank_max_documents_defaults_to_1000():
     from rapid_mlx import cli
 
     args = cli.build_parser().parse_args(["serve", "--rerank-model", RERANK_ID])
-    assert args.rerank_max_documents == 0
+    assert args.rerank_max_documents == 1000
     assert args.rerank_max_length == "auto"
     assert args.rerank_overflow_policy == "truncate"
     assert args.rerank_instruction is None
@@ -1664,6 +1664,8 @@ def test_legacy_server_parser_accepts_rerank_settings():
         ["--rerank-instruction", "Find code", "--rerank-prompt", "Judge."]
     )
     assert (args.rerank_instruction, args.rerank_prompt) == ("Find code", "Judge.")
+    assert args.rerank_max_documents == 1000
+    assert args.embedding_max_inputs == 2048
 
 
 def test_server_load_rerank_model_configures_engine(monkeypatch):
@@ -1837,3 +1839,105 @@ def test_jina_custom_prompt_strips_reserved_markers():
     assert prompt.startswith("<|im_start|>system\nRank carefully.<|im_end|>\n")
     assert prompt.count("<|embed_token|>") == 1
     assert prompt.count("<|rerank_token|>") == 1
+
+
+@pytest.mark.parametrize("policy", ["truncate", "error"])
+def test_rerank_default_cap_rejects_1001(rerank_client, policy):
+    engine = _StubEngine([], overflow_policy=policy)
+    _configure(rerank_client.cfg, engine)
+    response = rerank_client.client.post(
+        "/v1/rerank", json={"query": "q", "documents": ["d"] * 1001}
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert (error["code"], error["param"]) == ("too_many_documents", "documents")
+    assert all(
+        s in error["message"] for s in ["1001", "1000", "--rerank-max-documents"]
+    )
+    assert not engine.calls
+
+
+def test_rerank_busy_returns_retry_after(rerank_client, monkeypatch):
+    from rapid_mlx.routes import rerank
+    from rapid_mlx.routes._mlx_worker import RetrievalWorkerBusyError
+
+    _configure(rerank_client.cfg, _StubEngine([]))
+    monkeypatch.setattr(
+        rerank,
+        "run_on_mlx_worker",
+        mock.AsyncMock(side_effect=RetrievalWorkerBusyError),
+    )
+    telemetry = mock.Mock()
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.inference.emit_completed_request", telemetry
+    )
+    response = rerank_client.client.post(
+        "/v1/rerank", json={"query": "q", "documents": ["d"]}
+    )
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert response.json()["error"]["code"] == "server_busy"
+    telemetry.assert_not_called()
+
+
+@pytest.mark.parametrize("count", [50, 100])
+def test_jina_fixed_prompt_tokenization_is_bounded(count):
+    engine = _jina_engine()
+    encode = engine._tokenizer.encode
+    engine._tokenizer.encode = mock.Mock(wraps=encode)
+    engine.score("qa", ["xa"] * count)
+    full_prompts = [
+        c.args[0]
+        for c in engine._tokenizer.encode.call_args_list
+        if "<|im_start|>system" in c.args[0]
+    ]
+    # Empty singleton, two empties, exact block validation, block inference.
+    assert len(full_prompts) == 4
+
+
+@pytest.mark.parametrize(
+    "document", ["xa", "", "a<|embed_token|>b<|rerank_token|>", "a\nb"]
+)
+def test_jina_incremental_singleton_length_matches_exact(document):
+    engine = _jina_engine()
+    encode = lambda text: len(engine._tokenizer.encode(text, add_special_tokens=False))
+    base = encode(engine._listwise_prompt("qa", [""], "inst"))
+    estimate = (
+        base
+        - encode(engine._listwise_passage(""))
+        + encode(engine._listwise_passage(document))
+    )
+    assert estimate == encode(engine._listwise_prompt("qa", [document], "inst"))
+
+
+@pytest.mark.parametrize("policy", ["truncate", "error"])
+def test_jina_singleton_exact_validation_handles_underestimate(policy):
+    from rapid_mlx.rerank import RerankDocumentTooLongError
+
+    engine = _jina_engine(context_length=750)
+    engine.overflow_policy = policy
+    original = engine._tokenizer.encode
+
+    def nonadditive(text, **kwargs):
+        ids = original(text, **kwargs)
+        # Only the full prompt has a large boundary penalty for nonempty docs.
+        if "<|im_start|>system" in text and '<passage id="0">\nx' in text:
+            ids += [ord(" ")] * 100
+        return ids
+
+    engine._tokenizer.encode = nonadditive
+    if policy == "error":
+        with pytest.raises(RerankDocumentTooLongError):
+            engine.score("qa", ["xa"])
+    else:
+        result = engine.score("qa", ["xa"])
+        assert len(result.scores) == 1
+        assert engine.num_truncations == 1
+        assert max(engine._model.prompt_lengths) <= 750
+
+
+def test_jina_near_limit_estimate_uses_exact_fitting_singleton():
+    engine = _jina_engine(context_length=710)
+    result = engine.score("qa", ["xa"])
+    assert len(result.scores) == 1
+    assert engine.num_truncations == 0

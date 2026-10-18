@@ -1751,6 +1751,13 @@ def _add_serve_parser(
     )
     # Embedding model option
     serve_parser.add_argument(
+        "--embedding-max-inputs",
+        type=int,
+        default=2048,
+        help="Maximum inputs per /v1/embeddings request (default: 2048); "
+        "larger requests return 400. 0 or negative disables the limit.",
+    )
+    serve_parser.add_argument(
         "--embedding-model",
         type=str,
         default=None,
@@ -1856,12 +1863,11 @@ def _add_serve_parser(
     serve_parser.add_argument(
         "--rerank-max-documents",
         type=int,
-        default=0,
+        default=1000,
         metavar="N",
         help=(
-            "Maximum documents per /v1/rerank request; larger requests are "
-            "handled per --rerank-overflow-policy. 0 or a negative value "
-            "disables the limit (default: 0)."
+            "Maximum documents per /v1/rerank request (default: 1000); larger "
+            "requests always return 400. 0 or negative disables the limit."
         ),
     )
     serve_parser.add_argument(
@@ -1883,10 +1889,9 @@ def _add_serve_parser(
         choices=["truncate", "error"],
         default="truncate",
         help=(
-            "How to handle /v1/rerank requests over --rerank-max-documents or "
-            "documents over --rerank-max-length: 'truncate' (default) scores "
-            "only the first documents / shortens the document and logs a "
-            "warning; 'error' rejects the request with a 400."
+            "How to handle per-document token length overflow: 'truncate' "
+            "(default) shortens the document and logs a warning; 'error' "
+            "rejects the request with a 400."
         ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the

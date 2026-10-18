@@ -5982,6 +5982,21 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
+       "default": 2048,
+       "dest": "embedding_max_inputs",
+       "help": "Maximum inputs per /v1/embeddings request (default: 2048); larger requests return 400. 0 or negative disables the limit.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--embedding-max-inputs"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
        "default": null,
        "dest": "embedding_model",
        "help": "Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit). Without a positional model, the server runs embeddings-only. Requires the [embeddings] extra. Install the optional runtime with:\n    python -m pip install 'rapid-mlx[embeddings]==<version>'",
@@ -6128,9 +6143,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 0,
+       "default": 1000,
        "dest": "rerank_max_documents",
-       "help": "Maximum documents per /v1/rerank request; larger requests are handled per --rerank-overflow-policy. 0 or a negative value disables the limit (default: 0).",
+       "help": "Maximum documents per /v1/rerank request (default: 1000); larger requests always return 400. 0 or negative disables the limit.",
        "metavar": "N",
        "nargs": null,
        "option_strings": [
@@ -6164,7 +6179,7 @@
        "const": null,
        "default": "truncate",
        "dest": "rerank_overflow_policy",
-       "help": "How to handle /v1/rerank requests over --rerank-max-documents or documents over --rerank-max-length: 'truncate' (default) scores only the first documents / shortens the document and logs a warning; 'error' rejects the request with a 400.",
+       "help": "How to handle per-document token length overflow: 'truncate' (default) shortens the document and logs a warning; 'error' rejects the request with a 400.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -6508,6 +6523,7 @@
         "default_repetition_penalty",
         "default_presence_penalty",
         "default_frequency_penalty",
+        "embedding_max_inputs",
         "embedding_model",
         "enable_local_search",
         "local_search_dir",

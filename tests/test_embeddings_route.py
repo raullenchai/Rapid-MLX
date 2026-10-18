@@ -508,3 +508,133 @@ def test_embedding_inference_error_propagates_once(monkeypatch, chat_engine):
 
 if __name__ == "__main__":  # pragma: no cover — convenience only
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("tokenized", [False, True])
+def test_embedding_default_input_cap_precedes_model_work(monkeypatch, tokenized):
+    from rapid_mlx.config import get_config
+
+    engine = MagicMock()
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    loader = MagicMock()
+    monkeypatch.setattr("rapid_mlx.server.load_embedding_model", loader)
+    try:
+        assert get_config().embedding_max_inputs == 2048
+        payload = [[1]] * 2049 if tokenized else ["d"] * 2049
+        response = client.post(
+            "/v1/embeddings", json={"model": "stub-embed", "input": payload}
+        )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert (error["code"], error["param"], error["type"]) == (
+            "too_many_inputs",
+            "input",
+            "invalid_request_error",
+        )
+        assert all(
+            s in error["message"] for s in ["2049", "2048", "--embedding-max-inputs"]
+        )
+        assert not engine.mock_calls
+        loader.assert_not_called()
+    finally:
+        restore()
+
+
+@pytest.mark.parametrize(
+    "limit,payload,status",
+    [
+        (1, ["a", "b"], 400),
+        (1, [[1], [2]], 400),
+        (0, ["a", "b"], 200),
+        (-1, [[1], [2]], 200),
+        (1, [1, 2, 3], 200),
+        (1, "abc", 200),
+        (2, ["a", "b"], 200),
+    ],
+)
+def test_embedding_input_cap_override_and_singletons(
+    monkeypatch, limit, payload, status
+):
+    from rapid_mlx.config import get_config
+
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed.return_value = [[0.5]]
+    engine.embed_tokens.return_value = [[0.5]]
+    engine.count_tokens.return_value = 3
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    monkeypatch.setattr(get_config(), "embedding_max_inputs", limit)
+    try:
+        response = client.post(
+            "/v1/embeddings", json={"model": "stub-embed", "input": payload}
+        )
+        assert response.status_code == status
+    finally:
+        restore()
+
+
+def test_embedding_busy_returns_retry_after(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx.routes import embeddings
+    from rapid_mlx.routes._mlx_worker import RetrievalWorkerBusyError
+
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    monkeypatch.setattr(
+        embeddings, "run_on_mlx_worker", AsyncMock(side_effect=RetrievalWorkerBusyError)
+    )
+    telemetry = MagicMock()
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.inference.emit_completed_request", telemetry
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings", json={"model": "stub-embed", "input": "hello"}
+        )
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "1"
+        assert response.json()["error"]["code"] == "server_busy"
+        telemetry.assert_not_called()
+    finally:
+        restore()
+
+
+@pytest.mark.parametrize("limit", [7, 0, -1])
+def test_embedding_loader_and_config_preserve_input_cap(monkeypatch, limit):
+    from rapid_mlx import embedding, server
+    from rapid_mlx.config import get_config
+
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    cfg = get_config()
+    for name in ("embedding_engine", "embedding_model_locked", "embedding_max_inputs"):
+        monkeypatch.setattr(cfg, name, getattr(cfg, name))
+    monkeypatch.setattr(server, "_embedding_engine", None)
+    monkeypatch.setattr(embedding, "EmbeddingEngine", MagicMock(return_value=engine))
+    monkeypatch.setattr(server, "_emit_embedding_model_served_once", lambda *_a: None)
+    server.load_embedding_model("stub-embed", max_inputs=limit, reuse_existing=False)
+    assert server._embedding_max_inputs == limit
+    assert get_config().embedding_max_inputs == limit
+    server._sync_config()
+    assert get_config().embedding_max_inputs == limit
+
+
+def test_embedding_cli_passes_input_cap_to_loader(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx import cli
+
+    monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
+    loader = MagicMock()
+    cli._load_embedding_model_or_exit(
+        SimpleNamespace(embedding_model="stub-embed", embedding_max_inputs=12), loader
+    )
+    assert loader.call_args.kwargs["max_inputs"] == 12

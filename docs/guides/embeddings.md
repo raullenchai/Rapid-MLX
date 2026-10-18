@@ -203,3 +203,14 @@ huggingface-cli download mlx-community/all-MiniLM-L6-v2-4bit
 For opt-in semantic and keyword retrieval over local folders, see
 [Local folder search](local-search.md). It uses a separate lazy engine and does
 not change this endpoint’s model lock.
+
+## Request limits
+
+`--embedding-max-inputs N` defaults to 2048 inputs per `/v1/embeddings` request.
+Larger batches return HTTP 400 with `code: "too_many_inputs"` and `param: "input"`
+before model work. Each string or token sequence in a batch counts as one input;
+a single string or token sequence counts as one. Set 0 or a negative value to
+disable the cap. This count limit is independent of per-input token length.
+
+When the shared retrieval queue is full (64 running and queued jobs), requests
+receive HTTP 503 with `code: "server_busy"` and `Retry-After: 1`.

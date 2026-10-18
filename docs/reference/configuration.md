@@ -158,6 +158,7 @@ table and shows how a compressed response is marked.
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--embedding-max-inputs` | Maximum inputs per `/v1/embeddings` request; excess returns HTTP 400 `too_many_inputs`. 0 or negative disables the limit. | 2048 |
 | `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
 | `--embedding-max-length` | Max input length (tokens); `auto` derives it from the model's declared maximum, or pass a positive integer for a lower ceiling | `auto` |
 | `--embedding-overflow-policy` | Handling for over-length inputs: `truncate` (logged + metric, never silent) or `error` (HTTP 400 with observed/allowed counts) | `truncate` |
@@ -168,9 +169,9 @@ table and shows how a compressed response is marked.
 |--------|-------------|---------|
 | `--rerank-model` | Pre-load a reranker for `/v1/rerank`; see the [Rerank Guide](../guides/rerank.md) for the supported models | None |
 | `--rerank-model-family` | Family of `--rerank-model` when its name does not reveal it: `qwen3`, `bge2`, `mxbai2`, `jina3` or `roberta` | Detected |
-| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request (excess handled per `--rerank-overflow-policy`); `0` or negative disables the limit | `0` |
+| `--rerank-max-documents` | Maximum documents per `/v1/rerank` request; excess always returns HTTP 400 `too_many_documents`. 0 or negative disables the limit. | 1000 |
 | `--rerank-max-length` | Max tokens per query/document pair; `auto` uses the model's default, or pass a positive integer | `auto` |
-| `--rerank-overflow-policy` | Handling for requests over `--rerank-max-documents` and documents over `--rerank-max-length`: `truncate` (logged) or `error` (HTTP 400) | `truncate` |
+| `--rerank-overflow-policy` | Per-document token length overflow: `truncate` shortens the document and logs a warning; `error` returns HTTP 400 `input_too_long`. | truncate |
 | `--rerank-instruction` | Task description for requests without an `instruction` field | The model's default |
 | `--rerank-prompt` | Judging prompt that replaces the model's own | The model's default |
 

@@ -66,17 +66,22 @@ rejected with `400`. For a family without an instruction or judging prompt,
 
 ## Limits
 
-Two limits apply, and `--rerank-overflow-policy` decides what happens when
-they are exceeded:
+Two limits apply. `--rerank-overflow-policy` governs only per-document token length:
 
-- `--rerank-max-documents N` (default: no limit): with `truncate`, only the
-  first `N` documents are scored and a warning is logged; with `error`, the
-  request is rejected with `400` and `code: "too_many_documents"` before any
-  scoring.
+- `--rerank-max-documents N` (default: 1000): excess documents always produce
+  `400` with `code: "too_many_documents"` before scoring, under either overflow
+  policy. Set 0 or a negative value to disable the cap.
 - `--rerank-max-length` (`auto`: the family's pair length from the table,
   capped at the model's maximum): with `truncate`, a document that does not
   fit together with the query is shortened and a warning is logged; with
   `error`, the request is rejected with `400` and `code: "input_too_long"`.
+
+Empty `documents` and an empty `instruction` return `400`. Omit `instruction`
+to use the server or family default.
+
+When the shared retrieval worker has 64 pending jobs (running plus queued),
+new requests receive `503` with `code: "server_busy"` and `Retry-After: 1`.
+Retry after one second. Cancelled requests occupy a slot until their work finishes.
 
 ## Model Management
 

@@ -725,16 +725,25 @@ class RerankEngine:
             )
         return self._tokenizer.decode(ids[:limit]), limit, True
 
+    def _listwise_clean(self, text: str) -> str:
+        doc_token, query_token = self._loaded_family.marker_tokens
+        return text.replace(doc_token, "").replace(query_token, "")
+
+    def _listwise_passage(self, document: str, index: int = 0) -> str:
+        doc_token, _ = self._loaded_family.marker_tokens
+        return (
+            f'<passage id="{index}">\n{self._listwise_clean(document)}'
+            f"{doc_token}\n</passage>"
+        )
+
     def _listwise_prompt(
         self, query: str, documents: list[str], instruction: str | None
     ) -> str:
         marker_tokens = self._loaded_family.marker_tokens
         assert marker_tokens is not None
-        doc_token, query_token = marker_tokens
+        _, query_token = marker_tokens
 
-        def clean(text: str) -> str:
-            return text.replace(doc_token, "").replace(query_token, "")
-
+        clean = self._listwise_clean
         query = clean(query)
         prompt = (
             f"I will provide you with {len(documents)} passages, each indicated by "
@@ -744,8 +753,7 @@ class RerankEngine:
         if instruction:
             prompt += f"<instruct>\n{clean(instruction)}\n</instruct>\n"
         prompt += "\n".join(
-            f'<passage id="{i}">\n{clean(doc)}{doc_token}\n</passage>'
-            for i, doc in enumerate(documents)
+            self._listwise_passage(doc, i) for i, doc in enumerate(documents)
         )
         prompt += f"\n<query>\n{query}{query_token}\n</query>"
         # Marker tokens must only appear where the scorer expects them.
@@ -809,12 +817,12 @@ class RerankEngine:
             raise RerankInputTooLongError(
                 observed_tokens=empty_length, allowed_tokens=self._context_length
             )
-        singleton_lengths = []
-        for index, document in enumerate(docs):
-            observed = prompt_length([document])
+
+        def exact_singleton(index: int, observed: int) -> int:
+            nonlocal truncated
+            document = docs[index]
             if observed <= self._context_length:
-                singleton_lengths.append(observed)
-                continue
+                return observed
             if self.overflow_policy == "error":
                 raise RerankDocumentTooLongError(
                     index=index,
@@ -834,18 +842,27 @@ class RerankEngine:
                     high = midpoint - 1
             docs[index] = self._tokenizer.decode(ids[:low])
             lengths[index] = low
-            singleton_lengths.append(prompt_length([docs[index]]))
             truncated += 1
+            return prompt_length([docs[index]])
 
-        if truncated:
-            self.num_truncations += truncated
-            logger.warning(
-                "Rerank truncation: %d of %d document(s) exceeded a token limit "
-                "and were truncated. Set --rerank-overflow-policy error to "
-                "reject them instead.",
-                truncated,
-                len(documents),
+        empty_passage_length = len(
+            self._tokenizer.encode(self._listwise_passage(""), add_special_tokens=False)
+        )
+        singleton_lengths = []
+        for index, document in enumerate(docs):
+            observed = (
+                empty_length
+                - empty_passage_length
+                + len(
+                    self._tokenizer.encode(
+                        self._listwise_passage(document), add_special_tokens=False
+                    )
+                )
             )
+            # Tokenization across wrapper boundaries need not be additive.
+            if observed >= self._context_length - 16:
+                observed = exact_singleton(index, prompt_length([document]))
+            singleton_lengths.append(observed)
 
         two_empty_length = prompt_length(["", ""])
         # A second empty passage measures its wrapper, joining newline, and id.
@@ -898,10 +915,13 @@ class RerankEngine:
             packed_blocks.append(block)
 
         def validated_blocks(block: list[int]) -> list[list[int]]:
-            if prompt_length([docs[i] for i in block]) <= self._context_length:
+            observed = prompt_length([docs[i] for i in block])
+            if observed <= self._context_length:
                 return [block]
-            # Every singleton was checked above, so recursive bisection must
-            # terminate with context-safe blocks even for non-additive tokenizers.
+            if len(block) == 1:
+                exact_singleton(block[0], observed)
+                return [block]
+            # Bisect non-additive blocks; singletons use exact overflow handling.
             midpoint = len(block) // 2
             return validated_blocks(block[:midpoint]) + validated_blocks(
                 block[midpoint:]
@@ -910,6 +930,16 @@ class RerankEngine:
         blocks = [
             verified for block in packed_blocks for verified in validated_blocks(block)
         ]
+
+        if truncated:
+            self.num_truncations += truncated
+            logger.warning(
+                "Rerank truncation: %d of %d document(s) exceeded a token limit "
+                "and were truncated. Set --rerank-overflow-policy error to "
+                "reject them instead.",
+                truncated,
+                len(documents),
+            )
 
         def cosine(query_embed: mx.array, doc_embeds: mx.array) -> mx.array:
             norms = mx.linalg.norm(doc_embeds, axis=-1) * mx.linalg.norm(query_embed)

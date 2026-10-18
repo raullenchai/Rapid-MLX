@@ -68,6 +68,7 @@ _SERVER_SERVE_CONFIG_GLOBALS = (
     "_default_timeout",
     "_default_top_k",
     "_default_top_p",
+    "_embedding_max_inputs",
     "_embedding_max_length",
     "_embedding_model_locked",
     "_embedding_overflow_policy",

@@ -1494,6 +1494,7 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         load_fn(
             args.embedding_model,
             lock=True,
+            max_inputs=getattr(args, "embedding_max_inputs", 2048),
             max_length=max_length,
             overflow_policy=overflow_policy,
         )
@@ -1537,7 +1538,7 @@ def _load_rerank_model_or_exit(args, load_fn) -> None:
     try:
         load_fn(
             args.rerank_model,
-            max_documents=getattr(args, "rerank_max_documents", 0) or 0,
+            max_documents=getattr(args, "rerank_max_documents", 1000),
             max_length=max_length,
             overflow_policy=getattr(args, "rerank_overflow_policy", "truncate"),
             instruction=getattr(args, "rerank_instruction", None),
@@ -5534,6 +5535,7 @@ def _retrieval_only_incompatible_options(args) -> list[str]:
             "--trusted-hosts",
             "--rate-limit",
             "--embedding-model",
+            "--embedding-max-inputs",
             "--embedding-max-length",
             "--embedding-overflow-policy",
             "--rerank-model",

@@ -385,6 +385,10 @@ async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
     from rapid_mlx.config import reset_config
     from rapid_mlx.routes import audio, video
 
+    shutdown_worker = mock.Mock()
+    monkeypatch.setattr(
+        "rapid_mlx.routes._mlx_worker.shutdown_mlx_worker", shutdown_worker
+    )
     cfg = reset_config()
     cfg.embedding_engine = object()
     cfg.embedding_model_locked = EMBED_ID
@@ -406,6 +410,7 @@ async def test_embedding_only_lifespan_sets_and_clears_readiness(monkeypatch):
             assert cfg.model_loaded is True
         assert cfg.ready is False
         assert cfg.draining is True
+        shutdown_worker.assert_called_once_with()
     finally:
         reset_config()
 

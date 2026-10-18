@@ -20,7 +20,7 @@ from ..api.models import (
 )
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
-from ._mlx_worker import run_on_mlx_worker
+from ._mlx_worker import RetrievalWorkerBusyError, run_on_mlx_worker
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,28 @@ async def create_embeddings(
     from ..server import load_embedding_model
 
     cfg = get_config()
+    raw_input = request.input
+    input_count = (
+        len(raw_input)
+        if isinstance(raw_input, list)
+        and raw_input
+        and not isinstance(raw_input[0], int)
+        else 1
+    )
+    if cfg.embedding_max_inputs > 0 and input_count > cfg.embedding_max_inputs:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": f"Too many inputs: {input_count} exceeds this server's "
+                    f"limit of {cfg.embedding_max_inputs} (--embedding-max-inputs). "
+                    "Split the request into smaller batches.",
+                    "type": "invalid_request_error",
+                    "code": "too_many_inputs",
+                    "param": "input",
+                }
+            },
+        )
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
     caller_agent, caller_client = _telemetry_inference.request_caller_headers(
@@ -359,6 +381,19 @@ async def create_embeddings(
                 + optional_extra_install_hint("embeddings", include_paths=False)
             ),
         )
+    except RetrievalWorkerBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": "1"},
+            detail={
+                "error": {
+                    "message": "Retrieval worker queue is full. Retry shortly.",
+                    "type": "server_error",
+                    "code": "server_busy",
+                    "param": None,
+                }
+            },
+        ) from exc
     except HTTPException:
         raise
     except Exception as e:

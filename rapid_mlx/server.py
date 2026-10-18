@@ -330,13 +330,14 @@ _embedding_model_locked: str | None = None  # Set when --embedding-model is used
 # Operator embedding-length config (issue #1381). Set once from the CLI and
 # reused by route-triggered loads so both the pre-load and lazy paths build
 # the engine with the same limits.
+_embedding_max_inputs: int = 2048
 _embedding_max_length: int | str = "auto"
 _embedding_overflow_policy: str = "truncate"
 
 # Global rerank engine, loaded once from --rerank-model
 _rerank_engine = None
 _rerank_model_locked: str | None = None
-_rerank_max_documents: int = 0
+_rerank_max_documents: int = 1000
 
 # API key authentication
 _api_key: str | None = None
@@ -1167,8 +1168,10 @@ async def lifespan(app: FastAPI):
         if _engine is not None:
             await _engine.stop()
             logger.info("Engine stopped")
-    except Exception as _shutdown_exc:
-        raise
+    finally:
+        from .routes._mlx_worker import shutdown_mlx_worker
+
+        await asyncio.to_thread(shutdown_mlx_worker)
 
     _flush_v2_telemetry()
 
@@ -1807,6 +1810,7 @@ def load_embedding_model(
     *,
     lock: bool = False,
     reuse_existing: bool = True,
+    max_inputs: int | None = None,
     max_length: int | str | None = None,
     overflow_policy: str | None = None,
 ) -> None:
@@ -1818,11 +1822,13 @@ def load_embedding_model(
     engine with the same operator-configured limits.
     """
     global _embedding_engine, _embedding_model_locked
-    global _embedding_max_length, _embedding_overflow_policy
+    global _embedding_max_inputs, _embedding_max_length, _embedding_overflow_policy
 
     if not model_name:
         return
 
+    if max_inputs is not None:
+        _embedding_max_inputs = max_inputs
     if max_length is not None:
         _embedding_max_length = max_length
     if overflow_policy is not None:
@@ -1852,6 +1858,7 @@ def load_embedding_model(
 
     # Sync into config for route modules
     cfg = get_config()
+    cfg.embedding_max_inputs = _embedding_max_inputs
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
 
@@ -1859,7 +1866,7 @@ def load_embedding_model(
 def load_rerank_model(
     model_name: str,
     *,
-    max_documents: int = 0,
+    max_documents: int = 1000,
     max_length: int | str = "auto",
     overflow_policy: str = "truncate",
     instruction: str | None = None,
@@ -3403,6 +3410,7 @@ def _sync_config() -> None:
     cfg.reasoning_parser_name = _reasoning_parser_name
     cfg.default_reasoning_effort = _default_reasoning_effort
     cfg.mcp_manager = _mcp_manager
+    cfg.embedding_max_inputs = _embedding_max_inputs
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
     cfg.rerank_engine = _rerank_engine
@@ -3981,6 +3989,13 @@ Examples:
         help="Enable jump-forward decoding bias for tool call structural tokens",
     )
     parser.add_argument(
+        "--embedding-max-inputs",
+        type=int,
+        default=2048,
+        help="Maximum inputs per /v1/embeddings request (default: 2048); "
+        "larger requests return 400. 0 or negative disables the limit.",
+    )
+    parser.add_argument(
         "--embedding-model",
         type=str,
         default=None,
@@ -4015,11 +4030,10 @@ Examples:
     parser.add_argument(
         "--rerank-max-documents",
         type=int,
-        default=0,
+        default=1000,
         help=(
-            "Maximum documents per /v1/rerank request; larger requests are "
-            "handled per --rerank-overflow-policy. 0 or a negative value "
-            "disables the limit (default: 0)."
+            "Maximum documents per /v1/rerank request (default: 1000); larger "
+            "requests always return 400. 0 or negative disables the limit."
         ),
     )
     parser.add_argument(
@@ -4039,10 +4053,9 @@ Examples:
         choices=["truncate", "error"],
         default="truncate",
         help=(
-            "How to handle /v1/rerank requests over --rerank-max-documents or "
-            "documents over --rerank-max-length: 'truncate' (default) scores "
-            "only the first documents / shortens the document and logs a "
-            "warning; 'error' rejects the request with a 400."
+            "How to handle per-document token length overflow: 'truncate' "
+            "(default) shortens the document and logs a warning; 'error' "
+            "rejects the request with a 400."
         ),
     )
     parser.add_argument(
