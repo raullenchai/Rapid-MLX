@@ -27,9 +27,11 @@ def _post(url: str, payload: dict, headers: dict[str, str] | None = None) -> dic
     return result
 
 
-def _get(url: str) -> dict:
+def _get(url: str, headers: dict[str, str] | None = None) -> dict:
     with urllib.request.urlopen(
-        urllib.request.Request(url, headers={"X-Keenable-Title": "Rapid-MLX"}),
+        urllib.request.Request(
+            url, headers={"X-Keenable-Title": "Rapid-MLX", **(headers or {})}
+        ),
         timeout=25,
     ) as response:
         result = json.load(response)
@@ -44,6 +46,7 @@ def _search(query: str) -> str:
         raise ValueError("Search query is empty")
     parallel = os.environ.get("PARALLEL_API_KEY", "")
     tavily = os.environ.get("TAVILY_API_KEY", "")
+    brave = os.environ.get("BRAVE_API_KEY", "")
     if parallel:
         data = _post(
             "https://api.parallel.ai/v1/search",
@@ -67,6 +70,18 @@ def _search(query: str) -> str:
         results = [
             (item.get("title", ""), item.get("url", ""), item.get("content", ""))
             for item in data.get("results", [])
+        ]
+    elif brave:
+        from urllib.parse import urlencode
+
+        data = _get(
+            "https://api.search.brave.com/res/v1/web/search?"
+            + urlencode({"q": query, "count": 5, "safesearch": "moderate"}),
+            {"X-Subscription-Token": brave},
+        )
+        results = [
+            (item.get("title", ""), item.get("url", ""), item.get("description", ""))
+            for item in (data.get("web") or {}).get("results", [])
         ]
     else:
         data = _post(

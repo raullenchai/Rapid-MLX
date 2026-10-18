@@ -405,7 +405,7 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         "WORK_PROXY_CONTRACT_FILE": str(contract_path),
         "WORK_SEARCH_TOKEN": search_key,
     }
-    for key in ("PARALLEL_API_KEY", "TAVILY_API_KEY"):
+    for key in ("PARALLEL_API_KEY", "TAVILY_API_KEY", "BRAVE_API_KEY"):
         if os.environ.get(key):
             gate_env[key] = os.environ[key]
     goose_env = {

@@ -20,12 +20,43 @@ def test_keyless_search_returns_source_url(monkeypatch):
 
     monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     monkeypatch.setattr(web_search_mcp, "_post", fake_post)
     result = web_search_mcp._search("current weather")
     assert calls[0][0] == "https://api.keenable.ai/v1/search/public"
     assert calls[0][1]["query"] == "current weather"
     assert "https://forecast.weather.gov/test" in result
     assert "Sunny" in result
+
+
+def test_brave_key_uses_api_without_exposing_key(monkeypatch):
+    seen = []
+    monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("BRAVE_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        web_search_mcp,
+        "_get",
+        lambda url, headers=None: (
+            seen.append((url, headers))
+            or {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Story",
+                            "url": "https://example.org",
+                            "description": "News",
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    result = web_search_mcp._search("latest story")
+    assert "api.search.brave.com" in seen[0][0]
+    assert seen[0][1] == {"X-Subscription-Token": "test-secret"}
+    assert "https://example.org" in result
+    assert "test-secret" not in result
 
 
 def test_mcp_advertises_search_and_dispatches_through_gate(monkeypatch):

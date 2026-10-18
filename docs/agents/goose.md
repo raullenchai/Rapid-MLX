@@ -23,6 +23,6 @@ GOOSE_PATH_ROOT="$HOME/.cache/rapid-mlx/goose/1.54.0/mini-workspaces/$(python3 -
   "$HOME/.cache/rapid-mlx/goose/1.54.0/goose" configure
 ```
 
-Select **Toggle Extensions** to enable Computer Controller, Memory, or another extension for future sessions. Search uses Keenable without a key; `PARALLEL_API_KEY` or `TAVILY_API_KEY` in the launching shell selects a keyed backend. Keys go only to the local gate process and are never added to Goose's tool process environment.
+Select **Toggle Extensions** to enable Computer Controller, Memory, or another extension for future sessions. Search uses Keenable without a key; `PARALLEL_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY` in the launching shell selects a keyed backend in that order of priority. Keys go only to the local gate process and are never added to Goose's tool process environment.
 
 For a server started with `--api-key`, export `RAPID_MLX_API_KEY` before setup and Goose. Setup writes the environment variable name into the provider JSON; it never stores the key value. `rapid-mlx agents goose --test` runs the integration checks, including the headless Goose command when its binary is on `PATH`.
