@@ -1,5 +1,8 @@
 """Goose CLI startup contract without loading a model."""
 
+import hashlib
+import io
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +20,36 @@ def test_goose_cli_resources_match_desktop_harness():
     }
     for name, source in pairs.items():
         assert (chat_goose.ASSETS / name).read_bytes() == source.read_bytes()
+
+
+def test_goose_archive_is_verified_and_cached(tmp_path, monkeypatch):
+    executable = b"#!/bin/sh\nexit 0\n"
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as package:
+        entry = tarfile.TarInfo("goose")
+        entry.size = len(executable)
+        package.addfile(entry, io.BytesIO(executable))
+    payload = archive.getvalue()
+    monkeypatch.setattr(chat_goose.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        chat_goose.os, "uname", lambda: SimpleNamespace(machine="arm64")
+    )
+    monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(chat_goose, "GOOSE_SHA256", hashlib.sha256(payload).hexdigest())
+    downloads = []
+
+    def download(_url, timeout):
+        downloads.append(timeout)
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(chat_goose.urllib.request, "urlopen", download)
+    binary = chat_goose._goose_binary()
+    assert binary.read_bytes() == executable
+    assert chat_goose._goose_binary() == binary
+    assert downloads == [120]
+    binary.write_bytes(b"tampered")
+    assert chat_goose._goose_binary().read_bytes() == executable
+    assert downloads == [120]
 
 
 def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
