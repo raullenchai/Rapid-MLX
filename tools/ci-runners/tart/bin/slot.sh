@@ -51,7 +51,7 @@ reap_orphans() {
 on_term() { log "terminating; destroying $VM"; destroy_vm; exit 0; }
 trap on_term TERM INT HUP
 on_exit() {
-  if [ -n "$VM_PID" ] || [ -n "$EXEC_PID" ] || [ -n "$RUNNER_ID" ]; then destroy_vm; fi
+  if [ -n "$VM_PID" ] || [ -n "$EXEC_PID" ] || [ -n "$RUNNER_ID" ] || [ -n "$resp" ]; then destroy_vm; fi
 }
 trap on_exit EXIT
 
