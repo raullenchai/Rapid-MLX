@@ -8,6 +8,7 @@ claim cost a skipped e2e gate for no reason.
 """
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -36,6 +37,26 @@ def test_opencode_has_a_headless_query_cmd():
     assert profile is not None
     assert profile.testing.binary == "opencode"
     assert profile.testing.query_cmd == "opencode run '{query}'"
+
+
+def test_setup_uses_guarded_version_probe(tmp_path, monkeypatch):
+    profile = get_profile("opencode")
+    assert profile is not None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    observed = []
+
+    def guarded_probe(cmd, **kwargs):
+        observed.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "2.0.26\n", "")
+
+    with patch(
+        "rapid_mlx.agents.opencode_version.shutil.which", return_value="/fake/opencode"
+    ):
+        setup_agent_config(profile, model_id="local-model", _probe_runner=guarded_probe)
+
+    assert observed[0][0] == ["/fake/opencode", "--version"]
+    assert observed[0][1]["check"] is True
+    assert (tmp_path / ".config/opencode/opencode.json").exists()
 
 
 def test_opencode_known_issues_do_not_claim_interactive_only():

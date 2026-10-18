@@ -245,7 +245,7 @@ def setup_agent_config(
     *,
     context_length: int | None = None,
     dry_run: bool = False,
-    _hermes_probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    _probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
     """Write the agent's config file or print env vars to set up the integration.
 
@@ -268,7 +268,11 @@ def setup_agent_config(
     if profile.name == "opencode" and agent_version is None:
         from .opencode_version import installed_version
 
-        agent_version = installed_version()
+        agent_version = (
+            installed_version(_probe_runner)
+            if _probe_runner is not None
+            else installed_version()
+        )
 
     try:
         rendered = profile.render_config(
@@ -283,8 +287,8 @@ def setup_agent_config(
     if profile.name == "hermes" and isinstance(rendered, str):
         try:
             hermes_supported_toolsets = (
-                _hermes_supported_toolsets(_hermes_probe_runner)
-                if _hermes_probe_runner is not None
+                _hermes_supported_toolsets(_probe_runner)
+                if _probe_runner is not None
                 else _hermes_supported_toolsets()
             )
             rendered = _render_hermes_runtime_toolsets(

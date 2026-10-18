@@ -1759,17 +1759,20 @@ class AgentTestRunner:
                     )
                 else:
                     setup_kwargs = {}
-                    if self.profile.name == "hermes":
+                    if self.profile.name in {"hermes", "opencode"}:
 
                         def guarded_probe(cmd: list[str], **kwargs):
-                            return _run_guarded_agent(
+                            result = _run_guarded_agent(
                                 cmd,
                                 timeout=kwargs["timeout"],
                                 cwd=os.getcwd(),
                                 env=os.environ.copy(),
                             )
+                            if kwargs.get("check"):
+                                result.check_returncode()
+                            return result
 
-                        setup_kwargs["_hermes_probe_runner"] = guarded_probe
+                        setup_kwargs["_probe_runner"] = guarded_probe
                     setup_agent_config(
                         self.profile,
                         base_url=self.base_url,

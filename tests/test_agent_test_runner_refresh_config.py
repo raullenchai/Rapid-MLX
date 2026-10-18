@@ -22,6 +22,8 @@ import os
 from dataclasses import replace
 from unittest.mock import patch
 
+import pytest
+
 from rapid_mlx.agents.base import (
     AgentConfigSpec,
     AgentProfile,
@@ -153,9 +155,9 @@ def test_run_calls_setup_agent_config_before_tests():
         model_id,
         agent_version=None,
         context_length=None,
-        _hermes_probe_runner=None,
+        _probe_runner=None,
     ):
-        assert callable(_hermes_probe_runner)
+        assert callable(_probe_runner)
         calls.append(
             {
                 "profile_name": profile_arg.name,
@@ -222,9 +224,9 @@ def test_run_refreshes_config_when_server_is_available():
         model_id,
         agent_version=None,
         context_length=None,
-        _hermes_probe_runner=None,
+        _probe_runner=None,
     ):
-        assert callable(_hermes_probe_runner)
+        assert callable(_probe_runner)
         calls.append(model_id)
         return "ok"
 
@@ -406,12 +408,13 @@ def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
     plain_chat.assert_not_called()
 
 
-def test_hermes_setup_probe_stops_delayed_descendant(tmp_path):
+@pytest.mark.parametrize("agent_name", ["hermes", "opencode"])
+def test_setup_probe_stops_delayed_descendant(tmp_path, agent_name):
     import subprocess
     import sys
     import time
 
-    profile = _make_profile("hermes", "yaml")
+    profile = _make_profile(agent_name, "yaml")
     delayed = tmp_path / "delayed-setup-child-ran"
     child_script = (
         f"import pathlib, time; time.sleep(0.5); pathlib.Path({str(delayed)!r}).touch()"
@@ -422,9 +425,9 @@ def test_hermes_setup_probe_stops_delayed_descendant(tmp_path):
         f"{child_script!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
     )
 
-    def _setup(*_args, _hermes_probe_runner=None, **_kwargs):
-        assert callable(_hermes_probe_runner)
-        result = _hermes_probe_runner(
+    def _setup(*_args, _probe_runner=None, **_kwargs):
+        assert callable(_probe_runner)
+        result = _probe_runner(
             [sys.executable, "-c", setup_script],
             timeout=5,
             capture_output=True,

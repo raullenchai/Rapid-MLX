@@ -5,14 +5,17 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 
 
-def installed_version() -> str | None:
+def installed_version(
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> str | None:
     binary = shutil.which("opencode")
     if not binary:
         return None
     try:
-        output = subprocess.run(
+        output = (runner or subprocess.run)(
             [binary, "--version"],
             capture_output=True,
             text=True,
