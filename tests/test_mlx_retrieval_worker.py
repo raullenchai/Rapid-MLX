@@ -69,24 +69,49 @@ async def test_full_queue_and_cancelled_awaiters_keep_slots(monkeypatch):
         )
 
 
-async def test_shutdown_reuse_and_detached_completion():
+async def test_shutdown_rejects_work_until_drained(monkeypatch):
     release = threading.Event()
     started = threading.Event()
+    draining = threading.Event()
 
     def blocking():
         started.set()
         assert release.wait(5)
 
     old = asyncio.create_task(worker.run_on_mlx_worker(blocking))
+    shutdown = None
     try:
         assert await asyncio.to_thread(started.wait, 5)
         executor = worker._retrieval_executor
-        worker.shutdown_mlx_worker(wait=False)
+        original_shutdown = executor.shutdown
+
+        def observed_shutdown(*, wait):
+            assert wait is True
+            draining.set()
+            original_shutdown(wait=wait)
+
+        monkeypatch.setattr(executor, "shutdown", observed_shutdown)
+        shutdown = asyncio.create_task(asyncio.to_thread(worker.shutdown_mlx_worker))
+        assert await asyncio.to_thread(draining.wait, 5)
+        assert not shutdown.done()
+        assert worker._draining_executor is executor
+        assert worker._retrieval_executor is None
+        assert worker._pending_jobs == 1
+        with pytest.raises(worker.RetrievalWorkerBusyError, match="shutting down"):
+            await worker.run_on_mlx_worker(lambda: None)
+        with pytest.raises(worker.RetrievalWorkerBusyError, match="shutting down"):
+            worker.run_on_mlx_worker_sync(lambda: None)
+        assert worker._retrieval_executor is None
+        assert worker._draining_executor is executor
+        assert worker._pending_jobs == 1
+        release.set()
+        await old
+        await shutdown
+        assert worker._draining_executor is None
+        assert worker._retrieval_executor is None
         assert worker._pending_jobs == 0
         assert await worker.run_on_mlx_worker(lambda: "new") == "new"
         assert worker._retrieval_executor is not executor
-        release.set()
-        await old
         assert worker._pending_jobs == 0
         worker.shutdown_mlx_worker()
         assert worker._retrieval_executor is None
@@ -95,6 +120,8 @@ async def test_shutdown_reuse_and_detached_completion():
     finally:
         release.set()
         await old
+        if shutdown is not None:
+            await shutdown
 
 
 @pytest.mark.parametrize(

@@ -725,12 +725,17 @@ class RerankEngine:
             )
         return self._tokenizer.decode(ids[:limit]), limit, True
 
+    def _listwise_markers(self) -> tuple[str, str]:
+        marker_tokens = self._loaded_family.marker_tokens
+        assert marker_tokens is not None
+        return marker_tokens
+
     def _listwise_clean(self, text: str) -> str:
-        doc_token, query_token = self._loaded_family.marker_tokens
+        doc_token, query_token = self._listwise_markers()
         return text.replace(doc_token, "").replace(query_token, "")
 
     def _listwise_passage(self, document: str, index: int = 0) -> str:
-        doc_token, _ = self._loaded_family.marker_tokens
+        doc_token, _ = self._listwise_markers()
         return (
             f'<passage id="{index}">\n{self._listwise_clean(document)}'
             f"{doc_token}\n</passage>"
@@ -739,9 +744,7 @@ class RerankEngine:
     def _listwise_prompt(
         self, query: str, documents: list[str], instruction: str | None
     ) -> str:
-        marker_tokens = self._loaded_family.marker_tokens
-        assert marker_tokens is not None
-        _, query_token = marker_tokens
+        _, query_token = self._listwise_markers()
 
         clean = self._listwise_clean
         query = clean(query)
