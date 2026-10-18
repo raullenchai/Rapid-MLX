@@ -88,13 +88,6 @@ def test_prefill_rejects_media_and_disk_drafts():
             "messages": [{"role": "system", "content": "x"}],
             "draft_key": "draft",
         },
-        {
-            "kind": "prefix",
-            "messages": [{"role": "system", "content": "x"}],
-            "draft_key": None,
-            "revision": None,
-            "allow_disk_cache": True,
-        },
         {"messages": [{"role": "assistant", "content": "done"}]},
         {"draft_key": None},
     ],
@@ -356,6 +349,33 @@ async def test_draft_requires_disk_consent_before_engine_work(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persist", [False, True])
+async def test_prefix_requires_disk_consent_before_engine_work(monkeypatch, persist):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    body = api.PrefillRequest(
+        kind="prefix",
+        messages=[{"role": "system", "content": "private instructions"}],
+        persist=persist,
+    )
+    with pytest.raises(HTTPException) as error:
+        await api.prefill(body, ConnectedRequest())
+    assert error.value.status_code == 409
+    assert engine.calls == []
+    assert api.PrefillRequest(
+        kind="prefix",
+        messages=body.messages,
+        persist=persist,
+        allow_disk_cache=True,
+    ).allow_disk_cache
+
+
+@pytest.mark.asyncio
 async def test_context_rejection_happens_before_prefill(monkeypatch):
     engine = FakeEngine()
     monkeypatch.setattr(
@@ -536,9 +556,70 @@ async def test_cancelled_checkpoint_waits_for_thread(monkeypatch):
     task.cancel()
     await asyncio.sleep(0.01)
     assert not task.done()
+    task.cancel()
+    await asyncio.sleep(0.01)
+    assert not task.done()
     finish.set()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_keeps_checkpoint_slot_until_thread_exits(
+    monkeypatch,
+):
+    class DisconnectRequest:
+        disconnected = False
+
+        async def is_disconnected(self):
+            return self.disconnected
+
+    engine = FakeEngine()
+    engine.release.set()
+    engine._shared_system_tools_prompt = lambda *args: ([1, 2, 3], 2)
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    monkeypatch.setattr(api, "enforce_context_length", lambda *args, **kwargs: None)
+    started = threading.Event()
+    finish = threading.Event()
+
+    def save(_budget):
+        started.set()
+        assert finish.wait(timeout=3)
+        return True
+
+    monkeypatch.setattr(api, "save_prefix_cache_to_disk", save)
+    body = api.PrefillRequest(
+        kind="prefix",
+        messages=[{"role": "system", "content": "private instructions"}],
+        persist=True,
+        allow_disk_cache=True,
+    )
+    request = DisconnectRequest()
+    handler = asyncio.create_task(api.prefill(body, request))
+    assert await asyncio.to_thread(started.wait, 2)
+    request.disconnected = True
+    for _ in range(30):
+        if api._active is not None and api._active.cancelling():
+            break
+        await asyncio.sleep(0.01)
+    handler.cancel()
+    await asyncio.sleep(0.01)
+    assert api._active is not None
+    assert not api._active.done()
+    with pytest.raises(HTTPException) as busy:
+        await api.prefill(body, ConnectedRequest())
+    assert busy.value.status_code == 429
+    checkpoint = api._active
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+    with pytest.raises(asyncio.CancelledError):
+        await checkpoint
 
 
 @pytest.mark.asyncio

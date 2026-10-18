@@ -86,8 +86,6 @@ class PrefillRequest(BaseModel):
                 raise ValueError("prefix prefill requires one system message")
             if self.draft_key is not None or self.revision is not None:
                 raise ValueError("prefix prefill cannot use a draft key")
-            if self.allow_disk_cache:
-                raise ValueError("allow_disk_cache is only for drafts")
         else:
             if self.messages[-1]["role"] != "user":
                 raise ValueError("a draft must end with a user message")
@@ -175,7 +173,13 @@ async def _warm(engine, body: PrefillRequest) -> dict:
         except asyncio.CancelledError:
             # A worker thread cannot be cancelled. Keep this slot until the
             # bounded save exits rather than overlap it with a replacement.
-            await checkpoint_task
+            while not checkpoint_task.done():
+                try:
+                    await asyncio.shield(checkpoint_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
             raise
     return result
 
@@ -188,21 +192,18 @@ async def prefill(body: PrefillRequest, request: Request):
     process bounds speculative memory use; ordinary chat requests continue.
     ``persist`` requests an immediate cache save for fixed prefixes. A true
     ``cache_saved`` means at least one entry committed; it does not prove the
-    requested entry survived a partial save. Drafts
-    require explicit consent when the server's normal disk cache is enabled.
+    requested entry survived a partial save. Every prefill requires explicit
+    consent when the server's normal disk cache is enabled: a later shutdown
+    can persist the warm KV state.
     """
     global _active, _active_key, _active_revision
     cfg = get_config()
     if not cfg.ready or cfg.draining or cfg.engine is None:
         raise HTTPException(status_code=503, detail="Model is not ready")
-    if (
-        body.kind == "draft"
-        and not disk_caches.disabled()
-        and not body.allow_disk_cache
-    ):
+    if not disk_caches.disabled() and not body.allow_disk_cache:
         raise HTTPException(
             status_code=409,
-            detail="Draft KV may be saved by the configured disk cache; set allow_disk_cache=true or disable disk caches",
+            detail="Warm KV may be saved by the configured disk cache; set allow_disk_cache=true or disable disk caches",
         )
 
     if body.enable_thinking is None and getattr(cfg, "default_reasoning_effort", None):
@@ -287,7 +288,7 @@ async def prefill(body: PrefillRequest, request: Request):
         raise
     finally:
         async with _guard:
-            if _active is task:
+            if _active is task and task.done():
                 _active = None
                 _active_key = None
                 _active_revision = -1

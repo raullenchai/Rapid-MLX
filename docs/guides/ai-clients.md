@@ -13,6 +13,10 @@ Rapid-MLX exposes two primary interfaces:
 | **OpenAI-compatible** | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/speech` | Most AI clients, frameworks, and IDEs |
 | **Anthropic-compatible** | `/v1/messages`, `/v1/messages/count_tokens` | Claude Code, OpenCode, and other Anthropic SDK consumers |
 
+Clients that prepare prompts ahead of sending can use the Rapid-MLX
+[cache prefill API](cache-prefill.md). It requires an exact matching prompt
+prefix in the later chat request.
+
 Feature support available across both APIs:
 
 - Streaming (SSE)
