@@ -231,6 +231,7 @@ final class ConversationDraftTests: XCTestCase {
         XCTAssertNil(ConversationDraftStore.companionURL(forConversationStore: nil))
         XCTAssertEqual(ConversationDraftStore.fileURL().lastPathComponent, "drafts.json")
         XCTAssertEqual(ConversationDraftStore.load(from: draftURL), ConversationDrafts())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: draftURL.path))
         var drafts = ConversationDrafts()
         drafts.set("private", for: UUID().uuidString)
         drafts.set(" \n", for: "empty")
@@ -242,6 +243,50 @@ final class ConversationDraftTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
         let json = try String(contentsOf: draftURL, encoding: .utf8)
         XCTAssertFalse(json.contains("empty"))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: draftURL.deletingLastPathComponent().path), ["drafts.json"])
+
+        // Replace even a previously permissive file with a fresh owner-only inode.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: draftURL.path)
+        drafts.set("updated", for: ConversationDrafts.newChatKey)
+        ConversationDraftStore.save(drafts, to: draftURL)
+        ConversationDraftStore.flush()
+        XCTAssertEqual(ConversationDraftStore.load(from: draftURL), drafts)
+        let overwrittenAttributes = try FileManager.default.attributesOfItem(atPath: draftURL.path)
+        XCTAssertEqual((overwrittenAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: draftURL.deletingLastPathComponent().path), ["drafts.json"])
+    }
+
+    func testSaveFailureWhenParentIsAFile() throws {
+        let blocker = try isolatedStore()
+        let original = Data("keep this file".utf8)
+        try original.write(to: blocker)
+        ConversationDraftStore.save(ConversationDrafts(), to: blocker.appendingPathComponent("drafts.json"))
+        ConversationDraftStore.flush()
+        XCTAssertEqual(try Data(contentsOf: blocker), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: blocker.deletingLastPathComponent().path), ["conversations.json"])
+    }
+
+    func testSaveFailureWhenTemporaryFileCannotBeCreated() throws {
+        let directory = try isolatedStore().deletingLastPathComponent()
+        let fm = FileManager.default
+        try fm.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        ConversationDraftStore.save(ConversationDrafts(), to: directory.appendingPathComponent("drafts.json"))
+        ConversationDraftStore.flush()
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: directory.path), [])
+    }
+
+    func testRenameFailureRemovesTemporaryFile() throws {
+        let directory = try isolatedStore().deletingLastPathComponent()
+        let destination = directory.appendingPathComponent("drafts.json")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let blocker = destination.appendingPathComponent("keep")
+        let original = Data("keep this file".utf8)
+        try original.write(to: blocker)
+        ConversationDraftStore.save(ConversationDrafts(), to: destination)
+        ConversationDraftStore.flush()
+        XCTAssertEqual(try Data(contentsOf: blocker), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["drafts.json"])
     }
 
     func testCorruptFileBackup() throws {

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Text only: pending attachments deliberately remain in their in-memory store.
@@ -74,16 +75,24 @@ enum ConversationDraftStore {
 
     static func save(_ drafts: ConversationDrafts, to override: URL? = nil) {
         writeQueue.async {
-            guard let data = try? JSONEncoder().encode(drafts) else { return }
             let url = fileURL(override: override)
-            try? FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: url.path
-            )
+            let fm = FileManager.default
+            do {
+                let data = try JSONEncoder().encode(drafts)
+                let directory = url.deletingLastPathComponent()
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                let temporary = directory.appendingPathComponent(".drafts-\(UUID().uuidString).tmp")
+                defer { try? fm.removeItem(at: temporary) }
+                // Set permissions at creation so no published or temporary bytes are exposed.
+                guard fm.createFile(
+                    atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]
+                ) else { throw CocoaError(.fileWriteUnknown) }
+                guard rename(temporary.path, url.path) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+            } catch {
+                NSLog("Failed to save conversation drafts to %@: %@", url.path, String(describing: error))
+            }
         }
     }
 
