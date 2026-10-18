@@ -102,7 +102,9 @@ def _fetch_page(url: str) -> str:
     from urllib.parse import urlencode
 
     data = _get("https://api.keenable.ai/v1/fetch/public?" + urlencode({"url": url}))
-    return str(data.get("markdown") or data.get("content") or data)[:12000]
+    title = str(data.get("title") or "Web page")
+    content = str(data.get("content") or data.get("markdown") or "")[:12000]
+    return f"[1] {title}\n{url}\n{content}"
 
 
 def _call_gate(name: str, arguments: dict) -> str:

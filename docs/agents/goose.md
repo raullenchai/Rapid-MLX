@@ -12,4 +12,17 @@ goose run --provider custom_rapid_mlx --model qwen3.5-4b-4bit --no-session --tex
 
 `--setup` writes `~/.config/goose/custom_providers/custom_rapid_mlx.json`. It gets the model and context limit from the server. Pass `--base-url http://127.0.0.1:PORT/v1` for another port, `--model` to set the alias, or `--dry-run` to preview. Goose and setup both honor `XDG_CONFIG_HOME`; if you set `GOOSE_PATH_ROOT`, they use its `config/custom_providers/` subdirectory instead. Goose's [config path code](https://github.com/aaif-goose/goose/blob/v1.54.0/crates/goose/src/config/paths.rs) defines that override.
 
+## `rapid-mlx chat` extension defaults
+
+`rapid-mlx chat` creates an isolated Goose workspace for each working directory. New workspaces enable Developer, Skills, Extension Manager, and the local `web_search`/`fetch_page` extension. Analyze, Apps, Summon, Top of Mind, Memory, Computer Controller, Auto Visualiser, and Tutorial start disabled. Goose stores these choices in its own `config.yaml`; later changes to that file are preserved.
+
+To change the built-in extensions for the current working directory, run Goose's configuration UI against that same workspace:
+
+```sh
+GOOSE_PATH_ROOT="$HOME/.cache/rapid-mlx/goose/1.54.0/mini-workspaces/$(python3 -c 'import hashlib,os; print(hashlib.sha256(os.getcwd().encode()).hexdigest())')" \
+  "$HOME/.cache/rapid-mlx/goose/1.54.0/goose" configure
+```
+
+Select **Toggle Extensions** to enable Computer Controller, Memory, or another extension for future sessions. Search uses Keenable without a key; `PARALLEL_API_KEY` or `TAVILY_API_KEY` in the launching shell selects a keyed backend. Keys go only to the local gate process and are never added to Goose's tool process environment.
+
 For a server started with `--api-key`, export `RAPID_MLX_API_KEY` before setup and Goose. Setup writes the environment variable name into the provider JSON; it never stores the key value. `rapid-mlx agents goose --test` runs the integration checks, including the headless Goose command when its binary is on `PATH`.
