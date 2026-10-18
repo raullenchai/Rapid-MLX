@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Keep tracked license and attribution files in distributed packages."""
 
-import fnmatch
+import glob
 import importlib.util
 import os
 import shutil
@@ -57,17 +57,33 @@ def _tracked_license_files() -> set[tuple[str, str]]:
     return files
 
 
+def _declared_package_data(package, patterns):
+    return {
+        Path(p).relative_to(REPO_ROOT / package).as_posix()
+        for pattern in patterns
+        for p in glob.glob(str(REPO_ROOT / package / pattern), recursive=True)
+    }
+
+
+def test_declared_package_data_respects_directory_boundaries():
+    relative = "models/mlx_vlm_vendored/models/minicpmv4_7/LICENSE"
+    assert relative not in _declared_package_data("rapid_mlx", ["*/LICENSE"])
+    assert relative in _declared_package_data("rapid_mlx", [relative])
+
+
 def test_package_data_ships_every_tracked_license_file():
     tracked = _tracked_license_files()
     assert tracked and ("rapid_mlx", "spec_decode/mtp/LICENSE-MTPLX") in tracked
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     package_data = pyproject["tool"]["setuptools"]["package-data"]
+    declared = {
+        package: _declared_package_data(package, package_data.get(package, []))
+        for package in PACKAGES
+    }
     missing = sorted(
         f"{package}/{relative}"
         for package, relative in tracked
-        if not any(
-            fnmatch.fnmatch(relative, glob) for glob in package_data.get(package, [])
-        )
+        if relative not in declared[package]
     )
     assert not missing, (
         "Tracked license files missing from package-data:\n" + "\n".join(missing)
