@@ -915,6 +915,10 @@ def _qwen36_text_arrays_cache_type() -> type:
         UpstreamVLMCompatArraysCache,
         VendoredVLMCompatArraysCache,
     ):
+        # Keep B=1 requests on singleton caches: a 1-row BatchKVCache makes
+        # the shared language module extract/merge a row on every token.
+        _rapid_native_batch_surface = True
+
         def update_window(self, index, source, width, *, lengths=None):
             width = int(width)
             length = source.shape[1] - width

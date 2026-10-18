@@ -33,7 +33,8 @@ What
   codex MAJOR on #1874).
 
 Only exact ``KVCache`` / ``RotatingKVCache`` layers (and layers that already
-carry native batch surfaces, e.g. hybrid ``ArraysCache``) pass through.
+carry native batch surfaces from ``mlx_lm`` or explicitly opt in via
+``_rapid_native_batch_surface``, e.g. hybrid ``ArraysCache``) pass through.
 Subclasses are rejected even when they LOOK batch-capable: once instances
 of the base classes can carry the singleton surface, a duck-type probe
 cannot tell a native batch cache from an inherited shim, and
@@ -105,12 +106,16 @@ def _is_singleton_passthrough_layer(cache_obj: Any) -> bool:
         # BLOCKING on #1874).
         return False
     # Layers with native batch surfaces (hybrid ArraysCache/MambaCache)
-    # already store B=1-leading state and need no conversion.
+    # already store B=1-leading state and need no conversion. External
+    # native implementations can opt in with a class-level marker.
     return (
         hasattr(cache_obj, "filter")
         and hasattr(cache_obj, "extract")
         and hasattr(cache_obj, "extend")
-        and type(cache_obj).__module__.startswith("mlx_lm.")
+        and (
+            type(cache_obj).__module__.startswith("mlx_lm.")
+            or getattr(type(cache_obj), "_rapid_native_batch_surface", False)
+        )
     )
 
 

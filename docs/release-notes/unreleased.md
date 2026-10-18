@@ -5,8 +5,6 @@
 
 ## Highlights
 
-- **Faster text decode on multimodal Qwen MoE models**: Qwen3.5/3.6-family MoE checkpoints on the default vision-capable serving lane now receive the same MoE gate+up fusion as text-only serving.
-
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.
 
 - **Local web pages work from `localhost` and `127.0.0.1` alike**: a page served from `http://localhost:<port>` can call the server on the same port even when it is addressed as `127.0.0.1` or `[::1]`; other origins stay blocked.
@@ -28,3 +26,4 @@
 - **Leaner Desktop app bundle**: the app now ships only the math font it renders equations with, trimming about 6 MB from the installed app.
 - **MTP defaults work with copied model caches**: aliases can resolve a sole cached snapshot without `refs/main`; unavailable or ambiguous configs now explain why plain decode is used.
 - **Packaged license notices**: installed packages now include the license and notice files for the vendored speculative-decoding (MTP) code and the MiniCPM-V 4.7 vision model code.
+- **Faster text decode on multimodal Qwen MoE models**: text-only requests on the default vision-capable lane of multimodal Qwen3.6-35B-A3B-class MoE checkpoints now keep single-request caches and receive MoE gate+up fusion. They no longer run slower than `--no-mllm`.

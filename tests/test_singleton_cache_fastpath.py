@@ -118,6 +118,43 @@ def test_foreign_object_excluded():
     assert _is_singleton_passthrough_layer(_NotACache()) is False
 
 
+@pytest.mark.parametrize("base", [KVCache, RotatingKVCache])
+def test_marked_kvcache_subclass_still_excluded(base):
+    class _MarkedCache(base):
+        _rapid_native_batch_surface = True
+
+        def filter(self, keep):
+            pass
+
+        def extract(self, idx):
+            pass
+
+        def extend(self, other):
+            pass
+
+    kwargs = {"max_size": 64} if base is RotatingKVCache else {}
+    assert _is_singleton_passthrough_layer(_MarkedCache(**kwargs)) is False
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_foreign_batch_surface_requires_marker_and_all_methods(marked):
+    class _ForeignCache:
+        _rapid_native_batch_surface = marked
+
+        def filter(self, keep):
+            pass
+
+        def extract(self, idx):
+            pass
+
+        def extend(self, other):
+            pass
+
+    assert _is_singleton_passthrough_layer(_ForeignCache()) is marked
+    del _ForeignCache.extend
+    assert _is_singleton_passthrough_layer(_ForeignCache()) is False
+
+
 def test_composite_without_own_surface_rejected():
     """codex r2 BLOCKING: a wrapper is not admissible on child
     qualification alone — batch ops run on the WRAPPER, and one without
@@ -420,6 +457,47 @@ def test_merge_caches_single_passthrough_empty_is_identity():
     merged = gen._merge_caches([layers])
     assert merged[0] is layers[0]
     assert merged[1] is layers[1]
+
+
+def test_qwen36_native_text_cache_keeps_singleton_layers():
+    from rapid_mlx.engine.batched import _qwen36_text_arrays_cache_type
+
+    cache_type = _qwen36_text_arrays_cache_type()
+    recurrent = cache_type(size=2)
+    assert _is_singleton_passthrough_layer(recurrent) is True
+
+    gen = importlib.import_module("mlx_lm.generate")
+    attention = KVCache()
+    merged = gen._merge_caches([[attention, recurrent]])
+    assert merged[0] is attention
+    assert type(merged[0]) is KVCache
+    assert type(merged[1]) is cache_type
+    assert callable(merged[1].update_window)
+
+
+def test_qwen36_native_text_cache_join_preserves_recurrent_layer():
+    from mlx_lm.models.cache import BatchKVCache
+
+    from rapid_mlx.engine.batched import _qwen36_text_arrays_cache_type
+
+    gen = importlib.import_module("mlx_lm.generate")
+    cache_type = _qwen36_text_arrays_cache_type()
+
+    def request(value):
+        recurrent = cache_type(size=2)
+        recurrent[0] = mx.full((1, 2, 3), value)
+        recurrent[1] = mx.full((1, 4), value)
+        return gen._merge_caches([[_filled_kv(), recurrent]])
+
+    first, second = request(1), request(2)
+    out = gen._extend_cache(first, second)
+    assert type(out[0]) is BatchKVCache
+    assert out[0].keys.shape[0] == 2
+    assert out[1] is first[1]
+    assert type(out[1]) is cache_type
+    assert out[1][0].shape == (2, 2, 3)
+    assert out[1][0][:, 0, 0].tolist() == [1, 2]
+    assert callable(out[1].update_window)
 
 
 def test_merge_caches_detaches_loaned_prefix_state():
