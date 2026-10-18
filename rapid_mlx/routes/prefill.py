@@ -116,14 +116,12 @@ def _render_inputs(
         if getattr(engine, "preserve_native_tool_format", False):
             decode_inline_tool_call_arguments(messages)
     else:
-        messages, images, videos = extract_multimodal_content(
+        messages, _, _ = extract_multimodal_content(
             cast(list[Message], body.messages),
             preserve_native_format=bool(
                 getattr(engine, "preserve_native_tool_format", False)
             ),
         )
-        if images or videos:
-            raise ValueError("prefill accepts text messages only")
     for message in messages:
         if message["role"] == "developer":
             message["role"] = "system"

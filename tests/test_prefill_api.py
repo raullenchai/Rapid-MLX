@@ -58,6 +58,37 @@ def test_prefill_rejects_media_and_disk_drafts():
         )
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"messages": [{"role": "alien", "content": "hi"}]},
+        {"messages": [{"role": "user", "content": "x" * 500_001}]},
+        {
+            "kind": "prefix",
+            "messages": [{"role": "system", "content": "x"}],
+            "draft_key": "draft",
+        },
+        {
+            "kind": "prefix",
+            "messages": [{"role": "system", "content": "x"}],
+            "allow_disk_cache": True,
+        },
+        {"messages": [{"role": "assistant", "content": "done"}]},
+        {"draft_key": None},
+    ],
+)
+def test_prefill_rejects_unsafe_or_incomplete_shapes(changes):
+    data = {
+        "kind": "draft",
+        "messages": [{"role": "user", "content": "hi"}],
+        "draft_key": "shape",
+        "revision": 1,
+    }
+    data.update(changes)
+    with pytest.raises(ValidationError):
+        api.PrefillRequest(**data)
+
+
 @pytest.mark.asyncio
 async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
     engine = FakeEngine()
@@ -211,6 +242,30 @@ def test_mllm_draft_drops_null_tool_content_like_chat(monkeypatch):
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == {}
 
 
+def test_tool_prompt_without_system_and_no_thinking_override(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(
+            engine=SimpleNamespace(is_mllm=False, preserve_native_tool_format=False),
+            tool_call_parser="qwen3",
+            no_thinking=True,
+        ),
+    )
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "draft"}],
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+        draft_key="no-system",
+        revision=1,
+        enable_thinking=True,
+    )
+    messages, _, thinking = api._render_inputs(body)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == _TOOL_USE_SYSTEM_SUFFIX.strip()
+    assert thinking is False
+
+
 @pytest.mark.asyncio
 async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypatch):
     engine = FakeEngine()
@@ -302,6 +357,101 @@ async def test_context_rejection_happens_before_prefill(monkeypatch):
         await api.prefill(body, ConnectedRequest())
     assert error.value.status_code == 400
     assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_prefill_rejects_unready_and_unmatched_prompt_settings(monkeypatch):
+    engine = FakeEngine()
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}]
+    )
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=False, draining=False, engine=engine),
+    )
+    with pytest.raises(HTTPException) as unavailable:
+        await api.prefill(body, ConnectedRequest())
+    assert unavailable.value.status_code == 503
+
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(
+            ready=True,
+            draining=False,
+            engine=engine,
+            default_reasoning_effort="low",
+        ),
+    )
+    with pytest.raises(HTTPException) as unmatched:
+        await api.prefill(body, ConnectedRequest())
+    assert unmatched.value.status_code == 409
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_prefill_rejects_unrenderable_prefix_and_uncountable_draft(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    prefix = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}]
+    )
+    with pytest.raises(HTTPException) as unrenderable:
+        await api.prefill(prefix, ConnectedRequest())
+    assert unrenderable.value.status_code == 400
+
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: None
+    )
+    draft = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "draft"}],
+        draft_key="uncountable",
+        revision=1,
+    )
+    with pytest.raises(HTTPException) as uncountable:
+        await api.prefill(draft, ConnectedRequest())
+    assert uncountable.value.status_code == 400
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_prefill_limits_overlapping_clients(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    one = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "first"}],
+        draft_key="client-one",
+        revision=1,
+    )
+    two = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "second"}],
+        draft_key="client-two",
+        revision=1,
+    )
+    first = asyncio.create_task(api.prefill(one, ConnectedRequest()))
+    await engine.started.wait()
+    with pytest.raises(HTTPException) as busy:
+        await api.prefill(two, ConnectedRequest())
+    assert busy.value.status_code == 429
+    engine.release.set()
+    await first
 
 
 @pytest.mark.asyncio
