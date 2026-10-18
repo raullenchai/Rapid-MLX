@@ -1002,8 +1002,7 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
     # guard directory would hide agent setup's .zshenv/.zshrc/.zlogin.
     for name in (".profile", ".bash_profile", ".zshenv", ".zprofile", ".zlogin"):
         profile = home / name
-        # Config refresh may create a symlink; never rewrite a file outside
-        # the disposable HOME while installing a guard.
+        # Config refresh may create a symlink; never read through it.
         if profile.is_symlink():
             profile.unlink()
         existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
@@ -1023,7 +1022,11 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
         # A return in sourced content returns to this wrapper, so the PATH
         # restoration still runs before the agent command. exit/exec stop or
         # replace the shell, leaving no subsequent command to launch a GUI.
+        # Unlink before writing: a startup file or saved original may be a
+        # hard link to a file outside the disposable HOME and guard directory.
+        profile.unlink(missing_ok=True)
         if existing:
+            original.unlink(missing_ok=True)
             original.write_text(existing, encoding="utf-8")
             profile.write_text(wrapper, encoding="utf-8")
         else:
@@ -1138,6 +1141,9 @@ def _agent_query(
         else None
     )
     if launch_marker is not None:
+        # This records accidental GUI launches by cooperative agents. A child
+        # able to run arbitrary code can delete its own marker; concealment is
+        # outside the guard's threat model.
         # Never clear a prior attempt: a setup subprocess may reach its shim
         # after setup's check but before this first agent probe.
         if launch_marker.exists():

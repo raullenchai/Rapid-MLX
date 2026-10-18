@@ -249,6 +249,26 @@ def test_shell_guard_does_not_follow_profile_symlinks(tmp_path):
     assert not (guard_root / "original-profile.sh").is_symlink()
 
 
+def test_shell_guard_does_not_rewrite_hard_linked_profiles(tmp_path):
+    real_profile = tmp_path / "real-profile"
+    real_profile.write_text("keep real settings\n", encoding="utf-8")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    os.link(real_profile, fake_home / ".profile")
+    guard_root = tmp_path / "guard"
+    guard_root.mkdir()
+    browser = _install_gui_launch_guard(guard_root)
+    os.link(real_profile, guard_root / "original-profile.sh")
+
+    _install_shell_path_guard(browser.parent, fake_home)
+
+    assert real_profile.read_text(encoding="utf-8") == "keep real settings\n"
+    assert (fake_home / ".profile").stat().st_ino != real_profile.stat().st_ino
+    assert (
+        guard_root / "original-profile.sh"
+    ).stat().st_ino != real_profile.stat().st_ino
+
+
 def test_guarded_probe_stops_delayed_descendant_before_guard_cleanup(tmp_path):
     fake_home = tmp_path / "fake-home"
     fake_home.mkdir()
