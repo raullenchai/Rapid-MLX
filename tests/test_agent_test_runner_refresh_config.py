@@ -431,11 +431,15 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
         os.makedirs(home)
         with open(os.path.join(home, ".profile"), "w", encoding="utf-8") as handle:
             handle.write(
-                "export EARLY_OPEN=$(command -v open)\nexport REFRESHED_CONFIG=1\n"
+                "export EARLY_OPEN=$(command -v open)\n"
+                "export REFRESHED_CONFIG=1\n"
+                "PATH=/usr/bin:/bin\nreturn\n"
             )
         with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as handle:
             handle.write(
-                "export ZSH_EARLY_OPEN=$(command -v open)\nexport ZSH_REFRESHED_CONFIG=1\n"
+                "export ZSH_EARLY_OPEN=$(command -v open)\n"
+                "export ZSH_REFRESHED_CONFIG=1\n"
+                "PATH=/usr/bin:/bin\nreturn\n"
             )
 
     def _e2e(*_args, env_overrides=None, **_kwargs):

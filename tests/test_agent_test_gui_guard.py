@@ -226,6 +226,24 @@ def test_login_shell_resolves_launcher_to_guard(tmp_path, shell, launcher):
     assert result.stdout.strip() == str(browser.parent / launcher)
 
 
+def test_shell_guard_does_not_follow_profile_symlinks(tmp_path):
+    real_profile = tmp_path / "real-profile"
+    real_profile.write_text("keep real settings\n", encoding="utf-8")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    (fake_home / ".profile").symlink_to(real_profile)
+    guard_root = tmp_path / "guard"
+    guard_root.mkdir()
+    browser = _install_gui_launch_guard(guard_root)
+    (guard_root / "original-profile.sh").symlink_to(real_profile)
+
+    _install_shell_path_guard(browser.parent, fake_home)
+
+    assert real_profile.read_text(encoding="utf-8") == "keep real settings\n"
+    assert not (fake_home / ".profile").is_symlink()
+    assert not (guard_root / "original-profile.sh").is_symlink()
+
+
 def test_guarded_probe_stops_delayed_descendant_before_guard_cleanup(tmp_path):
     fake_home = tmp_path / "fake-home"
     fake_home.mkdir()

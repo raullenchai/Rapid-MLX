@@ -992,18 +992,32 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
     # guard directory would hide agent setup's .zshenv/.zshrc/.zlogin.
     for name in (".profile", ".bash_profile", ".zshenv", ".zprofile", ".zlogin"):
         profile = home / name
+        # Config refresh may create a symlink; never rewrite a file outside
+        # the disposable HOME while installing a guard.
+        if profile.is_symlink():
+            profile.unlink()
         existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
+        original = shim_dir.parent / f"original-{name[1:]}.sh"
+        if original.is_symlink():
+            original.unlink()
+        source_line = f". {shlex.quote(str(original))}\n"
+        wrapper = script + source_line + script
+        if existing == wrapper and original.exists():
+            continue
+        if existing == script:
+            continue
         # Creating .bash_profile makes Bash skip .profile. Source it when the
         # file is ours so config refresh's .profile exports remain visible.
         if name == ".bash_profile" and not existing:
             existing = '. "$HOME/.profile"\n'
-        # Guard startup commands themselves, then restore the shim if those
-        # commands change PATH before the agent command runs.
-        if not (existing.startswith(script) and existing.endswith(script)):
-            suffix = ("\n" if existing and not existing.endswith("\n") else "") + script
-            profile.write_text(
-                script + existing + (suffix if existing else ""), encoding="utf-8"
-            )
+        # A return in sourced content returns to this wrapper, so the PATH
+        # restoration still runs before the agent command. exit/exec stop or
+        # replace the shell, leaving no subsequent command to launch a GUI.
+        if existing:
+            original.write_text(existing, encoding="utf-8")
+            profile.write_text(wrapper, encoding="utf-8")
+        else:
+            profile.write_text(script, encoding="utf-8")
     return {
         "ZDOTDIR": str(home),
         "BASH_ENV": str(path_script),
@@ -1818,6 +1832,8 @@ class AgentTestRunner:
             )
         # A config refresh can replace the disposable HOME, including its
         # login-shell startup files. Restore those files before agent probes.
+        if isolated_root.is_symlink():
+            isolated_root.unlink()
         isolated_root.mkdir(parents=True, exist_ok=True)
         _install_shell_path_guard(browser_shim.parent, isolated_root)
         if (browser_shim.parent / _GUI_LAUNCH_MARKER).exists():
