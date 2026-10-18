@@ -51,8 +51,11 @@ from ..config.server_config import get_config
 
 logger = logging.getLogger(__name__)
 
-_DRAIN_TOTAL_SECONDS = 30.0
-_DRAIN_IDLE_SECONDS_FALLBACK = 5.0
+# The drain only lets a client still uploading read the 413 instead of a TCP
+# reset. This short bounded grace period cuts stalled clients after 2 s idle
+# and any client after 10 s total, then sends the 413 with Connection: close.
+_DRAIN_TOTAL_SECONDS = 10.0
+_DRAIN_IDLE_SECONDS_MAX = 2.0
 
 
 # Methods that can carry a body large enough to be a DoS surface.
@@ -247,7 +250,11 @@ class RequestBodyLimitMiddleware:
                     advertised = None
                 break
 
-        drain_idle_timeout = receive_timeout or _DRAIN_IDLE_SECONDS_FALLBACK
+        drain_idle_timeout = (
+            min(receive_timeout, _DRAIN_IDLE_SECONDS_MAX)
+            if receive_timeout > 0
+            else _DRAIN_IDLE_SECONDS_MAX
+        )
         if limit > 0 and advertised is not None and advertised > limit:
             expect_continue = any(
                 name.lower() == b"expect" and value.strip().lower() == b"100-continue"

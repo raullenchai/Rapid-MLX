@@ -712,12 +712,37 @@ def test_final_oversized_chunk_needs_no_further_receive():
     assert (b"connection", b"close") not in headers
 
 
-def test_disabled_receive_timeout_uses_bounded_drain_fallback(monkeypatch):
+@pytest.mark.parametrize(
+    ("receive_timeout", "expected_idle"),
+    [(0, 2.0), (-1, 2.0), (0.5, 0.5), (2.0, 2.0), (15.0, 2.0)],
+)
+def test_drain_uses_short_grace_period(monkeypatch, receive_timeout, expected_idle):
+    import rapid_mlx.middleware.body_size as body_size
+    from rapid_mlx.config.server_config import get_config
+
+    get_config().body_receive_timeout_seconds = receive_timeout
+    drain_calls = []
+
+    async def drain(receive, *, idle_timeout, total_budget):
+        drain_calls.append((idle_timeout, total_budget))
+        return False
+
+    monkeypatch.setattr(body_size, "_drain_request_body", drain)
+
+    async def receive():
+        pytest.fail("drain should be replaced")
+
+    headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
+    assert drain_calls == [(expected_idle, 10.0)]
+    assert (b"connection", b"close") in headers
+
+
+def test_disabled_receive_timeout_uses_bounded_drain_max(monkeypatch):
     import rapid_mlx.middleware.body_size as body_size
     from rapid_mlx.config.server_config import get_config
 
     get_config().body_receive_timeout_seconds = 0
-    monkeypatch.setattr(body_size, "_DRAIN_IDLE_SECONDS_FALLBACK", 0.001)
+    monkeypatch.setattr(body_size, "_DRAIN_IDLE_SECONDS_MAX", 0.001)
 
     async def receive():
         await asyncio.Event().wait()
