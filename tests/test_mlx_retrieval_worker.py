@@ -131,3 +131,16 @@ def test_retrieval_cli_defaults_and_override():
     )
     assert args.embedding_max_inputs == 0
     assert args.rerank_max_documents == -1
+
+
+def test_embedding_input_cap_without_model(monkeypatch):
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "embedding_max_inputs", cfg.embedding_max_inputs)
+
+    server.load_embedding_model("", max_inputs=5)
+
+    assert server._embedding_max_inputs == 5
+    assert get_config().embedding_max_inputs == 5

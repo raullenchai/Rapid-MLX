@@ -1824,11 +1824,13 @@ def load_embedding_model(
     global _embedding_engine, _embedding_model_locked
     global _embedding_max_inputs, _embedding_max_length, _embedding_overflow_policy
 
+    if max_inputs is not None:
+        _embedding_max_inputs = max_inputs
+        get_config().embedding_max_inputs = max_inputs
+
     if not model_name:
         return
 
-    if max_inputs is not None:
-        _embedding_max_inputs = max_inputs
     if max_length is not None:
         _embedding_max_length = max_length
     if overflow_policy is not None:
