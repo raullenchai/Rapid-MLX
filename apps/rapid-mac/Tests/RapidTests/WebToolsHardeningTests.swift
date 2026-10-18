@@ -268,7 +268,59 @@ struct WebToolsHardeningTests {
         #expect(ips.isEmpty)
     }
 
-    // MARK: - Weather geocoding overflow
+    // MARK: - Weather geocoding
+
+    @Test("Unresolved simplified place names can be retried in traditional script")
+    func weatherTraditionalNameFallback() async throws {
+        #expect(WeatherTool.traditionalGeocodingName("东京") == "東京")
+        #expect(WeatherTool.traditionalGeocodingName("纽约") == "紐約")
+        #expect(WeatherTool.traditionalGeocodingName("東京") == nil)
+        #expect(WeatherTool.traditionalGeocodingName("Tokyo") == nil)
+
+        let response = Data(#"""
+        {"results":[{"name":"東京","latitude":35.69,"longitude":139.69,
+                     "country":"日本","population":9733276}]}
+        """#.utf8)
+        let hit = WeatherTool.parseGeocodingResponse(
+            response, location: "東京", qualifiers: ["日本"]
+        )
+        #expect(hit?.name == "東京")
+        #expect(hit?.country == "日本")
+        let unresolved = WeatherTool.unresolvedPlaceResult(location: "unknown place")
+        #expect(unresolved.isError)
+        #expect(unresolved.content.contains("could not uniquely identify"))
+
+        let ambiguous = Data(#"""
+        {"results":[
+          {"name":"东京","latitude":32.0,"longitude":119.0,"country":"中国"},
+          {"name":"东京","latitude":30.0,"longitude":120.0,"country":"中国"}
+        ]}
+        """#.utf8)
+        let resolved = try await WeatherTool.geocode(
+            location: "东京", country: nil, admin1: nil
+        ) { request in
+            let components = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false))
+            let name = components.queryItems?.first(where: { $0.name == "name" })?.value
+            let body: Data
+            switch name {
+            case "东京": body = ambiguous
+            case "東京": body = response
+            default: body = Data("{}".utf8)
+            }
+            let http = try #require(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            ))
+            return (body, http)
+        }
+        #expect(resolved?.name == "東京")
+        #expect(resolved?.country == "日本")
+
+        let qualified = WeatherTool.parseGeocodingResponse(
+            Data(#"{"results":[{"name":"紐約","latitude":40.7,"longitude":-74.0,"country":"美國","country_code":"US","admin1":"紐約州","population":8000000}]}"#.utf8),
+            location: "紐約", qualifiers: ["纽约州"]
+        )
+        #expect(qualified?.admin1 == "紐約州")
+    }
 
     @Test("An Int.max population in untrusted geocoding JSON doesn't trap")
     func weatherGeocodingPopulationOverflowIsSafe() {

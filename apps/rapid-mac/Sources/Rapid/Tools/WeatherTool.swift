@@ -62,11 +62,7 @@ enum WeatherTool {
                 admin1: cleaned(args.admin1)
             )
             guard let hit = geo else {
-                return ToolCallResult(
-                    toolCallID: "",
-                    content: "\(toolName): could not uniquely identify \"\(location)\". Add a country or state/province and try again.",
-                    isError: false
-                )
+                return unresolvedPlaceResult(location: location)
             }
             let weather = try await fetchCurrentWeather(lat: hit.latitude, lon: hit.longitude, imperial: imperial)
             let tempUnit = imperial ? "°F" : "°C"
@@ -86,6 +82,14 @@ enum WeatherTool {
                 isError: true
             )
         }
+    }
+
+    static func unresolvedPlaceResult(location: String) -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: "",
+            content: "weather: could not uniquely identify \"\(location)\". Add a country or state/province and try again.",
+            isError: true
+        )
     }
 
     // MARK: - Geocoding
@@ -110,22 +114,54 @@ enum WeatherTool {
         }
     }
 
-    static func geocode(location: String, country: String?, admin1: String?) async throws -> GeoHit? {
+    typealias GeocodingLoader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    static func geocode(
+        location: String,
+        country: String?,
+        admin1: String?,
+        load: @escaping GeocodingLoader = { try await cappedData(for: $0) }
+    ) async throws -> GeoHit? {
         let query = geocodingQuery(location: location, country: country, admin1: admin1)
-        guard !query.name.isEmpty, let url = geocodingURL(location: query.name) else {
+        guard !query.name.isEmpty else {
+            throw NSError(domain: "WeatherTool", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not build geocoding URL"])
+        }
+        if let hit = try await geocodingHit(name: query.name, qualifiers: query.qualifiers, load: load) {
+            return hit
+        }
+        // The provider indexes some Chinese place names only under their
+        // traditional spelling. Retry that spelling only after the original
+        // name was unresolved, keeping explicit country/state qualifiers.
+        guard let alternate = traditionalGeocodingName(query.name) else { return nil }
+        return try await geocodingHit(name: alternate, qualifiers: query.qualifiers, load: load)
+    }
+
+    private static func geocodingHit(
+        name: String,
+        qualifiers: [String],
+        load: GeocodingLoader
+    ) async throws -> GeoHit? {
+        guard let url = geocodingURL(location: name) else {
             throw NSError(domain: "WeatherTool", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not build geocoding URL"])
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
-        let (data, response) = try await cappedData(for: request)
+        let (data, response) = try await load(request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "WeatherTool", code: 2, userInfo: [NSLocalizedDescriptionKey: "geocoding HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)"])
         }
         return parseGeocodingResponse(
             data,
-            location: query.name,
-            qualifiers: query.qualifiers
+            location: name,
+            qualifiers: qualifiers
         )
+    }
+
+    static func traditionalGeocodingName(_ name: String) -> String? {
+        guard let traditional = name.applyingTransform(
+            StringTransform(rawValue: "Hans-Hant"), reverse: false
+        ), traditional != name else { return nil }
+        return traditional
     }
 
     static func geocodingURL(location: String) -> URL? {
@@ -165,7 +201,8 @@ enum WeatherTool {
             let key = matchKey(qualifier)
             guard !key.isEmpty else { return nil }
             let countryCodes = countryCodes(for: qualifier).map(matchKey)
-            return Set([key] + countryCodes)
+            let alternate = traditionalGeocodingName(qualifier).map(matchKey)
+            return Set([key] + countryCodes + [alternate].compactMap { $0 })
         }
         let matches = candidates.filter { candidate in
             guard matchKey(candidate.name) == requestedName else { return false }
