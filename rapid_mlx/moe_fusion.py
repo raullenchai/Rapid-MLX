@@ -26,10 +26,15 @@ are freed layer-by-layer to bound the transient. Instances whose
 gate/up pair fails the structural checks are left untouched. Set
 ``RAPID_MLX_MOE_GATE_UP_FUSION=0`` to disable. The extended mlx-vlm
 call contract requires explicit ``extended_call_contract=True`` qualification.
+Its short blocks are byte-identical to stock's projection and combination:
+reshape the fused rows to ``[2E, N, Kpacked]`` and double expert indices so
+stock's Metal kernel reads gate at ``2e`` and up at ``2e+1``. Offset views
+supply those halves without per-call weight copies or duplicate resident weights.
 """
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import logging
 import os
@@ -108,12 +113,31 @@ def _switch_layer_families(*, extended_call_contract=False):
                 combine = getattr(family[1], "_combine", None)
                 block_size = getattr(linear, "DECODE_BLOCK_SIZE", None)
                 tokenwise = getattr(linear, "tokenwise", None)
+                fast_ops = sys.modules.get("mlx_vlm.models.fast_ops")
+                verifier = sys.modules.get("mlx_vlm.models.quantized_verifier")
+                try:
+                    if fast_ops is None:
+                        fast_ops = importlib.import_module("mlx_vlm.models.fast_ops")
+                    if verifier is None:
+                        verifier = importlib.import_module(
+                            "mlx_vlm.models.quantized_verifier"
+                        )
+                except ImportError:
+                    pass
+                exact_helpers = (
+                    getattr(fast_ops, "_affine_switch_gate_up_kernel", None),
+                    getattr(fast_ops, "exact_affine_moe_down", None),
+                    getattr(verifier, "exact_quantized_moe_hc_expand", None),
+                    getattr(verifier, "exact_quantized_selected_linear", None),
+                    getattr(verifier, "supports_quantization", None),
+                )
                 compatible = (
-                    callable(combine)
+                    all(callable(helper) for helper in exact_helpers)
+                    and callable(combine)
                     and isinstance(block_size, int)
                     and callable(tokenwise)
                 )
-                helpers = (combine, block_size, tokenwise)
+                helpers = (combine, block_size, tokenwise, family[0], *exact_helpers)
             if compatible and all(
                 family[1] is not existing[1] for existing in families
             ):
@@ -204,14 +228,145 @@ def _make_fused_call(orig_call, gather_sort, scatter_unsort):
 
 
 def _make_extended_fused_call(orig_call, gather_sort, scatter_unsort, helpers):
-    combine, block_size, tokenwise = helpers
+    (
+        combine,
+        block_size,
+        tokenwise,
+        quantized_cls,
+        gate_up_kernel,
+        exact_affine_moe_down,
+        exact_quantized_moe_hc_expand,
+        exact_quantized_selected_linear,
+        supports_quantization,
+    ) = helpers
     routed_call = _make_fused_call(orig_call, gather_sort, scatter_unsort)
+
+    def short_block_gate_up(linear, x, indices):
+        # Match stock's affine eligibility on the fused container. Unlike
+        # slicing each expert's half, the 2E reshape and offset slices below
+        # remain row-contiguous, so metal_kernel need not copy any weights.
+        affine = (
+            mx.metal.is_available()
+            and mx.default_device() == mx.gpu
+            and x.ndim == 3
+            and x.shape[0] >= 1
+            and x.shape[1] > 1
+            and indices.ndim == 3
+            and indices.shape[:2] == x.shape[:2]
+            and x.dtype in (mx.bfloat16, mx.float16)
+            and isinstance(linear, quantized_cls)
+            and linear.mode == "affine"
+            and linear.bits in (4, 5)
+            and linear.biases is not None
+            and "bias" not in linear
+            and linear.scales.dtype == x.dtype
+            and linear.biases.dtype == x.dtype
+            and x.shape[-1] == linear.input_dims
+            and x.shape[-1] % 512 == 0
+            and (linear.weight.shape[1] // 2) % 8 == 0
+            and linear.group_size % 16 == 0
+        )
+        if affine:
+            batch, length, k_size = x.shape
+            top_k = indices.shape[-1]
+            n_size = linear.weight.shape[1] // 2
+            x = mx.contiguous(x)
+            indices = mx.contiguous(indices.astype(mx.int32))
+            if batch == 1:
+                # Expert e's gate/up become virtual experts 2e and 2e+1.
+                views = [
+                    array.reshape(2 * array.shape[0], n_size, array.shape[-1])
+                    for array in (linear.weight, linear.scales, linear.biases)
+                ]
+                gate_w, gate_s, gate_b = [array[:-1] for array in views]
+                up_w, up_s, up_b = [array[1:] for array in views]
+                kernel = gate_up_kernel(
+                    linear.bits,
+                    x.dtype,
+                    length,
+                    k_size,
+                    n_size,
+                    top_k,
+                    linear.group_size,
+                )
+                return kernel(
+                    inputs=[
+                        x,
+                        mx.contiguous((indices * 2).astype(mx.int32)),
+                        up_w,
+                        up_s,
+                        up_b,
+                        gate_w,
+                        gate_s,
+                        gate_b,
+                    ],
+                    template=[
+                        ("T", x.dtype),
+                        ("VERIFY_T", int(length)),
+                        ("K_SIZE", int(k_size)),
+                        ("N_SIZE", int(n_size)),
+                        ("TOP_K", int(top_k)),
+                        ("GROUP_SIZE", int(linear.group_size)),
+                    ],
+                    grid=(32, 2 * (n_size // 8), batch * length * top_k),
+                    threadgroup=(32, 2, 1),
+                    output_shapes=[
+                        (batch, length, top_k, n_size),
+                        (batch, length, top_k, n_size),
+                    ],
+                    output_dtypes=[x.dtype, x.dtype],
+                )
+        # Stock's batch>1 affine path and generic exact quantized path both
+        # use unsorted gather_qmm. Fuse those two projections into one.
+        if affine or (
+            supports_quantization(linear)
+            and isinstance(linear, quantized_cls)
+            and x.ndim == 3
+            and indices.ndim == 3
+            and indices.shape[:2] == x.shape[:2]
+            and x.shape[-1] == linear.input_dims
+        ):
+            projected = mx.expand_dims(mx.contiguous(x), (-2, -3))
+            gate, up = mx.split(
+                linear(projected, indices, sorted_indices=False).squeeze(-2),
+                2,
+                axis=-1,
+            )
+            return up, gate
+        return None
 
     def fused_call(self, x, indices, weights=None, shared=None, residual=None):
         if getattr(self, "gate_up_proj", None) is None:
             return orig_call(self, x, indices, weights, shared, residual)
         if not self.training and x.ndim == 3 and 1 < x.shape[1] <= block_size:
-            routed = tokenwise(lambda x, idx: routed_call(self, x, idx), x, indices)
+            routed = None
+            if x.shape[0] * indices.shape[-1] < 64:
+                gate_up = short_block_gate_up(self.gate_up_proj, x, indices)
+                if gate_up is not None:
+                    up, gate = gate_up
+                    activated = self.activation(up, gate)
+                    if residual is not None:
+                        output = exact_quantized_moe_hc_expand(
+                            self.down_proj,
+                            activated,
+                            indices,
+                            weights,
+                            shared,
+                            *residual,
+                        )
+                        if output is not None:
+                            return output
+                    if weights is not None and shared is not None:
+                        output = exact_affine_moe_down(
+                            self.down_proj, activated, indices, weights, shared
+                        )
+                        if output is not None:
+                            return combine(output, None, None, residual)
+                    routed = exact_quantized_selected_linear(
+                        self.down_proj, activated, indices
+                    )
+            if routed is None:
+                routed = tokenwise(lambda x, idx: routed_call(self, x, idx), x, indices)
         else:
             routed = routed_call(self, x, indices)
         return combine(routed, weights, shared, residual)

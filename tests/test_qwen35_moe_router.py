@@ -279,13 +279,14 @@ E, HID, INTER, K = 8, 64, 128, 2
 class TinyVLMMoE(nn.Module):
     """mlx-vlm owns a separate SwitchGLU class family."""
 
-    def __init__(self, n_layers=2, quantize=True):
+    def __init__(self, n_layers=2, quantize=True, *, real_geometry=False, experts=E):
         super().__init__()
         from mlx_vlm.models.switch_layers import SwitchGLU as VLMSwitchGLU
 
-        self.layers = [VLMSwitchGLU(HID, INTER, E) for _ in range(n_layers)]
+        hidden, inter = (512, 512) if real_geometry else (HID, INTER)
+        self.layers = [VLMSwitchGLU(hidden, inter, experts) for _ in range(n_layers)]
         if quantize:
-            nn.quantize(self, group_size=32, bits=4)
+            nn.quantize(self, group_size=64 if real_geometry else 32, bits=4)
 
 
 def _decode_inputs(seed=3, tokens=1):
@@ -351,13 +352,25 @@ class TestExtendedVLMContract:
 
     @pytest.mark.parametrize("quantize", [True, False])
     @pytest.mark.parametrize(
-        "batch,tokens", [(1, 1), (1, 2), (1, 5), (1, 8), (1, 40), (3, 1)]
+        "batch,tokens,real_geometry",
+        [
+            (1, 1, False),
+            (1, 2, False),
+            (1, 5, False),
+            (1, 8, False),
+            (1, 40, False),
+            (3, 1, False),
+            (1, 1, True),
+        ],
     )
     @pytest.mark.parametrize("combine", [False, True])
-    def test_byte_identity(self, quantize, batch, tokens, combine):
-        model = TinyVLMMoE(n_layers=1, quantize=quantize)
+    def test_byte_identity(self, quantize, batch, tokens, real_geometry, combine):
+        model = TinyVLMMoE(n_layers=1, quantize=quantize, real_geometry=real_geometry)
         model.eval()
         x, inds = _decode_inputs(tokens=tokens)
+        if real_geometry:
+            model.set_dtype(mx.bfloat16)
+            x = mx.random.normal((1, tokens, 512)).astype(mx.bfloat16)
         x = mx.repeat(x, batch, axis=0)
         inds = mx.repeat(inds, batch, axis=0)
         weights = mx.softmax(mx.random.normal(inds.shape), axis=-1) if combine else None
@@ -409,7 +422,21 @@ class TestExtendedVLMContract:
         )
 
     @pytest.mark.parametrize(
-        "missing", ["combine", "block_size", "tokenwise", "linear", "contract"]
+        "missing",
+        [
+            "combine",
+            "block_size",
+            "tokenwise",
+            "linear",
+            "contract",
+            "_affine_switch_gate_up_kernel",
+            "exact_affine_moe_down",
+            "exact_quantized_moe_hc_expand",
+            "exact_quantized_selected_linear",
+            "supports_quantization",
+            "fast_import",
+            "verifier_import",
+        ],
     )
     def test_missing_helpers_or_unknown_contract_fail_closed(
         self, monkeypatch, missing
@@ -428,9 +455,182 @@ class TestExtendedVLMContract:
             monkeypatch.setattr(linear, "tokenwise", None)
         elif missing == "linear":
             monkeypatch.delitem(sys.modules, "mlx_vlm.models.linear")
-        else:
+        elif missing == "contract":
             monkeypatch.setattr(
                 VLMSwitchGLU, "__call__", lambda self, x, indices, future: x
             )
+        else:
+            import mlx_vlm.models.fast_ops as fast_ops
+            import mlx_vlm.models.quantized_verifier as verifier
+
+            if missing.endswith("_import"):
+                name = (
+                    "mlx_vlm.models.fast_ops"
+                    if missing == "fast_import"
+                    else "mlx_vlm.models.quantized_verifier"
+                )
+                monkeypatch.delitem(sys.modules, name)
+                original_import = moe_fusion.importlib.import_module
+
+                def rejecting_import(module):
+                    if module == name:
+                        raise ImportError("helper module unavailable")
+                    return original_import(module)
+
+                monkeypatch.setattr(
+                    moe_fusion.importlib, "import_module", rejecting_import
+                )
+            else:
+                module = fast_ops if hasattr(fast_ops, missing) else verifier
+                monkeypatch.setattr(module, missing, None)
         assert moe_fusion.fuse_gate_up(model, extended_call_contract=True) == 0
         assert hasattr(model.layers[0], "gate_proj")
+
+    @pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+    @pytest.mark.parametrize("tokens", [2, 3, 5, 8])
+    @pytest.mark.parametrize("batch", [1, 2])
+    @pytest.mark.parametrize("epilogue", ["selected", "combined", "residual"])
+    def test_real_short_block_byte_identity(self, monkeypatch, tokens, batch, epilogue):
+        import mlx_vlm.models.fast_ops as fast_ops
+        import mlx_vlm.models.quantized_verifier as verifier
+
+        mx.random.seed(4838 + tokens)
+        model = TinyVLMMoE(n_layers=1, real_geometry=True, experts=4)
+        model.set_dtype(mx.bfloat16)
+        model.eval()
+        layer = model.layers[0]
+        x = mx.random.normal((batch, tokens, 512)).astype(mx.bfloat16)
+        # Adjacent experts are distinct; cover both halves including expert 3.
+        first = mx.arange(batch * tokens).reshape(batch, tokens) % 4
+        indices = mx.stack([first, (first + 1) % 4], axis=-1).astype(mx.uint32)
+        weights = shared = residual = None
+        if epilogue != "selected":
+            weights = mx.softmax(mx.random.normal(indices.shape), axis=-1)
+            shared = mx.random.normal(x.shape).astype(x.dtype)
+        if epilogue == "residual":
+            residual = (
+                mx.random.normal((batch, tokens, 4, 512)).astype(x.dtype),
+                mx.random.normal((batch, tokens, 4)),
+                mx.random.normal((batch, tokens, 4, 4)),
+            )
+        stock_gate_up = fast_ops.exact_affine_switch_gate_up
+        stock_results = []
+
+        def stock_spy(*args):
+            result = stock_gate_up(*args)
+            stock_results.append(result)
+            return result
+
+        monkeypatch.setattr(fast_ops, "exact_affine_switch_gate_up", stock_spy)
+        kernel_spy = Mock(wraps=fast_ops._affine_switch_gate_up_kernel)
+        monkeypatch.setattr(fast_ops, "_affine_switch_gate_up_kernel", kernel_spy)
+        helper_name = {
+            "selected": "exact_quantized_selected_linear",
+            "combined": "exact_affine_moe_down",
+            "residual": "exact_quantized_moe_hc_expand",
+        }[epilogue]
+        module = fast_ops if epilogue == "combined" else verifier
+        helper_spy = Mock(wraps=getattr(module, helper_name))
+        monkeypatch.setattr(module, helper_name, helper_spy)
+        stock = layer(x, indices, weights, shared, residual)
+        mx.eval(stock)
+        assert len(stock_results) == 1 and stock_results[0] is not None
+        assert kernel_spy.call_count == (1 if batch == 1 else 0)
+        assert helper_spy.call_count == 1
+        kernel_spy.reset_mock()
+        helper_spy.reset_mock()
+        assert moe_fusion.fuse_gate_up(model, extended_call_contract=True) == 1
+        gather_spy = Mock(wraps=mx.gather_qmm)
+        monkeypatch.setattr(mx, "gather_qmm", gather_spy)
+        fused = layer(x, indices, weights, shared, residual)
+        mx.eval(fused)
+        fused_gathers = [
+            call
+            for call in gather_spy.call_args_list
+            if call.args[1] is layer.gate_up_proj.weight
+        ]
+        assert len(fused_gathers) == (1 if batch > 1 else 0)
+        if fused_gathers:
+            assert fused_gathers[0].kwargs["sorted_indices"] is False
+        assert kernel_spy.call_count == (1 if batch == 1 else 0)
+        assert helper_spy.call_count == 1
+        assert mx.array_equal(stock, fused)
+
+    @pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
+    def test_short_block_has_no_weight_copy_or_duplicate_residency(self):
+        from mlx.utils import tree_flatten
+
+        model = TinyVLMMoE(n_layers=1, real_geometry=True, experts=64)
+        model.set_dtype(mx.bfloat16)
+        model.eval()
+        layer = model.layers[0]
+        mx.eval(model.parameters())
+        original_bytes = sum(
+            array.nbytes
+            for proj in (layer.gate_proj, layer.up_proj)
+            for _, array in tree_flatten(proj.parameters())
+        )
+        half_weight_bytes = layer.gate_proj.weight.nbytes
+        assert moe_fusion.fuse_gate_up(model, extended_call_contract=True) == 1
+        assert not hasattr(layer, "gate_proj") and not hasattr(layer, "up_proj")
+        assert (
+            sum(
+                array.nbytes
+                for _, array in tree_flatten(layer.gate_up_proj.parameters())
+            )
+            == original_bytes
+        )
+        x = mx.random.normal((1, 8, 512)).astype(mx.bfloat16)
+        indices = mx.arange(16).reshape(1, 8, 2).astype(mx.uint32)
+        mx.eval(x, indices, model.parameters())
+        mx.synchronize()
+        mx.clear_cache()
+        baseline = mx.get_active_memory()
+        mx.reset_peak_memory()
+        output = layer(x, indices)
+        mx.eval(output)
+        increase = mx.get_peak_memory() - baseline
+        assert increase < half_weight_bytes // 4, (increase, half_weight_bytes)
+
+    @pytest.mark.parametrize(
+        "fallback", ["generic", "plain", "many_routes", "down_plain"]
+    )
+    def test_short_block_fallbacks(self, monkeypatch, fallback):
+        import mlx_vlm.models.linear as linear
+
+        model = TinyVLMMoE(n_layers=1, quantize=fallback != "plain")
+        model.eval()
+        layer = model.layers[0]
+        if fallback == "down_plain":
+            from mlx_vlm.models.switch_layers import SwitchLinear
+
+            layer.down_proj = SwitchLinear(INTER, HID, E, bias=False)
+        batch = 32 if fallback == "many_routes" else 1
+        x, indices = _decode_inputs(tokens=3)
+        x = mx.repeat(x, batch, axis=0)
+        indices = mx.repeat(indices, batch, axis=0)
+        expected = layer(x, indices)
+        mx.eval(expected)
+        tokenwise_spy = Mock(wraps=linear.tokenwise)
+        monkeypatch.setattr(linear, "tokenwise", tokenwise_spy)
+        assert moe_fusion.fuse_gate_up(model, extended_call_contract=True) == 1
+        gather_spy = Mock(wraps=mx.gather_qmm)
+        monkeypatch.setattr(mx, "gather_qmm", gather_spy)
+        actual = layer(x, indices)
+        mx.eval(actual)
+        assert mx.array_equal(actual, expected)
+        if fallback == "generic":
+            fused_gathers = [
+                call
+                for call in gather_spy.call_args_list
+                if call.args[1] is layer.gate_up_proj.weight
+            ]
+            assert len(fused_gathers) == 1
+            assert fused_gathers[0].kwargs["sorted_indices"] is False
+        assert tokenwise_spy.call_count == (0 if fallback == "generic" else 1)
+
+    def test_helper_modules_resolved_when_not_resident(self, monkeypatch):
+        model = TinyVLMMoE(n_layers=1)
+        monkeypatch.delitem(sys.modules, "mlx_vlm.models.fast_ops")
+        monkeypatch.delitem(sys.modules, "mlx_vlm.models.quantized_verifier")
+        assert moe_fusion.fuse_gate_up(model, extended_call_contract=True) == 1
