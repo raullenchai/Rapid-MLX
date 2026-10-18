@@ -18,4 +18,4 @@ def test_lfm25_24b_alias_profile_and_size() -> None:
     assert profile.supports_spec_decode is False
     assert profile.subfolder is None
     size = model_sizes.size_bytes(profile.hf_path)
-    assert size is not None and size > 0
+    assert size == 13_585_282_965
