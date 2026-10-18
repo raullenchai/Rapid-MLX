@@ -60,9 +60,9 @@ also holds all runner state:
 bin/tart -> ../tart.app/Contents/MacOS/tart   official signed release (Developer ID, notarized)
 bin/common.sh  bin/slot.sh  bin/supervisor.sh  bin/build-golden.sh
 guest/provision.sh      runs inside the VM when the golden image is built
-host.env                MACHINE_ID, SLOTS, VM_CPU, VM_MEM_MB, VM_DISK_GB, MIN_FREE_GB, MC_DIRECT
+host.env                MACHINE_ID, SLOTS, VM_CPU, VM_MEM_MB, VM_DISK_GB, MIN_FREE_GB, MC_DIRECT, KEEP_GOLDEN_PREV
 secrets/                gh-token (+ machinecontrol.token on hosts that query Machine Control directly)
-state/                  per-slot runner ids, Machine Control lease owner
+state/                  per-slot runner ids, Machine Control lease owner, build-golden.lock
 logs/                   supervisor.log, slotN.runner.log, slotN.tart.log, build-golden.log
 tart-home/              TART_HOME (VM images)
 PAUSE                   present = drain
@@ -88,7 +88,14 @@ The supervisor runs one loop per slot. Each loop works like this:
    id goes to `state/slotN.orphans` and is retried on every loop.
 
 On start, a loop destroys its stale VM and runner from before a crash or
-reboot. A VM older than 7 hours is killed.
+reboot. An EXIT trap also destroys a live VM or registration on unexpected
+exit, including before the runner id is persisted; normal TERM cleanup clears
+the state so EXIT does not clean up twice. A VM older than 7 hours is killed.
+
+The LaunchAgent allows 360 s for shutdown. Slots receive TERM in parallel:
+120 s for a deferred job-wait check + 10 s VM stop + 120 s registration removal
+and 110 s margin. Clone, boot probes and delete have no explicit timeout; if
+cleanup is killed, the next start recovers from `state/slotN.runner`.
 
 ## Drain and pause
 
@@ -153,10 +160,29 @@ rm ~/ci-runners/PAUSE
 ```
 
 To change a tool version, edit `guest/provision.sh` (runner and uv versions
-with their SHA-256, Node, Python, Swift).
+with their SHA-256, Node with its pinned archive SHA-256, Python, Swift).
+
+A host-local `state/build-golden.lock` serializes builds with `lockf` (or
+`flock` on other hosts). A concurrent build exits immediately with an error;
+the kernel releases the lock on exit or crash. Without either tool, the build
+logs a warning and proceeds without a lock.
 
 The previous image is kept as `rmx-golden-prev` until the new one is renamed
-into place, so a failed swap never leaves the host without an image.
+into place, so a failed swap never leaves the host without an image. Set
+`KEEP_GOLDEN_PREV=1` in `host.env` or the build environment to keep it after a
+successful swap (default 0). This costs about one golden image's on-disk size,
+check `tart list`: typically ~10–15 GB, up to `VM_DISK_GB=30` GB sparse.
+The next rebuild replaces any existing `-prev` image.
+
+To restore a retained image, pause and wait for slots to drain first:
+
+```bash
+touch ~/ci-runners/PAUSE
+# Wait for tart list to show no rmx-slot* VMs.
+export TART_HOME=~/ci-runners/tart-home
+tart delete rmx-golden && tart rename rmx-golden-prev rmx-golden
+rm ~/ci-runners/PAUSE
+```
 
 The build shuts the guest down from inside, after `sync`. Stopping it from
 outside can lose ext4 delayed-allocation writes, and that left zero-length

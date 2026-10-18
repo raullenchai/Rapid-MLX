@@ -7,10 +7,11 @@ export DEBIAN_FRONTEND=noninteractive
 RUNNER_VERSION="${RUNNER_VERSION:-2.338.0}"
 RUNNER_SHA256="${RUNNER_SHA256:-628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b}"
 NODE_VERSION="${NODE_VERSION:-22.23.2}"
+NODE_SHA256="${NODE_SHA256:-fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8}"
 # Python builds published for setup-python (linux-24.04-arm64). setup-python
 # resolves "3.12" etc. to these toolcache entries without any download.
 TOOLCACHE=/opt/hostedtoolcache
-RUNNER_USER=admin
+RUNNER_USER="admin"
 RUNNER_HOME=/home/$RUNNER_USER/actions-runner
 
 # Boot-time apt activity would race job steps that call apt-get.
@@ -41,7 +42,7 @@ fi
 # use the runner's bundled node.
 if ! /usr/local/bin/node --version 2>/dev/null | grep -q "v$NODE_VERSION"; then
   curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz"
-  curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" | grep " node-v$NODE_VERSION-linux-arm64.tar.xz\$" | sed 's#node-v.*#/tmp/node.tar.xz#' | sha256sum -c -
+  echo "$NODE_SHA256  /tmp/node.tar.xz" | sha256sum -c -
   tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
   rm -f /tmp/node.tar.xz
 fi
@@ -127,4 +128,5 @@ apt-get clean; rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache
 rm -f /home/$RUNNER_USER/.bash_history /root/.bash_history
 journalctl --rotate >/dev/null 2>&1 || true; journalctl --vacuum-time=1s >/dev/null 2>&1 || true
 sync; fstrim -av >/dev/null 2>&1 || true; sync
+# shellcheck disable=SC2012  # Toolcache version directory names contain no whitespace.
 echo "golden provisioned: runner $RUNNER_VERSION, node $NODE_VERSION, python $(ls "$TOOLCACHE/Python" | tr "\n" " ")"

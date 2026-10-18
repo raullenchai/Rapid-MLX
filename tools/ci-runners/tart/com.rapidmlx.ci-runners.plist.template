@@ -8,7 +8,13 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>ExitTimeOut</key><integer>120</integer>
+  <!-- Supervisor TERMs slots in parallel and waits: budget is per slot.
+       Deferred TERM: runner_busy (60s) + delete_runner_if_idle (60s) = 120s.
+       Cleanup: stop (10s) + runner_removed DELETE (60s) + GET (60s) = 130s.
+       120 + 130 + 110s margin = 360s. Clone, boot exec probe and delete have
+       no explicit timeout, so this is not a hard bound on all Tart operations.
+       Cleanup killed anyway is recovered next start from state/slotN.runner. -->
+  <key>ExitTimeOut</key><integer>360</integer>
   <key>ProcessType</key><string>Standard</string>
   <key>WorkingDirectory</key><string>__HOME__/ci-runners</string>
   <key>StandardOutPath</key><string>__HOME__/ci-runners/logs/supervisor.log</string>

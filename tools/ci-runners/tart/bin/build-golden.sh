@@ -5,6 +5,23 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 LOG_TAG="build-golden"
+mkdir -p "$CI_ROOT/state"
+if [ "${RMX_BUILD_GOLDEN_LOCKED:-0}" != 1 ]; then
+  if [ -x /usr/bin/lockf ]; then
+    locker=(/usr/bin/lockf -k -s -t 0)
+  elif command -v flock >/dev/null 2>&1; then
+    locker=(flock -n -E 75)
+  else
+    locker=()
+    log "warning: no lockf or flock; rebuilding without a lock"
+  fi
+  if [ "${#locker[@]}" -gt 0 ]; then
+    status=0
+    "${locker[@]}" "$CI_ROOT/state/build-golden.lock" env RMX_BUILD_GOLDEN_LOCKED=1 /bin/bash "$0" "$@" || status=$?
+    if [ "$status" -eq 75 ]; then log "build lock busy; another golden rebuild is running"; fi
+    exit "$status"
+  fi
+fi
 # Pinned by digest (ubuntu:24.04 as of 2026-10-18); bump deliberately.
 BASE="${BASE:-ghcr.io/cirruslabs/ubuntu@sha256:51b493a05e4bc6f21c5c5052cffc1b26b5cea1d76847f5db10b97da90c16e58c}"
 NEXT="$GOLDEN-next"
@@ -21,6 +38,7 @@ for _ in $(seq 1 90); do "$TART" exec "$NEXT" true >/dev/null 2>&1 && break; sle
 "$TART" exec "$NEXT" true
 
 # Grow the root filesystem into the enlarged disk.
+# shellcheck disable=SC2016  # Variables expand inside the guest.
 "$TART" exec "$NEXT" sudo bash -c 'growpart /dev/vda 2 >/dev/null 2>&1 || true; resize2fs "$(findmnt -no SOURCE /)" >/dev/null 2>&1 || true; df -h /'
 "$TART" exec -i "$NEXT" sudo bash -s < "$CI_ROOT/guest/provision.sh"
 # Flush and power off from inside the guest: an external stop can lose ext4
@@ -51,5 +69,9 @@ if ! "$TART" rename "$NEXT" "$GOLDEN"; then
   "$TART" list --quiet | grep -qx "$PREV" && "$TART" rename "$PREV" "$GOLDEN"
   log "could not swap in $NEXT; kept the previous image"; exit 1
 fi
-"$TART" delete "$PREV" >/dev/null 2>&1 || true
+if [ "${KEEP_GOLDEN_PREV:-0}" = 1 ]; then
+  log "kept previous image $PREV for rollback; next rebuild replaces it"
+else
+  "$TART" delete "$PREV" >/dev/null 2>&1 || true
+fi
 log "golden image $GOLDEN rebuilt from $BASE"

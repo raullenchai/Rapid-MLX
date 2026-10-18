@@ -1,8 +1,10 @@
+# shellcheck disable=SC2034  # Settings are consumed by the sourcing scripts.
 # Shared settings and helpers for the Rapid-MLX tart CI runners.
 # Sourced by supervisor.sh, slot.sh and build-golden.sh. bash 3.2 compatible.
 
 CI_ROOT="${CI_ROOT:-$HOME/ci-runners}"
-# Per-host settings (MACHINE_ID, SLOTS, VM_CPU, VM_MEM_MB, VM_DISK_GB, MC_DIRECT, MIN_FREE_GB).
+# Per-host settings (MACHINE_ID, SLOTS, VM_CPU, VM_MEM_MB, VM_DISK_GB, MC_DIRECT, MIN_FREE_GB, KEEP_GOLDEN_PREV).
+# shellcheck source=/dev/null
 [ -f "$CI_ROOT/host.env" ] && . "$CI_ROOT/host.env"
 MACHINE_ID="${MACHINE_ID:?set MACHINE_ID in host.env}"
 export TART_HOME="${TART_HOME:-$CI_ROOT/tart-home}"
