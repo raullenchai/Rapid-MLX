@@ -116,6 +116,29 @@ struct ChatComposeAccessibilityTests {
         #expect(coordinator.text.wrappedValue == "old draft")
     }
 
+    @Test("A conversation switch keeps an owner's disabled undo registration")
+    func conversationSwitchPreservesOwnerUndoDisable() {
+        let coordinator = editor(identity: UUID(), text: "old draft").makeCoordinator()
+        let view = AutosizingTextView()
+        let delegate = UndoDelegate()
+        view.delegate = delegate
+        view.allowsUndo = true
+        delegate.manager.disableUndoRegistration()
+        view.setMarkedText(
+            "nihao",
+            selectedRange: NSRange(location: 5, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+
+        editor(identity: UUID(), text: "restored draft")
+            .applyConversationIdentity(to: view, coordinator: coordinator)
+
+        #expect(!delegate.manager.isUndoRegistrationEnabled)
+        #expect(view.string == "restored draft")
+        delegate.manager.enableUndoRegistration()
+        #expect(delegate.manager.isUndoRegistrationEnabled)
+    }
+
     @Test("Chat passes conversation identity without replacing the composer")
     func chatComposerPreservesAccessibilityElement() throws {
         let source = try String(

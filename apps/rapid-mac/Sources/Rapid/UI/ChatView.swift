@@ -2941,6 +2941,8 @@ struct ComposeTextEditor: NSViewRepresentable {
         // Run before rebinding the coordinator: AppKit callbacks still reach the
         // old draft binding, whose stale-conversation guard ignores them.
         // Discarding marked text can register another undo action in AppKit.
+        // UndoManager counts nested disable/enable calls, so this balanced
+        // pair leaves an owner's own disabled state intact.
         let undo = view.undoManager
         undo?.disableUndoRegistration()
         defer { undo?.enableUndoRegistration() }
