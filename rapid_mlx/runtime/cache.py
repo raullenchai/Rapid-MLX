@@ -253,7 +253,7 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> bool:
         d = get_cache_dir()
         with _exclusive_cache_lock(d, operation="save") as acquired:
             if not acquired:
-                return
+                return False
             if should_abort is not None:
                 logger.info(
                     f"[lifespan] Saving prefix cache to {d} "

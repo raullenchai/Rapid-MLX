@@ -7,12 +7,13 @@ import asyncio
 import copy
 import time
 from collections import OrderedDict
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .. import disk_caches
+from ..api.models import Message
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import decode_inline_tool_call_arguments, extract_multimodal_content
 from ..config import get_config
@@ -118,7 +119,7 @@ def _render_inputs(
             decode_inline_tool_call_arguments(messages)
     else:
         messages, images, videos = extract_multimodal_content(
-            body.messages,
+            cast(list[Message], body.messages),
             preserve_native_format=bool(
                 getattr(engine, "preserve_native_tool_format", False)
             ),
@@ -220,7 +221,7 @@ async def prefill(body: PrefillRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.kind == "prefix":
         try:
-            token_ids, _ = cfg.engine._shared_system_tools_prompt(
+            token_ids, _ = cast(Any, cfg.engine)._shared_system_tools_prompt(
                 messages, tools, thinking, None
             )
         except (AttributeError, TypeError, ValueError) as exc:
@@ -238,6 +239,8 @@ async def prefill(body: PrefillRequest, request: Request):
             raise HTTPException(status_code=400, detail="Cannot count draft tokens")
 
     previous = None
+    draft_key = cast(str, body.draft_key)
+    revision = cast(int, body.revision)
     async with _guard:
         now = time.monotonic()
         while (
@@ -246,15 +249,15 @@ async def prefill(body: PrefillRequest, request: Request):
         ):
             _draft_revisions.popitem(last=False)
         if body.kind == "draft":
-            prior = _draft_revisions.get(body.draft_key)
-            if prior is not None and body.revision <= prior[0]:
+            prior = _draft_revisions.get(draft_key)
+            if prior is not None and revision <= prior[0]:
                 raise HTTPException(status_code=409, detail="Draft revision is stale")
         if _active is not None and not _active.done():
-            if body.kind != "draft" or body.draft_key != _active_key:
+            if body.kind != "draft" or draft_key != _active_key:
                 raise HTTPException(
                     status_code=429, detail="A prefill is already running"
                 )
-            if body.revision <= _active_revision:
+            if revision <= _active_revision:
                 raise HTTPException(status_code=409, detail="Draft revision is stale")
             previous = _active
             previous.cancel()
@@ -267,8 +270,8 @@ async def prefill(body: PrefillRequest, request: Request):
         _active_key = body.draft_key
         _active_revision = body.revision if body.revision is not None else -1
         if body.kind == "draft":
-            _draft_revisions[body.draft_key] = (body.revision, now)
-            _draft_revisions.move_to_end(body.draft_key)
+            _draft_revisions[draft_key] = (revision, now)
+            _draft_revisions.move_to_end(draft_key)
             if len(_draft_revisions) > _MAX_REVISION_KEYS:
                 _draft_revisions.popitem(last=False)
 
