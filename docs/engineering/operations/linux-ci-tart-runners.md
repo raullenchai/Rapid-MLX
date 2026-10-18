@@ -191,13 +191,14 @@ commands so `$(id -u)` and `$HOME` expand on the host.
    ```
 
    Only `launchctl print` status 113 (service not found) confirms it has stopped.
-   All other statuses keep polling; on timeout the helper reports the last status.
+   All other statuses keep polling; after 90 s the helper fails and reports the
+   last status.
 
-   On the first upgrade that ships this helper, the old copy does not have it
-   yet. Poll by hand instead:
+   If the host does not have the helper yet, copy it first. It is standalone,
+   so copying it does not affect the supervisor that is exiting:
 
    ```bash
-   ssh "$H" 'while :; do launchctl print gui/$(id -u)/com.rapidmlx.ci-runners >/dev/null 2>&1; rc=$?; [ "$rc" -eq 113 ] && break; sleep 1; done'
+   scp tools/ci-runners/tart/bin/wait-stopped.sh "${H}:ci-runners/bin/"
    ```
 
 4. Install the scripts and render the plist. The repo's `bin/` contains only
