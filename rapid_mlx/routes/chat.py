@@ -398,7 +398,7 @@ def _template_renders_native_xml_tool_call(engine, request, name) -> bool | None
     if len(rendered) != 2 or not rendered[1].startswith(rendered[0]):
         return None
     assistant_render = rendered[1][len(rendered[0]) :]
-    return (
+    return bool(
         assistant_render.rsplit("<tool_call>", 1)[-1]
         .lstrip()
         .startswith(f"<function={name}>")
