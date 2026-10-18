@@ -111,6 +111,62 @@ destroy_vm
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize("active", [True, False], ids=["cleanup", "empty"])
+def test_slot_exit_trap_behavior(tmp_path, active):
+    if not shutil.which("jq"):
+        pytest.skip("jq unavailable")
+    slot = (TART / "bin/slot.sh").read_text()
+    definitions = []
+    for name in ("destroy_vm", "runner_removed", "on_exit"):
+        match = re.search(rf"^{name}\(\) \{{\n.*?^\}}", slot, re.MULTILINE | re.DOTALL)
+        assert match, f"missing {name} definition"
+        definitions.append(match.group())
+    tart = tmp_path / "tart"
+    tart.write_text("#!/bin/bash\nexit 1\n")
+    tart.chmod(0o755)
+    harness = (
+        "\n".join(definitions)
+        + """
+tmp="$1"; VM=test; STATE="$tmp/slot"; TART="$tmp/tart"
+VM_PID=""; EXEC_PID=""; RUNNER_ID=""; resp=""
+delete_runner_if_idle() { printf '%s\\n' "$1" >> "$tmp/deleted"; return 0; }
+trap on_exit EXIT
+"""
+    )
+    if active:
+        harness += """
+sleep 30 >/dev/null 2>&1 &
+VM_PID=$!
+printf '%s\\n' "$VM_PID" > "$tmp/vm.pid"
+EXEC_PID=999999; resp='{"runner":{"id":42}}'
+echo registered > "$STATE.runner"
+exit 3
+"""
+    try:
+        # Match slot.sh: nounset only, so cleanup continues after command failures.
+        result = subprocess.run(
+            ["/bin/bash", "-u", "-c", harness, "test", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == (3 if active else 0), result.stderr
+        if active:
+            assert (tmp_path / "deleted").read_text() == "42\n"
+            assert not (tmp_path / "slot.runner").exists()
+            with pytest.raises(ProcessLookupError):
+                os.kill(int((tmp_path / "vm.pid").read_text()), 0)
+        else:
+            assert not (tmp_path / "deleted").exists()
+    finally:
+        # Also stop the child if a cleanup regression makes an assertion fail.
+        if (tmp_path / "vm.pid").exists():
+            try:
+                os.kill(int((tmp_path / "vm.pid").read_text()), 15)
+            except ProcessLookupError:
+                pass
+
+
 def test_concurrent_build_exits_before_tart(tmp_path):
     lockf = shutil.which("lockf")
     if not lockf or not Path("/usr/bin/lockf").is_file():
