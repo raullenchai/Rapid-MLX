@@ -99,7 +99,9 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     monkeypatch.setattr("builtins.input", lambda _: "What causes tides?")
     monkeypatch.setenv("PATH", "/opt/user-tools:/usr/bin:/bin")
     workspace = (
-        tmp_path / "cache/workspaces" / hashlib.sha256(os.getcwd().encode()).hexdigest()
+        tmp_path
+        / "cache/mini-workspaces"
+        / hashlib.sha256(os.getcwd().encode()).hexdigest()
     )
     (workspace / "config").mkdir(parents=True)
     (workspace / "config/permission.yaml").write_text("native Goose grants\n")
@@ -153,7 +155,11 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
         commands[0][commands[0].index("--provider") + 1]
         == environments[0]["GOOSE_PROVIDER"]
     )
-    assert commands[0][commands[0].index("--with-builtin") + 1] == chat_goose.BUILTINS
+    assert "--with-builtin" not in commands[0]
+    config = (workspace / "config/config.yaml").read_text()
+    assert "developer:\n    type: platform\n    enabled: true" in config
+    assert "extensionmanager:\n    type: platform\n    enabled: true" in config
+    assert "computercontroller:\n    type: builtin\n    enabled: false" in config
     assert "/opt/user-tools" in environments[0]["PATH"]
     assert "WORK_PROXY_BEARER" not in environments[0]
 

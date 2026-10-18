@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import secrets
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,7 +28,29 @@ GOOSE_URL = (
 )
 GOOSE_SHA256 = "feda29744cd4e13f9a5211a968ed47c67fb8fa79647f4d271d92d564998a393c"
 GOOSE_BINARY_SHA256 = "4b8258c24adad9e07957d1dddfc7d965b97883dce2eff64af7e3d3c005655d81"
-BUILTINS = "developer,computercontroller,memory,autovisualiser,tutorial"
+# Goose owns this configuration. Write it only for a new isolated workspace so
+# subsequent changes made through `goose configure` remain in effect.
+MINI_PLATFORM_EXTENSIONS = {
+    "developer": True,
+    "skills": True,
+    "extensionmanager": True,
+    "analyze": False,
+    "apps": False,
+    "summon": False,
+    "tom": False,
+    "todo": False,
+    "chatrecall": False,
+    "scheduler": False,
+    "summarize": False,
+    "codemode": False,
+    "orchestrator": False,
+}
+MINI_BUILTIN_EXTENSIONS = (
+    "computercontroller",
+    "memory",
+    "autovisualiser",
+    "tutorial",
+)
 ASSETS = Path(goose_runtime.__file__).parent
 
 
@@ -202,6 +226,75 @@ def _write_owned(path: Path, content: str) -> None:
     pending.replace(path)
 
 
+def _initialize_mini_extensions(config_dir: Path) -> bool:
+    """Seed Goose's native extension settings once; never replace user edits."""
+    config = config_dir / "config.yaml"
+    if config.exists() or config.is_symlink():
+        return False
+    entries = [
+        f"  {name}:\n    type: platform\n    enabled: {str(enabled).lower()}\n"
+        for name, enabled in MINI_PLATFORM_EXTENSIONS.items()
+    ]
+    entries.extend(
+        f"  {name}:\n    type: builtin\n    enabled: false\n"
+        for name in MINI_BUILTIN_EXTENSIONS
+    )
+    _write_owned(config, "extensions:\n" + "".join(entries))
+    return True
+
+
+class _PrefixWarmup:
+    """Best-effort cancellable prefill while an interactive user is typing."""
+
+    def __init__(self, port: int, model: str, key: str):
+        self.port = port
+        self.model = model
+        self.key = key
+        self.cancelled = threading.Event()
+        self.connection: http.client.HTTPConnection | None = None
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        if self.connection is not None:
+            self.connection.close()
+
+    def _run(self) -> None:
+        # Give an immediate user submission priority over speculative work.
+        if self.cancelled.wait(0.35):
+            return
+        try:
+            prefix = json.loads((ASSETS / "mini-prefix.json").read_text())
+            prefix["model"] = self.model
+            prefix["messages"].append({"role": "user", "content": "."})
+            prefix["stream"] = True
+            prefix["max_tokens"] = 1
+            self.connection = http.client.HTTPConnection(
+                "127.0.0.1", self.port, timeout=60
+            )
+            if self.cancelled.is_set():
+                return
+            self.connection.request(
+                "POST",
+                "/v1/chat/completions",
+                json.dumps(prefix),
+                {
+                    "Authorization": "Bearer " + self.key,
+                    "Content-Type": "application/json",
+                },
+            )
+            response = self.connection.getresponse()
+            while not self.cancelled.is_set() and response.read(16384):
+                pass
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        finally:
+            if self.connection is not None:
+                self.connection.close()
+
+
 def _fallback(reason: str) -> bool:
     print(f"  Goose unavailable ({reason}); using built-in chat.", file=sys.stderr)
     return False
@@ -233,7 +326,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         return _fallback("Goose 1.54.0 requires macOS arm64")
 
     root = (
-        _cache_root() / "workspaces" / hashlib.sha256(os.getcwd().encode()).hexdigest()
+        _cache_root()
+        / "mini-workspaces"
+        / hashlib.sha256(os.getcwd().encode()).hexdigest()
     )
     launch_id = secrets.token_hex(8)
     run_root = root / "runs" / launch_id
@@ -248,7 +343,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         run_root,
     ):
         _private_directory(directory)
+    first_mini_launch = _initialize_mini_extensions(root / "config")
     scoped_key = secrets.token_hex(32)
+    search_key = secrets.token_hex(32)
     gate_port = _port()
     upstream_key = os.environ.get("RAPID_MLX_API_KEY", "")
     provider = {
@@ -306,7 +403,11 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         "WORK_PROXY_METRICS_KEY": secrets.token_hex(32),
         "WORK_PROXY_METRICS_MODE": "sequence",
         "WORK_PROXY_CONTRACT_FILE": str(contract_path),
+        "WORK_SEARCH_TOKEN": search_key,
     }
+    for key in ("PARALLEL_API_KEY", "TAVILY_API_KEY"):
+        if os.environ.get(key):
+            gate_env[key] = os.environ[key]
     goose_env = {
         **common,
         "RAPID_LOCAL_WORK_KEY": scoped_key,
@@ -318,8 +419,11 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         "GOOSE_TELEMETRY_ENABLED": "false",
         "GOOSE_DISABLE_KEYRING": "1",
         "WORK_HELPER_OWNERSHIP_TOKEN": secrets.token_hex(16),
+        "WEB_SEARCH_GATE_PORT": str(gate_port),
+        "WEB_SEARCH_GATE_TOKEN": search_key,
     }
     processes: list[subprocess.Popen] = []
+    warmup: _PrefixWarmup | None = None
     try:
         gate = subprocess.Popen(
             [
@@ -340,9 +444,6 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         )
         processes.append(gate)
         _ready(gate_port, gate)
-        # Stock Goose sends its first request directly. An eager prefix
-        # request moves prefill work ahead of the user's prompt and makes
-        # first-launch latency materially worse even when TTFT looks fast.
         if script_mode:
             first_prompt = sys.stdin.read().strip()
             if not first_prompt:
@@ -352,16 +453,29 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
                 "  Goose Chat ready. Use Goose's approval prompts for tool calls.",
                 flush=True,
             )
+            sys.stdout.write("You: ")
+            sys.stdout.flush()
+            if first_mini_launch:
+                warmup = _PrefixWarmup(gate_port, model, scoped_key)
+                warmup.start()
             while True:
                 try:
-                    first_prompt = input("You: ").strip()
+                    first_prompt = input("").strip()
                 except (EOFError, KeyboardInterrupt):
+                    if warmup is not None:
+                        warmup.cancel()
                     print()
                     return True
                 if first_prompt.lower() in {"/exit", "exit", "quit"}:
+                    if warmup is not None:
+                        warmup.cancel()
                     return True
                 if first_prompt:
                     break
+                sys.stdout.write("You: ")
+                sys.stdout.flush()
+        if warmup is not None:
+            warmup.cancel()
         metric_before = _metric_sequence(gate_port, gate_env["WORK_PROXY_METRICS_KEY"])
         command = [
             str(goose),
@@ -370,17 +484,17 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
             provider_name,
             "--model",
             model,
-            "--with-builtin",
-            BUILTINS,
+            "--with-extension",
+            f"rapidweb:{sys.executable} -I -S {ASSETS / 'web_search_mcp.py'}",
             "--output-format",
             args.output_format,
             "--text",
             first_prompt,
         ]
         if not script_mode:
-            command.insert(command.index("--with-builtin"), "--interactive")
+            command.insert(command.index("--output-format"), "--interactive")
         else:
-            command.insert(command.index("--with-builtin"), "--quiet")
+            command.insert(command.index("--output-format"), "--quiet")
         if args.resume:
             command.append("--resume")
         args._goose_pending_prompt = first_prompt

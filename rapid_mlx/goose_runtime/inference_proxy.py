@@ -25,6 +25,7 @@ BEARER = os.environ["WORK_PROXY_BEARER"]
 UPSTREAM_BEARER = os.environ.get("WORK_PROXY_UPSTREAM_BEARER", BEARER)
 BEARER_FILE = os.environ.get("WORK_PROXY_BEARER_FILE", "")
 METRICS_KEY = os.environ.get("WORK_PROXY_METRICS_KEY", "")
+SEARCH_KEY = os.environ.get("WORK_SEARCH_TOKEN", "")
 METRICS_MODE = os.environ.get("WORK_PROXY_METRICS_MODE", "rate")
 CONTRACT_FILE = os.environ.get("WORK_PROXY_CONTRACT_FILE", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -225,6 +226,37 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
 
     def do_POST(self):
+        if self.path == "/web-search" and GOOSE_CHAT:
+            if not SEARCH_KEY or not hmac.compare_digest(
+                self.headers.get("X-Search-Key", ""), SEARCH_KEY
+            ):
+                self.send_error(401)
+                return
+            try:
+                size = int(self.headers.get("Content-Length", ""))
+                if not 0 < size <= 8192:
+                    raise ValueError("Invalid request size")
+                request = json.loads(self.rfile.read(size))
+                if os.path.dirname(__file__) not in sys.path:
+                    sys.path.insert(0, os.path.dirname(__file__))
+                import web_search_mcp
+
+                if request.get("name") == "web_search":
+                    result = web_search_mcp._search(request.get("query", ""))
+                elif request.get("name") == "fetch_page":
+                    result = web_search_mcp._fetch_page(request.get("url", ""))
+                else:
+                    raise ValueError("Unknown search tool")
+                data = json.dumps({"result": result}).encode()
+                self.send_response(200)
+            except (OSError, ValueError, TypeError) as exc:
+                data = json.dumps({"error": str(exc)}).encode()
+                self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path != "/v1/chat/completions":
             self.send_error(404)
             return
