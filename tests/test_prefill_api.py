@@ -1,6 +1,8 @@
 """Output-free prefix and draft warming contracts."""
 
 import asyncio
+import threading
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
@@ -71,6 +73,8 @@ def test_prefill_rejects_media_and_disk_drafts():
         {
             "kind": "prefix",
             "messages": [{"role": "system", "content": "x"}],
+            "draft_key": None,
+            "revision": None,
             "allow_disk_cache": True,
         },
         {"messages": [{"role": "assistant", "content": "done"}]},
@@ -489,4 +493,113 @@ async def test_handler_cancellation_waits_for_engine_cleanup(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await handler
     assert engine.closed == 1
+    assert api._active is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_checkpoint_waits_for_thread(monkeypatch):
+    engine = FakeEngine()
+    engine.release.set()
+    started = threading.Event()
+    finish = threading.Event()
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+
+    def save(_budget):
+        started.set()
+        assert finish.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(api, "save_prefix_cache_to_disk", save)
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}], persist=True
+    )
+    task = asyncio.create_task(api._warm(engine, body))
+    assert await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_successful_prefix_preflight_and_invalid_normalization(monkeypatch):
+    engine = FakeEngine()
+    engine.release.set()
+    engine._shared_system_tools_prompt = lambda *args: ([1, 2, 3], 2)
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(api, "enforce_context_length", lambda *args, **kwargs: None)
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}]
+    )
+    result = await api.prefill(body, ConnectedRequest())
+    assert result["status"] == "prefilled"
+    assert len(engine.calls) == 1
+
+    monkeypatch.setattr(
+        api,
+        "_render_inputs",
+        lambda _body: (_ for _ in ()).throw(ValueError("bad history")),
+    )
+    with pytest.raises(HTTPException) as invalid:
+        await api.prefill(body, ConnectedRequest())
+    assert invalid.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_revision_window_expires_and_evicts_old_keys(monkeypatch):
+    engine = FakeEngine()
+    engine.release.set()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    monkeypatch.setattr(api, "_draft_revisions", OrderedDict({"expired": (1, -1000.0)}))
+    monkeypatch.setattr(api, "_MAX_REVISION_KEYS", 1)
+    for key in ("fresh-one", "fresh-two"):
+        body = api.PrefillRequest(
+            kind="draft",
+            messages=[{"role": "user", "content": key}],
+            draft_key=key,
+            revision=1,
+        )
+        await api.prefill(body, ConnectedRequest())
+    assert list(api._draft_revisions) == ["fresh-two"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_draft_work(monkeypatch):
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "unsent"}],
+        draft_key="disconnect",
+        revision=1,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await api.prefill(body, DisconnectedRequest())
     assert api._active is None
