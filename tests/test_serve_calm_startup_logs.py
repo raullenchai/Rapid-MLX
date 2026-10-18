@@ -26,7 +26,7 @@ import threading
 from contextlib import redirect_stdout
 
 
-def _stub_config_and_cache_dir(monkeypatch, *, entries: int = 1):
+def _stub_config_and_cache_dir(monkeypatch, tmp_path, *, entries: int = 1):
     """Wire the module's ``get_config``/``get_cache_dir`` to stub surfaces so
     ``load_prefix_cache_from_disk`` runs without touching the real cache dir.
 
@@ -44,16 +44,19 @@ def _stub_config_and_cache_dir(monkeypatch, *, entries: int = 1):
     class _Config:
         engine = _StubEngine()
 
+    cache_dir = str(tmp_path / "calm-cache")
     monkeypatch.setattr(cache_mod, "get_config", lambda: _Config())
-    monkeypatch.setattr(cache_mod, "get_cache_dir", lambda: "/tmp/calm-cache")
-    return cache_mod
+    monkeypatch.setattr(cache_mod, "get_cache_dir", lambda: cache_dir)
+    return cache_mod, cache_dir
 
 
 def _info_records(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
 
 
-def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, caplog):
+def test_post_ready_prefix_cache_load_lines_are_debug_not_info(
+    monkeypatch, caplog, tmp_path
+):
     """The background prefix-cache auto-load must NOT emit at INFO.
 
     #2356: ``server._deferred_load_prefix_cache`` schedules this load AFTER
@@ -62,7 +65,7 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
     after the connect card and pushed it off the terminal. They are warm-start
     detail, so they move to DEBUG.
     """
-    cache_mod = _stub_config_and_cache_dir(monkeypatch)
+    cache_mod, cache_dir = _stub_config_and_cache_dir(monkeypatch, tmp_path)
 
     with caplog.at_level(logging.INFO):
         cache_mod.load_prefix_cache_from_disk()
@@ -80,13 +83,15 @@ def test_post_ready_prefix_cache_load_lines_are_debug_not_info(monkeypatch, capl
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         cache_mod.load_prefix_cache_from_disk()
-    assert "Loading prefix cache from /tmp/calm-cache" in caplog.text
+    assert f"Loading prefix cache from {cache_dir}" in caplog.text
     assert "Loaded 1 prefix cache entries" in caplog.text
 
 
-def test_post_ready_prefix_cache_no_entries_branch_is_debug(monkeypatch, caplog):
+def test_post_ready_prefix_cache_no_entries_branch_is_debug(
+    monkeypatch, caplog, tmp_path
+):
     """The ``No prefix cache entries found on disk`` branch is DEBUG too."""
-    cache_mod = _stub_config_and_cache_dir(monkeypatch, entries=0)
+    cache_mod, _ = _stub_config_and_cache_dir(monkeypatch, tmp_path, entries=0)
 
     with caplog.at_level(logging.INFO):
         cache_mod.load_prefix_cache_from_disk()
