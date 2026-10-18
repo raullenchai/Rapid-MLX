@@ -1899,11 +1899,11 @@ class BatchedEngine(BaseEngine):
             instance = MLXMultimodalLM(
                 self._model_name,
                 trust_remote_code=self._trust_remote_code,
-                spec_decode=(
-                    "auto"
-                    if self._force_spec_decode
-                    else getattr(self._scheduler_config, "spec_decode", "none")
-                ),
+            )
+            instance.spec_decode = (
+                "auto"
+                if getattr(self, "_force_spec_decode", False)
+                else getattr(self._scheduler_config, "spec_decode", "none")
             )
             instance.load()
             # Model constructors create random, lazy placeholder weights

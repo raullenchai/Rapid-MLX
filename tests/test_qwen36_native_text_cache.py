@@ -633,13 +633,13 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     loader_modes = []
 
     class _FakeMultimodalLM:
-        def __init__(self, *_args, **_kwargs):
-            loader_modes.append(_kwargs["spec_decode"])
+        def __init__(self, model_name, trust_remote_code=True):
             self.model = SimpleNamespace(language_model=language_model)
             self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
             self.config = {"model_type": config_model_type}
 
         def load(self):
+            loader_modes.append(self.spec_decode)
             return None
 
     class _FakeMLLMScheduler:
