@@ -9,7 +9,7 @@ usage() {
 [ "$#" -le 1 ] || usage
 timeout=${1-90}
 case "$timeout" in
-  ''|*[!0-9]*) usage ;;
+  ''|*[!0-9]*|??????*) usage ;;  # digits only, at most 5
 esac
 
 LABEL=${LABEL:-com.rapidmlx.ci-runners}

@@ -110,8 +110,9 @@ def test_wait_stopped_launchctl_error(fake_launchctl):
     assert "last launchctl status 1" in result.stderr
 
 
-def test_wait_stopped_invalid_timeout(fake_launchctl):
-    result = run_wait_stopped(fake_launchctl, "abc")
+@pytest.mark.parametrize("timeout", ["abc", "", "100000", "99999999999999999999"])
+def test_wait_stopped_invalid_timeout(fake_launchctl, timeout):
+    result = run_wait_stopped(fake_launchctl, timeout)
     assert result.returncode == 2
     assert "Usage:" in result.stderr
     assert not Path(fake_launchctl["CALLS"]).exists()
