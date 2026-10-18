@@ -2637,6 +2637,7 @@ final class ChatViewModel {
         // finish with a tools-disabled answer that states the uncertainty.
         var unreadableToolRequestCount = 0
         var forceUnreadableToolFallback = false
+        var emptyEarlyToolRetryUsed = false
         // The confabulated draft we are replacing, kept until the correction
         // round produces a usable answer. Restored if the retry stream fails,
         // is cancelled, or comes back empty — a wrong-but-present answer beats
@@ -2812,6 +2813,23 @@ final class ChatViewModel {
             )
             switch outcome {
             case .terminal:
+                // The server may stop a looping sample before the token
+                // limit with no visible output. One fresh sample can recover
+                // the current-info turn without hiding a real budget limit.
+                if epoch == conversationEpoch,
+                   !Task.isCancelled,
+                   !emptyEarlyToolRetryUsed,
+                   !definitions.isEmpty,
+                   !forceUnreadableToolFallback,
+                   let empty = currentMessage(index: currentPlaceholder),
+                   empty.status == .failed,
+                   empty.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   empty.errorMessage?.hasPrefix("The model stopped before writing an answer.") == true
+                {
+                    emptyEarlyToolRetryUsed = true
+                    prepareUnreadableToolRetry(at: currentPlaceholder, epoch: epoch)
+                    continue
+                }
                 // The engine returned tool-shaped content but no structured
                 // call. A fresh sample can recover a transient malformed
                 // request; a second miss gets one tools-disabled answer so
