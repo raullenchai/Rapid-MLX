@@ -252,7 +252,7 @@ private final class RecoveryToolRegistry: ToolRegistry {
 
     var definitions: [ToolDefinition] {
         [ToolDefinition(
-            name: "lookup",
+            name: "weather",
             description: "Look up a current result",
             parameters: .object(["type": .string("object")])
         )]
@@ -334,14 +334,14 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             choice = ["delta": ["content": ""], "finish_reason": "length"]
         } else if number == 1 {
             choice = [
-                "delta": ["content": "<tool_call>{\"name\":\"lookup\",\"arguments\":{"],
+                "delta": ["content": "<tool_call>{\"name\":\"weather\",\"arguments\":{"],
                 "finish_reason": "stop"
             ]
         } else if number == 2 && !config.recoverOnSecondRequest {
             choice = [
                 "delta": [
                     "content": config.secondContent
-                        ?? "<tool_call>{\"name\":\"lookup\",\"arguments\":{",
+                        ?? "<tool_call>{\"name\":\"weather\",\"arguments\":{",
                     "reasoning_content": config.secondReasoning ?? ""
                 ],
                 "finish_reason": "stop"
@@ -350,7 +350,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             choice = [
                 "delta": ["tool_calls": [[
                     "index": 0, "id": "call_recovered", "type": "function",
-                    "function": ["name": "lookup", "arguments": "{}"]
+                    "function": ["name": "weather", "arguments": "{}"]
                 ]]],
                 "finish_reason": "tool_calls"
             ]
