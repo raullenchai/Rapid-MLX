@@ -414,6 +414,58 @@ def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
     plain_chat.assert_not_called()
 
 
+def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
+    import shutil
+    import subprocess
+    import sys
+
+    profile = replace(
+        _make_profile("opencode", "yaml"),
+        testing=AgentTestingSpec(binary="opencode", query_cmd="opencode {query}"),
+    )
+    seen = []
+
+    def _setup(*_args, **_kwargs):
+        home = os.environ["HOME"]
+        shutil.rmtree(home)
+        os.makedirs(home)
+        with open(os.path.join(home, ".profile"), "w", encoding="utf-8") as handle:
+            handle.write("export REFRESHED_CONFIG=1\n")
+
+    def _e2e(*_args, env_overrides=None, **_kwargs):
+        env = os.environ | env_overrides
+        shell = "/bin/sh" if sys.platform == "darwin" else "/bin/bash"
+        result = subprocess.run(
+            [shell, "-lc", "command -v open; printf '%s' \"$REFRESHED_CONFIG\""],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        seen.append(result.stdout)
+        assert result.stdout.splitlines()[0] == os.path.join(
+            os.path.dirname(env_overrides["BROWSER"]), "open"
+        )
+        assert result.stdout.endswith("1")
+        return TestResult("e2e_chat", TestStatus.PASS)
+
+    from rapid_mlx.agents.testing import TestResult
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_setup),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+        patch("rapid_mlx.agents.testing._test_e2e_chat", side_effect=_e2e),
+    ):
+        AgentTestRunner(profile, model_id="local-model").run()
+
+    assert len(seen) == 1
+
+
 @pytest.mark.parametrize("agent_name", ["hermes", "opencode"])
 def test_setup_probe_stops_delayed_descendant(tmp_path, agent_name):
     import subprocess

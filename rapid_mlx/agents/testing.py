@@ -991,7 +991,10 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
     (shim_dir.parent / ".zprofile").write_text(script, encoding="utf-8")
     # POSIX login sh and login bash read these from HOME; zsh uses ZDOTDIR.
     for name in (".profile", ".bash_profile"):
-        (home / name).write_text(script, encoding="utf-8")
+        profile = home / name
+        existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
+        if script not in existing:
+            profile.write_text(existing + "\n" + script, encoding="utf-8")
     return {
         "ZDOTDIR": str(shim_dir.parent),
         "BASH_ENV": str(path_script),
@@ -1804,6 +1807,10 @@ class AgentTestRunner:
                 self.profile.name,
                 self._redact(str(exc)),
             )
+        # A config refresh can replace the disposable HOME, including its
+        # login-shell startup files. Restore those files before agent probes.
+        isolated_root.mkdir(parents=True, exist_ok=True)
+        _install_shell_path_guard(browser_shim.parent, isolated_root)
         if (browser_shim.parent / _GUI_LAUNCH_MARKER).exists():
             report.results.append(
                 TestResult(
