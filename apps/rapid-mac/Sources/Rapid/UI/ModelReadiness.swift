@@ -769,8 +769,12 @@ struct StartAndSendIntent: Equatable {
         return request.id
     }
 
-    mutating func finishStartAttempt(_ id: UUID) {
+    mutating func finishStartAttempt(_ id: UUID, served: Bool) {
         guard pending?.id == id else { return }
+        guard served else {
+            pending = nil
+            return
+        }
         pending?.startAttemptFinished = true
     }
 

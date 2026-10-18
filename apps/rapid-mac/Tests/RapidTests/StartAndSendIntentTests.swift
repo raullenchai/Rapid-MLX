@@ -51,15 +51,31 @@ struct StartAndSendIntentTests {
             #expect(composer.starts == 1)
             composer.model.composerDraft = attachments ? "" : "edited while starting"
             composer.hasAttachments = attachments
-            composer.model.startAndSendIntent.finishStartAttempt(id)
+            composer.model.startAndSendIntent.finishStartAttempt(id, served: true)
             #expect(composer.observe(.ready(alias: alias)) == .send)
             #expect(composer.sent == [attachments ? "" : "edited while starting"])
             #expect(composer.model.composerDraft == "")
             #expect(composer.observe(.ready(alias: alias)) == .wait)
-            composer.model.startAndSendIntent.finishStartAttempt(id)
+            composer.model.startAndSendIntent.finishStartAttempt(id, served: true)
             #expect(composer.observe(.ready(alias: alias)) == .wait)
             #expect(composer.sent.count == 1)
         }
+    }
+
+    @Test("A failed start cancels without observations and a later ready model does not send")
+    func failedStartWithoutObservations() throws {
+        let composer = Composer()
+        composer.model.composerDraft = "  keep exactly\n"
+        composer.press()
+        let id = try #require(composer.model.startAndSendIntent.pending?.id)
+        // ChatView can be unmounted throughout startup and failure.
+        composer.model.startAndSendIntent.finishStartAttempt(id, served: false)
+        #expect(composer.model.startAndSendIntent.pending == nil)
+        #expect(composer.model.composerDraft == "  keep exactly\n")
+        // A later successful retry from Launch must require a new Send press.
+        #expect(composer.observe(.ready(alias: alias)) == .wait)
+        #expect(composer.sent.isEmpty)
+        #expect(composer.model.composerDraft == "  keep exactly\n")
     }
 
     @Test("Failure and every unsupported readiness cancel without consuming the draft")
@@ -89,13 +105,14 @@ struct StartAndSendIntentTests {
         composer.model.composerDraft = "keep me"
         composer.press()
         let oldID = try #require(composer.model.startAndSendIntent.pending?.id)
-        composer.model.startAndSendIntent.finishStartAttempt(oldID)
+        composer.model.startAndSendIntent.finishStartAttempt(oldID, served: true)
         #expect(composer.observe(.needsStart(alias: alias)) == .cancel)
         #expect(composer.observe(.ready(alias: alias)) == .wait)
         #expect(composer.sent.isEmpty)
         #expect(composer.model.composerDraft == "keep me")
         composer.press()
-        composer.model.startAndSendIntent.finishStartAttempt(oldID)
+        composer.model.startAndSendIntent.finishStartAttempt(oldID, served: true)
+        composer.model.startAndSendIntent.finishStartAttempt(oldID, served: false)
         #expect(composer.model.startAndSendIntent.pending?.startAttemptFinished == false)
         #expect(composer.observe(.needsStart(alias: alias)) == .wait)
     }
@@ -112,7 +129,7 @@ struct StartAndSendIntentTests {
         }
         let start = Task {
             let served = await server.ensureServing(alias: alias)
-            composer.model.startAndSendIntent.finishStartAttempt(id)
+            composer.model.startAndSendIntent.finishStartAttempt(id, served: served)
             return served
         }
         while server.pendingMemoryWarning == nil { await Task.yield() }
@@ -122,7 +139,8 @@ struct StartAndSendIntentTests {
         server.cancelPendingMemoryLoad(warning)
         #expect(await start.value == false)
         #expect(server.state == .idle)
-        #expect(composer.observe(.needsStart(alias: alias)) == .cancel)
+        #expect(composer.model.startAndSendIntent.pending == nil)
+        #expect(composer.observe(.needsStart(alias: alias)) == .wait)
         #expect(composer.observe(.ready(alias: alias)) == .wait)
         #expect(composer.sent.isEmpty)
         #expect(composer.model.composerDraft == "keep after cancel")
@@ -209,7 +227,7 @@ struct StartAndSendIntentTests {
         #expect(view.contains("retryEnabled:readiness.sendAllowed"))
         let content = try source("Sources/Rapid/UI/ContentView.swift")
         #expect(content.contains("case.start(lettarget):startModel(target)"))
-        #expect(content.contains("_=awaitserveReadinessModel(target)"))
-        #expect(content.contains("chat.startAndSendIntent.finishStartAttempt(intentID)"))
+        #expect(content.contains("letserved=awaitserveReadinessModel(target)"))
+        #expect(content.contains("chat.startAndSendIntent.finishStartAttempt(intentID,served:served)"))
     }
 }
