@@ -53,6 +53,7 @@ _ANTHROPIC_REMOTE_ENV = (
 # from the child's own prose.
 _EXIT_ERR_PREFIX = "EXIT:"
 _GUI_LAUNCH_MARKER = ".gui-launch-attempted"
+_GUI_LAUNCH_MARKER_ENV = "_AGENT_TEST_GUI_MARKER"
 _GUI_LAUNCH_ERR_PREFIX = "GUI_LAUNCH:"
 
 # Diagnostics may contain normalized or derived request URLs, not just base_url.
@@ -953,14 +954,14 @@ _XDG_BASE_DIRS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _install_gui_launch_guard(home: Path) -> Path:
+def _install_gui_launch_guard(guard_root: Path) -> Path:
     """Refuse PATH launches and browser defaults under the disposable HOME.
 
     An absolute /usr/bin/open or /usr/bin/osascript, an app executable, or a
     native launch API bypasses PATH and BROWSER. These cannot be blocked by
     environment shims; callers must not treat this as an OS sandbox.
     """
-    shim_dir = home / "bin"
+    shim_dir = guard_root / "bin"
     shim_dir.mkdir()
     marker = shim_dir / _GUI_LAUNCH_MARKER
     script = (
@@ -1034,17 +1035,26 @@ def _agent_query(
     child_env.update(env_overrides or {})
     child_env.pop("CFFIXED_USER_HOME", None)
     browser = (env_overrides or {}).get("BROWSER")
-    guarded_browser = Path(browser) if browser else None
+    marker_path = (env_overrides or {}).get(_GUI_LAUNCH_MARKER_ENV)
     launch_marker = (
-        guarded_browser.parent / _GUI_LAUNCH_MARKER
-        if guarded_browser == Path(child_env.get("HOME", "")) / "bin" / "browser"
+        Path(marker_path)
+        if browser
+        and marker_path
+        and Path(marker_path) == Path(browser).parent / _GUI_LAUNCH_MARKER
         else None
     )
     if launch_marker is not None:
         # Foundation ignores HOME when CFFIXED_USER_HOME is absent and uses
         # the account's real home. Pin it to the disposable tree as well.
         child_env["CFFIXED_USER_HOME"] = child_env["HOME"]
-        launch_marker.unlink(missing_ok=True)
+        # Never clear a prior attempt: a setup subprocess may reach its shim
+        # after setup's check but before this first agent probe.
+        if launch_marker.exists():
+            return None, (
+                f"{_GUI_LAUNCH_ERR_PREFIX} agent tried to open a browser or app — "
+                f"sign in to {Path(binary_path).name} normally first, "
+                "then re-run --test"
+            )
     # OpenHands 1.x resolves these explicit paths before HOME and cwd. An
     # inherited value would let an auto-approved test read the operator's
     # settings/MCP servers or run tools in their real workspace.
@@ -1630,10 +1640,16 @@ class AgentTestRunner:
             prefix=f"rapid-mlx-{self.profile.name}-home-"
         )
         isolated_root = Path(isolated_config_home.name)
-        browser_shim = _install_gui_launch_guard(isolated_root)
+        # Keep the shims outside the agent's writable/configurable HOME so
+        # a config refresh that replaces HOME cannot remove the guard.
+        gui_guard_dir = tempfile.TemporaryDirectory(
+            prefix=f"rapid-mlx-{self.profile.name}-gui-"
+        )
+        browser_shim = _install_gui_launch_guard(Path(gui_guard_dir.name))
         guard_env = {
             "PATH": f"{browser_shim.parent}{os.pathsep}{os.environ.get('PATH') or os.defpath}",
             "BROWSER": str(browser_shim),
+            _GUI_LAUNCH_MARKER_ENV: str(browser_shim.parent / _GUI_LAUNCH_MARKER),
             "CFFIXED_USER_HOME": str(isolated_root),
         }
         config_home_env = active_config.home_env
@@ -1716,6 +1732,7 @@ class AgentTestRunner:
                 )
             )
             isolated_config_home.cleanup()
+            gui_guard_dir.cleanup()
             return report
 
         t0 = time.time()
@@ -1916,8 +1933,24 @@ class AgentTestRunner:
         for result in report.results:
             result.name = self._redact(result.name)
             result.message = self._redact(result.message)
+        if (browser_shim.parent / _GUI_LAUNCH_MARKER).exists() and not any(
+            result.message.startswith(_GUI_LAUNCH_ERR_PREFIX)
+            for result in report.results
+        ):
+            report.results.append(
+                TestResult(
+                    "gui_launch",
+                    TestStatus.FAIL,
+                    message=(
+                        "agent tried to open a browser or app — "
+                        f"sign in to {self.profile.display_name} normally first, "
+                        "then re-run --test"
+                    ),
+                )
+            )
         if isolated_config_home is not None:
             isolated_config_home.cleanup()
+        gui_guard_dir.cleanup()
         return report
 
     def _run_specific_tests(self, test_module_name: str) -> list[TestResult]:

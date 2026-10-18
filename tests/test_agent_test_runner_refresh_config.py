@@ -324,18 +324,20 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
         observed["setup_home"] = os.environ["HOME"]
         assert os.environ["CFFIXED_USER_HOME"] == os.environ["HOME"]
         assert os.environ["BROWSER"] == os.path.join(
-            os.environ["HOME"], "bin", "browser"
+            os.path.dirname(os.environ["_AGENT_TEST_GUI_MARKER"]), "browser"
         )
+        assert not os.environ["BROWSER"].startswith(os.environ["HOME"])
         assert os.environ["PATH"].split(os.pathsep)[1:] == os.defpath.split(os.pathsep)
         return "ok"
 
     def _capture_e2e(*_args, env_overrides=None, **_kwargs):
         observed["child_home"] = env_overrides["HOME"]
         assert env_overrides["BROWSER"] == os.path.join(
-            env_overrides["HOME"], "bin", "browser"
+            os.path.dirname(env_overrides["_AGENT_TEST_GUI_MARKER"]), "browser"
         )
-        assert env_overrides["PATH"].split(os.pathsep)[0] == os.path.join(
-            env_overrides["HOME"], "bin"
+        assert not env_overrides["BROWSER"].startswith(env_overrides["HOME"])
+        assert env_overrides["PATH"].split(os.pathsep)[0] == os.path.dirname(
+            env_overrides["BROWSER"]
         )
         assert env_overrides["CFFIXED_USER_HOME"] == env_overrides["HOME"]
         return TestResult("e2e_chat", TestStatus.PASS)
@@ -362,6 +364,7 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     assert os.environ["CFFIXED_USER_HOME"] == real_home
     assert os.environ["BROWSER"] == "/usr/bin/open"
     assert os.environ["PATH"] == real_path
+    assert "_AGENT_TEST_GUI_MARKER" not in os.environ
 
 
 def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
@@ -371,6 +374,9 @@ def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
     observed = []
 
     def _setup(*_args, **_kwargs):
+        import shutil
+
+        shutil.rmtree(os.environ["HOME"])
         observed.append(
             subprocess.run(["open", "https://example.invalid"], check=False)
         )
