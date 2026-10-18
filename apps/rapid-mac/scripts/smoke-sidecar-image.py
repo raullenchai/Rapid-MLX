@@ -59,10 +59,13 @@ def _bound_local_listener() -> socket.socket:
 
 def _request_json(url: str, payload: dict | None, timeout: float) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"} if data else {}
+    if api_key := os.environ.get("RAPID_MLX_API_KEY"):
+        headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"} if data else {},
+        headers=headers,
     )
     # urllib's timeout applies per socket operation. A peer that keeps sending
     # partial bytes can therefore keep json.load() alive forever; the release

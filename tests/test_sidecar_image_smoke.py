@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import socket
 import struct
@@ -80,6 +81,32 @@ def test_bound_listener_holds_port_until_socket_activation_handoff() -> None:
     finally:
         contender.close()
         listener.close()
+
+
+@pytest.mark.parametrize("api_key", [None, "", "test-api-key"])
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [("/health", None), ("/v1/images/generations", {"prompt": "test"})],
+)
+def test_request_json_sends_configured_api_key(
+    monkeypatch, api_key, path, payload
+) -> None:
+    if api_key is None:
+        monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", api_key)
+
+    def fake_urlopen(request, **_kwargs):
+        assert request.get_header("Authorization") == (
+            f"Bearer {api_key}" if api_key else None
+        )
+        response = io.StringIO("{}")
+        response.status = 200
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert _MODULE._request_json(f"http://127.0.0.1{path}", payload, 1) == {}
 
 
 def test_request_deadline_bounds_a_never_finishing_response(monkeypatch) -> None:
