@@ -208,8 +208,7 @@ def _fallback(reason: str) -> bool:
 
 def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     """Return false only when the old REPL should handle this session."""
-    if not sys.stdin.isatty():
-        return _fallback("an interactive terminal is required")
+    script_mode = not sys.stdin.isatty()
     unsupported = []
     if getattr(args, "mcp_config", None):
         unsupported.append("--mcp-config")
@@ -371,26 +370,35 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
                     "Content-Type": "application/json",
                 },
             )
-            print("  Warming Goose Chat prefix …", flush=True)
+            print(
+                "  Warming Goose Chat prefix …",
+                file=sys.stderr if script_mode else sys.stdout,
+                flush=True,
+            )
             try:
                 with urllib.request.urlopen(request, timeout=180) as response:
                     response.read()
             except OSError as exc:
                 print(f"  Prefix warmup skipped: {exc}", file=sys.stderr)
-        print(
-            "  Goose Chat ready. Use Goose's approval prompts for tool calls.",
-            flush=True,
-        )
-        while True:
-            try:
-                first_prompt = input("You: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return True
-            if first_prompt.lower() in {"/exit", "exit", "quit"}:
-                return True
-            if first_prompt:
-                break
+        if script_mode:
+            first_prompt = sys.stdin.read().strip()
+            if not first_prompt:
+                return _fallback("piped chat input is empty")
+        else:
+            print(
+                "  Goose Chat ready. Use Goose's approval prompts for tool calls.",
+                flush=True,
+            )
+            while True:
+                try:
+                    first_prompt = input("You: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return True
+                if first_prompt.lower() in {"/exit", "exit", "quit"}:
+                    return True
+                if first_prompt:
+                    break
         metric_before = _metric_sequence(gate_port, gate_env["WORK_PROXY_METRICS_KEY"])
         command = [
             str(goose),
@@ -399,7 +407,6 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
             provider_name,
             "--model",
             model,
-            "--interactive",
             "--with-builtin",
             BUILTINS,
             "--output-format",
@@ -407,6 +414,8 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
             "--text",
             first_prompt,
         ]
+        if not script_mode:
+            command.insert(command.index("--with-builtin"), "--interactive")
         if args.resume:
             command.append("--resume")
         args._goose_pending_prompt = first_prompt

@@ -274,6 +274,40 @@ def test_early_goose_exit_replays_prompt_in_builtin_chat(tmp_path, monkeypatch, 
     assert capsys.readouterr().err.count("Goose unavailable") == 1
 
 
+def test_piped_stream_json_runs_goose_without_stdout_banner(
+    tmp_path, monkeypatch, capsys
+):
+    binary = tmp_path / "goose"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(chat_goose, "_goose_binary", lambda: binary)
+    monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(chat_goose.sys, "stdin", io.StringIO("Piped prompt\n"))
+    commands = []
+    monkeypatch.setattr(
+        chat_goose, "_run_goose", lambda command, **_: commands.append(command) or 0
+    )
+    args = SimpleNamespace(
+        mcp_config=None,
+        mcp_max_rounds=8,
+        response_timeout=600,
+        context_length=8192,
+        system=None,
+        temperature=0.7,
+        think=False,
+        max_tokens=2048,
+        disable_prefix_cache=True,
+        output_format="stream-json",
+        resume=False,
+    )
+    assert chat_goose.run(
+        args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
+    )
+    assert "--interactive" not in commands[0]
+    assert commands[0][commands[0].index("--text") + 1] == "Piped prompt"
+    assert capsys.readouterr().out == ""
+
+
 @pytest.mark.parametrize(
     ("changes", "reason"),
     [
