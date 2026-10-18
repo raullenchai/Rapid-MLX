@@ -1219,7 +1219,14 @@ struct ContentView: View {
     }
 
     private func startModel(_ target: String) {
-        Task { _ = await serveReadinessModel(target) }
+        let intentID = chat.startAndSendIntent.pending.flatMap { $0.alias == target ? $0.id : nil }
+        Task {
+            _ = await serveReadinessModel(target)
+            // ensureServing waits for its own memory decision and confirmed launch.
+            // Completion while still needsStart therefore means declined/not started;
+            // pendingMemoryWarning alone is unsafe (it disappears during confirmation).
+            if let intentID { chat.startAndSendIntent.finishStartAttempt(intentID) }
+        }
     }
 
     private func serveReadinessModel(_ target: String) async -> Bool {

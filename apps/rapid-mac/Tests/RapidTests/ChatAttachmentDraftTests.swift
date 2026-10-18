@@ -558,7 +558,7 @@ struct ChatAttachmentDraftTests {
         #expect(stripped.contains("InlineNotice(message:attachmentNotice,tone:.error)"))
         #expect(stripped.contains("attachmentDraft.notice=nilphotoCapabilityNotice.present(message,availability:photoAvailability)"))
         #expect(!stripped.contains("attachmentDraft.notice=imageInputUnavailableMessage??"))
-        #expect(stripped.contains(".onChange(of:alias){_,_inphotoCapabilityNotice.dismiss()}"))
+        #expect(stripped.contains(".onChange(of:alias){_,_inviewModel.startAndSendIntent=StartAndSendIntent()photoCapabilityNotice.dismiss()}"))
         #expect(stripped.contains(".onChange(of:photoAvailability){_,availabilityinphotoCapabilityNotice.reconcile(with:availability)}"))
         #expect(stripped.contains(".onChange(of:draft){_,_inphotoCapabilityNotice.dismiss()}"))
         #expect(stripped.contains("guardacknowledgeIfNotReady()else{return}photoCapabilityNotice.dismiss()"))

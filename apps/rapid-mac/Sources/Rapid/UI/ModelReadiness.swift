@@ -35,14 +35,13 @@ import Foundation
 /// conflating them is most of why users could not tell choosing from
 /// downloading from starting.
 ///
-/// ## Sending is gated on ``ready``
+/// ## Sending and Start & Send
 ///
-/// ``sendAllowed`` is true only in ``ready``. This replaces the previous
-/// implicit contract where pressing Send on a cold model silently
-/// triggered a multi-gigabyte download behind an indeterminate spinner.
-/// The trade is deliberate: one extra click (the banner's Start action)
-/// buys the user a visible, cancellable, explicable startup. The draft
-/// is never consumed by a gated send — see ``ChatView.send``.
+/// ``sendAllowed`` remains true only in ``ready``. The composer alone also
+/// offers Start & Send in ``needsStart``: it uses the existing guarded Start
+/// action, then submits the current draft once the same model is ready.
+/// Cancelled or failed starts leave the draft untouched. Models that need
+/// downloading or have unknown availability still require an explicit action.
 ///
 /// Pure and free of SwiftUI so the whole truth table is unit-testable
 /// without standing up a view host or a live subprocess.
@@ -537,6 +536,16 @@ enum ModelReadiness: Equatable {
         }
     }
 
+    /// Only a known, downloaded, stopped model can start from the composer.
+    var startAndSendAlias: String? {
+        if case .needsStart(let alias) = self { return alias }
+        return nil
+    }
+
+    var composerSendTooltip: String {
+        startAndSendAlias == nil ? sendTooltip : String(localized: "Start & Send")
+    }
+
     /// Send-button tooltip. Doubles as the VoiceOver announcement when a
     /// gated send is attempted, so both channels say the same thing.
     var sendTooltip: String {
@@ -736,5 +745,56 @@ enum ModelReadiness: Equatable {
             return FailureDiagnoser.diagnosis(for: kind, modelAlias: failure.alias).message
         }
         return failure.message
+    }
+}
+
+/// Pure intent state; ChatViewModel owns it so rebuilding ChatView cannot
+/// lose an outstanding start or permit a second Send. It never owns drafts.
+struct StartAndSendIntent: Equatable {
+    struct Pending: Equatable {
+        let id: UUID
+        let conversationID: UUID
+        let alias: String
+        var startAttemptFinished = false
+    }
+
+    enum Resolution { case wait, send, cancel }
+    private(set) var pending: Pending?
+
+    @discardableResult
+    mutating func begin(conversationID: UUID, alias: String) -> UUID? {
+        guard pending == nil else { return nil }
+        let request = Pending(id: UUID(), conversationID: conversationID, alias: alias)
+        pending = request
+        return request.id
+    }
+
+    mutating func finishStartAttempt(_ id: UUID) {
+        guard pending?.id == id else { return }
+        pending?.startAttemptFinished = true
+    }
+
+    mutating func resolve(
+        readiness: ModelReadiness, conversationID: UUID, selectedAlias: String,
+        isStreaming: Bool
+    ) -> Resolution {
+        guard let pending else { return .wait }
+        guard pending.conversationID == conversationID, pending.alias == selectedAlias else {
+            self.pending = nil
+            return .cancel
+        }
+        switch readiness {
+        case .ready(let alias) where alias == pending.alias:
+            guard !isStreaming else { return .wait }
+            self.pending = nil // Consume before the caller enters the normal send path.
+            return .send
+        case .starting(let alias, _) where alias == pending.alias:
+            return .wait
+        case .needsStart(let alias) where alias == pending.alias && !pending.startAttemptFinished:
+            return .wait
+        default:
+            self.pending = nil
+            return .cancel
+        }
     }
 }

@@ -128,7 +128,11 @@ final class ChatViewModel {
     /// Identity of the conversation ``messages`` currently holds. A fresh
     /// UUID on launch (opens to an empty "Ask anything"); ``persistActive``
     /// upserts under this id once the user sends.
-    private(set) var activeConversationID = UUID()
+    private(set) var activeConversationID = UUID() {
+        didSet { startAndSendIntent = StartAndSendIntent() }
+    }
+
+    var startAndSendIntent = StartAndSendIntent()
 
     /// User-authored instructions for the open conversation. They are kept
     /// outside the visible transcript and merged into the wire-only system row.

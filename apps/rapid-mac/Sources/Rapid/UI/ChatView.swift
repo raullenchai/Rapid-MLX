@@ -375,6 +375,9 @@ struct ChatView: View {
         .onChange(of: server.state) { _, newState in
             if case .ready = newState { viewModel.clearStaleErrorBanner() }
         }
+        .onChange(of: readiness, initial: true) { _, _ in resolveStartAndSend() }
+        .onChange(of: viewModel.startAndSendIntent) { _, _ in resolveStartAndSend() }
+        .onChange(of: viewModel.isStreaming) { _, _ in resolveStartAndSend() }
         // Forward an external focus request onto the composer's own token.
         // Routed through the existing token rather than a second mechanism
         // so every focus request in this view — Send, Cmd+L, onboarding
@@ -395,7 +398,10 @@ struct ChatView: View {
             pruneAttachmentDrafts()
             photoCapabilityNotice.dismiss()
         }
-        .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
+        .onChange(of: alias) { _, _ in
+            viewModel.startAndSendIntent = StartAndSendIntent()
+            photoCapabilityNotice.dismiss()
+        }
         .onChange(of: photoAvailability) { _, availability in
             photoCapabilityNotice.reconcile(with: availability)
         }
@@ -1182,22 +1188,23 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
-            .help(readiness.sendTooltip)
-            .accessibilityLabel("Send message")
+            .help(readiness.composerSendTooltip)
+            .accessibilityLabel(readiness.startAndSendAlias == nil
+                ? String(localized: "Send message") : readiness.composerSendTooltip)
             .accessibilityIdentifier("ChatView.SendOrStopButton")
             // The tooltip alone is mouse-only. VoiceOver users get the
             // same sentence as the control's hint, so "why is this
             // dimmed" is answerable without a pointer.
-            .accessibilityHint(readiness.sendAllowed ? "" : readiness.sendTooltip)
+            .accessibilityHint(readiness.sendAllowed || readiness.startAndSendAlias != nil
+                ? "" : readiness.sendTooltip)
         }
     }
 
-    /// Two independent gates. ``hasDraft`` is the ordinary "nothing to
-    /// send" case; ``readiness.sendAllowed`` is the lifecycle gate that
-    /// replaces the old behaviour where pressing Send on a cold model
-    /// silently kicked off a multi-gigabyte download behind a spinner.
+    /// The composer may start a downloaded model; Retry/Edit/chips retain
+    /// the ready-only gate. Pending intent disables both button and Return.
     private var sendEnabled: Bool {
-        hasDraft && readiness.sendAllowed && !attachmentDraft.isImportingFiles
+        hasDraft && (readiness.sendAllowed || readiness.startAndSendAlias != nil)
+            && viewModel.startAndSendIntent.pending == nil && !attachmentDraft.isImportingFiles
             && (attachmentDraft.images.isEmpty || supportsImageInput)
     }
 
@@ -1208,7 +1215,24 @@ struct ChatView: View {
 
     // MARK: - Actions
 
+    private func resolveStartAndSend() {
+        let resolution = viewModel.startAndSendIntent.resolve(
+            readiness: readiness, conversationID: viewModel.activeConversationID,
+            selectedAlias: alias, isStreaming: viewModel.isStreaming
+        )
+        if case .send = resolution { send() }
+    }
+
     private func send() {
+        guard viewModel.startAndSendIntent.pending == nil else { return }
+        if let target = readiness.startAndSendAlias {
+            guard sendEnabled, !viewModel.isStreaming else { return }
+            viewModel.startAndSendIntent.begin(
+                conversationID: viewModel.activeConversationID, alias: target
+            )
+            onReadinessAction(.start(alias: target))
+            return
+        }
         viewModel.submitComposerDraft(
             hasAttachments: attachmentDraft.hasAttachments,
             canSubmit: {
