@@ -17,9 +17,12 @@ LAUNCHCTL=${LAUNCHCTL:-/bin/launchctl}
 POLL_SECS=${POLL_SECS:-1}
 target="gui/$(id -u)/$LABEL"
 start=$SECONDS
-while "$LAUNCHCTL" print "$target" >/dev/null 2>&1; do
+while :; do
+  "$LAUNCHCTL" print "$target" >/dev/null 2>&1
+  status=$?
+  [ "$status" -eq 113 ] && break
   if [ "$((SECONDS - start))" -ge "$timeout" ]; then
-    echo "Timed out waiting for $LABEL to stop after ${timeout}s" >&2
+    echo "Timed out waiting for $LABEL to stop after ${timeout}s (last launchctl status $status)" >&2
     exit 1
   fi
   sleep "$POLL_SECS"

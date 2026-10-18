@@ -190,11 +190,14 @@ commands so `$(id -u)` and `$HOME` expand on the host.
    ssh "$H" '~/ci-runners/bin/wait-stopped.sh'
    ```
 
+   Only `launchctl print` status 113 (service not found) confirms it has stopped.
+   All other statuses keep polling; on timeout the helper reports the last status.
+
    On the first upgrade that ships this helper, the old copy does not have it
    yet. Poll by hand instead:
 
    ```bash
-   ssh "$H" 'while launchctl print gui/$(id -u)/com.rapidmlx.ci-runners >/dev/null 2>&1; do sleep 1; done'
+   ssh "$H" 'while :; do launchctl print gui/$(id -u)/com.rapidmlx.ci-runners >/dev/null 2>&1; rc=$?; [ "$rc" -eq 113 ] && break; sleep 1; done'
    ```
 
 4. Install the scripts and render the plist. The repo's `bin/` contains only

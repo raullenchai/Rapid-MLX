@@ -86,10 +86,14 @@ def test_wait_stopped(fake_launchctl):
     assert result.returncode == 0, result.stderr
     assert "stopped" in result.stdout
     assert Path(fake_launchctl["COUNTER"]).read_text().strip() == "3"
-    assert Path(fake_launchctl["CALLS"]).read_text().splitlines() == [
-        "print",
-        f"gui/{os.getuid()}/com.rapidmlx.ci-runners",
-    ] * 3
+    assert (
+        Path(fake_launchctl["CALLS"]).read_text().splitlines()
+        == [
+            "print",
+            f"gui/{os.getuid()}/com.rapidmlx.ci-runners",
+        ]
+        * 3
+    )
 
 
 def test_wait_stopped_timeout(fake_launchctl):
@@ -97,6 +101,13 @@ def test_wait_stopped_timeout(fake_launchctl):
     result = run_wait_stopped(fake_launchctl, "0")
     assert result.returncode == 1
     assert "com.rapidmlx.ci-runners" in result.stderr
+
+
+def test_wait_stopped_launchctl_error(fake_launchctl):
+    Path(fake_launchctl["LAUNCHCTL"]).write_text("#!/bin/bash\nexit 1\n")
+    result = run_wait_stopped(fake_launchctl, "0")
+    assert result.returncode == 1
+    assert "last launchctl status 1" in result.stderr
 
 
 def test_wait_stopped_invalid_timeout(fake_launchctl):
