@@ -211,11 +211,11 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     if not sys.stdin.isatty():
         return _fallback("an interactive terminal is required")
     unsupported = []
-    if args.mcp_config:
+    if getattr(args, "mcp_config", None):
         unsupported.append("--mcp-config")
-    if args.mcp_max_rounds != 8:
+    if getattr(args, "mcp_max_rounds", 8) != 8:
         unsupported.append("--mcp-max-rounds")
-    if args.response_timeout != 600:
+    if getattr(args, "response_timeout", 600) != 600:
         unsupported.append("--response-timeout")
     if unsupported:
         return _fallback(f"{', '.join(unsupported)} is not supported by Goose chat")
