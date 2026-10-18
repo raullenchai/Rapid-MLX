@@ -431,22 +431,41 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
         os.makedirs(home)
         with open(os.path.join(home, ".profile"), "w", encoding="utf-8") as handle:
             handle.write("export REFRESHED_CONFIG=1\n")
+        with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as handle:
+            handle.write("export ZSH_REFRESHED_CONFIG=1\n")
 
     def _e2e(*_args, env_overrides=None, **_kwargs):
         env = os.environ | env_overrides
-        shell = "/bin/sh" if sys.platform == "darwin" else "/bin/bash"
-        result = subprocess.run(
-            [shell, "-lc", "command -v open; printf '%s' \"$REFRESHED_CONFIG\""],
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        seen.append(result.stdout)
-        assert result.stdout.splitlines()[0] == os.path.join(
-            os.path.dirname(env_overrides["BROWSER"]), "open"
-        )
-        assert result.stdout.endswith("1")
+        for shell in ("/bin/sh", "/bin/bash"):
+            result = subprocess.run(
+                [shell, "-lc", "command -v open; printf '%s' \"$REFRESHED_CONFIG\""],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            seen.append(result.stdout)
+            assert result.stdout.splitlines()[0] == os.path.join(
+                os.path.dirname(env_overrides["BROWSER"]), "open"
+            )
+            assert result.stdout.endswith("1")
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                [
+                    "/bin/zsh",
+                    "-lic",
+                    'command -v open; printf "%s" "$ZSH_REFRESHED_CONFIG"',
+                ],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            seen.append(result.stdout)
+            assert result.stdout.splitlines()[0] == os.path.join(
+                os.path.dirname(env_overrides["BROWSER"]), "open"
+            )
+            assert result.stdout.endswith("1")
         return TestResult("e2e_chat", TestStatus.PASS)
 
     from rapid_mlx.agents.testing import TestResult
@@ -463,7 +482,7 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
     ):
         AgentTestRunner(profile, model_id="local-model").run()
 
-    assert len(seen) == 1
+    assert len(seen) == (3 if sys.platform == "darwin" else 2)
 
 
 @pytest.mark.parametrize("agent_name", ["hermes", "opencode"])

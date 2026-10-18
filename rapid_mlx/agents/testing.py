@@ -988,15 +988,19 @@ def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
     path_script = shim_dir.parent / "shell-path.sh"
     script = f'PATH={shlex.quote(str(shim_dir))}:"$PATH"\nexport PATH\n'
     path_script.write_text(script, encoding="utf-8")
-    (shim_dir.parent / ".zprofile").write_text(script, encoding="utf-8")
-    # POSIX login sh and login bash read these from HOME; zsh uses ZDOTDIR.
-    for name in (".profile", ".bash_profile"):
+    # Keep startup files in the disposable HOME. Redirecting ZDOTDIR to the
+    # guard directory would hide agent setup's .zshenv/.zshrc/.zlogin.
+    for name in (".profile", ".bash_profile", ".zshenv", ".zprofile", ".zlogin"):
         profile = home / name
         existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
+        # Creating .bash_profile makes Bash skip .profile. Source it when the
+        # file is ours so config refresh's .profile exports remain visible.
+        if name == ".bash_profile" and not existing:
+            existing = '. "$HOME/.profile"\n'
         if script not in existing:
             profile.write_text(existing + "\n" + script, encoding="utf-8")
     return {
-        "ZDOTDIR": str(shim_dir.parent),
+        "ZDOTDIR": str(home),
         "BASH_ENV": str(path_script),
         "ENV": str(path_script),
     }
