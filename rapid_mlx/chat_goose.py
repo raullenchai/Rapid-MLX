@@ -223,7 +223,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     common = {
         "HOME": str(root),
         "GOOSE_PATH_ROOT": str(root),
-        "PATH": str(Path(sys.executable).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH": str(Path(sys.executable).parent)
+        + os.pathsep
+        + os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
         "LANG": "en_US.UTF-8",
         "NO_PROXY": "127.0.0.1,localhost",
         "PYTHONDONTWRITEBYTECODE": "1",

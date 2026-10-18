@@ -29,10 +29,13 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "What causes tides?")
+    monkeypatch.setenv("PATH", "/opt/user-tools:/usr/bin:/bin")
     commands = []
+    environments = []
 
-    def capture_goose(command, **_kwargs):
+    def capture_goose(command, **kwargs):
         commands.append(command)
+        environments.append(kwargs["env"])
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(chat_goose.subprocess, "run", capture_goose)
@@ -62,6 +65,8 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     assert "--no-session" not in commands[0]
     assert "--resume" in commands[0]
     assert commands[0][commands[0].index("--with-builtin") + 1] == chat_goose.BUILTINS
+    assert "/opt/user-tools" in environments[0]["PATH"]
+    assert "WORK_PROXY_BEARER" not in environments[0]
 
 
 @pytest.mark.parametrize(
