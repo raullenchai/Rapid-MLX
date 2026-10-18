@@ -502,8 +502,10 @@ async def test_stream_system_tools_warm_boundary_and_template_errors():
         ):
             pass
     assert seen["exact_prefix_boundary"] is True
-    assert seen["prompt"][seen["prefix_boundary"] + 1 :] == tokenizer.encode(
-        "<tool_call>", add_special_tokens=False
+    forced_ids = tokenizer.encode("<tool_call>", add_special_tokens=False)
+    assert seen["prompt"][-len(forced_ids) :] == forced_ids
+    assert tokenizer.decode(seen["prompt"][: -len(forced_ids)]).endswith(
+        "<|im_start|>assistant\n<think>\n"
     )
 
     engine._apply_chat_template = lambda *_args, **_kwargs: (_ for _ in ()).throw(
