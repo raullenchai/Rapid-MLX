@@ -386,7 +386,7 @@ class TestStreamingPostProcessorToolCalls:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         events = pp.process_chunk(_make_output("<tool_call>test</tool_call>"))
@@ -413,7 +413,7 @@ class TestStreamingPostProcessorToolCalls:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         # Detect tool call
@@ -925,7 +925,7 @@ class TestStreamingPostProcessorToolCallChannel:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         events = pp.process_chunk(_make_output("<tool_call>", channel="tool_call"))
@@ -962,7 +962,7 @@ class TestStructuredToolCallStreaming:
 
     def test_index_monotonic_across_chunks(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         first = pp.process_chunk(
@@ -988,7 +988,7 @@ class TestStructuredToolCallStreaming:
     def test_index_monotonic_within_single_chunk(self):
         """Multiple calls in one router event still receive distinct indices."""
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         events = pp.process_chunk(
@@ -1007,7 +1007,9 @@ class TestStructuredToolCallStreaming:
 
     def test_parallel_tool_calls_false_caps_across_chunks(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(
@@ -1035,7 +1037,9 @@ class TestStructuredToolCallStreaming:
 
     def test_parallel_tool_calls_false_caps_within_single_chunk(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         events = pp.process_chunk(
@@ -1055,7 +1059,9 @@ class TestStructuredToolCallStreaming:
     def test_parallel_tool_calls_true_does_not_cap(self):
         """Explicit ``True`` must behave like unset (no cap)."""
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": True})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": True}
+        )
         pp.reset()
 
         first = pp.process_chunk(
@@ -1081,7 +1087,9 @@ class TestStructuredToolCallStreaming:
         fires.
         """
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         pp.process_chunk(
@@ -1106,7 +1114,7 @@ class TestStructuredToolCallStreaming:
 
     def test_structured_event_assigns_id_when_missing(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         events = pp.process_chunk(
@@ -1121,7 +1129,7 @@ class TestStructuredToolCallStreaming:
 
     def test_structured_event_preserves_caller_id(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         events = pp.process_chunk(
@@ -1135,7 +1143,7 @@ class TestStructuredToolCallStreaming:
 
     def test_reset_clears_structured_counter(self):
         cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         pp.process_chunk(
@@ -1173,7 +1181,7 @@ class TestTextParserParallelCap:
             tool_parser_instance=tool_parser,
         )
         request = req_kwargs or None
-        pp = StreamingPostProcessor(cfg, request=request)
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=request)
         pp.reset()
         return pp
 
@@ -1239,7 +1247,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1308,7 +1318,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1367,7 +1379,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -1419,7 +1433,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -1461,7 +1477,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1505,7 +1523,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1557,7 +1577,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>a_anchor</tool_call>"))
@@ -1621,7 +1643,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -1658,7 +1682,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1712,7 +1738,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1758,7 +1786,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>anchor</tool_call>"))
@@ -1843,7 +1873,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
@@ -1888,7 +1920,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -1929,7 +1963,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -1955,7 +1991,9 @@ class TestTextParserParallelCap:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, request={"parallel_tool_calls": False}
+        )
         pp.reset()
 
         e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
@@ -2123,7 +2161,7 @@ class TestChannelRoutedEdgeCases:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         # First chunk: tool call detected
@@ -2152,7 +2190,7 @@ class TestChannelRoutedEdgeCases:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         pp.process_chunk(_make_output("<tc>", channel="content"))
@@ -2216,7 +2254,7 @@ class TestReasoningPathEdgeCases:
             enable_auto_tool_choice=True,
             tool_parser_instance=tool_parser,
         )
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         pp.process_chunk(_make_output("<tool_call>markup"))
@@ -2460,7 +2498,7 @@ class TestCoverageGaps:
             ]
         }
         cfg = _make_cfg(tool_parser_instance=tool_parser)
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         # First chunk: tool detected via channel routing (needs "<" to trigger parsing)
@@ -2519,7 +2557,7 @@ class TestCoverageGaps:
         }
 
         cfg = _make_cfg(reasoning_parser=parser, tool_parser_instance=tool_parser)
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         # Detect tool calls (content has "<" to trigger full parsing)
@@ -2583,7 +2621,7 @@ class TestCoverageGaps:
         }
 
         cfg = _make_cfg(tool_parser_instance=tool_parser)
-        pp = StreamingPostProcessor(cfg)
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
         pp.reset()
 
         # Detect tool call (needs "<" to trigger full parsing)

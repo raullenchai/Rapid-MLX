@@ -161,7 +161,7 @@ def test_legit_short_tool_call_not_released():
                 return None  # buffering the small args body
             return {"content": delta_text}
 
-    pp = StreamingPostProcessor(_make_cfg())
+    pp = StreamingPostProcessor(_make_cfg(), tools_requested=True)
     pp.reset()
     pp.tool_parser = _ClosingToolParser()
     pp.tool_markup_possible = True
@@ -204,7 +204,7 @@ def test_no_release_once_a_tool_call_reached_the_wire():
                 return None  # now buffering a large second block forever
             return {"content": delta_text}
 
-    pp = StreamingPostProcessor(_make_cfg())
+    pp = StreamingPostProcessor(_make_cfg(), tools_requested=True)
     pp.reset()
     pp.tool_parser = _EmitThenBufferParser()
     pp.tool_markup_possible = True

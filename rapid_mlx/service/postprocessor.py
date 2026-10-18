@@ -422,18 +422,15 @@ class StreamingPostProcessor:
                     and reasoning_protocol in sanitized_protocols
                 )
 
-        # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
-        # contract). The tool parser still RUNS — that is what strips wire
-        # markup out of ``content`` (the R12 sanitizer invariant) — but any
-        # call it resolves is DROPPED at the emission points rather than
-        # forwarded as a phantom the client cannot execute. This flag is
-        # read by ``_detect_tool_calls`` (text-parser incremental /
-        # finalize paths) and ``_process_channel_routed`` (harmony/gemma4
-        # structured channel), mirroring the non-streaming
-        # ``_parse_tool_calls_with_parser`` drop.
+        # No declared tools or ``tool_choice="none"`` forbids calls this turn.
+        # With tools declared, the text parser still strips wire markup, but
+        # resolved calls are dropped at emission. The same flag suppresses
+        # the entire structured tool-call channel and normalizes its finish.
         from .helpers import tool_choice_is_none
 
-        self._suppress_tool_calls = tool_choice_is_none(request)
+        self._suppress_tool_calls = (
+            tool_choice_is_none(request) or not self.tools_requested
+        )
 
         # State
         self.accumulated_text = ""
@@ -2787,8 +2784,8 @@ class StreamingPostProcessor:
         # round-14 BLOCKING — tool calls whose JSON args contain
         # literal harmony sentinels were corrupted by sentinel-
         # anchored regex parsing).
-        # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
-        # contract). The channel-routed structured path bypasses the text
+        # No declared tools or ``tool_choice="none"`` forbids calls this turn.
+        # The channel-routed structured path bypasses the text
         # ``self.tool_parser``, so it needs its own suppression. Drop the
         # ENTIRE ``tool_call`` channel — completed structured calls AND
         # partial in-flight deltas — so no call reaches the wire and the raw

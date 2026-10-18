@@ -3651,6 +3651,10 @@ def _run_tool_parser(
     """
     cfg = get_config()
     request_dict = request.model_dump() if hasattr(request, "model_dump") else request
+    # Match streaming: unknown/empty tools leave text untouched, including request=None.
+    if not request_dict or not request_dict.get("tools"):
+        return output_text or "", None
+
     declared: set[str] | None = None
     if cfg.tool_call_parser == "qwen3_coder_xml":
         declared = _request_declared_tool_names(request_dict)
@@ -3681,10 +3685,6 @@ def _run_tool_parser(
             for tc in structured_tool_calls
         ]
         return output_text or "", tool_calls
-
-    # Match streaming: unknown/empty tools leave text untouched, including request=None.
-    if not request_dict or not request_dict.get("tools"):
-        return output_text or "", None
 
     tokenizer = None
     if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):

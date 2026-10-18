@@ -81,6 +81,41 @@ class ReplayEngine:
         )
 
 
+class StructuredReplayEngine(ReplayEngine):
+    calls = [{"name": "web_search", "arguments": '{"query":"x"}'}]
+
+    async def stream_chat(self, messages, **kwargs):
+        yield GenerationOutput(
+            text="answer",
+            new_text="answer",
+            channel="content",
+            finished=False,
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="wire call",
+            channel="tool_call",
+            finished=False,
+            tool_calls=self.calls,
+        )
+        yield GenerationOutput(
+            text="answer",
+            new_text="",
+            channel="content",
+            finished=True,
+            finish_reason="stop",
+        )
+
+    async def chat(self, messages, **kwargs):
+        return GenerationOutput(
+            text="answer",
+            raw_text="answer",
+            tool_calls=self.calls,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
 def client_for(engine):
     cfg = reset_config()
     cfg.engine = engine
@@ -365,20 +400,34 @@ def test_tool_helper_with_tools_keeps_parsing(choice, parser):
         assert calls and calls[0].function.name == "get_weather"
 
 
-@pytest.mark.parametrize("unknown_request", [False, True])
-def test_no_tools_guard_preserves_structured_engine_channel(unknown_request):
+@pytest.mark.parametrize("parser", ["hermes", "qwen3_coder_xml", None])
+@pytest.mark.parametrize(
+    "tools_mode", ["missing", "null", "empty", "unknown", "declared"]
+)
+def test_no_tools_guard_drops_structured_engine_channel(parser, tools_mode):
     from rapid_mlx.api.models import ChatCompletionRequest
     from rapid_mlx.service import helpers
 
     cfg = reset_config()
-    cfg.tool_call_parser = "hermes"
+    cfg.tool_call_parser = parser
     request = (
         None
-        if unknown_request
+        if tools_mode == "unknown"
         else ChatCompletionRequest(
-            model="test", messages=[{"role": "user", "content": "Weather?"}]
+            model="test",
+            messages=[{"role": "user", "content": "Weather?"}],
+            **(
+                {}
+                if tools_mode == "missing"
+                else {
+                    "tools": TOOLS
+                    if tools_mode == "declared"
+                    else ([] if tools_mode == "empty" else None)
+                }
+            ),
         )
     )
+    helpers._undeclared_tool_dropped_this_parse.set(True)
     content, calls = helpers._parse_tool_calls_with_parser(
         "answer",
         request,
@@ -387,12 +436,72 @@ def test_no_tools_guard_preserves_structured_engine_channel(unknown_request):
         ],
     )
     assert content == "answer"
-    assert calls and calls[0].function.name == "get_weather"
+    assert not helpers._was_undeclared_tool_dropped()
+    if tools_mode == "declared":
+        assert calls and calls[0].function.name == "get_weather"
+    else:
+        assert calls is None
+
+
+@pytest.mark.parametrize("tools", [None, []])
+@pytest.mark.parametrize("terminal_channel", ["tool_call", "content"])
+@pytest.mark.parametrize("separate_finish", [False, True])
+def test_no_tools_drops_structured_stream_channel(
+    tools, terminal_channel, separate_finish
+):
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    cfg = reset_config()
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+    request = ChatCompletionRequest(
+        model="test", messages=[{"role": "user", "content": "Weather?"}], tools=tools
+    )
+    processor = StreamingPostProcessor(cfg, request=request)
+    assert processor.tool_parser is None
+    events = []
+    for output in [
+        GenerationOutput(
+            text="answer", new_text="answer", channel="content", finished=False
+        ),
+        GenerationOutput(
+            text="partial", new_text="partial", channel="tool_call", finished=False
+        ),
+        GenerationOutput(
+            text="wire call",
+            new_text="wire call",
+            channel="tool_call",
+            tool_calls=[{"name": "get_weather", "arguments": "{}"}],
+            finished=not separate_finish,
+            finish_reason=None if separate_finish else "tool_calls",
+        ),
+    ]:
+        events.extend(processor.process_chunk(output))
+    if separate_finish:
+        events.extend(
+            processor.process_chunk(
+                GenerationOutput(
+                    text="",
+                    new_text="",
+                    channel=terminal_channel,
+                    finished=True,
+                    finish_reason="tool_calls",
+                )
+            )
+        )
+    events.extend(processor.finalize())
+    assert not any(event.type == "tool_call" for event in events)
+    assert "".join(event.content or "" for event in events) == "answer"
+    assert [event.finish_reason for event in events if event.type == "finish"] == [
+        "stop"
+    ]
+    assert not processor.undeclared_tool_dropped
 
 
 @pytest.mark.parametrize("route", ["responses", "messages"])
 @pytest.mark.parametrize("tools_mode", ["missing", "null", "empty", "auto", "none"])
-@pytest.mark.parametrize("chunks", ["whole", "tags", "characters"])
+@pytest.mark.parametrize("chunks", ["whole", "tags", "characters", "structured"])
 def test_stream_tool_markup_matches_buffered_request_capability(
     route, tools_mode, chunks
 ):
@@ -408,7 +517,12 @@ def test_stream_tool_markup_matches_buffered_request_capability(
         "tags": raw.splitlines(keepends=True),
         "characters": list(raw),
     }
-    client = client_for(ReplayEngine(deltas[chunks], "stop"))
+    engine = (
+        StructuredReplayEngine([], "tool_calls")
+        if chunks == "structured"
+        else ReplayEngine(deltas[chunks], "stop")
+    )
+    client = client_for(engine)
     get_config().tool_call_parser = "hermes"
     declared = tools_mode in ("auto", "none")
     payload = {"model": "test-model"}
@@ -451,8 +565,9 @@ def test_stream_tool_markup_matches_buffered_request_capability(
             if event["type"] == "response.output_text.delta"
         )
         terminal = events[-1]
-        assert body["status"] == ("failed" if tools_mode == "none" else "completed")
-        if tools_mode == "none":
+        no_answer = tools_mode == "none" and chunks != "structured"
+        assert body["status"] == ("failed" if no_answer else "completed")
+        if no_answer:
             # Existing behavior: hidden calls with no final answer fail SSE.
             assert terminal["type"] == "response.failed", response.text
             assert terminal["response"]["error"]["code"] == "model_no_final_answer"
@@ -509,4 +624,5 @@ def test_stream_tool_markup_matches_buffered_request_capability(
             assert json.loads(arguments) == {"query": "x"}
     # Messages removes converted tools for none, so both paths preserve text.
     parsing_enabled = declared and not (route == "messages" and tools_mode == "none")
-    assert streamed == buffered == ("" if parsing_enabled else raw)
+    expected = "answer" if chunks == "structured" else ("" if parsing_enabled else raw)
+    assert streamed == buffered == expected

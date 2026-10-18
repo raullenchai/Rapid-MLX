@@ -402,9 +402,11 @@ def test_buffered_structured_shapes(monkeypatch, req):
         ],
     )
     assert content == "Narration"
-    assert [c.function.name for c in calls] == (
-        ["write_file"] if req and req != {"tools": []} else ["send_email", "write_file"]
-    )
+    if req and req != {"tools": []}:
+        assert [c.function.name for c in calls] == ["write_file"]
+    else:
+        assert calls is None
+        assert not helpers._was_undeclared_tool_dropped()
 
 
 def test_nemotron_boundaries_and_logging(caplog):
