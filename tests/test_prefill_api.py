@@ -83,7 +83,7 @@ async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
     assert engine.calls[0]["max_tokens"] == 1
     assert engine.calls[0]["enable_thinking"] is False
     assert engine.closed == 1
-    assert saved == [0]
+    assert saved == [30]
 
 
 @pytest.mark.asyncio
@@ -150,4 +150,30 @@ async def test_draft_requires_disk_consent_before_engine_work(monkeypatch):
     with pytest.raises(HTTPException) as error:
         await api.prefill(body, ConnectedRequest())
     assert error.value.status_code == 409
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_context_rejection_happens_before_prefill(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+
+    def too_long(*args, **kwargs):
+        raise HTTPException(status_code=400, detail="context_length_exceeded")
+
+    monkeypatch.setattr(api, "enforce_context_length_for_messages", too_long)
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "large draft"}],
+        draft_key="context-test",
+        revision=1,
+    )
+    with pytest.raises(HTTPException) as error:
+        await api.prefill(body, ConnectedRequest())
+    assert error.value.status_code == 400
     assert engine.calls == []
