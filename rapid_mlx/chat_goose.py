@@ -304,6 +304,7 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         "WORK_PROXY_BEARER": scoped_key,
         "WORK_PROXY_UPSTREAM_BEARER": upstream_key or scoped_key,
         "WORK_PROXY_METRICS_KEY": secrets.token_hex(32),
+        "WORK_PROXY_METRICS_MODE": "sequence",
         "WORK_PROXY_CONTRACT_FILE": str(contract_path),
     }
     goose_env = {

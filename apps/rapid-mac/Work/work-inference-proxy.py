@@ -25,6 +25,7 @@ BEARER = os.environ["WORK_PROXY_BEARER"]
 UPSTREAM_BEARER = os.environ.get("WORK_PROXY_UPSTREAM_BEARER", BEARER)
 BEARER_FILE = os.environ.get("WORK_PROXY_BEARER_FILE", "")
 METRICS_KEY = os.environ.get("WORK_PROXY_METRICS_KEY", "")
+METRICS_MODE = os.environ.get("WORK_PROXY_METRICS_MODE", "rate")
 CONTRACT_FILE = os.environ.get("WORK_PROXY_CONTRACT_FILE", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 METRICS_LOCK = threading.Lock()
@@ -281,8 +282,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(502, "Local inference unavailable")
             return
         with response:
-            rate = StreamRate() if GOOSE_CHAT and response.status == 200 else None
-            if rate is not None:
+            observe = GOOSE_CHAT and response.status == 200
+            rate = StreamRate() if observe and METRICS_MODE == "rate" else None
+            if observe:
                 with METRICS_LOCK:
                     LATEST_METRIC["sequence"] += 1
                     LATEST_METRIC["tokensPerSecond"] = None
