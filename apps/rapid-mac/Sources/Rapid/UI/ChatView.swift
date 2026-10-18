@@ -1384,7 +1384,7 @@ struct ChatView: View {
     private func chooseFiles() {
         photoCapabilityNotice.dismiss()
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText]
+        panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText, UTType(filenameExtension: "docx")].compactMap { $0 }
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -1435,7 +1435,7 @@ struct ChatView: View {
             accepted = addFileURLs(fileURLs) || accepted
         }
         if unsupported {
-            attachmentDraft.notice = String(localized: "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
+            attachmentDraft.notice = String(localized: "Choose PDF, CSV, TXT, DOCX, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
         }
         return accepted
     }
@@ -1498,7 +1498,7 @@ struct ChatView: View {
             existingCount: attachmentDraft.files.count
         )
         guard !selection.accepted.isEmpty else {
-            attachmentDraft.notice = String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message.")
+            attachmentDraft.notice = String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, TXT, or DOCX files per message.")
             return false
         }
         guard let importRequest = attachmentDrafts.beginFileImport(
@@ -1510,7 +1510,7 @@ struct ChatView: View {
             }.value
 
             let notice = selection.rejectedCount > 0
-                ? String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message.")
+                ? String(localized: "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, TXT, or DOCX files per message.")
                 : outcome.1
             let adopted = attachmentDrafts.finishFileImport(
                 request: importRequest,

@@ -5,7 +5,7 @@ import Testing
 @testable import Rapid
 
 @MainActor
-@Suite("Chat PDF, CSV, and TXT attachments", .serialized)
+@Suite("Chat PDF, CSV, TXT, and DOCX attachments", .serialized)
 struct ChatFileAttachmentTests {
     private func temporaryURL(extension fileExtension: String) -> URL {
         FileManager.default.temporaryDirectory
@@ -720,16 +720,16 @@ struct ChatFileAttachmentTests {
         for file in files { try Data("Attachment body".utf8).write(to: file) }
         let board = NSPasteboard(name: .init("rapid.chat.paste.live.\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
-        board.writeObjects([directory.appendingPathComponent("unsupported.docx") as NSURL])
+        board.writeObjects([directory.appendingPathComponent("unsupported.pages") as NSURL])
         #expect(editor.readSelection(from: board, type: .string))
         #expect(editor.string.isEmpty)
-        try await surface.stage.waitForText("Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
+        try await surface.stage.waitForText("Choose PDF, CSV, TXT, DOCX, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
 
         board.clearContents()
         board.writeObjects(files.map { $0 as NSURL })
         #expect(editor.readSelection(from: board, type: .string))
         try await surface.stage.waitForIdentifier("ChatView.Attachment.Remove.paste-3.txt")
-        try await surface.stage.waitForText("Attach up to 4 PDF, CSV, or TXT files per message.")
+        try await surface.stage.waitForText("Attach up to 4 PDF, CSV, TXT, or DOCX files per message.")
         #expect(!surface.stage.identifiers().contains("ChatView.Attachment.Remove.paste-4.txt"))
 
         // A further distinct file must hit the already-full budget as well.

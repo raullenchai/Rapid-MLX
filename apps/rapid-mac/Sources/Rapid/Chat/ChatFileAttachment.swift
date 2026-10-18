@@ -15,6 +15,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         case pdf
         case csv
         case txt
+        case docx
         /// Preserves history written by a newer build.
         case unknown
 
@@ -34,6 +35,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             case .pdf: return "doc.text"
             case .csv: return "tablecells"
             case .txt: return "doc.plaintext"
+            case .docx: return "doc.richtext"
             case .unknown: return "doc"
             }
         }
@@ -53,7 +55,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     let totalCharacterCount: Int?
 
     static func recognizesDocument(at url: URL) -> Bool {
-        ["pdf", "csv", "txt"].contains(url.pathExtension.lowercased())
+        ["pdf", "csv", "txt", "docx"].contains(url.pathExtension.lowercased())
     }
 
     /// Bound work before opening selected files.
@@ -227,11 +229,31 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         } else if contentType?.conforms(to: .commaSeparatedText) == true
             || extensionType?.conforms(to: .commaSeparatedText) == true {
             try self.init(csvFilename: url.lastPathComponent, data: data, cache: cache)
+        } else if url.pathExtension.lowercased() == "docx"
+            || UTType("org.openxmlformats.wordprocessingml.document").map({ contentType?.conforms(to: $0) == true }) == true {
+            try self.init(docxFilename: url.lastPathComponent, data: data, cache: cache)
         } else if url.pathExtension.lowercased() == "txt" {
             try self.init(txtFilename: url.lastPathComponent, data: data, cache: cache)
         } else {
             throw ValidationError.unsupportedType
         }
+    }
+
+    // ChatView imports on Task.detached; extraction stays on the caller's thread.
+    private init(docxFilename filename: String, data: Data, cache: DocumentContentCache) throws {
+        let result: DOCXTextExtractor.Result
+        do {
+            result = try DOCXTextExtractor.extract(data)
+        } catch let failure as DOCXTextExtractor.Failure {
+            switch failure {
+            case .tooLarge, .timedOut: throw ValidationError.docxTooComplex
+            case .encrypted: throw ValidationError.docxEncrypted
+            case .notAZip, .unsupportedArchive, .missingDocument, .malformed: throw ValidationError.invalidDOCX
+            }
+        }
+        try self.init(fullText: result.text, filename: filename, kind: .docx,
+                      sourceByteCount: data.count, cache: cache,
+                      state: result.reachedCharacterCap ? .truncated : .complete)
     }
 
     /// Selectable-text pages read synchronously for the preview.
@@ -674,23 +696,33 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         case unsupportedEncoding
         case invalidPDF
         case invalidCSV
+        case docxTooComplex
+        case docxEncrypted
+        case invalidDOCX
         case noExtractableText(Kind)
 
         var errorDescription: String? {
             switch self {
             case .tooLarge:
-                return "PDF, CSV, and TXT files must be 100 MB or smaller."
+                return "PDF, CSV, TXT, and DOCX files must be 100 MB or smaller."
             case .emptyFile:
                 return "This file is empty."
             case .unsupportedType:
-                return "Choose a PDF, CSV, or TXT file."
+                return "Choose a PDF, CSV, TXT, or DOCX file."
             case .unsupportedEncoding:
                 return "CSV and TXT files must use UTF-8 or UTF-16 text encoding."
             case .invalidPDF:
                 return "This PDF couldn't be read."
             case .invalidCSV:
                 return "This CSV has an unterminated quoted field."
+            case .docxTooComplex:
+                return "This Word document is too large or complex to read safely. Save it as PDF or TXT, then attach that file."
+            case .docxEncrypted:
+                return "This Word document is password-protected or in an older format. Remove the password or save it as PDF or TXT, then attach that file."
+            case .invalidDOCX:
+                return "This Word document couldn't be read. Save it as PDF or TXT, then attach that file."
             case .noExtractableText(let kind):
+                if kind == .docx { return "This Word document contains no readable text." }
                 if kind == .pdf {
                     return "No readable text could be recognized in this PDF. It may be blank, contain only images or diagrams, or be in a language Rapid cannot read."
                 }

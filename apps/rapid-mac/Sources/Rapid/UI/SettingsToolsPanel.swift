@@ -217,7 +217,7 @@ struct SettingsToolsPanel: View {
             // visible in the transcript, but "the full text is kept for N days,
             // then you are asked to attach the file again" is only observable
             // by waiting a quarter and being surprised.
-            return String(localized: "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation.")
+            return String(localized: "Reads the rest of a PDF, CSV, Word, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation.")
         default:
             return fallback
         }

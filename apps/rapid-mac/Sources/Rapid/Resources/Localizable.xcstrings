@@ -3280,12 +3280,12 @@
         }
       }
     },
-    "Attach up to %lld PDF, CSV, or TXT files per message." : {
+    "Attach up to %lld PDF, CSV, TXT, or DOCX files per message." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每条消息最多可附加 %lld 个 PDF、CSV 或 TXT 文件。"
+            "value" : "每条消息最多可附加 %lld 个 PDF、CSV、TXT 或 DOCX 文件。"
           }
         }
       }
@@ -3600,12 +3600,12 @@
         }
       }
     },
-    "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first." : {
+    "Choose PDF, CSV, TXT, DOCX, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请选择 PDF、CSV、TXT、PNG、JPEG 或 GIF 文件。其他文档请先另存为 PDF 或 TXT。"
+            "value" : "请选择 PDF、CSV、TXT、DOCX、PNG、JPEG 或 GIF 文件。其他文档请先另存为 PDF 或 TXT。"
           }
         }
       }
@@ -9230,12 +9230,12 @@
         }
       }
     },
-    "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for %lld days, and is deleted when you remove the attachment or delete the conversation." : {
+    "Reads the rest of a PDF, CSV, Word, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for %lld days, and is deleted when you remove the attachment or delete the conversation." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "读取你所附加的 PDF、CSV 或文本文件的其余部分。仅限你附加的文件，绝不读取 Mac 上的其他文件。全文会在这台 Mac 上保留 %lld 天，并在你移除附件或删除对话时删除。"
+            "value" : "读取你所附加的 PDF、CSV、Word 或文本文件的其余部分。仅限你附加的文件，绝不读取 Mac 上的其他文件。全文会在这台 Mac 上保留 %lld 天，并在你移除附件或删除对话时删除。"
           }
         }
       }
