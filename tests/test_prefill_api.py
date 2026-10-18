@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from rapid_mlx.routes import prefill as api
@@ -76,7 +77,7 @@ async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
         "status": "prefilled",
         "prompt_tokens": 14000,
         "cached_tokens": 13900,
-        "persisted": True,
+        "cache_saved": True,
     }
     assert "secret" not in str(response)
     assert engine.calls[0]["max_tokens"] == 1
@@ -95,6 +96,10 @@ async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypa
     )
     monkeypatch.setattr(
         api, "save_prefix_cache_to_disk", lambda _: pytest.fail("draft wrote to disk")
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 100
     )
     one = api.PrefillRequest(
         kind="draft",
@@ -120,5 +125,29 @@ async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypa
     assert len(engine.calls) == 2
     engine.release.set()
     result = await second
-    assert result["persisted"] is False
+    assert result["cache_saved"] is False
     assert engine.closed == 2
+    with pytest.raises(HTTPException) as stale:
+        await api.prefill(one, ConnectedRequest())
+    assert stale.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_draft_requires_disk_consent_before_engine_work(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "unsent"}],
+        draft_key="consent-test",
+        revision=1,
+    )
+    with pytest.raises(HTTPException) as error:
+        await api.prefill(body, ConnectedRequest())
+    assert error.value.status_code == 409
+    assert engine.calls == []

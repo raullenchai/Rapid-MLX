@@ -4,22 +4,37 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import OrderedDict
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from .. import disk_caches
+from ..api.tool_calling import convert_tools_for_template
 from ..config import get_config
-from ..middleware.auth import verify_api_key_or_x_api_key
+from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..runtime.cache import save_prefix_cache_to_disk
+from ..service.helpers import (
+    enforce_context_length,
+    enforce_context_length_for_messages,
+)
 
-router = APIRouter(dependencies=[Depends(verify_api_key_or_x_api_key)])
+router = APIRouter(
+    dependencies=[
+        Depends(verify_api_key_or_x_api_key),
+        Depends(check_rate_limit_or_x_api_key),
+    ]
+)
 
 _guard = asyncio.Lock()
 _active: asyncio.Task | None = None
 _active_key: str | None = None
 _active_revision = -1
+_draft_revisions: OrderedDict[str, tuple[int, float]] = OrderedDict()
+_REVISION_TTL_SECONDS = 300
+_MAX_REVISION_KEYS = 128
 
 
 class PrefillRequest(BaseModel):
@@ -32,6 +47,7 @@ class PrefillRequest(BaseModel):
     revision: int | None = Field(default=None, ge=0)
     persist: bool = False
     enable_thinking: bool | None = None
+    allow_disk_cache: bool = False
 
     @model_validator(mode="after")
     def validate_shape(self):
@@ -51,8 +67,12 @@ class PrefillRequest(BaseModel):
         if self.kind == "prefix":
             if len(self.messages) != 1 or self.messages[0]["role"] != "system":
                 raise ValueError("prefix prefill requires one system message")
+            if not self.tools:
+                raise ValueError("prefix prefill requires tools")
             if self.draft_key is not None or self.revision is not None:
                 raise ValueError("prefix prefill cannot use a draft key")
+            if self.allow_disk_cache:
+                raise ValueError("allow_disk_cache is only for drafts")
         else:
             if self.messages[-1]["role"] != "user":
                 raise ValueError("a draft must end with a user message")
@@ -85,10 +105,19 @@ async def _warm(engine, body: PrefillRequest) -> dict:
         "status": "prefilled",
         "prompt_tokens": getattr(last, "prompt_tokens", 0),
         "cached_tokens": getattr(last, "cached_tokens", 0),
-        "persisted": False,
+        "cache_saved": False,
     }
     if body.persist and not disk_caches.disabled():
-        result["persisted"] = await asyncio.to_thread(save_prefix_cache_to_disk, 0)
+        checkpoint_task = asyncio.create_task(
+            asyncio.to_thread(save_prefix_cache_to_disk, 30)
+        )
+        try:
+            result["cache_saved"] = await asyncio.shield(checkpoint_task)
+        except asyncio.CancelledError:
+            # A worker thread cannot be cancelled. Keep this slot until the
+            # bounded save exits rather than overlap it with a replacement.
+            await checkpoint_task
+            raise
     return result
 
 
@@ -98,14 +127,61 @@ async def prefill(body: PrefillRequest, request: Request):
 
     A new draft revision cancels its predecessor. One warm operation per
     process bounds speculative memory use; ordinary chat requests continue.
+    ``persist`` requests an immediate cache save for fixed prefixes. A true
+    ``cache_saved`` means at least one entry committed; it does not prove the
+    requested entry survived a partial save. Drafts
+    require explicit consent when the server's normal disk cache is enabled.
     """
     global _active, _active_key, _active_revision
     cfg = get_config()
     if not cfg.ready or cfg.draining or cfg.engine is None:
         raise HTTPException(status_code=503, detail="Model is not ready")
+    if (
+        body.kind == "draft"
+        and not disk_caches.disabled()
+        and not body.allow_disk_cache
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Draft KV may be saved by the configured disk cache; set allow_disk_cache=true or disable disk caches",
+        )
+
+    thinking = (
+        body.enable_thinking
+        if body.enable_thinking is not None
+        else (False if body.tools else None)
+    )
+    if body.kind == "prefix":
+        try:
+            token_ids, _ = cfg.engine._shared_system_tools_prompt(
+                body.messages, convert_tools_for_template(body.tools), thinking, None
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Cannot render prefix") from exc
+        enforce_context_length(cfg.engine, len(token_ids), max_tokens=1)
+    else:
+        counted = enforce_context_length_for_messages(
+            cfg.engine,
+            body.messages,
+            tools=body.tools or None,
+            max_tokens=1,
+            enable_thinking=thinking,
+        )
+        if counted is None:
+            raise HTTPException(status_code=400, detail="Cannot count draft tokens")
 
     previous = None
     async with _guard:
+        now = time.monotonic()
+        while (
+            _draft_revisions
+            and next(iter(_draft_revisions.values()))[1] < now - _REVISION_TTL_SECONDS
+        ):
+            _draft_revisions.popitem(last=False)
+        if body.kind == "draft":
+            prior = _draft_revisions.get(body.draft_key)
+            if prior is not None and body.revision <= prior[0]:
+                raise HTTPException(status_code=409, detail="Draft revision is stale")
         if _active is not None and not _active.done():
             if body.kind != "draft" or body.draft_key != _active_key:
                 raise HTTPException(
@@ -123,6 +199,11 @@ async def prefill(body: PrefillRequest, request: Request):
         _active = task
         _active_key = body.draft_key
         _active_revision = body.revision if body.revision is not None else -1
+        if body.kind == "draft":
+            _draft_revisions[body.draft_key] = (body.revision, now)
+            _draft_revisions.move_to_end(body.draft_key)
+            if len(_draft_revisions) > _MAX_REVISION_KEYS:
+                _draft_revisions.popitem(last=False)
 
     try:
         while not task.done():
