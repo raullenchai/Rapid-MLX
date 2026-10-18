@@ -423,7 +423,10 @@ def test_system_only_boundary_handles_native_template_and_render_failures():
     assert engine._compute_prefix_boundary(messages) > 0
     assert engine._compute_prefix_boundary(messages, tools) > 0
     assert engine._compute_prefix_boundary([]) == 0
-    assert engine._compute_prefix_boundary([{"role": "assistant", "content": "hello"}]) == 0
+    assert (
+        engine._compute_prefix_boundary([{"role": "assistant", "content": "hello"}])
+        == 0
+    )
     assert engine._compute_prefix_boundary([*messages, *messages]) == 0
 
     engine._apply_chat_template = lambda *_args, **_kwargs: (_ for _ in ()).throw(
