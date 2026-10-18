@@ -359,27 +359,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         )
         processes.append(bridge)
         _ready(bridge_port, bridge)
-        if not args.disable_prefix_cache and not args.system:
-            body = json.loads((ASSETS / "prefix.json").read_text())
-            body.update(model=model, max_tokens=1, temperature=0, stream=True)
-            request = urllib.request.Request(
-                f"http://127.0.0.1:{gate_port}/v1/chat/completions",
-                json.dumps(body).encode(),
-                {
-                    "Authorization": "Bearer " + proxy_key,
-                    "Content-Type": "application/json",
-                },
-            )
-            print(
-                "  Warming Goose Chat prefix …",
-                file=sys.stderr if script_mode else sys.stdout,
-                flush=True,
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=180) as response:
-                    response.read()
-            except OSError as exc:
-                print(f"  Prefix warmup skipped: {exc}", file=sys.stderr)
+        # Stock Goose sends its first request directly. An eager prefix
+        # request moves prefill work ahead of the user's prompt and makes
+        # first-launch latency materially worse even when TTFT looks fast.
         if script_mode:
             first_prompt = sys.stdin.read().strip()
             if not first_prompt:
