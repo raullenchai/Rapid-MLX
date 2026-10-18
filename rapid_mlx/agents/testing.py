@@ -1024,7 +1024,12 @@ def _agent_query(
     child_env.update(env_overrides or {})
     child_env.pop("CFFIXED_USER_HOME", None)
     browser = (env_overrides or {}).get("BROWSER")
-    launch_marker = Path(browser).parent / _GUI_LAUNCH_MARKER if browser else None
+    guarded_browser = Path(browser) if browser else None
+    launch_marker = (
+        guarded_browser.parent / _GUI_LAUNCH_MARKER
+        if guarded_browser == Path(child_env.get("HOME", "")) / "bin" / "open"
+        else None
+    )
     if launch_marker is not None:
         launch_marker.unlink(missing_ok=True)
     # OpenHands 1.x resolves these explicit paths before HOME and cwd. An

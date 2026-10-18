@@ -67,3 +67,41 @@ def test_child_never_receives_cffixed_user_home(tmp_path, monkeypatch):
     )
     assert error is None
     assert output.strip() == "absent"
+
+
+def test_unrelated_browser_override_does_not_touch_its_directory(tmp_path):
+    marker = tmp_path / ".gui-launch-attempted"
+    marker.write_text("keep", encoding="utf-8")
+    output, error = _agent_query(
+        sys.executable,
+        f"python -c {shlex.quote('print(123)')}",
+        "ignored",
+        env_overrides={"BROWSER": str(tmp_path / "other-browser")},
+    )
+    assert error is None
+    assert output.strip() == "123"
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path):
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    browser = _install_gui_launch_guard(fake_home)
+    script = (
+        "import subprocess, time; "
+        "subprocess.run(['open', 'https://example.invalid']); "
+        "time.sleep(5)"
+    )
+    output, error = _agent_query(
+        sys.executable,
+        f"python -c {shlex.quote(script)}",
+        "ignored",
+        timeout=2,
+        env_overrides={
+            "HOME": str(fake_home),
+            "PATH": f"{browser.parent}{os.pathsep}{os.environ['PATH']}",
+            "BROWSER": str(browser),
+        },
+    )
+    assert output is None
+    assert "agent tried to open a browser" in error
