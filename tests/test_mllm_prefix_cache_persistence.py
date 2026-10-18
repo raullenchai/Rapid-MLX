@@ -497,8 +497,11 @@ def test_save_oserror_preserves_committed_snapshot(
     fresh = generator()
     assert fresh.load_exact_prefix_cache_from_disk(path) == 1
     assert list(fresh._prefix_cache._exact_cache) == [old_key]
+    # Match the failure record itself: a test that ran earlier in the same
+    # process may have enabled INFO logging, so the reload above can log later.
+    failures = [r for r in caplog.records if "snapshot save failed" in r.getMessage()]
+    assert failures and all(r.levelname == "WARNING" for r in failures)
     assert "snapshot save failed: injected snapshot failure" in caplog.text
-    assert caplog.records[-1].levelname == "WARNING"
 
 
 def test_save_rollback_oserror_keeps_backup_recoverable(tmp_path, monkeypatch, caplog):
