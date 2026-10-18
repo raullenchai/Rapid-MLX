@@ -118,6 +118,36 @@ struct ClockContextFramingTests {
         #expect(retried.map(\.content) == rows.map(\.content))
     }
 
+    @Test("A late retry sends exactly one clock row per user turn and one current-time line, however often it is stamped")
+    func retryStampingIsIdempotentOnTheWire() throws {
+        let newest = instant.addingTimeInterval(600)
+        let later = newest.addingTimeInterval(45 * 60)
+        var rows = [
+            ChatMessage(role: .user, content: "Hello", createdAt: instant),
+            ChatMessage(role: .assistant, content: "Hi", createdAt: instant),
+            ChatMessage(role: .user, content: "What time is it?", createdAt: newest)
+        ]
+        // The send pipeline stamps before and after the trim, around both
+        // guidance passes, and every tool round re-runs it on the same array.
+        for _ in 0..<3 {
+            rows = ChatViewModel.stampingClockContext(on: rows, calendar: calendar, answeringAt: later)
+            rows = ChatViewModel.stampingToolGuidance(on: rows, toolsAdvertised: true)
+            rows = ChatViewModel.stampingClockContext(on: rows, calendar: calendar, answeringAt: later)
+        }
+        let request = ChatStreamClient.Request(alias: "test", messages: rows)
+        let wire = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request.messages)) as? [[String: Any]])
+        let contents = wire.compactMap { $0["content"] as? String }
+        #expect(wire.map { $0["role"] as? String } == ["user", "user", "assistant", "user", "user"])
+        #expect(contents.filter { $0.contains("(Local time:") }.count == 2)
+        #expect(contents.joined().components(separatedBy: "(Current time:").count == 2)
+        #expect(contents[3] == ChatViewModel.clockContext(at: newest, calendar: calendar)
+            + "\n(Current time: \(ChatViewModel.clockStampText(at: later, calendar: calendar)))")
+        #expect(contents[4] == "What time is it?")
+        // Nothing of it is persisted.
+        let decoded = try JSONDecoder().decode([ChatMessage].self, from: JSONEncoder().encode(rows))
+        #expect(decoded.allSatisfy { $0.wirePrelude == nil && $0.wireSuffix == nil })
+    }
+
     @Test("Retry appends current time during the repeated daylight-saving fall-back hour")
     func retryDuringRepeatedHour() {
         let formatter = ISO8601DateFormatter()
