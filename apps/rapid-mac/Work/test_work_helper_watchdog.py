@@ -56,7 +56,8 @@ class WatchdogTests(unittest.TestCase):
                 "items=(first second); "
                 "[[ $0 == /bin/bash && ${items[1]} == second "
                 "&& -z ${RAPID_LOCAL_WORK_KEY+x} "
-                "&& -z ${GOOSE_SERVER__SECRET_KEY+x} && -z ${WORK_PROXY_BEARER+x} ]] "
+                "&& -z ${GOOSE_SERVER__SECRET_KEY+x} && -z ${WORK_PROXY_BEARER+x} "
+                "&& -z ${WEB_SEARCH_GATE_TOKEN+x} ]] "
                 '&& printf "%s" "$SAFE_VALUE"'
             )
             result = subprocess.run(
@@ -68,6 +69,7 @@ class WatchdogTests(unittest.TestCase):
                     "RAPID_LOCAL_WORK_KEY": "private-key",
                     "GOOSE_SERVER__SECRET_KEY": "private-server-key",
                     "WORK_PROXY_BEARER": "private-proxy-key",
+                    "WEB_SEARCH_GATE_TOKEN": "private-search-key",
                     "SAFE_VALUE": "works",
                 },
                 check=False,
