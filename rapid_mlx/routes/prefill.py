@@ -265,7 +265,7 @@ async def prefill(body: PrefillRequest, request: Request):
                 # replacement handler itself was cancelled while waiting,
                 # do not admit its stale revision or launch new work.
                 current = asyncio.current_task()
-                if current is not None and current.cancelling():
+                if current is not None and cast(Any, current).cancelling():
                     raise
         task = asyncio.create_task(_warm(cfg.engine, body))
         _active = task
