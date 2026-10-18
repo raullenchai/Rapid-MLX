@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from rapid_mlx.routes import prefill as api
+from rapid_mlx.runtime import cache as runtime_cache
 from rapid_mlx.service.helpers import _TOOL_USE_SYSTEM_SUFFIX
 
 
@@ -38,6 +39,23 @@ class FakeEngine:
 class ConnectedRequest:
     async def is_disconnected(self):
         return False
+
+
+@pytest.mark.parametrize("missing_engine", [True, False])
+def test_unavailable_cache_reports_no_disk_checkpoint(monkeypatch, missing_engine):
+    engine = None if missing_engine else SimpleNamespace()
+    if engine is not None:
+        setattr(engine, runtime_cache._AUTO_LOAD_SKIPPED_ATTR, True)
+    monkeypatch.setattr(
+        runtime_cache, "get_config", lambda: SimpleNamespace(engine=engine)
+    )
+    monkeypatch.setattr(
+        runtime_cache,
+        "get_cache_dir",
+        lambda: pytest.fail("skipped restore must preserve the disk snapshot"),
+    )
+
+    assert runtime_cache.save_prefix_cache_to_disk(budget_sec=0) is False
 
 
 def test_prefill_rejects_media_and_disk_drafts():
