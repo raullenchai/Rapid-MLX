@@ -3123,44 +3123,61 @@ class MLLMBatchGenerator:
         staging = Path(str(target) + ".new")
         old = Path(str(target) + ".old")
         shutil.rmtree(staging, ignore_errors=True)
-        store = apc.DiskBlockStore(staging)
-        saved: list[int] = []
+        moved_old = False
         try:
-            with cache.lock:
-                entries = list(reversed(cache._exact_cache.items()))
-            for key, entry in entries:
-                if not self._persistable_exact_entry(entry, media_ids):
-                    continue
-                # Conservative shutdown write-throughput estimate.
-                predicted = self._exact_entry_bytes(entry.prompt_cache) / (100 << 20)
-                if should_abort is not None and should_abort(predicted):
-                    break
-                if store.save_exact_cache(
-                    key,
-                    entry.token_ids,
-                    entry.extra_hash,
-                    entry.prompt_cache,
-                    synchronous=True,
-                ):
-                    saved.append(key)
-        finally:
-            store.close()
-        if not saved:
-            shutil.rmtree(staging)
-            logger.info(
-                "[cache_persist] vision lane: no text-only exact prefix entries to persist"
-            )
+            store = apc.DiskBlockStore(staging)
+            saved: list[int] = []
+            try:
+                with cache.lock:
+                    entries = list(reversed(cache._exact_cache.items()))
+                for key, entry in entries:
+                    if not self._persistable_exact_entry(entry, media_ids):
+                        continue
+                    # Conservative shutdown write-throughput estimate.
+                    predicted = self._exact_entry_bytes(entry.prompt_cache) / (
+                        100 << 20
+                    )
+                    if should_abort is not None and should_abort(predicted):
+                        break
+                    if store.save_exact_cache(
+                        key,
+                        entry.token_ids,
+                        entry.extra_hash,
+                        entry.prompt_cache,
+                        synchronous=True,
+                    ):
+                        saved.append(key)
+            finally:
+                store.close()
+            if not saved:
+                shutil.rmtree(staging)
+                logger.info(
+                    "[cache_persist] vision lane: no text-only exact prefix entries to persist"
+                )
+                return False
+            # This index also marks a complete (possibly deadline-limited) snapshot.
+            index = staging / "index.json.tmp"
+            index.write_text(json.dumps(saved))
+            index.rename(staging / "index.json")
+            shutil.rmtree(old, ignore_errors=True)
+            if target.exists():
+                target.rename(old)
+                moved_old = True
+            staging.rename(target)
+            shutil.rmtree(old, ignore_errors=True)
+            return True
+        except OSError as exc:
+            logger.warning("[cache_persist] vision lane: snapshot save failed: %s", exc)
+            shutil.rmtree(staging, ignore_errors=True)
+            if moved_old:
+                try:
+                    old.rename(target)
+                except OSError as rollback_exc:
+                    logger.warning(
+                        "[cache_persist] vision lane: snapshot rollback failed: %s",
+                        rollback_exc,
+                    )
             return False
-        # This index also marks a complete (possibly deadline-limited) snapshot.
-        index = staging / "index.json.tmp"
-        index.write_text(json.dumps(saved))
-        index.rename(staging / "index.json")
-        shutil.rmtree(old, ignore_errors=True)
-        if target.exists():
-            target.rename(old)
-        staging.rename(target)
-        shutil.rmtree(old, ignore_errors=True)
-        return True
 
     def load_exact_prefix_cache_from_disk(self, cache_dir: str | Path) -> int:
         """Restore missing text-only entries on the scheduler's MLX step executor."""
@@ -3171,80 +3188,88 @@ class MLLMBatchGenerator:
             return 0
         cache, media_ids = context
         target = Path(cache_dir)
-        if not (target / "index.json").is_file():
-            for suffix in (".new", ".old"):
-                candidate = Path(str(target) + suffix)
-                if (candidate / "index.json").is_file():
-                    shutil.rmtree(target, ignore_errors=True)
-                    candidate.rename(target)
-                    break
-            else:
-                return 0
-        try:
-            keys = json.loads((target / "index.json").read_text())
-            if not isinstance(keys, list) or any(type(key) is not int for key in keys):
-                raise ValueError("index must be a list of integers (excluding bool)")
-        except (OSError, ValueError) as exc:
-            logger.warning(
-                "[cache_persist] vision lane: invalid snapshot index: %s", exc
-            )
-            return 0
-        store = apc.DiskBlockStore(target)
         loaded = 0
         try:
-            # Prefer the newest disk entries within the remaining capacity, then
-            # insert newest-last without evicting any already-live entry.
-            restored: list[tuple[int, Any]] = []
-            restored_bytes = 0
-            for key in keys:
-                with cache.lock:
-                    if key in cache._exact_cache:
-                        continue
-                    if (
-                        len(cache._exact_cache) + len(restored)
-                        >= cache._exact_cache_max
-                    ):
+            if not (target / "index.json").is_file():
+                for suffix in (".new", ".old"):
+                    candidate = Path(str(target) + suffix)
+                    if (candidate / "index.json").is_file():
+                        shutil.rmtree(target, ignore_errors=True)
+                        candidate.rename(target)
                         break
-                entry_bytes = store.exact_cache_bytes(key)
-                with self._media_entries_guard():
-                    live_bytes = self._exact_cache_footprint_bytes() + sum(
-                        entry.cache_bytes
-                        for entry in getattr(
-                            self, "_media_boundary_entries", {}
-                        ).values()
-                    )
-                projected_bytes = live_bytes + restored_bytes + entry_bytes
-                if any(
-                    budget > 0 and projected_bytes > budget
-                    for budget in (
-                        self._prefix_cache_max_bytes,
-                        cache.memory_max_bytes,
-                    )
+                else:
+                    return 0
+            try:
+                keys = json.loads((target / "index.json").read_text())
+                if not isinstance(keys, list) or any(
+                    type(key) is not int for key in keys
                 ):
-                    continue
-                if cache._disk_min_free_ram_bytes > 0:
-                    free_now = apc._free_ram_bytes()
-                    if (
-                        free_now is not None
-                        and free_now < cache._disk_min_free_ram_bytes + entry_bytes
+                    raise ValueError(
+                        "index must be a list of integers (excluding bool)"
+                    )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "[cache_persist] vision lane: invalid snapshot index: %s", exc
+                )
+                return 0
+            store = apc.DiskBlockStore(target)
+            try:
+                # Prefer the newest disk entries within the remaining capacity, then
+                # insert newest-last without evicting any already-live entry.
+                restored: list[tuple[int, Any]] = []
+                restored_bytes = 0
+                for key in keys:
+                    with cache.lock:
+                        if key in cache._exact_cache:
+                            continue
+                        if (
+                            len(cache._exact_cache) + len(restored)
+                            >= cache._exact_cache_max
+                        ):
+                            break
+                    entry_bytes = store.exact_cache_bytes(key)
+                    with self._media_entries_guard():
+                        live_bytes = self._exact_cache_footprint_bytes() + sum(
+                            entry.cache_bytes
+                            for entry in getattr(
+                                self, "_media_boundary_entries", {}
+                            ).values()
+                        )
+                    projected_bytes = live_bytes + restored_bytes + entry_bytes
+                    if any(
+                        budget > 0 and projected_bytes > budget
+                        for budget in (
+                            self._prefix_cache_max_bytes,
+                            cache.memory_max_bytes,
+                        )
                     ):
-                        break
-                snapshot = store.load_exact_cache(key)
-                if snapshot is None:
-                    continue
-                entry = apc.APCExactCacheEntry(*snapshot)
-                if self._persistable_exact_entry(entry, media_ids):
-                    restored.append((key, entry))
-                    restored_bytes += entry_bytes
-                del snapshot, entry
-            with cache.lock:
-                for key, entry in reversed(restored):
-                    cache._exact_cache[key] = entry
-                    loaded += 1
-            self._enforce_exact_cache_budget(cache)
-        finally:
-            store.close()
-        return loaded
+                        continue
+                    if cache._disk_min_free_ram_bytes > 0:
+                        free_now = apc._free_ram_bytes()
+                        if (
+                            free_now is not None
+                            and free_now < cache._disk_min_free_ram_bytes + entry_bytes
+                        ):
+                            break
+                    snapshot = store.load_exact_cache(key)
+                    if snapshot is None:
+                        continue
+                    entry = apc.APCExactCacheEntry(*snapshot)
+                    if self._persistable_exact_entry(entry, media_ids):
+                        restored.append((key, entry))
+                        restored_bytes += entry_bytes
+                    del snapshot, entry
+                with cache.lock:
+                    for key, entry in reversed(restored):
+                        cache._exact_cache[key] = entry
+                        loaded += 1
+                self._enforce_exact_cache_budget(cache)
+            finally:
+                store.close()
+            return loaded
+        except OSError as exc:
+            logger.warning("[cache_persist] vision lane: snapshot load failed: %s", exc)
+            return loaded
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""

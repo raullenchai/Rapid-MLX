@@ -420,3 +420,135 @@ def test_missing_scheduler_and_generator(tmp_path, caplog):
     assert not engine.save_cache_to_disk(str(tmp_path))
     assert engine.load_cache_from_disk(str(tmp_path)) == 0
     assert "no exact prefix scheduler available" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure", ["construction", "entry", "index", "index_rename", "backup", "final"]
+)
+def test_save_oserror_preserves_committed_snapshot(
+    tmp_path, monkeypatch, caplog, failure
+):
+    gen = generator()
+    old_key = add(gen)
+    path = tmp_path / "cache"
+    assert gen.save_exact_prefix_cache_to_disk(path)
+    before = {
+        p.relative_to(path): p.read_bytes() for p in path.rglob("*") if p.is_file()
+    }
+    add(gen, (4, 5, 6), tag=2)
+    original_rename = Path.rename
+    original_write = Path.write_text
+
+    def fail(*args, **kwargs):
+        raise OSError("injected snapshot failure")
+
+    def write(self, *args, **kwargs):
+        if self.name == "index.json.tmp":
+            fail()
+        return original_write(self, *args, **kwargs)
+
+    def rename(self, target):
+        if (
+            (failure == "index_rename" and self.name == "index.json.tmp")
+            or (failure == "backup" and self == path)
+            or (failure == "final" and self == Path(str(path) + ".new"))
+        ):
+            fail()
+        return original_rename(self, target)
+
+    with monkeypatch.context() as patch:
+        if failure == "construction":
+            patch.setattr(apc, "DiskBlockStore", fail)
+        elif failure == "entry":
+            patch.setattr(apc.DiskBlockStore, "save_exact_cache", fail)
+        elif failure == "index":
+            patch.setattr(Path, "write_text", write)
+        else:
+            patch.setattr(Path, "rename", rename)
+        assert gen.save_exact_prefix_cache_to_disk(path) is False
+    assert not Path(str(path) + ".new").exists()
+    assert not Path(str(path) + ".old").exists()
+    assert {
+        p.relative_to(path): p.read_bytes() for p in path.rglob("*") if p.is_file()
+    } == before
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert list(fresh._prefix_cache._exact_cache) == [old_key]
+    assert "snapshot save failed: injected snapshot failure" in caplog.text
+    assert caplog.records[-1].levelname == "WARNING"
+
+
+def test_save_rollback_oserror_keeps_backup_recoverable(tmp_path, monkeypatch, caplog):
+    gen = generator()
+    old_key = add(gen)
+    path = tmp_path / "cache"
+    assert gen.save_exact_prefix_cache_to_disk(path)
+    before = (path / "index.json").read_bytes()
+    add(gen, (4, 5, 6))
+    original_rename = Path.rename
+
+    def rename(self, target):
+        if self in (Path(str(path) + ".new"), Path(str(path) + ".old")):
+            raise OSError("rename unavailable")
+        return original_rename(self, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", rename)
+        assert gen.save_exact_prefix_cache_to_disk(path) is False
+    assert not Path(str(path) + ".new").exists()
+    assert (Path(str(path) + ".old") / "index.json").read_bytes() == before
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert list(fresh._prefix_cache._exact_cache) == [old_key]
+    assert "snapshot rollback failed: rename unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["construction", "entry", ".new", ".old", "close"])
+def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, failure):
+    source = generator()
+    add(source)
+    add(source, (4, 5, 6))
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    before = (path / "index.json").read_bytes()
+    snapshot_path = path
+    if failure in (".new", ".old"):
+        snapshot_path = path.rename(str(path) + failure)
+    fresh = generator()
+    live_key = add(fresh, (7, 8, 9), tag=42)
+    live = fresh._prefix_cache._exact_cache[live_key]
+    original_load = apc.DiskBlockStore.load_exact_cache
+    original_close = apc.DiskBlockStore.close
+    calls = []
+
+    def fail(*args, **kwargs):
+        raise OSError("injected snapshot failure")
+
+    def load(store, key):
+        calls.append(key)
+        if len(calls) == 2:
+            fail()
+        return original_load(store, key)
+
+    def close(store):
+        original_close(store)
+        fail()
+
+    with monkeypatch.context() as patch:
+        if failure == "construction":
+            patch.setattr(apc, "DiskBlockStore", fail)
+        elif failure == "entry":
+            patch.setattr(apc.DiskBlockStore, "load_exact_cache", load)
+        elif failure == "close":
+            patch.setattr(apc.DiskBlockStore, "close", close)
+        else:
+            patch.setattr(Path, "rename", fail)
+        assert fresh.load_exact_prefix_cache_from_disk(path) == (
+            2 if failure == "close" else 0
+        )
+    assert fresh._prefix_cache._exact_cache[live_key] is live
+    if failure != "close":
+        assert list(fresh._prefix_cache._exact_cache) == [live_key]
+    assert (snapshot_path / "index.json").read_bytes() == before
+    assert "snapshot load failed: injected snapshot failure" in caplog.text
+    assert caplog.records[-1].levelname == "WARNING"
