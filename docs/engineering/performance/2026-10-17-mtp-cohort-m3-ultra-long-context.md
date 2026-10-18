@@ -221,6 +221,13 @@ two points:
   is never split into a capped cohort plus overflow.
 - Dynamic joins never grow a cohort past 3 lanes. No join happens while more
   than 3 requests are live.
+- A cohort that is already running is not torn down when later requests
+  arrive. Those requests stay on the base queue and decode with plain
+  batching beside it, because the base generator still steps every cycle.
+  Once the cohort drains, no new cohort forms while more than 3 requests are
+  live. The measured bursts release every request at once, so they exercise
+  only the no-cohort case. Staggered arrivals that briefly mix a cohort with
+  plain rows were not measured separately (see follow-ups).
 
 The router's own `max_lanes` stays `min(max_num_seqs, completion_batch_size)`.
 Two earlier attempts lowered `max_lanes` itself to 3, and both measured worse
@@ -336,6 +343,10 @@ Design sketch, kept for that case:
 - The prefill memory gate over-estimates workspace for this hybrid model at
   long context (≈300 GB estimated for the selected rows at 32k vs 39–45 GB
   measured process peak). It serializes long prefills in every arm.
+- Staggered arrivals at 4+ concurrency briefly run an existing 2–3-lane
+  cohort beside plain-batched rows until it drains. Handing the live cohort
+  back to the base generator would avoid that mixed mode; it needs its own
+  cache handoff design and a staggered-arrival measurement.
 - The existing fallback tests mock `batch_gen.next`. An integration test
   with a real batch generator would cover the plain-decode handoff end to end.
 

@@ -1752,7 +1752,7 @@ def test_live_installer_counts_base_decode_and_prefill_rows(
 @pytest.mark.requires_mlx
 def test_live_installer_counts_pending_joins_against_cap(capped_cohort_installer):
     requests = {f"req-{uid}": _scheduler_request() for uid in (1, 2, 3)}
-    batch_gen, _, admitted = capped_cohort_installer((1, 2), requests=requests)
+    batch_gen, base_next, admitted = capped_cohort_installer((1, 2), requests=requests)
     assert admitted
     batch_gen.next()
     driver = batch_gen._continuous_mtp_driver
@@ -1773,6 +1773,9 @@ def test_live_installer_counts_pending_joins_against_cap(capped_cohort_installer
     assert len(driver.lane_uids) == 3
     assert not driver.pending_join_uids
     assert list(batch_gen._unprocessed_sequences) == overflow[1:]
+    # Overflow stays on the base queue, and the base generator still steps
+    # every cycle, so it decodes with plain batching beside the full cohort.
+    assert base_next.call_count == 4
 
 
 @pytest.mark.requires_mlx
