@@ -88,8 +88,7 @@ struct ToolLoopBudgetIntegrationTests {
         }
     }
 
-    // Use the parameter-block shape recognized by the existing tail detector;
-    // the pure-artifact tests above retain the captured multiline payload.
+    // Retain coverage for single-line parameter values as well.
     nonisolated private static let trailingArtifact = """
     <tool_call>
     <function=lookup>
@@ -104,7 +103,7 @@ struct ToolLoopBudgetIntegrationTests {
 
     @Test(
         "Final-round prose survives a trailing call with the suppression caption",
-        arguments: [trailingArtifact, trailingDeepSeekMarker]
+        arguments: [artifact, trailingArtifact, trailingDeepSeekMarker]
     )
     func finalArtifactKeepsProse(tail: String) async throws {
         ToolLoopBudgetProtocol.reset(finalAnswers: ["Here is the list.\n\n" + tail])
@@ -449,6 +448,7 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
         finalAnswers: [String] = ["Here is the answer from the evidence."],
         toolName: String = "lookup"
     ) {
+        precondition(!finalAnswers.isEmpty)
         self.finalAnswers = finalAnswers
         finalRoundCount = 0
         requestBodies = []

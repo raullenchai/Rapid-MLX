@@ -612,6 +612,44 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
     }
 
+    private static let multilineParameterArtifact = """
+    <tool_call>
+    <function=web_search>
+    <parameter=query>
+    lemon tart recipe ingredients
+    </parameter>
+    </function>
+    </tool_call>
+    """
+
+    @Test("A multiline XML parameter tail keeps the preceding prose", arguments: [false, true])
+    func multilineParameterTailKeepsProse(truncated: Bool) {
+        let tail = truncated
+            ? "<tool_call>\n<function=web_search>\n<parameter=query>\nlemon tart recipe ingredients"
+            : Self.multilineParameterArtifact
+        let content = "Here is the list.\n\n" + tail
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == "Here is the list.")
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: content) == "Here is the list.")
+    }
+
+    @Test("Prose after a multiline parameter example is preserved", arguments: [false, true])
+    func multilineParameterExampleKeepsExplanation(closedEnvelope: Bool) {
+        let example = closedEnvelope
+            ? Self.multilineParameterArtifact
+            : "<tool_call>\n<function=web_search>\n<parameter=query>\nlemon tart recipe ingredients\n</parameter>"
+        let content = "Here is the call:\n\n" + example
+            + "\n\nThe query parameter supplies the search terms."
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
+    @Test("A fenced multiline parameter example is untouched")
+    func fencedMultilineParameterExampleIsNotAnArtifact() {
+        let content = "Here is the call:\n\n```xml\n" + Self.multilineParameterArtifact + "\n```"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
     @Test("A pretty-printed envelope with array values is still a tail")
     func trailingPrettyPrintedEnvelopeIsAnArtifact() {
         // Adversarial review round 6 (codex, blocking): a pretty-printed call

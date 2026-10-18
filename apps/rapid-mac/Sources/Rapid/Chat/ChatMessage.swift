@@ -1543,7 +1543,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///
     /// Walks lines from the end: a blank line or a machine-syntax line
     /// (``isMachineSyntaxLine``) belongs to the run, and the first line that
-    /// reads as prose stops it.
+    /// reads as prose stops it. Open XML parameter blocks keep their value
+    /// lines in the run through the closing tag, or the end if truncated.
     ///
     /// Deliberately a line-shape test rather than a JSON/XML parse: the run
     /// only has to tell an envelope dump — what a model emits when the parser
@@ -1556,6 +1557,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     private static func terminalMachineSyntaxRunStart(in content: String) -> String.Index? {
         var runStart: String.Index?
         var sawContent = false
+        var inParameterBlock = false
         var lineStart = content.startIndex
         var index = content.startIndex
         // Forward pass recording the last prose line's successor, which is the
@@ -1565,9 +1567,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             let trimmed = content[lineStart..<lineEnd]
                 .trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty {
-                if isMachineSyntaxLine(trimmed) {
+                if inParameterBlock || isMachineSyntaxLine(trimmed) {
                     if runStart == nil { runStart = lineStart }
                     sawContent = true
+                    if inParameterBlock {
+                        if trimmed.contains("</parameter>") { inParameterBlock = false }
+                    } else if let opener = trimmed.range(of: "<parameter="),
+                              let openerEnd = trimmed[opener.upperBound...].firstIndex(of: ">"),
+                              openerEnd > opener.upperBound {
+                        inParameterBlock = !trimmed[trimmed.index(after: openerEnd)...].contains("</parameter>")
+                    }
                 } else {
                     // Prose: everything up to and including this line is the
                     // answer, so any run starts after it.
