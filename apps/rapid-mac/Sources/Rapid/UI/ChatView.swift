@@ -261,6 +261,7 @@ struct ChatView: View {
     /// The picker lives in the compose box now, not a top control bar.
     @Environment(DownloadManager.self) private var downloads
     @Environment(QuickstartCoordinator.self) private var quickstart
+    @Environment(\.controlActiveState) private var controlActiveState
 
     private var draft: String { viewModel.composerDraft }
     private var draftBinding: Binding<String> {
@@ -384,6 +385,13 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
         .onChange(of: viewModel.activeConversationID) { _, _ in
+            // The conversation-keyed editor is replaced, so carry forward
+            // focus only from the composer in this window.
+            if controlActiveState == .key,
+               let editor = NSApp.keyWindow?.firstResponder as? AutosizingTextView,
+               editor.accessibilityIdentifier() == AutosizingTextView.composeAccessibilityIdentifier {
+                composeFocusToken &+= 1
+            }
             pruneAttachmentDrafts()
             photoCapabilityNotice.dismiss()
         }
@@ -3023,7 +3031,7 @@ struct ComposeTextEditor: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
+        let coordinator = Coordinator(
             text: $text,
             onSubmit: onSubmit,
             onCancel: onCancel,
@@ -3031,6 +3039,10 @@ struct ComposeTextEditor: NSViewRepresentable {
             isStreaming: isStreaming,
             onRecallLastUser: onRecallLastUser
         )
+        // A replacement editor must not replay an earlier Send/Cmd+L request
+        // over another field. Conversation changes request focus explicitly.
+        coordinator.lastFocusToken = focusToken
+        return coordinator
     }
 
     @MainActor

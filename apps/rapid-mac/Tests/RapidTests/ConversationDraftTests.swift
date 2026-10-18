@@ -182,7 +182,7 @@ final class ConversationDraftTests: XCTestCase {
         XCTAssertEqual(ConversationDraftStore.load(from: draftURL), ConversationDrafts())
     }
 
-    func testValuePruningAndWhitespaceRemoval() throws {
+    func testValuePruningPreservesWhitespaceUntilEncoding() throws {
         let a = UUID(), stale = UUID(), missing = UUID()
         var drafts = ConversationDrafts()
         drafts.set(" A \n", for: a.uuidString)
@@ -196,7 +196,31 @@ final class ConversationDraftTests: XCTestCase {
         drafts.remove(missing)
         drafts.set("", for: stale.uuidString)
         drafts.set(" \n\t", for: ConversationDrafts.newChatKey)
+        XCTAssertEqual(drafts.text(for: ConversationDrafts.newChatKey), " \n\t")
+        XCTAssertEqual(drafts.pruned(keeping: []).text(for: ConversationDrafts.newChatKey), " \n\t")
+        XCTAssertEqual(try JSONDecoder().decode(ConversationDrafts.self, from: JSONEncoder().encode(drafts)), ConversationDrafts())
+        drafts.set("", for: ConversationDrafts.newChatKey)
         XCTAssertEqual(drafts, ConversationDrafts())
+    }
+
+    @MainActor
+    func testWhitespaceComposerInputSurvivesSavingButIsNotPersisted() throws {
+        let url = try isolatedStore()
+        let (model, a, _) = seededModel(at: url)
+        let draftURL = try XCTUnwrap(ConversationDraftStore.companionURL(forConversationStore: url))
+        for text in ["  ", "\n"] {
+            model.selectConversation(a)
+            model.composerDraft = text
+            XCTAssertEqual(model.composerDraft, text)
+            model.stopAndPersist()
+            ConversationDraftStore.flush()
+            XCTAssertEqual(model.composerDraft, text)
+            model.newConversation()
+            model.selectConversation(a)
+            XCTAssertEqual(model.composerDraft, text)
+            let json = try JSONSerialization.jsonObject(with: Data(contentsOf: draftURL)) as? [String: [String: String]]
+            XCTAssertEqual(try XCTUnwrap(json?["entries"]), [:])
+        }
     }
 
     func testStorePathsMissingRoundTripAndPermissions() throws {
@@ -212,6 +236,7 @@ final class ConversationDraftTests: XCTestCase {
         drafts.set(" \n", for: "empty")
         ConversationDraftStore.save(drafts, to: draftURL)
         ConversationDraftStore.flush()
+        drafts.set("", for: "empty")
         XCTAssertEqual(ConversationDraftStore.load(from: draftURL), drafts)
         let attributes = try FileManager.default.attributesOfItem(atPath: draftURL.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
@@ -240,6 +265,7 @@ final class ConversationDraftTests: XCTestCase {
         let draftURL = try XCTUnwrap(ConversationDraftStore.companionURL(forConversationStore: url))
         let json = ["entries": [a.id.uuidString: "A", stale.uuidString: "stale", "invalid": "bad", ConversationDrafts.newChatKey: " \n"]]
         try JSONEncoder().encode(json).write(to: draftURL)
+        XCTAssertEqual(ConversationDraftStore.load(from: draftURL).text(for: ConversationDrafts.newChatKey), "")
         let model = ChatViewModel(conversationStoreURL: url)
         XCTAssertEqual(model.composerDraft, "")
         model.selectConversation(a.id)

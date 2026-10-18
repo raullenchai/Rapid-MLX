@@ -5,10 +5,28 @@ struct ConversationDrafts: Codable, Equatable, Sendable {
     static let newChatKey = "new-chat"
     private var entries: [String: String] = [:]
 
+    private enum CodingKeys: String, CodingKey { case entries }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decode([String: String].self, forKey: .entries)
+            .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        // Preserve live keystrokes; blank drafts need no durable entry.
+        try container.encode(entries.filter {
+            !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }, forKey: .entries)
+    }
+
     func text(for key: String) -> String { entries[key] ?? "" }
 
     mutating func set(_ text: String, for key: String) {
-        entries[key] = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        entries[key] = text.isEmpty ? nil : text
     }
 
     mutating func remove(_ id: UUID) {

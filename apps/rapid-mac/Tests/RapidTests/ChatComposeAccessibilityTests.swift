@@ -14,6 +14,22 @@ import Testing
 @MainActor
 @Suite("ChatCompose accessibility shape")
 struct ChatComposeAccessibilityTests {
+    @Test("A fresh editor consumes old focus requests instead of replaying them")
+    func freshCoordinatorDoesNotReplayFocusToken() {
+        let editor = ComposeTextEditor(
+            text: .constant(""),
+            focusToken: 7,
+            isStreaming: false,
+            onSubmit: {},
+            onCancel: {},
+            onPasteAttachments: { false },
+            onDropAttachments: nil,
+            onRecallLastUser: { nil },
+            onMeasuredHeight: { _ in }
+        )
+        #expect(editor.makeCoordinator().lastFocusToken == 7)
+    }
+
     @Test("Marked text reports composition until AppKit unmarks it")
     func markedTextReportsCompositionLifecycle() {
         let tv = AutosizingTextView()
