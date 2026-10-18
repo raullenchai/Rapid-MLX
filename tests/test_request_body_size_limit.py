@@ -673,6 +673,73 @@ def test_drain_total_budget_closes_connection(monkeypatch, busy):
 
 
 @pytest.mark.parametrize("slow_path", [False, True])
+@pytest.mark.parametrize("final_bytes", [None, 1, 2, 3])
+def test_drain_byte_budget(monkeypatch, slow_path, final_bytes):
+    import rapid_mlx.middleware.body_size as body_size
+
+    monkeypatch.setattr(body_size, "_DRAIN_MAX_BYTES", 4)
+    calls = 0
+    drain_calls = 0
+
+    async def receive():
+        nonlocal calls, drain_calls
+        calls += 1
+        if slow_path and calls == 1:
+            return {"type": "http.request", "body": b"x" * 4096, "more_body": True}
+        drain_calls += 1
+        assert drain_calls <= 3, "drain continued past its byte budget"
+        final = final_bytes is not None and drain_calls == 2
+        return {
+            "type": "http.request",
+            "body": b"x" * (final_bytes if final else 2),
+            "more_body": not final,
+        }
+
+    async def app(scope, receive, send):
+        await receive()
+        pytest.fail("oversized chunk reached downstream")
+
+    headers = _run_rejection(
+        receive,
+        headers=[] if slow_path else [(b"content-length", b"4096")],
+        app=app if slow_path else None,
+    )
+    assert drain_calls == (3 if final_bytes is None else 2)
+    assert ((b"connection", b"close") in headers) is (final_bytes is None)
+    assert body_size._active_drains == 0
+
+
+@pytest.mark.parametrize("slow_path", [False, True])
+def test_receive_exception_during_drain_closes_connection(slow_path, caplog):
+    import rapid_mlx.middleware.body_size as body_size
+
+    calls = 0
+
+    async def receive():
+        nonlocal calls
+        calls += 1
+        if slow_path and calls == 1:
+            return {"type": "http.request", "body": b"x" * 4096, "more_body": True}
+        raise RuntimeError("receive failed")
+
+    async def app(scope, receive, send):
+        await receive()
+        pytest.fail("oversized chunk reached downstream")
+
+    with caplog.at_level("DEBUG", logger=body_size.__name__):
+        headers = _run_rejection(
+            receive,
+            headers=[] if slow_path else [(b"content-length", b"4096")],
+            app=app if slow_path else None,
+        )
+    assert calls == (2 if slow_path else 1)
+    assert (b"connection", b"close") in headers
+    record = next(r for r in caplog.records if "drain receive failed" in r.message)
+    assert record.exc_info[0] is RuntimeError
+    assert body_size._active_drains == 0
+
+
+@pytest.mark.parametrize("slow_path", [False, True])
 def test_disconnect_during_drain_closes_connection(slow_path):
     calls = []
 
@@ -723,8 +790,8 @@ def test_drain_uses_short_grace_period(monkeypatch, receive_timeout, expected_id
     get_config().body_receive_timeout_seconds = receive_timeout
     drain_calls = []
 
-    async def drain(receive, *, idle_timeout, total_budget):
-        drain_calls.append((idle_timeout, total_budget))
+    async def drain(receive, *, idle_timeout, total_budget, max_bytes):
+        drain_calls.append((idle_timeout, total_budget, max_bytes))
         return False
 
     monkeypatch.setattr(body_size, "_drain_request_body", drain)
@@ -733,7 +800,7 @@ def test_drain_uses_short_grace_period(monkeypatch, receive_timeout, expected_id
         pytest.fail("drain should be replaced")
 
     headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
-    assert drain_calls == [(expected_idle, 10.0)]
+    assert drain_calls == [(expected_idle, 10.0, 64 * 1024 * 1024)]
     assert (b"connection", b"close") in headers
 
 
@@ -791,16 +858,10 @@ def test_drain_capacity_is_released(outcome):
 
     async def run():
         assert body_size._active_drains == 0
-        if outcome == "exception":
-            with pytest.raises(RuntimeError, match="receive failed"):
-                await body_size._drain_if_capacity(
-                    receive, idle_timeout=0.001, total_budget=1
-                )
-        else:
-            drained = await body_size._drain_if_capacity(
-                receive, idle_timeout=0.001, total_budget=1
-            )
-            assert drained is (outcome == "complete")
+        drained = await body_size._drain_if_capacity(
+            receive, idle_timeout=0.001, total_budget=1, max_bytes=1024
+        )
+        assert drained is (outcome == "complete")
         assert body_size._active_drains == 0
 
     asyncio.run(run())

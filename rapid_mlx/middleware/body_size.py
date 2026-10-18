@@ -53,7 +53,9 @@ logger = logging.getLogger(__name__)
 
 # The drain only lets a client still uploading read the 413 instead of a TCP
 # reset. This short bounded grace period cuts stalled clients after 2 s idle
-# and any client after 10 s total, then sends the 413 with Connection: close.
+# and any client after 10 s total or a 64 MiB discard budget, then sends
+# the 413 with Connection: close.
+_DRAIN_MAX_BYTES = 64 * 1024 * 1024
 _DRAIN_TOTAL_SECONDS = 10.0
 _DRAIN_IDLE_SECONDS_MAX = 2.0
 _MAX_CONCURRENT_DRAINS = 16
@@ -174,9 +176,9 @@ def _resolve_body_receive_timeout() -> float:
 
 
 async def _drain_request_body(
-    receive, *, idle_timeout: float, total_budget: float
+    receive, *, idle_timeout: float, total_budget: float, max_bytes: int
 ) -> bool:
-    """Discard unread body bytes within idle and wall-clock bounds before a 413."""
+    """Discard unread body bytes within idle, wall-clock, and byte bounds before a 413."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + total_budget
     drained_bytes = 0
@@ -194,16 +196,29 @@ async def _drain_request_body(
         except asyncio.TimeoutError:
             logger.debug("body-size drain timed out (discarded=%d)", drained_bytes)
             return False
+        except Exception:
+            logger.debug(
+                "body-size drain receive failed (discarded=%d)",
+                drained_bytes,
+                exc_info=True,
+            )
+            return False
         if msg.get("type") == "http.disconnect":
             return False
         if msg.get("type") == "http.request":
             drained_bytes += len(msg.get("body", b"") or b"")
             if not msg.get("more_body", False):
                 return True
+            if drained_bytes > max_bytes:
+                logger.debug(
+                    "body-size drain byte budget exhausted (discarded=%d)",
+                    drained_bytes,
+                )
+                return False
 
 
 async def _drain_if_capacity(
-    receive, *, idle_timeout: float, total_budget: float
+    receive, *, idle_timeout: float, total_budget: float, max_bytes: int
 ) -> bool:
     # Draining is a courtesy so actively uploading clients can read the 413.
     # At most 16 run at once; extra rejections skip it so stalled oversized
@@ -214,7 +229,10 @@ async def _drain_if_capacity(
     _active_drains += 1
     try:
         return await _drain_request_body(
-            receive, idle_timeout=idle_timeout, total_budget=total_budget
+            receive,
+            idle_timeout=idle_timeout,
+            total_budget=total_budget,
+            max_bytes=max_bytes,
         )
     finally:
         _active_drains -= 1
@@ -286,6 +304,7 @@ class RequestBodyLimitMiddleware:
                     receive,
                     idle_timeout=drain_idle_timeout,
                     total_budget=_DRAIN_TOTAL_SECONDS,
+                    max_bytes=_DRAIN_MAX_BYTES,
                 )
             await _send_413(
                 send,
@@ -547,6 +566,7 @@ class RequestBodyLimitMiddleware:
                 receive,
                 idle_timeout=drain_idle_timeout,
                 total_budget=_DRAIN_TOTAL_SECONDS,
+                max_bytes=_DRAIN_MAX_BYTES,
             )
             await _send_413(
                 send,
