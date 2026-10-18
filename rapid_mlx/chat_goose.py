@@ -317,7 +317,6 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
                 model,
                 "--no-session",
                 "--interactive",
-                "--no-profile",
                 "--with-builtin",
                 BUILTINS,
                 "--output-format",
