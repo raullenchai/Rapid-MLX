@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -453,10 +454,19 @@ def test_busy_update_journey_requires_unobscured_model_start():
 # Execute the real Bash evidence boundary without launching a GUI. Keep these
 # in the existing registered desktop contract suite so all GUI lanes run them.
 def run_shell(tmp_path, body):
+    # A pytest-xdist worker may inherit SIGINT as ignored. Bash preserves that
+    # disposition on startup and then ignores even an explicit INT trap. Reset
+    # it before exec so the signal test exercises the harness's real trap.
+    reset_and_exec = (
+        "import os, signal, sys; "
+        "signal.signal(signal.SIGINT, signal.SIG_DFL); "
+        "os.execv('/bin/bash', ['/bin/bash', '-c', sys.argv[1]])"
+    )
     return subprocess.run(
         [
-            "/bin/bash",
+            sys.executable,
             "-c",
+            reset_and_exec,
             'source "$HARNESS"; OUT_ROOT="$EVIDENCE"; mkdir -p "$OUT_ROOT"; cleanup_persona() { :; }; cleanup_operator_server() { :; }; cleanup_telemetry_sink() { :; }; trap finish EXIT; '
             + body,
         ],

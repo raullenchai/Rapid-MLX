@@ -822,7 +822,7 @@ def test_run_uvicorn_probe_failure_does_not_mask_systemexit(monkeypatch):
     )
 
 
-def test_port_is_busy_returns_false_on_probe_side_exception():
+def test_port_is_busy_returns_false_on_probe_side_exception(monkeypatch):
     """Direct unit test on ``_port_is_busy``: when the probe machinery
     fails for ANY reason (host normalization, socket constructor,
     etc.) the helper must return ``False`` so the caller's ``raise``
@@ -830,14 +830,17 @@ def test_port_is_busy_returns_false_on_probe_side_exception():
     BLOCKING contract at the helper boundary, complementing the
     integration test above.
 
-    We pass ``host=None`` which would historically have raised a
-    ``TypeError`` from ``probe.bind((None, port))``; the outer
-    ``except BaseException`` (or the explicit ``isinstance`` guard)
-    must convert that into ``False`` rather than re-raising.
+    Raise from the socket constructor itself. Non-string hosts are
+    normalized to the wildcard address and can report a real port
+    collision when another test happens to own port 8000.
     """
-    # Should return False, NOT raise.
-    assert cli._port_is_busy(None, 8000) is False  # type: ignore[arg-type]
-    assert cli._port_is_busy(12345, 8000) is False  # type: ignore[arg-type]
+    import socket
+
+    def _probe_explodes(*_args, **_kwargs):
+        raise TypeError("simulated probe-side failure")
+
+    monkeypatch.setattr(socket, "socket", _probe_explodes)
+    assert cli._port_is_busy("127.0.0.1", 8000) is False
 
 
 def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(monkeypatch, capsys):

@@ -723,6 +723,10 @@ from tests.test_share_quicksilver import _make_args, _register_payload, _patched
 from tests.test_share_progress import metrics_response, metrics
 import sys
 os.environ["HOME"] = sys.argv[1]
+# xdist can leave SIGINT ignored in its worker process. Python preserves an
+# ignored disposition across exec, so make this child behave like a foreground
+# CLI before asking QuickSilver to handle a real Ctrl-C.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 entered = threading.Event()
 reads = [0]
 stop_forever = threading.Event()

@@ -545,9 +545,16 @@ class TestVLMFamily:
             return real_kernel(*args, **kwargs)
 
         monkeypatch.setattr(decode, "fused_gdn_decode", spy)
+        # The projection probe can reject this MLX/hardware pair even for
+        # otherwise eligible synthetic weights. Match the install contract:
+        # each qualified layer fuses, while rejected layers stay stock.
+        qualified_layers = sum(
+            bool(gdn_in_proj_fusion._probe_projection_parity(item))
+            for item in model.layers
+        )
         if decode_first:
             assert decode.install_qwen35_fused_gdn_decode(model) == 2
-        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 2
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == qualified_layers
         assert decode.install_qwen35_fused_gdn_decode(model) == 2
         assert all(getattr(item, decode._TAG) for item in model.layers)
         after = run()
