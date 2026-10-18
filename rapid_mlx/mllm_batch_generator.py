@@ -3218,6 +3218,24 @@ class MLLMBatchGenerator:
                 # insert newest-last without evicting any already-live entry.
                 restored: list[tuple[int, Any]] = []
                 restored_bytes = 0
+
+                def over_budget(pending_bytes: int) -> bool:
+                    with self._media_entries_guard():
+                        live_bytes = self._exact_cache_footprint_bytes() + sum(
+                            media.cache_bytes
+                            for media in getattr(
+                                self, "_media_boundary_entries", {}
+                            ).values()
+                        )
+                    projected = live_bytes + pending_bytes
+                    return any(
+                        budget > 0 and projected > budget
+                        for budget in (
+                            self._prefix_cache_max_bytes,
+                            cache.memory_max_bytes,
+                        )
+                    )
+
                 for key in keys:
                     with cache.lock:
                         if key in cache._exact_cache:
@@ -3227,39 +3245,35 @@ class MLLMBatchGenerator:
                             >= cache._exact_cache_max
                         ):
                             break
-                    entry_bytes = store.exact_cache_bytes(key)
-                    with self._media_entries_guard():
-                        live_bytes = self._exact_cache_footprint_bytes() + sum(
-                            entry.cache_bytes
-                            for entry in getattr(
-                                self, "_media_boundary_entries", {}
-                            ).values()
-                        )
-                    projected_bytes = live_bytes + restored_bytes + entry_bytes
-                    if any(
-                        budget > 0 and projected_bytes > budget
-                        for budget in (
-                            self._prefix_cache_max_bytes,
-                            cache.memory_max_bytes,
-                        )
-                    ):
-                        continue
-                    if cache._disk_min_free_ram_bytes > 0:
-                        free_now = apc._free_ram_bytes()
-                        if (
-                            free_now is not None
-                            and free_now < cache._disk_min_free_ram_bytes + entry_bytes
-                        ):
-                            break
                     try:
+                        # On-disk size gates the read; the decoded footprint
+                        # gates insertion, so live entries are never evicted
+                        # to make room for restored ones.
+                        entry_bytes = store.exact_cache_bytes(key)
+                        if over_budget(restored_bytes + entry_bytes):
+                            continue
+                        if cache._disk_min_free_ram_bytes > 0:
+                            free_now = apc._free_ram_bytes()
+                            if (
+                                free_now is not None
+                                and free_now
+                                < cache._disk_min_free_ram_bytes + entry_bytes
+                            ):
+                                break
                         snapshot = store.load_exact_cache(key)
                         if snapshot is None:
                             continue
                         entry = apc.APCExactCacheEntry(*snapshot)
-                        if self._persistable_exact_entry(entry, media_ids):
+                        del snapshot
+                        actual_bytes = max(
+                            entry_bytes, self._exact_entry_bytes(entry.prompt_cache)
+                        )
+                        if self._persistable_exact_entry(
+                            entry, media_ids
+                        ) and not over_budget(restored_bytes + actual_bytes):
                             restored.append((key, entry))
-                            restored_bytes += entry_bytes
-                        del snapshot, entry
+                            restored_bytes += actual_bytes
+                        del entry
                     except Exception as exc:
                         logger.warning(
                             "[cache_persist] vision lane: skipped unreadable "
@@ -3276,7 +3290,6 @@ class MLLMBatchGenerator:
                             continue
                         cache._exact_cache[key] = entry
                         loaded += 1
-                self._enforce_exact_cache_budget(cache)
             finally:
                 store.close()
             return loaded

@@ -581,3 +581,37 @@ def test_entry_that_becomes_live_during_restore_is_not_overwritten(
     assert fresh.load_exact_prefix_cache_from_disk(tmp_path / "cache") == 0
     live = fresh._prefix_cache._exact_cache[key]
     assert mx.array_equal(live.prompt_cache[1].cache[0], mx.full((1, 2), 5.0))
+
+
+def test_restore_rejects_decoded_footprint_over_budget_without_evicting_live(
+    tmp_path, monkeypatch
+):
+    source = generator()
+    add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    fresh = generator()
+    live_key = add(fresh, (7, 8, 9), tag=3)
+    live = fresh._prefix_cache._exact_cache[live_key]
+    live_bytes = fresh._exact_entry_bytes(live.prompt_cache)
+    # The on-disk size understates the decoded footprint: the read is admitted
+    # but the decoded entry must not be inserted, and the live entry survives.
+    monkeypatch.setattr(apc.DiskBlockStore, "exact_cache_bytes", lambda self, key: 1)
+    fresh._prefix_cache_max_bytes = live_bytes + 2
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 0
+    assert list(fresh._prefix_cache._exact_cache) == [live_key]
+    assert fresh._prefix_cache._exact_cache[live_key] is live
+
+
+def test_restore_skips_entry_whose_size_probe_raises(tmp_path, monkeypatch, caplog):
+    source = generator()
+    add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+
+    def broken(self, key):
+        raise ValueError("bad entry metadata")
+
+    monkeypatch.setattr(apc.DiskBlockStore, "exact_cache_bytes", broken)
+    assert generator().load_exact_prefix_cache_from_disk(path) == 0
+    assert "skipped unreadable snapshot entry: bad entry metadata" in caplog.text
