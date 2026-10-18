@@ -1000,7 +1000,7 @@ def test_rerank_runs_on_chat_model_worker_when_running(
     assert resp.status_code == 200
     assert worker.calls == worker_calls
     assert len(engine.threads) == 1
-    assert engine.threads[0].startswith("mlx-rerank") is not running
+    assert engine.threads[0].startswith("mlx-retrieval") is not running
 
 
 def test_rerank_error_on_chat_worker_is_not_retried(rerank_client):

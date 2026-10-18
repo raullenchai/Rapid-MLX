@@ -3,8 +3,6 @@
 
 import asyncio
 import base64
-import concurrent.futures
-import functools
 import logging
 import math
 import struct
@@ -22,40 +20,11 @@ from ..api.models import (
 )
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ._mlx_worker import run_on_mlx_worker
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Serializes embedding work when no chat model worker is available.
-_embedding_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="mlx-embedding"
-)
-
-
-# Runs ``func`` off the event loop, on the chat model's worker if there is one:
-# that worker also runs every chat forward pass, so embedding never overlaps them.
-async def _run_on_mlx_worker(func, /, *args, **kwargs):
-    primary = get_config().engine
-    execute = getattr(primary, "execute_on_model_worker", None)
-    if callable(execute):
-        started = False
-
-        def call():
-            nonlocal started
-            started = True
-            return func(*args, **kwargs)
-
-        try:
-            return await execute(call)
-        except RuntimeError:
-            # Raised by ``func`` itself, or the worker is not running (lazy
-            # primary before its first load, or shut down during a switch).
-            if started:
-                raise
-    return await asyncio.get_running_loop().run_in_executor(
-        _embedding_executor, functools.partial(func, *args, **kwargs)
-    )
 
 
 @router.post(
@@ -247,7 +216,7 @@ async def create_embeddings(
         try:
             if token_batches is not None:
                 prompt_tokens = sum(min(len(b), eff_limit) for b in token_batches)
-                embeddings = await _run_on_mlx_worker(
+                embeddings = await run_on_mlx_worker(
                     cfg.embedding_engine.embed_tokens, token_batches
                 )
                 n_inputs = len(token_batches)
@@ -261,7 +230,7 @@ async def create_embeddings(
                         embedding_engine.embed(texts),
                     )
 
-                prompt_tokens, embeddings = await _run_on_mlx_worker(count_and_embed)
+                prompt_tokens, embeddings = await run_on_mlx_worker(count_and_embed)
                 n_inputs = len(texts)
         except EmbeddingUnsupportedMediaError as exc:
             raise HTTPException(

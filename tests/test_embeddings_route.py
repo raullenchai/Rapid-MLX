@@ -187,6 +187,25 @@ def test_embeddings_returns_200_when_configured(monkeypatch):
     engine.embed.assert_called_once()
 
 
+def test_embeddings_pretokenized_input_uses_retrieval_worker(monkeypatch):
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed_tokens.return_value = [[1.0, 0.0]]
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": "stub-embed", "input": [101, 102]},
+        )
+    finally:
+        restore()
+
+    assert response.status_code == 200, response.text
+    engine.embed_tokens.assert_called_once_with([[101, 102]])
+
+
 class _ChatWorker:
     def __init__(self, running=True):
         self.running = running
@@ -267,6 +286,47 @@ async def test_embedding_does_not_block_event_loop(monkeypatch, chat_engine):
         restore()
 
 
+async def test_embedding_and_rerank_fallbacks_share_one_mlx_lane(chat_engine):
+    import asyncio
+    import threading
+
+    from rapid_mlx.routes import embeddings, rerank
+
+    first_started = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    thread_ids = []
+
+    def blocking_work():
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            thread_ids.append(threading.get_ident())
+            first_started.set()
+        try:
+            assert release.wait(timeout=5)
+        finally:
+            with lock:
+                active -= 1
+
+    chat_engine.engine = None
+    embedding = asyncio.create_task(embeddings.run_on_mlx_worker(blocking_work))
+    try:
+        assert await asyncio.to_thread(first_started.wait, 5)
+        reranking = asyncio.create_task(rerank.run_on_mlx_worker(blocking_work))
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.gather(embedding, reranking)
+    finally:
+        release.set()
+
+    assert len(set(thread_ids)) == 1
+    assert max_active == 1
+
+
 @pytest.mark.parametrize(("running", "worker_calls"), [(True, 1), (False, 0)])
 def test_embedding_runs_on_chat_model_worker_when_running(
     monkeypatch, chat_engine, running, worker_calls
@@ -284,7 +344,7 @@ def test_embedding_runs_on_chat_model_worker_when_running(
     assert r.status_code == 200, r.text
     assert worker.calls == worker_calls
     assert len(engine.threads) == 1
-    assert engine.threads[0].startswith("mlx-embedding") is not running
+    assert engine.threads[0].startswith("mlx-retrieval") is not running
 
 
 def test_embedding_error_on_chat_worker_is_not_retried(monkeypatch, chat_engine):
