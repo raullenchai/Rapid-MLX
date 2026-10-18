@@ -97,6 +97,7 @@ struct DOCXTextExtractor: Sendable {
                 defer { buffer.deallocate() }
                 var stream = compression_stream(dst_ptr: buffer, dst_size: 0,
                                                 src_ptr: base + start, src_size: document.compressed, state: nil)
+                // ZIP method 8 is raw DEFLATE; COMPRESSION_ZLIB is Apple's raw-DEFLATE decoder.
                 guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else { throw Failure.malformed }
                 defer { compression_stream_destroy(&stream) }
                 stream.src_ptr = base + start
@@ -204,7 +205,7 @@ struct DOCXTextExtractor: Sendable {
             let piece = value.prefix(max(0, limit - count))
             text.append(contentsOf: piece)
             count += piece.count
-            if count >= limit { capped = true; parser.abortParsing() }
+            if !value[piece.endIndex...].allSatisfy(\.isWhitespace) { capped = true; parser.abortParsing() }
         }
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
             tick(parser)
