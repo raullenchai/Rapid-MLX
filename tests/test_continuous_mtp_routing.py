@@ -1660,9 +1660,9 @@ def capped_cohort_installer(monkeypatch):
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize(
     ("maximum", "completion", "expected"),
-    [(8, 8, 3), (2, 8, 2), (3, 8, 3), (8, 2, 2), (1, 8, None), (8, 1, None)],
+    [(8, 8, 8), (2, 8, 2), (3, 8, 3), (8, 2, 2), (1, 8, None), (8, 1, None)],
 )
-def test_live_installer_caps_cohort_capacity(
+def test_live_installer_preserves_router_capacity(
     capped_cohort_installer, caplog, maximum, completion, expected
 ):
     batch_gen, _, admitted = capped_cohort_installer(
@@ -1675,6 +1675,39 @@ def test_live_installer_caps_cohort_capacity(
     else:
         assert batch_gen._continuous_mtp_router.config.max_lanes == expected
         assert batch_gen._continuous_mtp_router.config.min_batch_lanes == 2
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("maximum", "completion", "expected"), [(8, 16, 8), (16, 8, 8), (8, 2, 2)]
+)
+def test_cohort_cap_preserves_scheduler_admission_without_driver(
+    capped_cohort_installer, maximum, completion, expected
+):
+    from rapid_mlx.scheduler import Scheduler, SchedulerConfig
+
+    batch_gen, _, admitted = capped_cohort_installer(
+        (1, 2, 3, 4), max_num_seqs=maximum, completion_batch_size=completion
+    )
+    assert admitted
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        max_num_seqs=maximum,
+        completion_batch_size=completion,
+    )
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+    scheduler.batch_generator = batch_gen
+
+    assert batch_gen._continuous_mtp_driver is None
+    assert scheduler._max_running_sequences() == expected
+    # A burst above the cohort cap stays on the ordinary decode path without
+    # reducing admission for the next scheduler step.
+    batch_gen.next()
+    assert batch_gen._continuous_mtp_driver is None
+    assert scheduler._max_running_sequences() == expected
 
 
 @pytest.mark.requires_mlx

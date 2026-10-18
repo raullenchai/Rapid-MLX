@@ -1088,7 +1088,6 @@ def _install_continuous_mtp_router(
     max_lanes = min(
         int(getattr(config, "max_num_seqs", 4)),
         int(getattr(config, "completion_batch_size", 32)),
-        _CONTINUOUS_MTP_MAX_COHORT_LANES,
     )
     if max_lanes < 1:
         logger.warning(
@@ -1311,7 +1310,7 @@ def _install_continuous_mtp_router(
             ),
             len(requests) if requests is not None else 0,
         )
-        if occupancy > router.config.max_lanes:
+        if occupancy > _CONTINUOUS_MTP_MAX_COHORT_LANES:
             level = (
                 logging.DEBUG if _CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED else logging.INFO
             )
@@ -1321,7 +1320,7 @@ def _install_continuous_mtp_router(
                 "[MTP-continuous] skipping cohort formation: occupancy=%d exceeds "
                 "cap=%d; retaining plain batched decode",
                 occupancy,
-                router.config.max_lanes,
+                _CONTINUOUS_MTP_MAX_COHORT_LANES,
             )
             return
         metadata = [item[1] for item in candidates]
@@ -1376,10 +1375,15 @@ def _install_continuous_mtp_router(
     def _stage_joins() -> None:
         if driver is None or not driver.dynamic_membership:
             return
-        if requests is not None and len(requests) > router.config.max_lanes:
+        if requests is not None and len(requests) > _CONTINUOUS_MTP_MAX_COHORT_LANES:
             return
         occupied = len(driver.lane_uids) + len(driver.pending_join_uids)
-        room = max(0, int(router.config.max_lanes) - occupied)
+        # The router's width also controls scheduler admission. Limit only
+        # cohort membership so overflow can still use ordinary batched decode.
+        cohort_capacity = min(
+            int(router.config.max_lanes), _CONTINUOUS_MTP_MAX_COHORT_LANES
+        )
+        room = max(0, cohort_capacity - occupied)
         if room == 0 or _free_bytes() <= int(router.config.hard_reserve_bytes):
             return
         joining_specs: list[SelfMTPLaneSpec] = []
