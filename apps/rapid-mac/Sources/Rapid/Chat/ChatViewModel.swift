@@ -207,10 +207,6 @@ final class ChatViewModel {
     The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
     """
 
-    nonisolated private static let unreadableToolRequestPreamble = """
-    Your previous tool request could not be completed. No more tools are available for this answer. Use any successful tool result already present for this user turn. If there is no usable result, explain in the user's language that you could not retrieve or verify the needed information. Do not guess about live or external facts, and do not print a tool request.
-    """
-
     /// Per-tool on/off flags, persisted in ``UserDefaults`` under keys of the
     /// form ``rapid.tools.enabled.<name>``. Every tool defaults to enabled;
     /// an explicit stored Bool wins. ``enabledDefinitions`` filters disabled
@@ -2636,7 +2632,6 @@ final class ChatViewModel {
         // A malformed model-emitted call is resampled once. If it repeats,
         // finish with a tools-disabled answer that states the uncertainty.
         var unreadableToolRequestCount = 0
-        var forceUnreadableToolFallback = false
         var emptyEarlyToolRetryUsed = false
         var retryingEarlyEmptyToolRequest = false
         // The confabulated draft we are replacing, kept until the correction
@@ -2757,10 +2752,8 @@ final class ChatViewModel {
             // A tool-free chat also runs as a "final" round; only a request
             // that ends on tool evidence is a real synthesis round.
             let synthesizesToolEvidence =
-                isFinalSynthesisRound && !forceUnreadableToolFallback && history.last?.role == .tool
-            if forceUnreadableToolFallback {
-                history = ChatViewModel.addingUnreadableToolRequestPreamble(to: history)
-            } else if synthesizesToolEvidence {
+                isFinalSynthesisRound && history.last?.role == .tool
+            if synthesizesToolEvidence {
                 history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
             }
             // Whether any document extract survived onto THIS request, read
@@ -2839,7 +2832,6 @@ final class ChatViewModel {
                 if epoch == conversationEpoch,
                    !Task.isCancelled,
                    !definitions.isEmpty,
-                   !forceUnreadableToolFallback,
                    let empty = currentMessage(index: currentPlaceholder),
                    empty.status == .failed,
                    empty.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2860,41 +2852,29 @@ final class ChatViewModel {
                 // the user is told what information could not be fetched.
                 if epoch == conversationEpoch,
                    !Task.isCancelled,
-                   !forceUnreadableToolFallback,
                    currentMessage(index: currentPlaceholder)?.toolCallArtifactSuppressed == true,
                    let leaked = currentMessage(index: currentPlaceholder)?.content,
                    ChatMessage.proseAboveSuppressedToolCallArtifact(content: leaked) == nil
                 {
                     unreadableToolRequestCount += 1
                     if unreadableToolRequestCount > 1 {
-                        isFinalSynthesisRound = true
-                        forceUnreadableToolFallback = true
+                        finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
+                        return
                     }
                     prepareUnreadableToolRetry(at: currentPlaceholder, epoch: epoch)
                     continue
                 }
-                if forceUnreadableToolFallback,
-                   epoch == conversationEpoch,
-                   !Task.isCancelled,
-                   let fallback = currentMessage(index: currentPlaceholder),
-                   ChatMessage.trailingToolCallArtifactProse(in: fallback.content) == nil,
-                   ((fallback.status == .complete
-                        && ChatMessage.contentLooksLikeToolCallArtifact(fallback.content))
-                       || (fallback.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                           && (fallback.status == .complete
-                               || (fallback.status == .failed
-                                   && fallback.errorMessage?.hasPrefix("The model returned no text.") == true))))
-                {
-                    finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
-                }
-                if forceUnreadableToolFallback,
+                if unreadableToolRequestCount > 0,
                     epoch == conversationEpoch,
                     !Task.isCancelled,
-                    var final = currentMessage(index: currentPlaceholder),
-                    ChatMessage.trailingToolCallArtifactProse(in: final.content) != nil
+                    !ChatViewModel.carriesSuccessfulToolResultForThisTurn(
+                        Array(messages.prefix(currentPlaceholder))
+                    )
                 {
-                    final.toolCallArtifactSuppressed = true
-                    updateMessage(at: currentPlaceholder, with: final)
+                    // A retry that produces fluent prose still has no live
+                    // evidence. Do not show a guessed weather value.
+                    finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
+                    return
                 }
                 // A final tool-budget synthesis may still emit raw call syntax.
                 // Preserve any prose above it, or show the bounded failure.
@@ -2968,7 +2948,6 @@ final class ChatViewModel {
                 // show X"): a disclaimer in front of a grounded answer is not a
                 // refusal.
                 if !groundingCorrectionUsed,
-                    !forceUnreadableToolFallback,
                     epoch == conversationEpoch,
                     !Task.isCancelled,
                     ChatViewModel.carriesSuccessfulToolResultForThisTurn(
@@ -3015,10 +2994,6 @@ final class ChatViewModel {
                 // structured call. Keep a defensive failure for malformed
                 // model output rather than looping forever.
                 if isFinalSynthesisRound {
-                    if forceUnreadableToolFallback {
-                        finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
-                        return
-                    }
                     failWithToolRoundCap(at: currentPlaceholder, epoch: epoch)
                     return
                 }
@@ -3190,20 +3165,6 @@ final class ChatViewModel {
     ) -> [ChatMessage] {
         guard messages.last?.role == .tool else { return messages }
         return messages + [ChatMessage(role: .user, content: toolBudgetSynthesisPreamble, status: .complete)]
-    }
-
-    nonisolated static func addingUnreadableToolRequestPreamble(
-        to messages: [ChatMessage]
-    ) -> [ChatMessage] {
-        var result = messages
-        if result.last?.role == .tool {
-            result.append(ChatMessage(
-                role: .user, content: unreadableToolRequestPreamble, status: .complete
-            ))
-        } else if let index = result.lastIndex(where: { $0.role == .user }) {
-            result[index].content += "\n\n" + unreadableToolRequestPreamble
-        }
-        return result
     }
 
     /// Wire-side filter — what actually ends up in the request body's ``tools``

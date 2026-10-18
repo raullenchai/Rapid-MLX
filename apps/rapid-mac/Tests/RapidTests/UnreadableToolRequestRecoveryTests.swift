@@ -86,7 +86,7 @@ struct UnreadableToolRequestRecoveryTests {
         #expect(model.messages.last?.status == .complete)
     }
 
-    @Test("two malformed calls end in a tools-disabled honest answer")
+    @Test("two malformed calls end in a deterministic honest answer")
     func fallsBackWithoutPrintingTheArtifact() async throws {
         UnreadableToolProtocol.reset(recoverOnSecondRequest: false)
         let registry = RecoveryToolRegistry()
@@ -105,26 +105,22 @@ struct UnreadableToolRequestRecoveryTests {
         }
 
         #expect(!model.isStreaming)
-        #expect(UnreadableToolProtocol.requestBodies.count == 3)
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
         #expect(registry.runCount == 0)
-        #expect(model.messages.last?.content ==
-            "I couldn't fetch current information, so I can't verify the answer.")
+        #expect(model.messages.last?.content == ChatViewModel.unreadableToolFallbackCopy)
         #expect(model.messages.last?.toolCallArtifactSuppressed == false)
         #expect(model.messages.last?.status == .complete)
         #expect(model.lastError == nil)
 
-        let final = try #require(UnreadableToolProtocol.requestBodies.last)
-        let json = try #require(JSONSerialization.jsonObject(with: final) as? [String: Any])
-        #expect(json["tools"] == nil)
-        let messages = try #require(json["messages"] as? [[String: Any]])
-        let lastUser = try #require(messages.last)
-        #expect(lastUser["role"] as? String == "user")
-        #expect((lastUser["content"] as? String)?.contains("Do not guess about live or external facts") == true)
+        for body in UnreadableToolProtocol.requestBodies {
+            let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(json["tools"] != nil)
+        }
     }
 
-    @Test("a model that keeps printing call syntax gets a plain final answer")
+    @Test("a model that keeps printing call syntax gets a plain answer")
     func repeatedArtifactDoesNotLeak() async throws {
-        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, unreadableOnFinal: true)
+        UnreadableToolProtocol.reset(recoverOnSecondRequest: false)
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://unreadable-tool")!,
@@ -139,7 +135,7 @@ struct UnreadableToolRequestRecoveryTests {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        #expect(UnreadableToolProtocol.requestBodies.count == 3)
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
         #expect(model.messages.last?.content ==
             "I couldn't retrieve or verify the information needed for a reliable answer. Try again or choose another model.")
         #expect(model.messages.last?.toolCallArtifactSuppressed == false)
@@ -148,9 +144,9 @@ struct UnreadableToolRequestRecoveryTests {
             ChatViewModel.unreadableToolFallbackChineseCopy)
     }
 
-    @Test("an empty final completion gives a clear fallback")
-    func emptyFinalCompletion() async throws {
-        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, finalContent: "")
+    @Test("an empty retry completion gives a clear fallback")
+    func emptyRetryCompletion() async throws {
+        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, secondContent: "")
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://unreadable-tool")!,
@@ -163,16 +159,16 @@ struct UnreadableToolRequestRecoveryTests {
         for _ in 0..<300 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(UnreadableToolProtocol.requestBodies.count == 3)
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
         #expect(model.messages.last?.content == ChatViewModel.unreadableToolFallbackCopy)
         #expect(model.messages.last?.status == .complete)
     }
 
-    @Test("prose above a final raw call survives")
-    func finalProseSurvivesArtifact() async throws {
+    @Test("prose above a retry raw call does not bypass the honest fallback")
+    func retryProseCannotBypassFallback() async throws {
         UnreadableToolProtocol.reset(
             recoverOnSecondRequest: false,
-            finalContent: "I couldn't verify today's result.\n<｜tool▁calls▁begin｜>"
+            secondContent: "I couldn't verify today's result.\n<｜tool▁calls▁begin｜>"
         )
         let model = ChatViewModel(
             client: ChatStreamClient(
@@ -186,15 +182,20 @@ struct UnreadableToolRequestRecoveryTests {
         for _ in 0..<300 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(UnreadableToolProtocol.requestBodies.count == 3)
-        #expect(model.messages.last?.content.contains("I couldn't verify today's result.") == true)
-        #expect(model.messages.last?.toolCallArtifactSuppressed == true)
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
+        #expect(model.messages.last?.content == ChatViewModel.unreadableToolFallbackCopy)
+        #expect(model.messages.last?.toolCallArtifactSuppressed == false)
         #expect(model.messages.last?.status == .complete)
     }
 
-    @Test("stopping a pending fallback preserves cancellation")
-    func stopPendingFallback() async throws {
-        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, holdFinal: true)
+    @Test("ungrounded weather claims are replaced in both languages", arguments: [
+        ("东京今天天气怎么样", "东京今天晴，23°C。", ChatViewModel.unreadableToolFallbackChineseCopy),
+        ("What's Tokyo's weather today?", "Tokyo is sunny and 23°C today.", ChatViewModel.unreadableToolFallbackCopy)
+    ])
+    func fabricatedWeatherIsNeverShown(
+        prompt: String, fabricated: String, expected: String
+    ) async throws {
+        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, secondContent: fabricated)
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://unreadable-tool")!,
@@ -203,18 +204,39 @@ struct UnreadableToolRequestRecoveryTests {
             tools: RecoveryToolRegistry(),
             persistsConversations: false
         )
-        model.send("What happened today?", alias: "test-model")
-        for _ in 0..<300 where UnreadableToolProtocol.requestBodies.count < 3 {
+        model.send(prompt, alias: "test-model")
+        for _ in 0..<300 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(UnreadableToolProtocol.requestBodies.count == 3)
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
+        #expect(model.messages.last?.content == expected)
+        #expect(model.messages.last?.status == .complete)
+    }
+
+    @Test("stopping the first retry preserves cancellation")
+    func stopPendingRetry() async throws {
+        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, holdSecond: true)
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://unreadable-tool")!,
+                session: UnreadableToolProtocol.session()
+            ),
+            tools: RecoveryToolRegistry(),
+            persistsConversations: false
+        )
+        model.send("东京今天天气怎么样", alias: "test-model")
+        for _ in 0..<300 where UnreadableToolProtocol.requestBodies.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
         model.stop()
         for _ in 0..<300 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
         #expect(model.messages.last?.errorMessage == "Stopped.")
-        #expect(model.messages.last?.content != ChatViewModel.unreadableToolFallbackCopy)
     }
+
 }
 
 @MainActor
@@ -238,25 +260,22 @@ private final class RecoveryToolRegistry: ToolRegistry {
 private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestBodies: [Data] = []
     nonisolated(unsafe) static var recoverOnSecondRequest = false
-    nonisolated(unsafe) static var unreadableOnFinal = false
-    nonisolated(unsafe) static var finalContent: String?
-    nonisolated(unsafe) static var holdFinal = false
+    nonisolated(unsafe) static var secondContent: String?
+    nonisolated(unsafe) static var holdSecond = false
     nonisolated(unsafe) static var emptyLengthOnFirst = false
     nonisolated(unsafe) static var emptyLengthOnSecond = false
 
     static func reset(
         recoverOnSecondRequest: Bool,
-        unreadableOnFinal: Bool = false,
-        finalContent: String? = nil,
-        holdFinal: Bool = false,
+        secondContent: String? = nil,
+        holdSecond: Bool = false,
         emptyLengthOnFirst: Bool = false,
         emptyLengthOnSecond: Bool = false
     ) {
         requestBodies = []
         self.recoverOnSecondRequest = recoverOnSecondRequest
-        self.unreadableOnFinal = unreadableOnFinal
-        self.finalContent = finalContent
-        self.holdFinal = holdFinal
+        self.secondContent = secondContent
+        self.holdSecond = holdSecond
         self.emptyLengthOnFirst = emptyLengthOnFirst
         self.emptyLengthOnSecond = emptyLengthOnSecond
     }
@@ -281,16 +300,22 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if number == 3 && Self.holdFinal { return }
+        if number == 2 && Self.holdSecond { return }
 
         let choice: [String: Any]
         if (number == 1 && Self.emptyLengthOnFirst)
             || (number == 2 && Self.emptyLengthOnSecond)
         {
             choice = ["delta": ["content": ""], "finish_reason": "length"]
-        } else if number == 1 || (number == 2 && !Self.recoverOnSecondRequest) {
+        } else if number == 1 {
             choice = [
                 "delta": ["content": "<tool_call>{\"name\":\"lookup\",\"arguments\":{"],
+                "finish_reason": "stop"
+            ]
+        } else if number == 2 && !Self.recoverOnSecondRequest {
+            choice = [
+                "delta": ["content": Self.secondContent
+                    ?? "<tool_call>{\"name\":\"lookup\",\"arguments\":{"],
                 "finish_reason": "stop"
             ]
         } else if number == 2 {
@@ -303,11 +328,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             ]
         } else {
             choice = [
-                "delta": ["content": Self.finalContent ?? (Self.unreadableOnFinal
-                    ? "<tool_call>{\"name\":\"lookup\",\"arguments\":{"
-                    : Self.recoverOnSecondRequest
-                        ? "The verified result is ready."
-                        : "I couldn't fetch current information, so I can't verify the answer.")],
+                "delta": ["content": "The verified result is ready."],
                 "finish_reason": "stop"
             ]
         }
