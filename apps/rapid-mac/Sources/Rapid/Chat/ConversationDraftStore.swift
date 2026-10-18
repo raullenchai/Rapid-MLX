@@ -56,9 +56,14 @@ enum ConversationDraftStore {
         let url = fileURL(override: override)
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return ConversationDrafts() }
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(ConversationDrafts.self, from: data)
-        else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            NSLog("Failed to load conversation drafts from %@: %@", url.path, String(describing: error))
+            return ConversationDrafts()
+        }
+        guard let decoded = try? JSONDecoder().decode(ConversationDrafts.self, from: data) else {
             let backup = url.deletingLastPathComponent().appendingPathComponent(
                 "drafts.corrupt-\(UUID().uuidString).json"
             )

@@ -351,6 +351,15 @@ final class ConversationDraftTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["drafts.json"])
     }
 
+    func testReadFailureLeavesOriginalPathInPlace() throws {
+        let directory = try isolatedStore().deletingLastPathComponent()
+        let url = directory.appendingPathComponent("drafts.json")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        XCTAssertEqual(ConversationDraftStore.load(from: url), ConversationDrafts())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["drafts.json"])
+    }
+
     func testCorruptFileBackup() throws {
         let url = try isolatedStore().deletingLastPathComponent().appendingPathComponent("drafts.json")
         let corrupt = Data("not JSON".utf8)
