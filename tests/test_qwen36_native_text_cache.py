@@ -592,9 +592,14 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backbone", ["moe", "dense27b", "unqualified_dense"])
+@pytest.mark.parametrize(
+    "spec_decode,force_spec", [("none", False), ("mtp", False), ("none", True)]
+)
 async def test_mllm_start_activates_native_text_lane_only_after_qualification(
     monkeypatch,
     backbone,
+    spec_decode,
+    force_spec,
 ):
     from rapid_mlx import mllm_scheduler as mllm_scheduler_module
     from rapid_mlx.engine import batched as batched_module
@@ -625,8 +630,11 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         if backbone == "unqualified_dense":
             language_model.args.hidden_size = 4096
 
+    loader_modes = []
+
     class _FakeMultimodalLM:
         def __init__(self, *_args, **_kwargs):
+            loader_modes.append(_kwargs["spec_decode"])
             self.model = SimpleNamespace(language_model=language_model)
             self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
             self.config = {"model_type": config_model_type}
@@ -651,7 +659,12 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         chat_template_registry, "resolve_chat_template", lambda *_args: None
     )
 
-    engine = BatchedEngine("fake/qwen36", force_mllm=True)
+    engine = BatchedEngine(
+        "fake/qwen36",
+        force_mllm=True,
+        force_spec_decode=force_spec,
+        scheduler_config=SimpleNamespace(spec_decode=spec_decode),
+    )
     activated = []
 
     async def _activate(model):
@@ -666,12 +679,14 @@ async def test_mllm_start_activates_native_text_lane_only_after_qualification(
         engine._model_load_executor.shutdown(wait=True)
         engine._model_load_executor = None
 
-    assert activated == ([] if backbone == "unqualified_dense" else [language_model])
+    assert loader_modes == ["auto" if force_spec else spec_decode]
+    qualified = backbone != "unqualified_dense" and spec_decode == "none"
+    assert activated == ([language_model] if qualified else [])
     assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
-    assert engine._mllm_dense_singleton_fastpath is (backbone == "dense27b")
-    assert engine._mllm_scheduler.cooperative_prefill is (
-        backbone != "unqualified_dense"
+    assert engine._mllm_dense_singleton_fastpath is (
+        qualified and backbone == "dense27b"
     )
+    assert engine._mllm_scheduler.cooperative_prefill is qualified
 
 
 @pytest.mark.asyncio

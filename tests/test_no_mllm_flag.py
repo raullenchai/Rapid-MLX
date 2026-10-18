@@ -3196,7 +3196,7 @@ async def test_start_mllm_degrades_to_text_on_missing_vision_tower(monkeypatch):
     from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeTextOnlyMLLM:
-        def __init__(self, model_name, trust_remote_code=True):
+        def __init__(self, model_name, trust_remote_code=True, *, spec_decode="none"):
             self.model_name = model_name
 
         def load(self):
@@ -3262,7 +3262,7 @@ async def test_explicit_force_mllm_does_not_degrade(monkeypatch):
     from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeTextOnlyMLLM:
-        def __init__(self, model_name, trust_remote_code=True):
+        def __init__(self, model_name, trust_remote_code=True, *, spec_decode="none"):
             pass
 
         def load(self):
@@ -3304,7 +3304,7 @@ async def test_start_mllm_does_not_degrade_on_unrelated_load_error(monkeypatch):
     from rapid_mlx.models import mllm as mllm_mod
 
     class _FakeBrokenMLLM:
-        def __init__(self, model_name, trust_remote_code=True):
+        def __init__(self, model_name, trust_remote_code=True, *, spec_decode="none"):
             pass
 
         def load(self):

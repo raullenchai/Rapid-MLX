@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fuse the four GatedDeltaNet input projections into one quantized matmul.
 
-At decode, mlx-lm's ``qwen3_5.GatedDeltaNet`` issues four projection
+At decode, mlx-lm's ``qwen3_5.GatedDeltaNet`` and mlx-vlm's
+``qwen3_5.language.Qwen3_5GatedDeltaNet`` issue four projection
 launches per GDN layer per step: ``in_proj_qkv`` (N=2*key_dim+value_dim),
 ``in_proj_z`` (N=value_dim), and the two 48-row ``in_proj_b``/``in_proj_a``
 slivers that are pure launch overhead at single-token widths. Affine
@@ -23,7 +24,7 @@ construction, with no duplicate weight memory.
 Two install-time probes guard the rewrite; if either fails, the model is
 left stock (no partial fusion):
 
-* Projection parity on the FIRST eligible layer's real weights: fused
+* Projection parity on EVERY eligible layer's real weights: fused
   concat vs the four stock projections, byte-compared for every
   ``M in 1.._FUSED_MAX_ROWS`` — pins the kernel-dispatch boundary on the
   actual hardware, mlx build, and weight geometry.
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 import mlx.core as mx
@@ -66,6 +68,29 @@ def _gdn_imports():
     except ImportError:
         return None
     return nn, gated_delta_update, GatedDeltaNet
+
+
+def _vlm_gdn_imports():
+    """Resolve the loaded VLM contract lazily; dependency drift stays stock."""
+    if sys.modules.get("mlx_vlm.models.qwen3_5.language") is None:
+        return None
+    try:
+        import mlx.nn as nn
+        from mlx_vlm.models.qwen3_5.language import (
+            Qwen3_5GatedDeltaNet,
+            _qwen3_5_advance_left_padding_info,
+            _qwen3_5_advance_lengths_info,
+            gated_delta_update,
+        )
+    except Exception:  # noqa: BLE001 — optional dependency or symbol drift
+        return None
+    return (
+        nn,
+        gated_delta_update,
+        Qwen3_5GatedDeltaNet,
+        _qwen3_5_advance_left_padding_info,
+        _qwen3_5_advance_lengths_info,
+    )
 
 
 def _proj_modules(gdn: Any):
@@ -232,7 +257,97 @@ def _make_fused_call(orig_call, nn, gated_delta_update):
     return fused_call
 
 
-def _ensure_call_patch(gdn_cls, nn, gated_delta_update) -> None:
+def _make_vlm_fused_call(
+    orig_call,
+    nn,
+    gated_delta_update,
+    _qwen3_5_advance_left_padding_info,
+    _qwen3_5_advance_lengths_info,
+):
+    def fused_call(
+        self,
+        inputs: mx.array,
+        mask: mx.array | None = None,
+        cache: Any | None = None,
+    ) -> mx.array:
+        if not hasattr(self, "in_proj_fused"):
+            return orig_call(self, inputs, mask, cache)
+
+        # Mirrors mlx-vlm 0.7.2; only the four input projections differ.
+        B, S, _ = inputs.shape
+        mixed_qkv, z, b, a = _fused_projections(self, inputs)
+
+        z = z.reshape(B, S, -1, self.head_v_dim)
+
+        if cache is not None and cache[0] is not None:
+            conv_state = cache[0]
+            if conv_state.shape[0] != B:
+                conv_state = mx.zeros(
+                    (B, self.conv_kernel_size - 1, self.conv_dim),
+                    dtype=inputs.dtype,
+                )
+        else:
+            conv_state = mx.zeros(
+                (B, self.conv_kernel_size - 1, self.conv_dim),
+                dtype=inputs.dtype,
+            )
+
+        if mask is not None:
+            if mask.shape[0] != B:
+                mask = None
+            else:
+                mixed_qkv = mx.where(mask[..., None], mixed_qkv, 0)
+        conv_input = mx.concatenate([conv_state, mixed_qkv], axis=1)
+        if cache is not None:
+            cache.update_window(
+                0, conv_input, self.conv_kernel_size - 1, lengths=cache.lengths
+            )
+        if (
+            S == 1
+            and conv_input.shape[1] == self.conv_kernel_size
+            and self.conv1d.weight.dtype in (mx.bfloat16, mx.float16)
+        ):
+            conv_out = nn.silu(self._causal_conv1d_decode(conv_input))
+        else:
+            conv_out = nn.silu(self.conv1d(conv_input))
+
+        q, k, v = [
+            t.reshape(B, S, h, d)
+            for t, h, d in zip(
+                mx.split(conv_out, [self.key_dim, 2 * self.key_dim], -1),
+                [self.num_k_heads, self.num_k_heads, self.num_v_heads],
+                [self.head_k_dim, self.head_k_dim, self.head_v_dim],
+            )
+        ]
+
+        q, k = self._normalize_qk(q, k)
+
+        out, _ = gated_delta_update(
+            q,
+            k,
+            v,
+            a,
+            b,
+            self.A_log,
+            self.dt_bias,
+            mask=mask,
+            use_kernel=not self.training,
+            cache=cache,
+        )
+
+        if cache is not None:
+            if hasattr(cache, "advance"):
+                cache.advance(S)
+                _qwen3_5_advance_left_padding_info(cache, S)
+                _qwen3_5_advance_lengths_info(cache, S)
+
+        out = self.norm(out, z)
+        return self.out_proj(out.reshape(B, S, -1))
+
+    return fused_call
+
+
+def _ensure_call_patch(gdn_cls, nn, gated_delta_update, *vlm_helpers) -> None:
     # The per-class marker is the sole authority: a reloaded/replaced
     # GatedDeltaNet class must be re-patched even though this module
     # already patched an earlier incarnation (a module-global flag here
@@ -240,10 +355,25 @@ def _ensure_call_patch(gdn_cls, nn, gated_delta_update) -> None:
     # __call__ whose projections were deleted).
     if getattr(gdn_cls, "_rapid_gdn_in_proj_fused_call", False):
         return
-    orig = gdn_cls.__call__
-    gdn_cls.__call__ = _make_fused_call(orig, nn, gated_delta_update)
+    # A previous model load may already have installed the decode dispatcher.
+    # Keep it outermost so its stock fallback sees the projection rewrite.
+    decode_patched = vlm_helpers and getattr(
+        gdn_cls, "_rapid_qwen35_fused_gdn_patched", False
+    )
+    orig = (
+        gdn_cls._rapid_qwen35_fused_gdn_original_call
+        if decode_patched
+        else gdn_cls.__call__
+    )
+    factory = _make_vlm_fused_call if vlm_helpers else _make_fused_call
+    gdn_cls.__call__ = factory(orig, nn, gated_delta_update, *vlm_helpers)
     gdn_cls._rapid_gdn_in_proj_fused_call = True
     gdn_cls._rapid_gdn_in_proj_original_call = orig
+    if decode_patched:
+        from .qwen35_fused_gdn_decode import _patch_class
+
+        gdn_cls._rapid_qwen35_fused_gdn_patched = False
+        _patch_class(gdn_cls)
 
 
 _UINT_OF_SIZE = {1: "uint8", 2: "uint16", 4: "uint32", 8: "uint64"}
@@ -313,10 +443,11 @@ def _probe_projection_parity(gdn: Any) -> frozenset:
     return frozenset(passed)
 
 
-def _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update) -> bool:
+def _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update, *vlm_helpers) -> bool:
     """Stock ``__call__`` vs the fused reimplementation on a small synthetic
     layer, byte-compared without cache and across a prefill+decode cache
-    sequence (catches mlx-lm body drift)."""
+    sequence (catches dependency body drift). The VLM family also checks
+    the shared-weight native text scheduler's dual-namespace cache."""
     try:
         from mlx_lm.models.cache import ArraysCache
         from mlx_lm.models.qwen3_5 import TextModelArgs
@@ -336,10 +467,26 @@ def _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update) -> bool:
             linear_conv_kernel_dim=4,
             vocab_size=128,
         )
+        cache_types = [ArraysCache]
+        if vlm_helpers:
+            import dataclasses
+
+            from mlx_vlm.models.cache import ArraysCache as VLMCache
+            from mlx_vlm.models.qwen3_5.config import TextConfig
+
+            from rapid_mlx.engine.batched import _qwen36_text_arrays_cache_type
+
+            fields = {field.name for field in dataclasses.fields(TextConfig)}
+            values = {k: v for k, v in vars(args).items() if k in fields}
+            values.update(rms_norm_eps=1e-6, max_position_embeddings=1024)
+            args = TextConfig(**values)
+            cache_types = [VLMCache, _qwen36_text_arrays_cache_type()]
         stock = gdn_cls(args)
         fusedm = gdn_cls(args)
         fusedm.update(stock.parameters())
         for m in (stock, fusedm):
+            if vlm_helpers:
+                m.set_dtype(mx.bfloat16)
             nn.quantize(m, group_size=32, bits=4)
             m.eval()  # serving mode: gated_delta_update takes the kernel path
         fusedm.update(stock.parameters())
@@ -373,18 +520,19 @@ def _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update) -> bool:
             mx.random.normal((1, 1, args.hidden_size), key=mx.random.key(8)) * 0.3
         ).astype(mx.bfloat16)
         mask = mx.arange(16)[None, :] < 12
-        outs = []
-        for layer in (stock, fusedm):
-            cache = ArraysCache(size=2)
-            cache.lengths = mx.array([12])
-            y1 = layer(xp, mask, cache)
-            cache.lengths = None
-            y2 = layer(xd, None, cache)
-            mx.eval(y1, y2, cache[0], cache[1])
-            outs.append((y1, y2, cache[0], cache[1]))
-        for a, b in zip(outs[0], outs[1]):
-            if _bytes_of(a) != _bytes_of(b):
-                return False
+        for cache_type in cache_types:
+            outs = []
+            for layer in (stock, fusedm):
+                cache = cache_type(size=2)
+                cache.lengths = mx.array([12])
+                y1 = layer(xp, mask, cache)
+                cache.lengths = None
+                y2 = layer(xd, None, cache)
+                mx.eval(y1, y2, cache[0], cache[1])
+                outs.append((y1, y2, cache[0], cache[1]))
+            for a, b in zip(outs[0], outs[1]):
+                if _bytes_of(a) != _bytes_of(b):
+                    return False
         return True
     except Exception:  # noqa: BLE001 — synthetic probe failure: stay stock
         return False
@@ -456,11 +604,14 @@ def fuse_gdn_in_proj(model: Any) -> int:
 
 
 def _install(model: Any) -> int:
-    imports = _gdn_imports()
-    if imports is None:
-        return 0
-    nn, gated_delta_update, gdn_cls = imports
+    committed = 0
+    for imports in (_gdn_imports(), _vlm_gdn_imports()):
+        if imports is not None:
+            committed += _install_family(model, *imports)
+    return committed
 
+
+def _install_family(model, nn, gated_delta_update, gdn_cls, *vlm_helpers) -> int:
     try:
         modules = [m for _, m in model.named_modules()]
     except Exception:  # noqa: BLE001 — unusual model containers: no fusion
@@ -488,10 +639,10 @@ def _install(model: Any) -> int:
         )
         return 0
 
-    _ensure_call_patch(gdn_cls, nn, gated_delta_update)
-    if not _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update):
+    _ensure_call_patch(gdn_cls, nn, gated_delta_update, *vlm_helpers)
+    if not _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update, *vlm_helpers):
         logger.warning(
-            "[gdn_fusion] whole-layer byte-parity probe failed (mlx-lm "
+            "[gdn_fusion] whole-layer byte-parity probe failed (dependency "
             "body drift?); leaving model stock"
         )
         return 0

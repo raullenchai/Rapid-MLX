@@ -372,3 +372,224 @@ class TestWidthDispatch:
             expected = fused_w[bounds[i] : bounds[i + 1]]
             assert captured[i].shape == expected.shape
             assert bool(mx.array_equal(captured[i], expected))
+
+
+class TestVLMFamily:
+    @pytest.fixture(autouse=True)
+    def vlm(self):
+        pytest.importorskip("mlx_vlm")
+
+    @staticmethod
+    def model(*, quantize=True, qualified=False):
+        import dataclasses
+
+        from mlx_vlm.models.qwen3_5.config import TextConfig
+        from mlx_vlm.models.qwen3_5.language import Qwen3_5GatedDeltaNet
+
+        fields = {field.name for field in dataclasses.fields(TextConfig)}
+        values = {k: v for k, v in vars(_tiny_args()).items() if k in fields}
+        values.update(rms_norm_eps=1e-6, max_position_embeddings=1024)
+        if qualified:
+            values.update(
+                hidden_size=2048,
+                linear_num_value_heads=32,
+                linear_num_key_heads=16,
+                linear_key_head_dim=128,
+                linear_value_head_dim=128,
+            )
+        model = nn.Sequential(Qwen3_5GatedDeltaNet(TextConfig(**values)))
+        model.set_dtype(mx.bfloat16)
+        if quantize:
+            nn.quantize(model, group_size=32, bits=4)
+        model.eval()
+        mx.eval(model.parameters())
+        return model
+
+    @staticmethod
+    def cache_type(native):
+        from mlx_vlm.models.cache import ArraysCache as VLMCache
+
+        from rapid_mlx.engine.batched import _qwen36_text_arrays_cache_type
+
+        return _qwen36_text_arrays_cache_type() if native else VLMCache
+
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize(
+        "batch,rows,masked",
+        [(1, 1, False), (4, 1, False), (1, 16, False), (4, 16, True)],
+    )
+    def test_outputs_and_cache(self, native, batch, rows, masked):
+        model = self.model()
+        layer = model.layers[0]
+        x = mx.repeat(_inputs(rows, layer.hidden_size), batch, axis=0)
+        xd = mx.repeat(_inputs(1, layer.hidden_size, seed=9), batch, axis=0)
+        mask = (
+            mx.arange(rows)[None, :]
+            < mx.array([rows - i for i in range(batch)])[:, None]
+            if masked
+            else None
+        )
+
+        def run():
+            cache = self.cache_type(native)(size=2)
+            cache.lengths = (
+                mx.array([rows - i for i in range(batch)]) if masked else None
+            )
+            y = layer(x, mask, cache)
+            prefill_state = [cache[0], cache[1]]
+            cache.lengths = None
+            z = layer(xd, None, cache)
+            result = [y, *prefill_state, z, cache[0], cache[1]]
+            mx.eval(result)
+            return result
+
+        before = run()
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 1
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 0
+        after = run()
+        assert all(_bits_equal(a, b) for a, b in zip(before, after))
+
+    def test_no_cache_and_mismatched_batch(self):
+        model = self.model()
+        layer = model.layers[0]
+        x = _inputs(1, layer.hidden_size)
+        cache = self.cache_type(False)(size=2)
+        cache[0] = mx.zeros((2, 3, layer.conv_dim), dtype=x.dtype)
+        mask = mx.ones((2, 1), dtype=mx.bool_)
+        before = layer(x, mask, cache)
+        plain = layer(x)
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 1
+        cache[0] = mx.zeros((2, 3, layer.conv_dim), dtype=x.dtype)
+        cache[1] = None
+        assert _bits_equal(before, layer(x, mask, cache))
+        assert _bits_equal(plain, layer(x))
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "import",
+            "symbol",
+            "projection",
+            "whole",
+            "structure",
+            "subclass",
+            "disabled",
+        ],
+    )
+    def test_fail_closed(self, monkeypatch, failure):
+        model = self.model(quantize=failure != "structure")
+        if failure == "import":
+            import sys
+
+            monkeypatch.setitem(sys.modules, "mlx_vlm.models.qwen3_5.language", None)
+        elif failure == "symbol":
+            import mlx_vlm.models.qwen3_5.language as language
+
+            monkeypatch.delattr(language, "_qwen3_5_advance_lengths_info")
+        elif failure == "projection":
+            monkeypatch.setattr(
+                gdn_in_proj_fusion, "_probe_projection_parity", lambda _: frozenset()
+            )
+        elif failure == "whole":
+            monkeypatch.setattr(
+                gdn_in_proj_fusion, "_probe_whole_layer_parity", lambda *args: False
+            )
+        elif failure == "subclass":
+
+            class Derived(type(model.layers[0])):
+                pass
+
+            model.layers[0].__class__ = Derived
+        elif failure == "disabled":
+            monkeypatch.setenv("RAPID_MLX_GDN_IN_PROJ_FUSION", "0")
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 0
+        assert hasattr(model.layers[0], "in_proj_qkv")
+
+    @pytest.mark.parametrize("decode_first", [False, True])
+    def test_decode_composition(self, monkeypatch, decode_first):
+        import copy
+
+        from rapid_mlx import qwen35_fused_gdn_decode as decode
+
+        model = self.model(qualified=True)
+        model.layers.append(copy.deepcopy(model.layers[0]))
+        layer = model.layers[0]
+        cls = type(layer)
+        stock_call = getattr(cls, "_rapid_gdn_in_proj_original_call", cls.__call__)
+        monkeypatch.setattr(cls, "__call__", stock_call)
+        for marker in (
+            "_rapid_gdn_in_proj_fused_call",
+            "_rapid_qwen35_fused_gdn_patched",
+        ):
+            monkeypatch.setattr(cls, marker, False, raising=False)
+        for marker in (
+            "_rapid_gdn_in_proj_original_call",
+            "_rapid_qwen35_fused_gdn_original_call",
+        ):
+            monkeypatch.setattr(cls, marker, stock_call, raising=False)
+        x = _inputs(1, layer.hidden_size)
+
+        def run():
+            cache = self.cache_type(True)(size=2)
+            layer(x, None, cache)
+            out = layer(x, None, cache)
+            mx.eval(out, cache[0], cache[1])
+            return [out, cache[0], cache[1]]
+
+        before = run()
+        calls = []
+        real_kernel = decode.fused_gdn_decode
+
+        def spy(*args, **kwargs):
+            calls.append(True)
+            return real_kernel(*args, **kwargs)
+
+        monkeypatch.setattr(decode, "fused_gdn_decode", spy)
+        if decode_first:
+            assert decode.install_qwen35_fused_gdn_decode(model) == 2
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 2
+        assert decode.install_qwen35_fused_gdn_decode(model) == 2
+        assert all(getattr(item, decode._TAG) for item in model.layers)
+        after = run()
+        assert all(_bits_equal(a, b) for a, b in zip(before, after))
+
+        assert calls  # Complete singleton decode reached the composed kernel.
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_install_probe_rejects_cache_drift(self, monkeypatch, native):
+        model = self.model()
+        layer_type = type(model.layers[0])
+        imports = gdn_in_proj_fusion._vlm_gdn_imports()
+        nn_module, update, _, *helpers = imports
+        gdn_in_proj_fusion._ensure_call_patch(layer_type, nn_module, update, *helpers)
+        original = layer_type.__call__
+        target_cache_type = self.cache_type(native)
+
+        def drift(self, inputs, mask=None, cache=None):
+            out = original(self, inputs, mask, cache)
+            if (
+                hasattr(self, "in_proj_fused")
+                and inputs.shape[1] == 1
+                and type(cache) is target_cache_type
+            ):
+                cache[1] = cache[1] + 1
+            return out
+
+        monkeypatch.setattr(layer_type, "__call__", drift)
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 0
+        assert hasattr(model.layers[0], "in_proj_qkv")
+
+    def test_each_layer_probed_independently_without_lm(self, monkeypatch):
+        model = self.model()
+        model.layers.append(self.model().layers[0])
+        monkeypatch.setattr(gdn_in_proj_fusion, "_gdn_imports", lambda: None)
+        real_probe = gdn_in_proj_fusion._probe_projection_parity
+        probed = []
+
+        def probe(layer):
+            probed.append(layer)
+            return real_probe(layer)
+
+        monkeypatch.setattr(gdn_in_proj_fusion, "_probe_projection_parity", probe)
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 2
+        assert {id(layer) for layer in probed} == {id(layer) for layer in model.layers}

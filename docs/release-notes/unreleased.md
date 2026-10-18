@@ -5,6 +5,8 @@
 
 ## Highlights
 
+- Faster text-only decode on the default vision-capable lane for Qwen3.6-35B-A3B-class multimodal MoE checkpoints.
+
 - Vision-model servers now restore text-only prompt-prefix caches across restarts; image-bearing prefixes are never persisted.
 
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.

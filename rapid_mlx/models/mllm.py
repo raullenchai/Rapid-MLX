@@ -1607,6 +1607,8 @@ class MLXMultimodalLM:
         trust_remote_code: bool = True,
         enable_cache: bool = True,
         cache_size: int = 50,
+        *,
+        spec_decode: str = "none",
     ):
         """
         Initialize the MLX multimodal language model.
@@ -1616,9 +1618,11 @@ class MLXMultimodalLM:
             trust_remote_code: Whether to trust remote code
             enable_cache: Enable KV cache for repeated image/video+prompt (default: True)
             cache_size: Maximum cache entries (default: 50)
+            spec_decode: Only explicit "none" permits destructive projection fusion.
         """
         self.model_name = model_name
         self.trust_remote_code = trust_remote_code
+        self._spec_decode = spec_decode
         self.enable_cache = enable_cache
 
         self.model = None
@@ -1731,6 +1735,13 @@ class MLXMultimodalLM:
                 from ..qwen35_moe_router import install_qwen35_moe_router
 
                 install_qwen35_moe_router(self.model)
+                if self._spec_decode == "none":
+                    from ..gdn_in_proj_fusion import fuse_gdn_in_proj
+
+                    # Exact speculative verification and MTP cache patching
+                    # read the split projections directly. Unknown modes also
+                    # keep them intact. Install before the decode dispatcher.
+                    fuse_gdn_in_proj(self.model)
                 # The multimodal wrapper owns a separate Qwen GDN class from
                 # mlx-lm. Enroll its qualified single-token recurrence too so
                 # the catalog's default vision-capable lane receives the same

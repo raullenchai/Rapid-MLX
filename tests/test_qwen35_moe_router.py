@@ -203,7 +203,8 @@ def test_patched_class_keeps_stock_fallback_and_matches_fused_composition(monkey
     router._patch_class(Block)
 
 
-def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
+@pytest.mark.parametrize("spec_decode", ["none", "mtp", "draft", "unknown", None])
+def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch, spec_decode):
     import mlx_vlm
     import mlx_vlm.utils
 
@@ -241,7 +242,25 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
         lambda *args, **kwargs: None,
     )
 
-    mllm.MLXMultimodalLM("local/qwen-moe").load()
+    from rapid_mlx import gdn_in_proj_fusion, qwen35_fused_gdn_decode
+
+    calls = []
+    monkeypatch.setattr(
+        gdn_in_proj_fusion,
+        "fuse_gdn_in_proj",
+        lambda m: calls.append(("projection", m)),
+    )
+    monkeypatch.setattr(
+        qwen35_fused_gdn_decode,
+        "install_qwen35_fused_gdn_decode",
+        lambda m: calls.append(("decode", m)),
+    )
+    mllm.MLXMultimodalLM("local/qwen-moe", spec_decode=spec_decode).load()
+    assert calls == (
+        [("projection", model), ("decode", model)]
+        if spec_decode == "none"
+        else [("decode", model)]
+    )
 
     assert fused == [(model, True)]
     assert routed == [model]
