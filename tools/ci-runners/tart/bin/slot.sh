@@ -59,6 +59,7 @@ while true; do
 
   log "cloning $GOLDEN -> $VM"
   if ! "$TART" clone "$GOLDEN" "$VM" >>"$LOG_DIR/slot$N.tart.log" 2>&1; then
+    "$TART" delete "$VM" >/dev/null 2>&1  # drop any partial clone
     log "clone failed; retry in 60s"; nap 60; continue
   fi
   started=$(date +%s)
