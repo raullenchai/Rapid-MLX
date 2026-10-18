@@ -66,28 +66,6 @@ def test_load_rerank_model_reports_download_failure(monkeypatch, capsys):
     assert "pass the full HuggingFace id of a supported reranker" in output
 
 
-def test_audio_mode_preloads_configured_reranker(monkeypatch):
-    from rapid_mlx import server
-    from tests.test_audio_alias_registry import _make_serve_args
-
-    calls = []
-    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_k: None)
-    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_k: None)
-    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
-    monkeypatch.setattr("rapid_mlx.model_downloads.disabled", lambda: False)
-    monkeypatch.setattr(
-        cli,
-        "_load_rerank_model_or_exit",
-        lambda args, loader: calls.append((args.rerank_model, loader)),
-    )
-    args = _make_serve_args("kokoro")
-    args.rerank_model = RERANK_ID
-
-    cli.serve_command(args)
-
-    assert calls == [(RERANK_ID, server.load_rerank_model)]
-
-
 def test_text_mode_preloads_configured_reranker(monkeypatch):
     from rapid_mlx import server
 

@@ -1681,3 +1681,30 @@ def test_cua_only_rejects_rerank_model():
 
     args = Namespace(rerank_model=RERANK_ID)
     assert cli._cua_only_incompatible_options(args) == ["--rerank-model"]
+
+
+_AUDIO_RERANK_ID = "mlx-community/Qwen3-Reranker-0.6B-mxfp8"
+
+
+def test_audio_mode_preloads_configured_reranker(monkeypatch):
+    # The audio serve path needs the MLX audio stack, so this lives in the
+    # MLX-only rerank tests rather than the Linux-run serve tests.
+    from rapid_mlx import cli, server
+    from tests.test_audio_alias_registry import _make_serve_args
+
+    calls = []
+    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr("rapid_mlx.model_downloads.disabled", lambda: False)
+    monkeypatch.setattr(
+        cli,
+        "_load_rerank_model_or_exit",
+        lambda args, loader: calls.append((args.rerank_model, loader)),
+    )
+    args = _make_serve_args("kokoro")
+    args.rerank_model = _AUDIO_RERANK_ID
+
+    cli.serve_command(args)
+
+    assert calls == [(_AUDIO_RERANK_ID, server.load_rerank_model)]
