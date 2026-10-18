@@ -12,6 +12,10 @@ space; a successful warm response is not a promise that a later request will
 hit the cache. Normal batching and MTP settings remain in effect. The endpoint
 does not reserve a private scheduler lane or change the later response shape.
 
+The examples below set `allow_disk_cache` and therefore require the user's
+consent to possible KV persistence. To warm without that consent, start the
+server with `--disable-disk-caches` and omit the field.
+
 ## Warm a fixed system and tools prefix
 
 ```sh
@@ -24,7 +28,8 @@ curl -X POST http://127.0.0.1:8000/v1/cache/prefill \
       "name": "lookup", "description": "Look up a value",
       "parameters": {"type": "object", "properties": {"key": {"type": "string"}}}
     }}],
-    "enable_thinking": false
+    "enable_thinking": false,
+    "allow_disk_cache": true
   }'
 ```
 
@@ -48,7 +53,8 @@ curl -X POST http://127.0.0.1:8000/v1/cache/prefill \
     ],
     "draft_key": "conversation-42",
     "revision": 7,
-    "enable_thinking": false
+    "enable_thinking": false,
+    "allow_disk_cache": true
   }'
 ```
 
