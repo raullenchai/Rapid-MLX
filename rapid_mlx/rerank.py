@@ -748,7 +748,8 @@ class RerankEngine:
             for i, doc in enumerate(documents)
         )
         prompt += f"\n<query>\n{query}{query_token}\n</query>"
-        prefix = _CHATML_PREFIX.format(system=self.prompt)
+        # Marker tokens must only appear where the scorer expects them.
+        prefix = _CHATML_PREFIX.format(system=clean(self.prompt))
         return prefix + prompt + _CHATML_SUFFIX + _NO_THINKING
 
     def _embed_listwise_block(
@@ -927,9 +928,14 @@ class RerankEngine:
             weights.append(mx.max((1.0 + cosine(query_embed, block_docs)) / 2.0))
             prompt_tokens += tokens
         weight = mx.stack(weights)
+        # All-zero weights (every block maximally dissimilar) fall back to an
+        # unweighted mean instead of dividing by zero.
+        weight = mx.where(weight.sum() > 0, weight, mx.ones_like(weight))
         query_embed = (mx.stack(query_embeds) * weight[:, None]).sum(0) / weight.sum()
         # Cosine similarity is in [-1, 1]; map it to the API's [0, 1] range.
         scores = (1.0 + cosine(query_embed, mx.concatenate(doc_embeds))) / 2.0
+        # Clamp float rounding so scores never leave the documented range.
+        scores = mx.clip(scores, 0.0, 1.0)
         mx.eval(scores)
         return RerankScores(scores=scores.tolist(), prompt_tokens=prompt_tokens)
 

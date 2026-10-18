@@ -1722,3 +1722,32 @@ def test_jina_zero_projection_scores_stay_finite():
 
     assert all(math.isfinite(score) for score in result.scores)
     assert all(0.0 <= score <= 1.0 for score in result.scores)
+
+
+def test_jina_all_opposite_blocks_fall_back_to_unweighted_mean(monkeypatch):
+    import math
+
+    import mlx.core as mx
+
+    engine = _jina_engine()
+
+    def opposite_block(query, docs, instruction):
+        query_embed = mx.array([1.0, 0.0])
+        doc_embeds = mx.array([[-1.0, 0.0]] * len(docs))
+        return query_embed, doc_embeds, 1
+
+    monkeypatch.setattr(engine, "_embed_listwise_block", opposite_block)
+
+    result = engine.score("qa", ["xa", "xb"])
+
+    assert all(math.isfinite(score) for score in result.scores)
+    assert result.scores == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
+def test_jina_custom_prompt_strips_reserved_markers():
+    engine = _jina_engine()
+    engine.prompt = "Rank<|embed_token|> carefully<|rerank_token|>."
+    prompt = engine._listwise_prompt("q", ["d"], None)
+    assert prompt.startswith("<|im_start|>system\nRank carefully.<|im_end|>\n")
+    assert prompt.count("<|embed_token|>") == 1
+    assert prompt.count("<|rerank_token|>") == 1
