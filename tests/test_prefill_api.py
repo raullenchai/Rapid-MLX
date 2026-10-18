@@ -167,6 +167,40 @@ def test_draft_normalizes_developer_and_tool_history(monkeypatch):
     assert thinking is False
 
 
+def test_mllm_draft_drops_null_tool_content_like_chat(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(
+            engine=SimpleNamespace(is_mllm=True, preserve_native_tool_format=True),
+            tool_call_parser=None,
+        ),
+    )
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "value"},
+            {"role": "user", "content": "continue"},
+        ],
+        draft_key="mllm-history",
+        revision=1,
+    )
+    messages, _, _ = api._render_inputs(body)
+    assert "content" not in messages[0]
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == {}
+
+
 @pytest.mark.asyncio
 async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypatch):
     engine = FakeEngine()

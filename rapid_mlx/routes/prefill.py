@@ -106,7 +106,14 @@ def _render_inputs(
     cfg = get_config()
     engine = cfg.engine
     if getattr(engine, "is_mllm", False):
-        messages = copy.deepcopy(body.messages)
+        messages = [
+            {
+                key: value
+                for key, value in copy.deepcopy(message).items()
+                if value is not None
+            }
+            for message in body.messages
+        ]
         if getattr(engine, "preserve_native_tool_format", False):
             decode_inline_tool_call_arguments(messages)
     else:
