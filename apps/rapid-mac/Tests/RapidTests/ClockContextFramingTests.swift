@@ -113,6 +113,21 @@ struct ClockContextFramingTests {
         #expect(retried.map(\.content) == rows.map(\.content))
     }
 
+    @Test("Retry appends current time during the repeated daylight-saving fall-back hour")
+    func retryDuringRepeatedHour() {
+        let formatter = ISO8601DateFormatter()
+        let asked = formatter.date(from: "2026-11-01T08:30:00Z")!
+        let answeringAt = formatter.date(from: "2026-11-01T09:30:00Z")!
+        #expect(ChatViewModel.clockStampText(at: asked, calendar: calendar)
+            == ChatViewModel.clockStampText(at: answeringAt, calendar: calendar))
+
+        let line = ChatViewModel.answeringNowLine(
+            asked: asked, answeringAt: answeringAt, calendar: calendar
+        )
+        #expect(!line.isEmpty)
+        #expect(line == "\n(Current time: Sunday, November 1, 2026 at 1:30 AM)")
+    }
+
     @Test("Clock annotation follows attachment extracts without changing their bytes")
     func attachmentOrdering() throws {
         let attachment = try ChatFileAttachment(

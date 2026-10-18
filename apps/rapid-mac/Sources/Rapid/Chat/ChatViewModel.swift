@@ -3300,8 +3300,8 @@ final class ChatViewModel {
 
     /// One minute-resolution local timestamp: "<full date> at <h:mm a>".
     /// Omits zone names. Shared by the local-time annotation and the
-    /// regenerate line so the two can never drift in format — and so
-    /// comparing them for equality is a reliable "does this say anything new".
+    /// regenerate line so the two can never drift in format. Distinct instants
+    /// can render identically during the repeated daylight-saving fall-back hour.
     nonisolated static func clockStampText(
         at instant: Date,
         calendar inputCalendar: Calendar = .autoupdatingCurrent
@@ -3331,8 +3331,9 @@ final class ChatViewModel {
     }
 
     /// Neutral current-time annotation for regenerate/retry of an older row.
-    /// Returns "" when both instants render to the same minute-resolution
-    /// timestamp, keeping ordinary sends and same-minute retries byte-identical.
+    /// Returns "" when both instants fall in the same absolute minute bucket,
+    /// keeping ordinary sends and same-minute retries byte-identical. Distinct
+    /// minutes append the line even if their local timestamps match at fall-back.
     /// Appends rather than rewrites the row's original local-time annotation.
     ///
     /// The cache cost is bounded: the line disappears on the next turn, which
@@ -3344,9 +3345,10 @@ final class ChatViewModel {
         answeringAt: Date,
         calendar: Calendar = .autoupdatingCurrent
     ) -> String {
-        let askedText = clockStampText(at: asked, calendar: calendar)
+        let askedMinute = Int(floor(asked.timeIntervalSince1970 / 60))
+        let answeringMinute = Int(floor(answeringAt.timeIntervalSince1970 / 60))
+        guard askedMinute != answeringMinute else { return "" }
         let nowText = clockStampText(at: answeringAt, calendar: calendar)
-        guard askedText != nowText else { return "" }
         return "\n(Current time: \(nowText))"
     }
 
