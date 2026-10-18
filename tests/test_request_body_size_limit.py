@@ -749,3 +749,137 @@ def test_disabled_receive_timeout_uses_bounded_drain_max(monkeypatch):
 
     headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
     assert (b"connection", b"close") in headers
+
+
+@pytest.mark.parametrize("slow_path", [False, True])
+def test_full_drain_capacity_rejects_without_receiving(monkeypatch, slow_path):
+    import rapid_mlx.middleware.body_size as body_size
+
+    monkeypatch.setattr(body_size, "_active_drains", body_size._MAX_CONCURRENT_DRAINS)
+    calls = []
+
+    async def receive():
+        calls.append(True)
+        assert slow_path and len(calls) == 1, "rejection must skip draining"
+        return {"type": "http.request", "body": b"x" * 4096, "more_body": True}
+
+    async def app(scope, receive, send):
+        await receive()
+        pytest.fail("oversized chunk reached downstream")
+
+    headers = _run_rejection(
+        receive,
+        headers=[] if slow_path else [(b"content-length", b"4096")],
+        app=app if slow_path else None,
+    )
+    assert len(calls) == int(slow_path)
+    assert (b"connection", b"close") in headers
+    assert body_size._active_drains == body_size._MAX_CONCURRENT_DRAINS
+
+
+@pytest.mark.parametrize("outcome", ["complete", "exception", "timeout"])
+def test_drain_capacity_is_released(outcome):
+    import rapid_mlx.middleware.body_size as body_size
+
+    async def receive():
+        assert body_size._active_drains == 1
+        if outcome == "exception":
+            raise RuntimeError("receive failed")
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        return {"type": "http.request", "body": b"done", "more_body": False}
+
+    async def run():
+        assert body_size._active_drains == 0
+        if outcome == "exception":
+            with pytest.raises(RuntimeError, match="receive failed"):
+                await body_size._drain_if_capacity(
+                    receive, idle_timeout=0.001, total_budget=1
+                )
+        else:
+            drained = await body_size._drain_if_capacity(
+                receive, idle_timeout=0.001, total_budget=1
+            )
+            assert drained is (outcome == "complete")
+        assert body_size._active_drains == 0
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
+def test_concurrent_drains_are_bounded(cancel):
+    import rapid_mlx.middleware.body_size as body_size
+    from rapid_mlx.config.server_config import get_config
+
+    get_config().max_request_bytes = 1024
+
+    async def run():
+        release = asyncio.Event()
+        all_receiving = asyncio.Event()
+        receive_calls = 0
+
+        async def stalled_receive():
+            nonlocal receive_calls
+            receive_calls += 1
+            if receive_calls == body_size._MAX_CONCURRENT_DRAINS:
+                all_receiving.set()
+            await release.wait()
+            return {"type": "http.request", "body": b"done", "more_body": False}
+
+        async def app(scope, receive, send):
+            pytest.fail("fast rejection reached downstream")
+
+        async def reject(receive):
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+
+            await body_size.RequestBodyLimitMiddleware(app)(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/v1/chat/completions",
+                    "headers": [(b"content-length", b"4096")],
+                },
+                receive,
+                send,
+            )
+            assert sent[0]["status"] == 413
+            return sent[0]["headers"]
+
+        assert body_size._active_drains == 0
+        tasks = [
+            asyncio.create_task(reject(stalled_receive))
+            for _ in range(body_size._MAX_CONCURRENT_DRAINS)
+        ]
+        extra_receive_calls = 0
+
+        async def extra_receive():
+            nonlocal extra_receive_calls
+            extra_receive_calls += 1
+            await release.wait()
+
+        try:
+            await asyncio.wait_for(all_receiving.wait(), timeout=1)
+            assert body_size._active_drains == body_size._MAX_CONCURRENT_DRAINS
+            assert all(not task.done() for task in tasks)
+            headers = await asyncio.wait_for(reject(extra_receive), timeout=0.1)
+            assert (b"connection", b"close") in headers
+            assert extra_receive_calls == 0
+        finally:
+            if cancel:
+                for task in tasks:
+                    task.cancel()
+            else:
+                release.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert body_size._active_drains == 0
+        assert receive_calls == body_size._MAX_CONCURRENT_DRAINS
+        if cancel:
+            assert all(isinstance(result, asyncio.CancelledError) for result in results)
+        else:
+            assert all(isinstance(result, list) for result in results)
+            assert all((b"connection", b"close") not in result for result in results)
+
+    asyncio.run(run())

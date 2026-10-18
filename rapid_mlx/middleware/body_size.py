@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 # and any client after 10 s total, then sends the 413 with Connection: close.
 _DRAIN_TOTAL_SECONDS = 10.0
 _DRAIN_IDLE_SECONDS_MAX = 2.0
+_MAX_CONCURRENT_DRAINS = 16
+_active_drains = 0
 
 
 # Methods that can carry a body large enough to be a DoS surface.
@@ -200,6 +202,24 @@ async def _drain_request_body(
                 return True
 
 
+async def _drain_if_capacity(
+    receive, *, idle_timeout: float, total_budget: float
+) -> bool:
+    # Draining is a courtesy so actively uploading clients can read the 413.
+    # At most 16 run at once; extra rejections skip it so stalled oversized
+    # requests cannot pile up. One event loop makes check-and-increment atomic.
+    global _active_drains
+    if _active_drains >= _MAX_CONCURRENT_DRAINS:
+        return False
+    _active_drains += 1
+    try:
+        return await _drain_request_body(
+            receive, idle_timeout=idle_timeout, total_budget=total_budget
+        )
+    finally:
+        _active_drains -= 1
+
+
 class RequestBodyLimitMiddleware:
     """ASGI middleware enforcing :attr:`ServerConfig.max_request_bytes`."""
 
@@ -262,7 +282,7 @@ class RequestBodyLimitMiddleware:
             )
             drained = False
             if not expect_continue:
-                drained = await _drain_request_body(
+                drained = await _drain_if_capacity(
                     receive,
                     idle_timeout=drain_idle_timeout,
                     total_budget=_DRAIN_TOTAL_SECONDS,
@@ -523,7 +543,7 @@ class RequestBodyLimitMiddleware:
                         exc_info=True,
                     )
                 return
-            drained = body_complete["value"] or await _drain_request_body(
+            drained = body_complete["value"] or await _drain_if_capacity(
                 receive,
                 idle_timeout=drain_idle_timeout,
                 total_budget=_DRAIN_TOTAL_SECONDS,
