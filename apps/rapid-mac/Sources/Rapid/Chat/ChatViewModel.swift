@@ -2827,7 +2827,10 @@ final class ChatViewModel {
                         restore.status = .complete
                         restore.errorMessage = nil
                         restore.failureKind = nil
-                        restore.toolCallArtifactSuppressed = false
+                        // The draft may itself have ended in a call that
+                        // was suppressed before the correction blanked it.
+                        restore.toolCallArtifactSuppressed =
+                            ChatMessage.trailingToolCallArtifactProse(in: original) != nil
                         updateMessage(at: currentPlaceholder, with: restore)
                     }
                     appendGroundingSources(

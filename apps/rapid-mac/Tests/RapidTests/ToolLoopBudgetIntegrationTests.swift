@@ -154,6 +154,23 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(model.messages.filter { $0.role == .user }.count == 1)
     }
 
+    @Test("A restored draft that ended in a call keeps that call suppressed")
+    func restoredDraftKeepsItsSuppression() async throws {
+        let draft = "I can't access real-time information.\n\n" + Self.trailingArtifact
+        ToolLoopBudgetProtocol.reset(finalAnswers: [draft, Self.artifact], toolName: "web_search")
+        let model = makeModel(toolName: "web_search")
+        try await sendAndWait(model)
+
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 5)
+        let final = try #require(model.messages.last)
+        #expect(final.toolCallArtifactSuppressed)
+        #expect(final.status == .complete)
+        let visible = try #require(ChatMessage.proseAboveSuppressedToolCallArtifact(content: final.content))
+        #expect(visible.hasPrefix("I can't access real-time information."))
+        #expect(visible.contains("Sources:"))
+        #expect(!visible.contains("<tool_call>"))
+    }
+
     @Test("Synthesis helper appends a bare user row without changing existing rows", arguments: [false, true])
     func synthesisHelperIsAppendOnly(hasSystem: Bool) {
         let history = (hasSystem ? [ChatMessage(role: .system, content: "System instructions")] : []) + [
