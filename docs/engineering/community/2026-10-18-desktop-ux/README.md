@@ -36,13 +36,13 @@ in this audit. Priority means proposed product priority, not incident severity.
 
 | ID | Priority | Observed problem | Proposed owner | Next action |
 | --- | --- | --- | --- | --- |
-| UX01 | P1 | Ordinary Chinese rewriting requests trigger local file actions while Personal Intelligence says Off | Pixel + Vector | Make a visible conversation tool mode agree with the actual tool surface |
-| UX02 | P1 | A stopped, downloaded model disables Send and requires a separate Start | Pixel | Queue the draft behind one explicit Start & send action |
-| UX03 | P1 | Seeded setup prose and the new-chat empty state do not help users reach their first useful task | Pixel | Replace setup-as-transcript and central promotion with actionable starts |
-| UX04 | P2 | Diagnostics and model operations occupy permanent primary-chat space | Pixel; Atlas for navigation scope | Put chat/history first; move operational detail into an accessible inspector |
-| UX05 | P2 | First model selection exposes many overlapping technical choices before first value | Pixel | Lead with one explained starter and a secondary comparison route |
-| UX06 | P1 | Absolute local privacy promises omit enabled online-tool boundaries | Pixel + Vector; Atlas for copy | Make local-processing and optional-network behavior precise everywhere |
-| UX07 | P2 | The selected starter misreads the Chinese task even after local file tools are disabled | Vector + Pixel | Investigate app instructions/model behavior and validate the starter on everyday tasks |
+| [UX01 / #4853](https://github.com/raullenchai/Rapid-MLX/issues/4853) | P1 | Ordinary Chinese rewriting requests trigger local file actions while Personal Intelligence says Off | Pixel + Vector | Make a visible conversation tool mode agree with the actual tool surface |
+| [UX02 / #4854](https://github.com/raullenchai/Rapid-MLX/issues/4854) | P1 | A stopped, downloaded model disables Send and requires a separate Start | Pixel | Queue the draft behind one explicit Start & send action |
+| [UX03 / #4855](https://github.com/raullenchai/Rapid-MLX/issues/4855) | P1 | Seeded setup prose and the new-chat empty state do not help users reach their first useful task | Pixel | Replace setup-as-transcript and central promotion with actionable starts |
+| [UX04 / #4856](https://github.com/raullenchai/Rapid-MLX/issues/4856) | P2 | Diagnostics and model operations occupy permanent primary-chat space | Pixel; Atlas for navigation scope | Put chat/history first; move operational detail into an accessible inspector |
+| [UX05 / #4857](https://github.com/raullenchai/Rapid-MLX/issues/4857) | P2 | First model selection exposes many overlapping technical choices before first value | Pixel | Lead with one explained starter and a secondary comparison route |
+| [UX06 / #4858](https://github.com/raullenchai/Rapid-MLX/issues/4858) | P1 | Absolute local privacy promises omit enabled online-tool boundaries | Pixel + Vector; Atlas for copy | Make local-processing and optional-network behavior precise everywhere |
+| [UX07 / #4859](https://github.com/raullenchai/Rapid-MLX/issues/4859) | P2 | The selected starter misreads the Chinese task even after local file tools are disabled | Vector + Pixel | Investigate app instructions/model behavior and validate the starter on everyday tasks |
 
 ## Evidence
 
@@ -116,9 +116,10 @@ and compact layouts must remain part of implementation acceptance.
 
 This branch contains evidence and design handoffs only. No application behavior,
 engine code, telemetry policy, model selection policy, or release was changed.
-The user authorized filing findings as GitHub issues with mock designs; fixes are
-for the receiving owners to implement. Atlas should sequence UX01/UX06, UX02/UX03,
-and UX07 before optional visual reorganization. Keep each implementation scoped to
+The user authorized filing findings as GitHub issues with mock designs. All seven
+linked findings are now filed and ready for owner triage; fixes are for the receiving
+owners to implement. Atlas should sequence UX01/UX06, UX02/UX03,
+before optional visual reorganization; investigate UX07 alongside starter validation. Keep each implementation scoped to
 its own issue rather than turning the audit into a wholesale rewrite.
 
 The requested Orca role FYI messaging channel was not exposed in this session.
