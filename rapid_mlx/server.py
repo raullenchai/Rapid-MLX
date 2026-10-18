@@ -1845,7 +1845,9 @@ def load_embedding_model(
         max_length=_embedding_max_length,
         overflow_policy=_embedding_overflow_policy,
     )
-    _embedding_engine.load()
+    from .routes._mlx_worker import run_on_mlx_worker_sync
+
+    run_on_mlx_worker_sync(_embedding_engine.load)
     _emit_embedding_model_served_once(_embedding_engine, model_name)
 
     # Sync into config for route modules
@@ -1877,7 +1879,9 @@ def load_rerank_model(
         prompt=prompt,
         model_family=model_family,
     )
-    engine.load()
+    from .routes._mlx_worker import run_on_mlx_worker_sync
+
+    run_on_mlx_worker_sync(engine.load)
     _rerank_engine = engine
     _rerank_model_locked = model_name
     _rerank_max_documents = max_documents

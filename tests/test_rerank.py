@@ -964,15 +964,12 @@ async def test_rerank_scoring_does_not_block_event_loop(monkeypatch):
 
 
 class _ChatWorker:
-    def __init__(self, running=True):
-        self.running = running
+    def __init__(self):
         self.calls = 0
 
     async def execute_on_model_worker(self, func, *args, **kwargs):
-        if not self.running:
-            raise RuntimeError("model worker is not running")
         self.calls += 1
-        return await asyncio.to_thread(func, *args, **kwargs)
+        raise AssertionError("retrieval work used the chat model worker")
 
 
 def _thread_recording_engine(scores, error=None):
@@ -986,31 +983,30 @@ def _thread_recording_engine(scores, error=None):
     return engine
 
 
-@pytest.mark.parametrize(("running", "worker_calls"), [(True, 1), (False, 0)])
-def test_rerank_runs_on_chat_model_worker_when_running(
-    rerank_client, running, worker_calls
-):
+def test_rerank_uses_dedicated_worker_not_chat_worker(rerank_client):
     engine = _thread_recording_engine([0.5])
     _configure(rerank_client.cfg, engine)
-    worker = _ChatWorker(running=running)
+    worker = _ChatWorker()
     rerank_client.cfg.engine = worker
     resp = rerank_client.client.post(
         "/v1/rerank", json={"query": "q", "documents": ["a"]}
     )
     assert resp.status_code == 200
-    assert worker.calls == worker_calls
+    assert worker.calls == 0
     assert len(engine.threads) == 1
-    assert engine.threads[0].startswith("mlx-retrieval") is not running
+    assert engine.threads[0].startswith("mlx-retrieval")
 
 
-def test_rerank_error_on_chat_worker_is_not_retried(rerank_client):
+def test_rerank_inference_error_propagates_once(rerank_client):
     engine = _thread_recording_engine([], error=RuntimeError("boom"))
     _configure(rerank_client.cfg, engine)
-    rerank_client.cfg.engine = _ChatWorker()
+    worker = _ChatWorker()
+    rerank_client.cfg.engine = worker
     resp = rerank_client.client.post(
         "/v1/rerank", json={"query": "q", "documents": ["a"]}
     )
     assert resp.status_code == 500
+    assert worker.calls == 0
     assert len(engine.threads) == 1
 
 
@@ -1236,17 +1232,25 @@ def test_legacy_server_parser_accepts_rerank_settings():
 
 
 def test_server_load_rerank_model_configures_engine(monkeypatch):
+    import asyncio
+    import threading
+
     from rapid_mlx import rerank, server
     from rapid_mlx.config import get_config, reset_config
+    from rapid_mlx.routes._mlx_worker import run_on_mlx_worker
 
     created = []
+    threads = []
 
     class _Engine:
         def __init__(self, name, **kwargs):
             created.append((name, kwargs))
 
         def load(self):
-            pass
+            threads.append(threading.current_thread().name)
+
+        def score(self):
+            threads.append(threading.current_thread().name)
 
     monkeypatch.setattr(rerank, "RerankEngine", _Engine)
     monkeypatch.setattr(server, "_emit_rerank_model_served_once", lambda _name: None)
@@ -1279,8 +1283,31 @@ def test_server_load_rerank_model_configures_engine(monkeypatch):
         cfg = get_config()
         assert isinstance(cfg.rerank_engine, _Engine)
         assert (cfg.rerank_model_locked, cfg.rerank_max_documents) == (RERANK_ID, 5)
+        asyncio.run(run_on_mlx_worker(cfg.rerank_engine.score))
+        assert len(threads) == 2
+        assert threads[0].startswith("mlx-retrieval")
+        assert threads[0] == threads[1]
     finally:
         reset_config()
+
+
+def test_server_load_rerank_model_propagates_load_error(monkeypatch):
+    from rapid_mlx import rerank, server
+
+    error = LookupError("load failed unchanged")
+
+    class _Engine:
+        def __init__(self, _name, **_kwargs):
+            pass
+
+        def load(self):
+            raise error
+
+    monkeypatch.setattr(rerank, "RerankEngine", _Engine)
+
+    with pytest.raises(LookupError, match="load failed unchanged") as exc_info:
+        server.load_rerank_model(RERANK_ID)
+    assert exc_info.value is error
 
 
 def test_health_reports_rerank_only_server():

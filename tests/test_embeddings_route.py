@@ -207,17 +207,12 @@ def test_embeddings_pretokenized_input_uses_retrieval_worker(monkeypatch):
 
 
 class _ChatWorker:
-    def __init__(self, running=True):
-        self.running = running
+    def __init__(self):
         self.calls = 0
 
     async def execute_on_model_worker(self, func, *args, **kwargs):
-        import asyncio
-
-        if not self.running:
-            raise RuntimeError("model worker is not running")
         self.calls += 1
-        return await asyncio.to_thread(func, *args, **kwargs)
+        raise AssertionError("retrieval work used the chat model worker")
 
 
 def _thread_recording_engine(error=None):
@@ -286,7 +281,7 @@ async def test_embedding_does_not_block_event_loop(monkeypatch, chat_engine):
         restore()
 
 
-async def test_embedding_and_rerank_fallbacks_share_one_mlx_lane(chat_engine):
+async def test_embedding_and_rerank_share_one_mlx_lane(chat_engine):
     import asyncio
     import threading
 
@@ -327,12 +322,9 @@ async def test_embedding_and_rerank_fallbacks_share_one_mlx_lane(chat_engine):
     assert max_active == 1
 
 
-@pytest.mark.parametrize(("running", "worker_calls"), [(True, 1), (False, 0)])
-def test_embedding_runs_on_chat_model_worker_when_running(
-    monkeypatch, chat_engine, running, worker_calls
-):
+def test_embedding_uses_dedicated_worker_not_chat_worker(monkeypatch, chat_engine):
     engine = _thread_recording_engine()
-    worker = _ChatWorker(running=running)
+    worker = _ChatWorker()
     chat_engine.engine = worker
     client, restore = _build_embed_app(
         monkeypatch, engine, embedding_model_locked="stub-embed"
@@ -342,14 +334,72 @@ def test_embedding_runs_on_chat_model_worker_when_running(
     finally:
         restore()
     assert r.status_code == 200, r.text
-    assert worker.calls == worker_calls
+    assert worker.calls == 0
     assert len(engine.threads) == 1
-    assert engine.threads[0].startswith("mlx-retrieval") is not running
+    assert engine.threads[0].startswith("mlx-retrieval")
 
 
-def test_embedding_error_on_chat_worker_is_not_retried(monkeypatch, chat_engine):
-    engine = _thread_recording_engine(error=RuntimeError("boom"))
-    chat_engine.engine = _ChatWorker()
+async def test_embedding_load_and_inference_share_retrieval_thread(monkeypatch):
+    import threading
+
+    from rapid_mlx import embedding, server
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes._mlx_worker import run_on_mlx_worker
+
+    threads = []
+
+    class _Engine:
+        def __init__(self, model_name, **_kwargs):
+            self.model_name = model_name
+
+        def load(self):
+            threads.append(threading.current_thread().name)
+
+        def embed(self, _texts):
+            threads.append(threading.current_thread().name)
+
+    monkeypatch.setattr(embedding, "EmbeddingEngine", _Engine)
+    monkeypatch.setattr(server, "_emit_embedding_model_served_once", lambda *_a: None)
+    monkeypatch.setattr(server, "_embedding_engine", None)
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "embedding_engine", None)
+    monkeypatch.setattr(cfg, "embedding_model_locked", None)
+    # The CLI calls this before uvicorn starts, while the lazy route caller may
+    # invoke it with an event loop already running. The blocking API must work
+    # in both cases without dispatching through that loop.
+    server.load_embedding_model("stub-embed", reuse_existing=False)
+    await run_on_mlx_worker(server._embedding_engine.embed, ["hello"])
+
+    assert len(threads) == 2
+    assert threads[0].startswith("mlx-retrieval")
+    assert threads[0] == threads[1]
+
+
+def test_embedding_load_error_propagates(monkeypatch):
+    from rapid_mlx import embedding, server
+
+    error = ValueError("load failed unchanged")
+
+    class _Engine:
+        def __init__(self, model_name, **_kwargs):
+            self.model_name = model_name
+
+        def load(self):
+            raise error
+
+    monkeypatch.setattr(embedding, "EmbeddingEngine", _Engine)
+    monkeypatch.setattr(server, "_embedding_engine", None)
+
+    with pytest.raises(ValueError, match="load failed unchanged") as exc_info:
+        server.load_embedding_model("stub-embed", reuse_existing=False)
+    assert exc_info.value is error
+
+
+def test_embedding_inference_error_propagates_once(monkeypatch, chat_engine):
+    error = RuntimeError("boom")
+    engine = _thread_recording_engine(error=error)
+    worker = _ChatWorker()
+    chat_engine.engine = worker
     client, restore = _build_embed_app(
         monkeypatch, engine, embedding_model_locked="stub-embed"
     )
@@ -358,6 +408,7 @@ def test_embedding_error_on_chat_worker_is_not_retried(monkeypatch, chat_engine)
     finally:
         restore()
     assert r.status_code == 500
+    assert worker.calls == 0
     assert len(engine.threads) == 1
 
 

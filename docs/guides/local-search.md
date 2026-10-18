@@ -494,8 +494,9 @@ Engines without that boundary fail closed to keyword search and expose
 `semantic_unavailable_reason` in status. If the selected model worker changes,
 semantic work fails closed until Local Search is restarted; cached model objects
 are never forwarded to a different worker. Cancellation drains an in-flight model
-call before releasing its engine on that same worker. The existing
-`/v1/embeddings` route retains its synchronous execution path.
+call before releasing its engine on that same worker. The
+`/v1/embeddings` and `/v1/rerank` routes use their own models on a separate
+retrieval worker thread that loads and runs them.
 File reads, extraction, chunking, and eligibility run off the HTTP event loop;
 a separate single CPU worker owns SQLite and search computation. Every root
 component opens relative to a pinned directory descriptor with `O_NOFOLLOW`;
