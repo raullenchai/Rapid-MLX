@@ -162,10 +162,86 @@ async def test_cancelled_stream_that_returns_normally_cannot_checkpoint(monkeypa
     )
     task = asyncio.create_task(api._warm(SuppressingEngine(), body))
     await started.wait()
-    api._cancel_warm(task)
+    task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_warm_cancellation_waits_for_stream_cleanup(monkeypatch):
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    closed = asyncio.Event()
+
+    class SuppressingEngine:
+        async def stream_chat(self, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release_cleanup.wait()
+            try:
+                yield SimpleNamespace(finished=True)
+            finally:
+                closed.set()
+
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    monkeypatch.setattr(
+        api,
+        "save_prefix_cache_to_disk",
+        lambda budget: pytest.fail("cancelled stream wrote a checkpoint"),
+    )
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}], persist=True
+    )
+    task = asyncio.create_task(api._warm(SuppressingEngine(), body))
+    try:
+        await started.wait()
+        task.cancel()
+        await cleaning.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not closed.is_set()
+    finally:
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("stream failed"), asyncio.CancelledError()]
+)
+async def test_stream_failure_propagates_and_closes_without_checkpoint(
+    monkeypatch, failure
+):
+    closed = asyncio.Event()
+
+    class FailingEngine:
+        async def stream_chat(self, **kwargs):
+            try:
+                raise failure
+                yield
+            finally:
+                closed.set()
+
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    monkeypatch.setattr(
+        api,
+        "save_prefix_cache_to_disk",
+        lambda budget: pytest.fail("failed stream wrote a checkpoint"),
+    )
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}], persist=True
+    )
+    with pytest.raises(type(failure)):
+        await api._warm(FailingEngine(), body)
+    assert closed.is_set()
 
 
 @pytest.mark.asyncio
@@ -799,8 +875,11 @@ async def test_handler_cancellation_keeps_checkpoint_slot_until_thread_exits(
 ):
     class DisconnectRequest:
         disconnected = False
+        disconnect_observed = False
 
         async def is_disconnected(self):
+            if self.disconnected:
+                self.disconnect_observed = True
             return self.disconnected
 
     engine = FakeEngine()
@@ -833,9 +912,10 @@ async def test_handler_cancellation_keeps_checkpoint_slot_until_thread_exits(
     assert await asyncio.to_thread(started.wait, 2)
     request.disconnected = True
     for _ in range(30):
-        if api._active is not None and api._cancel_requested(api._active):
+        if request.disconnect_observed:
             break
         await asyncio.sleep(0.01)
+    assert request.disconnect_observed
     handler.cancel()
     await asyncio.sleep(0.01)
     assert api._active is not None

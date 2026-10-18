@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-import weakref
 from collections import OrderedDict
 from typing import Any, Literal, cast
 
@@ -36,23 +35,11 @@ router = APIRouter(
 
 _guard = asyncio.Lock()
 _active: asyncio.Task | None = None
-_cancel_requested_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
 _active_key: str | None = None
 _active_revision = -1
 _draft_revisions: OrderedDict[str, tuple[int, float]] = OrderedDict()
 _REVISION_TTL_SECONDS = 300
 _MAX_REVISION_KEYS = 128
-
-
-def _cancel_warm(task: asyncio.Task) -> None:
-    _cancel_requested_tasks.add(task)
-    task.cancel()
-
-
-def _cancel_requested(task: asyncio.Task) -> bool:
-    # Python 3.10 has no Task.cancelling(); track warm cancellations explicitly.
-    cancelling = getattr(task, "cancelling", None)
-    return task in _cancel_requested_tasks or bool(cancelling and cancelling())
 
 
 class PrefillRequest(BaseModel):
@@ -163,17 +150,32 @@ async def _warm(engine, body: PrefillRequest) -> dict:
         temperature=0,
         enable_thinking=thinking,
     )
-    last = None
+
+    async def _consume():
+        last = None
+        try:
+            async for output in stream:
+                last = output
+                if output.finished:
+                    break
+        finally:
+            await stream.aclose()
+        return last
+
+    consume = asyncio.create_task(_consume())
     try:
-        async for output in stream:
-            last = output
-            if output.finished:
-                break
-    finally:
-        await stream.aclose()
-    current = asyncio.current_task()
-    if current is not None and _cancel_requested(current):
-        raise asyncio.CancelledError()
+        # Waiting does not propagate the stream's outcome, so cancellation
+        # here always belongs to this warm task, even on Python 3.10.
+        await asyncio.wait({consume})
+    except asyncio.CancelledError:
+        consume.cancel()
+        while not consume.done():
+            try:
+                await asyncio.wait({consume})
+            except asyncio.CancelledError:
+                continue
+        raise
+    last = consume.result()
     if last is None or not last.finished:
         raise HTTPException(status_code=503, detail="Prefill did not complete")
     result = {
@@ -275,11 +277,11 @@ async def prefill(body: PrefillRequest, request: Request):
             if revision <= _active_revision:
                 raise HTTPException(status_code=409, detail="Draft revision is stale")
             previous = _active
-            _cancel_warm(previous)
+            previous.cancel()
             try:
                 await asyncio.wait({previous})
             except asyncio.CancelledError:
-                _cancel_warm(previous)
+                previous.cancel()
                 while not previous.done():
                     try:
                         await asyncio.wait({previous})
@@ -301,12 +303,12 @@ async def prefill(body: PrefillRequest, request: Request):
     try:
         while not task.done():
             if await request.is_disconnected():
-                _cancel_warm(task)
+                task.cancel()
                 break
             await asyncio.wait({task}, timeout=0.1)
         return await task
     except asyncio.CancelledError:
-        _cancel_warm(task)
+        task.cancel()
         try:
             await task
         except asyncio.CancelledError:
