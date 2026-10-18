@@ -603,3 +603,32 @@ async def test_disconnect_cancels_draft_work(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await api.prefill(body, DisconnectedRequest())
     assert api._active is None
+
+
+@pytest.mark.asyncio
+async def test_active_revision_remains_stale_if_watermark_expires(monkeypatch):
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    monkeypatch.setattr(api, "_draft_revisions", OrderedDict())
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "partial"}],
+        draft_key="active-stale",
+        revision=1,
+    )
+    first = asyncio.create_task(api.prefill(body, ConnectedRequest()))
+    await engine.started.wait()
+    api._draft_revisions.clear()
+    with pytest.raises(HTTPException) as stale:
+        await api.prefill(body, ConnectedRequest())
+    assert stale.value.status_code == 409
+    engine.release.set()
+    await first
