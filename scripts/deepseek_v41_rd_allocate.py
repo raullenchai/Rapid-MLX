@@ -18,6 +18,47 @@ from scripts.deepseek_v41_rd_common import BITS, bank_plan
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 
 
+def pruning_audit(result, counts_by_slice, reap_by_slice, slice_names, roles):
+    """Calibration mass retained across layers and within each layer (empty = 1)."""
+    counts, reap = np.asarray(counts_by_slice), np.asarray(reap_by_slice)
+    if (
+        counts.ndim != 3
+        or counts.shape != reap.shape
+        or len(counts) != len(slice_names)
+        or counts.shape[1] != len(result["layers"])
+        or any(not np.isfinite(x).all() or np.any(x < 0) for x in (counts, reap))
+    ):
+        raise ValueError("invalid calibration mass arrays")
+    keep = np.zeros(counts.shape[1:], bool)
+    for layer, spec in result["layers"].items():
+        keep[int(layer), spec["kept_expert_ids"]] = True
+    audit = {}
+    for i, name in enumerate(slice_names):
+        if roles[name] != "hot":
+            continue
+        audit[name] = {}
+        for label, values in (("route", counts[i]), ("reap", reap[i])):
+            total = values.sum(axis=-1)
+            retained = (values * keep).sum(axis=-1)
+            audit[name][label + "_mass_retained"] = (
+                float(retained.sum() / total.sum()) if total.sum() else 1.0
+            )
+            audit[name][label + "_mass_retained_by_layer"] = np.divide(
+                retained, total, out=np.ones(len(total)), where=total != 0
+            ).tolist()
+    if not audit:
+        raise ValueError("audit requires hot calibration slices")
+    return {
+        "hot_slice_retention": audit,
+        "min_hot_route_mass_retained": min(
+            x["route_mass_retained"] for x in audit.values()
+        ),
+        "min_hot_reap_mass_retained": min(
+            x["reap_mass_retained"] for x in audit.values()
+        ),
+    }
+
+
 def allocate(
     sensitivity, errors, costs, fixed_bytes, budget_bytes, min_kept=288, topk=6
 ):
@@ -163,6 +204,12 @@ def main():
     p.add_argument("--max-prune-fraction", type=float)
     p.add_argument("--rd-fallback", action="store_true")
     p.add_argument(
+        "--allow-hot-pruning",
+        action="store_true",
+        help="allow protected expert removal only with RD fallback (T128 opts in)",
+    )
+    p.add_argument("--mtp-expert-bits", type=int, choices=(4, 8), default=4)
+    p.add_argument(
         "--source", type=Path, help="source headers for exact component breakdown"
     )
     p.add_argument("--score", choices=["reap", "man", "msan"], default="reap")
@@ -174,6 +221,13 @@ def main():
     p.add_argument("--min-split-overlap", type=float, default=0.9)
     p.add_argument("--output-dir", type=Path, required=True)
     a = p.parse_args()
+    preset = PRESETS.get(a.preset, PRESETS["T256"])
+    fallback = preset["fallback"] or a.rd_fallback
+    allow_hot_pruning = preset["allow_hot_pruning"] or a.allow_hot_pruning
+    if allow_hot_pruning and (not fallback or a.granularity == "legacy-expert"):
+        raise ValueError(
+            "--allow-hot-pruning requires --rd-fallback and layer/projection granularity"
+        )
     if not 0 <= a.min_split_overlap <= 1:
         raise ValueError("split-overlap threshold must be between zero and one")
     with (
@@ -230,6 +284,18 @@ def main():
                 a.hot_threshold,
                 a.cold_ratio,
             )
+            from scripts.deepseek_v41_rd_build import (
+                layout_report,
+                mtp_byte_costs,
+                plan,
+            )
+            from scripts.repack_deepseek_v41_native import CheckpointIndex
+
+            config = json.loads((a.source / "config.json").read_text())
+            index = CheckpointIndex(a.source)
+            # Recompute from source headers: older inventories contain only the
+            # former 8-bit draft total and cannot price a 4-bit draft correctly.
+            draft_costs = mtp_byte_costs(index, config)
         budgets = (
             [PRESETS[a.preset]["budget_bytes"] / 1e9] if a.preset else a.budgets_gb
         )
@@ -249,8 +315,9 @@ def main():
                     a.topk,
                 )
             else:
-                preset = PRESETS.get(a.preset, PRESETS["T256"])
-                mtp_bytes = cost.get("mtp_bytes", 0) if a.preset == "T256" else 0
+                mtp_bytes = (
+                    draft_costs[str(a.mtp_expert_bits)] if a.preset == "T256" else 0
+                )
                 result = layer_allocate(
                     selection,
                     errors["q"],
@@ -260,16 +327,40 @@ def main():
                     preset["max_prune_fraction"]
                     if a.max_prune_fraction is None
                     else a.max_prune_fraction,
-                    preset["fallback"] or a.rd_fallback,
+                    fallback,
                     a.topk,
                     errors["projection_q"] if a.granularity == "projection" else None,
+                    allow_hot_pruning=allow_hot_pruning,
                 )
                 result["keep_mtp"] = a.preset == "T256"
-                from scripts.deepseek_v41_rd_build import layout_report, plan
-                from scripts.repack_deepseek_v41_native import CheckpointIndex
-
-                config = json.loads((a.source / "config.json").read_text())
-                entries, _, report = plan(CheckpointIndex(a.source), config, result)
+                result["mtp_expert_bits"] = a.mtp_expert_bits
+                result["mtp_bytes"] = mtp_bytes
+                result["mtp_bytes_by_expert_bits"] = draft_costs
+                result.update(
+                    pruning_audit(
+                        result,
+                        scores["counts_by_slice"]
+                        if "counts_by_slice" in scores
+                        else scores["counts_halves_by_slice"].sum(1),
+                        scores["reap_by_slice"]
+                        if "reap_by_slice" in scores
+                        else scores["reap_halves"].sum(1),
+                        sm["slice_names"],
+                        roles,
+                    )
+                )
+                worst = sorted(
+                    result["hot_slice_retention"].items(),
+                    key=lambda x: (x[1]["route_mass_retained"], x[0]),
+                )[:5]
+                print(
+                    f"{gb:g}GB worst hot slices (route/REAP retained): "
+                    + ", ".join(
+                        f"{n}={v['route_mass_retained']:.6f}/{v['reap_mass_retained']:.6f}"
+                        for n, v in worst
+                    )
+                )
+                entries, _, report = plan(index, config, result)
                 result["byte_breakdown"] = layout_report(entries, report)
                 if report["resident_tensor_bytes"] != result["resident_tensor_bytes"]:
                     raise ValueError(

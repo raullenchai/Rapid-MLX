@@ -112,6 +112,9 @@ def output_entries(
 
 
 def validate_allocation(allocation, config):
+    mtp_bits = allocation.get("mtp_expert_bits", 4)
+    if type(mtp_bits) is not int or mtp_bits not in (4, 8):
+        raise ValueError("mtp_expert_bits must be 4 or 8")
     c = config.get("text_config", config)
     count = c.get("num_hidden_layers", c.get("n_layers"))
     experts = c["n_routed_experts"]
@@ -143,34 +146,51 @@ def validate_allocation(allocation, config):
     return c
 
 
+def mtp_entries(index, config, expert_bits=4):
+    """Draft-only affine policy; dense Markov I/O and norms remain BF16."""
+    if type(expert_bits) is not int or expert_bits not in (4, 8):
+        raise ValueError("mtp_expert_bits must be 4 or 8")
+    entries = []
+    for name, t in sorted(index.tensors.items()):
+        if not name.startswith("mtp.") or name.endswith(".scale"):
+            continue
+        shape = list(t.shape)
+        expert = ".ffn.experts." in name and name.endswith(".weight")
+        scale = name.removesuffix(".weight") + ".scale" in index.tensors
+        if (
+            expert
+            and scale
+            and config.get("quantization_config", {}).get("expert_dtype", "fp4")
+            == "fp4"
+        ):
+            shape[-1] *= 2
+        bits = expert_bits if expert else fixed_precision(name, shape)
+        entries.extend(
+            output_entries(
+                name,
+                shape,
+                (name,),
+                "mtp",
+                bits,
+                fp32=bool(re.search(r"gate\.bias(_vl)?$", name)),
+            )
+        )
+    return entries
+
+
+def mtp_byte_costs(index, config):
+    """Exact resident bytes, including unchanged draft non-expert policy."""
+    return {
+        str(bits): sum(e.nbytes for e in mtp_entries(index, config, bits))
+        for bits in (4, 8)
+    }
+
+
 def plan(index, config, allocation):
     validate_allocation(allocation, config)
     entries, experts = [], {}
     for name, t in sorted(index.tensors.items()):
         if name.startswith("mtp."):
-            if allocation.get("keep_mtp", False) and not name.endswith(".scale"):
-                shape = list(t.shape)
-                scale = name.removesuffix(
-                    ".weight"
-                ) + ".scale" in index.tensors and name.endswith(".weight")
-                if (
-                    ".ffn.experts." in name
-                    and scale
-                    and config.get("quantization_config", {}).get("expert_dtype", "fp4")
-                    == "fp4"
-                ):
-                    shape[-1] *= 2
-                bits = fixed_precision(name, shape)
-                entries.extend(
-                    output_entries(
-                        name,
-                        shape,
-                        (name,),
-                        "mtp",
-                        bits,
-                        fp32=bool(re.search(r"gate\.bias(_vl)?$", name)),
-                    )
-                )
             continue
         if name.startswith(DROP) or name.endswith(".scale"):
             continue
@@ -208,6 +228,8 @@ def plan(index, config, allocation):
         entries.extend(
             output_entries(name, shape, (name,), component, bits, rows=rows, fp32=fp32)
         )
+    if allocation.get("keep_mtp", False):
+        entries.extend(mtp_entries(index, config, allocation.get("mtp_expert_bits", 4)))
     for layer, spec in allocation["layers"].items():
         for proj, final in PROJECTIONS.items():
             parts = experts.get((layer, proj), {})
@@ -405,6 +427,8 @@ def write_group(path, entries, index, config, row_chunk=65536):
 
 
 def build(source, destination, shared, allocation, dry_run=False):
+    if allocation.get("keep_mtp"):
+        allocation = {"mtp_expert_bits": 4, **allocation}
     config = json.loads((source / "config.json").read_text())
     index = CheckpointIndex(source)
     entries, modules, report = plan(index, config, allocation)

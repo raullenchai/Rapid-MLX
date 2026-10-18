@@ -11,7 +11,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_contrastive import contrastive
-from scripts.deepseek_v41_rd_build import layout_report, plan
+from scripts.deepseek_v41_rd_build import layout_report, mtp_byte_costs, plan
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 from scripts.repack_deepseek_v41_native import CheckpointIndex
 
@@ -45,6 +45,7 @@ def main():
         (*costs.shape[:2], 3, 3),
     )
     index = CheckpointIndex(a.source)
+    draft_costs = mtp_byte_costs(index, config)
     a.output_dir.mkdir(parents=True, exist_ok=True)
     reference = {
         "reference": True,
@@ -60,7 +61,7 @@ def main():
     )
     for target, preset in PRESETS.items():
         fixed = cost["fixed_non_expert_bytes"] + (
-            cost["mtp_bytes"] if target == "T256" else 0
+            draft_costs["4"] if target == "T256" else 0
         )
         result = layer_allocate(
             selection,
@@ -72,8 +73,11 @@ def main():
             preset["fallback"],
             6,
             pq,
+            allow_hot_pruning=preset["allow_hot_pruning"],
         )
         result["keep_mtp"] = target == "T256"
+        result["mtp_expert_bits"] = 4
+        result["mtp_bytes_by_expert_bits"] = draft_costs
         result["synthetic_only"] = True
         result["assumptions"] = (
             "24 stable cold specialists, 176 other weak hot experts, 184 protected per layer; all routed. Isolated q gate/up=[.07,.025,.008], down=[.2,.035,.008]. Not measured."

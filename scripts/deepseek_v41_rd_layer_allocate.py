@@ -1,4 +1,4 @@
-"""Homogeneous layer/projection RD options, contrastive first, hard hot guards."""
+"""Homogeneous layer/projection RD options with explicit hot-pruning fallback."""
 
 from itertools import product
 
@@ -9,11 +9,13 @@ PRESETS = {
         "budget_bytes": 200_000_000_000,
         "max_prune_fraction": 0.10,
         "fallback": False,
+        "allow_hot_pruning": False,
     },
     "T128": {
         "budget_bytes": 100_000_000_000,
         "max_prune_fraction": 0.60,
         "fallback": True,
+        "allow_hot_pruning": True,
     },
 }
 
@@ -28,7 +30,12 @@ def layer_allocate(
     fallback=False,
     topk=6,
     projection_q=None,
+    allow_hot_pruning=False,
 ):
+    if allow_hot_pruning and not fallback:
+        raise ValueError("--allow-hot-pruning requires --rd-fallback")
+    if allow_hot_pruning and "never_routed" not in selection:
+        raise ValueError("hot pruning requires an explicit never-routed mask")
     s = np.asarray(selection["sensitivity"], float)
     q, costs = np.asarray(q, float), np.asarray(expert_costs)
     if (
@@ -58,6 +65,9 @@ def layer_allocate(
     for key in ("candidate", "protected"):
         if np.asarray(selection[key]).shape != s.shape:
             raise ValueError("selection masks must match sensitivity")
+    never = np.asarray(selection.get("never_routed", np.zeros(s.shape, bool)), bool)
+    if never.shape != s.shape or np.any(never & selection["candidate"]):
+        raise ValueError("invalid never-routed mask")
     if projection_q is not None:
         projection_q = np.asarray(projection_q)
         if (
@@ -89,11 +99,13 @@ def layer_allocate(
         protected = selection["protected"][layer]
         if np.any(candidate & protected):
             raise ValueError("contrastive candidates cannot be protected")
-        # Removal order puts stable contrastive topics first, then low raw hot
-        # sensitivity. Never-routed and hot experts cannot be removed at all.
+        # Hot protection can be relaxed only by an explicit fallback opt-in.
+        # Never-routed experts remain immutable even under that opt-in.
         removable = sorted(
-            np.flatnonzero(~protected),
-            key=lambda e: (not candidate[e], s[layer, e], int(e)),
+            np.flatnonzero(
+                ~never[layer] & (~protected | (fallback and allow_hot_pruning))
+            ),
+            key=lambda e: (not candidate[e], bool(protected[e]), s[layer, e], int(e)),
         )
         if not fallback:
             removable = [e for e in removable if candidate[e]]
@@ -124,7 +136,12 @@ def layer_allocate(
             # candidates before touching the remaining unprotected experts.
             ordered = sorted(
                 removable,
-                key=lambda e: (not candidate[e], s[layer, e] * (1 - keep_q[e]), int(e)),
+                key=lambda e: (
+                    not candidate[e],
+                    bool(protected[e]),
+                    s[layer, e] * (1 - keep_q[e]),
+                    int(e),
+                ),
             )
             for removed in range(cap + 1):
                 kept = np.array(
@@ -147,7 +164,9 @@ def layer_allocate(
     remaining = budget_bytes - fixed_bytes
     if sum(min(o[0] for o in opts) for opts in options) > remaining:
         raise ValueError(
-            "infeasible under hot/never-routed protection and per-layer pruning caps; do not relax guards silently"
+            "infeasible under hot/never-routed protection and per-layer pruning caps; "
+            "--rd-fallback --allow-hot-pruning explicitly permits hot expert removal; "
+            "never-routed protection, caps and top-k floor remain enforced"
         )
 
     def solve(lam):
@@ -197,6 +216,7 @@ def layer_allocate(
         "max_prune_fraction": max_prune_fraction,
         "rd_fallback": fallback,
         "rd_fallback_requested": fallback_requested,
+        "allow_hot_pruning": allow_hot_pruning,
         "contrastive_only_minimum_bytes": contrastive_minimum,
         "layers": {
             str(i): {
@@ -206,6 +226,10 @@ def layer_allocate(
                 ),
                 "summed_kept_sensitivity": float(s[i, o[2]].sum()),
                 "removed_experts": o[4],
+                "removed_protected_experts": int(
+                    np.asarray(selection["protected"][i], bool).sum()
+                    - np.asarray(selection["protected"][i], bool)[o[2]].sum()
+                ),
                 "routed_and_router_bytes": o[0],
             }
             for i, o in enumerate(best)

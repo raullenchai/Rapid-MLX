@@ -266,7 +266,7 @@ def main():
     revision = a.model_revision or source.name
     account = inventory(index, config, a.nonexpert_bits)
     if a.release_policy:
-        from scripts.deepseek_v41_rd_build import plan
+        from scripts.deepseek_v41_rd_build import mtp_byte_costs, plan
 
         allocation = {
             "layers": {
@@ -278,8 +278,9 @@ def main():
             }
         }
         _, _, report = plan(index, config, allocation)
-        _, _, with_mtp = plan(index, config, {**allocation, "keep_mtp": True})
-        account["mtp_bytes"] = with_mtp["components"].get("mtp", 0)
+        account["mtp_bytes_by_expert_bits"] = mtp_byte_costs(index, config)
+        account["mtp_expert_bits"] = 4
+        account["mtp_bytes"] = account["mtp_bytes_by_expert_bits"]["4"]
         account["fixed_non_expert_bytes"] = sum(
             v
             for k, v in report["components"].items()
