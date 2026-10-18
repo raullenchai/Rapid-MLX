@@ -230,6 +230,11 @@ logger = logging.getLogger(__name__)
 # One clamp warning per server process (the batch generator, and with it the
 # continuous-MTP router install, is recreated during the server's life).
 _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = False
+# Cohorts beat plain batching only up to 3 lanes; at 4+ the per-cycle
+# verify/rollback cost exceeds the speculative gain. Measurements:
+# docs/engineering/performance/2026-10-17-mtp-cohort-m3-ultra-long-context.md
+_CONTINUOUS_MTP_MAX_COHORT_LANES = 3
+_CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED = False
 
 # Functional hybrid cache updates retain their prior lazy graph until an eval
 # barrier. Eight steps bounds that graph to a few hundred live Metal handles on
@@ -1083,6 +1088,7 @@ def _install_continuous_mtp_router(
     max_lanes = min(
         int(getattr(config, "max_num_seqs", 4)),
         int(getattr(config, "completion_batch_size", 32)),
+        _CONTINUOUS_MTP_MAX_COHORT_LANES,
     )
     if max_lanes < 1:
         logger.warning(
@@ -1291,8 +1297,28 @@ def _install_continuous_mtp_router(
 
     def _stage_initial() -> None:
         nonlocal driver
+        global _CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED
         candidates = _queued_candidates()
         if not candidates:
+            return
+        # Include plain decode and in-flight prefill rows: never split a large
+        # burst into a capped cohort plus plain overflow.
+        occupancy = len(candidates) + sum(
+            len(getattr(getattr(batch_gen, name, None), "uids", ()))
+            for name in ("_generation_batch", "_prompt_batch")
+        )
+        if occupancy > router.config.max_lanes:
+            level = (
+                logging.DEBUG if _CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED else logging.INFO
+            )
+            _CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED = True
+            logger.log(
+                level,
+                "[MTP-continuous] skipping cohort formation: occupancy=%d exceeds "
+                "cap=%d; retaining plain batched decode",
+                occupancy,
+                router.config.max_lanes,
+            )
             return
         metadata = [item[1] for item in candidates]
         routed = router.plan(metadata, free_bytes=_free_bytes())

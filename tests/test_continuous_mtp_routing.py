@@ -989,13 +989,14 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     join = next(
         call for call in driver.calls if isinstance(call, tuple) and call[0] == "join"
     )
-    assert join[1] == (4, 5)
-    assert join[3] == (1, 1)  # follows the live cohort, not the policy default
+    assert join[1] == (4,)
+    assert join[3] == (1,)  # follows the live cohort, not the policy default
+    assert [sequence[0] for sequence in batch_gen._unprocessed_sequences][-2:] == [5, 6]
 
-    driver.lane_uids = (1, 2, 4, 5)
+    driver.lane_uids = (1, 2, 4)
     batch_gen.next()
     driver.lane_uids = (1, 2)
-    driver.last_attached_uids = (4, 5)
+    driver.last_attached_uids = (4,)
     driver.fail_join = True
     queued_before_failed_join = list(batch_gen._unprocessed_sequences)
     batch_gen.next()
@@ -1576,3 +1577,194 @@ def test_scheduler_retirement_reaps_continuous_closure_owners(
     assert retired_ref() is None
     assert driver_ref() is None
     assert all(callable(hook) for hook in hooks)
+
+
+@pytest.fixture
+def capped_cohort_installer(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from rapid_mlx.spec_decode.mtp import continuous_runtime
+    from rapid_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from rapid_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    runtime = SimpleNamespace(
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+            dynamic_membership=True,
+        )
+    )
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+
+    def create(_cls, specs, *_args, **_kwargs):
+        driver = SimpleNamespace(
+            lane_uids=tuple(spec.uid for spec in specs),
+            pending_join_uids=(),
+            last_attached_uids=(),
+            dynamic_membership=True,
+            has_work=True,
+            closed=False,
+            next=lambda: [],
+            take_terminal_detaches=lambda: (),
+        )
+
+        def queue_lanes(specs, **_kwargs):
+            driver.pending_join_uids += tuple(spec.uid for spec in specs)
+
+        driver.queue_lanes = queue_lanes
+        return driver
+
+    monkeypatch.setattr(ContinuousMTPDriver, "create", classmethod(create))
+
+    def install(queued=(), *, max_num_seqs=8, completion_batch_size=8):
+        batch_gen = _SchedulerBatchGenerator()
+        batch_gen._unprocessed_sequences.extend(
+            _scheduler_sequence(uid) for uid in queued
+        )
+        base_next = Mock(return_value=([], [SimpleNamespace(uid=99)]))
+        batch_gen.next = base_next
+        admitted = _install_continuous_mtp_router(
+            batch_gen,
+            _Model(),
+            SchedulerConfig(
+                spec_decode="mtp",
+                mtp_continuous_batching=True,
+                mtp_allow_dynamic_membership=True,
+                max_num_seqs=max_num_seqs,
+                completion_batch_size=completion_batch_size,
+            ),
+            requests={f"req-{uid}": _scheduler_request() for uid in range(1, 10)},
+            uid_to_request_id={uid: f"req-{uid}" for uid in range(1, 10)},
+            free_bytes_getter=lambda: 16 * 1024**3,
+        )
+        return batch_gen, base_next, admitted
+
+    return install
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("maximum", "completion", "expected"),
+    [(8, 8, 3), (2, 8, 2), (3, 8, 3), (8, 2, 2), (1, 8, None), (8, 1, None)],
+)
+def test_live_installer_caps_cohort_capacity(
+    capped_cohort_installer, caplog, maximum, completion, expected
+):
+    batch_gen, _, admitted = capped_cohort_installer(
+        max_num_seqs=maximum, completion_batch_size=completion
+    )
+    assert admitted is (expected is not None)
+    if expected is None:
+        assert not hasattr(batch_gen, "_continuous_mtp_router")
+        assert "continuous self-MTP needs at least 2 completion lanes" in caplog.text
+    else:
+        assert batch_gen._continuous_mtp_router.config.max_lanes == expected
+        assert batch_gen._continuous_mtp_router.config.min_batch_lanes == 2
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("queued_count", [2, 3, 4, 8])
+def test_live_installer_keeps_large_bursts_on_base_queue(
+    capped_cohort_installer, queued_count
+):
+    batch_gen, base_next, admitted = capped_cohort_installer(range(1, queued_count + 1))
+    assert admitted
+    queued = list(batch_gen._unprocessed_sequences)
+    assert batch_gen.next()[1][0].uid == 99
+    base_next.assert_called_once_with()
+    if queued_count > 3:
+        assert batch_gen._continuous_mtp_driver is None
+        assert list(batch_gen._unprocessed_sequences) == queued
+    else:
+        assert batch_gen._continuous_mtp_driver.lane_uids == tuple(
+            range(1, queued_count + 1)
+        )
+        assert not batch_gen._unprocessed_sequences
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    ("generation", "prompt", "forms_cohort"),
+    [(2, 0, False), (0, 2, False), (1, 1, False), (1, 0, True), (0, 1, True)],
+)
+def test_live_installer_counts_base_decode_and_prefill_rows(
+    capped_cohort_installer, generation, prompt, forms_cohort
+):
+    batch_gen, base_next, admitted = capped_cohort_installer((1, 2))
+    assert admitted
+    batch_gen._generation_batch.uids = list(range(20, 20 + generation))
+    batch_gen._prompt_batch = SimpleNamespace(uids=list(range(30, 30 + prompt)))
+    queued = list(batch_gen._unprocessed_sequences)
+    batch_gen.next()
+    base_next.assert_called_once_with()
+    assert (batch_gen._continuous_mtp_driver is not None) is forms_cohort
+    assert list(batch_gen._unprocessed_sequences) == ([] if forms_cohort else queued)
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_counts_pending_joins_against_cap(capped_cohort_installer):
+    batch_gen, _, admitted = capped_cohort_installer((1, 2))
+    assert admitted
+    batch_gen.next()
+    driver = batch_gen._continuous_mtp_driver
+    overflow = [_scheduler_sequence(uid) for uid in (3, 4, 5)]
+    batch_gen._unprocessed_sequences.extend(overflow)
+    batch_gen.next()
+    assert driver.lane_uids == (1, 2)
+    assert driver.pending_join_uids == (3,)
+    assert list(batch_gen._unprocessed_sequences) == overflow[1:]
+    batch_gen.next()
+    assert driver.pending_join_uids == (3,)
+    assert len(driver.lane_uids) + len(driver.pending_join_uids) == 3
+    assert list(batch_gen._unprocessed_sequences) == overflow[1:]
+    driver.lane_uids += driver.pending_join_uids
+    driver.last_attached_uids = driver.pending_join_uids
+    driver.pending_join_uids = ()
+    batch_gen.next()
+    assert len(driver.lane_uids) == 3
+    assert not driver.pending_join_uids
+    assert list(batch_gen._unprocessed_sequences) == overflow[1:]
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_logs_occupancy_skip_once_per_process(
+    capped_cohort_installer, monkeypatch, caplog
+):
+    import logging
+
+    from rapid_mlx import scheduler as scheduler_module
+
+    monkeypatch.setattr(
+        scheduler_module, "_CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED", False
+    )
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.scheduler"):
+        for _ in range(2):
+            batch_gen, _, admitted = capped_cohort_installer((1, 2, 3, 4))
+            assert admitted
+            batch_gen.next()
+            batch_gen.next()
+    records = [
+        record
+        for record in caplog.records
+        if "skipping cohort formation" in record.message
+    ]
+    assert [record.levelno for record in records] == [
+        logging.INFO,
+        logging.DEBUG,
+        logging.DEBUG,
+        logging.DEBUG,
+    ]
+    assert all(
+        "occupancy=4" in record.message and "cap=3" in record.message
+        for record in records
+    )
