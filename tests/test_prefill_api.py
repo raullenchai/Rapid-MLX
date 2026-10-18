@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from rapid_mlx.routes import prefill as api
+from rapid_mlx.service.helpers import _TOOL_USE_SYSTEM_SUFFIX
 
 
 class FakeEngine:
@@ -84,6 +85,31 @@ async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
     assert engine.calls[0]["enable_thinking"] is False
     assert engine.closed == 1
     assert saved == [30]
+
+
+def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
+    monkeypatch.setattr(
+        api, "get_config", lambda: SimpleNamespace(tool_call_parser="qwen3")
+    )
+    body = api.PrefillRequest(
+        kind="prefix",
+        messages=[{"role": "system", "content": "agent instructions"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    messages, tools, thinking = api._render_inputs(body)
+    assert messages[0]["content"] == "agent instructions" + _TOOL_USE_SYSTEM_SUFFIX
+    assert body.messages[0]["content"] == "agent instructions"
+    assert tools == api.convert_tools_for_template(body.tools)
+    assert thinking is False
 
 
 @pytest.mark.asyncio

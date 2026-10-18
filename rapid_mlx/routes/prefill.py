@@ -17,6 +17,8 @@ from ..config import get_config
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..runtime.cache import save_prefix_cache_to_disk
 from ..service.helpers import (
+    _TOOL_USE_SYSTEM_SUFFIX,
+    _append_tool_use_suffix,
     enforce_context_length,
     enforce_context_length_for_messages,
 )
@@ -83,15 +85,39 @@ class PrefillRequest(BaseModel):
         return self
 
 
+def _render_inputs(
+    body: PrefillRequest,
+) -> tuple[list[dict], list[dict] | None, bool | None]:
+    """Apply the same tool prompt and schema conversion as chat completions."""
+    messages = [message.copy() for message in body.messages]
+    if body.tools and getattr(get_config(), "tool_call_parser", None):
+        for message in messages:
+            if message["role"] == "system":
+                message["content"] = _append_tool_use_suffix(
+                    message["content"], _TOOL_USE_SYSTEM_SUFFIX
+                )
+                break
+        else:
+            messages.insert(
+                0, {"role": "system", "content": _TOOL_USE_SYSTEM_SUFFIX.strip()}
+            )
+    tools = convert_tools_for_template(body.tools) if body.tools else None
+    thinking = (
+        body.enable_thinking
+        if body.enable_thinking is not None
+        else (False if body.tools else None)
+    )
+    return messages, tools, thinking
+
+
 async def _warm(engine, body: PrefillRequest) -> dict:
+    messages, tools, thinking = _render_inputs(body)
     stream = engine.stream_chat(
-        messages=body.messages,
-        tools=body.tools or None,
+        messages=messages,
+        tools=tools,
         max_tokens=1,
         temperature=0,
-        enable_thinking=body.enable_thinking
-        if body.enable_thinking is not None
-        else (False if body.tools else None),
+        enable_thinking=thinking,
     )
     last = None
     try:
@@ -146,15 +172,11 @@ async def prefill(body: PrefillRequest, request: Request):
             detail="Draft KV may be saved by the configured disk cache; set allow_disk_cache=true or disable disk caches",
         )
 
-    thinking = (
-        body.enable_thinking
-        if body.enable_thinking is not None
-        else (False if body.tools else None)
-    )
+    messages, tools, thinking = _render_inputs(body)
     if body.kind == "prefix":
         try:
             token_ids, _ = cfg.engine._shared_system_tools_prompt(
-                body.messages, convert_tools_for_template(body.tools), thinking, None
+                messages, tools, thinking, None
             )
         except (AttributeError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Cannot render prefix") from exc
@@ -162,7 +184,7 @@ async def prefill(body: PrefillRequest, request: Request):
     else:
         counted = enforce_context_length_for_messages(
             cfg.engine,
-            body.messages,
+            messages,
             tools=body.tools or None,
             max_tokens=1,
             enable_thinking=thinking,
