@@ -248,17 +248,15 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         run_root,
     ):
         _private_directory(directory)
-    scoped_key, proxy_key = secrets.token_hex(32), secrets.token_hex(32)
-    gate_port, bridge_port = _port(), _port()
-    while bridge_port == gate_port:
-        bridge_port = _port()
+    scoped_key = secrets.token_hex(32)
+    gate_port = _port()
     upstream_key = os.environ.get("RAPID_MLX_API_KEY", "")
     provider = {
         "name": provider_name,
         "engine": "openai",
         "display_name": "Rapid Local",
         "api_key_env": "RAPID_LOCAL_WORK_KEY",
-        "base_url": f"http://127.0.0.1:{bridge_port}/v1/chat/completions",
+        "base_url": f"http://127.0.0.1:{gate_port}/v1/chat/completions",
         "models": [
             {
                 "name": model,
@@ -303,15 +301,10 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     }
     gate_env = {
         **common,
-        "WORK_PROXY_BEARER": proxy_key,
-        "WORK_PROXY_UPSTREAM_BEARER": upstream_key or proxy_key,
+        "WORK_PROXY_BEARER": scoped_key,
+        "WORK_PROXY_UPSTREAM_BEARER": upstream_key or scoped_key,
         "WORK_PROXY_METRICS_KEY": secrets.token_hex(32),
-    }
-    bridge_env = {
-        **common,
-        "WORK_BRIDGE_SCOPED_KEY": scoped_key,
-        "WORK_BRIDGE_UPSTREAM_KEY": proxy_key,
-        "WORK_BRIDGE_CONTRACT_FILE": str(contract_path),
+        "WORK_PROXY_CONTRACT_FILE": str(contract_path),
     }
     goose_env = {
         **common,
@@ -346,23 +339,6 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         )
         processes.append(gate)
         _ready(gate_port, gate)
-        bridge = subprocess.Popen(
-            [
-                sys.executable,
-                "-I",
-                "-S",
-                str(ASSETS / "helper_watchdog.py"),
-                "--credential-bridge",
-                str(bridge_port),
-                str(gate_port),
-            ],
-            cwd=root,
-            env=bridge_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        processes.append(bridge)
-        _ready(bridge_port, bridge)
         # Stock Goose sends its first request directly. An eager prefix
         # request moves prefill work ahead of the user's prompt and makes
         # first-launch latency materially worse even when TTFT looks fast.

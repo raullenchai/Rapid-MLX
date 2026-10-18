@@ -25,6 +25,7 @@ BEARER = os.environ["WORK_PROXY_BEARER"]
 UPSTREAM_BEARER = os.environ.get("WORK_PROXY_UPSTREAM_BEARER", BEARER)
 BEARER_FILE = os.environ.get("WORK_PROXY_BEARER_FILE", "")
 METRICS_KEY = os.environ.get("WORK_PROXY_METRICS_KEY", "")
+CONTRACT_FILE = os.environ.get("WORK_PROXY_CONTRACT_FILE", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 METRICS_LOCK = threading.Lock()
 LATEST_METRIC = {"sequence": 0, "tokensPerSecond": None}
@@ -53,6 +54,33 @@ def compact_goose_request(body):
                 messages[0]["content"] += "\n\n" + messages[index]["content"]
                 del messages[index]
                 break
+    return body
+
+
+def apply_goose_contract(body, contract):
+    """Apply the launcher's explicit options without replacing Goose guidance."""
+    messages = body.get("messages", [])
+    system = contract.get("system_prompt", "")
+    if system:
+        messages.insert(0, {"role": "system", "content": system})
+        body["_rapid_desktop_system"] = True
+    body["messages"] = messages
+    if not contract.get("use_goose_sampling_defaults", False):
+        body["temperature"] = contract["temperature"]
+        body["top_p"] = contract["top_p"]
+        body["max_tokens"] = contract["max_tokens"]
+        body["repetition_penalty"] = contract["repetition_penalty"]
+        body["frequency_penalty"] = 0.0
+        body["presence_penalty"] = 0.0
+        kwargs = body.get("chat_template_kwargs") or {}
+        if contract["enable_thinking"]:
+            kwargs.pop("enable_thinking", None)
+        else:
+            kwargs["enable_thinking"] = False
+        if kwargs:
+            body["chat_template_kwargs"] = kwargs
+        else:
+            body.pop("chat_template_kwargs", None)
     return body
 
 
@@ -221,11 +249,19 @@ class Handler(BaseHTTPRequestHandler):
         if not FULL_ACCESS and not text_only(body):
             self.send_error(403, "Work allows text-only inference")
             return
+        if GOOSE_CHAT and CONTRACT_FILE:
+            try:
+                with open(CONTRACT_FILE, encoding="utf-8") as contract_stream:
+                    body = apply_goose_contract(body, json.load(contract_stream))
+            except (OSError, ValueError, KeyError, TypeError):
+                self.send_error(500, "Goose contract unavailable")
+                return
         if GOOSE_CHAT and body.get("stream") is True:
             body = compact_goose_request(body)
             options = body.get("stream_options") or {}
             options["include_usage"] = True
             body["stream_options"] = options
+        if GOOSE_CHAT:
             raw = json.dumps(body).encode()
         request = urllib.request.Request(
             f"http://127.0.0.1:{RAPID_PORT}/v1/chat/completions",
