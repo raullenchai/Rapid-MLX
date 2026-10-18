@@ -69,8 +69,12 @@ struct ToolLoopBudgetIntegrationTests {
     }
     @Test("A plain request omits the reader and unsolicited document calls are refused")
     func noFileOmitsAndRefusesDocumentReader() async throws {
-        ToolLoopBudgetProtocol.reset(documentReads: 6)
-        let registry = CountingToolRegistry(toolName: "read_document")
+        // Keep another tool offered so the loop reaches normal dispatch. The
+        // fake emits read_document on round one regardless of its omission.
+        ToolLoopBudgetProtocol.reset(documentReads: 1)
+        let registry = CountingToolRegistry(
+            toolName: "read_document", additionalToolNames: ["lookup"]
+        )
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://tool-loop")!,
@@ -84,21 +88,24 @@ struct ToolLoopBudgetIntegrationTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(!model.isStreaming)
-        #expect(ToolLoopBudgetProtocol.requestBodies.count == 1)
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 2)
         let body = try #require(ToolLoopBudgetProtocol.requestBodies.first)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(json["tools"] == nil)
-        let advertised = ChatViewModel.offeredDefinitions(
-            enabled: registry.definitions, hasAttachedDocument: false,
-            toolExecutionsLeft: 3, documentReadsLeft: 12, maxDocumentReads: 12
-        )
-        let result = await NativeToolCallExecutor(registry: registry).execute(
-            ToolCall(id: "hallucinated", name: "read_document", arguments: "{}"),
-            advertised: advertised
-        )
-        #expect(result.isError)
-        #expect(!result.executed)
+        let tools = try #require(json["tools"] as? [[String: Any]])
+        let toolNames = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        #expect(toolNames.contains("lookup"))
+        #expect(!toolNames.contains("read_document"))
         #expect(registry.runCount == 0)
+        let toolRows = model.messages.filter { $0.role == .tool }
+        #expect(toolRows.count == 1)
+        let refusal = try #require(toolRows.first)
+        #expect(refusal.toolCallID == "call_1")
+        #expect(refusal.status == .failed)
+        #expect(refusal.content.contains("read_document"))
+        #expect(refusal.content.contains("isn't available in this conversation"))
+        #expect(model.messages.last?.content == "Here is the answer from the evidence.")
+        #expect(model.messages.last?.status == .complete)
+        #expect(model.lastError == nil)
     }
 
     @Test("read_document draws on its own budget instead of the general three")
@@ -182,20 +189,20 @@ struct ToolLoopBudgetIntegrationTests {
 @MainActor
 private final class CountingToolRegistry: ToolRegistry {
     private(set) var runCount = 0
-    private let toolName: String
+    private let toolNames: [String]
 
-    init(toolName: String = "lookup") {
-        self.toolName = toolName
+    init(toolName: String = "lookup", additionalToolNames: [String] = []) {
+        self.toolNames = [toolName] + additionalToolNames
     }
 
     var definitions: [ToolDefinition] {
-        [
+        toolNames.map { toolName in
             ToolDefinition(
                 name: toolName,
                 description: "Look up evidence",
                 parameters: .object(["type": .string("object")])
             )
-        ]
+        }
     }
 
     func run(_ call: ToolCall) async -> ToolCallResult {
