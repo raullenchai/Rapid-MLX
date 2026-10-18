@@ -32,8 +32,8 @@ and find the original conversation again.
 | Send using Return | Created the workshop thread and received three titles | Verified on the first launch |
 | Refine the previous answer | The reply used the requested second title and Room Cedar | Context worked, but a local_write approval interrupted the task: #4853 |
 | Copy a useful reply | Clipboard contained the response Markdown and Room Cedar | Verified; copied content was synthetic |
-| Switch to New Chat | An unfinished workshop draft remained in the new chat | Draft ownership defect |
-| Switch between existing chats | The other conversation's draft appeared in the selected thread; returning showed the replacement text | Draft ownership defect, reproduced independently |
+| Switch to New Chat | An unfinished workshop draft remained in the new chat | [#4862](https://github.com/raullenchai/Rapid-MLX/issues/4862) |
+| Switch between existing chats | The other conversation's draft appeared in the selected thread; returning showed the replacement text | [#4862](https://github.com/raullenchai/Rapid-MLX/issues/4862), independently reproduced |
 | Find a chat by message content | Searching “Room Cedar” returned the workshop even though its title did not contain that full phrase | Verified |
 | Rename a chat | “Cedar workshop invitation” persisted after relaunch | Verified |
 | Export Markdown | Native Save panel reached; an 850-byte file was written to scratch, containing the renamed title and follow-up room | Verified output, not just menu acknowledgement |
@@ -48,7 +48,7 @@ The CSV contained four cost rows summing to 480.
 
 | Checkpoint | Observation | Disposition |
 | --- | --- | --- |
-| Paste a Word document | Its local file path appeared as ordinary draft text, without an attachment chip or unsupported-format explanation | New recovery issue; adding Word parsing is not required for this fix |
+| Paste a Word document | Its local file path appeared as ordinary draft text, without an attachment chip or unsupported-format explanation | [#4863](https://github.com/raullenchai/Rapid-MLX/issues/4863); Word parsing is outside the recovery fix |
 | Attach TXT after that failure | TXT chip appeared and remained removable | Recovery with a supported file worked |
 | Paste the same TXT again | One chip remained and “That file is already attached.” appeared | Verified |
 | Ask about the TXT | Answer correctly stated $480 and 12 attendees | Verified against fixture |
@@ -61,7 +61,7 @@ The CSV contained four cost rows summing to 480.
 | Ask about a text PDF | Returned `CEDAR-PDF-8246` | Verified against fixture; OCR/scanned PDFs untested |
 | Ask about a CSV | Returned `480` | Verified against fixture; large/complex spreadsheets untested |
 | Reopen document history | Filename, answer, edit version and retry version were retained | Verified |
-| Reopen an unfinished draft | “Unsent Cedar draft: Please RSVP by Thursday afternoon.” disappeared, including after reopening its conversation | New draft-recovery issue, same owner as draft isolation |
+| Reopen an unfinished draft | “Unsent Cedar draft: Please RSVP by Thursday afternoon.” disappeared, including after reopening its conversation | [#4862](https://github.com/raullenchai/Rapid-MLX/issues/4862), same draft lifecycle owner |
 | Locate voice input | Audio → Speech to Text / Text to Speech controls were present | Discovery only; no microphone recording, audio-model start, permission grant or transcription was tested |
 
 The positive behaviors are worth preserving: follow-up context, supported-document
@@ -84,7 +84,12 @@ They should form the basic release journey checks alongside the fixes below.
 5. **Polish the quiet shell.** Keep #4856 and the precise privacy boundary #4858
    aligned with the same everyday journey.
 
-The two new issue links are recorded in the delivery section below once filed.
+Filed handoffs:
+
+- [P1 #4862: drafts cross conversations and disappear after quitting](https://github.com/raullenchai/Rapid-MLX/issues/4862).
+- [P2 #4863: unsupported document paste silently inserts a local path](https://github.com/raullenchai/Rapid-MLX/issues/4863).
+- [English local_write follow-up evidence added to #4853](https://github.com/raullenchai/Rapid-MLX/issues/4853#issuecomment-6251585222).
+
 Pixel owns draft and attachment UI fixes; Vector supports tool/request boundaries;
 Atlas owns cross-feature compatibility and sequencing. The user will arrange
 implementation. The role FYI channel was unavailable; these are durable handoffs.

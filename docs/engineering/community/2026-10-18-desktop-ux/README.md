@@ -78,6 +78,11 @@ controlled comparison. Preserve correct current-time behavior when fixing it.
 | [#4858](https://github.com/raullenchai/Rapid-MLX/issues/4858) | P1 | Absolute local privacy promises omit online-tool boundaries | Pixel + Vector / Atlas: precise copy consistent with actual configuration |
 | [#4859](https://github.com/raullenchai/Rapid-MLX/issues/4859) | P1 | English drafting requests are mistaken for messages already sent | Vector + Pixel: isolate timestamp/context effects and restore useful drafting |
 
+The [two additional workflow rounds](journeys/README.md) added
+[P1 #4862: conversation draft isolation and recovery](https://github.com/raullenchai/Rapid-MLX/issues/4862)
+and [P2 #4863: unsupported-document paste recovery](https://github.com/raullenchai/Rapid-MLX/issues/4863),
+with additional English local-file-tool evidence on #4853.
+
 Prioritize the repeated English drafting failure, the chat/tool contract, and the
 first-reply path. The source of the task-quality finding and its priority were
 updated after the English retest; the initial Chinese-only examples are no longer
