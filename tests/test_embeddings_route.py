@@ -187,6 +187,30 @@ def test_embeddings_returns_200_when_configured(monkeypatch):
     engine.embed.assert_called_once()
 
 
+def test_embeddings_list_of_strings_embeds_each_text(monkeypatch):
+    engine = MagicMock()
+    engine.model_name = "stub-embed"
+    engine.embed.return_value = [[1.0, 0.0], [0.0, 1.0]]
+    engine.count_tokens.return_value = 4
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": "stub-embed", "input": ["alpha", "beta"]},
+        )
+    finally:
+        restore()
+
+    assert response.status_code == 200, response.text
+    assert [item["embedding"] for item in response.json()["data"]] == [
+        [1.0, 0.0],
+        [0.0, 1.0],
+    ]
+    engine.embed.assert_called_once_with(["alpha", "beta"])
+
+
 def test_embeddings_pretokenized_input_uses_retrieval_worker(monkeypatch):
     engine = MagicMock()
     engine.model_name = "stub-embed"

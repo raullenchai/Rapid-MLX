@@ -726,6 +726,92 @@ def test_cross_encoder_downloads_remote_checkpoint(monkeypatch, tmp_path):
     assert seen == [("org/remote-xlm", rerank._CROSS_ENCODER_FILES)]
 
 
+def _install_fake_xlm_roberta(monkeypatch):
+    """Stand in for ``mlx_embeddings.models.xlm_roberta`` so the loader runs
+    on hosts without the [embeddings] extra."""
+    import importlib.util
+    import sys
+    import types
+
+    import mlx.nn as nn
+
+    class ModelArgs:
+        def __init__(self, config):
+            self.hidden_size = config["hidden_size"]
+            self.vocab_size = config["vocab_size"]
+
+        @classmethod
+        def from_dict(cls, config):
+            return cls(config)
+
+    class Model(nn.Module):
+        def __init__(self, args):
+            super().__init__()
+            self.embeddings = nn.Embedding(args.vocab_size, args.hidden_size)
+
+        def __call__(self, input_ids, attention_mask=None):
+            hidden = self.embeddings(input_ids) * attention_mask[..., None]
+            return types.SimpleNamespace(last_hidden_state=hidden)
+
+    xlm_roberta = types.ModuleType("mlx_embeddings.models.xlm_roberta")
+    xlm_roberta.ModelArgs = ModelArgs
+    xlm_roberta.Model = Model
+    models = types.ModuleType("mlx_embeddings.models")
+    models.xlm_roberta = xlm_roberta
+    package = types.ModuleType("mlx_embeddings")
+    package.models = models
+    monkeypatch.setitem(sys.modules, "mlx_embeddings", package)
+    monkeypatch.setitem(sys.modules, "mlx_embeddings.models", models)
+    monkeypatch.setitem(sys.modules, "mlx_embeddings.models.xlm_roberta", xlm_roberta)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: (
+            object() if name == "mlx_embeddings" else real_find_spec(name, *a)
+        ),
+    )
+    return xlm_roberta
+
+
+def test_cross_encoder_loader_without_embeddings_extra(monkeypatch, tmp_path):
+    import mlx.core as mx
+    import transformers
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx import model_downloads, rerank
+
+    xlm_roberta = _install_fake_xlm_roberta(monkeypatch)
+    args = xlm_roberta.ModelArgs.from_dict(_TINY_XLMR)
+    reference = rerank._CrossEncoder(xlm_roberta.Model(args), args.hidden_size)
+    weights = dict(tree_flatten(reference.parameters()))
+    weights["roberta.embeddings.position_ids"] = mx.arange(20)[None]
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda path: ("tok", path)
+    )
+    seen = []
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda model, *, allow_patterns: seen.append(model) or str(tmp_path),
+    )
+
+    model, tokenizer = rerank._load_cross_encoder("org/remote-xlm", _TINY_XLMR)
+    assert seen == ["org/remote-xlm"]
+    assert tokenizer == ("tok", str(tmp_path))
+    ids = mx.array([[0, 5, 2, 6]])
+    mask = mx.ones(ids.shape)
+    assert model(ids, mask).tolist() == pytest.approx(
+        reference(ids, mask).tolist(), rel=1e-5
+    )
+
+    del weights["classifier.out_proj.weight"]
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    with pytest.raises(rerank.UnsupportedRerankModelError, match="weight layout"):
+        rerank._load_cross_encoder(str(tmp_path), _TINY_XLMR)
+
+
 class _MarkerTokenizer(_CharTokenizer):
     """``_CharTokenizer`` that maps the jina marker strings to single ids."""
 
