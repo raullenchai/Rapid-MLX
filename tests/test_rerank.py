@@ -1936,6 +1936,48 @@ def test_jina_singleton_exact_validation_handles_underestimate(policy):
         assert max(engine._model.prompt_lengths) <= 750
 
 
+@pytest.mark.parametrize("max_length", [20, 2048])
+def test_jina_singleton_rechecks_truncation_without_double_counting(
+    monkeypatch, max_length
+):
+    engine = _jina_engine(max_length=max_length)
+    encode = engine._tokenizer.encode
+    decode = engine._tokenizer.decode
+    empty_length = len(
+        encode(engine._listwise_prompt("qa", [""], None), add_special_tokens=False)
+    )
+    engine._context_length = empty_length + 105
+
+    def nonadditive(text, **kwargs):
+        ids = encode(text, **kwargs)
+        # Keep the singleton estimate small so validated_blocks handles overflow.
+        if "<|im_start|>system" in text and '<passage id="0">\nx' in text:
+            ids += [ord(" ")] * 100
+        return ids
+
+    five_token_decodes = []
+
+    def expanding_decode(ids):
+        text = decode(ids)
+        if len(ids) == 5:
+            five_token_decodes.append(text)
+            # The search probe fits, but decoding its final result expands it.
+            if len(five_token_decodes) == 2:
+                return text + "x"
+        return text
+
+    monkeypatch.setattr(engine._tokenizer, "encode", nonadditive)
+    monkeypatch.setattr(engine._tokenizer, "decode", expanding_decode)
+
+    result = engine.score("qa", ["x" * 40])
+
+    assert len(five_token_decodes) >= 3
+    assert len(result.scores) == 1
+    assert engine._model.calls == 1
+    assert engine._model.prompt_lengths == [engine._context_length]
+    assert engine.num_truncations == 1
+
+
 def test_jina_near_limit_estimate_uses_exact_fitting_singleton():
     engine = _jina_engine(context_length=710)
     result = engine.score("qa", ["xa"])

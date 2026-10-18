@@ -791,14 +791,15 @@ class RerankEngine:
         query, query_length, _ = self._truncate_listwise(
             query, family.max_query_tokens, None
         )
-        truncated = 0
+        truncated_indices: set[int] = set()
         docs, lengths = [], []
         for index, document in enumerate(documents):
             text, length, cut = self._truncate_listwise(
                 document, self.max_length, index
             )
             lengths.append(length)
-            truncated += cut
+            if cut:
+                truncated_indices.add(index)
             docs.append(text)
 
         def prompt_length(block_docs: list[str]) -> int:
@@ -819,7 +820,6 @@ class RerankEngine:
             )
 
         def exact_singleton(index: int, observed: int) -> int:
-            nonlocal truncated
             document = docs[index]
             if observed <= self._context_length:
                 return observed
@@ -842,8 +842,8 @@ class RerankEngine:
                     high = midpoint - 1
             docs[index] = self._tokenizer.decode(ids[:low])
             lengths[index] = low
-            truncated += 1
-            return prompt_length([docs[index]])
+            truncated_indices.add(index)
+            return exact_singleton(index, prompt_length([docs[index]]))
 
         empty_passage_length = len(
             self._tokenizer.encode(self._listwise_passage(""), add_special_tokens=False)
@@ -931,6 +931,7 @@ class RerankEngine:
             verified for block in packed_blocks for verified in validated_blocks(block)
         ]
 
+        truncated = len(truncated_indices)
         if truncated:
             self.num_truncations += truncated
             logger.warning(
