@@ -912,7 +912,9 @@ class RerankEngine:
 
         def cosine(query_embed: mx.array, doc_embeds: mx.array) -> mx.array:
             norms = mx.linalg.norm(doc_embeds, axis=-1) * mx.linalg.norm(query_embed)
-            return (doc_embeds @ query_embed) / norms
+            # A zero projected vector has no direction; score it as orthogonal
+            # (cosine 0) instead of dividing by zero.
+            return (doc_embeds @ query_embed) / mx.maximum(norms, 1e-12)
 
         query_embeds, doc_embeds, weights = [], [], []
         prompt_tokens = 0

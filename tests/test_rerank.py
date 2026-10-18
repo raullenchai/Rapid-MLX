@@ -1708,3 +1708,17 @@ def test_audio_mode_preloads_configured_reranker(monkeypatch):
     cli.serve_command(args)
 
     assert calls == [(_AUDIO_RERANK_ID, server.load_rerank_model)]
+
+
+def test_jina_zero_projection_scores_stay_finite():
+    import math
+
+    import mlx.core as mx
+
+    engine = _jina_engine()
+    engine._model.projector = lambda x: mx.zeros_like(x)
+
+    result = engine.score("qa", ["xa", "xb"])
+
+    assert all(math.isfinite(score) for score in result.scores)
+    assert all(0.0 <= score <= 1.0 for score in result.scores)
