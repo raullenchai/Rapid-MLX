@@ -180,8 +180,11 @@ To restore a retained image, pause and wait for slots to drain first:
 touch ~/ci-runners/PAUSE
 # Wait for tart list to show no rmx-slot* VMs.
 export TART_HOME=~/ci-runners/tart-home
-tart delete rmx-golden && tart rename rmx-golden-prev rmx-golden
+tart list --quiet | grep -qx rmx-golden-prev            # confirm the retained image exists
+tart rename rmx-golden rmx-golden-bad && tart rename rmx-golden-prev rmx-golden \
+  || tart rename rmx-golden-bad rmx-golden              # restore the active image if promotion fails
 rm ~/ci-runners/PAUSE
+tart delete rmx-golden-bad                               # later, once slots boot cleanly from the restored image
 ```
 
 The build shuts the guest down from inside, after `sync`. Stopping it from
