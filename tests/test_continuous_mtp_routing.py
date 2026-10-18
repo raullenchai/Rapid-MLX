@@ -918,17 +918,17 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     batch_gen = _SchedulerBatchGenerator(raw_next=[SimpleNamespace(uid=50)])
     requests = {}
     uid_to_request_id = {}
-    for uid in (1, 2, 3, 4, 5, 6, 95):
+    for uid in (1, 2, 3, 4, 5, 6, 96):
         request_id = f"req-{uid}"
-        requests[request_id] = _scheduler_request()
         uid_to_request_id[uid] = request_id
+    requests.update({f"req-{uid}": _scheduler_request() for uid in (1, 2, 96)})
     uid_to_request_id[97] = "req-97"
     batch_gen._unprocessed_sequences.extend(
         [
             (0,),
             _scheduler_sequence(98),
             _scheduler_sequence(97, segments=[]),
-            _scheduler_sequence(95, segments=[]),
+            _scheduler_sequence(1, segments=[]),
             _scheduler_sequence(
                 96,
                 caches=[SimpleNamespace(caches=[SimpleNamespace(offset="bad")])],
@@ -938,9 +938,6 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
             _scheduler_sequence(2),
         ]
     )
-    requests["req-96"] = _scheduler_request()
-    uid_to_request_id[96] = "req-96"
-
     config = SchedulerConfig(
         spec_decode="mtp",
         mtp_continuous_batching=True,
@@ -975,6 +972,8 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     assert compatible.from_draft is True
 
     batch_gen.raw_next = ([], [])
+    requests.pop("req-96")
+    requests["req-3"] = _scheduler_request()
     batch_gen._unprocessed_sequences.append(
         _scheduler_sequence(3, processors=[object()])
     )
@@ -982,6 +981,8 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     assert [item.uid for item in responses] == [1]
     assert driver.calls[:2] == ["next", "take-terminal"]
 
+    requests.pop("req-3")
+    requests["req-4"] = _scheduler_request()
     batch_gen._unprocessed_sequences.extend(
         [_scheduler_sequence(uid) for uid in (4, 5, 6)]
     )
@@ -996,6 +997,8 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     driver.lane_uids = (1, 2, 4)
     batch_gen.next()
     driver.lane_uids = (1, 2)
+    requests.pop("req-4")
+    requests["req-5"] = _scheduler_request()
     driver.last_attached_uids = (4,)
     driver.fail_join = True
     queued_before_failed_join = list(batch_gen._unprocessed_sequences)
@@ -1626,7 +1629,9 @@ def capped_cohort_installer(monkeypatch):
 
     monkeypatch.setattr(ContinuousMTPDriver, "create", classmethod(create))
 
-    def install(queued=(), *, max_num_seqs=8, completion_batch_size=8):
+    def install(queued=(), *, max_num_seqs=8, completion_batch_size=8, requests=None):
+        if requests is None:
+            requests = {f"req-{uid}": _scheduler_request() for uid in queued}
         batch_gen = _SchedulerBatchGenerator()
         batch_gen._unprocessed_sequences.extend(
             _scheduler_sequence(uid) for uid in queued
@@ -1643,7 +1648,7 @@ def capped_cohort_installer(monkeypatch):
                 max_num_seqs=max_num_seqs,
                 completion_batch_size=completion_batch_size,
             ),
-            requests={f"req-{uid}": _scheduler_request() for uid in range(1, 10)},
+            requests=requests,
             uid_to_request_id={uid: f"req-{uid}" for uid in range(1, 10)},
             free_bytes_getter=lambda: 16 * 1024**3,
         )
@@ -1713,7 +1718,8 @@ def test_live_installer_counts_base_decode_and_prefill_rows(
 
 @pytest.mark.requires_mlx
 def test_live_installer_counts_pending_joins_against_cap(capped_cohort_installer):
-    batch_gen, _, admitted = capped_cohort_installer((1, 2))
+    requests = {f"req-{uid}": _scheduler_request() for uid in (1, 2, 3)}
+    batch_gen, _, admitted = capped_cohort_installer((1, 2), requests=requests)
     assert admitted
     batch_gen.next()
     driver = batch_gen._continuous_mtp_driver
@@ -1734,6 +1740,49 @@ def test_live_installer_counts_pending_joins_against_cap(capped_cohort_installer
     assert len(driver.lane_uids) == 3
     assert not driver.pending_join_uids
     assert list(batch_gen._unprocessed_sequences) == overflow[1:]
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("live_count", [3, 4])
+def test_live_installer_counts_scheduler_requests_before_formation(
+    capped_cohort_installer, live_count
+):
+    requests = {f"req-{uid}": _scheduler_request() for uid in range(1, live_count + 1)}
+    batch_gen, base_next, admitted = capped_cohort_installer(
+        (1, 2, 3), requests=requests
+    )
+    assert admitted
+    queued = list(batch_gen._unprocessed_sequences)
+    batch_gen.next()
+    base_next.assert_called_once_with()
+    if live_count > 3:
+        assert batch_gen._continuous_mtp_driver is None
+        assert list(batch_gen._unprocessed_sequences) == queued
+    else:
+        assert batch_gen._continuous_mtp_driver.lane_uids == (1, 2, 3)
+        assert not batch_gen._unprocessed_sequences
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_bounds_joins_by_scheduler_requests(capped_cohort_installer):
+    requests = {f"req-{uid}": _scheduler_request() for uid in (1, 2)}
+    batch_gen, _, admitted = capped_cohort_installer((1, 2), requests=requests)
+    assert admitted
+    batch_gen.next()
+    driver = batch_gen._continuous_mtp_driver
+    requests.update({f"req-{uid}": _scheduler_request() for uid in (3, 4)})
+    joining = _scheduler_sequence(3)
+    batch_gen._unprocessed_sequences.append(joining)
+
+    batch_gen.next()
+    assert driver.lane_uids == (1, 2)
+    assert not driver.pending_join_uids
+    assert list(batch_gen._unprocessed_sequences) == [joining]
+
+    requests.pop("req-4")
+    batch_gen.next()
+    assert driver.pending_join_uids == (3,)
+    assert not batch_gen._unprocessed_sequences
 
 
 @pytest.mark.requires_mlx

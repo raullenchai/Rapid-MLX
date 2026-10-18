@@ -1301,11 +1301,15 @@ def _install_continuous_mtp_router(
         candidates = _queued_candidates()
         if not candidates:
             return
-        # Include plain decode and in-flight prefill rows: never split a large
-        # burst into a capped cohort plus plain overflow.
-        occupancy = len(candidates) + sum(
-            len(getattr(getattr(batch_gen, name, None), "uids", ()))
-            for name in ("_generation_batch", "_prompt_batch")
+        # Include scheduler requests awaiting insertion, plain decode, and
+        # in-flight prefill: never split a burst into a cohort plus plain overflow.
+        occupancy = max(
+            len(candidates)
+            + sum(
+                len(getattr(getattr(batch_gen, name, None), "uids", ()))
+                for name in ("_generation_batch", "_prompt_batch")
+            ),
+            len(requests) if requests is not None else 0,
         )
         if occupancy > router.config.max_lanes:
             level = (
@@ -1371,6 +1375,8 @@ def _install_continuous_mtp_router(
 
     def _stage_joins() -> None:
         if driver is None or not driver.dynamic_membership:
+            return
+        if requests is not None and len(requests) > router.config.max_lanes:
             return
         occupied = len(driver.lane_uids) + len(driver.pending_join_uids)
         room = max(0, int(router.config.max_lanes) - occupied)
