@@ -147,22 +147,33 @@ def _write_owned(path: Path, content: str) -> None:
     pending.replace(path)
 
 
+def _fallback(reason: str) -> bool:
+    print(f"  Goose unavailable ({reason}); using built-in chat.", file=sys.stderr)
+    return False
+
+
 def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     """Return false only when the old REPL should handle this session."""
     if not sys.stdin.isatty():
-        return False
-    if args.mcp_config or args.mcp_max_rounds != 8 or args.response_timeout != 600:
-        return False
+        return _fallback("an interactive terminal is required")
+    unsupported = []
+    if args.mcp_config:
+        unsupported.append("--mcp-config")
+    if args.mcp_max_rounds != 8:
+        unsupported.append("--mcp-max-rounds")
+    if args.response_timeout != 600:
+        unsupported.append("--response-timeout")
+    if unsupported:
+        return _fallback(f"{', '.join(unsupported)} is not supported by Goose chat")
     rapid_port = _local_port(base_url)
     if rapid_port is None:
-        return False
+        return _fallback("Goose chat requires a local HTTP Rapid server")
     try:
         goose = _goose_binary()
     except (OSError, ValueError, tarfile.TarError) as exc:
-        print(f"  Goose unavailable ({exc}); using built-in chat.", file=sys.stderr)
-        return False
+        return _fallback(str(exc))
     if goose is None:
-        return False
+        return _fallback("Goose 1.54.0 requires macOS arm64")
 
     root = (
         _cache_root() / "workspaces" / hashlib.sha256(os.getcwd().encode()).hexdigest()
@@ -307,23 +318,25 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
                 return True
             if first_prompt:
                 break
+        command = [
+            str(goose),
+            "run",
+            "--provider",
+            "custom_rapid_local",
+            "--model",
+            model,
+            "--interactive",
+            "--with-builtin",
+            BUILTINS,
+            "--output-format",
+            args.output_format,
+            "--text",
+            first_prompt,
+        ]
+        if args.resume:
+            command.append("--resume")
         completed = subprocess.run(
-            [
-                str(goose),
-                "run",
-                "--provider",
-                "custom_rapid_local",
-                "--model",
-                model,
-                "--no-session",
-                "--interactive",
-                "--with-builtin",
-                BUILTINS,
-                "--output-format",
-                args.output_format,
-                "--text",
-                first_prompt,
-            ],
+            command,
             cwd=os.getcwd(),
             env=goose_env,
             check=False,

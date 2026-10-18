@@ -2585,6 +2585,11 @@ def _add_chat_parser(
         help="Goose output format (default: text; stream-json is useful for scripts)",
     )
     chat_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the previous Goose chat session in this workspace",
+    )
+    chat_parser.add_argument(
         "--disable-prefix-cache",
         action="store_true",
         help=(
