@@ -77,6 +77,13 @@ struct DOCXTextExtractorTests {
         #expect(try JSONDecoder().decode(ChatFileAttachment.Kind.self, from: Data("\"future\"".utf8)) == .unknown)
     }
 
+    @Test func strictNamespace() throws {
+        let source = String(decoding: xml("<w:p><w:t>Strict</w:t><w:tab/><w:t>OOXML</w:t><w:br/><w:t>text</w:t></w:p>"), as: UTF8.self)
+            .replacingOccurrences(of: ns, with: "http://purl.oclc.org/ooxml/wordprocessingml/main")
+        let data = try zip([Entry(data: Data(source.utf8))])
+        #expect(try DOCXTextExtractor.extract(data).text == "Strict\tOOXML\ntext\n")
+    }
+
     @Test func largePreviewAndCap() throws {
         let text = String(repeating: "paragraph text ", count: 150_000)
         let data = try zip([Entry(data: xml("<w:p><w:t>\(text)</w:t></w:p>"))])
@@ -267,15 +274,32 @@ struct DOCXTextExtractorTests {
         #expect(Date().timeIntervalSince(start) < 2)
     }
 
+    @Test func crcDeadline() throws {
+        // A bad checksum prevents a later checkpoint from masking an uninterrupted CRC pass.
+        let data = try zip([Entry(data: Data(repeating: 65, count: 3 * 1024 * 1024), crc: 0)])
+        let start = Date()
+        var calls = 0
+        // Initial clock, central entry, stored copy, then the first CRC chunk.
+        // Expire at the second chunk, after CRC processing has started.
+        #expect(throws: DOCXTextExtractor.Failure.timedOut) {
+            try DOCXTextExtractor.extract(data, now: {
+                calls += 1
+                return start.addingTimeInterval(calls < 5 ? 0 : 21)
+            })
+        }
+        #expect(calls == 5)
+        #expect(Date().timeIntervalSince(start) < 2)
+    }
+
     @Test func parsingDeadline() throws {
         let data = try zip([Entry(data: xml(String(repeating: "<w:p><w:t>x</w:t></w:p>", count: 1000)))])
         let start = Date()
         var calls = 0
-        // One central entry, stored copy, CRC checkpoint and declaration scan precede parsing.
+        // Initial clock, central entry, stored copy, CRC chunk/checkpoint and declaration scan precede parsing.
         #expect(throws: DOCXTextExtractor.Failure.timedOut) {
             try DOCXTextExtractor.extract(data, now: {
                 calls += 1
-                return start.addingTimeInterval(calls < 6 ? 0 : 21)
+                return start.addingTimeInterval(calls < 7 ? 0 : 21)
             })
         }
         #expect(Date().timeIntervalSince(start) < 2)

@@ -117,7 +117,18 @@ struct DOCXTextExtractor: Sendable {
                 }
             }
         }
-        guard xml.count == document.expanded, crc32(xml) == document.crc else { throw Failure.malformed }
+        guard xml.count == document.expanded else { throw Failure.malformed }
+        let crc = try xml.withUnsafeBytes { raw in
+            var crc = UInt32.max
+            let chunkSize = 1024 * 1024
+            for offset in stride(from: 0, to: raw.count, by: chunkSize) {
+                try checkTime()
+                let end = min(offset + chunkSize, raw.count)
+                crc = updateCRC32(crc, with: UnsafeRawBufferPointer(rebasing: raw[offset..<end]))
+            }
+            return crc ^ UInt32.max
+        }
+        guard crc == document.crc else { throw Failure.malformed }
         try checkTime()
         // NUL removal also detects declarations in UTF-16/32 documents.
         let markers = [Array("<!DOCTYPE".utf8), Array("<!ENTITY".utf8)]
@@ -160,7 +171,10 @@ struct DOCXTextExtractor: Sendable {
         (0..<8).reduce(UInt32(value)) { crc, _ in (crc >> 1) ^ (crc & 1 == 1 ? 0xedb88320 : 0) }
     }
     static func crc32(_ bytes: Data) -> UInt32 {
-        bytes.reduce(UInt32.max) { ($0 >> 8) ^ crcTable[Int(($0 ^ UInt32($1)) & 255)] } ^ UInt32.max
+        bytes.withUnsafeBytes { updateCRC32(UInt32.max, with: $0) } ^ UInt32.max
+    }
+    static func updateCRC32(_ crc: UInt32, with bytes: UnsafeRawBufferPointer) -> UInt32 {
+        bytes.reduce(crc) { ($0 >> 8) ^ crcTable[Int(($0 ^ UInt32($1)) & 255)] }
     }
 
     // Internal so declaration rejection can be tested separately from preflight.
@@ -176,7 +190,8 @@ struct DOCXTextExtractor: Sendable {
         var callbacks = 0
         var capped = false
         var failure: Failure?
-        let namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        let namespaces = ["http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                          "http://purl.oclc.org/ooxml/wordprocessingml/main"]
         init(limit: Int, deadline: Date, now: @escaping () -> Date) {
             self.limit = limit; self.deadline = deadline; self.now = now
         }
@@ -195,7 +210,7 @@ struct DOCXTextExtractor: Sendable {
             tick(parser)
             depth += 1
             guard depth <= 256 else { abort(parser); return }
-            guard namespaceURI == namespace else { return }
+            guard namespaces.contains(namespaceURI ?? "") else { return }
             if name == "delText" || name == "instrText" { ignoredDepth = depth }
             guard ignoredDepth == nil else { return }
             if name == "t" { textDepth = depth }
@@ -210,7 +225,7 @@ struct DOCXTextExtractor: Sendable {
             tick(parser)
             if textDepth == depth { textDepth = nil }
             if ignoredDepth == depth { ignoredDepth = nil }
-            if namespaceURI == namespace {
+            if namespaces.contains(namespaceURI ?? "") {
                 if name == "p" { append("\n", parser) }
                 if name == "tc", text.last != "\n" { append("\t", parser) }
             }
