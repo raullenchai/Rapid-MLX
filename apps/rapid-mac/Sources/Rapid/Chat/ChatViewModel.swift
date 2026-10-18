@@ -2902,7 +2902,7 @@ final class ChatViewModel {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
             // LAST, after the trim and every preamble: each user turn carries
-            // the clock of the moment it was sent, so the prompt stays
+            // a neutral local-time annotation from createdAt, so the prompt stays
             // append-only between turns and the engine's prefix cache can
             // reuse it. See ``currentDateContext`` for the measurement that
             // motivates moving the clock out of the system row, and
@@ -3443,10 +3443,10 @@ final class ChatViewModel {
         addingInstructionLayers(
             to: [],
             // The preview shows what actually goes on the wire: the system
-            // row carries the DATE only. The wall clock rides each user turn
-            // as a wire-only trailer (``stampingClockContext``), so quoting it
-            // here would show the reader a system row Rapid never sends. The
-            // editor's caption tells them where the time went.
+            // row carries the DATE only. A neutral local-time annotation rides
+            // each user turn as a wire-only trailer (``stampingClockContext``).
+            // Quoting it here would show a system row Rapid never sends;
+            // the editor's caption tells the reader where the time went.
             dateContext: dateContext ?? currentDateContext(),
             memoryContext: memoryContext,
             global: global,
@@ -3472,8 +3472,8 @@ final class ChatViewModel {
     /// The calendar day, time zone and nothing finer — the half of #2330's
     /// context that belongs in the leading system row.
     ///
-    /// The wall CLOCK deliberately does not appear here; it rides each user
-    /// turn instead (``clockContext(at:calendar:)`` +
+    /// The wall clock deliberately does not appear here; a neutral local-time
+    /// annotation rides each user turn instead (``clockContext(at:calendar:)`` +
     /// ``stampingClockContext(on:calendar:)``). The engine's prompt cache
     /// reuses a request only when its token prefix is byte-identical to a
     /// stored one, and the system row is the FIRST thing in every request: a
@@ -3515,8 +3515,8 @@ final class ChatViewModel {
         """
     }
 
-    /// One minute-resolution wall-clock stamp: "<full date> at <h:mm a>
-    /// (<abbreviation>, <identifier>)". Shared by the "sent" trailer and the
+    /// One minute-resolution local timestamp: "<full date> at <h:mm a>
+    /// (<abbreviation>, <identifier>)". Shared by the local-time annotation and the
     /// regenerate line so the two can never drift in format — and so
     /// comparing them for equality is a reliable "does this say anything new".
     nonisolated static func clockStampText(
@@ -3536,45 +3536,28 @@ final class ChatViewModel {
         return "\(stampText) (\(abbreviation), \(zone.identifier))"
     }
 
-    /// The wall clock at `instant`, for the trailer stamped on a user turn.
-    ///
-    /// Split out of the system row for the prefix-cache reason documented on
-    /// ``currentDateContext``. It keeps #2330's contract — the newest user row
-    /// always carries the time it was sent, so the model is still told the
-    /// current local time on every request and never answers a "what time is
-    /// it" from training memory — while keeping the volatile tokens out of the
-    /// prompt's head.
+    /// Neutral local-time annotation for a user row, outside the system row
+    /// for the prefix-cache reason documented on ``currentDateContext``.
+    /// The newest row supplies the request's local time (#2330).
+    /// Issue #4859: the earlier "[MESSAGE SENT] ... was sent" wording made a
+    /// small model claim a draft email was already sent and treat the oldest
+    /// timestamp as now. Keep this neutral, never an action or event.
     nonisolated static func clockContext(
         at instant: Date,
         calendar inputCalendar: Calendar = .autoupdatingCurrent
     ) -> String {
-        """
-        [MESSAGE SENT]
-        This message was sent \(clockStampText(at: instant, calendar: inputCalendar)).
-        """
+        "(Local time: \(clockStampText(at: instant, calendar: inputCalendar)))"
     }
 
-    /// The extra trailer line a REGENERATE or RETRY adds to the turn it is
-    /// re-answering, and only when it carries information: the question was
-    /// asked at one instant and is being answered at a materially later one.
-    ///
+    /// Neutral current-time annotation for regenerate/retry of an older row.
     /// Returns "" when both instants render to the same minute-resolution
-    /// stamp, which is every ordinary send (the row was minted by this
-    /// request) and every regenerate within the same minute. So the common
-    /// path is byte-identical to having no such line at all.
+    /// timestamp, keeping ordinary sends and same-minute retries byte-identical.
+    /// Appends rather than rewrites the row's original local-time annotation.
     ///
-    /// Why this exists: the reused row's "sent" stamp is honestly the original
-    /// ask time, but a model asked "what time is it?" and re-answering it 45
-    /// minutes later would otherwise report the stale clock — the exact
-    /// regression codex caught, against the pre-change behaviour where the
-    /// clock was recomputed per request. Appending rather than rewriting keeps
-    /// the row's own stamp immutable.
-    ///
-    /// The cache cost is bounded and paid only by the user who regenerated:
-    /// the line is gone again on the NEXT turn (which re-stamps from
-    /// ``ChatMessage/createdAt``), so that turn's shared prefix ends just
-    /// before this row instead of after it — a re-prefill of the last exchange,
-    /// not of the conversation. The document in the first turn stays cached.
+    /// The cache cost is bounded: the line disappears on the next turn, which
+    /// re-stamps from ``ChatMessage/createdAt``. Its shared prefix then ends
+    /// before this row, re-prefilling only the last exchange; the document in
+    /// the first turn stays cached.
     nonisolated static func answeringNowLine(
         asked: Date,
         answeringAt: Date,
@@ -3583,24 +3566,13 @@ final class ChatViewModel {
         let askedText = clockStampText(at: asked, calendar: calendar)
         let nowText = clockStampText(at: answeringAt, calendar: calendar)
         guard askedText != nowText else { return "" }
-        return "\nThis answer is being generated \(nowText)."
+        return "\n(Current time: \(nowText))"
     }
 
-    /// Stamp every user row with the moment it was sent, as a wire-only
-    /// trailer.
-    ///
-    /// The trailer reads "This message was sent <full date> at <time>", not
-    /// "the current local time is …", and it carries the date as well as the
-    /// clock. Both were codex findings on this PR, and both are about the
-    /// same thing: every user row in the history wears one of these, so
-    /// anything phrased as "current" would have the prompt asserting three
-    /// contradictory current times, and a bare time on an old row would
-    /// silently attach yesterday's clock to today's ``[CURRENT DATE]`` in a
-    /// conversation that crossed midnight. A send-time stamp is true of every
-    /// row forever, which is also exactly what makes it cacheable.
-    ///
-    /// The model still knows what time it is now: the newest user row is the
-    /// one being sent, so its stamp IS the request time.
+    /// Annotate every user row with its local date and time, wire-only.
+    /// The full date avoids attaching yesterday's time to today's system date
+    /// across midnight. Neutral wording avoids implying a user action (#4859).
+    /// The newest user row supplies the request time for an ordinary send.
     ///
     /// Derived from each row's own ``ChatMessage/createdAt`` — which is
     /// persisted and immutable — rather than from "now", so the rendering of
@@ -3631,7 +3603,7 @@ final class ChatViewModel {
     ///     the shared prefix at that row, so there is no reuse to protect.
     ///   * **Regenerate / Retry** (``regenerateAnswer(afterUserAt:…)``) reuse
     ///     the existing user row deliberately — the question was asked then,
-    ///     and re-answering it is not asking it again — so its "sent" stamp
+    ///     and re-answering it is not asking it again — so its annotation
     ///     keeps the original ask time. But re-answering "what time is it?"
     ///     three quarters of an hour later must not report the stale clock,
     ///     which is why ``answeringNowLine`` APPENDS the answer time to that

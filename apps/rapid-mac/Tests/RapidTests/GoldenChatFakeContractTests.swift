@@ -46,8 +46,9 @@ struct GoldenChatFakeContractTests {
         let recorded = try #require(surface.fake.recordedPrompts().first)
         #expect(surface.fake.recordedPrompts().count == 1)
         #expect(recorded.hasPrefix("probe prompt"))
-        #expect(recorded.contains("[MESSAGE SENT]"))
-        #expect(recorded.contains("This message was sent "))
+        #expect(recorded.contains("(Local time:"))
+        let row = try #require(surface.chat.messages.first { $0.role == .user })
+        #expect(recorded == "probe prompt\n\n" + ChatViewModel.clockContext(at: row.createdAt))
     }
 
     @MainActor
@@ -65,7 +66,7 @@ struct GoldenChatFakeContractTests {
         let firstRow = try #require(surface.chat.messages.first { $0.role == .user })
         let firstWire = try #require(surface.fake.recordedPrompts().last)
         let firstTrailer = try #require(
-            firstWire.range(of: "[MESSAGE SENT]").map { String(firstWire[$0.lowerBound...]) }
+            firstWire.range(of: "(Local time:").map { String(firstWire[$0.lowerBound...]) }
         )
 
         // Regenerate: the SAME row is re-sent, so the trailer must come back

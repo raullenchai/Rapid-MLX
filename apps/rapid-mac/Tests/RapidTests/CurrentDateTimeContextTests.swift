@@ -107,14 +107,13 @@ struct CurrentDateTimeContextTests {
             at: Self.instant("2026-08-25T14:37:00Z"),
             calendar: Self.calendar("America/Los_Angeles")
         )
-        // Send-time wording, and the DATE as well as the clock. Both because
+        // Neutral local-time wording, and the DATE as well as the clock, because
         // every user row in the history wears one of these: "the current
         // local time" would have the prompt asserting three contradictory
         // current times, and a bare clock on an old row would attach
         // yesterday's time to today's [CURRENT DATE] across midnight.
         #expect(out == """
-        [MESSAGE SENT]
-        This message was sent Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles).
+        (Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))
         """)
     }
 
@@ -146,9 +145,9 @@ struct CurrentDateTimeContextTests {
         // makes turn two a strict extension of turn one: had the first row
         // been restamped (or its trailer removed), the stored prefix would no
         // longer match and the engine would re-prefill from that row onward.
-        #expect(stamped[1].modelContent.hasSuffix("7:37 AM (PDT, America/Los_Angeles)."))
-        #expect(stamped[3].modelContent.hasSuffix("7:41 AM (PDT, America/Los_Angeles)."))
-        #expect(stamped[1].modelContent.hasPrefix("first question\n\n[MESSAGE SENT]"))
+        #expect(stamped[1].modelContent.hasSuffix("7:37 AM (PDT, America/Los_Angeles))"))
+        #expect(stamped[3].modelContent.hasSuffix("7:41 AM (PDT, America/Los_Angeles))"))
+        #expect(stamped[1].modelContent.hasPrefix("first question\n\n(Local time:"))
         // Non-user rows are never stamped: the assistant transcript has to
         // stay byte-identical to what the model produced, and the system row
         // is exactly where the clock must not be.
@@ -200,11 +199,11 @@ struct CurrentDateTimeContextTests {
             role: .user, content: "what is the total?",
             fileAttachments: [attachment], status: .complete
         )
-        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
 
         let wire = message.modelContent
         let extractIndex = try #require(wire.range(of: "TOTAL DUE 1,204.55"))
-        let trailerIndex = try #require(wire.range(of: "[MESSAGE SENT]"))
+        let trailerIndex = try #require(wire.range(of: "(Local time:"))
         #expect(extractIndex.upperBound < trailerIndex.lowerBound,
                 "The trailer must follow the extract, or the prompt diverges before the document and the cache cannot reuse it.")
         #expect(wire.hasPrefix("what is the total?"))
@@ -213,8 +212,8 @@ struct CurrentDateTimeContextTests {
     @Test("An empty-prose row gains no leading blank line from the trailer")
     func blankPromptDoesNotGainLeadingNewlines() {
         var message = ChatMessage(role: .user, content: "   ", status: .complete)
-        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
-        #expect(message.modelContent.hasPrefix("[MESSAGE SENT]"))
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
+        #expect(message.modelContent.hasPrefix("(Local time:"))
     }
 
     @Test("A blank trailer is dropped rather than appended")
@@ -227,7 +226,7 @@ struct CurrentDateTimeContextTests {
     @Test("The wire-only trailer is not persisted")
     func trailerIsNotPersisted() throws {
         var message = ChatMessage(role: .user, content: "hello", status: .complete)
-        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
         let round = try JSONDecoder().decode(
             ChatMessage.self, from: JSONEncoder().encode(message)
         )
@@ -425,15 +424,16 @@ struct CurrentDateContextWireTests {
         #expect(system.contains("Today is "))
         // The wall clock must NOT be in the system row — it is the first
         // thing in the prompt and a minute tick there costs a full re-prefill.
-        #expect(!system.contains("[MESSAGE SENT]"))
+        #expect(!system.contains("(Local time:"))
         // …and it must still be on the wire, on the user turn, so #2330's
         // "the model is told the current time" contract survives the split.
         let user = try #require(
             messages.first { $0["role"] as? String == "user" }?["content"] as? String
         )
         #expect(user.contains("what is the date today"))
-        #expect(user.contains("[MESSAGE SENT]"))
-        #expect(user.contains("This message was sent "))
+        #expect(user.contains("(Local time:"))
+        let row = try #require(model.messages.first { $0.role == .user })
+        #expect(user == "what is the date today\n\n" + ChatViewModel.clockContext(at: row.createdAt))
     }
     @MainActor
     @Test("An edited send gets the live clock; regenerate keeps the original ask time")
@@ -495,7 +495,7 @@ struct CurrentDateContextWireTests {
         // And the answer time is actually there, so the model can answer the
         // question it was asked.
         #expect(trailer.contains(ChatViewModel.clockStampText(at: muchLater, calendar: calendar)))
-        #expect(trailer.contains("This answer is being generated"))
+        #expect(trailer.contains("(Current time:"))
 
         // Only the newest user row. An earlier turn renders exactly as it did
         // before, which is the append-only property the prefix cache needs.
@@ -539,7 +539,7 @@ struct CurrentDateContextWireTests {
         // codex round 6, blocking: the send site sampled `Date()` twice, once
         // for the system row and once for the clock trailer, so a request
         // assembled across local midnight could say "Today is the 11th" and
-        // "this message was sent … the 12th" in the same prompt. The send site
+        // "(Local time: … the 12th)" in the same prompt. The send site
         // now threads one `requestInstant` into both. This pins the other half
         // — that both renderings agree on the calendar day for a shared
         // instant, including right at the boundary, where a mismatched
@@ -554,7 +554,7 @@ struct CurrentDateContextWireTests {
         for instant in [justBefore, justBefore.addingTimeInterval(1)] {
             let systemRow = ChatViewModel.currentDateContext(now: instant, calendar: calendar)
             let trailer = ChatViewModel.clockContext(at: instant, calendar: calendar)
-            // "Today is <EEEE, MMMM d, yyyy> (zone)." vs "… sent <EEEE,
+            // "Today is <EEEE, MMMM d, yyyy> (zone)." vs "(Local time: <EEEE,
             // MMMM d, yyyy> at <time> (…)." — the date text is shared.
             let day = systemRow
                 .replacingOccurrences(of: "[CURRENT DATE]\nToday is ", with: "")

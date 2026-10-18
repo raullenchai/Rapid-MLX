@@ -23,6 +23,7 @@
 - **Long prompts prefill concurrently when memory allows**: the scheduler no longer over-estimates prefill memory for long prompts (about 300 GB estimated vs about 45 GB measured for a 32k-token prompt on a 35B MoE hybrid model), so concurrent 32k-token requests are no longer forced to prefill one at a time.
 - **Faster opt-in MTP cohorts under load**: continuous self-MTP now forms a cohort only when at most 3 requests are live and never grows one past 3 lanes; with 4 or more concurrent requests, the rest use plain batched decode, which measured 23–24% faster than the previous cohort for short prompts and 6–13% faster at 8k–16k-token prompts.
 
+- **Neutral Desktop time context**: Desktop no longer labels each message with “This message was sent …”; the model sees a neutral local-time annotation, so email drafting requests are no longer answered as if the email had already been sent, and current-time answers use the latest message’s time. Fixes #4859.
 - **Desktop no longer quits when you open a generated video**: clicking a finished video's preview now plays it in the app instead of crashing Rapid-MLX Desktop.
 - **TensorFold lane setting no longer ignored**: setting `RAPID_MLX_TENSORFOLD_LANES` above 1, or to an invalid value, on a model that is not served through a qualified TensorFold profile now stops `rapid-mlx serve` at startup with an error instead of being silently ignored.
 

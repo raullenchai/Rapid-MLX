@@ -69,7 +69,7 @@ struct ToolGuidanceTrailerTests {
         #expect(newestUser.role == .user)
         #expect(newestUser.content == "weather in Tokyo?", "the transcript row stays prose-only")
         let suffix = newestUser.wireSuffix ?? ""
-        #expect(suffix.hasPrefix("[MESSAGE SENT]"), "the clock trailer still comes first")
+        #expect(suffix.hasPrefix("(Local time:"), "the clock trailer still comes first")
         #expect(suffix.hasSuffix(ChatViewModel.toolGuidance))
         #expect(newestUser.modelContent.hasSuffix(ChatViewModel.toolGuidance))
 
@@ -190,7 +190,7 @@ struct ToolGuidanceTrailerTests {
         #expect(withdrawn.map(\.modelContent) == pristine.map(\.modelContent),
                 "withdrawing the guidance restores every row's wire bytes")
         // The clock trailer the guidance was joined behind survives intact.
-        #expect(withdrawn[3].wireSuffix?.hasPrefix("[MESSAGE SENT]") == true)
+        #expect(withdrawn[3].wireSuffix?.hasPrefix("(Local time:") == true)
         #expect(withdrawn[3].wireSuffix?.hasSuffix("\n\n") == false)
     }
 
@@ -205,9 +205,9 @@ struct ToolGuidanceTrailerTests {
         let g = ChatViewModel.toolGuidance
         #expect(ChatViewModel.strippingToolGuidance(from: nil) == nil)
         #expect(ChatViewModel.strippingToolGuidance(from: g) == nil)
-        #expect(ChatViewModel.strippingToolGuidance(from: "[MESSAGE SENT]\nnow.\n\n" + g) == "[MESSAGE SENT]\nnow.")
+        #expect(ChatViewModel.strippingToolGuidance(from: "(Local time: now)\n\n" + g) == "(Local time: now)")
         // A trailer that merely quotes the guidance somewhere else is not ours.
-        let quoted = "note: " + g + "\n\n[MESSAGE SENT]\nnow."
+        let quoted = "note: " + g + "\n\n(Local time: now)"
         #expect(ChatViewModel.strippingToolGuidance(from: quoted) == quoted)
         #expect(ChatViewModel.strippingToolGuidance(from: "   ") == nil)
     }
