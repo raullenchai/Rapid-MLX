@@ -224,7 +224,7 @@ def _resolve_memory_aware_cache(engine):
     return getattr(scheduler, "memory_aware_cache", None)
 
 
-def save_prefix_cache_to_disk(budget_sec: float | None = None) -> bool:
+def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
     """Save prefix cache to disk during shutdown.
 
     Runs against a wall-clock budget (default
@@ -239,13 +239,13 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> bool:
     """
     cfg = get_config()
     if cfg.engine is None:
-        return False
+        return
     if getattr(cfg.engine, _AUTO_LOAD_SKIPPED_ATTR, False):
         logger.warning(
             "[cache_persist] startup restore skipped under contention; "
             "preserving the existing disk snapshot instead of saving an incomplete one"
         )
-        return False
+        return
     if budget_sec is None:
         budget_sec = _shutdown_budget_sec()
     should_abort = _make_should_abort(budget_sec) if budget_sec > 0 else None
@@ -253,7 +253,7 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> bool:
         d = get_cache_dir()
         with _exclusive_cache_lock(d, operation="save") as acquired:
             if not acquired:
-                return False
+                return
             if should_abort is not None:
                 logger.info(
                     f"[lifespan] Saving prefix cache to {d} "
@@ -273,10 +273,8 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> bool:
             # cache; another writer must not replace its directory first.
             if saved:
                 _save_radix_index_after_cache(cfg.engine, d)
-            return bool(saved)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to save cache to disk: {e}", exc_info=True)
-        return False
 
 
 def _save_radix_index_after_cache(engine, cache_dir: str) -> None:
