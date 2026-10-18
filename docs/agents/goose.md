@@ -25,4 +25,6 @@ GOOSE_PATH_ROOT="$HOME/.cache/rapid-mlx/goose/1.54.0/mini-workspaces/$(python3 -
 
 Select **Toggle Extensions** to enable Computer Controller, Memory, or another extension for future sessions. Search uses Keenable without a key; `PARALLEL_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY` in the launching shell selects a keyed backend in that order of priority. Keys go only to the local gate process and are never added to Goose's tool process environment.
 
+Desktop Chat seeds the same Goose extension defaults in `~/Library/Application Support/Rapid/agent-goose-chat/workspaces/<folder SHA-256>/config/config.yaml`. You can enable a disabled extension by changing its `enabled` value to `true` in that file, then starting a new Chat helper. Desktop reads a selected Parallel, Tavily, or Brave key from Rapid's existing Keychain namespace without requesting Keychain UI access; with no selected key, search uses Keenable.
+
 For a server started with `--api-key`, export `RAPID_MLX_API_KEY` before setup and Goose. Setup writes the environment variable name into the provider JSON; it never stores the key value. `rapid-mlx agents goose --test` runs the integration checks, including the headless Goose command when its binary is on `PATH`.
