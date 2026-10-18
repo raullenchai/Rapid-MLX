@@ -113,9 +113,18 @@ def test_serve_refuses_tensorfold_lanes_before_download(monkeypatch, capsys, val
     assert LANES_ENV in output.err
 
 
+@pytest.mark.parametrize(
+    ("flag", "served"),
+    [
+        ("embedding_model", "mlx-community/all-MiniLM-L6-v2-4bit"),
+        ("rerank_model", "mlx-community/Qwen3-Reranker-0.6B-mxfp8"),
+    ],
+)
 @pytest.mark.parametrize("has_model", [False, True])
 @pytest.mark.parametrize("value", ["4", None])
-def test_embedding_only_serve_tensorfold_lanes(monkeypatch, capsys, has_model, value):
+def test_retrieval_only_serve_tensorfold_lanes(
+    monkeypatch, capsys, has_model, value, flag, served
+):
     from argparse import Namespace
     from unittest.mock import Mock
 
@@ -125,12 +134,12 @@ def test_embedding_only_serve_tensorfold_lanes(monkeypatch, capsys, has_model, v
     monkeypatch.delenv(LANES_ENV, raising=False)
     if value is not None:
         monkeypatch.setenv(LANES_ENV, value)
-    args = Namespace(embedding_model="mlx-community/all-MiniLM-L6-v2-4bit")
+    args = Namespace(**{flag: served})
     if has_model:
         args.model = None
     embed_only = Mock()
     resolve_port = Mock(return_value=cli.DEFAULT_SERVE_PORT)
-    monkeypatch.setattr(cli, "_serve_embedding_only_mode", embed_only)
+    monkeypatch.setattr(cli, "_serve_retrieval_only_mode", embed_only)
     monkeypatch.setattr(cli, "_resolve_serve_port", resolve_port)
 
     if value is not None:
@@ -142,7 +151,7 @@ def test_embedding_only_serve_tensorfold_lanes(monkeypatch, capsys, has_model, v
         output = capsys.readouterr()
         assert not output.out
         assert f"{LANES_ENV}=4" in output.err
-        assert repr(args.embedding_model) in output.err
+        assert repr(served) in output.err
     else:
         cli.serve_command(args)
         resolve_port.assert_called_once()
