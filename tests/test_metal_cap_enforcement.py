@@ -1642,7 +1642,7 @@ def test_prefill_uncalibrated_cohort_is_narrow_and_high_water_only_rises():
         before = sched._begin_prefill_memory_sample()
         reset.assert_called_once()
     assert before is not None
-    assert before[:2] == (400, [(next(iter(sched.running.values())), 10)])
+    assert before[:2] == (400, [(next(iter(sched.running.values())), 10, 10)])
     with patch("rapid_mlx.scheduler.mx.get_peak_memory", return_value=500):
         sched._finish_prefill_memory_sample(before)
     assert sched._prefill_workspace_high_water == 1
@@ -1788,7 +1788,7 @@ def test_prefill_calibration_uses_dispatched_chunk_and_bounds_shorter_context():
     with patch("rapid_mlx.scheduler.mx.reset_peak_memory"):
         before = sched._begin_prefill_memory_sample()
     assert before is not None
-    assert before[:2] == (400, [(req, 512)])
+    assert before[:2] == (400, [(req, 512, 512)])
     with patch("rapid_mlx.scheduler.mx.get_peak_memory", return_value=1424):
         sched._finish_prefill_memory_sample(before)
     # A shorter context still reserves the activation high-water per chunk.
@@ -2215,7 +2215,7 @@ def test_review2_sample_counts_only_dispatched_rows_and_marks_large_rows(dispatc
     bg._unprocessed_sequences = [(102, [[0] * 512, [0] * 288])]
     before = sched._begin_prefill_memory_sample()
     assert before is not None
-    assert before[:2] == (400, [(tiny, 1), (large, 512)])
+    assert before[:2] == (400, [(tiny, 1, 1), (large, 512, 512)])
     assert not getattr(large, "_prefill_memory_sampled", False)
     uids = {"tiny": [101], "large": [102], "both": [101, 102], "none": []}[dispatch]
     with patch("rapid_mlx.scheduler.mx.get_peak_memory", return_value=1424):
@@ -2268,7 +2268,7 @@ def test_review2_step_samples_generator_dispatch_with_timing(review2_generator, 
             assert not output.finished_request_ids
         assert finish.call_count == 2
         before, raw_next = finish.call_args_list[0].args
-        assert before[1] == [(req, 511)]
+        assert before[1] == [(req, 511, 511)]
         assert raw_next[0][0].uid == req.batch_uid
     assert req._prefill_memory_sampled
 
@@ -2362,3 +2362,197 @@ def test_prefill_peak_window_controls_high_water_and_calibration(
     )
     assert sched._prefill_workspace_calibrated == intact
     assert not getattr(req, "_prefill_memory_sampled", False)
+
+
+def _workspace_scheduler(heads=16, kv_bytes=20480):
+    sched = _cohort_scheduler()
+    sched.model = SimpleNamespace(
+        config={
+            "num_hidden_layers": 40,
+            "layer_types": ["full_attention"] * 10 + ["linear_attention"] * 30,
+            "num_attention_heads": heads,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+        }
+    )
+    sched.config.prefill_step_size = sched.batch_generator.prefill_step_size = 2048
+    sched._resolve_kv_bytes_per_token = lambda: kv_bytes
+    sched._estimate_request_kv_bytes = lambda r, **kw: (
+        kv_bytes * len(r.prompt_token_ids)
+    )
+    sched._resolve_metal_cap_bytes = lambda: 215_000_000_000
+    sched._current_metal_active_bytes = lambda: 25_000_000_000
+    sched._reclaim_prefix_cache_for_prefill = MagicMock()
+    del sched._prefill_workspace_high_water
+    return sched
+
+
+def _workspace_sample(sched, length, chunk, delta, *, cached=0, processed=None):
+    req = _make_request("sample", length)
+    req.cached_tokens = cached
+    req.batch_uid = 101
+    if processed is None:
+        processed = length - cached - chunk
+    sched.running = {req.request_id: req}
+    bg = sched.batch_generator
+    bg._unprocessed_sequences = []
+    bg._prompt_batch.uids = [101]
+    bg._currently_processing = [[[[0] * chunk], processed, length - cached]]
+    with patch("rapid_mlx.scheduler.mx.reset_peak_memory"):
+        before = sched._begin_prefill_memory_sample()
+    assert before is not None
+    assert before[1] == [(req, chunk, cached + processed + chunk)]
+    with patch(
+        "rapid_mlx.scheduler.mx.get_peak_memory",
+        return_value=25_000_000_000 + delta,
+    ):
+        sched._finish_prefill_memory_sample(before, ([SimpleNamespace(uid=101)], []))
+    return req
+
+
+def test_issue4824_hybrid_long_prompts_can_share_a_cohort():
+    sched = _workspace_scheduler()
+    _workspace_sample(sched, 512, 512, 881_000_000)
+    _workspace_sample(sched, 32768, 2048, 3_281_000_000)
+    row = _make_request("first", 32768)
+    units = 2048 * 32768
+    # Reproduction: short-prompt delta / (chunk * final context), extrapolated
+    # to 32k. These exact inputs yield 225.536 GB (the same ~150 GB failure
+    # scale), despite the measured 32k workspace being only 3.281 GB.
+    legacy = int(sched._prefill_workspace_high_water * units)
+    assert legacy == 225_536_000_000
+    workspace = sched._prefill_workspace_bytes(row)
+    kv = sched._estimate_request_kv_bytes(row)
+    assert workspace == 3_524_000_000
+    assert kv == 671_088_640
+    assert 3_281_000_000 <= workspace <= 1.5 * (3_281_000_000 + kv)
+    total = 25_000_000_000 + 2 * (workspace + kv)
+    assert total == 33_390_177_280 < 215_000_000_000
+    bg = sched.batch_generator
+    bg._prompt_batch.uids = []
+    bg._currently_processing = []
+    row.batch_uid = 102
+    bg._unprocessed_sequences = [(102, [row.prompt_token_ids])]
+    sched.running = {row.request_id: row}
+    assert sched._prefill_cohort_fits(_make_request("second", 32768))
+    assert sched._reclaim_prefix_cache_for_prefill.call_args.kwargs["cohort_need"] == (
+        total - 25_000_000_000
+    )
+
+
+def test_issue4824_context_extrapolation_and_padding():
+    sched = _workspace_scheduler()
+    row = _make_request(tokens=32768)
+    prior = 3.5 * 20480 / 2048 * (2048 * 32768)
+    assert sched._prefill_workspace_bytes(row) == prior  # no samples
+    _workspace_sample(sched, 512, 512, 881_000_000)
+    assert sched._prefill_workspace_max_context == 512
+    rate = 881_000_000 / 512
+    expected = 2048 * (rate + 16 * 4 * 3 * (32768 - 512))
+    assert sched._prefill_workspace_bytes(row) == expected >= 2048 * rate
+    shorter = _make_request("padded", 256)
+    assert (
+        sched._prefill_workspace_bytes(
+            shorter, padded_units=2048 * 32768, padded_chunk=2048
+        )
+        == expected
+    )
+    _workspace_sample(sched, 32768, 2048, 3_281_000_000)
+    assert sched._prefill_workspace_max_context == 32768
+    assert sched._prefill_workspace_bytes(row) >= 3_281_000_000
+    _workspace_sample(sched, 512, 512, 100)
+    assert sched._prefill_workspace_max_context == 32768
+    assert sched._prefill_workspace_bytes(shorter) == int(256 * rate)
+
+
+def test_issue4824_dense_attention_preserves_growth_prior_and_large_samples():
+    sched = _workspace_scheduler(32, 147456)
+    sched.model.config = {
+        "num_hidden_layers": 36,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+    }
+    _workspace_sample(sched, 8192, 2048, 4_000_000_000)
+    row = _make_request(tokens=32768)
+    growth = 2048 * (4_000_000_000 / 2048 + 32 * 4 * 3 * (32768 - 8192))
+    prior = 3.5 * 147456 / 2048 * (2048 * 32768)
+    assert sched._prefill_workspace_bytes(row) == max(growth, prior)
+    assert sched._prefill_workspace_bytes(row) >= growth
+    assert sched._prefill_workspace_bytes(row) >= prior
+    _workspace_sample(sched, 32768, 2048, 30_000_000_000)
+    assert sched._prefill_workspace_bytes(row) >= 30_000_000_000
+
+
+@pytest.mark.parametrize("heads", [None, 0, -1, 16.0, True])
+def test_issue4824_unknown_heads_preserve_legacy_formula(heads):
+    sched = _workspace_scheduler(heads)
+    _workspace_sample(sched, 512, 512, 881_000_000)
+    row = _make_request(tokens=32768)
+    for padded_units, padded_chunk in [(0, 0), (4096 * 65536, 4096)]:
+        units = max(padded_units, sched._prefill_workspace_units(row))
+        expected = int(
+            max(
+                max(3.5 * 20480 / 2048, sched._prefill_workspace_high_water) * units,
+                sched._prefill_workspace_per_chunk * max(2048, padded_chunk),
+            )
+        )
+        assert (
+            sched._prefill_workspace_bytes(
+                row, padded_units=padded_units, padded_chunk=padded_chunk
+            )
+            == expected
+        )
+
+
+def test_issue4824_sample_context_uses_cached_processed_and_dispatched_chunk():
+    sched = _workspace_scheduler()
+    _workspace_sample(sched, 32768, 2048, 3_281_000_000, cached=4096, processed=1024)
+    assert sched._prefill_workspace_max_context == 7168  # not final prompt length
+
+
+@pytest.mark.parametrize("holder", ["config", "args"])
+@pytest.mark.parametrize("structural", [False, True])
+def test_issue4824_attention_heads_follow_text_tower_and_are_cached(holder, structural):
+    sched = _workspace_scheduler()
+    text = {"num_attention_heads": 16}
+    if structural:
+        text.update(num_hidden_layers=2, layer_types=["full_attention"] * 2)
+    sched.model = SimpleNamespace(
+        **{holder: {"num_attention_heads": 100, "text_config": text}}
+    )
+    assert sched._resolve_prefill_attention_beta() == 192
+    text["num_attention_heads"] = 32
+    assert sched._resolve_prefill_attention_beta() == 192
+
+
+@pytest.mark.parametrize("dispatch_both", [False, True])
+def test_issue4824_sample_anchor_is_minimum_dispatched_context(dispatch_both):
+    sched = _workspace_scheduler()
+    long = _make_request("long", 32768)
+    short = _make_request("short", 8192)
+    long.batch_uid, short.batch_uid = 101, 102
+    long.cached_tokens = 4096
+    sched.running = {r.request_id: r for r in (long, short)}
+    bg = sched.batch_generator
+    bg._prompt_batch.uids = [101, 102]
+    bg._currently_processing = [
+        [[long.prompt_token_ids], 1024, 32768 - 4096],
+        [[short.prompt_token_ids], 256, 8192],
+    ]
+    bg._unprocessed_sequences = []
+    with patch("rapid_mlx.scheduler.mx.reset_peak_memory"):
+        before = sched._begin_prefill_memory_sample()
+    assert before[1] == [(long, 2048, 7168), (short, 2048, 2304)]
+    dispatched = [101, 102] if dispatch_both else [101]
+    with patch("rapid_mlx.scheduler.mx.get_peak_memory", return_value=28_000_000_000):
+        sched._finish_prefill_memory_sample(
+            before, ([SimpleNamespace(uid=uid) for uid in dispatched], [])
+        )
+    assert sched._prefill_workspace_max_context == (2304 if dispatch_both else 7168)
+
+
+def test_issue4824_outer_structural_config_wins_over_decoy_text_heads():
+    sched = _workspace_scheduler()
+    sched.model.config["text_config"] = {"num_attention_heads": 100}
+    assert sched._resolve_prefill_attention_beta() == 192
