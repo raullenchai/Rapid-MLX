@@ -50,7 +50,15 @@ def _search(query: str) -> str:
     if parallel:
         data = _post(
             "https://api.parallel.ai/v1/search",
-            {"objective": query, "search_queries": [query]},
+            {
+                "objective": query,
+                "search_queries": [query],
+                "mode": "advanced",
+                "advanced_settings": {
+                    "max_results": 5,
+                    "excerpt_settings": {"max_chars_per_result": 240},
+                },
+            },
             {"x-api-key": parallel},
         )
         results = [
@@ -64,8 +72,12 @@ def _search(query: str) -> str:
     elif tavily:
         data = _post(
             "https://api.tavily.com/search",
-            {"query": query, "max_results": 5},
-            {"Authorization": "Bearer " + tavily},
+            {
+                "query": query,
+                "max_results": 5,
+                "search_depth": "basic",
+                "api_key": tavily,
+            },
         )
         results = [
             (item.get("title", ""), item.get("url", ""), item.get("content", ""))
@@ -85,12 +97,26 @@ def _search(query: str) -> str:
         ]
     else:
         data = _post(
-            "https://api.keenable.ai/v1/search/public", {"query": query, "mode": "pro"}
+            "https://api.keenable.ai/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_web_pages",
+                    "arguments": {"query": query, "snippet_max_length": 240},
+                },
+            },
+            {"Accept": "application/json, text/event-stream"},
         )
-        results = [
-            (item.get("title", ""), item.get("url", ""), item.get("snippet", ""))
-            for item in data.get("results", [])
-        ]
+        if data.get("error") or (data.get("result") or {}).get("isError"):
+            raise ValueError("Keenable search failed")
+        content = (data.get("result") or {}).get("content") or []
+        blocks = "\n".join(str(item.get("text", "")) for item in content)
+        return (
+            "\n\n".join(blocks.split("\n---\n")[:5])[:4096]
+            or "No search results found."
+        )
     lines = []
     for index, (title, url, excerpt) in enumerate(results[:5], 1):
         if isinstance(url, str) and url.startswith(("https://", "http://")):

@@ -9,13 +9,14 @@ def test_keyless_search_returns_source_url(monkeypatch):
     def fake_post(url, payload, headers=None):
         calls.append((url, payload, headers))
         return {
-            "results": [
-                {
-                    "title": "Weather service",
-                    "url": "https://forecast.weather.gov/test",
-                    "snippet": "Sunny " * 500,
-                }
-            ]
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Title: Weather service\nURL: https://forecast.weather.gov/test\nSnippets:\nSunny",
+                    }
+                ]
+            }
         }
 
     monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
@@ -23,11 +24,11 @@ def test_keyless_search_returns_source_url(monkeypatch):
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     monkeypatch.setattr(web_search_mcp, "_post", fake_post)
     result = web_search_mcp._search("current weather")
-    assert calls[0][0] == "https://api.keenable.ai/v1/search/public"
-    assert calls[0][1]["query"] == "current weather"
+    assert calls[0][0] == "https://api.keenable.ai/mcp"
+    assert calls[0][1]["params"]["arguments"]["query"] == "current weather"
+    assert calls[0][1]["params"]["arguments"]["snippet_max_length"] == 240
     assert "https://forecast.weather.gov/test" in result
     assert "Sunny" in result
-    assert len(result) < 350
 
 
 def test_brave_key_uses_api_without_exposing_key(monkeypatch):
@@ -57,6 +58,29 @@ def test_brave_key_uses_api_without_exposing_key(monkeypatch):
     assert "api.search.brave.com" in seen[0][0]
     assert seen[0][1] == {"X-Subscription-Token": "test-secret"}
     assert "https://example.org" in result
+    assert "test-secret" not in result
+
+
+def test_tavily_key_stays_in_gate_request(monkeypatch):
+    calls = []
+    monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "test-secret")
+    monkeypatch.setattr(
+        web_search_mcp,
+        "_post",
+        lambda url, payload, headers=None: (
+            calls.append((url, payload, headers))
+            or {
+                "results": [
+                    {"title": "Story", "url": "https://example.org", "content": "News"}
+                ]
+            }
+        ),
+    )
+    result = web_search_mcp._search("latest story")
+    assert calls[0][0] == "https://api.tavily.com/search"
+    assert calls[0][1]["api_key"] == "test-secret"
+    assert calls[0][1]["search_depth"] == "basic"
     assert "test-secret" not in result
 
 
