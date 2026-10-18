@@ -780,7 +780,7 @@ struct StartAndSendIntent: Equatable {
 
     mutating func resolve(
         readiness: ModelReadiness, conversationID: UUID, selectedAlias: String,
-        isStreaming: Bool
+        isStreaming: Bool, isImportingFiles: Bool
     ) -> Resolution {
         guard let pending else { return .wait }
         guard pending.conversationID == conversationID, pending.alias == selectedAlias else {
@@ -789,7 +789,7 @@ struct StartAndSendIntent: Equatable {
         }
         switch readiness {
         case .ready(let alias) where alias == pending.alias:
-            guard !isStreaming else { return .wait }
+            guard !isStreaming, !isImportingFiles else { return .wait }
             self.pending = nil // Consume before the caller enters the normal send path.
             return .send
         case .starting(let alias, _) where alias == pending.alias:

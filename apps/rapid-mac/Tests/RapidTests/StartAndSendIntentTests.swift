@@ -24,10 +24,10 @@ struct StartAndSendIntentTests {
         }
 
         @discardableResult
-        func observe(_ readiness: ModelReadiness, streaming: Bool = false) -> StartAndSendIntent.Resolution {
+        func observe(_ readiness: ModelReadiness, streaming: Bool = false, importingFiles: Bool = false) -> StartAndSendIntent.Resolution {
             let result = model.startAndSendIntent.resolve(
                 readiness: readiness, conversationID: model.activeConversationID,
-                selectedAlias: alias, isStreaming: streaming
+                selectedAlias: alias, isStreaming: streaming, isImportingFiles: importingFiles
             )
             if case .send = result {
                 model.submitComposerDraft(hasAttachments: hasAttachments, canSubmit: { true }) {
@@ -60,6 +60,24 @@ struct StartAndSendIntentTests {
             #expect(composer.observe(.ready(alias: alias)) == .wait)
             #expect(composer.sent.count == 1)
         }
+    }
+
+    @Test("A ready model waits for file imports, then sends once")
+    func waitsForFileImports() throws {
+        let composer = Composer()
+        composer.model.composerDraft = "keep until files finish"
+        composer.hasAttachments = true
+        composer.press()
+        let pending = try #require(composer.model.startAndSendIntent.pending)
+        #expect(composer.observe(.ready(alias: alias), importingFiles: true) == .wait)
+        #expect(composer.model.startAndSendIntent.pending == pending)
+        #expect(composer.model.composerDraft == "keep until files finish")
+        #expect(composer.sent.isEmpty)
+        #expect(composer.observe(.ready(alias: alias), importingFiles: false) == .send)
+        #expect(composer.model.startAndSendIntent.pending == nil)
+        #expect(composer.sent == ["keep until files finish"])
+        #expect(composer.observe(.ready(alias: alias)) == .wait)
+        #expect(composer.sent.count == 1)
     }
 
     @Test("A failed start cancels without observations and a later ready model does not send")
@@ -177,7 +195,8 @@ struct StartAndSendIntentTests {
             #expect(intent.resolve(
                 readiness: .ready(alias: alias),
                 conversationID: changeConversation ? UUID() : conversation,
-                selectedAlias: changeConversation ? alias : "other", isStreaming: false
+                selectedAlias: changeConversation ? alias : "other", isStreaming: false,
+                isImportingFiles: false
             ) == .cancel)
             #expect(intent.pending == nil)
         }
@@ -222,6 +241,8 @@ struct StartAndSendIntentTests {
         #expect(view.contains("guardviewModel.startAndSendIntent.pending==nilelse{return}"))
         #expect(view.contains("onReadinessAction(.start(alias:target))"))
         #expect(view.contains("ifcase.send=resolution{send()}"))
+        #expect(view.contains("selectedAlias:alias,isStreaming:viewModel.isStreaming,isImportingFiles:attachmentDraft.isImportingFiles"))
+        #expect(view.contains(".onChange(of:attachmentDraft.isImportingFiles){_,_inresolveStartAndSend()}"))
         #expect(view.contains(".onDisappear{viewModel.startAndSendIntent=StartAndSendIntent()}"))
         #expect(view.contains(".help(readiness.composerSendTooltip)"))
         #expect(view.contains("?String(localized:\"Sendmessage\"):readiness.composerSendTooltip)"))

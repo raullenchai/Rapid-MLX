@@ -378,6 +378,7 @@ struct ChatView: View {
         .onChange(of: readiness, initial: true) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.startAndSendIntent) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.isStreaming) { _, _ in resolveStartAndSend() }
+        .onChange(of: attachmentDraft.isImportingFiles) { _, _ in resolveStartAndSend() }
         .onDisappear {
             // Normal startup keeps ChatView mounted: idle/starting/ready all map to .chat.
             viewModel.startAndSendIntent = StartAndSendIntent()
@@ -1222,8 +1223,10 @@ struct ChatView: View {
     private func resolveStartAndSend() {
         let resolution = viewModel.startAndSendIntent.resolve(
             readiness: readiness, conversationID: viewModel.activeConversationID,
-            selectedAlias: alias, isStreaming: viewModel.isStreaming
+            selectedAlias: alias, isStreaming: viewModel.isStreaming,
+            isImportingFiles: attachmentDraft.isImportingFiles
         )
+        // Normal send rejects unsupported images with the existing notice and keeps the draft.
         if case .send = resolution { send() }
     }
 
