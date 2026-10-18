@@ -49,6 +49,7 @@ destroy_vm
 
 while true; do
   reap_orphans
+  rotate_logs "$LOG_DIR/slot$N.runner.log" "$LOG_DIR/slot$N.tart.log"
   if reason=$(should_drain); then
     log "draining: $reason"; nap 30; continue
   fi

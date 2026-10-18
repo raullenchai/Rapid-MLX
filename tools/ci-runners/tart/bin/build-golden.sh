@@ -5,7 +5,8 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 LOG_TAG="build-golden"
-BASE="${BASE:-ghcr.io/cirruslabs/ubuntu:24.04}"
+# Pinned by digest (ubuntu:24.04 as of 2026-10-18); bump deliberately.
+BASE="${BASE:-ghcr.io/cirruslabs/ubuntu@sha256:51b493a05e4bc6f21c5c5052cffc1b26b5cea1d76847f5db10b97da90c16e58c}"
 NEXT="$GOLDEN-next"
 mkdir -p "$LOG_DIR"
 

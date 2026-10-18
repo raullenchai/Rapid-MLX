@@ -14,7 +14,7 @@ rollback, and rebuilding the image.
 | Pools | the CI Mac mini (2 slots); the M5 Max CI host (3 slots, joins when its lease frees) |
 | VM size | 4 vCPU, 8 GB RAM, 30 GB sparse disk, copy-on-write clone of one golden image |
 | Lifetime | one VM per job: clone → boot → JIT-register → run one job → destroy |
-| Image | `rmx-golden`, built from `ghcr.io/cirruslabs/ubuntu:24.04` |
+| Image | `rmx-golden`, built from `ghcr.io/cirruslabs/ubuntu:24.04`, pinned by digest in `build-golden.sh` |
 
 What the golden image contains: build-essential, git, curl, jq, zstd, unzip, and
 the GL/GLib shared libraries that OpenCV wheels need. It also has

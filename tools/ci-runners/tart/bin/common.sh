@@ -91,6 +91,16 @@ runner_busy() {  # prints true/false, gone (HTTP 404), or unknown (other errors)
   rm -f "$err"
 }
 
+# Keep per-slot logs under ~50 MB (one rotated copy). They are reopened for
+# every job, so a rename is safe; supervisor.log is held open and stays small.
+rotate_logs() {
+  local f
+  for f in "$@"; do
+    [ -f "$f" ] && [ "$(stat -f %z "$f")" -gt 52428800 ] && mv -f "$f" "$f.1"
+  done
+  return 0
+}
+
 # Interruptible sleep so TERM traps run promptly.
 nap() { sleep "$1" & wait $!; }
 
