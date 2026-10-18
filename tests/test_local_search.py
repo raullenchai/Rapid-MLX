@@ -10033,3 +10033,143 @@ def test_closest_respects_scope_safety_grouping_and_positive_scores(
             await search.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "mode,foreign,allowed",
+    [
+        (0o700, False, True),
+        (0o777, False, False),
+        (0o1777, True, False),
+        (0o1777, False, True),
+        (0o700, True, False),
+    ],
+)
+def test_index_symlink_provenance(tmp_path, monkeypatch, mode, foreign, allowed):
+    from rapid_mlx.local_search import store as module
+
+    tmp_path.chmod(0o700)
+    parent = tmp_path / "shared"
+    parent.mkdir(mode=0o700)
+    parent.chmod(mode)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    real.chmod(0o700)
+    link = parent / "link"
+    link.symlink_to(real, target_is_directory=True)
+    lstat = module.os.lstat
+
+    def link_owner(path, *args, **kwargs):
+        info = lstat(path, *args, **kwargs)
+        if foreign and Path(path) == link:
+            values = list(info)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(module.os, "lstat", link_owner)
+    path = link / "index" / "index.sqlite3"
+    if allowed:
+        store = Store(path, "test")
+        try:
+            assert store.path == real / "index" / "index.sqlite3"
+        finally:
+            store.close()
+    else:
+        with pytest.raises(
+            PermissionError, match="replaced by another account"
+        ) as error:
+            Store(path, "test")
+        assert str(link) in str(error.value)
+        assert ("foreign symlink owner" if foreign else "writable") in str(error.value)
+        assert not (real / "index").exists()
+
+
+@pytest.mark.parametrize("target_kind", ["relative", "absolute", "chain", "dotdot"])
+def test_index_symlink_targets(tmp_path, monkeypatch, target_kind):
+    tmp_path.chmod(0o700)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    real.chmod(0o700)
+    link = tmp_path / "link"
+    target = real if target_kind == "absolute" else Path("real")
+    if target_kind == "chain":
+        second = tmp_path / "second"
+        second.symlink_to(target, target_is_directory=True)
+        target = Path("second")
+    elif target_kind == "dotdot":
+        target = Path("real/../real")
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    store = Store(Path("link/index/index.sqlite3"), "test")
+    try:
+        assert store.path == real / "index" / "index.sqlite3"
+        assert store.db.execute("PRAGMA database_list").fetchone()[2] == str(store.path)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_index_symlink_hop_limit(tmp_path, loop):
+    tmp_path.chmod(0o700)
+    for number in range(41):
+        target = f"link{number + 1}" if number < 40 or not loop else "link0"
+        (tmp_path / f"link{number}").symlink_to(target, target_is_directory=True)
+    with pytest.raises(PermissionError, match="symlink hop limit"):
+        Store(tmp_path / "link0" / "index.sqlite3", "test")
+
+
+@pytest.mark.parametrize("unsafe", ["ancestor", "parent_owner", "acl"])
+def test_index_symlink_parent_safety(tmp_path, monkeypatch, unsafe):
+    from rapid_mlx.local_search import store as module
+
+    tmp_path.chmod(0o700)
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir(mode=0o700)
+    ancestor.chmod(0o777 if unsafe == "ancestor" else 0o700)
+    parent = ancestor / "parent"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    real.chmod(0o700)
+    link = parent / "link"
+    link.symlink_to(real, target_is_directory=True)
+    inode = parent.stat().st_ino
+    fstat = module.os.fstat
+
+    def owner(fd):
+        info = fstat(fd)
+        if unsafe == "parent_owner" and info.st_ino == inode:
+            values = list(info)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(module.os, "fstat", owner)
+    if unsafe == "acl":
+        monkeypatch.setattr(module.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            module, "_ancestor_acl_dangerous", lambda fd: fstat(fd).st_ino == inode
+        )
+    with pytest.raises(PermissionError, match="replaced by another account") as error:
+        Store(link / "index.sqlite3", "test")
+    assert str(link) in str(error.value)
+    assert {"ancestor": "writable", "parent_owner": "foreign owner", "acl": "ACL"}[
+        unsafe
+    ] in str(error.value)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="stock macOS /tmp symlink")
+def test_index_real_darwin_tmp_symlink():
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="rapid-mlx-link-", dir="/tmp") as directory:
+        parent = Path(directory)
+        parent.chmod(0o700)
+        store = Store(parent / "index" / "index.sqlite3", "test")
+        try:
+            assert store.path == (parent / "index" / "index.sqlite3").resolve()
+            assert store.path.is_file()
+        finally:
+            store.close()

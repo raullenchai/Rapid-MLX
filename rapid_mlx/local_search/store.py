@@ -149,6 +149,72 @@ def _remove_acl(fd: int) -> None:
         raise PermissionError("Could not remove local-search index ACL")
 
 
+def _parent_safety_reason(directory: int, owner: int) -> str | None:
+    """Explain whether another account can replace an entry owned by owner."""
+    parent = os.fstat(directory)
+    reason = None
+    if parent.st_uid not in {0, os.geteuid()}:
+        reason = "foreign owner"
+    elif _ancestor_acl_dangerous(directory):
+        reason = "ACL that grants access to other accounts"
+    writable = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    sticky_owner = parent.st_mode & stat.S_ISVTX and owner == os.geteuid()
+    if writable and not sticky_owner:
+        reason = "group- or world-writable without sticky ownership"
+    return reason
+
+
+def _resolve_index_path(path: Path) -> Path:
+    """Resolve links only after checking their ownership and real parent chain."""
+    absolute = path.absolute()
+    real = Path(absolute.anchor)
+    pending = list(absolute.parts[1:])
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part == "..":
+            real = real.parent
+            continue
+        component = real / part
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError:
+            # mkdir will create the remainder beneath the now-real parent.
+            return component.joinpath(*pending)
+        if not stat.S_ISLNK(info.st_mode):
+            real = component
+            continue
+        reason = (
+            "foreign symlink owner" if info.st_uid not in {0, os.geteuid()} else None
+        )
+        if reason is None:
+            try:
+                directory = _open_stable_directory(real)
+                try:
+                    reason = _parent_safety_reason(directory, info.st_uid)
+                finally:
+                    os.close(directory)
+            except PermissionError as exc:
+                reason = str(exc)
+        if reason:
+            raise PermissionError(
+                "Local-search index symlink can be replaced by another account: "
+                f"{component} ({reason})"
+            )
+        hops += 1
+        if hops > 40:
+            raise PermissionError(
+                f"Local-search index symlink hop limit exceeded: {component}"
+            )
+        target = Path(os.readlink(component))
+        if target.is_absolute():
+            real = Path(target.anchor)
+            pending = list(target.parts[1:]) + pending
+        else:
+            pending = list(target.parts) + pending
+    return real
+
+
 def _open_stable_directory(path: Path) -> int:
     """Open a path whose components cannot be replaced by another account."""
     absolute = path.absolute()
@@ -168,17 +234,7 @@ def _open_stable_directory(path: Path) -> int:
                     f"Local-search index path component {component} changed or is a symlink"
                 ) from exc
             try:
-                parent = os.fstat(current)
-                owner = os.fstat(child).st_uid
-                reason = None
-                if parent.st_uid not in {0, os.geteuid()}:
-                    reason = "foreign owner"
-                elif _ancestor_acl_dangerous(current):
-                    reason = "ACL that grants access to other accounts"
-                writable = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-                sticky_owner = parent.st_mode & stat.S_ISVTX and owner == os.geteuid()
-                if writable and not sticky_owner:
-                    reason = "group- or world-writable without sticky ownership"
+                reason = _parent_safety_reason(current, os.fstat(child).st_uid)
                 if reason:
                     raise PermissionError(
                         "Local-search index path can be replaced by another account: "
@@ -262,7 +318,7 @@ class Store:
                 f"Local-search index file {path} is a symlink; "
                 "choose a dedicated index directory"
             )
-        path = path.resolve()
+        path = _resolve_index_path(path)
         _prepare_index(path)
         self.path = path
         # SQLite's Unix VFS creates WAL/SHM/rollback journals with the database
