@@ -2859,7 +2859,6 @@ class BatchedEngine(BaseEngine):
             if not (
                 len(messages) == 1
                 and messages[0].get("role") == "system"
-                and tools
                 and "No user query found in messages" in str(exc)
             ):
                 raise
@@ -3688,7 +3687,6 @@ class BatchedEngine(BaseEngine):
             if not (
                 len(messages) == 1
                 and messages[0].get("role") == "system"
-                and tools
                 and "No user query found in messages" in str(exc)
             ):
                 raise
@@ -3909,10 +3907,10 @@ class BatchedEngine(BaseEngine):
             # prefix before its first user turn. The assistant marker in that
             # completion is not shared with a subsequent user message, so
             # snapshot their token LCP exactly (including recurrent state).
-            if len(messages) != 1 or messages[0].get("role") != "system" or not tools:
+            if len(messages) != 1 or messages[0].get("role") != "system":
                 return 0
             try:
-                template_tools = convert_tools_for_template(tools)
+                template_tools = convert_tools_for_template(tools) if tools else None
                 warm = generation_prompt or self._apply_chat_template(
                     messages,
                     template_tools,
@@ -4610,7 +4608,6 @@ class BatchedEngine(BaseEngine):
             if not (
                 len(messages) == 1
                 and messages[0].get("role") == "system"
-                and tools
                 and "No user query found in messages" in str(exc)
             ):
                 raise

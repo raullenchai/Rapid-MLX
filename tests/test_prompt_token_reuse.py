@@ -324,6 +324,33 @@ def test_system_tools_only_completion_saves_exact_cross_session_boundary():
     assert tokenizer.decode(prompt).endswith("<|im_start|>assistant\n<think>\n")
 
 
+def test_system_only_without_tools_saves_shared_boundary():
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    messages = [{"role": "system", "content": "unchanged guidance " * 400}]
+    warm = _render(messages)
+    boundary = engine._compute_prefix_boundary(messages, generation_prompt=warm)
+    next_turn = tokenizer.encode(
+        _render([*messages, {"role": "user", "content": "hi"}])
+    )
+    warm_tokens = tokenizer.encode(warm)
+    assert boundary > 0
+    assert warm_tokens[:boundary] == next_turn[:boundary]
+    assert warm_tokens[boundary] != next_turn[boundary]
+
+    def requires_user(items, template_tools=None, **kwargs):
+        if not any(item["role"] == "user" for item in items):
+            raise ValueError("No user query found in messages")
+        return _render(items, template_tools, **kwargs)
+
+    engine._apply_chat_template = requires_user
+    prompt, fallback_boundary = engine._shared_system_tools_prompt(
+        messages, None, False, None
+    )
+    assert fallback_boundary > 0
+    assert prompt[:fallback_boundary] == next_turn[:fallback_boundary]
+
+
 def test_system_tools_only_keeps_a_template_that_accepts_it():
     engine = _engine(_SectionTokenizer())
     engine._loaded = True
