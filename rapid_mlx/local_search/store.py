@@ -158,7 +158,8 @@ def _parent_safety_reason(directory: int, owner: int) -> str | None:
     elif _ancestor_acl_dangerous(directory):
         reason = "ACL that grants access to other accounts"
     writable = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-    sticky_owner = parent.st_mode & stat.S_ISVTX and owner == os.geteuid()
+    # Sticky directories only let the entry owner (or root) rename/unlink it.
+    sticky_owner = parent.st_mode & stat.S_ISVTX and owner in {0, os.geteuid()}
     if writable and not sticky_owner:
         reason = "group- or world-writable without sticky ownership"
     return reason

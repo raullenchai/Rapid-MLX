@@ -10048,16 +10048,18 @@ def test_closest_respects_scope_safety_grouping_and_positive_scores(
 
 
 @pytest.mark.parametrize(
-    "mode,foreign,allowed",
+    "mode,owner,allowed",
     [
-        (0o700, False, True),
-        (0o777, False, False),
-        (0o1777, True, False),
-        (0o1777, False, True),
-        (0o700, True, False),
+        (0o700, "self", True),
+        (0o777, "self", False),
+        (0o1777, "foreign", False),
+        (0o1777, "self", True),
+        # Root-owned links in sticky directories cannot be swapped by others.
+        (0o1777, "root", True),
+        (0o700, "foreign", False),
     ],
 )
-def test_index_symlink_provenance(tmp_path, monkeypatch, mode, foreign, allowed):
+def test_index_symlink_provenance(tmp_path, monkeypatch, mode, owner, allowed):
     from rapid_mlx.local_search import store as module
 
     tmp_path.chmod(0o700)
@@ -10073,9 +10075,9 @@ def test_index_symlink_provenance(tmp_path, monkeypatch, mode, foreign, allowed)
 
     def link_owner(path, *args, **kwargs):
         info = lstat(path, *args, **kwargs)
-        if foreign and Path(path) == link:
+        if owner != "self" and Path(path) == link:
             values = list(info)
-            values[4] = os.geteuid() + 1
+            values[4] = 0 if owner == "root" else os.geteuid() + 1
             return os.stat_result(values)
         return info
 
@@ -10093,7 +10095,9 @@ def test_index_symlink_provenance(tmp_path, monkeypatch, mode, foreign, allowed)
         ) as error:
             Store(path, "test")
         assert str(link) in str(error.value)
-        assert ("foreign symlink owner" if foreign else "writable") in str(error.value)
+        assert ("foreign symlink owner" if owner == "foreign" else "writable") in str(
+            error.value
+        )
         assert not (real / "index").exists()
 
 
