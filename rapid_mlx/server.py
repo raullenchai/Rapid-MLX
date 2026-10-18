@@ -3615,6 +3615,7 @@ from .routes.mcp_routes import admin_router as _mcp_admin_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
+from .routes.prefill import router as _prefill_router
 from .routes.rerank import router as _rerank_router
 from .routes.residency import router as _residency_router
 from .routes.responses import router as _responses_router
@@ -3655,6 +3656,7 @@ app.include_router(_mcp_admin_router)
 # fuzz wave: Qwen3-7B-4bit, etc.) must answer ``/v1/audio/*`` with a
 # stock 404 instead of advertising routes that 500 on first call.
 app.include_router(_cache_router)
+app.include_router(_prefill_router)
 
 
 def register_audio_routes_if_enabled() -> bool:
