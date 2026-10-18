@@ -487,6 +487,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
             f"rapidweb:{sys.executable} -I -S {ASSETS / 'web_search_mcp.py'}",
             "--output-format",
             args.output_format,
+            # A native user-set session name skips Goose's concurrent model
+            # call for an automatic title while preserving the chat request.
+            *([] if args.resume else ["--name", f"Rapid Chat {launch_id}"]),
             "--text",
             first_prompt,
         ]

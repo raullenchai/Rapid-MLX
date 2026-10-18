@@ -151,6 +151,7 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     assert "--no-profile" not in commands[0]
     assert "--no-session" not in commands[0]
     assert "--resume" in commands[0]
+    assert "--name" not in commands[0]
     assert (
         commands[0][commands[0].index("--provider") + 1]
         == environments[0]["GOOSE_PROVIDER"]
@@ -173,8 +174,10 @@ def test_goose_cli_maps_sampling_and_system_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "Hello")
     snapshots = []
+    commands = []
 
-    def capture_goose(_command, **kwargs):
+    def capture_goose(command, **kwargs):
+        commands.append(command)
         workspace = Path(kwargs["env"]["HOME"])
         name = kwargs["env"]["GOOSE_PROVIDER"]
         snapshots.append(
@@ -213,6 +216,7 @@ def test_goose_cli_maps_sampling_and_system_flags(tmp_path, monkeypatch):
     assert contract["max_tokens"] == 512
     assert contract["enable_thinking"] is True
     assert provider["models"][0] == {"name": "test-model", "context_limit": 8192}
+    assert commands[0][commands[0].index("--name") + 1].startswith("Rapid Chat ")
 
 
 def test_explicit_default_sampling_flags_override_goose_defaults(tmp_path, monkeypatch):
