@@ -76,17 +76,27 @@ final class ConversationDraftTests: XCTestCase {
         model.selectConversation(a)
         model.composerDraft = "A"
         model.selectConversation(b)
-        model.composerDraft = "B"
-        model.clearComposerDraft()
+        model.composerDraft = "  B\n"
+        var submitted: [String] = []
+        XCTAssertTrue(model.submitComposerDraft(hasAttachments: false, canSubmit: {
+            XCTAssertEqual(model.composerDraft, "  B\n")
+            return true
+        }, submit: { text in
+            XCTAssertEqual(model.composerDraft, "")
+            submitted.append(text)
+        }))
+        XCTAssertEqual(submitted, ["  B\n"])
         XCTAssertEqual(model.composerDraft, "")
         model.selectConversation(a)
         XCTAssertEqual(model.composerDraft, "A")
         model.newConversation()
         model.composerDraft = "first send"
-        let text = model.composerDraft
-        model.clearComposerDraft() // Same ordering as ChatView.send, after its gate.
         let newID = model.activeConversationID
-        model.send(text, alias: "test-model")
+        XCTAssertTrue(model.submitComposerDraft(hasAttachments: false, canSubmit: { true }, submit: { text in
+            XCTAssertEqual(model.composerDraft, "")
+            XCTAssertEqual(text, "first send")
+            model.send(text, alias: "test-model")
+        }))
         model.stopAndPersist()
         XCTAssertTrue(model.conversations.contains { $0.id == newID })
         XCTAssertEqual(model.composerDraft, "")
@@ -99,6 +109,58 @@ final class ConversationDraftTests: XCTestCase {
         XCTAssertEqual(saved.text(for: ConversationDrafts.newChatKey), "")
         XCTAssertEqual(saved.text(for: a.uuidString), "A")
         XCTAssertEqual(saved.text(for: b.uuidString), "")
+    }
+
+    @MainActor
+    func testGateBlockedSubmissionPreservesDraft() throws {
+        let model = ChatViewModel(persistsConversations: false, conversationStoreURL: try isolatedStore())
+        model.composerDraft = "  waiting\n"
+        var gateCalls = 0
+        XCTAssertFalse(model.submitComposerDraft(hasAttachments: false, canSubmit: {
+            gateCalls += 1
+            XCTAssertEqual(model.composerDraft, "  waiting\n")
+            return false
+        }, submit: { _ in
+            XCTFail("Blocked submission must not send")
+        }))
+        XCTAssertEqual(gateCalls, 1)
+        XCTAssertEqual(model.composerDraft, "  waiting\n")
+    }
+
+    @MainActor
+    func testBlankSubmissionWithoutAttachmentsIsNoOp() throws {
+        let model = ChatViewModel(persistsConversations: false, conversationStoreURL: try isolatedStore())
+        for text in ["", "  \n\t"] {
+            model.composerDraft = text
+            XCTAssertFalse(model.submitComposerDraft(hasAttachments: false, canSubmit: {
+                XCTFail("Empty submission must not reach the gate")
+                return true
+            }, submit: { _ in
+                XCTFail("Empty submission must not send")
+            }))
+            XCTAssertEqual(model.composerDraft, text)
+        }
+    }
+
+    @MainActor
+    func testBlankSubmissionWithAttachmentsSends() throws {
+        let model = ChatViewModel(persistsConversations: false, conversationStoreURL: try isolatedStore())
+        for text in ["", "  \n\t"] {
+            model.composerDraft = text
+            var gateCalls = 0
+            var submitted: [String] = []
+            XCTAssertTrue(model.submitComposerDraft(hasAttachments: true, canSubmit: {
+                gateCalls += 1
+                XCTAssertEqual(model.composerDraft, text)
+                return true
+            }, submit: { text in
+                XCTAssertEqual(model.composerDraft, "")
+                submitted.append(text)
+            }))
+            XCTAssertEqual(gateCalls, 1)
+            XCTAssertEqual(submitted, [text])
+            XCTAssertEqual(model.composerDraft, "")
+        }
     }
 
     @MainActor

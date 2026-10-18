@@ -1209,36 +1209,40 @@ struct ChatView: View {
     // MARK: - Actions
 
     private func send() {
-        let text = draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || attachmentDraft.hasAttachments else { return }
-        guard !viewModel.isStreaming else { return }
-        guard !attachmentDraft.isImportingFiles else { return }
-        guard attachmentDraft.images.isEmpty || supportsImageInput else {
-            rejectImageInputForCurrentModel()
-            return
-        }
-        // Return reaches here even when the Send button is disabled —
-        // AppKit routes the key through ``ComposeTextEditor`` regardless
-        // of SwiftUI's button state. Previously that landed on a silent
-        // no-op: the keystroke did nothing and nothing said why.
-        //
-        // Two guarantees here. The draft is NOT cleared (it is still
-        // exactly what the user typed, ready to send the moment the
-        // model is up), and the attempt is acknowledged — the banner
-        // flashes and VoiceOver speaks the same sentence the Send
-        // tooltip carries.
-        guard acknowledgeIfNotReady() else { return }
-        photoCapabilityNotice.dismiss()
-        viewModel.clearComposerDraft()
-        let submission = attachmentDraft.takeSubmission()
-        composeFocusToken &+= 1
-        viewModel.send(
-            text,
-            alias: alias,
-            supportsImageInput: supportsImageInput,
-            imageAttachments: submission.images,
-            fileAttachments: submission.files
+        viewModel.submitComposerDraft(
+            hasAttachments: attachmentDraft.hasAttachments,
+            canSubmit: {
+                guard !viewModel.isStreaming else { return false }
+                guard !attachmentDraft.isImportingFiles else { return false }
+                guard attachmentDraft.images.isEmpty || supportsImageInput else {
+                    rejectImageInputForCurrentModel()
+                    return false
+                }
+                // Return reaches here even when the Send button is disabled —
+                // AppKit routes the key through ``ComposeTextEditor`` regardless
+                // of SwiftUI's button state. Previously that landed on a silent
+                // no-op: the keystroke did nothing and nothing said why.
+                //
+                // Two guarantees here. The draft is NOT cleared (it is still
+                // exactly what the user typed, ready to send the moment the
+                // model is up), and the attempt is acknowledged — the banner
+                // flashes and VoiceOver speaks the same sentence the Send
+                // tooltip carries.
+                guard acknowledgeIfNotReady() else { return false }
+                photoCapabilityNotice.dismiss()
+                return true
+            },
+            submit: { text in
+                let submission = attachmentDraft.takeSubmission()
+                composeFocusToken &+= 1
+                viewModel.send(
+                    text,
+                    alias: alias,
+                    supportsImageInput: supportsImageInput,
+                    imageAttachments: submission.images,
+                    fileAttachments: submission.files
+                )
+            }
         )
     }
 

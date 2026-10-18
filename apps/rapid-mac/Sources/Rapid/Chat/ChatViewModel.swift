@@ -290,6 +290,22 @@ final class ChatViewModel {
         }
     }
 
+    /// Preserve the draft until submission is accepted, then clear it before sending.
+    @discardableResult
+    func submitComposerDraft(
+        hasAttachments: Bool,
+        canSubmit: () -> Bool,
+        submit: (String) -> Void
+    ) -> Bool {
+        let text = composerDraft
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || hasAttachments else { return false }
+        guard canSubmit() else { return false }
+        clearComposerDraft()
+        submit(text)
+        return true
+    }
+
     /// Called after the readiness gate, before send can save a new conversation.
     func clearComposerDraft() {
         drafts.set("", for: composerDraftKey)
