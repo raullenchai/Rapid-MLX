@@ -14,6 +14,140 @@ import Testing
 @MainActor
 @Suite("ChatCompose accessibility shape")
 struct ChatComposeAccessibilityTests {
+    @Test("Conversation identity changes include entering and leaving New Chat")
+    func conversationIdentityTruthTable() {
+        let a = AnyHashable(UUID())
+        let b = AnyHashable(UUID())
+        for (previous, current, changed) in [
+            (nil, nil, false), (nil, a, true), (a, nil, true),
+            (a, a, false), (a, b, true),
+        ] as [(AnyHashable?, AnyHashable?, Bool)] {
+            #expect(ComposeTextEditor.conversationIdentityChanged(
+                previous: previous, current: current
+            ) == changed)
+        }
+    }
+
+    private func editor(identity: AnyHashable? = nil, text: String = "") -> ComposeTextEditor {
+        ComposeTextEditor(
+            text: .constant(text),
+            conversationIdentity: identity,
+            focusToken: 7,
+            isStreaming: false,
+            onSubmit: {},
+            onCancel: {},
+            onPasteAttachments: { false },
+            onDropAttachments: nil,
+            onRecallLastUser: { nil },
+            onMeasuredHeight: { _ in }
+        )
+    }
+
+    @Test("Shared composer call sites default to no conversation identity")
+    func sharedComposerDefaultsToNoConversation() {
+        let field = ComposeField(
+            text: .constant("image prompt"),
+            focusToken: 0,
+            isStreaming: false,
+            onSubmit: {},
+            onCancel: {}
+        )
+        #expect(field.conversationIdentity == nil)
+    }
+
+    @Test("Initial and unchanged identities preserve editor state")
+    func coordinatorSeedsConversationIdentity() {
+        for identity in [nil, AnyHashable(UUID())] {
+            let editor = editor(identity: identity, text: "binding draft")
+            let coordinator = editor.makeCoordinator()
+            #expect(coordinator.lastConversationIdentity == identity)
+            #expect(coordinator.lastFocusToken == 7)
+            let view = AutosizingTextView()
+            view.string = "editor draft"
+            editor.applyConversationIdentity(to: view, coordinator: coordinator)
+            #expect(view.string == "editor draft")
+        }
+    }
+
+    @MainActor
+    private final class UndoDelegate: NSObject, NSTextViewDelegate {
+        let manager = UndoManager()
+        func undoManager(for view: NSTextView) -> UndoManager? { manager }
+    }
+
+    @Test("Conversation switches discard marked text and undo before applying the draft")
+    func conversationSwitchResetsEditorInPlace() throws {
+        let oldEditor = editor(identity: UUID(), text: "old draft")
+        let coordinator = oldEditor.makeCoordinator()
+        let view = AutosizingTextView()
+        let delegate = UndoDelegate()
+        view.delegate = delegate
+        view.allowsUndo = true
+        // Close the group explicitly: an open event group can report canUndo
+        // even after all its targeted actions have been removed.
+        delegate.manager.groupsByEvent = false
+        delegate.manager.beginUndoGrouping()
+        var states: [Bool] = []
+        view.onComposingChange = { states.append($0) }
+        view.setMarkedText(
+            "nihao",
+            selectedRange: NSRange(location: 5, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        let undo = try #require(view.undoManager)
+        undo.registerUndo(
+            withTarget: view, selector: #selector(setter: NSTextView.string), object: "old draft"
+        )
+        undo.endUndoGrouping()
+        #expect(view.hasMarkedText())
+        #expect(undo.canUndo)
+
+        let nextEditor = editor(identity: UUID(), text: "restored draft")
+        nextEditor.applyConversationIdentity(to: view, coordinator: coordinator)
+
+        #expect(!view.hasMarkedText())
+        #expect(!undo.canUndo)
+        #expect(!undo.canRedo)
+        #expect(undo.isUndoRegistrationEnabled)
+        #expect(view.string == "restored draft")
+        #expect(states.first == true)
+        #expect(states.last == false)
+        #expect(coordinator.lastConversationIdentity == nextEditor.conversationIdentity)
+        #expect(coordinator.text.wrappedValue == "old draft")
+    }
+
+    @Test("Chat passes conversation identity without replacing the composer")
+    func chatComposerPreservesAccessibilityElement() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/ChatView.swift"),
+            encoding: .utf8
+        )
+        let stripped = CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(source)
+        #expect(stripped.contains(
+            "ComposeField(text:draftBinding,conversationIdentity:viewModel.activeConversationID,"
+        ))
+        #expect(stripped.contains(
+            "ComposeTextEditor(text:$text,conversationIdentity:conversationIdentity,"
+        ))
+        // Only the pre-existing ConversationInstructionsPopover keeps this ID.
+        #expect(stripped.components(separatedBy: ".id(viewModel.activeConversationID)").count - 1 == 1)
+        #expect(stripped.contains(
+            "messages.last(where:{$0.role==.user})?.content})composerControls"
+        ))
+        #expect(stripped.contains(
+            "applyConversationIdentity(to:view,coordinator:context.coordinator)"
+        ))
+        let reset = try #require(stripped.range(of:
+            "applyConversationIdentity(to:view,coordinator:context.coordinator)"
+        ))
+        let rebind = try #require(stripped.range(of: "context.coordinator.text=$text"))
+        #expect(reset.lowerBound < rebind.lowerBound)
+    }
+
     @Test("A fresh editor consumes old focus requests instead of replaying them")
     func freshCoordinatorDoesNotReplayFocusToken() {
         let editor = ComposeTextEditor(

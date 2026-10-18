@@ -848,6 +848,7 @@ struct ChatView: View {
                 // reason is visible before a single character is typed.
                 ComposeField(
                     text: draftBinding,
+                    conversationIdentity: viewModel.activeConversationID,
                     focusToken: composeFocusToken,
                     isStreaming: viewModel.isStreaming,
                     placeholder: readiness.composerPlaceholder,
@@ -859,8 +860,6 @@ struct ChatView: View {
                         messages.last(where: { $0.role == .user })?.content
                     }
                 )
-                // A new editor also isolates marked IME text and undo history.
-                .id(viewModel.activeConversationID)
                 composerControls
             }
             .padding(.horizontal, RapidTheme.Space.md - 2)
@@ -2534,6 +2533,8 @@ private struct ToolCallChip: View {
 /// ImagesView so both tabs get an identical input field.
 struct ComposeField: View {
     @Binding var text: String
+    /// Resets conversation state in place, preserving the accessibility element.
+    var conversationIdentity: AnyHashable? = nil
     /// Counter the parent bumps when it wants the editor to grab
     /// keyboard focus. See ``ChatView.composeFocusToken``.
     var focusToken: Int
@@ -2598,6 +2599,7 @@ struct ComposeField: View {
             // NSScrollView) rather than pushing the window around.
             ComposeTextEditor(
                 text: $text,
+                conversationIdentity: conversationIdentity,
                 focusToken: focusToken,
                 isStreaming: isStreaming,
                 onSubmit: onSubmit,
@@ -2887,6 +2889,8 @@ final class AutosizingTextView: NSTextView {
 /// snippets the user pastes.
 struct ComposeTextEditor: NSViewRepresentable {
     @Binding var text: String
+    /// Resets conversation state in place, preserving the accessibility element.
+    var conversationIdentity: AnyHashable? = nil
     var focusToken: Int
     var isStreaming: Bool
     var onSubmit: () -> Void
@@ -2922,6 +2926,33 @@ struct ComposeTextEditor: NSViewRepresentable {
         bindingText: String
     ) -> Bool {
         !viewHasMarkedText && editorText != bindingText
+    }
+
+    static func conversationIdentityChanged(previous: AnyHashable?, current: AnyHashable?) -> Bool {
+        previous != current
+    }
+
+    /// Keep the NSView alive: replacing it during a search-result AXPress makes
+    /// accessibility report failure even though the conversation selection ran.
+    func applyConversationIdentity(to view: AutosizingTextView, coordinator: Coordinator) {
+        guard Self.conversationIdentityChanged(
+            previous: coordinator.lastConversationIdentity, current: conversationIdentity
+        ) else { return }
+        // Run before rebinding the coordinator: AppKit callbacks still reach the
+        // old draft binding, whose stale-conversation guard ignores them.
+        // Discarding marked text can register another undo action in AppKit.
+        let undo = view.undoManager
+        undo?.disableUndoRegistration()
+        defer { undo?.enableUndoRegistration() }
+        view.inputContext?.discardMarkedText()
+        view.unmarkText()
+        undo?.removeAllActions(withTarget: view)
+        if let storage = view.textStorage {
+            undo?.removeAllActions(withTarget: storage)
+        }
+        view.string = text
+        view.remeasure()
+        coordinator.lastConversationIdentity = conversationIdentity
     }
 
     /// 15pt base (matches the transcript body) through the Settings text size.
@@ -2990,6 +3021,7 @@ struct ComposeTextEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? AutosizingTextView else { return }
+        applyConversationIdentity(to: view, coordinator: context.coordinator)
         // Never write over an in-flight IME composition. While marked
         // text is up, ``view.string`` holds the pre-edit run and ``text``
         // is still empty (AppKit posts no text-did-change until the user
@@ -3050,6 +3082,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         // A replacement editor must not replay an earlier Send/Cmd+L request
         // over another field. Conversation changes request focus explicitly.
         coordinator.lastFocusToken = focusToken
+        coordinator.lastConversationIdentity = conversationIdentity
         return coordinator
     }
 
@@ -3066,6 +3099,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         /// Last focus token applied. ``updateNSView`` compares and
         /// only calls ``makeFirstResponder`` when this lags behind.
         var lastFocusToken: Int = 0
+        var lastConversationIdentity: AnyHashable?
 
         init(
             text: Binding<String>,
