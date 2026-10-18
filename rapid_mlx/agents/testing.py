@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -982,6 +983,50 @@ def _install_gui_launch_guard(guard_root: Path) -> Path:
     return browser
 
 
+def _run_guarded_agent(
+    cmd: list[str], *, timeout: int, cwd: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Contain a test CLI's descendants until its launch guard is checked.
+
+    A CLI can exit after starting a background tool. Kill its process group
+    before the guard directory is removed, including on timeout. A child that
+    deliberately creates a new session can still escape this boundary.
+    """
+
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    ) as proc:
+
+        def stop_group() -> None:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif proc.poll() is None:
+                proc.kill()
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stop_group()
+            try:
+                proc.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        finally:
+            stop_group()
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def _agent_query(
     binary: str,
     query_cmd: str,
@@ -1099,28 +1144,41 @@ def _agent_query(
             )
 
     try:
-        proc = subprocess.run(
-            cmd_parts,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            # An explicit workspace, not the caller's cwd — see
-            # ``_e2e_workspace``. Falling back to os.getcwd() keeps any
-            # caller that hasn't opted in behaving exactly as before.
-            cwd=cwd or os.getcwd(),
-            # Close stdin. Without this the child inherits ours, and a CLI
-            # that reads stdin when it isn't a TTY blocks until `timeout`
-            # instead of answering the query it was handed on argv. Codex
-            # does exactly that — `codex exec '<query>'` prints "Reading
-            # additional input from stdin..." and then waits forever, so
-            # the e2e gate spent its whole budget on a process that never
-            # got a chance to fail. Every agent CLI runs headless here, so
-            # none of them has any business reading stdin (#1683).
-            stdin=subprocess.DEVNULL,
-            # Env-profile setup returns shell exports; it cannot mutate the
-            # parent process. Pass those values explicitly so an E2E agent
-            # never falls back to its normal remote provider or real key.
-            env=child_env,
+        # Guarded probes get their own process group. Otherwise a CLI could
+        # print an answer, exit, and leave a child waiting to call system open
+        # after the shims are cleaned up. Keep the original subprocess.run
+        # behavior for callers that did not opt into the GUI guard.
+        proc = (
+            _run_guarded_agent(
+                cmd_parts,
+                timeout=timeout,
+                cwd=cwd or os.getcwd(),
+                env=child_env,
+            )
+            if launch_marker is not None
+            else subprocess.run(
+                cmd_parts,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                # An explicit workspace, not the caller's cwd — see
+                # ``_e2e_workspace``. Falling back to os.getcwd() keeps any
+                # caller that hasn't opted in behaving exactly as before.
+                cwd=cwd or os.getcwd(),
+                # Close stdin. Without this the child inherits ours, and a CLI
+                # that reads stdin when it isn't a TTY blocks until `timeout`
+                # instead of answering the query it was handed on argv. Codex
+                # does exactly that — `codex exec '<query>'` prints "Reading
+                # additional input from stdin..." and then waits forever, so
+                # the e2e gate spent its whole budget on a process that never
+                # got a chance to fail. Every agent CLI runs headless here, so
+                # none of them has any business reading stdin (#1683).
+                stdin=subprocess.DEVNULL,
+                # Env-profile setup returns shell exports; it cannot mutate the
+                # parent process. Pass those values explicitly so an E2E agent
+                # never falls back to its normal remote provider or real key.
+                env=child_env,
+            )
         )
         output = proc.stdout + proc.stderr
         if launch_marker is not None and launch_marker.exists():

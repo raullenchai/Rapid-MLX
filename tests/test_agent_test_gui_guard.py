@@ -3,6 +3,7 @@
 import os
 import shlex
 import sys
+import time
 import webbrowser
 from unittest.mock import patch
 
@@ -177,3 +178,35 @@ def test_previous_launch_marker_cannot_be_erased_by_next_probe(tmp_path):
     assert output is None
     assert "agent tried to open a browser" in error
     assert marker.exists()
+
+
+def test_guarded_probe_stops_delayed_descendant_before_guard_cleanup(tmp_path):
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    guard_root = tmp_path / "guard"
+    guard_root.mkdir()
+    browser = _install_gui_launch_guard(guard_root)
+    delayed = tmp_path / "delayed-child-ran"
+    child_script = (
+        f"import pathlib, time; time.sleep(0.5); pathlib.Path({str(delayed)!r}).touch()"
+    )
+    agent_script = (
+        "import subprocess, sys; "
+        "subprocess.Popen([sys.executable, '-c', "
+        f"{child_script!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        "print(777777)"
+    )
+    output, error = _agent_query(
+        sys.executable,
+        f"python -c {shlex.quote(agent_script)}",
+        "ignored",
+        env_overrides={
+            "HOME": str(fake_home),
+            "BROWSER": str(browser),
+            _GUI_LAUNCH_MARKER_ENV: str(browser.parent / ".gui-launch-attempted"),
+        },
+    )
+    assert error is None
+    assert output.strip() == "777777"
+    time.sleep(0.7)
+    assert not delayed.exists()
