@@ -14,6 +14,12 @@ from rapid_mlx.runtime import cache as runtime_cache
 from rapid_mlx.service.helpers import _TOOL_USE_SYSTEM_SUFFIX
 
 
+@pytest.fixture(autouse=True)
+def isolate_prefill_guard(monkeypatch):
+    # Contended locks bind to a loop; each async test uses a fresh loop.
+    monkeypatch.setattr(api, "_guard", asyncio.Lock())
+
+
 class FakeEngine:
     def __init__(self):
         self.calls = []
@@ -156,7 +162,7 @@ async def test_cancelled_stream_that_returns_normally_cannot_checkpoint(monkeypa
     )
     task = asyncio.create_task(api._warm(SuppressingEngine(), body))
     await started.wait()
-    task.cancel()
+    api._cancel_warm(task)
     with pytest.raises(asyncio.CancelledError):
         await task
     assert saved == []
@@ -443,6 +449,110 @@ async def test_cancelled_replacement_does_not_launch_or_consume_revision(
 
 
 @pytest.mark.asyncio
+async def test_repeated_replacement_cancellation_waits_for_predecessor(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=FakeEngine()),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    cancelled_again = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    launched = []
+
+    async def warm(_engine, body):
+        launched.append(body.revision)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaning.set()
+            while not release_cleanup.is_set():
+                try:
+                    await release_cleanup.wait()
+                except asyncio.CancelledError:
+                    cancelled_again.set()
+            raise
+
+    monkeypatch.setattr(api, "_warm", warm)
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "partial"}],
+        draft_key="repeated-replacement-cancel",
+        revision=1,
+    )
+    first = asyncio.create_task(api.prefill(body, ConnectedRequest()))
+    await started.wait()
+    predecessor = api._active
+    second = asyncio.create_task(
+        api.prefill(body.model_copy(update={"revision": 2}), ConnectedRequest())
+    )
+    try:
+        await cleaning.wait()
+        second.cancel()
+        await cancelled_again.wait()
+        second.cancel()
+        await asyncio.sleep(0)
+        assert not second.done()
+        assert not predecessor.done()
+        assert api._guard.locked()
+        assert launched == [1]
+        assert api._draft_revisions[body.draft_key][0] == 1
+    finally:
+        release_cleanup.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+    assert api._active is None
+
+
+@pytest.mark.asyncio
+async def test_replacement_propagates_predecessor_failure(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=FakeEngine()),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    started = asyncio.Event()
+    launched = []
+    failure = RuntimeError("predecessor cleanup failed")
+
+    async def warm(_engine, body):
+        launched.append(body.revision)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise failure
+
+    monkeypatch.setattr(api, "_warm", warm)
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "partial"}],
+        draft_key="replacement-predecessor-failure",
+        revision=1,
+    )
+    first = asyncio.create_task(api.prefill(body, ConnectedRequest()))
+    await started.wait()
+    second = asyncio.create_task(
+        api.prefill(body.model_copy(update={"revision": 2}), ConnectedRequest())
+    )
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert results == [failure, failure]
+    assert launched == [1]
+    assert api._draft_revisions[body.draft_key][0] == 1
+    assert api._active is None
+
+
+@pytest.mark.asyncio
 async def test_draft_requires_disk_consent_before_engine_work(monkeypatch):
     engine = FakeEngine()
     monkeypatch.setattr(
@@ -723,7 +833,7 @@ async def test_handler_cancellation_keeps_checkpoint_slot_until_thread_exits(
     assert await asyncio.to_thread(started.wait, 2)
     request.disconnected = True
     for _ in range(30):
-        if api._active is not None and api._active.cancelling():
+        if api._active is not None and api._cancel_requested(api._active):
             break
         await asyncio.sleep(0.01)
     handler.cancel()
