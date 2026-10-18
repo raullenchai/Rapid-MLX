@@ -304,6 +304,7 @@ def test_piped_stream_json_runs_goose_without_stdout_banner(
         args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
     )
     assert "--interactive" not in commands[0]
+    assert "--quiet" in commands[0]
     assert commands[0][commands[0].index("--text") + 1] == "Piped prompt"
     assert capsys.readouterr().out == ""
 

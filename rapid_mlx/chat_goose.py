@@ -398,6 +398,8 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         ]
         if not script_mode:
             command.insert(command.index("--with-builtin"), "--interactive")
+        else:
+            command.insert(command.index("--with-builtin"), "--quiet")
         if args.resume:
             command.append("--resume")
         args._goose_pending_prompt = first_prompt
