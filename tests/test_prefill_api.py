@@ -89,7 +89,12 @@ async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
 
 def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
     monkeypatch.setattr(
-        api, "get_config", lambda: SimpleNamespace(tool_call_parser="qwen3")
+        api,
+        "get_config",
+        lambda: SimpleNamespace(
+            tool_call_parser="qwen3",
+            engine=SimpleNamespace(is_mllm=False, preserve_native_tool_format=False),
+        ),
     )
     body = api.PrefillRequest(
         kind="prefix",
