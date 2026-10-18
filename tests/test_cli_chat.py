@@ -18,6 +18,12 @@ import pytest
 from rapid_mlx import cli
 
 
+@pytest.fixture(autouse=True)
+def exercise_legacy_chat_loop(monkeypatch):
+    """These REPL tests target the fallback loop, not the Goose launcher."""
+    monkeypatch.setattr("rapid_mlx.chat_goose.run", lambda *_args, **_kwargs: False)
+
+
 def _sse(events: list[dict]) -> bytes:
     """Build an SSE byte stream from a list of OpenAI-format chunks."""
     out = []

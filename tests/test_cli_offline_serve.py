@@ -664,6 +664,7 @@ def test_pull_prefetch_gate_survives_probe_fault(monkeypatch, capsys, exc):
 @pytest.mark.parametrize("exc", [TypeError("bad index"), AttributeError("bad header")])
 def test_chat_model_switch_survives_probe_fault(monkeypatch, capsys, exc):
     """A chat /model switch treats a probe fault as inconclusive, not uncached."""
+    monkeypatch.setattr("rapid_mlx.chat_goose.run", lambda *_args, **_kwargs: False)
     spawned: list[object] = []
 
     class _FakeProc:
