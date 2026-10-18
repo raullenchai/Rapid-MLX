@@ -112,6 +112,56 @@ def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
     assert thinking is False
 
 
+def test_prefill_rejects_unsupported_tool_choice():
+    with pytest.raises(ValidationError):
+        api.PrefillRequest(
+            kind="draft",
+            messages=[{"role": "user", "content": "hi"}],
+            draft_key="choice",
+            revision=1,
+            tool_choice="none",
+        )
+
+
+def test_draft_normalizes_developer_and_tool_history(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(
+            engine=SimpleNamespace(is_mllm=False, preserve_native_tool_format=False),
+            tool_call_parser=None,
+            reasoning_parser_name="qwen3",
+            no_thinking=False,
+        ),
+    )
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[
+            {"role": "developer", "content": "Use tools carefully"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "value"},
+            {"role": "user", "content": "continue"},
+        ],
+        draft_key="history",
+        revision=1,
+    )
+    messages, _, thinking = api._render_inputs(body)
+    assert messages[0] == {"role": "system", "content": "Use tools carefully"}
+    assert all(message["role"] != "tool" for message in messages)
+    assert any("Tool Result" in message["content"] for message in messages)
+    assert thinking is False
+
+
 @pytest.mark.asyncio
 async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypatch):
     engine = FakeEngine()
@@ -203,3 +253,41 @@ async def test_context_rejection_happens_before_prefill(monkeypatch):
         await api.prefill(body, ConnectedRequest())
     assert error.value.status_code == 400
     assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_waits_for_engine_cleanup(monkeypatch):
+    class SlowCleanupEngine(FakeEngine):
+        async def stream_chat(self, **kwargs):
+            self.calls.append(kwargs)
+            self.started.set()
+            try:
+                await self.release.wait()
+                yield SimpleNamespace(finished=True, prompt_tokens=1, cached_tokens=0)
+            finally:
+                await asyncio.sleep(0.05)
+                self.closed += 1
+
+    engine = SlowCleanupEngine()
+    monkeypatch.setattr(
+        api,
+        "get_config",
+        lambda: SimpleNamespace(ready=True, draining=False, engine=engine),
+    )
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
+    monkeypatch.setattr(
+        api, "enforce_context_length_for_messages", lambda *args, **kwargs: 1
+    )
+    body = api.PrefillRequest(
+        kind="draft",
+        messages=[{"role": "user", "content": "partial"}],
+        draft_key="handler-cancel-test",
+        revision=1,
+    )
+    handler = asyncio.create_task(api.prefill(body, ConnectedRequest()))
+    await engine.started.wait()
+    handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+    assert engine.closed == 1
+    assert api._active is None
