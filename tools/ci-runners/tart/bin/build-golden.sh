@@ -36,6 +36,7 @@ for _ in $(seq 1 90); do "$TART" exec "$NEXT" true >/dev/null 2>&1 && break; sle
 empty=$("$TART" exec "$NEXT" bash -c 'find /home/admin/actions-runner/bin /usr/local/bin -type f -size 0 | wc -l')
 "$TART" exec "$NEXT" sudo systemctl poweroff >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do kill -0 "$VM_PID" 2>/dev/null || break; sleep 2; done
+"$TART" stop "$NEXT" --timeout 30 >/dev/null 2>&1 || true
 wait "$VM_PID" 2>/dev/null || true
 [ "$empty" -eq 0 ] || { log "image has $empty zero-length files; aborting"; exit 1; }
 trap - EXIT

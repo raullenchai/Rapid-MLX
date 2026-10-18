@@ -99,7 +99,9 @@ The host stops starting new VMs when either of these is true:
   `rapid-mlx/harbor-ci-runners` (benchmarks get a quiet machine).
 
 Running jobs always finish. Idle registered runners are deregistered and their
-VMs destroyed, so they cannot pick up new work. Machine Control state comes
+VMs destroyed within one 20 s poll, so a runner that was already idle can still
+accept one job in that window. Drain is a quiesce, not a hard cutoff: wait for
+`tart list` to show no `rmx-slot*` VMs before relying on a quiet machine. Machine Control state comes
 from the API directly (`MC_DIRECT=1`). For hosts that cannot reach it, a
 LaunchAgent on the Studio relays the lease owner into `state/mc-lease` every
 20 s. Stale state (more than 10 min old) is treated as "not leased", so a
