@@ -9,7 +9,6 @@ RUNNER_SHA256="${RUNNER_SHA256:-628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3df
 NODE_VERSION="${NODE_VERSION:-22.23.2}"
 # Python builds published for setup-python (linux-24.04-arm64). setup-python
 # resolves "3.12" etc. to these toolcache entries without any download.
-PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.10.22 3.11.17 3.12.15 3.13.16}"
 TOOLCACHE=/opt/hostedtoolcache
 RUNNER_USER=admin
 RUNNER_HOME=/home/$RUNNER_USER/actions-runner
@@ -44,24 +43,34 @@ if ! /usr/local/bin/node --version 2>/dev/null | grep -q "v$NODE_VERSION"; then
   rm -f /tmp/node.tar.xz
 fi
 
-# Pre-populated toolcache in the hosted-runner layout.
+# Pre-populated toolcache in the hosted-runner layout. Each archive is pinned
+# by URL and SHA-256 before its bundled setup.sh runs.
 mkdir -p "$TOOLCACHE"
-for v in $PYTHON_VERSIONS; do
+PY_BASE=https://github.com/actions/python-versions/releases/download
+while read -r v tag sha; do
+  [ -n "$v" ] || continue
   if [ -f "$TOOLCACHE/Python/$v/arm64.complete" ]; then continue; fi
-  url=$(curl -fsSL https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
-    jq -r --arg v "$v" '.[] | select(.version==$v) | .files[] | select(.platform=="linux" and .arch=="arm64" and .platform_version=="24.04") | .download_url')
-  [ -n "$url" ] || { echo "no arm64 build for $v" >&2; exit 1; }
-  d=$(mktemp -d); curl -fsSL -o "$d/py.tgz" "$url"; tar -xzf "$d/py.tgz" -C "$d"
+  d=$(mktemp -d)
+  curl -fsSL -o "$d/py.tgz" "$PY_BASE/$tag/python-$v-linux-24.04-arm64.tar.gz"
+  echo "$sha  $d/py.tgz" | sha256sum -c -
+  tar -xzf "$d/py.tgz" -C "$d"
   (cd "$d" && RUNNER_TOOL_CACHE="$TOOLCACHE" AGENT_TOOLSDIRECTORY="$TOOLCACHE" bash ./setup.sh)
   rm -rf "$d"
-done
+done <<'PYTHONS'
+3.10.22 3.10.22-36876129702 678191f49348bcaf1d420ad634202d9e5210a145eb9eb84f01e3b221211f0aa2
+3.11.17 3.11.17-36876195594 a7a7bb9e6b50483f393d1c44c87aa87677a0464a9e3b07f33ee5b31ce155c6ef
+3.12.15 3.12.15-36805895057 c537f7852633f9a6d909181528e263087ad815cc44d52ed226992b70b2648f44
+3.13.16 3.13.16-36805956071 0e923697b278f1a21ac403838a4238b659200726d8983c3f271a120e76090f0e
+PYTHONS
 chown -R "$RUNNER_USER:$RUNNER_USER" "$TOOLCACHE"
 
 # Swift toolchain: the hosted ubuntu image ships one and some unit tests key
 # off `swift` being on PATH.
-SWIFT_VERSION="${SWIFT_VERSION:-6.4.1}"
+SWIFT_VERSION=6.4.1
+SWIFT_SHA256=b85dd70e204bc363ce62f1e35bd1887810d0e04487d13de8fd9d042635972f45
 if ! /usr/local/swift/usr/bin/swift --version 2>/dev/null | grep -q "$SWIFT_VERSION"; then
   curl -fsSL -o /tmp/swift.tgz "https://download.swift.org/swift-$SWIFT_VERSION-release/ubuntu2404-aarch64/swift-$SWIFT_VERSION-RELEASE/swift-$SWIFT_VERSION-RELEASE-ubuntu24.04-aarch64.tar.gz"
+  echo "$SWIFT_SHA256  /tmp/swift.tgz" | sha256sum -c -
   rm -rf /usr/local/swift; mkdir -p /usr/local/swift
   tar -xzf /tmp/swift.tgz -C /usr/local/swift --strip-components=1; rm -f /tmp/swift.tgz
   ln -sf /usr/local/swift/usr/bin/swift /usr/local/bin/swift
@@ -115,4 +124,4 @@ apt-get clean; rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache
 rm -f /home/$RUNNER_USER/.bash_history /root/.bash_history
 journalctl --rotate >/dev/null 2>&1 || true; journalctl --vacuum-time=1s >/dev/null 2>&1 || true
 sync; fstrim -av >/dev/null 2>&1 || true; sync
-echo "golden provisioned: runner $RUNNER_VERSION, node $NODE_VERSION, python $PYTHON_VERSIONS"
+echo "golden provisioned: runner $RUNNER_VERSION, node $NODE_VERSION, python $(ls "$TOOLCACHE/Python" | tr "\n" " ")"

@@ -40,7 +40,7 @@ gh_api() {
   local method="$1" api_path="$2" body="${3:-}" out code
   out=$(mktemp "${TMPDIR:-/tmp}/ghapi.XXXXXX")
   code=$( { printf 'header = "Authorization: Bearer %s"\n' "$(cat "$GH_TOKEN_FILE")"; } |
-    curl -sS -K - -o "$out" -w '%{http_code}' -X "$method" \
+    curl -sS --connect-timeout 10 --max-time 60 -K - -o "$out" -w '%{http_code}' -X "$method" \
       -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
       ${body:+-H "Content-Type: application/json" --data "$body"} \
       "https://api.github.com$api_path" ) || code=000

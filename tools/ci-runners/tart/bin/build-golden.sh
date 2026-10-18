@@ -7,6 +7,7 @@ set -euo pipefail
 LOG_TAG="build-golden"
 BASE="${BASE:-ghcr.io/cirruslabs/ubuntu:24.04}"
 NEXT="$GOLDEN-next"
+mkdir -p "$LOG_DIR"
 
 "$TART" delete "$NEXT" >/dev/null 2>&1 || true
 log "cloning $BASE"
