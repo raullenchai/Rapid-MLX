@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -84,7 +85,13 @@ async def test_concurrent_first_requests_share_load_and_cancellation_isolated():
 
 
 @pytest.mark.asyncio
-async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
+@pytest.mark.parametrize(
+    ("model_name", "expected_name"),
+    [("public-model", "public-model"), (None, "primary")],
+)
+async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks(
+    caplog, model_name, expected_name
+):
     now = [100.0]
     engine = FakeEngine(loaded=True)
     events: list[str] = []
@@ -92,6 +99,7 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
 
     lifecycle = PrimaryModelLifecycle(
         engine,
+        model_name=model_name,
         idle_unload_seconds=30,
         before_unload=lambda: events.append("save"),
         release_allocator_cache=lambda: events.append("release"),
@@ -99,6 +107,7 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
         on_state_change=states.append,
         clock=lambda: now[0],
     )
+    caplog.set_level(logging.INFO, logger="rapid_mlx.runtime.primary_lifecycle")
 
     now[0] += 31
     assert await lifecycle.evict_if_idle() is True
@@ -117,6 +126,12 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
     assert lifecycle.snapshot()["load_total"] == 1
     assert lifecycle.snapshot()["load_failures_total"] == 0
     assert lifecycle.snapshot()["last_load_duration_seconds"] == 0.0
+    assert caplog.messages == [
+        f"[idle_unload] idle for 31.0s; unloading primary model {expected_name} "
+        "(endpoint stays online; will reload on next request)",
+        f"[idle_unload] primary model {expected_name} unloaded; endpoint stays online",
+        f"[idle_unload] reloading primary model {expected_name} on demand",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1088,9 +1103,16 @@ async def test_primary_server_lifecycle_helpers(monkeypatch):
 
     monkeypatch.setattr(server, "_primary_lazy_load", True)
     monkeypatch.setattr(server, "_primary_idle_unload_seconds", 9.0)
+    monkeypatch.setattr(server, "_model_alias", "public-model")
+    monkeypatch.setattr(server, "_model_path", "/resolved/model")
     lifecycle = server._build_primary_model_lifecycle(engine)
     assert lifecycle.lazy_load is True
     assert lifecycle.idle_unload_seconds == 9.0
+    assert lifecycle.model_name == "public-model"
+
+    monkeypatch.setattr(server, "_model_alias", None)
+    lifecycle = server._build_primary_model_lifecycle(engine)
+    assert lifecycle.model_name == "/resolved/model"
 
 
 def test_configure_primary_lifecycle_resets_existing_state(monkeypatch):

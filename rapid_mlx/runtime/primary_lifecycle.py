@@ -43,6 +43,7 @@ class PrimaryModelLifecycle:
         self,
         engine: object,
         *,
+        model_name: str | None = None,
         lazy_load: bool = False,
         idle_unload_seconds: float = 0,
         on_loaded: LifecycleHook | None = None,
@@ -52,6 +53,7 @@ class PrimaryModelLifecycle:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.engine = engine
+        self.model_name = model_name or "primary"
         self.lazy_load = bool(lazy_load)
         self.idle_unload_seconds = max(0.0, float(idle_unload_seconds))
         self._on_loaded = on_loaded
@@ -279,6 +281,11 @@ class PrimaryModelLifecycle:
                 self._set_state("ready")
                 self._last_error = None
                 return
+            if self.state == "standby" and self._last_unload_reason == "idle":
+                logger.info(
+                    "[idle_unload] reloading primary model %s on demand",
+                    self.model_name,
+                )
             self._set_state("loading")
             self._last_error = None
             self._load_total += 1
@@ -394,6 +401,13 @@ class PrimaryModelLifecycle:
                 self.touch()
                 return False
 
+            idle_seconds = max(0.0, self._clock() - self._last_activity)
+            logger.info(
+                "[idle_unload] idle for %.1fs; unloading primary model %s "
+                "(endpoint stays online; will reload on next request)",
+                idle_seconds,
+                self.model_name,
+            )
             try:
                 try:
                     await _run_hook(self._before_unload)
@@ -453,6 +467,10 @@ class PrimaryModelLifecycle:
             self._last_unload_reason = "idle"
             self._unload_total_by_reason["idle"] = (
                 self._unload_total_by_reason.get("idle", 0) + 1
+            )
+            logger.info(
+                "[idle_unload] primary model %s unloaded; endpoint stays online",
+                self.model_name,
             )
             return True
 

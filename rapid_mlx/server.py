@@ -796,6 +796,7 @@ async def _finish_primary_demand_load_and_emit(engine: object) -> None:
 def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
     return PrimaryModelLifecycle(
         engine,
+        model_name=_model_alias or _model_path,
         lazy_load=_primary_lazy_load,
         idle_unload_seconds=_primary_idle_unload_seconds,
         on_loaded=lambda: _finish_primary_demand_load_and_emit(engine),
