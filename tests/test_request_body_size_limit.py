@@ -705,7 +705,9 @@ def test_drain_byte_budget(monkeypatch, slow_path, final_bytes):
         app=app if slow_path else None,
     )
     assert drain_calls == (3 if final_bytes is None else 2)
-    assert ((b"connection", b"close") in headers) is (final_bytes is None)
+    assert ((b"connection", b"close") in headers) is (
+        final_bytes is None or final_bytes > 2
+    )
     assert body_size._active_drains == 0
 
 

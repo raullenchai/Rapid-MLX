@@ -207,14 +207,14 @@ async def _drain_request_body(
             return False
         if msg.get("type") == "http.request":
             drained_bytes += len(msg.get("body", b"") or b"")
-            if not msg.get("more_body", False):
-                return True
             if drained_bytes > max_bytes:
                 logger.debug(
                     "body-size drain byte budget exhausted (discarded=%d)",
                     drained_bytes,
                 )
                 return False
+            if not msg.get("more_body", False):
+                return True
 
 
 async def _drain_if_capacity(
@@ -222,7 +222,8 @@ async def _drain_if_capacity(
 ) -> bool:
     # Draining is a courtesy so actively uploading clients can read the 413.
     # At most 16 run at once; extra rejections skip it so stalled oversized
-    # requests cannot pile up. One event loop makes check-and-increment atomic.
+    # requests cannot pile up. The counter is only touched from the server's
+    # event loop with no await between check and increment.
     global _active_drains
     if _active_drains >= _MAX_CONCURRENT_DRAINS:
         return False
