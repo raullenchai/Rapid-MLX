@@ -3915,7 +3915,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已拷贝"
+            "value": "已复制"
           }
         }
       }
@@ -3925,7 +3925,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "拷贝"
+            "value": "复制"
           }
         }
       }
