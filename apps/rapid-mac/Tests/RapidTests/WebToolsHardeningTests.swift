@@ -320,6 +320,20 @@ struct WebToolsHardeningTests {
             location: "紐約", qualifiers: ["纽约州"]
         )
         #expect(qualified?.admin1 == "紐約州")
+
+        let wrongCountry = Data(#"{"results":[{"name":"東京","latitude":35.0,"longitude":139.0,"country":"中国","country_code":"CN","admin1":"日本","population":8000000}]}"#.utf8)
+        let rejected = try await WeatherTool.geocode(
+            location: "东京", country: "日本", admin1: nil
+        ) { request in
+            let name = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "name" })?.value
+            let body = name == "東京" ? wrongCountry : Data("{}".utf8)
+            let http = try #require(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            ))
+            return (body, http)
+        }
+        #expect(rejected == nil)
     }
 
     @Test("An Int.max population in untrusted geocoding JSON doesn't trap")
