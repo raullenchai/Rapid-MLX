@@ -343,7 +343,7 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         run_root,
     ):
         _private_directory(directory)
-    first_mini_launch = _initialize_mini_extensions(root / "config")
+    _initialize_mini_extensions(root / "config")
     scoped_key = secrets.token_hex(32)
     search_key = secrets.token_hex(32)
     gate_port = _port()
@@ -455,9 +455,8 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
             )
             sys.stdout.write("You: ")
             sys.stdout.flush()
-            if first_mini_launch:
-                warmup = _PrefixWarmup(gate_port, model, scoped_key)
-                warmup.start()
+            warmup = _PrefixWarmup(gate_port, model, scoped_key)
+            warmup.start()
             while True:
                 try:
                     first_prompt = input("").strip()
