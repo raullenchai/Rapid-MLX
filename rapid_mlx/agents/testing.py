@@ -983,6 +983,22 @@ def _install_gui_launch_guard(guard_root: Path) -> Path:
     return browser
 
 
+def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
+    """Put the shim back first after macOS login shells run path_helper."""
+    path_script = shim_dir.parent / "shell-path.sh"
+    script = f'PATH={shlex.quote(str(shim_dir))}:"$PATH"\nexport PATH\n'
+    path_script.write_text(script, encoding="utf-8")
+    (shim_dir.parent / ".zprofile").write_text(script, encoding="utf-8")
+    # POSIX login sh and login bash read these from HOME; zsh uses ZDOTDIR.
+    for name in (".profile", ".bash_profile"):
+        (home / name).write_text(script, encoding="utf-8")
+    return {
+        "ZDOTDIR": str(shim_dir.parent),
+        "BASH_ENV": str(path_script),
+        "ENV": str(path_script),
+    }
+
+
 def _run_guarded_agent(
     cmd: list[str], *, timeout: int, cwd: str, env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
@@ -1709,6 +1725,7 @@ class AgentTestRunner:
             "BROWSER": str(browser_shim),
             _GUI_LAUNCH_MARKER_ENV: str(browser_shim.parent / _GUI_LAUNCH_MARKER),
             "CFFIXED_USER_HOME": str(isolated_root),
+            **_install_shell_path_guard(browser_shim.parent, isolated_root),
         }
         config_home_env = active_config.home_env
 

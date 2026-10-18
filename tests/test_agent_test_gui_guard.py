@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import subprocess
 import sys
 import time
 import webbrowser
@@ -14,6 +15,7 @@ from rapid_mlx.agents.testing import (
     TestStatus,
     _agent_query,
     _install_gui_launch_guard,
+    _install_shell_path_guard,
     _test_e2e_chat,
 )
 
@@ -178,6 +180,34 @@ def test_previous_launch_marker_cannot_be_erased_by_next_probe(tmp_path):
     assert output is None
     assert "agent tried to open a browser" in error
     assert marker.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS login shell path_helper")
+@pytest.mark.parametrize("shell", ["/bin/zsh", "/bin/bash", "/bin/sh"])
+@pytest.mark.parametrize("launcher", ["open", "xdg-open", "osascript"])
+def test_login_shell_resolves_launcher_to_guard(tmp_path, shell, launcher):
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    guard_root = tmp_path / "guard"
+    guard_root.mkdir()
+    browser = _install_gui_launch_guard(guard_root)
+    shell_env = _install_shell_path_guard(browser.parent, fake_home)
+    env = (
+        os.environ
+        | shell_env
+        | {
+            "HOME": str(fake_home),
+            "PATH": f"{browser.parent}{os.pathsep}{os.environ['PATH']}",
+        }
+    )
+    result = subprocess.run(
+        [shell, "-lc", f"command -v {launcher}"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == str(browser.parent / launcher)
 
 
 def test_guarded_probe_stops_delayed_descendant_before_guard_cleanup(tmp_path):

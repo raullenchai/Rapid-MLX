@@ -325,6 +325,9 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     monkeypatch.setenv("HOME", real_home)
     monkeypatch.setenv("CFFIXED_USER_HOME", real_home)
     monkeypatch.setenv("BROWSER", "/usr/bin/open")
+    monkeypatch.setenv("ZDOTDIR", "/operator/zdotdir")
+    monkeypatch.setenv("BASH_ENV", "/operator/bash-env")
+    monkeypatch.setenv("ENV", "/operator/sh-env")
     monkeypatch.setenv("PATH", "")
     real_path = os.environ["PATH"]
     profile = _make_profile("opencode", "yaml")
@@ -377,6 +380,9 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     assert os.environ["HOME"] == real_home
     assert os.environ["CFFIXED_USER_HOME"] == real_home
     assert os.environ["BROWSER"] == "/usr/bin/open"
+    assert os.environ["ZDOTDIR"] == "/operator/zdotdir"
+    assert os.environ["BASH_ENV"] == "/operator/bash-env"
+    assert os.environ["ENV"] == "/operator/sh-env"
     assert os.environ["PATH"] == real_path
     assert "_AGENT_TEST_GUI_MARKER" not in os.environ
 
