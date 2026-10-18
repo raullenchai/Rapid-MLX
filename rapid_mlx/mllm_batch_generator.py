@@ -3187,6 +3187,7 @@ class MLLMBatchGenerator:
             # Prefer the newest disk entries within the remaining capacity, then
             # insert newest-last without evicting any already-live entry.
             restored: list[tuple[int, Any]] = []
+            restored_bytes = 0
             for key in keys:
                 with cache.lock:
                     if key in cache._exact_cache:
@@ -3196,12 +3197,38 @@ class MLLMBatchGenerator:
                         >= cache._exact_cache_max
                     ):
                         break
+                entry_bytes = store.exact_cache_bytes(key)
+                with self._media_entries_guard():
+                    live_bytes = self._exact_cache_footprint_bytes() + sum(
+                        entry.cache_bytes
+                        for entry in getattr(
+                            self, "_media_boundary_entries", {}
+                        ).values()
+                    )
+                projected_bytes = live_bytes + restored_bytes + entry_bytes
+                if any(
+                    budget > 0 and projected_bytes > budget
+                    for budget in (
+                        self._prefix_cache_max_bytes,
+                        cache.memory_max_bytes,
+                    )
+                ):
+                    continue
+                if cache._disk_min_free_ram_bytes > 0:
+                    free_now = apc._free_ram_bytes()
+                    if (
+                        free_now is not None
+                        and free_now < cache._disk_min_free_ram_bytes + entry_bytes
+                    ):
+                        break
                 snapshot = store.load_exact_cache(key)
                 if snapshot is None:
                     continue
                 entry = apc.APCExactCacheEntry(*snapshot)
                 if self._persistable_exact_entry(entry, media_ids):
                     restored.append((key, entry))
+                    restored_bytes += entry_bytes
+                del snapshot, entry
             with cache.lock:
                 for key, entry in reversed(restored):
                     cache._exact_cache[key] = entry

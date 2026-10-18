@@ -197,9 +197,107 @@ def test_live_entries_capacity_and_byte_budget(tmp_path):
     )
     fresh = generator()
     fresh._prefix_cache_max_bytes = 1
-    assert fresh.load_exact_prefix_cache_from_disk(path) == 3
-    assert list(fresh._prefix_cache._exact_cache) == [third]
-    assert fresh._prefix_cache_budget_evictions == 2
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 0
+    assert not fresh._prefix_cache._exact_cache
+    assert fresh._prefix_cache_budget_evictions == 0
+
+
+@pytest.mark.parametrize("budget_owner", ["lane", "apc"])
+@pytest.mark.parametrize("live_kind", ["empty", "text", "media"])
+def test_restore_admits_bytes_before_loading(
+    tmp_path, monkeypatch, budget_owner, live_kind
+):
+    source = generator()
+    oldest = add(source)
+    newest = add(source, (4, 5, 6))
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    fresh = generator()
+    live_bytes = 0
+    if live_kind == "text":
+        live_key = add(fresh, (7, 8, 9))
+        live_bytes = fresh._exact_entry_bytes(
+            fresh._prefix_cache._exact_cache[live_key].prompt_cache
+        )
+    elif live_kind == "media":
+        live_bytes = 100
+        fresh._media_boundary_entries = {
+            "media": SimpleNamespace(cache_bytes=live_bytes)
+        }
+    # The newest entry is oversized; skip it and admit only the oldest.
+    monkeypatch.setattr(
+        apc.DiskBlockStore,
+        "exact_cache_bytes",
+        lambda self, key: 201 if key == newest else 200,
+    )
+    budget = live_bytes + 200
+    if budget_owner == "lane":
+        fresh._prefix_cache_max_bytes = budget
+    else:
+        fresh._prefix_cache.memory_max_bytes = budget
+    loaded_keys = []
+    original_load = apc.DiskBlockStore.load_exact_cache
+
+    def load(store, key):
+        loaded_keys.append(key)
+        return original_load(store, key)
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", load)
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert loaded_keys == [oldest]
+
+
+@pytest.mark.parametrize("budget_owner", ["lane", "apc"])
+def test_restore_counts_pending_bytes(tmp_path, monkeypatch, budget_owner):
+    source = generator()
+    add(source)
+    newest = add(source, (4, 5, 6))
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    fresh = generator()
+    if budget_owner == "lane":
+        fresh._prefix_cache_max_bytes = 200
+    else:
+        fresh._prefix_cache.memory_max_bytes = 200
+    monkeypatch.setattr(apc.DiskBlockStore, "exact_cache_bytes", lambda *args: 200)
+    loaded_keys = []
+    original_load = apc.DiskBlockStore.load_exact_cache
+
+    def load(store, key):
+        loaded_keys.append(key)
+        return original_load(store, key)
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", load)
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert loaded_keys == [newest]
+
+
+@pytest.mark.parametrize("free_ram", [None, 1200, 1199])
+def test_restore_free_ram_floor(tmp_path, monkeypatch, free_ram):
+    source = generator()
+    add(source)
+    add(source, (4, 5, 6))
+    newest = add(source, (7, 8, 9))
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    fresh = generator()
+    fresh._prefix_cache._disk_min_free_ram_bytes = 1000
+    monkeypatch.setattr(apc.DiskBlockStore, "exact_cache_bytes", lambda *args: 200)
+    # First entry fits exactly; second stops restoration if below floor + size.
+    readings = iter([1200, free_ram, 1200])
+    monkeypatch.setattr(apc, "_free_ram_bytes", lambda: next(readings))
+    loaded_keys = []
+    original_load = apc.DiskBlockStore.load_exact_cache
+
+    def load(store, key):
+        loaded_keys.append(key)
+        return original_load(store, key)
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", load)
+    expected = 1 if free_ram == 1199 else 3
+    assert fresh.load_exact_prefix_cache_from_disk(path) == expected
+    assert len(loaded_keys) == expected
+    assert loaded_keys[0] == newest
 
 
 @pytest.mark.parametrize("suffix", [".new", ".old"])
