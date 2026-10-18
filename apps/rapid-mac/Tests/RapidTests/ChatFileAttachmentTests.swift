@@ -742,6 +742,77 @@ struct ChatFileAttachmentTests {
         #expect(surface.chat.messages.first(where: { $0.role == .user })?.fileAttachments.count == 4)
     }
 
+    private func storedDOCX(documentXML: Data) -> Data {
+        var output = Data(), central = Data()
+        let name = Data("word/document.xml".utf8)
+        let crc = Int(DOCXTextExtractor.crc32(documentXML))
+        func put(_ value: Int, _ width: Int, into data: inout Data) {
+            for shift in 0..<width {
+                data.append(UInt8(truncatingIfNeeded: value >> (8 * shift)))
+            }
+        }
+        for (value, width) in [
+            (0x04034b50, 4), (20, 2), (0, 2), (0, 2), (0, 2), (0, 2),
+            (crc, 4), (documentXML.count, 4), (documentXML.count, 4), (name.count, 2), (0, 2),
+        ] { put(value, width, into: &output) }
+        output.append(name)
+        output.append(documentXML)
+        let offset = output.count
+        for (value, width) in [
+            (0x02014b50, 4), (20, 2), (20, 2), (0, 2), (0, 2), (0, 2), (0, 2),
+            (crc, 4), (documentXML.count, 4), (documentXML.count, 4), (name.count, 2),
+            (0, 2), (0, 2), (0, 2), (0, 2), (0, 4), (0, 4),
+        ] { put(value, width, into: &central) }
+        central.append(name)
+        output.append(central)
+        for (value, width) in [
+            (0x06054b50, 4), (0, 2), (0, 2), (1, 2), (1, 2),
+            (central.count, 4), (offset, 4), (0, 2),
+        ] { put(value, width, into: &output) }
+        return output
+    }
+
+    @Test("A pasted Word document attaches, sends its text, and a corrupt one explains the fallback")
+    func liveComposerDOCXPaste() async throws {
+        let (surface, editor) = try mountedComposer()
+        defer {
+            surface.chat.stopAndPersist()
+            DocumentContentCache.shared.remove(contentsOf:
+                surface.chat.messages.flatMap { $0.fileAttachments.map(\.id) })
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-docx-paste-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let memo = directory.appendingPathComponent("memo.docx")
+        let broken = directory.appendingPathComponent("broken.docx")
+        let xml = """
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:body><w:p><w:r><w:t>The launch date for Project Halcyon is March 14, 2027.</w:t></w:r></w:p></w:body>
+        </w:document>
+        """
+        try storedDOCX(documentXML: Data(xml.utf8)).write(to: memo)
+        try Data("Not a ZIP archive".utf8).write(to: broken)
+        let board = NSPasteboard(name: .init("rapid.chat.paste.docx.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.writeObjects([broken as NSURL])
+        #expect(editor.readSelection(from: board, type: .string))
+        try await surface.stage.waitForText("This Word document couldn't be read. Save it as PDF or TXT, then attach that file.")
+        #expect(editor.string.isEmpty)
+
+        board.clearContents()
+        board.writeObjects([memo as NSURL])
+        #expect(editor.readSelection(from: board, type: .string))
+        try await surface.stage.waitForIdentifier("ChatView.Attachment.Remove.memo.docx")
+        try await surface.sendPrompt("What is the launch date for Project Halcyon?")
+        try await surface.waitForSendIdle()
+        let message = try #require(surface.chat.messages.first(where: { $0.role == .user }))
+        #expect(message.fileAttachments.count == 1)
+        let attachment = try #require(message.fileAttachments.first)
+        #expect(attachment.kind == .docx)
+        #expect(attachment.extractedText.contains("Project Halcyon is March 14, 2027"))
+    }
+
     @Test("The live image paste callback still accepts image data and ignores plain text")
     func liveComposerImagePaste() throws {
         let (surface, editor) = try mountedComposer()
