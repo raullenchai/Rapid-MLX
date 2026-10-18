@@ -439,6 +439,7 @@ def test_setup_probe_stops_delayed_descendant(tmp_path, agent_name):
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
+            check=agent_name == "opencode",
         )
         assert result.returncode == 0
         return "ok"
@@ -459,6 +460,36 @@ def test_setup_probe_stops_delayed_descendant(tmp_path, agent_name):
     assert report.results[0].status is TestStatus.PASS
     time.sleep(0.7)
     assert not delayed.exists()
+
+
+def test_late_setup_launch_marker_fails_final_report():
+    from pathlib import Path
+
+    from rapid_mlx.agents.testing import TestResult
+
+    profile = _make_profile("hermes", "yaml")
+    marker = None
+
+    def _setup(*_args, **_kwargs):
+        nonlocal marker
+        marker = Path(os.environ["_AGENT_TEST_GUI_MARKER"])
+        return "ok"
+
+    def _plain_chat(*_args, **_kwargs):
+        assert marker is not None
+        marker.touch()
+        return TestResult("plain_chat", TestStatus.PASS)
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_setup),
+        patch("rapid_mlx.agents.testing._test_plain_chat", side_effect=_plain_chat),
+    ):
+        report = AgentTestRunner(profile, model_id="local-model").run()
+
+    assert report.results[-1].name == "gui_launch"
+    assert report.results[-1].status is TestStatus.FAIL
 
 
 def test_claude_e2e_sets_documented_config_directory():

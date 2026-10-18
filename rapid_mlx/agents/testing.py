@@ -1021,22 +1021,15 @@ def _run_guarded_agent(
     ) as proc:
 
         def stop_group() -> None:
-            if os.name == "posix":
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            elif proc.poll() is None:
-                proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             stop_group()
-            try:
-                proc.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
             raise
         finally:
             stop_group()
