@@ -519,6 +519,7 @@ async def test_context_rejection_happens_before_prefill(monkeypatch):
 @pytest.mark.asyncio
 async def test_prefill_rejects_unready_and_unmatched_prompt_settings(monkeypatch):
     engine = FakeEngine()
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: True)
     body = api.PrefillRequest(
         kind="prefix", messages=[{"role": "system", "content": "shared"}]
     )
@@ -650,7 +651,8 @@ async def test_handler_cancellation_waits_for_engine_cleanup(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_checkpoint_waits_for_thread(monkeypatch):
+@pytest.mark.parametrize("save_raises", [False, True])
+async def test_cancelled_checkpoint_waits_for_thread(monkeypatch, save_raises):
     engine = FakeEngine()
     engine.release.set()
     started = threading.Event()
@@ -660,6 +662,8 @@ async def test_cancelled_checkpoint_waits_for_thread(monkeypatch):
     def save(_budget):
         started.set()
         assert finish.wait(timeout=2)
+        if save_raises:
+            raise RuntimeError("checkpoint failed")
         return True
 
     monkeypatch.setattr(api, "save_prefix_cache_to_disk", save)
