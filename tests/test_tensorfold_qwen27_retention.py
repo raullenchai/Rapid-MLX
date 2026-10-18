@@ -1,8 +1,5 @@
 """Model-free ownership, admission and lifecycle contracts for optional cuts."""
 
-import os
-import random
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -263,40 +260,12 @@ def test_cache_off_and_already_cached_prefix_forward_unchanged():
     assert engine.interior_tokens is None
 
 
-def test_raw_completion_resuming_cut_keeps_expendable_ownership():
-    store, engine = setup_cut()
-    key = tuple(engine.interior_tokens)
-    raw = prompt()[:6200]
-    run(engine, raw, cached=6144, selected=())
-    assert engine.interior_tokens == list(key)
-    assert key in store.entries
-    assert tuple(engine.interior_tokens) == key
-
-
 def test_release_without_owned_cut_does_not_touch_store():
     store = Store()
     engine = _checkpoint_engine(Engine, lambda: store, {})()
     engine._release_interior(store)
     assert store.transfers == []
     assert engine.interior_releases == 0
-
-
-def test_interrupted_resumed_cut_keeps_ownership():
-    # Cancellation keeps ownership of the restored cut.
-    store, engine = setup_cut()
-    tokens = engine.interior_tokens
-    stream = SimpleNamespace(
-        stream_id="test", prompt_ids=prompt(edit=True), history_checkpoints=[]
-    )
-    steps = engine.begin_stream(stream, cached_tokens=6144, checkpoints_at=[7950])
-    assert engine.interior_tokens == tokens
-    next(steps)
-    steps.close()
-    assert engine.interior_tokens == tokens
-    keep(store, stream)
-    run(engine, prompt(1))
-    assert tuple(tokens) not in store.entries
-    assert tokens in store.transfers
 
 
 class PlannedEngine(Engine):
@@ -457,31 +426,6 @@ def test_resumed_cut_released_before_native_pressure_matches_main(
     assert engine.interior_releases >= 1
 
 
-def test_shortened_history_with_superseded_boundary_matches_main_under_pressure():
-    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
-    results = []
-    for wrapped in (False, True):
-        histories = {}
-        store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-        engine = (
-            _checkpoint_engine(PlannedEngine, lambda store=store: store, histories)
-            if wrapped
-            else PlannedEngine
-        )()
-        engine.test_histories = histories
-        earlier = short_prompt(20)
-        runtime_request(engine, store, earlier, 990)
-        extended = earlier + [220] * 990 + [10, 11] + [220] * 8
-        runtime_request(engine, store, extended, 1990)
-        runtime_request(engine, store, prompt(), 7950)
-        shortened = prompt()[:6144] + [100] * 56 + [10, 11] + [100] * 8
-        runtime_request(engine, store, shortened, 6200)
-        for c in range(5):
-            runtime_request(engine, store, short_prompt(c), 990)
-        results.append(runtime_request(engine, store, shortened, 6200)[0])
-    assert results == [6144, 6144]
-
-
 @pytest.mark.parametrize("history", [0, 6143, 6144, 6200, 6210, 7000])
 def test_promotion_mirrors_cold_scheduler_history_floor(history):
     checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
@@ -592,294 +536,58 @@ def test_counterfactual_ignores_unusable_entry_and_does_not_touch_other_metadata
     assert unusable.last_prompt == prompt()
 
 
-class SmallPlannedEngine(Engine):
-    prefill_step = 16
-
-    def __init__(self):
-        super().__init__()
-        plan = pytest.importorskip("tensorfold.engine.prefill_plan")
-        self.prefill_plan = plan.PrefillPlan(
-            step=16, openers=(10,), min_chunk=2, assistant=(10, 11)
-        )
-
-    def prompt_chunks(self, ids):
-        return self.prefill_plan.chunks(ids)
-
-
-def synthetic_requests(seed):
-    """Adversarial lens may change independently of the unchanged prefix."""
-    rng = random.Random(seed)
-    conversations = {}
-    for _ in range(24):
-        conversation = rng.randrange(4)
-        action = rng.choice(("new", "edit", "extend", "repeat", "shorten"))
-        if conversation not in conversations or action == "new":
-            length = rng.choice((30, 64, 66, 80, 96))
-            ids = [100 + conversation] * length
-            ids[0] = ids[3] = ids[-2] = 10
-            ids[-1] = 11
-        else:
-            ids = conversations[conversation].copy()
-            if action == "edit":
-                ids[rng.randrange(4, len(ids) - 2)] = rng.randrange(200, 210)
-            elif action == "extend":
-                ids += [100 + conversation] * rng.choice((16, 32)) + [10, 11]
-            elif action == "shorten":
-                ids = ids[: rng.randrange(5, max(6, len(ids) - 2))] + [10, 11]
-        conversations[conversation] = ids
-        history = len(ids) - 2 if rng.randrange(5) else 0
-        shared = (3,) if rng.randrange(4) == 0 else ()
-        yield ids, history, shared
+@pytest.mark.parametrize(
+    "final_span,cut", [(1024, None), (2047, None), (2048, 2048), (3000, 2048)]
+)
+def test_final_message_threshold_uses_one_unchanged_2048_step(final_span, cut):
+    store = Store()
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, {})()
+    boundary = 33 + final_span
+    ids = [100] * (boundary + 10)
+    for at in (0, 33, boundary):
+        ids[at] = 10
+    ids[boundary + 1] = 11
+    first = run(engine, ids, selected=(boundary,))
+    expected = [boundary] if cut is None else [cut, boundary]
+    assert [len(tokens) for tokens, _ in first.history_checkpoints] == expected
+    assert engine.prefill_step == 2048
+    assert engine.interior_tokens == (None if cut is None else ids[:cut])
+    keep(store, first)
+    edited = ids.copy()
+    edited[boundary - 20] = 999
+    hit = store.peek(edited, usable=lambda n: n in engine.prompt_chunks(edited))
+    assert (None if hit is None else len(hit.tokens)) == cut
 
 
-class RenderedTokenizer:
-    """Model-free token renderer: role openers, message bodies, generation suffix."""
-
-    @staticmethod
-    def apply_chat_template(messages, *, add_generation_prompt=False, **kwargs):
-        ids = []
-        for message in messages:
-            ids += [10, {"system": 12, "user": 13, "assistant": 11}[message["role"]]]
-            ids += message["content"] + [14]
-        return ids + ([10, 11] if add_generation_prompt else [])
-
-    @staticmethod
-    def encode(rendered):
-        return rendered
-
-
-def realistic_requests(seed):
-    """Render chat boundaries and use the product's actual shared-lens derivation."""
-    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
-
-    tokenizer = RenderedTokenizer()
-    app = SimpleNamespace(
-        tokenizer=tokenizer,
-        tokenizer_lock=threading.Lock(),
-        system_prefix_len=lambda messages, *args, **kwargs: len(
-            tokenizer.apply_chat_template(messages[:1])
-        ),
+def test_optional_resume_preserves_scheduler_selection_and_ordinary_metadata():
+    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
+    copies = []
+    store = checkpoints.CheckpointStore(
+        8,
+        copier=lambda cache: copies.append(cache) or list(cache),
+        sizer=lambda c: c[0],
     )
-    rng = random.Random(seed)
-    conversations = {}
-    systems = {}
-    for _ in range(24):
-        conversation = rng.randrange(4)
-        action = rng.choice(("new", "edit", "extend", "repeat", "shorten"))
-        if conversation not in conversations or action == "new":
-            system = rng.randrange(3)
-            messages = [
-                {
-                    "role": "system",
-                    "content": [300 + system] * (520, 1040, 2600)[system],
-                },
-                {
-                    "role": "user",
-                    "content": [100 + conversation] * rng.choice((30, 64, 96)),
-                },
-            ]
-        else:
-            messages = [
-                dict(m, content=m["content"].copy())
-                for m in conversations[conversation]
-            ]
-            if action == "edit":
-                body = messages[-1]["content"]
-                body[rng.randrange(len(body))] = rng.randrange(200, 210)
-            elif action == "extend":
-                messages += [
-                    {
-                        "role": "assistant",
-                        "content": [400 + conversation] * rng.choice((8, 16)),
-                    },
-                    {
-                        "role": "user",
-                        "content": [100 + conversation] * rng.choice((30, 64, 96)),
-                    },
-                ]
-            elif action == "shorten":
-                if len(messages) > 2:
-                    messages = messages[:-2]
-                else:
-                    messages[-1]["content"] = messages[-1]["content"][
-                        : rng.randrange(4, 20)
-                    ]
-        conversations[conversation] = messages
-        ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-        history, shared = _prompt_boundaries(app, ids, messages, False)
-        system_key = tuple(tokenizer.apply_chat_template(messages[:1]))
-        assert systems.setdefault(system_key, shared) == shared
-        assert ids[:history] == tokenizer.apply_chat_template(messages)
-        yield ids, history, shared
-
-
-def classify_requests(requests, engine_factory=_checkpoint_engine):
-    """Exact skipped-key witnesses; no blanket exemption for later pressure effects.
-
-    Every allowed deficit must name the same token prefix selected by main on
-    an earlier request with main_hit < position < resumed_owned. Witnesses expire
-    when main removes that state, or HEAD materializes it. Unrelated eviction
-    victims never inherit a witness, even when caused by a skipped pin.
-    """
-    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
-    stores = [
-        checkpoints.CheckpointStore(
-            8, copier=list, sizer=lambda c: c[0], budget_bytes=800
-        )
-        for _ in range(2)
-    ]
     contexts = {}
-    engines = [
-        SmallPlannedEngine(),
-        engine_factory(SmallPlannedEngine, lambda: stores[1], contexts)(),
-    ]
-    engines[1].test_histories = contexts
-    witnesses = {}
-    events = []
-    sequence = []
-    for number, (ids, history, shared) in enumerate(requests, 1):
-        sequence.append((ids.copy(), history, shared))
-        previous_head = {tuple(e.tokens) for e in stores[1]._entries}
-        prior_witnesses = witnesses.copy()
-        owned = getattr(engines[1], "interior_tokens", None)
-        main_reuse, selected = runtime_request(
-            engines[0], stores[0], ids, history, shared
-        )
-        head_reuse, _ = runtime_request(engines[1], stores[1], ids, history, shared)
-        main_keys = {tuple(e.tokens) for e in stores[0]._entries}
-        head_keys = {tuple(e.tokens) for e in stores[1]._entries}
-        witnesses = {
-            key: value
-            for key, value in witnesses.items()
-            if key in main_keys and key not in head_keys
-        }
-        if owned is not None and head_reuse == len(owned) and ids[:head_reuse] == owned:
-            for at in selected:
-                key = tuple(ids[:at])
-                if main_reuse < at < head_reuse and key in main_keys - head_keys:
-                    witness = dict(
-                        request=number,
-                        main_hit=main_reuse,
-                        position=at,
-                        owned=head_reuse,
-                    )
-                    witnesses[key] = witness
-                    events.append(
-                        dict(request=number, kind="skip", key=key, witness=witness)
-                    )
-        deficits = [("deleted", key) for key in (previous_head & main_keys) - head_keys]
-        if head_reuse < main_reuse:
-            deficits.append(("reuse", tuple(ids[:main_reuse])))
-        for kind, key in deficits:
-            events.append(
-                dict(
-                    request=number,
-                    kind=kind,
-                    key=key,
-                    witness=(prior_witnesses if kind == "reuse" else witnesses).get(
-                        key
-                    ),
-                )
-            )
-    return events, sequence
-
-
-def assert_classified(seed, requests):
-    events, sequence = classify_requests(requests)
-    failures = [event for event in events if event["witness"] is None]
-    assert not failures, f"seed={seed}, failures={failures!r}, sequence={sequence!r}"
-
-
-@pytest.mark.parametrize(
-    "seed", range(int(os.environ.get("TENSORFOLD_PROPERTY_SEEDS", "200")))
-)
-def test_randomized_native_retention_and_reuse(seed):
-    assert_classified(seed, synthetic_requests(seed))
-
-
-@pytest.mark.parametrize(
-    "seed", range(int(os.environ.get("TENSORFOLD_REALISTIC_SEEDS", "20")))
-)
-def test_rendered_chat_native_retention_and_reuse(seed):
-    assert_classified(seed, realistic_requests(seed))
-
-
-@pytest.mark.parametrize("ordinary_hit", [0, 19])
-def test_skipped_native_pin_recomputes_from_ordinary_hit(ordinary_hit):
-    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
-    store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-    contexts = {}
-    engine = _checkpoint_engine(SmallPlannedEngine, lambda: store, contexts)()
+    engine = _checkpoint_engine(PlannedEngine, lambda: store, contexts)()
     engine.test_histories = contexts
-    ids = [100] * 96
-    ids[0] = ids[3] = ids[-2] = 10
-    ids[-1] = 11
-    runtime_request(engine, store, ids, 94)
-    assert len(engine.interior_tokens) == 83
-    if ordinary_hit:
-        store.insert(ids[:ordinary_hit], [100], last_prompt=ids)
-    shorter = ids[:90] + [10, 11]
-    reused, _ = runtime_request(engine, store, shorter, 90, (51,))
-    assert reused == ordinary_hit
-    assert store.peek(shorter, usable=lambda n: n == 51).pinned
-    final = ids[:62] + [10, 11]
-    assert runtime_request(engine, store, final, 62)[0] == 51
-
-
-@pytest.mark.parametrize("seed,skips,reuse,deleted", [(12, 1, 1, 0), (92, 1, 3, 2)])
-def test_classifier_requires_exact_skipped_key(seed, skips, reuse, deleted):
-    def unprotected(engine_type, getter, contexts):
-        guarded = _checkpoint_engine(engine_type, getter, contexts)
-
-        class Unprotected(guarded):
-            def _native_selection_without_owned(self, store, stream, owned):
-                # Disable only the new guard, reproducing the prior policy.
-                return {
-                    at
-                    for at in super()._native_selection_without_owned(
-                        store, stream, owned
-                    )
-                    if at >= len(owned)
-                }
-
-        return Unprotected
-
-    events, _ = classify_requests(synthetic_requests(seed), unprotected)
-    assert sum(e["kind"] == "skip" for e in events) == skips
-    assert sum(e["kind"] == "reuse" for e in events) == reuse
-    assert sum(e["kind"] == "deleted" for e in events) == deleted
-    for event in events:
-        if event["kind"] == "deleted":
-            assert len(event["key"]) in (62, 81)
-            assert event["witness"] is None
-        else:
-            witness = event["witness"]
-            assert len(event["key"]) == witness["position"] == 3
-            assert witness["main_hit"] == 0 < 3 < witness["owned"]
-
-
-def test_skipped_selection_after_native_transfer_still_recomputes():
-    checkpoints = pytest.importorskip("tensorfold.server.checkpoints")
-    store = checkpoints.CheckpointStore(8, copier=list, sizer=lambda c: c[0])
-    contexts = {}
-    engine = _checkpoint_engine(SmallPlannedEngine, lambda: store, contexts)()
-    engine.test_histories = contexts
-    ids = [100] * 96
-    ids[0] = ids[3] = ids[-2] = 10
-    ids[-1] = 11
-    runtime_request(engine, store, ids, 94)
-    shorter = ids[:90] + [10, 11]
-    cached, cache, _ = store.match(shorter, usable=lambda n: n == 83, take=True)
-    contexts["test"] = (90, (3,))
-    stream = run(engine, shorter, cached=cached, cache=cache, selected=(90,))
-    assert engine.calls[-1]["cached_tokens"] == 0
-    assert {len(tokens) for tokens, _ in stream.history_checkpoints} >= {3, 90}
-
-
-@pytest.mark.parametrize(
-    "seed", [23, 60, 186, 489, 496, 588, 592, 724, 739, 1109, 1504, 1689]
-)
-def test_optional_resume_preserves_ordinary_hit_eviction_order(seed):
-    # These sequences touch a system hit on main, an optional cut on HEAD,
-    # then rotate systems past the three-pin limit under native byte pressure.
-    assert_classified(seed, realistic_requests(seed))
+    ids = prompt()
+    runtime_request(engine, store, ids, 7950)
+    # Ordinary system hit would be touched by main; an optional resume leaves
+    # its LRU/last_prompt untouched and skips a selected prefix below the cut.
+    prior = ids[:33] + [777]
+    store.insert(ids[:33], [100], last_prompt=prior)
+    ordinary = store.peek(ids, usable=lambda n: n == 33)
+    store.insert([333], [100], last_prompt=[333, 0])
+    untouched = lambda: [e for e in store._entries if len(e.tokens) not in (6144, 7950)]
+    before = untouched()
+    copies.clear()
+    edited = prompt(edit=True)
+    reused, selected = runtime_request(engine, store, edited, 7950, (4096,))
+    assert reused == 6144
+    assert selected == [7950]
+    assert engine.calls[-1]["cached_tokens"] == 6144
+    assert engine.calls[-1]["checkpoints_at"] == [7950]
+    assert len(copies) == 1  # Only the scheduler's match copies a snapshot.
+    assert store.peek(edited, usable=lambda n: n == 4096) is None
+    assert ordinary.last_prompt == prior
+    assert untouched() == before

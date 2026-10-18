@@ -342,7 +342,7 @@ def _checkpoint_engine(
                 i for i, token in enumerate(ids) if token in self.prefill_plan.openers
             ]
             candidate = None
-            if len(starts) >= 2 and starts[-1] - starts[-2] >= 2 * self.prefill_step:
+            if len(starts) >= 2 and starts[-1] - starts[-2] >= self.prefill_step:
                 cuts = self.prompt_chunks(ids).starts or []
                 boundary = min(starts[-1], max(original, default=starts[-1]))
                 grid = [
