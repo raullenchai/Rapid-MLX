@@ -92,11 +92,14 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
 
     captured: dict = {}
 
-    def _fake_loader(name, *, lock, max_length="auto", overflow_policy="truncate"):
+    def _fake_loader(
+        name, *, lock, max_length="auto", overflow_policy="truncate", max_inputs=2048
+    ):
         captured["name"] = name
         captured["lock"] = lock
         captured["max_length"] = max_length
         captured["overflow_policy"] = overflow_policy
+        captured["max_inputs"] = max_inputs
 
     args = SimpleNamespace(embedding_model="mlx-community/some-embed-model")
     _load_embedding_model_or_exit(args, _fake_loader)
@@ -106,6 +109,7 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
         "lock": True,
         "max_length": "auto",
         "overflow_policy": "truncate",
+        "max_inputs": 2048,
     }
 
 

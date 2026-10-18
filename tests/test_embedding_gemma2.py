@@ -383,6 +383,7 @@ def test_native_cli_boot_helper_resolves_alias_without_legacy_extra(monkeypatch)
         "lock": True,
         "max_length": "auto",
         "overflow_policy": "truncate",
+        "max_inputs": 2048,
     }
 
 
@@ -409,7 +410,12 @@ def test_legacy_cli_boot_helper_keeps_zero_argument_optional_guard(
         assert calls == [
             (
                 "legacy-embedding-model",
-                {"lock": True, "max_length": "auto", "overflow_policy": "truncate"},
+                {
+                    "lock": True,
+                    "max_length": "auto",
+                    "overflow_policy": "truncate",
+                    "max_inputs": 2048,
+                },
             )
         ]
     else:

@@ -1173,6 +1173,7 @@ class TestAudioServeHonorsEmbeddingModel:
         assert calls[0][2] == {
             "max_length": "auto",
             "overflow_policy": "truncate",
+            "max_inputs": 2048,
         }
 
     def test_audio_mode_without_embedding_does_not_call_loader(self):

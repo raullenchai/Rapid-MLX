@@ -44,6 +44,7 @@ async def create_embeddings(
     from ..server import load_embedding_model
 
     cfg = get_config()
+    max_inputs = getattr(cfg, "embedding_max_inputs", 2048)
     raw_input = request.input
     input_count = (
         len(raw_input)
@@ -52,13 +53,13 @@ async def create_embeddings(
         and not isinstance(raw_input[0], int)
         else 1
     )
-    if cfg.embedding_max_inputs > 0 and input_count > cfg.embedding_max_inputs:
+    if max_inputs > 0 and input_count > max_inputs:
         raise HTTPException(
             status_code=400,
             detail={
                 "error": {
                     "message": f"Too many inputs: {input_count} exceeds this server's "
-                    f"limit of {cfg.embedding_max_inputs} (--embedding-max-inputs). "
+                    f"limit of {max_inputs} (--embedding-max-inputs). "
                     "Split the request into smaller batches.",
                     "type": "invalid_request_error",
                     "code": "too_many_inputs",
