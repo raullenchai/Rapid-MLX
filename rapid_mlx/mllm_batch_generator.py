@@ -3179,6 +3179,25 @@ class MLLMBatchGenerator:
                     )
             return False
 
+    @staticmethod
+    def _read_exact_snapshot_index(snapshot: Path) -> list[int] | None:
+        """Return a snapshot's validated entry keys, or None when unusable."""
+        index = snapshot / "index.json"
+        if not index.is_file():
+            return None
+        try:
+            keys = json.loads(index.read_text())
+            if not isinstance(keys, list) or any(type(key) is not int for key in keys):
+                raise ValueError("index must be a list of integers (excluding bool)")
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "[cache_persist] vision lane: invalid snapshot index in %s: %s",
+                snapshot,
+                exc,
+            )
+            return None
+        return keys
+
     def load_exact_prefix_cache_from_disk(self, cache_dir: str | Path) -> int:
         """Restore missing text-only entries on the scheduler's MLX step executor."""
         from .models.mlx_vlm_vendored import apc
@@ -3190,27 +3209,24 @@ class MLLMBatchGenerator:
         target = Path(cache_dir)
         loaded = 0
         try:
-            if not (target / "index.json").is_file():
-                for suffix in (".new", ".old"):
-                    candidate = Path(str(target) + suffix)
-                    if (candidate / "index.json").is_file():
-                        shutil.rmtree(target, ignore_errors=True)
-                        candidate.rename(target)
-                        break
-                else:
-                    return 0
-            try:
-                keys = json.loads((target / "index.json").read_text())
-                if not isinstance(keys, list) or any(
-                    type(key) is not int for key in keys
-                ):
-                    raise ValueError(
-                        "index must be a list of integers (excluding bool)"
-                    )
-            except (OSError, ValueError) as exc:
-                logger.warning(
-                    "[cache_persist] vision lane: invalid snapshot index: %s", exc
-                )
+            # Use the first snapshot whose index validates: the committed one,
+            # else a crash-left ``.new`` (complete once its index exists), else
+            # the previous ``.old``. An invalid candidate never shadows a valid
+            # one.
+            keys = None
+            for candidate in (
+                target,
+                Path(str(target) + ".new"),
+                Path(str(target) + ".old"),
+            ):
+                keys = self._read_exact_snapshot_index(candidate)
+                if keys is None:
+                    continue
+                if candidate != target:
+                    shutil.rmtree(target, ignore_errors=True)
+                    candidate.rename(target)
+                break
+            if keys is None:
                 return 0
             store = apc.DiskBlockStore(target)
             try:

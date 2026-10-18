@@ -630,3 +630,18 @@ def test_restore_rechecks_budget_at_insertion(tmp_path, monkeypatch):
     monkeypatch.setattr(fresh, "_exact_cache_footprint_bytes", lambda: next(footprints))
     assert fresh.load_exact_prefix_cache_from_disk(path) == 0
     assert not fresh._prefix_cache._exact_cache
+
+
+def test_malformed_new_does_not_shadow_valid_old(tmp_path, caplog):
+    source = generator()
+    key = add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    path.rename(str(path) + ".old")
+    broken = Path(str(path) + ".new")
+    broken.mkdir()
+    (broken / "index.json").write_text("[")
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert list(fresh._prefix_cache._exact_cache) == [key]
+    assert "invalid snapshot index in" in caplog.text
