@@ -3860,7 +3860,7 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=chat_template_kwargs,
             )
             probes.append(
-                tokenizer.encode(rendered)
+                tokenizer.encode(rendered, add_special_tokens=not self._is_mllm)
                 if isinstance(rendered, str)
                 else list(rendered)
             )
@@ -3871,7 +3871,10 @@ class BatchedEngine(BaseEngine):
             boundary += 1
         if boundary <= 0 or boundary >= len(probes[0]):
             raise ValueError("Chat template has no distinct shared system/tools prefix")
-        return probes[0][: boundary + 1], boundary
+        # Keep the synthetic turn structurally complete. The scheduler stores
+        # the exact shared boundary, while the single generated warmup token
+        # must follow a valid assistant header rather than a cut-off user turn.
+        return probes[0], boundary
 
     def _compute_prefix_boundary(
         self,
@@ -3926,12 +3929,16 @@ class BatchedEngine(BaseEngine):
                 )
                 tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
                 warm_tokens = (
-                    self.encode_prompt_text(warm) or tokenizer.encode(warm)
+                    (
+                        tokenizer.encode(warm, add_special_tokens=False)
+                        if self._is_mllm
+                        else self.encode_prompt_text(warm) or tokenizer.encode(warm)
+                    )
                     if isinstance(warm, str)
                     else list(warm)
                 )
                 next_tokens = (
-                    tokenizer.encode(next_turn)
+                    tokenizer.encode(next_turn, add_special_tokens=not self._is_mllm)
                     if isinstance(next_turn, str)
                     else list(next_turn)
                 )

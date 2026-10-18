@@ -318,7 +318,10 @@ def test_system_tools_only_completion_saves_exact_cross_session_boundary():
     assert boundary > 0
     assert prompt[:boundary] == real[:boundary]
     assert prompt[boundary] != real[boundary]
-    assert len(prompt) == boundary + 1
+    assert prompt == tokenizer.encode(
+        requires_user([*messages, {"role": "user", "content": "A"}], tools)
+    )
+    assert tokenizer.decode(prompt).endswith("<|im_start|>assistant\n<think>\n")
 
 
 def test_system_tools_only_keeps_a_template_that_accepts_it():
@@ -331,6 +334,29 @@ def test_system_tools_only_keeps_a_template_that_accepts_it():
     messages = [{"role": "system", "content": "guidance"}]
     tools = [{"type": "function", "function": {"name": "lookup"}}]
     assert engine.build_prompt(messages, tools) == _render(messages)
+
+
+def test_mllm_shared_warm_prefix_uses_actual_no_bos_tokenization():
+    tokenizer = _SectionTokenizer(bos=True)
+    engine = _engine(tokenizer)
+    engine._is_mllm = True
+    messages = [{"role": "system", "content": "shared guidance"}]
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+
+    def requires_user(items, template_tools=None, **kwargs):
+        if not any(item["role"] == "user" for item in items):
+            raise ValueError("No user query found in messages")
+        return _render(items, template_tools, **kwargs)
+
+    engine._apply_chat_template = requires_user
+    warm, boundary = engine._shared_system_tools_prompt(messages, tools, False, None)
+    real = tokenizer.encode(
+        requires_user([*messages, {"role": "user", "content": "hi"}], tools),
+        add_special_tokens=False,
+    )
+    assert warm[0] == real[0] != 1
+    assert warm[:boundary] == real[:boundary]
+    assert boundary > 0
 
 
 def test_build_prompt_system_only_fallback_and_unrelated_template_error():
@@ -400,10 +426,16 @@ async def test_system_tools_warm_prompt_contains_forced_assistant_prefix():
     engine.generate = generate
     await engine.chat(messages, tools=tools, forced_assistant_prefix="<tool_call>")
     boundary = seen["prefix_boundary"]
+    assert boundary > 0
     assert seen["exact_prefix_boundary"] is True
-    assert seen["prompt"][boundary + 1 :] == tokenizer.encode(
-        "<tool_call>", add_special_tokens=False
-    )
+    assert seen["prompt"][
+        -len(tokenizer.encode("<tool_call>", add_special_tokens=False)) :
+    ] == tokenizer.encode("<tool_call>", add_special_tokens=False)
+    assert tokenizer.decode(
+        seen["prompt"][
+            : -len(tokenizer.encode("<tool_call>", add_special_tokens=False))
+        ]
+    ).endswith("<|im_start|>assistant\n<think>\n")
 
 
 @pytest.mark.asyncio
