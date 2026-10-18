@@ -309,6 +309,7 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     """Every profile must avoid the operator's HOME, not only Codex/Hermes."""
     real_home = "/Users/operator"
     monkeypatch.setenv("HOME", real_home)
+    monkeypatch.setenv("CFFIXED_USER_HOME", real_home)
     profile = _make_profile("opencode", "yaml")
     profile = replace(
         profile,
@@ -318,10 +319,19 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
 
     def _capture_setup(*_args, **_kwargs):
         observed["setup_home"] = os.environ["HOME"]
+        assert "CFFIXED_USER_HOME" not in os.environ
+        assert os.environ["BROWSER"] == os.path.join(os.environ["HOME"], "bin", "open")
         return "ok"
 
     def _capture_e2e(*_args, env_overrides=None, **_kwargs):
         observed["child_home"] = env_overrides["HOME"]
+        assert env_overrides["BROWSER"] == os.path.join(
+            env_overrides["HOME"], "bin", "open"
+        )
+        assert env_overrides["PATH"].split(os.pathsep)[0] == os.path.join(
+            env_overrides["HOME"], "bin"
+        )
+        assert "CFFIXED_USER_HOME" not in env_overrides
         return TestResult("e2e_chat", TestStatus.PASS)
 
     from rapid_mlx.agents.testing import TestResult, TestStatus
@@ -343,6 +353,31 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     assert observed["setup_home"] == observed["child_home"]
     assert "rapid-mlx-opencode-home-" in observed["child_home"]
     assert os.environ["HOME"] == real_home
+    assert os.environ["CFFIXED_USER_HOME"] == real_home
+
+
+def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
+    import subprocess
+
+    profile = _make_profile("opencode", "yaml")
+    observed = []
+
+    def _setup(*_args, **_kwargs):
+        observed.append(
+            subprocess.run(["open", "https://example.invalid"], check=False)
+        )
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_setup),
+        patch("rapid_mlx.agents.testing._test_plain_chat") as plain_chat,
+    ):
+        report = AgentTestRunner(profile, model_id="local-model").run()
+
+    assert observed[0].returncode == 126
+    assert report.results[0].status is TestStatus.FAIL
+    assert "sign in to" in report.results[0].message
+    plain_chat.assert_not_called()
 
 
 def test_claude_e2e_sets_documented_config_directory():

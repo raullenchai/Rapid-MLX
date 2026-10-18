@@ -52,6 +52,8 @@ _ANTHROPIC_REMOTE_ENV = (
 # property of the string the subprocess boundary produced, not a guess made
 # from the child's own prose.
 _EXIT_ERR_PREFIX = "EXIT:"
+_GUI_LAUNCH_MARKER = ".gui-launch-attempted"
+_GUI_LAUNCH_ERR_PREFIX = "GUI_LAUNCH:"
 
 # Diagnostics may contain normalized or derived request URLs, not just base_url.
 _DIAGNOSTIC_URL_RE = re.compile(r"https?://[^\s\"']+", re.IGNORECASE)
@@ -951,6 +953,24 @@ _XDG_BASE_DIRS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _install_gui_launch_guard(home: Path) -> Path:
+    """Refuse browser/app opens by tools running under the disposable HOME."""
+    shim_dir = home / "bin"
+    shim_dir.mkdir()
+    marker = shim_dir / _GUI_LAUNCH_MARKER
+    script = (
+        "#!/bin/sh\n"
+        f": > {shlex.quote(str(marker))}\n"
+        'printf "%s\\n" "Browser and app launches are disabled during agents --test" >&2\n'
+        "exit 126\n"
+    )
+    for name in ("open", "xdg-open"):
+        shim = shim_dir / name
+        shim.write_text(script, encoding="utf-8")
+        shim.chmod(0o755)
+    return shim_dir / "open"
+
+
 def _agent_query(
     binary: str,
     query_cmd: str,
@@ -1002,6 +1022,11 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+    child_env.pop("CFFIXED_USER_HOME", None)
+    browser = (env_overrides or {}).get("BROWSER")
+    launch_marker = Path(browser).parent / _GUI_LAUNCH_MARKER if browser else None
+    if launch_marker is not None:
+        launch_marker.unlink(missing_ok=True)
     # OpenHands 1.x resolves these explicit paths before HOME and cwd. An
     # inherited value would let an auto-approved test read the operator's
     # settings/MCP servers or run tools in their real workspace.
@@ -1070,6 +1095,12 @@ def _agent_query(
             env=child_env,
         )
         output = proc.stdout + proc.stderr
+        if launch_marker is not None and launch_marker.exists():
+            return None, (
+                f"{_GUI_LAUNCH_ERR_PREFIX} agent tried to open a browser or app — "
+                f"sign in to {Path(binary_path).name} normally first, "
+                "then re-run --test"
+            )
         if "error" in output.lower() and "HTTP 4" in output:
             return None, "Agent error: server issue"
         # Harness self-refuses to initialize when the served model's
@@ -1158,6 +1189,13 @@ def _agent_query(
         # run itself has reported that it went wrong.
         return output, None
     except subprocess.TimeoutExpired as exc:
+        if launch_marker is not None and launch_marker.exists():
+            return None, (
+                f"{_GUI_LAUNCH_ERR_PREFIX} agent tried to open a browser or app — "
+                f"sign in to {Path(binary_path).name} normally first, "
+                "then re-run --test"
+            )
+
         # A headless agent can finish the capability under test, print the
         # evidence, and then fail to terminate its own loop.  Keep that output
         # so capability-specific probes can grade what actually happened and
@@ -1198,6 +1236,8 @@ def _err_to_status(err: str | None) -> TestStatus:
     """
     if not err:
         return TestStatus.PASS  # caller shouldn't pass empty err but stay safe
+    if err.startswith(_GUI_LAUNCH_ERR_PREFIX):
+        return TestStatus.FAIL
     if err.startswith(_EXIT_ERR_PREFIX):
         return TestStatus.ERROR
     if "not found" in err:
@@ -1571,6 +1611,12 @@ class AgentTestRunner:
         isolated_config_home = tempfile.TemporaryDirectory(
             prefix=f"rapid-mlx-{self.profile.name}-home-"
         )
+        isolated_root = Path(isolated_config_home.name)
+        browser_shim = _install_gui_launch_guard(isolated_root)
+        guard_env = {
+            "PATH": f"{browser_shim.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+            "BROWSER": str(browser_shim),
+        }
         config_home_env = active_config.home_env
 
         # Refresh the agent's on-disk config (e.g. ``~/.hermes/config.yaml``)
@@ -1599,8 +1645,12 @@ class AgentTestRunner:
                 redirected["CLINE_PROVIDER_SETTINGS_PATH"] = str(
                     Path(isolated_config_home.name) / "settings" / "providers.json"
                 )
-            previous = {key: os.environ.get(key) for key in redirected}
-            os.environ.update(redirected)
+            previous = {
+                key: os.environ.get(key)
+                for key in (*redirected, *guard_env, "CFFIXED_USER_HOME")
+            }
+            os.environ.update(redirected | guard_env)
+            os.environ.pop("CFFIXED_USER_HOME", None)
             try:
                 if self.profile.name == "cline":
                     from rapid_mlx.launch import cline
@@ -1638,6 +1688,20 @@ class AgentTestRunner:
                 self.profile.name,
                 self._redact(str(exc)),
             )
+        if (browser_shim.parent / _GUI_LAUNCH_MARKER).exists():
+            report.results.append(
+                TestResult(
+                    "config_refresh",
+                    TestStatus.FAIL,
+                    message=(
+                        "agent tried to open a browser or app — "
+                        f"sign in to {self.profile.display_name} normally first, "
+                        "then re-run --test"
+                    ),
+                )
+            )
+            isolated_config_home.cleanup()
+            return report
 
         t0 = time.time()
         streaming = self.profile.get_streaming_for_version(self.agent_version)
@@ -1671,7 +1735,7 @@ class AgentTestRunner:
         # have the child read their REAL global config — plugins, remote
         # provider credentials — and write state outside the throwaway home.
         # Pin every XDG base directory to its default location inside it.
-        isolated_root = Path(isolated_config_home.name)
+        env_overrides.update(guard_env)
         for xdg_key, xdg_rel in _XDG_BASE_DIRS:
             env_overrides[xdg_key] = str(isolated_root / xdg_rel)
         if self.profile.name == "goose":
