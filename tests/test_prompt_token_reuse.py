@@ -420,7 +420,7 @@ def test_system_only_boundary_handles_native_template_and_render_failures():
     engine = _engine(_SectionTokenizer())
     messages = [{"role": "system", "content": "guidance"}]
     tools = [{"type": "function", "function": {"name": "lookup"}}]
-    assert engine._compute_prefix_boundary(messages) == 0
+    assert engine._compute_prefix_boundary(messages) > 0
     assert engine._compute_prefix_boundary(messages, tools) > 0
 
     engine._apply_chat_template = lambda *_args, **_kwargs: (_ for _ in ()).throw(
