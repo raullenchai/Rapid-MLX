@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from .base import AgentProfile
@@ -50,13 +51,15 @@ def _merge_toolset_list(
     return result
 
 
-def _hermes_supported_toolsets() -> set[str] | None:
+def _hermes_supported_toolsets(
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> set[str] | None:
     """Read the installed Hermes CLI's official built-in toolset registry."""
     binary = shutil.which("hermes")
     if binary is None:
         return None
     try:
-        proc = subprocess.run(
+        proc = (runner or subprocess.run)(
             [binary, "tools", "list", "--platform", "cli"],
             capture_output=True,
             text=True,
@@ -242,6 +245,7 @@ def setup_agent_config(
     *,
     context_length: int | None = None,
     dry_run: bool = False,
+    _hermes_probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
     """Write the agent's config file or print env vars to set up the integration.
 
@@ -278,7 +282,11 @@ def setup_agent_config(
     hermes_supported_toolsets = None
     if profile.name == "hermes" and isinstance(rendered, str):
         try:
-            hermes_supported_toolsets = _hermes_supported_toolsets()
+            hermes_supported_toolsets = (
+                _hermes_supported_toolsets(_hermes_probe_runner)
+                if _hermes_probe_runner is not None
+                else _hermes_supported_toolsets()
+            )
             rendered = _render_hermes_runtime_toolsets(
                 rendered, hermes_supported_toolsets
             )

@@ -148,8 +148,14 @@ def test_run_calls_setup_agent_config_before_tests():
     calls = []
 
     def _capture_setup(
-        profile_arg, base_url, model_id, agent_version=None, context_length=None
+        profile_arg,
+        base_url,
+        model_id,
+        agent_version=None,
+        context_length=None,
+        _hermes_probe_runner=None,
     ):
+        assert callable(_hermes_probe_runner)
         calls.append(
             {
                 "profile_name": profile_arg.name,
@@ -211,8 +217,14 @@ def test_run_refreshes_config_when_server_is_available():
     calls = []
 
     def _capture_setup(
-        profile_arg, base_url, model_id, agent_version=None, context_length=None
+        profile_arg,
+        base_url,
+        model_id,
+        agent_version=None,
+        context_length=None,
+        _hermes_probe_runner=None,
     ):
+        assert callable(_hermes_probe_runner)
         calls.append(model_id)
         return "ok"
 
@@ -392,6 +404,52 @@ def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
     assert report.results[0].status is TestStatus.FAIL
     assert "sign in to" in report.results[0].message
     plain_chat.assert_not_called()
+
+
+def test_hermes_setup_probe_stops_delayed_descendant(tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    profile = _make_profile("hermes", "yaml")
+    delayed = tmp_path / "delayed-setup-child-ran"
+    child_script = (
+        f"import pathlib, time; time.sleep(0.5); pathlib.Path({str(delayed)!r}).touch()"
+    )
+    setup_script = (
+        "import subprocess, sys; "
+        "subprocess.Popen([sys.executable, '-c', "
+        f"{child_script!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+    )
+
+    def _setup(*_args, _hermes_probe_runner=None, **_kwargs):
+        assert callable(_hermes_probe_runner)
+        result = _hermes_probe_runner(
+            [sys.executable, "-c", setup_script],
+            timeout=5,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        assert result.returncode == 0
+        return "ok"
+
+    from rapid_mlx.agents.testing import TestResult
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_setup),
+        patch(
+            "rapid_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+    ):
+        report = AgentTestRunner(profile, model_id="local-model").run()
+
+    assert report.results[0].status is TestStatus.PASS
+    time.sleep(0.7)
+    assert not delayed.exists()
 
 
 def test_claude_e2e_sets_documented_config_directory():
