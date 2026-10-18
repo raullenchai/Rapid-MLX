@@ -14,8 +14,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 TART = ROOT / "tools/ci-runners/tart"
 SCRIPTS = sorted(TART.rglob("*.sh"))
-# Per slot: 120s deferred TERM + 10s stop + 120s removal + 110s margin.
-EXIT_TIMEOUT = 360
+# launchd caps GUI LaunchAgent ExitTimeOut at 60s; larger values silently
+# clamp to 60 and mislead operators.
+EXIT_TIMEOUT = 60
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: str(p.relative_to(TART)))
@@ -45,7 +46,64 @@ def test_node_checksum():
 def test_launchd_timeout():
     template = (TART / "com.rapidmlx.ci-runners.plist.template").read_text()
     plist = plistlib.loads(template.replace("__HOME__", "/Users/test").encode())
-    assert plist["ExitTimeOut"] >= EXIT_TIMEOUT
+    assert plist["ExitTimeOut"] == EXIT_TIMEOUT
+
+
+@pytest.fixture
+def fake_launchctl(tmp_path):
+    fake = tmp_path / "launchctl"
+    fake.write_text(
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$@" >> "$CALLS"\n'
+        'count=0; [ ! -f "$COUNTER" ] || read -r count < "$COUNTER"\n'
+        'count=$((count + 1)); echo "$count" > "$COUNTER"\n'
+        '[ "$count" -le "$ACTIVE_CALLS" ] || exit 113\n'
+    )
+    fake.chmod(0o755)
+    return {
+        **os.environ,
+        "LAUNCHCTL": str(fake),
+        "LABEL": "com.rapidmlx.ci-runners",
+        "POLL_SECS": "0",
+        "CALLS": str(tmp_path / "calls"),
+        "COUNTER": str(tmp_path / "counter"),
+        "ACTIVE_CALLS": "2",
+    }
+
+
+def run_wait_stopped(env, *args):
+    return subprocess.run(
+        ["/bin/bash", str(TART / "bin/wait-stopped.sh"), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_wait_stopped(fake_launchctl):
+    result = run_wait_stopped(fake_launchctl)
+    assert result.returncode == 0, result.stderr
+    assert "stopped" in result.stdout
+    assert Path(fake_launchctl["COUNTER"]).read_text().strip() == "3"
+    assert Path(fake_launchctl["CALLS"]).read_text().splitlines() == [
+        "print",
+        f"gui/{os.getuid()}/com.rapidmlx.ci-runners",
+    ] * 3
+
+
+def test_wait_stopped_timeout(fake_launchctl):
+    Path(fake_launchctl["LAUNCHCTL"]).write_text("#!/bin/bash\nexit 0\n")
+    result = run_wait_stopped(fake_launchctl, "0")
+    assert result.returncode == 1
+    assert "com.rapidmlx.ci-runners" in result.stderr
+
+
+def test_wait_stopped_invalid_timeout(fake_launchctl):
+    result = run_wait_stopped(fake_launchctl, "abc")
+    assert result.returncode == 2
+    assert "Usage:" in result.stderr
+    assert not Path(fake_launchctl["CALLS"]).exists()
 
 
 def test_build_lock_and_retention():

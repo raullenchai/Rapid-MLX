@@ -58,7 +58,7 @@ also holds all runner state:
 
 ```
 bin/tart -> ../tart.app/Contents/MacOS/tart   official signed release (Developer ID, notarized)
-bin/common.sh  bin/slot.sh  bin/supervisor.sh  bin/build-golden.sh
+bin/common.sh  bin/slot.sh  bin/supervisor.sh  bin/build-golden.sh  bin/wait-stopped.sh
 guest/provision.sh      runs inside the VM when the golden image is built
 host.env                MACHINE_ID, SLOTS, VM_CPU, VM_MEM_MB, VM_DISK_GB, MIN_FREE_GB, MC_DIRECT, KEEP_GOLDEN_PREV
 secrets/                gh-token (+ machinecontrol.token on hosts that query Machine Control directly)
@@ -92,10 +92,12 @@ reboot. An EXIT trap also destroys a live VM or registration on unexpected
 exit, including before the runner id is persisted; normal TERM cleanup clears
 the state so EXIT does not clean up twice. A VM older than 7 hours is killed.
 
-The LaunchAgent allows 360 s for shutdown. Slots receive TERM in parallel:
-120 s for a deferred job-wait check + 10 s VM stop + 120 s registration removal
-and 110 s margin. Clone, boot probes and delete have no explicit timeout; if
-cleanup is killed, the next start recovers from `state/slotN.runner`.
+The effective shutdown bound is 60 s: launchd caps GUI LaunchAgent
+`ExitTimeOut` at 60 s. Slots receive TERM in parallel, but worst-case per-slot
+cleanup (up to 120 s for deferred runner-busy/delete checks, 10 s VM stop, and
+120 s registration removal) can exceed that bound. Cleanup killed by launchd
+is recovered on the next start from `state/slotN.runner` and
+`state/slotN.orphans`. Drain with `PAUSE` before a planned stop.
 
 ## Drain and pause
 
@@ -128,10 +130,12 @@ gh variable delete CI_LINUX_LIGHT_RUNNER -R raullenchai/Rapid-MLX   # light jobs
 touch ~/ci-runners/PAUSE                                     # on each host
 # Full stop and uninstall:
 launchctl bootout gui/$(id -u)/com.rapidmlx.ci-runners
+~/ci-runners/bin/wait-stopped.sh
 ```
 
-`bootout` sends TERM, and each slot destroys its VM. Remove `~/ci-runners`
-after `tart list` shows no `rmx-slot*` VMs.
+`bootout` sends TERM and returns before the supervisor exits. Wait with
+`~/ci-runners/bin/wait-stopped.sh` before removing `~/ci-runners`, and confirm
+`tart list` shows no `rmx-slot*` VMs.
 
 ## Setup on a new host
 
@@ -150,6 +154,80 @@ after `tart list` shows no `rmx-slot*` VMs.
    `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rapidmlx.ci-runners.plist`.
 6. Check that the runners appear online with the labels above.
 7. Release the setup lease.
+
+## Upgrading the scripts
+
+Run these commands from a workstation with a repo checkout. Set `H` to the
+host's SSH alias:
+
+```bash
+H='<ssh-alias>'
+```
+
+Always quote host-prefixed paths as `"${H}:ci-runners/..."`; zsh mis-parses
+`"$H:ci-runners"` because `:c` is a history modifier. Single-quote remote
+commands so `$(id -u)` and `$HOME` expand on the host.
+
+1. Pause and wait for running jobs to finish. Repeat the list command until
+   there are no `rmx-slot*` VMs, so bootout cleanup has nothing to do within
+   the 60 s bound.
+
+   ```bash
+   ssh "$H" 'touch ~/ci-runners/PAUSE'
+   ssh "$H" 'TART_HOME=~/ci-runners/tart-home ~/ci-runners/bin/tart list --quiet'
+   ```
+
+2. Stop the supervisor. `bootout` returns before it exits.
+
+   ```bash
+   ssh "$H" 'launchctl bootout gui/$(id -u)/com.rapidmlx.ci-runners'
+   ```
+
+3. Wait for the old supervisor to exit. Bootstrapping while it is still exiting
+   fails with `Bootstrap failed: 5: Input/output error`.
+
+   ```bash
+   ssh "$H" '~/ci-runners/bin/wait-stopped.sh'
+   ```
+
+   On the first upgrade that ships this helper, the old copy does not have it
+   yet. Poll by hand instead:
+
+   ```bash
+   ssh "$H" 'while launchctl print gui/$(id -u)/com.rapidmlx.ci-runners >/dev/null 2>&1; do sleep 1; done'
+   ```
+
+4. Install the scripts and render the plist. The repo's `bin/` contains only
+   shell scripts; copying it preserves the host's existing `bin/tart` symlink.
+
+   ```bash
+   scp -r tools/ci-runners/tart/bin tools/ci-runners/tart/guest "${H}:ci-runners/"
+   scp tools/ci-runners/tart/com.rapidmlx.ci-runners.plist.template "${H}:ci-runners/"
+   ssh "$H" 'sed "s#__HOME__#$HOME#g" ~/ci-runners/com.rapidmlx.ci-runners.plist.template > ~/Library/LaunchAgents/com.rapidmlx.ci-runners.plist'
+   ```
+
+5. Start the supervisor.
+
+   ```bash
+   ssh "$H" 'launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rapidmlx.ci-runners.plist'
+   ```
+
+6. Resume the slots.
+
+   ```bash
+   ssh "$H" 'rm ~/ci-runners/PAUSE'
+   ```
+
+7. Verify that `launchctl print` shows `state = running`, the supervisor log
+   shows `starting N slots`, and the runners re-register online. The VM list
+   should show at most `SLOTS` `rmx-slot*` VMs with no orphans.
+
+   ```bash
+   ssh "$H" 'launchctl print gui/$(id -u)/com.rapidmlx.ci-runners'
+   ssh "$H" 'tail -n 50 ~/ci-runners/logs/supervisor.log'
+   gh api repos/raullenchai/Rapid-MLX/actions/runners --paginate --jq '.runners[] | select(.name | startswith("rmx-tart-")) | [.name, .status, .busy] | @tsv'
+   ssh "$H" 'TART_HOME=~/ci-runners/tart-home ~/ci-runners/bin/tart list --quiet'
+   ```
 
 ## Rebuilding the golden image
 
