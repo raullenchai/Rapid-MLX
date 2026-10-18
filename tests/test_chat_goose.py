@@ -37,6 +37,9 @@ def test_goose_archive_is_verified_and_cached(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path)
     monkeypatch.setattr(chat_goose, "GOOSE_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(
+        chat_goose, "GOOSE_BINARY_SHA256", hashlib.sha256(executable).hexdigest()
+    )
     downloads = []
 
     def download(_url, timeout):
@@ -49,6 +52,7 @@ def test_goose_archive_is_verified_and_cached(tmp_path, monkeypatch):
     assert chat_goose._goose_binary() == binary
     assert downloads == [120]
     binary.write_bytes(b"tampered")
+    (tmp_path / "binary.sha256").write_text(hashlib.sha256(b"tampered").hexdigest())
     assert chat_goose._goose_binary().read_bytes() == executable
     assert downloads == [120]
 

@@ -24,6 +24,7 @@ GOOSE_URL = (
     "goose-aarch64-apple-darwin.tar.gz"
 )
 GOOSE_SHA256 = "feda29744cd4e13f9a5211a968ed47c67fb8fa79647f4d271d92d564998a393c"
+GOOSE_BINARY_SHA256 = "4b8258c24adad9e07957d1dddfc7d965b97883dce2eff64af7e3d3c005655d81"
 BUILTINS = "developer,computercontroller,memory,autovisualiser,tutorial"
 ASSETS = Path(goose_runtime.__file__).parent
 
@@ -38,12 +39,10 @@ def _goose_binary() -> Path | None:
     root = _cache_root()
     binary = root / "goose"
     stamp = root / "archive.sha256"
-    binary_stamp = root / "binary.sha256"
     if binary.is_file() and os.access(binary, os.X_OK) and stamp.is_file():
         if (
             stamp.read_text().strip() == GOOSE_SHA256
-            and binary_stamp.is_file()
-            and binary_stamp.read_text().strip() == _sha256(binary)
+            and _sha256(binary) == GOOSE_BINARY_SHA256
         ):
             return binary
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -72,9 +71,11 @@ def _goose_binary() -> Path | None:
                 pending = Path(target.name)
                 shutil.copyfileobj(source, target)
     pending.chmod(0o755)
+    if _sha256(pending) != GOOSE_BINARY_SHA256:
+        pending.unlink(missing_ok=True)
+        raise ValueError("Goose executable checksum mismatch")
     pending.replace(binary)
     stamp.write_text(GOOSE_SHA256 + "\n")
-    binary_stamp.write_text(_sha256(binary) + "\n")
     return binary
 
 
