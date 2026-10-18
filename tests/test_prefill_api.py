@@ -133,6 +133,56 @@ async def test_prefix_prefill_hides_generated_text_and_checkpoints(monkeypatch):
     assert saved == [30]
 
 
+@pytest.mark.asyncio
+async def test_cancelled_stream_that_returns_normally_cannot_checkpoint(monkeypatch):
+    started = asyncio.Event()
+    saved = []
+
+    class SuppressingEngine:
+        async def stream_chat(self, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return
+            yield SimpleNamespace(finished=True)
+
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    monkeypatch.setattr(
+        api, "save_prefix_cache_to_disk", lambda budget: saved.append(budget)
+    )
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}], persist=True
+    )
+    task = asyncio.create_task(api._warm(SuppressingEngine(), body))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_does_not_report_success_or_checkpoint(monkeypatch):
+    class EmptyEngine:
+        async def stream_chat(self, **kwargs):
+            if False:
+                yield None
+
+    monkeypatch.setattr(api.disk_caches, "disabled", lambda: False)
+    monkeypatch.setattr(
+        api,
+        "save_prefix_cache_to_disk",
+        lambda budget: pytest.fail("saved empty stream"),
+    )
+    body = api.PrefillRequest(
+        kind="prefix", messages=[{"role": "system", "content": "shared"}], persist=True
+    )
+    with pytest.raises(HTTPException) as error:
+        await api._warm(EmptyEngine(), body)
+    assert error.value.status_code == 503
+
+
 def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
     monkeypatch.setattr(
         api,

@@ -158,6 +158,11 @@ async def _warm(engine, body: PrefillRequest) -> dict:
                 break
     finally:
         await stream.aclose()
+    current = asyncio.current_task()
+    if current is not None and cast(Any, current).cancelling():
+        raise asyncio.CancelledError()
+    if last is None or not last.finished:
+        raise HTTPException(status_code=503, detail="Prefill did not complete")
     result = {
         "status": "prefilled",
         "prompt_tokens": getattr(last, "prompt_tokens", 0),
