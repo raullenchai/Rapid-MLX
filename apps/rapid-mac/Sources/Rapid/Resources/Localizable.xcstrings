@@ -3600,12 +3600,12 @@
         }
       }
     },
-    "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files." : {
+    "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请选择 PDF、CSV、TXT、PNG、JPEG 或 GIF 文件。"
+            "value" : "请选择 PDF、CSV、TXT、PNG、JPEG 或 GIF 文件。其他文档请先另存为 PDF 或 TXT。"
           }
         }
       }

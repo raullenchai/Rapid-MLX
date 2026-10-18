@@ -5,7 +5,7 @@ import Testing
 @testable import Rapid
 
 @MainActor
-@Suite("Chat PDF, CSV, and TXT attachments")
+@Suite("Chat PDF, CSV, and TXT attachments", .serialized)
 struct ChatFileAttachmentTests {
     private func temporaryURL(extension fileExtension: String) -> URL {
         FileManager.default.temporaryDirectory
@@ -625,6 +625,151 @@ struct ChatFileAttachmentTests {
         ))
 
         #expect(!AutosizingTextView.isStandardPasteKeyEquivalent(event))
+    }
+
+    @Test("File pastes route every URL and consume path text even when rejected",
+          arguments: ["txt", "pdf", "docx", "pages", "md"])
+    func nativeFilePaste(fileExtension: String) {
+        let view = AutosizingTextView.makeForComposer()
+        view.string = "Existing draft"
+        let file = URL(fileURLWithPath: "/tmp/pasted.\(fileExtension)")
+        let board = NSPasteboard(name: .init("rapid.chat.paste.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.writeObjects([file as NSURL])
+        board.setString(file.path, forType: .string)
+        var received: [URL] = []
+        var imageCalls = 0
+        view.onDropAttachments = {
+            received = $0
+            return false
+        }
+        view.onPasteAttachments = { imageCalls += 1; return true }
+
+        // The plain-string entry point is also used by Paste and Match Style.
+        #expect(view.readSelection(from: board, type: .string))
+        #expect(received == [file])
+        #expect(view.string == "Existing draft")
+        #expect(imageCalls == 0)
+        received = []
+        #expect(view.readSelection(from: board))
+        #expect(received == [file])
+        #expect(view.string == "Existing draft")
+    }
+
+    @Test("A mixed file paste preserves every candidate and is consumed without a handler")
+    func mixedFilePaste() {
+        let view = AutosizingTextView.makeForComposer()
+        let files = ["a.pdf", "b.pages", "c.docx"].map { URL(fileURLWithPath: "/tmp/\($0)") }
+        let board = NSPasteboard(name: .init("rapid.chat.paste.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.writeObjects(files.map { $0 as NSURL })
+        #expect(view.consumeFilePaste(from: board))
+        var received: [URL] = []
+        view.onDropAttachments = { received = $0; return true }
+        #expect(view.consumeFilePaste(from: board))
+        #expect(received == files)
+        #expect(view.string.isEmpty)
+    }
+
+    @Test("Plain text paste uses AppKit unchanged and never calls attachment handlers")
+    func nativePlainTextPaste() {
+        let view = AutosizingTextView.makeForComposer()
+        view.isRichText = false
+        let text = "/tmp/notes.docx\nOrdinary text 数据"
+        let board = NSPasteboard(name: .init("rapid.chat.paste.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.setString(text, forType: .string)
+        var calls = 0
+        view.onDropAttachments = { _ in calls += 1; return true }
+        view.onPasteAttachments = { calls += 1; return true }
+        #expect(!view.consumeFilePaste(from: board))
+        #expect(view.readSelection(from: board, type: .string))
+        #expect(view.string == text)
+        #expect(calls == 0)
+    }
+
+    private func composer(in view: NSView) -> AutosizingTextView? {
+        if let editor = view as? AutosizingTextView { return editor }
+        return view.subviews.lazy.compactMap { composer(in: $0) }.first
+    }
+
+    private func mountedComposer() throws -> (GoldenChatSurface, AutosizingTextView) {
+        let previousWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let surface = GoldenChatSurface.mount()
+        let editor = try #require(NSApp.windows.lazy.filter {
+            !previousWindows.contains(ObjectIdentifier($0))
+        }.compactMap {
+            $0.contentView.flatMap { composer(in: $0) }
+        }.first)
+        return (surface, editor)
+    }
+
+    @Test("File paste reaches the live composer notice, attachment chips, and document budget")
+    func liveComposerFilePaste() async throws {
+        let (surface, editor) = try mountedComposer()
+        defer {
+            surface.chat.stopAndPersist()
+            DocumentContentCache.shared.remove(contentsOf:
+                surface.chat.messages.flatMap { $0.fileAttachments.map(\.id) })
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-paste-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = (0..<5).map { directory.appendingPathComponent("paste-\($0).txt") }
+        for file in files { try Data("Attachment body".utf8).write(to: file) }
+        let board = NSPasteboard(name: .init("rapid.chat.paste.live.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.writeObjects([directory.appendingPathComponent("unsupported.docx") as NSURL])
+        #expect(editor.readSelection(from: board, type: .string))
+        #expect(editor.string.isEmpty)
+        try await surface.stage.waitForText("Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
+
+        board.clearContents()
+        board.writeObjects(files.map { $0 as NSURL })
+        #expect(editor.readSelection(from: board, type: .string))
+        try await surface.stage.waitForIdentifier("ChatView.Attachment.Remove.paste-3.txt")
+        try await surface.stage.waitForText("Attach up to 4 PDF, CSV, or TXT files per message.")
+        #expect(!surface.stage.identifiers().contains("ChatView.Attachment.Remove.paste-4.txt"))
+
+        // A further distinct file must hit the already-full budget as well.
+        board.clearContents()
+        board.writeObjects([files[4] as NSURL])
+        #expect(editor.readSelection(from: board, type: .string))
+        #expect(editor.string.isEmpty)
+        try await surface.sendPrompt("Use the attached files")
+        try await surface.waitForSendIdle()
+        #expect(surface.chat.messages.first(where: { $0.role == .user })?.fileAttachments.count == 4)
+    }
+
+    @Test("The live image paste callback still accepts image data and ignores plain text")
+    func liveComposerImagePaste() throws {
+        let (surface, editor) = try mountedComposer()
+        defer { surface.chat.stopAndPersist() }
+        let board = NSPasteboard.general
+        let saved = (board.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            board.clearContents()
+            if !saved.isEmpty { board.writeObjects(saved) }
+        }
+        board.clearContents()
+        board.setString("Plain text", forType: .string)
+        #expect(editor.onPasteAttachments?() == false)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        board.clearContents()
+        board.setData(try #require(bitmap.tiffRepresentation), forType: .tiff)
+        #expect(editor.onPasteAttachments?() == true)
+        #expect(editor.string.isEmpty)
     }
 
     @Test("A file dropped on the native text view is imported instead of inserting its path")

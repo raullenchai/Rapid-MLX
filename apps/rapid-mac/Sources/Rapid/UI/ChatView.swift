@@ -1405,7 +1405,7 @@ struct ChatView: View {
             accepted = addFileURLs(fileURLs) || accepted
         }
         if unsupported {
-            attachmentDraft.notice = String(localized: "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files.")
+            attachmentDraft.notice = String(localized: "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files. Save other documents as PDF or TXT first.")
         }
         return accepted
     }
@@ -1570,22 +1570,11 @@ struct ChatView: View {
 
     private func pasteAttachmentsFromClipboard() -> Bool {
         let pasteboard = NSPasteboard.general
-        let urls = (pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL] ?? []).filter {
-            let type = UTType(filenameExtension: $0.pathExtension)
-            return type?.conforms(to: .image) == true
-                || ChatFileAttachment.recognizesDocument(at: $0)
-        }
         let pastedImage = NSImage(pasteboard: pasteboard)
-        guard !urls.isEmpty || pastedImage != nil else { return false }
-        if !urls.isEmpty {
-            _ = addAttachmentURLs(urls)
-        } else if let image = pastedImage,
-                  let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) {
+        guard let image = pastedImage else { return false }
+        if let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
             guard supportsImageInput else {
                 rejectImageInputForCurrentModel()
                 return true
@@ -2711,8 +2700,23 @@ final class AutosizingTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        if onPasteAttachments?() == true { return }
+        if consumeFilePaste(from: .general) || onPasteAttachments?() == true { return }
         super.paste(sender)
+    }
+
+    // AppKit also uses this entry point for Paste and Match Style / plain text.
+    // Accept an explicit pasteboard so tests never have to replace the clipboard.
+    override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        if consumeFilePaste(from: pasteboard) { return true }
+        return super.readSelection(from: pasteboard, type: type)
+    }
+
+    @discardableResult
+    func consumeFilePaste(from pasteboard: NSPasteboard) -> Bool {
+        let urls = Self.fileURLs(from: pasteboard)
+        guard !urls.isEmpty else { return false }
+        _ = onDropAttachments?(urls)
+        return true
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -2784,7 +2788,7 @@ final class AutosizingTextView: NSTextView {
         // reach the attachment importer. Shift-Command-V remains AppKit's
         // alternate paste behavior.
         if Self.isStandardPasteKeyEquivalent(event),
-           onPasteAttachments?() == true {
+           consumeFilePaste(from: .general) || onPasteAttachments?() == true {
             return true
         }
         return super.performKeyEquivalent(with: event)

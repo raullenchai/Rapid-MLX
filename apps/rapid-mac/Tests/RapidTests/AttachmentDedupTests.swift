@@ -59,8 +59,10 @@ struct AttachmentDedupTests {
                 "Drag-and-drop must enter the shared attachment importer.")
         #expect(stripped.components(separatedBy: "addAttachmentURLs(panel.urls)").count - 1 == 2,
                 "Both Upload file and Upload photo must enter the shared attachment importer.")
-        #expect(stripped.contains("if!urls.isEmpty{_=addAttachmentURLs(urls)"),
-                "Pasted file URLs must enter the shared attachment importer.")
+        let pasteWired = stripped.contains("ifconsumeFilePaste(from:.general)||onPasteAttachments?()==true{return}")
+            && stripped.contains("_=onDropAttachments?(urls)")
+            && stripped.contains("onDropAttachments:addAttachmentURLs")
+        #expect(pasteWired, "Pasted file URLs must enter the shared attachment importer.")
     }
 
     @Test("A file already attached is rejected, and counted")
