@@ -797,15 +797,50 @@ def test_unrelated_template_error_is_not_hidden():
         apply_chat_template(tokenizer, _messages_with_assistant_tool_call("{}"))
 
 
-def test_alternating_consecutive_users_without_tools():
-    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "Conversation roles must alternate user/assistant/user/assistant/...",
+        "After the optional system message, conversation roles must alternate "
+        "user/assistant/user/assistant/...",
+        "After the optional system message, conversation roles must alternate "
+        "user and assistant roles except for tool calls and results",
+    ],
+)
+def test_alternating_consecutive_users_without_tools(diagnostic):
+    tokenizer = _fake_tokenizer_with_template(
+        ALTERNATING_ONLY_TEMPLATE.replace(
+            "Conversation roles must alternate user/assistant/user/assistant/...",
+            diagnostic,
+        )
+    )
     messages = [
         {"role": "user", "content": "clock"},
         {"role": "user", "content": "question"},
     ]
     original = copy.deepcopy(messages)
     assert "user: clock\n\nquestion" in apply_chat_template(tokenizer, messages)
+    assert tokenizer.apply_chat_template.call_count == 2
+    assert tokenizer.apply_chat_template.call_args.args[0] == [
+        {"role": "user", "content": "clock\n\nquestion"}
+    ]
     assert messages == original
+
+
+def test_unrelated_alternate_error_is_reraised_unchanged():
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    original = ValueError("Cannot render alternate message format")
+    tokenizer.apply_chat_template.side_effect = original
+    with pytest.raises(ValueError) as raised:
+        apply_chat_template(
+            tokenizer,
+            [
+                {"role": "user", "content": "clock"},
+                {"role": "user", "content": "question"},
+            ],
+        )
+    assert raised.value is original
+    assert tokenizer.apply_chat_template.call_count == 1
 
 
 def test_alternating_tool_history_with_clock_rows():

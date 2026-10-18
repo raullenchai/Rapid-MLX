@@ -2666,7 +2666,7 @@ def _render_chat_template(
                 candidate_messages, **candidate_kwargs
             )
         except Exception as exc:
-            if "Conversation roles must alternate user/assistant" not in str(exc):
+            if "conversation roles must alternate" not in str(exc).lower():
                 raise
             has_tools = any(
                 isinstance(message, dict) and message.get("role") == "tool"
