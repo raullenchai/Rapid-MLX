@@ -53,8 +53,11 @@ logger = logging.getLogger(__name__)
 
 # The drain only lets a client still uploading read the 413 instead of a TCP
 # reset. This short bounded grace period cuts stalled clients after 2 s idle
-# and any client after 10 s total or a 64 MiB discard budget, then sends
-# the 413 with Connection: close.
+# and any client after 10 s total or once more than 64 MiB has been
+# discarded, then sends the 413 with Connection: close. The byte budget is
+# checked per ASGI body message; the HTTP server delivers uploads in
+# socket-read-sized chunks (it pauses reading past a small buffer), so the
+# overshoot is at most one such chunk.
 _DRAIN_MAX_BYTES = 64 * 1024 * 1024
 _DRAIN_TOTAL_SECONDS = 10.0
 _DRAIN_IDLE_SECONDS_MAX = 2.0
