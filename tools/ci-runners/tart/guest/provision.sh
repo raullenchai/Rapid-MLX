@@ -80,9 +80,15 @@ fetch_enc o200k_base.tiktoken 446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59
 fetch_enc cl100k_base.tiktoken 223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7
 chmod -R a+rX "$ENC"
 
-# uv (fast installs; optional for jobs).
-if ! command -v uv >/dev/null; then
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+# uv (fast installs; optional for jobs). Pinned release, checksum-verified.
+UV_VERSION=0.13.1
+UV_SHA256=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14
+if ! uv --version 2>/dev/null | grep -q " $UV_VERSION "; then
+  curl -fsSL -o /tmp/uv.tgz "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-aarch64-unknown-linux-gnu.tar.gz"
+  echo "$UV_SHA256  /tmp/uv.tgz" | sha256sum -c -
+  tar -xzf /tmp/uv.tgz -C /tmp
+  install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uv /tmp/uv-aarch64-unknown-linux-gnu/uvx /usr/local/bin/
+  rm -rf /tmp/uv.tgz /tmp/uv-aarch64-unknown-linux-gnu
 fi
 
 # GitHub Actions runner. Registration happens per boot with a JIT config

@@ -80,10 +80,12 @@ The supervisor runs one loop per slot. Each loop works like this:
 1. If draining (see below), wait.
 2. If free disk is below `MIN_FREE_GB`, wait.
 3. Otherwise run `tart clone rmx-golden rmx-slotN` and boot the VM headless.
+   If a drain started during boot, destroy the VM without registering.
 4. Call `POST /repos/{repo}/actions/runners/generate-jitconfig` with the labels
    above, and start `run.sh --jitconfig` in the VM through `tart exec`.
 5. When the runner exits after its one job, stop and delete the VM, and remove
-   any leftover registration.
+   any leftover registration. If GitHub cannot confirm the removal, the runner
+   id goes to `state/slotN.orphans` and is retried on every loop.
 
 On start, a loop destroys its stale VM and runner from before a crash or
 reboot. A VM older than 7 hours is killed.
@@ -148,13 +150,16 @@ touch ~/ci-runners/PAUSE                 # optional; running clones are unaffect
 rm ~/ci-runners/PAUSE
 ```
 
-To change a tool version, edit `guest/provision.sh` (runner version and
-SHA-256, Node, Python, Swift).
+To change a tool version, edit `guest/provision.sh` (runner and uv versions
+with their SHA-256, Node, Python, Swift).
+
+The previous image is kept as `rmx-golden-prev` until the new one is renamed
+into place, so a failed swap never leaves the host without an image.
 
 The build shuts the guest down from inside, after `sync`. Stopping it from
 outside can lose ext4 delayed-allocation writes, and that left zero-length
-runner binaries in an early image. The build then aborts if it finds
-zero-length runner binaries.
+runner binaries in an early image. The build then aborts if it finds any
+zero-length file in the runner or `/usr/local/bin`.
 
 Validate a new image before relying on it. Open a throwaway draft PR that
 hard-routes every `CI_LINUX_RUNNER` and `CI_LINUX_LIGHT_RUNNER` job to `rapidmlx-tart`, and run

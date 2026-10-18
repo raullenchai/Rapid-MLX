@@ -15,8 +15,29 @@ destroy_vm() {
   "$TART" stop "$VM" --timeout 10 >/dev/null 2>&1
   [ -n "$VM_PID" ] && { kill "$VM_PID" 2>/dev/null; wait "$VM_PID" 2>/dev/null; }
   "$TART" delete "$VM" >/dev/null 2>&1
-  if [ -n "$RUNNER_ID" ]; then delete_runner_if_idle "$RUNNER_ID"; fi
+  # Keep the id for a later retry if GitHub could not confirm the removal.
+  if [ -n "$RUNNER_ID" ] && ! runner_removed "$RUNNER_ID"; then
+    echo "$RUNNER_ID" >> "$STATE.orphans"
+    log "could not remove runner $RUNNER_ID; will retry"
+  fi
   VM_PID=""; EXEC_PID=""; RUNNER_ID=""; rm -f "$STATE.runner"
+}
+
+# Removed now, or already gone on GitHub.
+runner_removed() {
+  delete_runner_if_idle "$1" || [ "$(runner_busy "$1")" = gone ]
+}
+
+# Retry registrations that an earlier destroy_vm could not remove.
+reap_orphans() {
+  [ -s "$STATE.orphans" ] || return 0
+  local id keep=""
+  while read -r id; do
+    [ -n "$id" ] || continue
+    runner_removed "$id" || keep="$keep$id
+"
+  done < "$STATE.orphans"
+  printf '%s' "$keep" > "$STATE.orphans"
 }
 
 on_term() { log "terminating; destroying $VM"; destroy_vm; exit 0; }
@@ -27,6 +48,7 @@ if [ -f "$STATE.runner" ]; then RUNNER_ID=$(cat "$STATE.runner"); fi
 destroy_vm
 
 while true; do
+  reap_orphans
   if reason=$(should_drain); then
     log "draining: $reason"; nap 30; continue
   fi
@@ -50,6 +72,10 @@ while true; do
   done
   if [ "$ready" != 1 ]; then log "VM not ready after boot; destroying"; destroy_vm; nap 30; continue; fi
   log "VM booted in $(( $(date +%s) - started ))s"
+  # Drain may have started while the VM booted; do not register a runner then.
+  if reason=$(should_drain); then
+    log "draining ($reason) after boot; destroying $VM"; destroy_vm; continue
+  fi
 
   name="$RUNNER_PREFIX-$N-$(date +%Y%m%d%H%M%S)"
   body=$(jq -nc --arg n "$name" --argjson l "$LABELS_JSON" '{name:$n, runner_group_id:1, labels:$l, work_folder:"_work"}')

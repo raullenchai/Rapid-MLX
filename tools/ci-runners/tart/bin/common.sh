@@ -78,13 +78,17 @@ delete_runner_if_idle() {
   gh_api DELETE "/repos/$REPO/actions/runners/$id" >/dev/null 2>&1
 }
 
-runner_busy() {  # prints true/false/gone
-  local id="$1" r
-  if r=$(gh_api GET "/repos/$REPO/actions/runners/$id" 2>/dev/null); then
+runner_busy() {  # prints true/false, gone (HTTP 404), or unknown (other errors)
+  local id="$1" r err
+  err=$(mktemp "${TMPDIR:-/tmp}/ghapi-err.XXXXXX")
+  if r=$(gh_api GET "/repos/$REPO/actions/runners/$id" 2>"$err"); then
     printf '%s' "$r" | jq -r '.busy'
-  else
+  elif grep -q 'HTTP 404$' "$err"; then
     echo gone
+  else
+    echo unknown
   fi
+  rm -f "$err"
 }
 
 # Interruptible sleep so TERM traps run promptly.
