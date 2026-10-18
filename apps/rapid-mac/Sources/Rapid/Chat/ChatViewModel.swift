@@ -2718,7 +2718,10 @@ final class ChatViewModel {
             )
             // Last wire transformation: keep the synthesis steer after all
             // evidence, without stamping it or changing the newest real user.
-            if isFinalSynthesisRound {
+            // A tool-free chat also runs as a "final" round; only a request
+            // that ends on tool evidence is a real synthesis round.
+            let synthesizesToolEvidence = isFinalSynthesisRound && history.last?.role == .tool
+            if synthesizesToolEvidence {
                 history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
             }
             // Whether any document extract survived onto THIS request, read
@@ -2778,7 +2781,7 @@ final class ChatViewModel {
                 // Prose above a trailing call wins over the whole-content
                 // check: both detectors can match the same reply, and the
                 // answer must survive. A Stop keeps the cancellation result.
-                if isFinalSynthesisRound,
+                if synthesizesToolEvidence,
                     epoch == conversationEpoch,
                     !Task.isCancelled,
                     var final = currentMessage(index: currentPlaceholder)

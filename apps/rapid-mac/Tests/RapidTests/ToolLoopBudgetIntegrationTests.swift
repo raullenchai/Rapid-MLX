@@ -168,6 +168,26 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(result.last?.status == .complete)
     }
 
+    @Test("A tool-free chat keeps a tool-call-shaped answer and gets no synthesis row")
+    func toolFreeChatIsNotASynthesisRound() async throws {
+        ToolLoopBudgetProtocol.reset(finalAnswers: [Self.artifact])
+        let model = ChatViewModel(
+            client: ChatStreamClient(baseURL: URL(string: "fake://tool-loop")!, session: ToolLoopBudgetProtocol.session()),
+            tools: EmptyToolRegistry(),
+            persistsConversations: false
+        )
+        try await sendAndWait(model)
+
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 1)
+        let final = try #require(model.messages.last)
+        #expect(final.content == Self.artifact)
+        #expect(final.status == .complete)
+        let body = try #require(ToolLoopBudgetProtocol.requestBodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let rows = try #require(json["messages"] as? [[String: Any]])
+        #expect(!rows.contains { ($0["content"] as? String) == Self.synthesisInstruction })
+    }
+
     @Test("A request that does not end on a tool result gets no synthesis row")
     func synthesisHelperSkipsToolFreeRequests() {
         let history = [
