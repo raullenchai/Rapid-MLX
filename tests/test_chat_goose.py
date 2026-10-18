@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 import os
 import tarfile
 from pathlib import Path
@@ -110,6 +111,48 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     assert commands[0][commands[0].index("--with-builtin") + 1] == chat_goose.BUILTINS
     assert "/opt/user-tools" in environments[0]["PATH"]
     assert "WORK_PROXY_BEARER" not in environments[0]
+
+
+def test_goose_cli_maps_sampling_and_system_flags(tmp_path, monkeypatch):
+    binary = tmp_path / "goose"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(chat_goose, "_goose_binary", lambda: binary)
+    monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "Hello")
+    monkeypatch.setattr(
+        chat_goose.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    args = SimpleNamespace(
+        mcp_config=None,
+        mcp_max_rounds=8,
+        response_timeout=600,
+        context_length=8192,
+        system="Be concise",
+        temperature=0.2,
+        max_tokens=512,
+        think=True,
+        disable_prefix_cache=True,
+        output_format="text",
+        resume=False,
+    )
+    assert chat_goose.run(
+        args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=True
+    )
+    workspace = next((tmp_path / "cache/workspaces").iterdir())
+    contract = json.loads((workspace / "chat-contract.json").read_text())
+    provider = json.loads(
+        (workspace / "config/custom_providers/custom_rapid_local.json").read_text()
+    )
+    assert contract["system_prompt"] == "Be concise"
+    assert contract["use_goose_sampling_defaults"] is False
+    assert contract["temperature"] == 0.2
+    assert contract["max_tokens"] == 512
+    assert contract["enable_thinking"] is True
+    assert provider["models"][0] == {"name": "test-model", "context_limit": 8192}
 
 
 @pytest.mark.parametrize(
