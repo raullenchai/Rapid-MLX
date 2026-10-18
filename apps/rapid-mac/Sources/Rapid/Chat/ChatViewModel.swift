@@ -199,7 +199,7 @@ final class ChatViewModel {
         return offered
     }
 
-    nonisolated private static let toolBudgetSynthesisPreamble = """
+    nonisolated static let toolBudgetSynthesisPreamble = """
     The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
     """
 
@@ -1512,7 +1512,17 @@ final class ChatViewModel {
                 .replacingOccurrences(of: "]", with: "\\]")
             return "- [\(safeTitle)](\(source.url))"
         }
-        message.content += "\n\nSources:\n" + rows.joined(separator: "\n")
+        let sourceText = "\n\nSources:\n" + rows.joined(separator: "\n")
+        if message.toolCallArtifactSuppressed,
+            let prose = ChatMessage.trailingToolCallArtifactProse(in: message.content),
+            let proseRange = message.content.range(of: prose)
+        {
+            // Keep the artifact at the tail so the existing renderer can
+            // recover both the answer and its sources above the caption.
+            message.content.insert(contentsOf: sourceText, at: proseRange.upperBound)
+        } else {
+            message.content += sourceText
+        }
         updateMessage(at: index, with: message)
     }
 
@@ -2676,16 +2686,13 @@ final class ChatViewModel {
                 history,
                 contextWindow: ctxWindow
             )
-            if isFinalSynthesisRound {
-                history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
-            }
             // BUG C: on the forced correction round, name the exact failure so
             // the retry has a stronger steer than the preamble that already
             // rode on the draft it is correcting.
             if forceGroundingCorrection {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
-            // LAST, after the trim and every preamble: each user turn carries
+            // After the trim and system preambles, each real user turn carries
             // a neutral local-time annotation from createdAt, so the prompt stays
             // append-only between turns and the engine's prefix cache can
             // reuse it. See ``currentDateContext`` for the measurement that
@@ -2709,6 +2716,11 @@ final class ChatViewModel {
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
             )
+            // Last wire transformation: keep the synthesis steer after all
+            // evidence, without stamping it or changing the newest real user.
+            if isFinalSynthesisRound {
+                history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
+            }
             // Whether any document extract survived onto THIS request, read
             // off the same array that is about to be encoded. The
             // tool-not-called caption is decided later, at the completion
@@ -2760,6 +2772,25 @@ final class ChatViewModel {
             )
             switch outcome {
             case .terminal:
+                // Tools-disabled rounds can still leak calls as plain text.
+                // Handle them before refusal detection; a correction containing
+                // only a call is restored from its draft below instead.
+                if isFinalSynthesisRound,
+                    epoch == conversationEpoch,
+                    var final = currentMessage(index: currentPlaceholder)
+                {
+                    if ChatMessage.contentLooksLikeToolCallArtifact(final.content) {
+                        if draftBeforeCorrection == nil {
+                            final.content = ""
+                            updateMessage(at: currentPlaceholder, with: final)
+                            failWithToolRoundCap(at: currentPlaceholder, epoch: epoch)
+                            return
+                        }
+                    } else if ChatMessage.trailingToolCallArtifactProse(in: final.content) != nil {
+                        final.toolCallArtifactSuppressed = true
+                        updateMessage(at: currentPlaceholder, with: final)
+                    }
+                }
                 // BUG C: if this .terminal ends a grounding-correction round
                 // that failed to produce a usable answer (transport error,
                 // cancellation, or an empty stream), restore the original draft
@@ -2780,6 +2811,7 @@ final class ChatViewModel {
                         !Task.isCancelled
                         && !correctedText.isEmpty
                         && corrected?.status != .failed
+                        && !ChatMessage.contentLooksLikeToolCallArtifact(correctedText)
                     if !correctionUsable,
                         var restore = currentMessage(index: currentPlaceholder)
                     {
@@ -2787,6 +2819,7 @@ final class ChatViewModel {
                         restore.status = .complete
                         restore.errorMessage = nil
                         restore.failureKind = nil
+                        restore.toolCallArtifactSuppressed = false
                         updateMessage(at: currentPlaceholder, with: restore)
                     }
                     appendGroundingSources(
@@ -2941,8 +2974,8 @@ final class ChatViewModel {
         updateMessage(at: index, with: stale)
     }
 
-    /// Defensive fallback when a model emits a structured call even though
-    /// the final synthesis request advertised no tools.
+    /// Defensive fallback when a model emits a structured or raw call even
+    /// though the final synthesis request advertised no tools.
     private func failWithToolRoundCap(at index: Int, epoch: Int) {
         guard epoch == conversationEpoch else { return }
         let message = ChatViewModel.toolRoundCapMessage(cap: maxToolExecutions)
@@ -2963,21 +2996,14 @@ final class ChatViewModel {
         "The model could not finish after \(cap) tool calls. Try rephrasing, or turn a tool off."
     }
 
-    /// Add the tools-disabled final-round instruction without introducing a
-    /// second system row, which several local chat templates reject.
+    /// Append a wire-only user instruction after the final tool result.
+    /// In captured synthesis requests, a system-row instruction still produced
+    /// raw calls in 5/5 trials; the same text as a trailing user row produced
+    /// real answers in 5/5. Append after clock/guidance stamping so it stays bare.
     nonisolated static func addingToolBudgetSynthesisPreamble(
         to messages: [ChatMessage]
     ) -> [ChatMessage] {
-        var result = messages
-        if result.first?.role == .system {
-            result[0].content += "\n\n" + toolBudgetSynthesisPreamble
-        } else {
-            result.insert(
-                ChatMessage(role: .system, content: toolBudgetSynthesisPreamble, status: .complete),
-                at: 0
-            )
-        }
-        return result
+        messages + [ChatMessage(role: .user, content: toolBudgetSynthesisPreamble, status: .complete)]
     }
 
     /// Wire-side filter — what actually ends up in the request body's ``tools``
@@ -3455,8 +3481,8 @@ Your previous draft refused the question by claiming you lack real-time access o
 """
 
     /// Prepend/merge the grounding-correction instruction onto the wire body of
-    /// the forced correction round. Mirrors ``addingToolBudgetSynthesisPreamble``
-    /// so both can stack on a single leading system row.
+    /// the forced correction round. Remains on the leading system row while
+    /// the tools-disabled synthesis instruction is appended as a user row.
     nonisolated static func addingGroundingCorrectionPreamble(
         to messages: [ChatMessage]
     ) -> [ChatMessage] {

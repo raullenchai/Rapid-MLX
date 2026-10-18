@@ -5,6 +5,10 @@ import Testing
 @MainActor
 @Suite("Tool-loop budget integration", .serialized)
 struct ToolLoopBudgetIntegrationTests {
+    private static let synthesisInstruction = """
+    The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
+    """
+
     @Test("three tool rounds end in a tools-disabled synthesis answer")
     func cappedLoopSynthesizesInsteadOfFailing() async throws {
         ToolLoopBudgetProtocol.reset()
@@ -38,7 +42,164 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(json["tools"] == nil)
         let messages = try #require(json["messages"] as? [[String: Any]])
         let system = try #require(messages.first)
-        #expect((system["content"] as? String)?.contains("tool-use budget") == true)
+        #expect(system["role"] as? String == "system")
+        #expect((system["content"] as? String)?.contains("tool-use budget") == false)
+        let synthesis = try #require(messages.last)
+        #expect(synthesis["role"] as? String == "user")
+        #expect(synthesis["content"] as? String == Self.synthesisInstruction)
+        #expect((synthesis["content"] as? String)?.contains("(Local time:") == false)
+        #expect(messages[messages.count - 2]["role"] as? String == "tool")
+        #expect(model.messages.filter { $0.role == .user }.map(\.content) == ["Research this topic thoroughly"])
+        #expect(!model.messages.contains { $0.content.contains(Self.synthesisInstruction) })
+    }
+
+    private static let artifact = """
+    <tool_call>
+    <function=lookup>
+    <parameter=q>
+    x
+    </parameter>
+    </function>
+    </tool_call>
+    """
+
+    @Test(
+        "Pure final-round markup fails without rendering markup, sources, or triggering correction",
+        arguments: ["lookup", "web_search"], ["x", "I can't access real-time information."]
+    )
+    func finalArtifactFails(toolName: String, query: String) async throws {
+        let artifact = Self.artifact.replacingOccurrences(of: "\nx\n", with: "\n" + query + "\n")
+        ToolLoopBudgetProtocol.reset(finalAnswers: [artifact], toolName: toolName)
+        let model = makeModel(toolName: toolName)
+        try await sendAndWait(model)
+
+        let final = try #require(model.messages.last)
+        #expect(final.role == .assistant)
+        #expect(final.content.isEmpty)
+        #expect(final.status == .failed)
+        #expect(final.failureKind == .toolFailed)
+        #expect(final.errorMessage == ChatViewModel.toolRoundCapMessage(cap: 3))
+        #expect(!final.content.contains("<tool_call>"))
+        #expect(!final.content.contains("Sources:"))
+        #expect(model.lastError == final.errorMessage)
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 4)
+        if toolName == "web_search" {
+            #expect(model.messages.contains { $0.role == .tool && $0.content.contains("https://example.com/evidence") })
+        }
+    }
+
+    // Use the parameter-block shape recognized by the existing tail detector;
+    // the pure-artifact tests above retain the captured multiline payload.
+    private static let trailingArtifact = """
+    <tool_call>
+    <function=lookup>
+    <parameter=q>x</parameter>
+    </function>
+    </tool_call>
+    """
+
+    @Test("Final-round prose survives a trailing call with the suppression caption")
+    func finalArtifactKeepsProse() async throws {
+        ToolLoopBudgetProtocol.reset(finalAnswers: ["Here is the list.\n\n" + Self.trailingArtifact])
+        let model = makeModel()
+        try await sendAndWait(model)
+
+        let final = try #require(model.messages.last)
+        #expect(final.content == "Here is the list.\n\n" + Self.trailingArtifact)
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: final.content) == "Here is the list.")
+        #expect(final.toolCallArtifactSuppressed)
+        #expect(final.status == .complete)
+        #expect(model.lastError == nil)
+    }
+
+    @Test("Grounding correction restores a draft on raw markup and keeps corrected prose", arguments: [false, true])
+    func groundingCorrectionHandlesArtifacts(hasProse: Bool) async throws {
+        let draft = "I can't access real-time information."
+        let correction = hasProse ? "Here is the list.\n\n" + Self.trailingArtifact : Self.artifact
+        ToolLoopBudgetProtocol.reset(finalAnswers: [draft, correction], toolName: "web_search")
+        let model = makeModel(toolName: "web_search")
+        try await sendAndWait(model)
+
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 5)
+        let final = try #require(model.messages.last)
+        #expect(final.content.hasPrefix(hasProse ? "Here is the list." : draft))
+        #expect(final.content.contains("Sources:"))
+        let visible = hasProse
+            ? ChatMessage.proseAboveSuppressedToolCallArtifact(content: final.content)
+            : final.content
+        #expect(visible?.contains("Here is the list.") == hasProse)
+        #expect(visible?.contains("Sources:") == true)
+        #expect(visible?.contains("<tool_call>") == false)
+        #expect(final.toolCallArtifactSuppressed == hasProse)
+        #expect(final.status == .complete)
+        #expect(final.errorMessage == nil)
+        let body = try #require(ToolLoopBudgetProtocol.requestBodies.last)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["tools"] == nil)
+        let rows = try #require(json["messages"] as? [[String: Any]])
+        #expect((rows.first?["content"] as? String)?.contains(ChatViewModel.groundingCorrectionPreamble) == true)
+        #expect((rows.first?["content"] as? String)?.contains(Self.synthesisInstruction) == false)
+        #expect(rows.last?["role"] as? String == "user")
+        #expect(rows.last?["content"] as? String == Self.synthesisInstruction)
+        #expect(model.messages.filter { $0.role == .user }.count == 1)
+    }
+
+    @Test("Synthesis helper appends a bare user row without changing existing rows", arguments: [false, true])
+    func synthesisHelperIsAppendOnly(hasSystem: Bool) {
+        let history = (hasSystem ? [ChatMessage(role: .system, content: "System instructions")] : []) + [
+            ChatMessage(role: .user, content: "Question"),
+            ChatMessage(role: .tool, content: "Evidence", toolCallID: "call_1")
+        ]
+        let result = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
+        #expect(Array(result.dropLast()) == history)
+        #expect(result.count == history.count + 1)
+        #expect(result.last?.role == .user)
+        #expect(result.last?.content == Self.synthesisInstruction)
+        #expect(result.last?.status == .complete)
+    }
+
+    @Test("Synthetic user row preserves image selection and document focus", arguments: [0, 1, 2])
+    func synthesisPreservesImageSelection(focus: Int) throws {
+        let image = try ChatImageAttachment(
+            filename: "photo.png", mimeType: "image/png", data: Data([0x89, 0x50, 0x4e, 0x47])
+        )
+        var history = [ChatMessage(role: .user, content: "Describe", imageAttachments: [image])]
+        if focus == 1 {
+            history.append(ChatMessage(role: .user, content: "Explain further"))
+        } else if focus == 2 {
+            let file = try ChatFileAttachment(
+                filename: "report.txt", kind: .txt, extractedText: "Report", sourceByteCount: 6
+            )
+            history.append(ChatMessage(role: .user, content: "Read this", fileAttachments: [file]))
+        }
+        history.append(ChatMessage(role: .tool, content: "Evidence", toolCallID: "call_1"))
+        let original = ChatStreamClient.Request(alias: "test-model", messages: history, supportsImageInput: true)
+        let synthesis = ChatStreamClient.Request(
+            alias: "test-model",
+            messages: ChatViewModel.addingToolBudgetSynthesisPreamble(to: history),
+            supportsImageInput: true
+        )
+        #expect(original.imageMessageID == (focus == 2 ? nil : history[0].id))
+        #expect(synthesis.imageMessageID == original.imageMessageID)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        #expect(try encoder.encode(Array(synthesis.messages.dropLast())) == encoder.encode(original.messages))
+    }
+
+    private func makeModel(toolName: String = "lookup") -> ChatViewModel {
+        ChatViewModel(
+            client: ChatStreamClient(baseURL: URL(string: "fake://tool-loop")!, session: ToolLoopBudgetProtocol.session()),
+            tools: CountingToolRegistry(toolName: toolName),
+            persistsConversations: false
+        )
+    }
+
+    private func sendAndWait(_ model: ChatViewModel) async throws {
+        model.send("Research this topic thoroughly", alias: "test-model")
+        for _ in 0..<300 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isStreaming)
     }
 
     @Test("a batched response cannot execute past the three-call budget")
@@ -209,7 +370,9 @@ private final class CountingToolRegistry: ToolRegistry {
         runCount += 1
         return ToolCallResult(
             toolCallID: call.id,
-            content: "Evidence item \(runCount)"
+            content: call.function.name == "web_search"
+                ? "1. Evidence item \(runCount)\nhttps://example.com/evidence"
+                : "Evidence item \(runCount)"
         )
     }
 }
@@ -221,14 +384,23 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var toolName = "lookup"
     nonisolated(unsafe) static var toolRounds = 3
 
-    static func reset(batched: Bool = false, documentReads: Int? = nil) {
+    nonisolated(unsafe) static var finalAnswers: [String] = []
+    nonisolated(unsafe) static var finalRoundCount = 0
+
+    static func reset(
+        batched: Bool = false, documentReads: Int? = nil,
+        finalAnswers: [String] = ["Here is the answer from the evidence."],
+        toolName: String = "lookup"
+    ) {
+        self.finalAnswers = finalAnswers
+        finalRoundCount = 0
         requestBodies = []
         sendsBatchedCalls = batched
         if let documentReads {
-            toolName = "read_document"
+            self.toolName = "read_document"
             toolRounds = documentReads
         } else {
-            toolName = "lookup"
+            self.toolName = toolName
             toolRounds = 3
         }
     }
@@ -258,8 +430,12 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
 
         let stream: String
         if !offersTools {
+            let answer = Self.finalAnswers[min(Self.finalRoundCount, Self.finalAnswers.count - 1)]
+            Self.finalRoundCount += 1
+            let encoded = try! JSONEncoder().encode(answer)
+            let jsonAnswer = String(decoding: encoded, as: UTF8.self)
             stream = """
-            data: {"choices":[{"delta":{"content":"Here is the answer from the evidence."},"finish_reason":"stop"}]}
+            data: {"choices":[{"delta":{"content":\(jsonAnswer)},"finish_reason":"stop"}]}
 
             data: [DONE]
 

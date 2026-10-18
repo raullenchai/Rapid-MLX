@@ -219,7 +219,12 @@ final class GoldenChatFake: @unchecked Sendable {
             let messages = object["messages"] as? [[String: Any]]
         else { return nil }
         for message in messages.reversed() where (message["role"] as? String) == "user" {
-            if let text = message["content"] as? String { return text }
+            // The tool-budget synthesis round appends a wire-only user row
+            // after the last tool result; route on the user's own prompt.
+            if let text = message["content"] as? String {
+                if text == ChatViewModel.toolBudgetSynthesisPreamble { continue }
+                return text
+            }
             if let parts = message["content"] as? [[String: Any]] {
                 // OpenAI content-parts form.
                 return parts.compactMap { $0["text"] as? String }.joined(separator: " ")

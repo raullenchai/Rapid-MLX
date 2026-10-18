@@ -1080,9 +1080,14 @@ class Handler(BaseHTTPRequestHandler):
         # Deterministic runaway-model fixture. The app must execute only its
         # bounded budget and then issue one final request with no tools; that
         # request gets a useful synthesis rather than another tool call.
+        # The synthesis round appends a wire-only user instruction after the
+        # last tool result; route on the user's own prompt instead.
         last_user = next((
             m.get("content", "") for m in reversed(messages)
             if isinstance(m, dict) and m.get("role") == "user"
+            and not str(m.get("content", "")).startswith(
+                "The tool-use budget for this turn is exhausted."
+            )
         ), "")
         if "shape:tool-loop" in last_user:
             tool_results = sum(
