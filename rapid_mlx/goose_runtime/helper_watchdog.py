@@ -127,7 +127,7 @@ group = os.getpgrp()
 if os.fork() != 0:
     os.execv(command[0], command)
 
-known = {}
+known: dict[int, str] = {}
 stopping = False
 
 

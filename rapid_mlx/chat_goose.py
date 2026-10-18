@@ -64,12 +64,12 @@ def _goose_binary() -> Path | None:
         entries = [m for m in package if m.isfile() and Path(m.name).name == "goose"]
         if len(entries) != 1:
             raise ValueError("Goose archive has no unique executable")
-        with package.extractfile(entries[0]) as source:
-            if source is None:
-                raise ValueError("Goose executable could not be read")
-            with tempfile.NamedTemporaryFile(dir=root, delete=False) as target:
-                pending = Path(target.name)
-                shutil.copyfileobj(source, target)
+        source = package.extractfile(entries[0])
+        if source is None:
+            raise ValueError("Goose executable could not be read")
+        with source, tempfile.NamedTemporaryFile(dir=root, delete=False) as target:
+            pending = Path(target.name)
+            shutil.copyfileobj(source, target)
     pending.chmod(0o755)
     if _sha256(pending) != GOOSE_BINARY_SHA256:
         pending.unlink(missing_ok=True)
@@ -90,7 +90,7 @@ def _sha256(path: Path) -> str:
 def _port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+        return int(sock.getsockname()[1])
 
 
 def _ready(port: int, process: subprocess.Popen, timeout: float = 10) -> None:

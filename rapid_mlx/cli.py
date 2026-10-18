@@ -12582,7 +12582,9 @@ def chat_command(args):
 
     try:
         goose_handled = run_goose_chat(
-            args, base_url, getattr(args, "_original_alias", args.model),
+            args,
+            base_url,
+            getattr(args, "_original_alias", args.model),
             max_tokens_explicit=user_passed_max_tokens,
         )
     except (OSError, RuntimeError, ValueError) as exc:
@@ -12591,7 +12593,10 @@ def chat_command(args):
     if goose_handled:
         return
     if getattr(args, "output_format", "text") != "text":
-        print("  Goose stream-json is unavailable in built-in chat fallback.", file=sys.stderr)
+        print(
+            "  Goose stream-json is unavailable in built-in chat fallback.",
+            file=sys.stderr,
+        )
 
     print(
         f"  🐆 {BOLD}Chat{RESET} — "
