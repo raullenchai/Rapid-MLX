@@ -8593,6 +8593,18 @@ def test_index_real_darwin_ancestor_acl(tmp_path, entry, dangerous):
         subprocess.run(["/bin/chmod", "-N", str(ancestor)], check=True)
 
 
+def test_index_symlink_target_through_file_is_not_a_directory(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir(mode=0o700)
+    base.chmod(0o700)
+    (base / "regular-file").write_text("x")
+    link = base / "link"
+    link.symlink_to("regular-file/..")
+    with pytest.raises(NotADirectoryError, match="regular-file is not a directory"):
+        Store(link / "index" / "index.sqlite3", "test")
+    assert not (base / "index").exists()
+
+
 def test_index_resolves_symlinked_component(tmp_path):
     real = tmp_path / "real"
     real.mkdir(mode=0o700)

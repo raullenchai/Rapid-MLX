@@ -182,6 +182,11 @@ def _resolve_index_path(path: Path) -> Path:
             # mkdir will create the remainder beneath the now-real parent.
             return component.joinpath(*pending)
         if not stat.S_ISLNK(info.st_mode):
+            if pending and not stat.S_ISDIR(info.st_mode):
+                # Match kernel resolution: nothing (not even "..") follows a file.
+                raise NotADirectoryError(
+                    f"Local-search index path component {component} is not a directory"
+                )
             real = component
             continue
         reason = (
