@@ -296,7 +296,7 @@ def load(
                             biases_key=keys["biases"],
                             num_embeddings=e.weight.shape[0],
                             dim=e.weight.shape[1],
-                            group_size=q["group_size"],
+                            group_size=q.get("engram_group_size", q["group_size"]),
                             bits=q["engram_bits"],
                         )
                         engram_keys.update(keys.values())
@@ -304,7 +304,7 @@ def load(
                         layer.engram.embed = QuantizedEngramEmbedding(
                             e.weight.shape[0],
                             e.weight.shape[1],
-                            q["group_size"],
+                            q.get("engram_group_size", q["group_size"]),
                             q["engram_bits"],
                         )
     if engram_ssd_offload and args.engram_layer_ids and not engram_keys:

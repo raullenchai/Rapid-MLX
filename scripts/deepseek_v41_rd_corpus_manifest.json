@@ -1,0 +1,610 @@
+{
+  "schema_version": 2,
+  "purpose": "Calibration and held-out RD screening only; never execute dataset scripts",
+  "destination": "/Volumes/RTL-2T/datasets/deepseek-v41-1017-rd",
+  "fetch_status": "Manifest only; no datasets fetched in phases 1 or 2",
+  "max_total_download_bytes": 1000000000,
+  "max_export_bytes_per_slice": 2000000,
+  "revision_policy": "Resolve and record a commit SHA before fetching any selected file. Record URL, file SHA256, revision, license text and selected row IDs in provenance.json. Fetch only selected parquet/JSON files, never a repository snapshot.",
+  "split_policy": "Disjoint source row/article IDs for calibration and held-out; preserve conversations and tool schemas; deduplicate text SHA256 across all slices. Parallel translations must use disjoint sentence IDs across splits. Export UTF-8 text; record formatting and row IDs. Use validation/test splits below only as RD text, never claim benchmark accuracy.",
+  "export_policy": "Export calibration.json and heldout.json with slices mapping each name to absolute UTF-8 file paths. Export slice_roles.json from this manifest. Equal 8192-token calibration budgets per slice, two 4096-token halves; held-out 512 tokens/slice. Never repeat text to meet quota; extend unique source rows when under target. Include heldout_only domains only in heldout.json. Retain provenance and deduplicate across all slices/splits/translations. Hash-group IDs before token truncation; no conversation/article may span halves when practical. Counts/stability may require more calibration.",
+  "sources": [
+    {
+      "slices": [
+        "general_chat_en"
+      ],
+      "dataset": "HuggingFaceH4/ultrachat_200k",
+      "url": "https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k",
+      "license": "MIT (dataset card)",
+      "selection": "A bounded subset of train_sft messages and test_sft messages; include both user and assistant turns",
+      "download_policy": "Selected parquet shard only if <200 MB; otherwise stream a bounded row export and count actual received bytes"
+    },
+    {
+      "slices": [
+        "code"
+      ],
+      "dataset": "google-research-datasets/mbpp",
+      "url": "https://huggingface.co/datasets/google-research-datasets/mbpp",
+      "license": "CC-BY-4.0",
+      "selection": "full configuration; calibration train, heldout validation/test; text, code and test_list"
+    },
+    {
+      "slices": [
+        "math"
+      ],
+      "dataset": "openai/gsm8k",
+      "url": "https://huggingface.co/datasets/openai/gsm8k",
+      "license": "MIT",
+      "selection": "main; calibration train, heldout test; question and answer"
+    },
+    {
+      "slices": [
+        "tool_calling"
+      ],
+      "dataset": "NousResearch/hermes-function-calling-v1",
+      "url": "https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1",
+      "license": "Apache-2.0 (verify selected component license)",
+      "selection": "Bounded rows including tool schemas, assistant calls, JSON arguments and tool results; deterministic disjoint conversation IDs"
+    },
+    {
+      "slices": [
+        "medical",
+        "legal",
+        "finance",
+        "science"
+      ],
+      "dataset": "cais/mmlu",
+      "url": "https://huggingface.co/datasets/cais/mmlu",
+      "license": "MIT",
+      "selection": {
+        "medical": [
+          "clinical_knowledge",
+          "professional_medicine",
+          "anatomy"
+        ],
+        "legal": [
+          "professional_law",
+          "international_law",
+          "jurisprudence"
+        ],
+        "finance": [
+          "professional_accounting",
+          "econometrics",
+          "high_school_macroeconomics"
+        ],
+        "science": [
+          "college_physics",
+          "college_chemistry",
+          "college_biology",
+          "astronomy"
+        ]
+      },
+      "split": "Use auxiliary/dev/validation where available, otherwise deterministic disjoint test row IDs; render question, choices and answer text. Small domain probes, not clinical/legal/financial validation."
+    },
+    {
+      "slices": [
+        "multilingual_zho_Hans",
+        "multilingual_spa_Latn",
+        "multilingual_arb_Arab",
+        "multilingual_hin_Deva",
+        "low_resource_swh_Latn",
+        "low_resource_yor_Latn",
+        "low_resource_amh_Ethi",
+        "low_resource_npi_Deva",
+        "low_resource_sin_Sinh",
+        "multilingual_deu_Latn",
+        "multilingual_fra_Latn",
+        "multilingual_por_Latn",
+        "multilingual_rus_Cyrl",
+        "multilingual_jpn_Jpan",
+        "multilingual_kor_Hang",
+        "multilingual_ind_Latn",
+        "multilingual_tur_Latn",
+        "multilingual_vie_Latn"
+      ],
+      "dataset": "facebook/flores",
+      "url": "https://huggingface.co/datasets/facebook/flores",
+      "license": "CC-BY-SA-4.0",
+      "selection": "Selected language files/configurations only; dev for calibration, devtest heldout. This repository is gated: owner must accept conditions; do not bypass. An updated source is openlanguagedata/flores_plus; changing source requires recording its revision/license and exact language mapping."
+    },
+    {
+      "slices": [
+        "general_chat_zh"
+      ],
+      "dataset": "allenai/WildChat-1M",
+      "url": "https://huggingface.co/datasets/allenai/WildChat-1M",
+      "license": "ODC-BY-1.0; retain database attribution (verify pinned card)",
+      "selection": "Chinese language, benign general conversations; split by conversation_hash and turn_identifier group hash; preserve roles. Exclude cold topics and medical/legal PII."
+    },
+    {
+      "slices": [
+        "agentic_terminal"
+      ],
+      "dataset": "SWE-bench/SWE-smith-trajectories",
+      "url": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories",
+      "license": "MIT dataset; retain underlying repository attribution for code excerpts",
+      "selection": "Small selected ticks parquet shard below 200 MB; preserve assistant/terminal commands/results as inert text; group by repository/task instance_id across splits. Never execute commands."
+    },
+    {
+      "slices": [
+        "cold_archaeology_en",
+        "cold_archaeology_zh",
+        "cold_folk_customs_en",
+        "cold_folk_customs_zh",
+        "cold_obscure_history_en",
+        "cold_obscure_history_zh",
+        "general_reference_en",
+        "general_reference_zh"
+      ],
+      "dataset": "Wikimedia English/Chinese article extracts",
+      "url": "https://en.wikipedia.org/w/api.php",
+      "secondary_url": "https://zh.wikipedia.org/w/api.php",
+      "license": "CC-BY-SA-4.0 and applicable GFDL; record article revision, URL, contributors link and license per extract",
+      "selection": "Owner-curated bounded article revision exports; no dump download. Cold topics limited to archaeology, regional folk customs and obscure historical trivia; exclude medicine/law/finance/science/code/math and safety content even when under cold categories. Use a monolingual general_reference_en or general_reference_zh matching each cold slice; never divide Chinese cold saliency by an English reference. Each general reference covers broad daily syntax/topic mix and excludes cold article IDs. Split by article ID, not paragraph; disjoint reference and cold articles."
+    },
+    {
+      "slices": [
+        "heldout_cybersecurity",
+        "heldout_electrical_engineering"
+      ],
+      "dataset": "cais/mmlu",
+      "url": "https://huggingface.co/datasets/cais/mmlu",
+      "license": "MIT",
+      "selection": [
+        "computer_security",
+        "electrical_engineering"
+      ],
+      "split": "held-out only; no calibration rows from these subjects; preserve source row IDs and use disjoint source shards from other subjects"
+    }
+  ],
+  "license_policy": "Retain each source license and attribution alongside local exports. Check cards at pinned revisions before fetching. Do not redistribute raw corpus in the model artifact.",
+  "slices": [
+    {
+      "name": "general_chat_en",
+      "role": "hot",
+      "source": "HuggingFaceH4/ultrachat_200k",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "code",
+      "role": "hot",
+      "source": "google-research-datasets/mbpp",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "math",
+      "role": "hot",
+      "source": "openai/gsm8k",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "tool_calling",
+      "role": "hot",
+      "source": "NousResearch/hermes-function-calling-v1",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "medical",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "legal",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "finance",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "science",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_zho_Hans",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_spa_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_arb_Arab",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_hin_Deva",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "low_resource_swh_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "low_resource_yor_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "low_resource_amh_Ethi",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "low_resource_npi_Deva",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "low_resource_sin_Sinh",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_deu_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_fra_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_por_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_rus_Cyrl",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_jpn_Jpan",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_kor_Hang",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_ind_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_tur_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "multilingual_vie_Latn",
+      "role": "hot",
+      "source": "facebook/flores",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "general_chat_zh",
+      "role": "hot",
+      "source": "allenai/WildChat-1M",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "agentic_terminal",
+      "role": "hot",
+      "source": "SWE-bench/SWE-smith-trajectories",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_archaeology_en",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_archaeology_zh",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_folk_customs_en",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_folk_customs_zh",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_obscure_history_en",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "cold_obscure_history_zh",
+      "role": "cold",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "heldout_cybersecurity",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 0,
+      "heldout_tokens": 512,
+      "calibration_halves": 0,
+      "heldout_only": true,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "heldout_electrical_engineering",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": "as_named_or_source",
+      "calibration_tokens": 0,
+      "heldout_tokens": 512,
+      "calibration_halves": 0,
+      "heldout_only": true,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "general_reference_en",
+      "role": "reference",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    },
+    {
+      "name": "general_reference_zh",
+      "role": "reference",
+      "source": "Wikimedia English/Chinese article extracts",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "source conversation/task/article/sentence ID; SHA256 mod 10: 0-7 calibration, 8-9 heldout; native train/test precedence"
+    }
+  ],
+  "contrastive_policy": {
+    "normalization": "REAP divided by per-layer expert mean separately per slice/half for hot protection; raw hot REAP retained for RD layer sensitivity",
+    "hot_threshold": 0.25,
+    "cold_specificity_ratio": 4,
+    "min_cold_routes_per_half": 2,
+    "max_relative_ratio_change": 0.5,
+    "general_reference": "general_reference_en / general_reference_zh, matched by cold slice language suffix",
+    "never_routed": "keep by default; hard-protected during fallback too",
+    "cold_languages": "English/Chinese only; low-resource languages remain hot/protected, never cold",
+    "language_balance": "Each cold English or Chinese slice uses its same-language reference with equal token budgets; audit topic contamination before calibration."
+  }
+}

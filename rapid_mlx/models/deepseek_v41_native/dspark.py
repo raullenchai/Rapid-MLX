@@ -182,11 +182,14 @@ def _required_tensors(config: dict) -> set[str]:
                 )
     final = "mtp.2"
     required.add(final + ".norm.weight")
-    for projection in ("confidence_head.proj", "markov_head.embed", "markov_head.head"):
-        required.update(
-            f"{final}.{projection}.{suffix}"
-            for suffix in ("weight", "scales", "biases")
-        )
+    required.update(
+        f"{final}.confidence_head.proj.{suffix}"
+        for suffix in ("weight", "scales", "biases")
+    )
+    # These small I/O matrices may be dense BF16 in high-precision builds;
+    # the adapter's linear/embedding paths already support dense tensors.
+    for projection in ("markov_head.embed", "markov_head.head"):
+        required.add(f"{final}.{projection}.weight")
     return required
 
 
@@ -238,6 +241,13 @@ class DSparkWeights:
             raise ValueError(
                 f"DSpark index/shard mismatch (missing={missing[:1]}, extra={extra[:1]})"
             )
+        for name in self._arrays:
+            if name.endswith(".weight"):
+                base = name.removesuffix(".weight")
+                if (base + ".scales" in self._arrays) != (
+                    base + ".biases" in self._arrays
+                ):
+                    raise ValueError(f"incomplete affine triple: {base}")
         missing_contract = sorted(_required_tensors(self.config) - set(self._arrays))
         if missing_contract:
             raise ValueError(
