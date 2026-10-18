@@ -506,13 +506,18 @@ class TestVLMFamily:
         assert hasattr(model.layers[0], "in_proj_qkv")
 
     @pytest.mark.parametrize("decode_first", [False, True])
-    def test_decode_composition(self, monkeypatch, decode_first):
+    @pytest.mark.parametrize("projection_qualified", [False, True])
+    def test_decode_composition(self, monkeypatch, decode_first, projection_qualified):
         import copy
 
         from rapid_mlx import qwen35_fused_gdn_decode as decode
 
         model = self.model(qualified=True)
         model.layers.append(copy.deepcopy(model.layers[0]))
+        stock_projections = {
+            id(item): tuple(gdn_in_proj_fusion._proj_modules(item))
+            for item in model.layers
+        }
         layer = model.layers[0]
         cls = type(layer)
         stock_call = getattr(cls, "_rapid_gdn_in_proj_original_call", cls.__call__)
@@ -545,16 +550,41 @@ class TestVLMFamily:
             return real_kernel(*args, **kwargs)
 
         monkeypatch.setattr(decode, "fused_gdn_decode", spy)
-        # The projection probe can reject this MLX/hardware pair even for
-        # otherwise eligible synthetic weights. Match the install contract:
-        # each qualified layer fuses, while rejected layers stay stock.
-        qualified_layers = sum(
-            bool(gdn_in_proj_fusion._probe_projection_parity(item))
-            for item in model.layers
-        )
+        if projection_qualified:
+            # Exercise the composition contract on hardware whose real fused
+            # matmul fails byte qualification. Projection arithmetic has its
+            # own parity tests; here the stock quartet supplies exact values
+            # through the fused wrapper so both optimizations stay installed.
+            monkeypatch.setattr(
+                gdn_in_proj_fusion,
+                "_probe_projection_parity",
+                lambda _item: frozenset({mx.bfloat16}),
+            )
+            monkeypatch.setattr(
+                gdn_in_proj_fusion, "_probe_whole_layer_parity", lambda *args: True
+            )
+            monkeypatch.setattr(
+                gdn_in_proj_fusion,
+                "_fused_projections",
+                lambda item, values: tuple(
+                    part(values) for part in stock_projections[id(item)]
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                gdn_in_proj_fusion,
+                "_probe_projection_parity",
+                lambda _item: frozenset(),
+            )
         if decode_first:
             assert decode.install_qwen35_fused_gdn_decode(model) == 2
-        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == qualified_layers
+        assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == (
+            2 if projection_qualified else 0
+        )
+        assert all(
+            hasattr(item, "in_proj_fused") == projection_qualified
+            for item in model.layers
+        )
         assert decode.install_qwen35_fused_gdn_decode(model) == 2
         assert all(getattr(item, decode._TAG) for item in model.layers)
         after = run()
