@@ -686,3 +686,56 @@ def test_restore_rejects_entry_under_a_mismatched_key(tmp_path, monkeypatch, cap
     assert fresh.load_exact_prefix_cache_from_disk(path) == 0
     assert not fresh._prefix_cache._exact_cache
     assert "snapshot key does not match its tokens" in caplog.text
+
+
+def test_save_serialization_error_preserves_committed_snapshot(
+    tmp_path, monkeypatch, caplog
+):
+    gen = generator()
+    key = add(gen)
+    path = tmp_path / "cache"
+    assert gen.save_exact_prefix_cache_to_disk(path)
+    before = (path / "index.json").read_bytes()
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("cannot serialize cache state")
+
+    monkeypatch.setattr(apc.DiskBlockStore, "save_exact_cache", explode)
+    assert not gen.save_exact_prefix_cache_to_disk(path)
+    assert (path / "index.json").read_bytes() == before
+    assert not Path(str(path) + ".new").exists()
+    assert "snapshot save failed: cannot serialize cache state" in caplog.text
+    monkeypatch.undo()
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 1
+    assert list(fresh._prefix_cache._exact_cache) == [key]
+
+
+def test_restore_memory_error_is_not_swallowed(tmp_path, monkeypatch):
+    source = generator()
+    add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+
+    def oom(*args, **kwargs):
+        raise MemoryError
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", oom)
+    fresh = generator()
+    with pytest.raises(MemoryError):
+        fresh.load_exact_prefix_cache_from_disk(path)
+    assert not fresh._prefix_cache._exact_cache
+
+
+def test_engine_sibling_dir_stays_absolute_for_root(monkeypatch):
+    seen = []
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._is_mllm = True
+    engine._engine = None
+    engine._mllm_scheduler = SimpleNamespace(
+        save_prefix_cache_to_disk=lambda d, abort: seen.append(d) or True,
+        load_prefix_cache_from_disk=lambda d: seen.append(d) or 0,
+    )
+    assert engine.save_cache_to_disk("/")
+    assert engine.load_cache_from_disk("/") == 0
+    assert seen == ["/.mllm-exact", "/.mllm-exact"]

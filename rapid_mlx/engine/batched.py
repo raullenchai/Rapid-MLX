@@ -4764,7 +4764,7 @@ class BatchedEngine(BaseEngine):
             save = getattr(scheduler, "save_prefix_cache_to_disk", None)
             if save is not None:
                 return bool(
-                    save(cache_dir.rstrip(os.sep) + ".mllm-exact", should_abort)
+                    save(os.path.normpath(cache_dir) + ".mllm-exact", should_abort)
                 )
             logger.info(
                 "[cache_persist] vision lane: no exact prefix scheduler available"
@@ -4791,7 +4791,7 @@ class BatchedEngine(BaseEngine):
             scheduler = getattr(self, "_mllm_scheduler", None)
             load = getattr(scheduler, "load_prefix_cache_from_disk", None)
             if load is not None:
-                return int(load(cache_dir.rstrip(os.sep) + ".mllm-exact"))
+                return int(load(os.path.normpath(cache_dir) + ".mllm-exact"))
             return 0
         if self._engine and not self._is_mllm:
             return self._engine.load_cache_from_disk(

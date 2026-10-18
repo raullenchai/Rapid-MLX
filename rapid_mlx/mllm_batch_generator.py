@@ -3166,7 +3166,7 @@ class MLLMBatchGenerator:
             staging.rename(target)
             shutil.rmtree(old, ignore_errors=True)
             return True
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 — shutdown must complete
             logger.warning("[cache_persist] vision lane: snapshot save failed: %s", exc)
             shutil.rmtree(staging, ignore_errors=True)
             if moved_old:
@@ -3299,6 +3299,8 @@ class MLLMBatchGenerator:
                             restored.append((key, entry, actual_bytes))
                             restored_bytes += actual_bytes
                         del entry
+                    except MemoryError:
+                        raise
                     except Exception as exc:
                         logger.warning(
                             "[cache_persist] vision lane: skipped unreadable "
