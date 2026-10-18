@@ -259,7 +259,7 @@ class ServerConfig:
     @property
     def model_loaded(self) -> bool:
         if self.primary_model_lifecycle is not None:
-            return self.primary_model_lifecycle.model_loaded
+            return bool(self.primary_model_lifecycle.model_loaded)
         return self.engine is not None or self.embeddings_only
 
 
