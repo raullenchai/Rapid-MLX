@@ -14,7 +14,7 @@ prerequisites, verification, observability, rollback, and authorization gates.
   — physical-host boot, no-login, keepalive, restart, and rollback evidence for
   the always-on service.
 - [Self-hosted Linux CI runners](linux-ci-tart-runners.md) — ephemeral tart
-  VMs behind `CI_LINUX_RUNNER`: supervisor, drain/pause, rollback, and golden
+  VMs behind `CI_LINUX_RUNNER` / `CI_LINUX_LIGHT_RUNNER`: supervisor, drain/pause, rollback, and golden
   image rebuilds.
 - [Model mirror operations](model-mirror.md) — drift auditing, intentional
   Hugging Face fallback, and safe R2 resync procedure.

@@ -10,7 +10,7 @@ rollback, and rebuilding the image.
 | Item | Value |
 | --- | --- |
 | Labels | `self-hosted`, `Linux`, `ARM64`, `rapidmlx-tart` |
-| Routing switch | repository variable `CI_LINUX_RUNNER` (JSON runner spec). Unset → `ubuntu-latest`. Fork heads always stay on hosted runners. |
+| Routing switches | repository variables (JSON runner spec): `CI_LINUX_RUNNER` routes only the heavy `ci.yml` `test-matrix` shards; `CI_LINUX_LIGHT_RUNNER` routes every other Linux job (lint, guards, merge-on-green, and similar). Unset → `ubuntu-latest`. Fork heads always stay on hosted runners. |
 | Pools | the CI Mac mini (2 slots); the M5 Max CI host (3 slots, joins when its lease frees) |
 | VM size | 4 vCPU, 8 GB RAM, 30 GB sparse disk, copy-on-write clone of one golden image |
 | Lifetime | one VM per job: clone → boot → JIT-register → run one job → destroy |
@@ -31,6 +31,11 @@ layout, so `actions/setup-python` resolves versions without downloading. The
 tiktoken vocab files are pre-seeded under `/opt/tiktoken-encodings` with
 `TIKTOKEN_ENCODINGS_BASE` set, because the arm64 Linux `openai-harmony` wheel
 cannot fetch them itself.
+
+Light jobs default to hosted runners on purpose. They take seconds to a minute,
+and queueing them behind 7–10 minute test shards on a five-slot pool causes
+head-of-line blocking for merge gates. Set `CI_LINUX_LIGHT_RUNNER` only when
+the pool has spare capacity.
 
 ## Security model
 
@@ -107,7 +112,8 @@ tail -f ~/ci-runners/logs/supervisor.log
 ## Rollback
 
 ```bash
-gh variable delete CI_LINUX_RUNNER -R raullenchai/Rapid-MLX   # all jobs back to ubuntu-latest
+gh variable delete CI_LINUX_RUNNER -R raullenchai/Rapid-MLX         # test shards back to ubuntu-latest
+gh variable delete CI_LINUX_LIGHT_RUNNER -R raullenchai/Rapid-MLX   # light jobs back (if it was set)
 touch ~/ci-runners/PAUSE                                     # on each host
 # Full stop and uninstall:
 launchctl bootout gui/$(id -u)/com.rapidmlx.ci-runners
@@ -151,7 +157,7 @@ runner binaries in an early image. The build then aborts if it finds
 zero-length runner binaries.
 
 Validate a new image before relying on it. Open a throwaway draft PR that
-hard-routes every `CI_LINUX_RUNNER` job to `rapidmlx-tart`, and run
+hard-routes every `CI_LINUX_RUNNER` and `CI_LINUX_LIGHT_RUNNER` job to `rapidmlx-tart`, and run
 merge-on-green from that branch with `workflow_dispatch` and `dry_run=true`.
 Test shards alone are not enough: they use setup-python, while the utility jobs
 (main guard, merge on green) call the system `python`.
