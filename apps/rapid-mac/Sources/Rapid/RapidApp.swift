@@ -1164,6 +1164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // disagreeing about where a row lives.
         flushConversations()
         flushFolders()
+        // A still-debounced draft is enqueued earlier by `stopStream`
+        // (`ChatViewModel.stopAndPersist()` saves drafts first); this drains it.
         flushDrafts()
     }
 
