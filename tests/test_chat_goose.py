@@ -77,6 +77,13 @@ def test_context_limit_uses_authenticated_server_metadata(monkeypatch):
     assert requests == [
         ("http://127.0.0.1:8123/v1/models", "Bearer real-server-key", 5)
     ]
+    assert (
+        chat_goose._served_context_limit(
+            "http://127.0.0.1:8123/v1", "test-model", "real-server-key"
+        )
+        == 8192
+    )
+    assert requests[-1] == requests[0]
 
 
 def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(

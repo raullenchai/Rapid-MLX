@@ -160,9 +160,10 @@ def _local_port(base_url: str) -> int | None:
 def _served_context_limit(base_url: str, model: str, api_key: str) -> int:
     """Use the server's advertised model window, as Desktop Chat does."""
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/v1/models", headers=headers
-    )
+    models_root = base_url.rstrip("/")
+    if models_root.endswith("/v1"):
+        models_root = models_root[:-3]
+    request = urllib.request.Request(models_root + "/v1/models", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             models = json.load(response).get("data", [])
