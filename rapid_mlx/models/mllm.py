@@ -1714,17 +1714,15 @@ class MLXMultimodalLM:
                 else getattr(self.config, "model_type", None)
             )
             if config_model_type in {"glm5_next", "qwen3_5_moe"}:
-                # Keep qualified MLLM MoE lanes at parity with BatchedEngine's
-                # text lane: collapse each eligible gate/up pair into one
-                # gather_qmm. GLM-5.3-Flash and Qwen3.5-family MoE both route
-                # through this wrapper, so otherwise every sparse layer issues
-                # an extra quantized projection for every generated token.
-                # Other MoE VLMs still need real-model qualification.
-                # Server use runs this method on the model-owning mllm-step
-                # worker, preserving the stream contract from #170.
+                # Qwen's qualified extended contract preserves routed-output
+                # combination; GLM keeps the default contract gate because its
+                # hyper-connection residual path requires separate qualification.
                 from ..moe_fusion import fuse_gate_up
 
-                fuse_gate_up(self.model)
+                if config_model_type == "qwen3_5_moe":
+                    fuse_gate_up(self.model, extended_call_contract=True)
+                else:
+                    fuse_gate_up(self.model)
 
             if config_model_type == "qwen3_5_moe":
                 from ..qwen35_fused_gdn_decode import (

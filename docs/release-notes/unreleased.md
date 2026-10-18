@@ -5,6 +5,8 @@
 
 ## Highlights
 
+- **Faster text decode on multimodal Qwen MoE models**: Qwen3.5/3.6-family MoE checkpoints on the default vision-capable serving lane now receive the same MoE gate+up fusion as text-only serving.
+
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.
 
 - **Local web pages work from `localhost` and `127.0.0.1` alike**: a page served from `http://localhost:<port>` can call the server on the same port even when it is addressed as `127.0.0.1` or `[::1]`; other origins stay blocked.

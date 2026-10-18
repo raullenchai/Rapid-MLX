@@ -24,7 +24,8 @@ eligible instance in place — the gate module becomes the fused container
 so quantization parameters carry over, and the original gate/up buffers
 are freed layer-by-layer to bound the transient. Instances whose
 gate/up pair fails the structural checks are left untouched. Set
-``RAPID_MLX_MOE_GATE_UP_FUSION=0`` to disable.
+``RAPID_MLX_MOE_GATE_UP_FUSION=0`` to disable. The extended mlx-vlm
+call contract requires explicit ``extended_call_contract=True`` qualification.
 """
 
 from __future__ import annotations
@@ -40,16 +41,20 @@ import mlx.core as mx
 logger = logging.getLogger(__name__)
 
 
-def _supports_fused_call_contract(switch_glu_cls) -> bool:
+def _supports_fused_call_contract(switch_glu_cls, *, extended=False) -> bool:
     """Fail closed if an upstream SwitchGLU changes its calling convention."""
     try:
         parameters = tuple(inspect.signature(switch_glu_cls.__call__).parameters)
     except (TypeError, ValueError):
         return False
-    return parameters == ("self", "x", "indices")
+    return parameters == (
+        ("self", "x", "indices", "weights", "shared", "residual")
+        if extended
+        else ("self", "x", "indices")
+    )
 
 
-def _switch_layer_families():
+def _switch_layer_families(*, extended_call_contract=False):
     """Return loaded compatible SwitchGLU families without importing mlx-vlm.
 
     mlx-vlm carries a private copy of the switch layers rather than re-exporting
@@ -77,6 +82,7 @@ def _switch_layer_families():
                     SwitchLinear,
                     _gather_sort,
                     _scatter_unsort,
+                    None,
                 )
             )
 
@@ -93,10 +99,25 @@ def _switch_layer_families():
         except AttributeError:
             pass
         else:
-            if _supports_fused_call_contract(family[1]) and all(
+            helpers = None
+            compatible = _supports_fused_call_contract(family[1])
+            if extended_call_contract and _supports_fused_call_contract(
+                family[1], extended=True
+            ):
+                linear = sys.modules.get("mlx_vlm.models.linear")
+                combine = getattr(family[1], "_combine", None)
+                block_size = getattr(linear, "DECODE_BLOCK_SIZE", None)
+                tokenwise = getattr(linear, "tokenwise", None)
+                compatible = (
+                    callable(combine)
+                    and isinstance(block_size, int)
+                    and callable(tokenwise)
+                )
+                helpers = (combine, block_size, tokenwise)
+            if compatible and all(
                 family[1] is not existing[1] for existing in families
             ):
-                families.append(family)
+                families.append((*family, helpers))
     return tuple(families)
 
 
@@ -182,16 +203,37 @@ def _make_fused_call(orig_call, gather_sort, scatter_unsort):
     return fused_call
 
 
-def _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort) -> None:
+def _make_extended_fused_call(orig_call, gather_sort, scatter_unsort, helpers):
+    combine, block_size, tokenwise = helpers
+    routed_call = _make_fused_call(orig_call, gather_sort, scatter_unsort)
+
+    def fused_call(self, x, indices, weights=None, shared=None, residual=None):
+        if getattr(self, "gate_up_proj", None) is None:
+            return orig_call(self, x, indices, weights, shared, residual)
+        if not self.training and x.ndim == 3 and 1 < x.shape[1] <= block_size:
+            routed = tokenwise(lambda x, idx: routed_call(self, x, idx), x, indices)
+        else:
+            routed = routed_call(self, x, indices)
+        return combine(routed, weights, shared, residual)
+
+    return fused_call
+
+
+def _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort, helpers) -> None:
     if getattr(switch_glu_cls, "_rapid_gate_up_fused_call", False):
         return
     orig = switch_glu_cls.__call__
-    switch_glu_cls.__call__ = _make_fused_call(orig, gather_sort, scatter_unsort)
+    if helpers is None:
+        switch_glu_cls.__call__ = _make_fused_call(orig, gather_sort, scatter_unsort)
+    else:
+        switch_glu_cls.__call__ = _make_extended_fused_call(
+            orig, gather_sort, scatter_unsort, helpers
+        )
     switch_glu_cls._rapid_gate_up_fused_call = True
     switch_glu_cls._rapid_gate_up_original_call = orig
 
 
-def fuse_gate_up(model: Any) -> int:
+def fuse_gate_up(model: Any, *, extended_call_contract: bool = False) -> int:
     """Fuse gate+up expert projections on a loaded MoE model, in place.
 
     Returns the number of fused ``SwitchGLU`` instances (0 when disabled
@@ -203,7 +245,7 @@ def fuse_gate_up(model: Any) -> int:
     if os.environ.get("RAPID_MLX_MOE_GATE_UP_FUSION", "1") == "0":
         logger.info("[moe_fusion] disabled via RAPID_MLX_MOE_GATE_UP_FUSION=0")
         return 0
-    families = _switch_layer_families()
+    families = _switch_layer_families(extended_call_contract=extended_call_contract)
     if not families:
         return 0
 
@@ -217,6 +259,7 @@ def fuse_gate_up(model: Any) -> int:
         plain_cls,
         gather_sort,
         scatter_unsort,
+        helpers,
     ) in families:
         try:
             # Keep only the parent SwitchGLUs alive.  Retaining the complete
@@ -234,7 +277,7 @@ def fuse_gate_up(model: Any) -> int:
             continue
         if not targets:
             continue
-        _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort)
+        _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort, helpers)
         for switch_mlp in targets:
             _fuse_one(switch_mlp, quantized_cls)
             fused_count += 1

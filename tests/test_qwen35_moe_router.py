@@ -222,7 +222,13 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
         "load_config",
         lambda *args, **kwargs: {"model_type": "qwen3_5_moe"},
     )
-    monkeypatch.setattr(moe_fusion, "fuse_gate_up", fused.append)
+    monkeypatch.setattr(
+        moe_fusion,
+        "fuse_gate_up",
+        lambda model, *, extended_call_contract=False: fused.append(
+            (model, extended_call_contract)
+        ),
+    )
     monkeypatch.setattr(router, "install_qwen35_moe_router", routed.append)
     monkeypatch.setattr(
         tokenizer_utils,
@@ -237,5 +243,5 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
 
     mllm.MLXMultimodalLM("local/qwen-moe").load()
 
-    assert fused == [model]
+    assert fused == [(model, True)]
     assert routed == [model]
