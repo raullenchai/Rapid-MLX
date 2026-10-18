@@ -158,6 +158,7 @@ def test_serve_config_tuple_covers_launch_writers():
     runtime_globals = {
         "_engine",
         "_embedding_engine",
+        "_rerank_engine",
         "_residency_manager",
         "_primary_model_lifecycle",
         "_mcp_manager",
@@ -167,10 +168,12 @@ def test_serve_config_tuple_covers_launch_writers():
         "_telemetry_model_served_state",
         "_telemetry_audio_model_served_state",
         "_telemetry_embedding_model_served_state",
+        "_telemetry_rerank_model_served_state",
     }
     original_helpers = {
         "load_model",
         "load_embedding_model",
+        "load_rerank_model",
         "configure_model_residency",
         "configure_primary_model_lifecycle",
         "configure_cors_from_env",

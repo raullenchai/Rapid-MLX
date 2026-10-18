@@ -91,6 +91,8 @@ _SERVER_SERVE_CONFIG_GLOBALS = (
     "_reasoning_parser",
     "_reasoning_parser_name",
     "_relocate_mid_conversation_system",
+    "_rerank_max_documents",
+    "_rerank_model_locked",
     "_resident_gpu_memory_utilization",
     "_resident_idle_ttl_seconds",
     "_resident_memory_limit_bytes",
@@ -273,6 +275,7 @@ def _reset_server_telemetry_latches() -> None:
         "_telemetry_model_served_state",
         "_telemetry_audio_model_served_state",
         "_telemetry_embedding_model_served_state",
+        "_telemetry_rerank_model_served_state",
     ):
         setattr(server_module, name, "idle")
 
