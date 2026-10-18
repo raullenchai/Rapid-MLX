@@ -84,8 +84,6 @@ class PrefillRequest(BaseModel):
         if self.kind == "prefix":
             if len(self.messages) != 1 or self.messages[0]["role"] != "system":
                 raise ValueError("prefix prefill requires one system message")
-            if not self.tools:
-                raise ValueError("prefix prefill requires tools")
             if self.draft_key is not None or self.revision is not None:
                 raise ValueError("prefix prefill cannot use a draft key")
             if self.allow_disk_cache:

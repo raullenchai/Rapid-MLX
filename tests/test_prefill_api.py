@@ -117,6 +117,16 @@ def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
     assert thinking is False
 
 
+def test_tool_free_system_prefix_is_accepted():
+    body = api.PrefillRequest(
+        kind="prefix",
+        messages=[{"role": "system", "content": "shared instructions"}],
+    )
+    messages, tools, _ = api._render_inputs(body)
+    assert messages == body.messages
+    assert tools is None
+
+
 def test_prefill_rejects_unsupported_tool_choice():
     with pytest.raises(ValidationError):
         api.PrefillRequest(
