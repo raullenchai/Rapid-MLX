@@ -1494,6 +1494,9 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         load_fn(
             args.embedding_model,
             lock=True,
+            # /v1/embeddings answers 503 unless --embedding-model preloads a
+            # locked model here (no lazy load without it), so the input cap
+            # only needs to travel with this preload.
             max_inputs=getattr(args, "embedding_max_inputs", 2048),
             max_length=max_length,
             overflow_policy=overflow_policy,
