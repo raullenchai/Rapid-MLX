@@ -71,6 +71,28 @@ def test_child_never_receives_cffixed_user_home(tmp_path, monkeypatch):
     assert output.strip() == "absent"
 
 
+def test_guarded_child_uses_disposable_foundation_home(tmp_path, monkeypatch):
+    real_home = tmp_path / "real-home"
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("CFFIXED_USER_HOME", str(real_home))
+    browser = _install_gui_launch_guard(fake_home)
+    script = "import os; print(os.environ['CFFIXED_USER_HOME'])"
+    output, error = _agent_query(
+        sys.executable,
+        f"python -c {shlex.quote(script)}",
+        "ignored",
+        env_overrides={
+            "HOME": str(fake_home),
+            "BROWSER": str(browser),
+            "CFFIXED_USER_HOME": str(real_home),
+        },
+    )
+    assert error is None
+    assert output.strip() == str(fake_home)
+    assert os.environ["CFFIXED_USER_HOME"] == str(real_home)
+
+
 def test_python_webbrowser_stops_at_guard_before_native_fallback(tmp_path, monkeypatch):
     fake_home = tmp_path / "fake-home"
     fake_home.mkdir()

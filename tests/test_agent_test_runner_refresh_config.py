@@ -311,6 +311,7 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     monkeypatch.setenv("HOME", real_home)
     monkeypatch.setenv("CFFIXED_USER_HOME", real_home)
     monkeypatch.setenv("BROWSER", "/usr/bin/open")
+    monkeypatch.setenv("PATH", "")
     real_path = os.environ["PATH"]
     profile = _make_profile("opencode", "yaml")
     profile = replace(
@@ -321,10 +322,11 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
 
     def _capture_setup(*_args, **_kwargs):
         observed["setup_home"] = os.environ["HOME"]
-        assert "CFFIXED_USER_HOME" not in os.environ
+        assert os.environ["CFFIXED_USER_HOME"] == os.environ["HOME"]
         assert os.environ["BROWSER"] == os.path.join(
             os.environ["HOME"], "bin", "browser"
         )
+        assert os.environ["PATH"].split(os.pathsep)[1:] == os.defpath.split(os.pathsep)
         return "ok"
 
     def _capture_e2e(*_args, env_overrides=None, **_kwargs):
@@ -335,7 +337,7 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
         assert env_overrides["PATH"].split(os.pathsep)[0] == os.path.join(
             env_overrides["HOME"], "bin"
         )
-        assert "CFFIXED_USER_HOME" not in env_overrides
+        assert env_overrides["CFFIXED_USER_HOME"] == env_overrides["HOME"]
         return TestResult("e2e_chat", TestStatus.PASS)
 
     from rapid_mlx.agents.testing import TestResult, TestStatus

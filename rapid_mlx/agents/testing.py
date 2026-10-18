@@ -1041,6 +1041,9 @@ def _agent_query(
         else None
     )
     if launch_marker is not None:
+        # Foundation ignores HOME when CFFIXED_USER_HOME is absent and uses
+        # the account's real home. Pin it to the disposable tree as well.
+        child_env["CFFIXED_USER_HOME"] = child_env["HOME"]
         launch_marker.unlink(missing_ok=True)
     # OpenHands 1.x resolves these explicit paths before HOME and cwd. An
     # inherited value would let an auto-approved test read the operator's
@@ -1629,8 +1632,9 @@ class AgentTestRunner:
         isolated_root = Path(isolated_config_home.name)
         browser_shim = _install_gui_launch_guard(isolated_root)
         guard_env = {
-            "PATH": f"{browser_shim.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PATH": f"{browser_shim.parent}{os.pathsep}{os.environ.get('PATH') or os.defpath}",
             "BROWSER": str(browser_shim),
+            "CFFIXED_USER_HOME": str(isolated_root),
         }
         config_home_env = active_config.home_env
 
@@ -1660,12 +1664,8 @@ class AgentTestRunner:
                 redirected["CLINE_PROVIDER_SETTINGS_PATH"] = str(
                     Path(isolated_config_home.name) / "settings" / "providers.json"
                 )
-            previous = {
-                key: os.environ.get(key)
-                for key in (*redirected, *guard_env, "CFFIXED_USER_HOME")
-            }
+            previous = {key: os.environ.get(key) for key in (*redirected, *guard_env)}
             os.environ.update(redirected | guard_env)
-            os.environ.pop("CFFIXED_USER_HOME", None)
             try:
                 if self.profile.name == "cline":
                     from rapid_mlx.launch import cline
