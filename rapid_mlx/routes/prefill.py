@@ -261,12 +261,12 @@ async def prefill(body: PrefillRequest, request: Request):
             try:
                 await previous
             except asyncio.CancelledError:
-                # The predecessor normally raises after cleanup. If the
-                # replacement handler itself was cancelled while waiting,
-                # do not admit its stale revision or launch new work.
-                current = asyncio.current_task()
-                if current is not None and cast(Any, current).cancelling():
-                    raise
+                pass
+            # A predecessor may suppress cancellation and return normally.
+            # Do not admit the replacement if its handler was cancelled.
+            current = asyncio.current_task()
+            if current is not None and cast(Any, current).cancelling():
+                raise asyncio.CancelledError()
         task = asyncio.create_task(_warm(cfg.engine, body))
         _active = task
         _active_key = body.draft_key

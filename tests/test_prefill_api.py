@@ -328,7 +328,10 @@ async def test_new_draft_revision_cancels_previous_and_keeps_disk_clean(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_cancelled_replacement_does_not_launch_or_consume_revision(monkeypatch):
+@pytest.mark.parametrize("suppress_predecessor", [False, True])
+async def test_cancelled_replacement_does_not_launch_or_consume_revision(
+    monkeypatch, suppress_predecessor
+):
     engine = FakeEngine()
     monkeypatch.setattr(
         api,
@@ -352,15 +355,23 @@ async def test_cancelled_replacement_does_not_launch_or_consume_revision(monkeyp
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 cleaning.set()
-                await release_cleanup.wait()
-                raise
+                while True:
+                    try:
+                        await release_cleanup.wait()
+                        break
+                    except asyncio.CancelledError:
+                        if not suppress_predecessor:
+                            raise
+                if not suppress_predecessor:
+                    raise
         return {"status": "prefilled"}
 
     monkeypatch.setattr(api, "_warm", warm)
+    draft_key = f"cancel-replace-{suppress_predecessor}"
     first_body = api.PrefillRequest(
         kind="draft",
         messages=[{"role": "user", "content": "partial"}],
-        draft_key="cancel-replace",
+        draft_key=draft_key,
         revision=1,
     )
     second_body = first_body.model_copy(update={"revision": 2})
@@ -369,13 +380,16 @@ async def test_cancelled_replacement_does_not_launch_or_consume_revision(monkeyp
     second = asyncio.create_task(api.prefill(second_body, ConnectedRequest()))
     await cleaning.wait()
     second.cancel()
+    release_cleanup.set()
     with pytest.raises(asyncio.CancelledError):
         await second
     assert launched == [1]
-    assert api._draft_revisions["cancel-replace"][0] == 1
-    release_cleanup.set()
-    with pytest.raises(asyncio.CancelledError):
-        await first
+    assert api._draft_revisions[draft_key][0] == 1
+    if suppress_predecessor:
+        assert await first == {"status": "prefilled"}
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await first
 
 
 @pytest.mark.asyncio
