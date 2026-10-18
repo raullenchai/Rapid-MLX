@@ -954,7 +954,12 @@ _XDG_BASE_DIRS: tuple[tuple[str, str], ...] = (
 
 
 def _install_gui_launch_guard(home: Path) -> Path:
-    """Refuse browser/app opens by tools running under the disposable HOME."""
+    """Refuse PATH launches and browser defaults under the disposable HOME.
+
+    An absolute /usr/bin/open or /usr/bin/osascript, an app executable, or a
+    native launch API bypasses PATH and BROWSER. These cannot be blocked by
+    environment shims; callers must not treat this as an OS sandbox.
+    """
     shim_dir = home / "bin"
     shim_dir.mkdir()
     marker = shim_dir / _GUI_LAUNCH_MARKER
@@ -962,13 +967,18 @@ def _install_gui_launch_guard(home: Path) -> Path:
         "#!/bin/sh\n"
         f": > {shlex.quote(str(marker))}\n"
         'printf "%s\\n" "Browser and app launches are disabled during agents --test" >&2\n'
-        "exit 126\n"
     )
-    for name in ("open", "xdg-open"):
+    for name in ("open", "xdg-open", "osascript"):
         shim = shim_dir / name
-        shim.write_text(script, encoding="utf-8")
+        shim.write_text(script + "exit 126\n", encoding="utf-8")
         shim.chmod(0o755)
-    return shim_dir / "open"
+    # Python's webbrowser tries the next registered browser after a nonzero
+    # BROWSER exit; on macOS that reaches absolute /usr/bin/osascript. Report
+    # success to the library while the marker still makes agents --test fail.
+    browser = shim_dir / "browser"
+    browser.write_text(script + "exit 0\n", encoding="utf-8")
+    browser.chmod(0o755)
+    return browser
 
 
 def _agent_query(
@@ -1027,7 +1037,7 @@ def _agent_query(
     guarded_browser = Path(browser) if browser else None
     launch_marker = (
         guarded_browser.parent / _GUI_LAUNCH_MARKER
-        if guarded_browser == Path(child_env.get("HOME", "")) / "bin" / "open"
+        if guarded_browser == Path(child_env.get("HOME", "")) / "bin" / "browser"
         else None
     )
     if launch_marker is not None:

@@ -3,6 +3,8 @@
 import os
 import shlex
 import sys
+import webbrowser
+from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +16,7 @@ from rapid_mlx.agents.testing import (
 )
 
 
-@pytest.mark.parametrize("launcher", ["open", "xdg-open", "browser"])
+@pytest.mark.parametrize("launcher", ["open", "xdg-open", "osascript", "browser"])
 def test_gui_launch_fails_even_if_agent_prints_expected_answer(
     tmp_path, monkeypatch, launcher
 ):
@@ -67,6 +69,19 @@ def test_child_never_receives_cffixed_user_home(tmp_path, monkeypatch):
     )
     assert error is None
     assert output.strip() == "absent"
+
+
+def test_python_webbrowser_stops_at_guard_before_native_fallback(tmp_path, monkeypatch):
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    browser = _install_gui_launch_guard(fake_home)
+    monkeypatch.setenv("BROWSER", str(browser))
+    monkeypatch.setattr(webbrowser, "_tryorder", None)
+    monkeypatch.setattr(webbrowser, "_browsers", {})
+    with patch.object(webbrowser.os, "popen") as native_launch:
+        assert webbrowser.open("https://example.invalid") is True
+    native_launch.assert_not_called()
+    assert (browser.parent / ".gui-launch-attempted").exists()
 
 
 def test_unrelated_browser_override_does_not_touch_its_directory(tmp_path):

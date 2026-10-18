@@ -310,6 +310,8 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     real_home = "/Users/operator"
     monkeypatch.setenv("HOME", real_home)
     monkeypatch.setenv("CFFIXED_USER_HOME", real_home)
+    monkeypatch.setenv("BROWSER", "/usr/bin/open")
+    real_path = os.environ["PATH"]
     profile = _make_profile("opencode", "yaml")
     profile = replace(
         profile,
@@ -320,13 +322,15 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     def _capture_setup(*_args, **_kwargs):
         observed["setup_home"] = os.environ["HOME"]
         assert "CFFIXED_USER_HOME" not in os.environ
-        assert os.environ["BROWSER"] == os.path.join(os.environ["HOME"], "bin", "open")
+        assert os.environ["BROWSER"] == os.path.join(
+            os.environ["HOME"], "bin", "browser"
+        )
         return "ok"
 
     def _capture_e2e(*_args, env_overrides=None, **_kwargs):
         observed["child_home"] = env_overrides["HOME"]
         assert env_overrides["BROWSER"] == os.path.join(
-            env_overrides["HOME"], "bin", "open"
+            env_overrides["HOME"], "bin", "browser"
         )
         assert env_overrides["PATH"].split(os.pathsep)[0] == os.path.join(
             env_overrides["HOME"], "bin"
@@ -354,6 +358,8 @@ def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
     assert "rapid-mlx-opencode-home-" in observed["child_home"]
     assert os.environ["HOME"] == real_home
     assert os.environ["CFFIXED_USER_HOME"] == real_home
+    assert os.environ["BROWSER"] == "/usr/bin/open"
+    assert os.environ["PATH"] == real_path
 
 
 def test_config_refresh_launch_attempt_fails_before_e2e(monkeypatch):
