@@ -2,6 +2,7 @@
 """Tests for the OpenAI-compatible API server."""
 
 import platform
+import re
 import sys
 
 import pytest
@@ -11,6 +12,54 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "darwin" or platform.machine() != "arm64",
     reason="Requires Apple Silicon",
 )
+
+# Explicit exceptions to the /v1 authentication contract. Currently none:
+# public probes (/, /health, /healthz, /livez, /readyz, /health/ready,
+# /metrics) all live outside /v1. Any future exception needs a rationale here.
+PUBLIC_V1_ROUTES: frozenset[tuple[str, str]] = frozenset()
+
+
+def test_all_production_v1_routes_require_api_key():
+    """Exercise every documented production /v1 method, including lazy routers."""
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.server import app
+
+    cfg = get_config()
+    original_key = cfg.api_key
+    original_schema = app.openapi_schema
+    try:
+        cfg.api_key = "test-production-route-secret"
+        # FastAPI may wrap included routers lazily; app.routes inspection can
+        # silently miss them. OpenAPI resolves those routers across versions.
+        app.openapi_schema = None
+        paths = app.openapi()["paths"]
+        routes = {
+            (method.upper(), path)
+            for path, operations in paths.items()
+            if path.startswith("/v1")
+            for method in operations
+            if method
+            in {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+        }
+        assert ("POST", "/v1/chat/completions") in routes
+        assert ("POST", "/v1/images/generations") in routes
+        assert routes >= PUBLIC_V1_ROUTES
+        # No lifespan: this checks routing/auth without loading any models.
+        client = TestClient(app)
+        failures = []
+        for method, path in sorted(routes - PUBLIC_V1_ROUTES):
+            url = re.sub(r"\{[^}]+\}", "auth-test-dummy", path)
+            response = client.request(method, url)
+            if response.status_code != 401:
+                failures.append(
+                    f"{method} {path}: {response.status_code} {response.text}"
+                )
+        assert not failures, "Unauthenticated /v1 routes:\n" + "\n".join(failures)
+    finally:
+        cfg.api_key = original_key
+        app.openapi_schema = original_schema
 
 
 # =============================================================================

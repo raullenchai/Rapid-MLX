@@ -10,15 +10,25 @@ import secrets
 import tempfile
 import time
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from starlette.responses import JSONResponse
 
 from ..api.models import ImageGenerationRequest, parse_image_size
+from ..middleware.auth import verify_api_key
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 # Cap the uploaded init image so a single edit request can't buffer an
 # unbounded body into memory before the size validators run.

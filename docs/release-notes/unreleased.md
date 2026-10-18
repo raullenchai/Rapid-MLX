@@ -5,6 +5,8 @@
 
 ## Highlights
 
+- **Image endpoint authentication**: image endpoints now require the API key when `--api-key` is set.
+
 - **Faster and bounded retrieval requests**: jina-reranker-v3 scores large requests faster. Rerank requests now default to 1000 documents and embeddings to 2048 inputs; excess returns HTTP 400 (override or disable with `--rerank-max-documents` / `--embedding-max-inputs`). Empty rerank documents or instruction return 400. A full retrieval queue returns 503 with `Retry-After: 1`.
 
 - Faster text-only decode on the default vision-capable lane for Qwen3.6-35B-A3B-class multimodal MoE checkpoints.
