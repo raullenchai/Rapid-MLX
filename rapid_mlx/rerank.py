@@ -749,7 +749,7 @@ class RerankEngine:
         )
         prompt += f"\n<query>\n{query}{query_token}\n</query>"
         # Marker tokens must only appear where the scorer expects them.
-        prefix = _CHATML_PREFIX.format(system=clean(self.prompt))
+        prefix = _CHATML_PREFIX.format(system=clean(self.prompt or ""))
         return prefix + prompt + _CHATML_SUFFIX + _NO_THINKING
 
     def _embed_listwise_block(
