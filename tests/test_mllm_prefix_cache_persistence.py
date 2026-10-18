@@ -615,3 +615,18 @@ def test_restore_skips_entry_whose_size_probe_raises(tmp_path, monkeypatch, capl
     monkeypatch.setattr(apc.DiskBlockStore, "exact_cache_bytes", broken)
     assert generator().load_exact_prefix_cache_from_disk(path) == 0
     assert "skipped unreadable snapshot entry: bad entry metadata" in caplog.text
+
+
+def test_restore_rechecks_budget_at_insertion(tmp_path, monkeypatch):
+    source = generator()
+    add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    fresh = generator()
+    fresh._prefix_cache_max_bytes = 1 << 20
+    footprints = iter([0, 0, 1 << 20])  # pre-read, post-read, insertion
+
+    # Simulate live growth that lands after the entry was read and admitted.
+    monkeypatch.setattr(fresh, "_exact_cache_footprint_bytes", lambda: next(footprints))
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 0
+    assert not fresh._prefix_cache._exact_cache

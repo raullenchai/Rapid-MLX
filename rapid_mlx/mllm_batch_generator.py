@@ -3216,7 +3216,7 @@ class MLLMBatchGenerator:
             try:
                 # Prefer the newest disk entries within the remaining capacity, then
                 # insert newest-last without evicting any already-live entry.
-                restored: list[tuple[int, Any]] = []
+                restored: list[tuple[int, Any, int]] = []
                 restored_bytes = 0
 
                 def over_budget(pending_bytes: int) -> bool:
@@ -3271,7 +3271,7 @@ class MLLMBatchGenerator:
                         if self._persistable_exact_entry(
                             entry, media_ids
                         ) and not over_budget(restored_bytes + actual_bytes):
-                            restored.append((key, entry))
+                            restored.append((key, entry, actual_bytes))
                             restored_bytes += actual_bytes
                         del entry
                     except Exception as exc:
@@ -3280,8 +3280,12 @@ class MLLMBatchGenerator:
                             "snapshot entry: %s",
                             exc,
                         )
-                with cache.lock:
-                    for key, entry in reversed(restored):
+                for key, entry, entry_bytes in reversed(restored):
+                    # Re-check against the live footprint (which now includes
+                    # entries inserted so far) right before each insertion.
+                    if over_budget(entry_bytes):
+                        continue
+                    with cache.lock:
                         # Never replace an entry that became live meanwhile.
                         if (
                             key in cache._exact_cache
