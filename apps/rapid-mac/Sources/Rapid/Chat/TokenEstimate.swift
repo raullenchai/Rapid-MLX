@@ -2,6 +2,10 @@ import Foundation
 
 /// Conservative script-aware token estimates for prompt budgeting.
 enum TokenEstimate {
+    /// Role header and end-of-turn delimiters added around one message by a
+    /// chat template: approximately 8 tokens on the shipped model families.
+    static let messageFramingTokens = 8
+
     static let cjkTokensPerCharacter = 0.65
     static let hangulTokensPerCharacter = 0.45
     static let defaultTokensPerCharacter = 0.42

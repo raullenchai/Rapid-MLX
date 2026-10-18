@@ -1882,8 +1882,15 @@ final class ChatViewModel {
             let toolArgs = (msg.toolCalls ?? [])
                 .map(\.function.arguments)
                 .joined()
+            let preludeTokens: Int
+            if let prelude = msg.wirePrelude,
+                !prelude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                preludeTokens = TokenEstimate.tokens(in: prelude) + TokenEstimate.messageFramingTokens
+            } else {
+                preludeTokens = 0
+            }
             return max(1, TokenEstimate.tokens(in: msg.modelContent)
-                + (msg.wirePrelude.map { TokenEstimate.tokens(in: $0) } ?? 0)
+                + preludeTokens
                 + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let totalTokens = max(1, messages.reduce(0) { $0 + perRowCost($1) })

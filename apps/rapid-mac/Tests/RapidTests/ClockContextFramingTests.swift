@@ -198,6 +198,22 @@ struct ClockPreludeWireTests {
         #expect(ChatViewModel.trimMessagesForContextWindow(rows, contextWindow: budget, keepFraction: 1).count == rows.count)
         let stamped = ChatViewModel.stampingClockContext(on: rows)
         #expect(ChatViewModel.trimMessagesForContextWindow(stamped, contextWindow: budget, keepFraction: 1).count < rows.count)
+        let preludeBudget = stamped.compactMap(\.wirePrelude).reduce(0) {
+            $0 + TokenEstimate.tokens(in: $1) + TokenEstimate.messageFramingTokens
+        }
+        let fullBudget = budget + preludeBudget
+        #expect(ChatViewModel.trimMessagesForContextWindow(stamped, contextWindow: fullBudget, keepFraction: 1).count == rows.count)
+        #expect(ChatViewModel.trimMessagesForContextWindow(stamped, contextWindow: fullBudget - 1, keepFraction: 1).count < rows.count)
+    }
+
+    @MainActor
+    @Test("Blank preludes add neither content nor framing to the trim budget", arguments: ["", " \n\t "])
+    func blankPreludeBudget(prelude: String) {
+        let rows = [ChatMessage(role: .user, content: "first", wirePrelude: prelude),
+            ChatMessage(role: .assistant, content: "answer"),
+            ChatMessage(role: .user, content: "latest", wirePrelude: prelude)]
+        let budget = rows.reduce(0) { $0 + max(1, TokenEstimate.tokens(in: $1.modelContent)) }
+        #expect(ChatViewModel.trimMessagesForContextWindow(rows, contextWindow: budget, keepFraction: 1).count == rows.count)
     }
 
     @Test("Blank preludes are omitted")
