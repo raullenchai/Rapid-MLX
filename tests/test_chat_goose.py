@@ -328,15 +328,14 @@ def test_goose_cli_explains_unsupported_flags(monkeypatch, capsys, changes, reas
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     values = {"mcp_config": None, "mcp_max_rounds": 8, "response_timeout": 600}
     values.update(changes)
-    assert not chat_goose.run(
-        SimpleNamespace(**values),
-        "http://127.0.0.1:8123",
-        "test-model",
-        max_tokens_explicit=False,
-    )
-    error = capsys.readouterr().err
-    assert error.count("Goose unavailable") == 1
-    assert reason in error
+    with pytest.raises(SystemExit, match=reason + " is not supported"):
+        chat_goose.run(
+            SimpleNamespace(**values),
+            "http://127.0.0.1:8123",
+            "test-model",
+            max_tokens_explicit=False,
+        )
+    assert capsys.readouterr().err == ""
 
 
 def test_goose_cli_falls_back_for_remote_server(monkeypatch, capsys):

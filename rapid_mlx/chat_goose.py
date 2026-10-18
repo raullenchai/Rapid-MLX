@@ -218,7 +218,10 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     if getattr(args, "response_timeout", 600) != 600:
         unsupported.append("--response-timeout")
     if unsupported:
-        return _fallback(f"{', '.join(unsupported)} is not supported by Goose chat")
+        raise SystemExit(
+            f"rapid-mlx chat: {', '.join(unsupported)} is not supported by Goose chat; "
+            "remove the flag to continue"
+        )
     rapid_port = _local_port(base_url)
     if rapid_port is None:
         return _fallback("Goose chat requires a local HTTP Rapid server")
@@ -366,7 +369,7 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         if script_mode:
             first_prompt = sys.stdin.read().strip()
             if not first_prompt:
-                return _fallback("piped chat input is empty")
+                raise SystemExit("rapid-mlx chat: piped chat input is empty")
         else:
             print(
                 "  Goose Chat ready. Use Goose's approval prompts for tool calls.",
