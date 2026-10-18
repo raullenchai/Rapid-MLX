@@ -387,6 +387,10 @@ _COLD_PREFILL_TRANSIENT_KV_MULTIPLE = 3.5
 # materializes the score matrix with its scale/softcap/mask/softmax
 # intermediates; a softcapped model measured ~7 fp32 copies live per head.
 _PREFILL_ATTENTION_SCORE_COPIES = 8
+# Live 35B MoE hybrid, calibrated 49k prefill: projected KV + workspace was
+# 6.22 GB vs 6.29 GB peak growth from admission (two rows: 12.35 vs 12.04 GB).
+# Step peak - active misses persistent non-KV growth (~0.2 GB at 49k).
+_PREFILL_WORKSPACE_MEASURED_HEADROOM = 1.25
 
 
 @dataclass
@@ -10000,7 +10004,16 @@ class Scheduler:
                 rate += beta * max(
                     0, context - getattr(self, "_prefill_workspace_max_context", 0)
                 )
-            return int(max(prior * units, max(chunk, padded_chunk) * rate))
+            return int(
+                max(
+                    prior * units,
+                    int(
+                        max(chunk, padded_chunk)
+                        * rate
+                        * _PREFILL_WORKSPACE_MEASURED_HEADROOM
+                    ),
+                )
+            )
         return int(
             max(
                 coefficient * units,

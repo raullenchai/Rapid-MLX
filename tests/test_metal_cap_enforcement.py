@@ -2423,11 +2423,11 @@ def test_issue4824_hybrid_long_prompts_can_share_a_cohort():
     assert legacy == 225_536_000_000
     workspace = sched._prefill_workspace_bytes(row)
     kv = sched._estimate_request_kv_bytes(row)
-    assert workspace == 3_524_000_000
+    assert workspace == int(2048 * (881_000_000 / 512) * 1.25)
     assert kv == 671_088_640
     assert 3_281_000_000 <= workspace <= 1.5 * (3_281_000_000 + kv)
     total = 25_000_000_000 + 2 * (workspace + kv)
-    assert total == 33_390_177_280 < 215_000_000_000
+    assert total == 35_152_177_280 < 215_000_000_000
     bg = sched.batch_generator
     bg._prompt_batch.uids = []
     bg._currently_processing = []
@@ -2440,6 +2440,17 @@ def test_issue4824_hybrid_long_prompts_can_share_a_cohort():
     )
 
 
+def test_issue4824_live_49k_prefill_need_covers_admission_peak():
+    sched = _workspace_scheduler()
+    _workspace_sample(sched, 49152, 2048, 2048 * 2.472e6)
+    row = _make_request(tokens=49359)
+    workspace = sched._prefill_workspace_bytes(row)
+    assert workspace == int(2048 * (2.472e6 + 16 * 4 * 8 * (49359 - 49152)) * 1.25)
+    need = sched._prefill_unmaterialized_bytes(row, 0) + workspace
+    assert need == 20480 * 49359 + workspace
+    assert 6.29e9 <= need <= 1.5 * 6.29e9
+
+
 def test_issue4824_context_extrapolation_and_padding():
     sched = _workspace_scheduler()
     row = _make_request(tokens=32768)
@@ -2448,7 +2459,7 @@ def test_issue4824_context_extrapolation_and_padding():
     _workspace_sample(sched, 512, 512, 881_000_000)
     assert sched._prefill_workspace_max_context == 512
     rate = 881_000_000 / 512
-    expected = 2048 * (rate + 16 * 4 * 8 * (32768 - 512))
+    expected = int(2048 * (rate + 16 * 4 * 8 * (32768 - 512)) * 1.25)
     assert sched._prefill_workspace_bytes(row) == expected >= 2048 * rate
     shorter = _make_request("padded", 256)
     assert (
@@ -2462,7 +2473,7 @@ def test_issue4824_context_extrapolation_and_padding():
     assert sched._prefill_workspace_bytes(row) >= 3_281_000_000
     _workspace_sample(sched, 512, 512, 100)
     assert sched._prefill_workspace_max_context == 32768
-    assert sched._prefill_workspace_bytes(shorter) == int(256 * rate)
+    assert sched._prefill_workspace_bytes(shorter) == int(256 * rate * 1.25)
 
 
 def test_issue4824_dense_attention_preserves_growth_prior_and_large_samples():
@@ -2475,7 +2486,7 @@ def test_issue4824_dense_attention_preserves_growth_prior_and_large_samples():
     }
     _workspace_sample(sched, 8192, 2048, 4_000_000_000)
     row = _make_request(tokens=32768)
-    growth = 2048 * (4_000_000_000 / 2048 + 32 * 4 * 8 * (32768 - 8192))
+    growth = int(2048 * (4_000_000_000 / 2048 + 32 * 4 * 8 * (32768 - 8192)) * 1.25)
     prior = 3.5 * 147456 / 2048 * (2048 * 32768)
     assert sched._prefill_workspace_bytes(row) == max(growth, prior)
     assert sched._prefill_workspace_bytes(row) >= growth
