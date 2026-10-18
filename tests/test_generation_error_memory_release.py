@@ -20,6 +20,8 @@ def test_generation_error_releases_prompt_and_checkpoint_references():
         set_finished=MagicMock(),
     )
     scheduler._close_batch_generator = MagicMock()
+    scheduler._forget_uid_grammar = MagicMock()
+    scheduler._realign_grammar_logits_processors = MagicMock()
     scheduler._current_sampler_params = object()
     scheduler.performance = SimpleNamespace(record_failed_performance=MagicMock())
     scheduler.running = {"failed": request}
@@ -57,6 +59,8 @@ def test_generation_error_continues_after_paged_release_failure():
         set_finished=MagicMock(),
     )
     scheduler._close_batch_generator = MagicMock()
+    scheduler._forget_uid_grammar = MagicMock()
+    scheduler._realign_grammar_logits_processors = MagicMock()
     scheduler._current_sampler_params = object()
     scheduler.performance = SimpleNamespace(record_failed_performance=MagicMock())
     scheduler.running = {"failed": failed, "second": second}
