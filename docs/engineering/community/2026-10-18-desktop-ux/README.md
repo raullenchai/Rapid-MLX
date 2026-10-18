@@ -1,5 +1,8 @@
 # Desktop 0.16.3: English-first UX dogfood
 
+[Two additional end-to-end journey rounds](journeys/README.md) cover follow-ups,
+drafts, history, attachments, editing, stopping, export and relaunch.
+
 Rapid's primary audience is English-speaking users looking for an approachable
 local AI assistant. The primary evidence, reproduction steps, screenshots, design
 mocks, and priorities in this audit now follow that English product journey.

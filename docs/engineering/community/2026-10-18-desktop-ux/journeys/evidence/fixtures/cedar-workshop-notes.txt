@@ -1,0 +1,10 @@
+Workshop Cedar planning brief
+Event: Friday at 2 pm in Room Cedar
+Owner: Morgan
+Attendees: 12
+Total budget: $480
+Room: $120
+Materials: $60
+Refreshments: $180
+Contingency: $120
+Reference code: CEDAR-7821

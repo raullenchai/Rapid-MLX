@@ -1,0 +1,70 @@
+{
+  "new-chat-draft": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": "Draft A: Add a note asking everyone to bring one example."
+    }
+  ],
+  "document-draft": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": "Workshop-only draft: ask for RSVP by Thursday."
+    }
+  ],
+  "workshop-draft": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": "Document-only draft: ask about refreshments."
+    }
+  ],
+  "before-quit": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": "Unsent Cedar draft: Please RSVP by Thursday afternoon."
+    },
+    {
+      "role": "AXMenuButton",
+      "identifier": "ModelPickerBar.ModelMenu",
+      "description": "Model",
+      "value": "qwen3.5-4b-4bit",
+      "enabled": true
+    }
+  ],
+  "after-relaunch": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": ""
+    },
+    {
+      "role": "AXMenuButton",
+      "identifier": "ModelPickerBar.ModelMenu",
+      "description": "Model",
+      "value": "qwen3.5-4b-4bit",
+      "enabled": true
+    }
+  ],
+  "unsupported-word": [
+    {
+      "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
+      "description": "Message compose field",
+      "value": "<fixture-folder>/cedar-workshop-notes.docx"
+    },
+    {
+      "role": "AXButton",
+      "identifier": "ChatView.SendOrStopButton",
+      "description": "Send message",
+      "enabled": true
+    }
+  ]
+}
