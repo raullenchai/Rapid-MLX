@@ -8761,8 +8761,13 @@ def test_index_ancestor_error_names_path_and_reason(tmp_path, monkeypatch, unsaf
     ancestor = tmp_path / "ancestor"
     directory = ancestor / "index"
     directory.mkdir(parents=True, mode=0o700)
-    if unsafe != "foreign_owner":
-        ancestor.chmod(0o1777 if unsafe == "sticky_foreign_child" else 0o777)
+    # Set every mode explicitly: a umask-dependent group-writable default
+    # would otherwise report the writable reason instead of the owner one.
+    ancestor.chmod(
+        {"foreign_owner": 0o755, "writable": 0o777, "sticky_foreign_child": 0o1777}[
+            unsafe
+        ]
+    )
     target = (directory if unsafe == "sticky_foreign_child" else ancestor).stat().st_ino
     original_fstat = os.fstat
 
