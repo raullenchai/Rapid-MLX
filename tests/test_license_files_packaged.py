@@ -103,6 +103,8 @@ def test_ci_runs_the_real_license_file_package_build_once():
         "test_real_distributions_ship_every_tracked_license_file" in run["run"]
     )
     assert "--run-slow -m slow" in run["run"]
+    real_build = "test_real_distributions_ship_every_tracked_license_file"
+    assert sum(real_build in str(step.get("run", "")) for step in steps) == 1
 
 
 @pytest.mark.slow
