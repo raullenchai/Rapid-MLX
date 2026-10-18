@@ -536,6 +536,37 @@ def test_config_refresh_replaces_home_with_file_then_restores_directory():
     assert report.failed == 0
 
 
+def test_config_refresh_reports_failure_when_shell_guard_cannot_be_restored():
+    from rapid_mlx.agents import testing as testing_module
+
+    profile = _make_profile("opencode", "yaml")
+    install_guard = testing_module._install_shell_path_guard
+    installs = 0
+
+    def fail_restore(shim_dir, home):
+        nonlocal installs
+        installs += 1
+        if installs == 2:
+            raise OSError("profile write denied")
+        return install_guard(shim_dir, home)
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch("rapid_mlx.agents.adapter.setup_agent_config"),
+        patch.object(
+            testing_module, "_install_shell_path_guard", side_effect=fail_restore
+        ),
+        patch("rapid_mlx.agents.testing._test_plain_chat") as plain_chat,
+    ):
+        report = AgentTestRunner(profile, model_id="local-model").run()
+
+    assert installs == 2
+    assert report.results[0].name == "config_refresh"
+    assert report.results[0].status is TestStatus.FAIL
+    assert "profile write denied" in report.results[0].message
+    plain_chat.assert_not_called()
+
+
 @pytest.mark.parametrize("agent_name", ["hermes", "opencode"])
 def test_setup_probe_stops_delayed_descendant(tmp_path, agent_name):
     import subprocess
