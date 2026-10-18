@@ -139,6 +139,20 @@ struct ChatComposeAccessibilityTests {
         #expect(delegate.manager.isUndoRegistrationEnabled)
     }
 
+    @Test("A conversation switch puts the caret at the end of the restored draft")
+    func conversationSwitchMovesCaretToDraftEnd() {
+        let coordinator = editor(identity: UUID(), text: "a much longer old draft").makeCoordinator()
+        let view = AutosizingTextView()
+        view.string = "a much longer old draft"
+        view.setSelectedRange(NSRange(location: 2, length: 4))
+
+        editor(identity: UUID(), text: "next ✓")
+            .applyConversationIdentity(to: view, coordinator: coordinator)
+
+        #expect(view.string == "next ✓")
+        #expect(view.selectedRange() == NSRange(location: ("next ✓" as NSString).length, length: 0))
+    }
+
     @Test("Chat passes conversation identity without replacing the composer")
     func chatComposerPreservesAccessibilityElement() throws {
         let source = try String(

@@ -2953,6 +2953,8 @@ struct ComposeTextEditor: NSViewRepresentable {
             undo?.removeAllActions(withTarget: storage)
         }
         view.string = text
+        // Match a freshly created editor: caret at the end of the restored draft.
+        view.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         view.remeasure()
         coordinator.lastConversationIdentity = conversationIdentity
     }
