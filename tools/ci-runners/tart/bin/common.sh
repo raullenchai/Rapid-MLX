@@ -6,7 +6,7 @@ CI_ROOT="${CI_ROOT:-$HOME/ci-runners}"
 [ -f "$CI_ROOT/host.env" ] && . "$CI_ROOT/host.env"
 MACHINE_ID="${MACHINE_ID:?set MACHINE_ID in host.env}"
 export TART_HOME="${TART_HOME:-$CI_ROOT/tart-home}"
-export PATH="$CI_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="$CI_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"  # jq: /usr/bin on macOS 15+, Homebrew before
 TART="$CI_ROOT/bin/tart"
 
 REPO="${REPO:-raullenchai/Rapid-MLX}"
