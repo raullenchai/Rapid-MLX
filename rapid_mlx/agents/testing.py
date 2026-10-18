@@ -986,7 +986,17 @@ def _install_gui_launch_guard(guard_root: Path) -> Path:
 def _install_shell_path_guard(shim_dir: Path, home: Path) -> dict[str, str]:
     """Put the shim back first after macOS login shells run path_helper."""
     path_script = shim_dir.parent / "shell-path.sh"
-    script = f'PATH={shlex.quote(str(shim_dir))}:"$PATH"\nexport PATH\n'
+    script = (
+        f'PATH={shlex.quote(str(shim_dir))}:"$PATH"\nexport PATH\n'
+        # A startup file may reset PATH before the wrapper's final restore.
+        # Shell functions and an alias keep bare launch commands guarded in
+        # that interval; absolute executables and native APIs remain outside
+        # the reach of an environment guard.
+        f'open() {{ {shlex.quote(str(shim_dir / "open"))} "$@"; }}\n'
+        f'osascript() {{ {shlex.quote(str(shim_dir / "osascript"))} "$@"; }}\n'
+        'if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi\n'
+        f"alias xdg-open={shlex.quote(str(shim_dir / 'xdg-open'))}\n"
+    )
     path_script.write_text(script, encoding="utf-8")
     # Keep startup files in the disposable HOME. Redirecting ZDOTDIR to the
     # guard directory would hide agent setup's .zshenv/.zshrc/.zlogin.
@@ -1832,10 +1842,25 @@ class AgentTestRunner:
             )
         # A config refresh can replace the disposable HOME, including its
         # login-shell startup files. Restore those files before agent probes.
-        if isolated_root.is_symlink():
-            isolated_root.unlink()
-        isolated_root.mkdir(parents=True, exist_ok=True)
-        _install_shell_path_guard(browser_shim.parent, isolated_root)
+        try:
+            if isolated_root.is_symlink() or (
+                isolated_root.exists() and not isolated_root.is_dir()
+            ):
+                isolated_root.unlink()
+            isolated_root.mkdir(parents=True, exist_ok=True)
+            _install_shell_path_guard(browser_shim.parent, isolated_root)
+        except OSError as exc:
+            report.results.append(
+                TestResult(
+                    "config_refresh",
+                    TestStatus.FAIL,
+                    message=f"could not restore disposable agent HOME: {self._redact(str(exc))}",
+                )
+            )
+            with contextlib.suppress(OSError):
+                isolated_config_home.cleanup()
+            gui_guard_dir.cleanup()
+            return report
         if (browser_shim.parent / _GUI_LAUNCH_MARKER).exists():
             report.results.append(
                 TestResult(

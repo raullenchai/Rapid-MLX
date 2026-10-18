@@ -217,13 +217,18 @@ def test_login_shell_resolves_launcher_to_guard(tmp_path, shell, launcher):
         }
     )
     result = subprocess.run(
-        [shell, "-lc", f"command -v {launcher}"],
+        [shell, "-lc", f"printf '%s\\n' \"$PATH\"; command -v {launcher}"],
         env=env,
         capture_output=True,
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == str(browser.parent / launcher)
+    path, resolved = result.stdout.splitlines()[:2]
+    assert path.split(os.pathsep)[0] == str(browser.parent)
+    if launcher == "xdg-open":
+        assert str(browser.parent / launcher) in resolved
+    else:
+        assert resolved == launcher
 
 
 def test_shell_guard_does_not_follow_profile_symlinks(tmp_path):

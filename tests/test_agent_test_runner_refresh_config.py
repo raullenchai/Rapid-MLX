@@ -433,13 +433,15 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
             handle.write(
                 "export EARLY_OPEN=$(command -v open)\n"
                 "export REFRESHED_CONFIG=1\n"
-                "PATH=/usr/bin:/bin\nreturn\n"
+                "PATH=/usr/bin:/bin\n"
+                "export AFTER_RESET_OPEN=$(command -v open)\nreturn\n"
             )
         with open(os.path.join(home, ".zshrc"), "w", encoding="utf-8") as handle:
             handle.write(
                 "export ZSH_EARLY_OPEN=$(command -v open)\n"
                 "export ZSH_REFRESHED_CONFIG=1\n"
-                "PATH=/usr/bin:/bin\nreturn\n"
+                "PATH=/usr/bin:/bin\n"
+                "export ZSH_AFTER_RESET_OPEN=$(command -v open)\nreturn\n"
             )
 
     def _e2e(*_args, env_overrides=None, **_kwargs):
@@ -449,7 +451,7 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
                 [
                     shell,
                     "-lc",
-                    'command -v open; printf \'%s\\n%s\' "$EARLY_OPEN" "$REFRESHED_CONFIG"',
+                    'command -v open; printf \'%s\\n%s\\n%s\\n%s\' "$EARLY_OPEN" "$AFTER_RESET_OPEN" "$REFRESHED_CONFIG" "$PATH"',
                 ],
                 env=env,
                 check=True,
@@ -457,17 +459,17 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
                 text=True,
             )
             seen.append(result.stdout)
-            assert result.stdout.splitlines()[0] == os.path.join(
-                os.path.dirname(env_overrides["BROWSER"]), "open"
+            lines = result.stdout.splitlines()
+            assert lines[:4] == ["open", "open", "open", "1"]
+            assert lines[4].split(os.pathsep)[0] == os.path.dirname(
+                env_overrides["BROWSER"]
             )
-            assert result.stdout.splitlines()[1] == result.stdout.splitlines()[0]
-            assert result.stdout.endswith("1")
         if sys.platform == "darwin":
             result = subprocess.run(
                 [
                     "/bin/zsh",
                     "-lic",
-                    'command -v open; printf "%s\\n%s" "$ZSH_EARLY_OPEN" "$ZSH_REFRESHED_CONFIG"',
+                    'command -v open; printf "%s\\n%s\\n%s\\n%s" "$ZSH_EARLY_OPEN" "$ZSH_AFTER_RESET_OPEN" "$ZSH_REFRESHED_CONFIG" "$PATH"',
                 ],
                 env=env,
                 check=True,
@@ -475,11 +477,11 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
                 text=True,
             )
             seen.append(result.stdout)
-            assert result.stdout.splitlines()[0] == os.path.join(
-                os.path.dirname(env_overrides["BROWSER"]), "open"
+            lines = result.stdout.splitlines()
+            assert lines[:4] == ["open", "open", "open", "1"]
+            assert lines[4].split(os.pathsep)[0] == os.path.dirname(
+                env_overrides["BROWSER"]
             )
-            assert result.stdout.splitlines()[1] == result.stdout.splitlines()[0]
-            assert result.stdout.endswith("1")
         return TestResult("e2e_chat", TestStatus.PASS)
 
     from rapid_mlx.agents.testing import TestResult
@@ -497,6 +499,41 @@ def test_config_refresh_replaces_home_then_login_shell_still_uses_guard():
         AgentTestRunner(profile, model_id="local-model").run()
 
     assert len(seen) == (3 if sys.platform == "darwin" else 2)
+
+
+def test_config_refresh_replaces_home_with_file_then_restores_directory():
+    import shutil
+    from pathlib import Path
+
+    from rapid_mlx.agents.testing import TestResult
+
+    profile = replace(
+        _make_profile("opencode", "yaml"),
+        needs_function_calling=False,
+        needs_streaming=False,
+    )
+    seen = {}
+
+    def _setup(*_args, **_kwargs):
+        home = Path(os.environ["HOME"])
+        shutil.rmtree(home)
+        home.write_text("replaced", encoding="utf-8")
+        seen["home"] = home
+
+    def _plain_chat(*_args, **_kwargs):
+        assert seen["home"].is_dir()
+        assert (seen["home"] / ".profile").is_file()
+        return TestResult("plain_chat", TestStatus.PASS)
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=False),
+        patch("rapid_mlx.agents.adapter.setup_agent_config", side_effect=_setup),
+        patch("rapid_mlx.agents.testing._test_plain_chat", side_effect=_plain_chat),
+    ):
+        report = AgentTestRunner(profile, model_id="local-model").run()
+
+    assert report.failed == 0
 
 
 @pytest.mark.parametrize("agent_name", ["hermes", "opencode"])
