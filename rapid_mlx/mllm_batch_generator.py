@@ -3284,6 +3284,15 @@ class MLLMBatchGenerator:
                         actual_bytes = max(
                             entry_bytes, self._exact_entry_bytes(entry.prompt_cache)
                         )
+                        # The slot key must be the hash of the decoded prefix
+                        # and salt; a mismatched index is a corrupt snapshot.
+                        if (
+                            apc._sequence_hash(
+                                entry.token_ids, entry.extra_hash, cache.block_size
+                            )
+                            != key
+                        ):
+                            raise ValueError("snapshot key does not match its tokens")
                         if self._persistable_exact_entry(
                             entry, media_ids
                         ) and not over_budget(restored_bytes + actual_bytes):

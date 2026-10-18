@@ -645,3 +645,21 @@ def test_malformed_new_does_not_shadow_valid_old(tmp_path, caplog):
     assert fresh.load_exact_prefix_cache_from_disk(path) == 1
     assert list(fresh._prefix_cache._exact_cache) == [key]
     assert "invalid snapshot index in" in caplog.text
+
+
+def test_restore_rejects_entry_under_a_mismatched_key(tmp_path, monkeypatch, caplog):
+    source = generator()
+    add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    real_load = apc.DiskBlockStore.load_exact_cache
+
+    def swapped(store, cache_hash, **kwargs):
+        tokens, salt, prompt_cache = real_load(store, cache_hash, **kwargs)
+        return (4, 5, 6), salt, prompt_cache  # KV state under another prefix
+
+    monkeypatch.setattr(apc.DiskBlockStore, "load_exact_cache", swapped)
+    fresh = generator()
+    assert fresh.load_exact_prefix_cache_from_disk(path) == 0
+    assert not fresh._prefix_cache._exact_cache
+    assert "snapshot key does not match its tokens" in caplog.text
