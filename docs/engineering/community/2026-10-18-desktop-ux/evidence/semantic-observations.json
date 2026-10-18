@@ -1,200 +1,58 @@
 {
-  "02-chooser.json": [
+  "new-chat": [
     {
-      "identifier": "Quickstart.CachedModel.qwen3.5-4b-4bit",
       "role": "AXButton",
-      "description": "qwen3.5-4b-4bit. Already downloaded and ready to start.. on disk 2.85 GB",
-      "enabled": true,
-      "selected": true
-    },
-    {
-      "identifier": "Quickstart.Footer.Primary",
-      "role": "AXButton",
-      "description": "Start existing model",
-      "enabled": true
-    }
-  ],
-  "08-answer.json": [
-    {
       "identifier": "ChatView.PersonalIntelligence.Toggle",
-      "role": "AXButton",
       "description": "Personal Intelligence",
-      "enabled": false,
-      "value": "Off"
-    },
-    {
-      "identifier": "ToolApproval.Local.Deny",
-      "role": "AXButton",
-      "description": "Don't allow",
-      "enabled": true
-    },
-    {
-      "identifier": "ToolApproval.Local.Allow",
-      "role": "AXButton",
-      "description": "Allow once",
+      "value": "Off",
       "enabled": true
     }
   ],
-  "14-tools.json": [
+  "stopped-model-draft": [
     {
-      "identifier": "Settings.Tools.Toggle.web_search",
-      "role": "AXCheckBox",
-      "description": "Web search",
-      "enabled": true,
-      "value": 1
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_search",
-      "role": "AXCheckBox",
-      "description": "Search local files",
-      "enabled": true,
-      "value": 1
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_read",
-      "role": "AXCheckBox",
-      "description": "Read local file",
-      "enabled": true,
-      "value": 1
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_write",
-      "role": "AXCheckBox",
-      "description": "Write local file",
-      "enabled": true,
-      "value": 1
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_trash",
-      "role": "AXCheckBox",
-      "description": "Move file to Trash",
-      "enabled": true,
-      "value": 1
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_run",
-      "role": "AXCheckBox",
-      "description": "Run development command",
-      "enabled": true,
-      "value": 1
-    }
-  ],
-  "20-unloaded-draft.json": [
-    {
+      "role": "AXButton",
       "identifier": "Readiness.Action",
-      "role": "AXButton",
       "description": "Start",
       "enabled": true
     },
     {
-      "identifier": "rapid.chat.compose",
       "role": "AXTextArea",
+      "identifier": "rapid.chat.compose",
       "description": "Message compose field",
       "value": "What is 2 + 2? Reply with only the number."
     },
     {
-      "identifier": "ChatView.SendOrStopButton",
       "role": "AXButton",
+      "identifier": "ChatView.SendOrStopButton",
       "description": "Send message",
       "enabled": false
     }
   ],
-  "23-ready-draft.json": [
+  "packing-checklist-permission": [
     {
-      "identifier": "rapid.chat.compose",
-      "role": "AXTextArea",
-      "description": "Message compose field",
-      "value": "What is 2 + 2? Reply with only the number."
-    },
-    {
-      "identifier": "ChatView.SendOrStopButton",
       "role": "AXButton",
-      "description": "Send message",
+      "identifier": "ChatView.PersonalIntelligence.Toggle",
+      "description": "Personal Intelligence",
+      "value": "Off",
+      "enabled": false
+    },
+    {
+      "role": "AXButton",
+      "identifier": "ChatView.SendOrStopButton",
+      "description": "Stop generating",
       "enabled": true
-    }
-  ],
-  "29-local-tools-off.json": [
-    {
-      "identifier": "Settings.Tools.Toggle.local_search",
-      "role": "AXCheckBox",
-      "description": "Search local files",
-      "enabled": true,
-      "value": 0
     },
     {
-      "identifier": "Settings.Tools.Toggle.local_read",
-      "role": "AXCheckBox",
-      "description": "Read local file",
-      "enabled": true,
-      "value": 0
+      "role": "AXButton",
+      "identifier": "ToolApproval.Browse.Deny",
+      "description": "Don't allow",
+      "enabled": true
     },
     {
-      "identifier": "Settings.Tools.Toggle.local_write",
-      "role": "AXCheckBox",
-      "description": "Write local file",
-      "enabled": true,
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_trash",
-      "role": "AXCheckBox",
-      "description": "Move file to Trash",
-      "enabled": true,
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_run",
-      "role": "AXCheckBox",
-      "description": "Run development command",
-      "enabled": true,
-      "value": 0
-    }
-  ],
-  "31-all-tools-off.json": [
-    {
-      "identifier": "Settings.Tools.Toggle.web_search",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.browse",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.weather",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.read_document",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_search",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_read",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_write",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_trash",
-      "role": "AXCheckBox",
-      "value": 0
-    },
-    {
-      "identifier": "Settings.Tools.Toggle.local_run",
-      "role": "AXCheckBox",
-      "value": 0
+      "role": "AXButton",
+      "identifier": "ToolApproval.Browse.Allow",
+      "description": "Allow once",
+      "enabled": true
     }
   ]
 }

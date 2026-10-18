@@ -1,133 +1,123 @@
-# Desktop 0.16.3: conversation-first dogfood
+# Desktop 0.16.3: English-first UX dogfood
 
-Rapid's Desktop goal is an approachable everyday local AI assistant. This audit
-found avoidable interruptions between typing a simple request and receiving a
-useful answer. The central product recommendation is to make conversation the
-default experience, with model operations and agent capabilities available through
-deliberate, understandable choices.
+Rapid's primary audience is English-speaking users looking for an approachable
+local AI assistant. The primary evidence, reproduction steps, screenshots, design
+mocks, and priorities in this audit now follow that English product journey.
+Earlier Chinese tests are retained as secondary localized observations only.
 
-These are observed usability risks and design proposals, **not proven explanations
-of user churn**. No retention data, customer interviews, or funnel data was available
-in this audit. Priority means proposed product priority, not incident severity.
+The product recommendation is to make everyday conversation dependable and easy
+to start. Ordinary English drafting requests were mistaken for messages already
+sent; a simple packing checklist triggered web tools and a blocking approval while
+Personal Intelligence showed Off. These interruptions deserve attention alongside
+the entry state, model readiness, and information hierarchy.
+
+These are observed usability risks, **not proven causes of churn**. No customer
+interviews, retention data, or funnel data was available. Priority is proposed
+product priority, not incident severity.
 
 ## Release and method
 
-- Tested the [published Desktop release `rapid-mac-v0.16.3`](https://github.com/raullenchai/Rapid-MLX/releases/tag/rapid-mac-v0.16.3),
-  published October 17, 2026. Release commit: `76b8296cd1cf3a009de045d719dd4823974afae2`.
+- Tested [published Desktop `rapid-mac-v0.16.3`](https://github.com/raullenchai/Rapid-MLX/releases/tag/rapid-mac-v0.16.3),
+  published October 17, 2026; release commit `76b8296cd1cf3a009de045d719dd4823974afae2`.
 - DMG SHA-256: `66b5fedff777fab4d3942b780a74413f13b91105937c9425af205e4dd48ee8d0`.
-- Host: Apple M3 Ultra, 256 GB memory, macOS 26.5.2. Window sizes: 1440 × 900 and
-  820 × 720. Session: October 18, 2026, starting around 14:25 UTC.
-- Ran a copy of the signed release with a unique bundle identifier and temporary
-  HOME using `scripts/dogfood-isolate.sh`; that copy was ad-hoc signed. Preferences,
-  sessions, and server port were isolated; the existing shared model cache was reused.
-  Existing installation was version 0.15.6 and was not used or modified.
-- This is **fresh app state with a warm model cache**, not a clean-machine download
-  or Gatekeeper/notarization test. No new model was downloaded.
-- Used real native Accessibility operations and inspected screenshots. Assertions
-  describe observed state after an action, rather than trusting an AXPress success
-  message. Screenshots of sheets use their separate window IDs.
-- Tested onboarding, a cached starter, Chinese and English rewriting requests,
-  permission denial/recovery, new chat, draft survival across conversation changes,
-  model unload/restart, compact layout, and Tools/Privacy settings. Did not test
-  heavy media generation, microphone permissions, cold downloads, offline networking,
-  document processing, update installation, or long-term retention.
+- Apple M3 Ultra, 256 GB memory, macOS 26.5.2; 1440 × 900 and 820 × 720 windows.
+  English retest: October 18, 2026, approximately 14:42–14:46 UTC.
+- Used a separate fresh persona with unique bundle identifier, temporary HOME,
+  isolated sessions/preferences and a separate port. The release copy was ad-hoc
+  signed for isolation. The existing shared model cache was reused; no model was
+  downloaded. This is fresh app state with a warm cache, not a clean-machine
+  download, Gatekeeper, or notarization test. Existing installation was untouched.
+- Ran the selected cached `qwen3.5-4b-4bit` starter with default Tools preferences
+  and Personal Intelligence Off. No permission to write files, run commands, or
+  send external messages was granted. A browsing request was denied.
+- Used native Accessibility actions, checked resulting UI state, and inspected
+  screenshots. Primary screenshots show only English test conversations.
+- Tested English task entry/replies, onboarding, new chat, compact layout, and
+  stopped-model draft readiness. Did not test cold downloads, document processing,
+  heavy media generation, microphone permissions, offline networking, updates,
+  long-term retention, or representative small-memory hardware.
+
+## English task observations
+
+Nine submitted turns across eight distinct everyday prompts were tested. Each
+started in a fresh conversation. All nine streams completed; stream completion
+alone does not establish that the user task succeeded. This small exploratory
+sample is not a model benchmark or an estimated failure rate.
+
+| Task | Observed result |
+| --- | --- |
+| Rewrite a work message, three options | Returned three English options without tools; phrasing was somewhat awkward |
+| Draft a polite email about a leaking faucet | Twice claimed a message/email was already sent instead of drafting it; no send tool or actual email action occurred |
+| Summarize meeting notes in exactly three bullets | Returned one paragraph, omitting the requested bullet format |
+| Explain compound interest in under 100 words | Supplied an explanation/example but exceeded the requested length |
+| Plan a relaxed Saturday at home | Invoked three web_search calls despite no request for current information; returned a plan and sources |
+| Write a Python deduplication function | Returned code and examples for hashable values without tools; execution was not tested |
+| Draft a junior designer cover letter | Exposed reasoning about an internal `[MESSAGE SENT]` section and did not deliver the requested letter |
+| Create a simple weekend packing checklist | Invoked search and browse; a webpage approval interrupted the task; denial was followed by an answer |
+
+[Task prompts and selected observations](evidence/english-task-observations.json)
+contain synthetic test content only. The English writing failure is materially
+more actionable than the original language-specific quality concern: the repeated
+already-sent claims and exposed `[MESSAGE SENT]` wording point to a context boundary
+worth investigating. The release's `ChatViewModel.clockContext` appends a user-turn
+timestamp trailer with this marker. That is a **causal lead**, not proof without a
+controlled comparison. Preserve correct current-time behavior when fixing it.
 
 ## Findings and ownership
 
-| ID | Priority | Observed problem | Proposed owner | Next action |
-| --- | --- | --- | --- | --- |
-| [UX01 / #4853](https://github.com/raullenchai/Rapid-MLX/issues/4853) | P1 | Ordinary Chinese rewriting requests trigger local file actions while Personal Intelligence says Off | Pixel + Vector | Make a visible conversation tool mode agree with the actual tool surface |
-| [UX02 / #4854](https://github.com/raullenchai/Rapid-MLX/issues/4854) | P1 | A stopped, downloaded model disables Send and requires a separate Start | Pixel | Queue the draft behind one explicit Start & send action |
-| [UX03 / #4855](https://github.com/raullenchai/Rapid-MLX/issues/4855) | P1 | Seeded setup prose and the new-chat empty state do not help users reach their first useful task | Pixel | Replace setup-as-transcript and central promotion with actionable starts |
-| [UX04 / #4856](https://github.com/raullenchai/Rapid-MLX/issues/4856) | P2 | Diagnostics and model operations occupy permanent primary-chat space | Pixel; Atlas for navigation scope | Put chat/history first; move operational detail into an accessible inspector |
-| [UX05 / #4857](https://github.com/raullenchai/Rapid-MLX/issues/4857) | P2 | First model selection exposes many overlapping technical choices before first value | Pixel | Lead with one explained starter and a secondary comparison route |
-| [UX06 / #4858](https://github.com/raullenchai/Rapid-MLX/issues/4858) | P1 | Absolute local privacy promises omit enabled online-tool boundaries | Pixel + Vector; Atlas for copy | Make local-processing and optional-network behavior precise everywhere |
-| [UX07 / #4859](https://github.com/raullenchai/Rapid-MLX/issues/4859) | P2 | The selected starter misreads the Chinese task even after local file tools are disabled | Vector + Pixel | Investigate app instructions/model behavior and validate the starter on everyday tasks |
+| Issue | Priority | English-first finding | Suggested owner / next action |
+| --- | --- | --- | --- |
+| [#4853](https://github.com/raullenchai/Rapid-MLX/issues/4853) | P1 | Everyday English chat invokes online tools while Personal Intelligence says Off | Pixel + Vector: align visible chat/tool mode with actual offered tools |
+| [#4854](https://github.com/raullenchai/Rapid-MLX/issues/4854) | P1 | A stopped downloaded model disables Send for a written English draft | Pixel: offer one explicit Start & send action |
+| [#4855](https://github.com/raullenchai/Rapid-MLX/issues/4855) | P1 | Setup prose and central promotion compete with useful task entry | Pixel: provide actionable English starts and a focused composer |
+| [#4856](https://github.com/raullenchai/Rapid-MLX/issues/4856) | P2 | Model operations and diagnostics dominate everyday chat space | Pixel / Atlas: disclose operational detail on demand |
+| [#4857](https://github.com/raullenchai/Rapid-MLX/issues/4857) | P2 | Model selection demands catalogue knowledge before first value | Pixel: lead with one understandable starter and secondary comparison |
+| [#4858](https://github.com/raullenchai/Rapid-MLX/issues/4858) | P1 | Absolute local privacy promises omit online-tool boundaries | Pixel + Vector / Atlas: precise copy consistent with actual configuration |
+| [#4859](https://github.com/raullenchai/Rapid-MLX/issues/4859) | P1 | English drafting requests are mistaken for messages already sent | Vector + Pixel: isolate timestamp/context effects and restore useful drafting |
 
-## Evidence
+Prioritize the repeated English drafting failure, the chat/tool contract, and the
+first-reply path. The source of the task-quality finding and its priority were
+updated after the English retest; the initial Chinese-only examples are no longer
+its primary reproduction or evidence. Existing issues were revised rather than
+creating duplicate tickets.
 
-The `evidence/` directory contains only app screenshots from this synthetic test and
-selected semantic records. Raw logs, window inventories, operator screens, private
-paths, credentials, and unrelated permission prompts are excluded.
+## Evidence and design handoff
 
-- [Initial welcome](evidence/welcome.png), [model selection](evidence/model-choice.png),
-  [first chat](evidence/first-chat.png), [new chat](evidence/new-chat.png).
-- [Unexpected file approval](evidence/unexpected-file-approval.png),
-  [default tools](evidence/default-tools.png), [privacy settings](evidence/privacy.png).
-- [Compact chat](evidence/compact-chat.png),
-  [stopped model with a written draft](evidence/stopped-model-draft.png).
-- [Answer with local file tools disabled](evidence/local-tools-disabled-answer.png),
-  [selected Accessibility observations](evidence/semantic-observations.json).
+| Journey | Actual English release UI | Proposed UI |
+| --- | --- | --- |
+| English tool interruption | [Webpage approval](evidence/unexpected-tool-approval.png), [packing task](evidence/english-checklist.png) | [Explicit chat/tool mode](mockups/tools.png) |
+| Model readiness | [Stopped model and draft](evidence/stopped-model-draft.png) | [Start & send](mockups/sleeping.png) |
+| First value | [First chat](evidence/first-chat.png), [new chat](evidence/new-chat.png) | [Task-oriented entry](mockups/empty.png) |
+| Visual hierarchy | [Compact shell](evidence/compact-chat.png) | [Optional diagnostics](mockups/shell.png) |
+| First model | [Model chooser](evidence/model-choice.png) | [Starter first](mockups/setup.png) |
+| Privacy | [Welcome](evidence/welcome.png), [Privacy](evidence/privacy.png), [English task using search](evidence/english-plan.png) | [Precise local promise](mockups/privacy.png) |
+| English drafting | [Email](evidence/english-email.png), [repeat](evidence/english-email-repeat.png), [cover letter](evidence/english-cover-letter.png) | [Useful email draft](mockups/answer.png) |
 
-The same Chinese rewrite request produced `local_write` approvals on two fresh
-conversations. Personal Intelligence read Off both times. Denial allowed a response
-to follow, but it changed the intended task: asking the coworker to provide three
-reports rather than offering three phrasings. Disabling only `local_write` led to
-`local_read` and `local_search` attempts. Disabling all five local file/command tools
-removed that interruption in the next sample, but did not fix task understanding:
-the answer mixed English and Chinese, supplied four numbered options instead of
-three, and still asked the coworker for three versions of the report. A successful
-`web_search` chip was also visible: disabling local file tools did not make this
-request local-only. No wire payload was captured. These are
-small-sample observations; root cause and model-family generality remain unproven.
+All mock conversation content is now English. Editable source:
+[design.html](mockups/design.html), with `?screen=empty`, `tools`, `sleeping`, `shell`,
+`setup`, `privacy`, or `answer`. These are static visual proposals with authored
+sample answers, not shipped behavior, model outputs, or final pixel specifications.
+They share a restrained warm palette, amber brand accents, readable conversation
+width, familiar history, and one primary action per state.
 
-A further all-tools-disabled sample still treated the three requested rewrites as
-three report versions and added irrelevant date/time commentary. An explicitly
-quoted control prompt that specified exactly three Chinese outputs and no new
-report-count requirement did produce three Chinese variants without tool use.
-That limits the finding: natural task interpretation and default experience need
-evaluation; this does not establish a universal Chinese/model failure. See
-[all-tools-disabled sample](evidence/all-tools-disabled-answer.png) and
-[explicit prompt control](evidence/explicit-prompt-control.png).
+The privacy mock anticipates a real Chat only mode. Until that exists, copy must
+accurately describe current tools and cannot imply the proposed mode has shipped.
+Telemetry review preserves the user's saved preference; collection policy is not
+being changed. Implementation must retain hardware/disk guards, source disclosure,
+cancellation/retry, localization, keyboard access, VoiceOver, contrast, and compact
+layouts. No reference-product code or assets are included.
 
-An English rewrite request explicitly asking for a reply in chat completed normally:
-the UI reported 130 tokens/sec, 1.0 seconds to first token, and 1.9 seconds generation
-time. Those are app-reported values for one run on this host, not general performance
-benchmarks. Draft text survived a conversation switch and model restart. The selected
-cached starter loaded successfully. These working behaviors should be preserved.
+[Selected English Accessibility records](evidence/semantic-observations.json)
+support mode/readiness observations. [Secondary localized observations](evidence/secondary-zh/README.md)
+retain the earlier Chinese findings without driving the primary English-user
+assessment. No raw operator screens, credentials, unrelated permission prompts,
+or unfiltered diagnostic logs are published.
 
-## Design handoff
+## Delivery
 
-| Proposal | Preview |
-| --- | --- |
-| Task-oriented new chat | [empty.png](mockups/empty.png) |
-| Explicit Chat only / Use tools | [tools.png](mockups/tools.png) |
-| Start & send | [sleeping.png](mockups/sleeping.png) |
-| Quiet shell and optional diagnostics | [shell.png](mockups/shell.png) |
-| Recommended starter first | [setup.png](mockups/setup.png) |
-| Precise privacy promise | [privacy.png](mockups/privacy.png) |
-| Expected Chinese rewrite result | [answer.png](mockups/answer.png) |
-
-Editable source: [design.html](mockups/design.html). Open it locally with
-`?screen=empty`, `tools`, `sleeping`, `shell`, `setup`, `privacy`, or `answer`.
-These are static visual proposals with illustrative copy and values, not a working
-replacement app or pixel specifications. They share a warm neutral palette,
-restrained amber brand accents, a consistent sidebar, readable conversation width,
-and one primary action per state. Existing branding need not change.
-
-The privacy mock anticipates a real Chat only mode; until UX01 is implemented, copy
-must describe current tool behavior and cannot imply this mode already exists.
-Its telemetry review link preserves the user's actual setting and does not propose
-a change to collection policy. Download size, hardware-fit warnings, source choice,
-cancel/retry, accessible controls, keyboard navigation, contrast, localization,
-and compact layouts must remain part of implementation acceptance.
-
-## Delivery and follow-up
-
-This branch contains evidence and design handoffs only. No application behavior,
-engine code, telemetry policy, model selection policy, or release was changed.
-The user authorized filing findings as GitHub issues with mock designs. All seven
-linked findings are now filed and ready for owner triage; fixes are for the receiving
-owners to implement. Atlas should sequence UX01/UX06, UX02/UX03,
-before optional visual reorganization; investigate UX07 alongside starter validation. Keep each implementation scoped to
-its own issue rather than turning the audit into a wholesale rewrite.
-
-The requested Orca role FYI messaging channel was not exposed in this session.
-Ownership and next steps are recorded here and in the linked GitHub handoffs;
-no substitute agents were spawned or unsolicited messages sent.
-
-To measure whether fixes help, use existing privacy-approved aggregate activation
-milestones where available: setup completion, first successful reply, and return
-usage. Define missing measurements separately before adding instrumentation.
-Validate with everyday users on common 16/24/32 GB Macs; this large-memory host is
-not representative evidence of their first-load experience.
+This branch changes evidence, design proposals, and handoffs only. App/engine
+behavior and production release state are untouched. Fixes belong to the named
+receiving roles. Role FYI messaging was not available; ownership and next actions
+are recorded in the issues. Validate improvements with English-speaking everyday
+users on common 16/24/32 GB Macs, using existing approved activation signals where
+available. Define any new instrumentation separately.

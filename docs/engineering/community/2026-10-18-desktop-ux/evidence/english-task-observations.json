@@ -1,0 +1,84 @@
+[
+  {
+    "task": "rewrite",
+    "prompt": "Make this message friendlier and more professional: 'Where is the report? Can you send it today?' Give me three options.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "Here are three options to make the message friendlier and more professional:\n1.\t\"Hi [Name], could you share a bit where the report is? I'd appreciate it if you could send it over today when you get a chance.\"\n2.\t\"Hello [Name], I was wondering if we could find out where the report is located? Would you be able to send it over today?\"\n3.\t\"Hi [Name], could we please get a bit more information about where the report is? I would appreciate it if you could send it over today.\""
+  },
+  {
+    "task": "email",
+    "prompt": "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "It looks like you've already sent the email! The message shows it was sent on Sunday, October 18, 2026 at 7:42 AM PDT.\nIf you'd like me to help you draft the email, review it, or make any changes before sending, please let me know and I'd be happy to help."
+  },
+  {
+    "task": "summary",
+    "prompt": "Summarize these meeting notes in exactly three bullet points: Launch moves from Monday to Thursday. Alex owns the release checklist. Priya will finish the help page by Wednesday. The team will review progress tomorrow at 10 am.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "The launch has been rescheduled from Monday to Thursday. Alex is responsible for the release checklist, and Priya needs to complete the help page by Wednesday. The team will review progress at 10 am tomorrow."
+  },
+  {
+    "task": "explain",
+    "prompt": "Explain compound interest to a beginner in under 100 words. Use a simple example.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "Compound interest is when your money earns interest, and that interest also earns interest over time. Think of it like a snowball rolling down a hill: it gets bigger not just by adding new snow, but because the existing snow also picks up more.\nSimple example: If you invest $100 at 10% annual interest:\n•\tYear 1: You earn $10, total = $110.\n•\tYear 2: You earn 10% of $110 ($11), total = $121.\n•\tYear 3: You earn 10% of $121 ($12.10), total = $133.10.\nAfter 3 years, your $100 has grown to over $133—not just because of the original amount, but because each year you earn interest on more money. The earlier you start, the more powerful it becomes!"
+  },
+  {
+    "task": "plan",
+    "prompt": "Plan a relaxed Saturday at home for two adults. Include one indoor activity, a simple lunch, and a movie night. Keep it under 150 words.",
+    "completed_stream": true,
+    "tools": [
+      "Tool call web_search",
+      "Tool call web_search",
+      "Tool call web_search"
+    ],
+    "approvals_denied": [],
+    "response_excerpt": "Saturday Staycation Plan:\n•\tIndoor Activity (Morning): Create a \"Halloween Nest.\" Pull every blanket and stack pillows on the floor. Set up an ambient playlist with creaking doors or spooky instrumentals in the background. Light a fall-scented candle (pumpkin spice or woodsmoke).\n•\tSimple Lunch: Make quick \"Chickpea & Red Cabbage Wraps.\" Use 2 large flour tortillas, shredded red cabbage, diced tomato, and chopped parsley. Sauté chickpeas in a bowl with the toppings for a creamy, crunchy meal ready in 10 minutes.\n•\tMovie Night (Evening): Watch a cozy Halloween film like Hocus Pocus or a classic spooky movie. Enjoy the rest of your snacks while snuggling in the bean bag chair under a rust-colored throw blanket. No electronics or complicated plans—just you two and the movie.\nSources:\n•\t20 Romantic Halloween Activities at Home for Introverted Couples - bondaffair.com\n•\t20 Halloween Activities for Couples at Home for a Cozy Spooky Night - bondaffair.com\n•\t31 Fun Ways to Enjoy October\n•\t12 Dairy Free Lunch Ideas for Work: Easy Picks (October 2026)\n•\tCheap Dinners for Two Under $10 (October 2026)\n•\tLess Cooking, More Enjoying: Three Easy Lunch Ideas\n•\t20 Romantic Halloween Activities at Home for Introverted Couples - bondaffair.com\n•\t20 Halloween Activities for Couples at Home for a Cozy Spooky Night - bondaffair.com\n•\t31 Fun Ways to Enjoy October"
+  },
+  {
+    "task": "code",
+    "prompt": "Write a Python function that removes duplicates from a list while keeping the original order. Include a short example.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "Here's a Python function that removes duplicates from a list while preserving the original order:\ndef remove_duplicates(lst):\n    \"\"\"Remove duplicates from a list while preserving original order.\"\"\"\n    seen = set()\n    result = []\n    \n    for item in lst:\n        if item not in seen:\n            seen.add(item)\n            result.append(item)\n    \n    return result\n\n# Example usage:\nnumbers = [1, 2, 3, 2, 4, 1, 5, 3]\nprint(remove_duplicates(numbers))  # Output: [1, 2, 3, 4, 5]\n\nPython\nHow it works:\n•\tUses a seen set to track elements we've already encountered (O(1) lookup time)\n•\tBuilds a new list with only the first occurrence of each element\n•\tPreserves the original order since we iterate through the input in order\nExample output:\n>>> remove_duplicates([1, 2, 3, 2, 4, 1, 5, 3])\n[1, 2, 3, 4, 5]\n\n>>> remove_duplicates(['apple', 'banana', 'apple', 'orange'])\n['apple', 'banana', 'orange']\n\n>>> remove_duplicates([5, 5, 5, 5])\n[5]\n\nPython"
+  },
+  {
+    "task": "email-repeat",
+    "prompt": "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "I can see you've already sent a message about the leaking kitchen faucet to your landlord. Is there anything else you'd like help with regarding this situation? Perhaps:\n•\tYou want me to review or edit the message you sent\n•\tYou need help following up if there's no response\n•\tYou want advice on what to include in future communications\nLet me know how I can assist!"
+  },
+  {
+    "task": "cover-letter",
+    "prompt": "Write a short cover letter for a junior graphic designer applying to a small design studio. Use placeholders for the company and my name.",
+    "completed_stream": true,
+    "tools": [],
+    "approvals_denied": [],
+    "response_excerpt": "The user asked me to write a cover letter. However, they also sent a message indicating that a previous message was \"SENT\" on October 18, 2026. This appears to be a test message or they're showing me what was already sent.\nSince I cannot see the actual content of their previous message (the \"[MESSAGE SENT]\" section indicates something was transmitted, but I don't have access to it), and they haven't asked me to write a cover letter in this current message, I should ask them if they want me to proceed with writing the cover letter now.\nActually, looking more carefully at this - the message \"[MESSAGE SENT]\" appears to be showing me what was previously sent in a conversation, and now the current message is from me (the assistant) asking them to write a cover letter. But they haven't actually asked me to do anything in this message - it's just showing me the context.\nLet me assume they want me to write the cover letter now and proceed:"
+  },
+  {
+    "task": "checklist",
+    "prompt": "Create a simple packing checklist for a weekend trip. Include clothing, toiletries, and travel documents.",
+    "completed_stream": true,
+    "tools": [
+      "Tool call web_search",
+      "Tool call browse",
+      "Tool call web_search"
+    ],
+    "approvals_denied": [
+      "ToolApproval.Browse.Deny"
+    ],
+    "response_excerpt": "REQUESTED BY THE MODEL\n{\n  \"url\" : \"https:\\/\\/level8cases.com\\/blogs\\/blog\\/packing-list-for-a-weekend-trip\"\n}\nYou didn't allow this, so there's nothing to show. Ask again if you change your mind.\nHere is a simple weekend trip packing checklist tailored for October 18, 2026 (PDT), organized by category:\n📱 Travel Documents & Electronics\n•\tPassport or Driver’s License (Essential for ID; passport needed if traveling internationally)\n•\tCredit/Debit Cards + some cash (USD) in small bills\n•\tReservation Confirmation (hotel, event tickets, etc.) saved on your phone or printed copy\n•\tPhone & Charging (power bank if possible, cable)\n•\tKeys to your car or home\n👕 Clothing (2 Days)\n•\tTops: 2–3 shirts/blouses (mix casual and slightly dressier if needed)\n•\tBottoms: 1 pair of pants/shorts + 1 pair of socks (or underwear)\n•\tOuter Layer: Light jacket or sweater for evening/cool weather (PDT can get chilly in Oct)\n•\tSleepwear: 1 set of pajamas/onesie\n•\tShoes: Casual sandals or sneakers for walking; 1 backup shoe (e.g., dress shoes or loafers)\n•\tHats/Accessories: 1 hat (sun or casual) + sunglasses (if sunny)\n🧴 Toiletries & Personal Care\n•\tFace: Travel-sized facial cleanser, moisturizer, sunscreen (SPF 30+)\n•\tBody: Deodorant, toothbrush, toothpaste (travel size), hairbrush/comb\n•\tHair: Mini hairspray or gel, hair tie (optional)\n•\tMedicine: Prescription meds (in original container), pain reliever, wet wipes\n💡 Extras & Tips\n•\tReusable water bottle (if allowed on flights)\n•\tWet wipes or hand sanitiz"
+  }
+]
