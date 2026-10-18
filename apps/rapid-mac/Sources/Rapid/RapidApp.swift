@@ -134,8 +134,6 @@ struct RapidApp: App {
     /// Per-fetch approval gate for the ``browse`` tool, shared by the tool
     /// runner (which suspends on it) and the SwiftUI approval sheet.
     @State private var browseApproval: BrowseApprovalStore
-    /// Consent gate for built-in local workspace reads and actions.
-    @State private var localToolApproval: LocalToolApprovalStore
     /// MCP connectors (issue #1716) — the config file the engine reads, the
     /// live state it reports back, the per-tool consent gate, and the registry
     /// that ties them into the chat loop.
@@ -229,15 +227,12 @@ struct RapidApp: App {
         // so Settings + the approval sheet bind to the same instances.
         let webSearchConfig = WebSearchConfig()
         let browseApprovalStore = BrowseApprovalStore()
-        let localToolApprovalStore = LocalToolApprovalStore()
         let builtinRegistry = BuiltinToolRegistry(
             browseApproval: browseApprovalStore,
-            webSearch: webSearchConfig,
-            localApproval: localToolApprovalStore
+            webSearch: webSearchConfig
         )
         _webSearch = State(initialValue: webSearchConfig)
         _browseApproval = State(initialValue: browseApprovalStore)
-        _localToolApproval = State(initialValue: localToolApprovalStore)
 
         // Issue #1716: MCP connectors. The config store owns the file the
         // engine child reads; the catalog reads back what that child actually
@@ -450,7 +445,6 @@ struct RapidApp: App {
                 .environment(dockPromptStore)
                 .environment(webSearch)
                 .environment(browseApproval)
-                .environment(localToolApproval)
                 .environment(mcpConfig)
                 .environment(mcpCatalog)
                 .environment(mcpApproval)
@@ -658,7 +652,6 @@ struct RapidApp: App {
                 .environment(dockPromptStore)
                 .environment(webSearch)
                 .environment(browseApproval)
-                .environment(localToolApproval)
                 .environment(mcpConfig)
                 .environment(mcpCatalog)
                 .environment(mcpApproval)

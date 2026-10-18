@@ -170,9 +170,8 @@ final class ChatViewModel {
     """
 
     /// Per-tool on/off flags, persisted in ``UserDefaults`` under keys of the
-    /// form ``rapid.tools.enabled.<name>``. Local workspace tools default to
-    /// disabled; other tools default to enabled. An explicit stored Bool wins.
-    /// ``enabledDefinitions`` filters disabled
+    /// form ``rapid.tools.enabled.<name>``. Every tool defaults to enabled;
+    /// an explicit stored Bool wins. ``enabledDefinitions`` filters disabled
     /// tools out before they reach the model, and the loop also gates dispatch
     /// so a model that invents a disabled name gets a clean refusal instead.
     private(set) var disabledTools: Set<String>
@@ -326,15 +325,12 @@ final class ChatViewModel {
         self.conversationStoreURL = conversationStoreURL
         self.onProductValueDelivered = onProductValueDelivered
         self.documentCache = documentCache
-        // Preserve explicit choices; local workspace access requires opt-in.
-        let localTools: Set<String> = [
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
-        ]
+        // Absent preferences enable tools; explicit stored false disables them.
         var disabled = Set<String>()
         for def in tools.definitions {
             let name = def.function.name
             let enabled = toolDefaults.object(forKey: Self.toolEnabledKey(name)) as? Bool
-                ?? !localTools.contains(name)
+                ?? true
             if !enabled { disabled.insert(name) }
         }
         self.disabledTools = disabled

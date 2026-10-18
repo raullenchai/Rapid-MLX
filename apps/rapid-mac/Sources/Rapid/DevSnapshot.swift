@@ -43,11 +43,6 @@ enum DevSnapshot {
         // throwaway instance is right here: the snapshot never approves
         // anything, it only needs the object to exist.
         let browseApproval = BrowseApprovalStore()
-        // ``ContentView`` also owns the built-in local-file/code approval
-        // sheet. Keep the snapshot environment in lockstep with RapidApp's
-        // dependency chain; otherwise adding that production dependency makes
-        // every visual capture trap before the first frame is rendered.
-        let localToolApproval = LocalToolApprovalStore()
         // ``ContentView`` also reads ``ImageGenViewModel`` from the
         // environment (the Images tab). Same rule as ``browseApproval``: a
         // throwaway instance so the view can be evaluated without trapping.
@@ -358,7 +353,6 @@ enum DevSnapshot {
                     .environment(dockPromptStore)
                     .environment(snapshotShareCompute)
                     .environment(browseApproval)
-                    .environment(localToolApproval)
                     .environment(imageGen)
                     .environment(audio)
                     .environment(video)

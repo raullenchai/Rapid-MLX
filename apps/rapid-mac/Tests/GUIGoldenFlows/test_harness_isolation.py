@@ -56,11 +56,6 @@ class HarnessIsolationTests(unittest.TestCase):
             "rapid.tools.enabled.browse",
             "rapid.tools.enabled.weather",
             "rapid.tools.enabled.read_document",
-            "rapid.tools.enabled.local_search",
-            "rapid.tools.enabled.local_read",
-            "rapid.tools.enabled.local_write",
-            "rapid.tools.enabled.local_trash",
-            "rapid.tools.enabled.local_run",
         }
         self.assertEqual(set(seeds), expected_keys)
         self.assertEqual(len(table.splitlines()), len(seeds), "duplicate seed key")
@@ -183,22 +178,16 @@ class HarnessIsolationTests(unittest.TestCase):
         )
         record(key, "bool", value)
 
-        # Derive opt-in names from the source and verify the fallback expression.
+        # Verify that built-in tools default to enabled when no preference is stored.
         text = source("Chat/ChatViewModel.swift")
         template = capture(
             text,
             r'private static func toolEnabledKey\(_ name: String\) -> String \{\s*"([^"\n]+)"\s*\}',
         )
-        local_tools = set(
-            re.findall(
-                r'"([^"\n]+)"',
-                capture(text, r"let localTools: Set<String> = \[([\s\S]*?)\]"),
-            )
-        )
         self.assertRegex(
             text,
             r"let enabled = toolDefaults.object\(forKey: Self.toolEnabledKey\(name\)\) as\? Bool"
-            r"\s*\?\? !localTools.contains\(name\)",
+            r"\s*\?\? true",
         )
         self.assertIn("if !enabled { disabled.insert(name) }", text)
         self.assertIn("var disabled = Set<String>()", text)
@@ -208,16 +197,11 @@ class HarnessIsolationTests(unittest.TestCase):
             "browse",
             "weather",
             "read_document",
-            "local_search",
-            "local_read",
-            "local_write",
-            "local_trash",
-            "local_run",
         ):
             record(
                 template.replace(r"\(name)", name),
                 "bool",
-                str(name not in local_tools).lower(),
+                "true",
             )
 
         # No explicit scalar default: UserDefaults.bool returns false on an

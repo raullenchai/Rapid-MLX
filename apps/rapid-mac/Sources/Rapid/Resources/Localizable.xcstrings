@@ -3110,16 +3110,6 @@
         }
       }
     },
-    "Allow for this session" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "本次会话内允许"
-          }
-        }
-      }
-    },
     "Allow once" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4910,16 +4900,6 @@
         }
       }
     },
-    "Files are moved to Trash and remain recoverable. Folders are never removed." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "文件会移到废纸篓，仍可恢复。文件夹不会被移除。"
-          }
-        }
-      }
-    },
     "Filter" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6240,16 +6220,6 @@
         }
       }
     },
-    "Rapid wants to use its local workspace on this Mac." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rapid 想要使用这台 Mac 上的本地工作区。"
-          }
-        }
-      }
-    },
     "Pick the folder where Rapid should keep downloaded models." : {
       "localizations" : {
         "zh-Hans" : {
@@ -6966,16 +6936,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "回顾已完成的对话并保存长期偏好。默认关闭。"
-          }
-        }
-      }
-    },
-    "Review the exact path, content, command, and arguments before allowing it." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "允许前请核对确切的路径、内容、命令和参数。"
           }
         }
       }
@@ -9040,16 +9000,6 @@
         }
       }
     },
-    "Creates or replaces one text file after showing the exact path and content for approval." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在展示确切路径和内容并获得批准后，创建或替换一个文本文件。"
-          }
-        }
-      }
-    },
     "Daily" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9180,36 +9130,6 @@
         }
       }
     },
-    "Move File to Trash" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "将文件移到废纸篓"
-          }
-        }
-      }
-    },
-    "Move file to Trash" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "将文件移到废纸篓"
-          }
-        }
-      }
-    },
-    "Moves one file to Trash after approval. It never removes folders or permanently deletes files." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "获得批准后将一个文件移到废纸篓。它不会移除文件夹，也不会永久删除文件。"
-          }
-        }
-      }
-    },
     "No key stored — %@ works without one; a free key lifts the shared rate limit." : {
       "localizations" : {
         "zh-Hans" : {
@@ -9300,42 +9220,12 @@
         }
       }
     },
-    "Read Local File" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "读取本地文件"
-          }
-        }
-      }
-    },
     "Read attached document" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "读取附加的文档"
-          }
-        }
-      }
-    },
-    "Read local file" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "读取本地文件"
-          }
-        }
-      }
-    },
-    "Reads a UTF-8 text file you approve inside your home folder." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "读取个人文件夹中经你批准的 UTF-8 文本文件。"
           }
         }
       }
@@ -9400,42 +9290,12 @@
         }
       }
     },
-    "Run Development Command" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "运行开发命令"
-          }
-        }
-      }
-    },
-    "Run development command" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "运行开发命令"
-          }
-        }
-      }
-    },
     "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "重新运行模型设置向导。你的设置、对话、已下载的模型和遥测选择都不会受影响。"
-          }
-        }
-      }
-    },
-    "Runs an approved development command without a shell, with a 30-second limit." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "不经 shell 运行经批准的开发命令，时限 30 秒。"
           }
         }
       }
@@ -9450,32 +9310,12 @@
         }
       }
     },
-    "Search Local Files" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "搜索本地文件"
-          }
-        }
-      }
-    },
     "Search local files" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "搜索本地文件"
-          }
-        }
-      }
-    },
-    "Searches filenames and text under a folder you approve on this Mac." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在这台 Mac 上经你批准的文件夹内搜索文件名和文本。"
           }
         }
       }
@@ -9696,26 +9536,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "`web_search` 查询所使用的后端。Keenable 无需账号即可使用；添加免费密钥（推荐 Parallel）可获得最佳结果。密钥保存在你的钥匙串中。"
-          }
-        }
-      }
-    },
-    "Write Local File" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "写入本地文件"
-          }
-        }
-      }
-    },
-    "Write local file" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "写入本地文件"
           }
         }
       }

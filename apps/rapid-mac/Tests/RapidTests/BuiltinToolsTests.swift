@@ -28,19 +28,17 @@ final class BuiltinToolsTests {
     private func makeRegistry() -> BuiltinToolRegistry {
         BuiltinToolRegistry(
             browseApproval: BrowseApprovalStore(defaults: freshDefaults()),
-            webSearch: WebSearchConfig(defaults: freshDefaults(), keychain: InMemoryKeychain()),
-            localApproval: LocalToolApprovalStore(defaults: freshDefaults())
+            webSearch: WebSearchConfig(defaults: freshDefaults(), keychain: InMemoryKeychain())
         )
     }
 
     // MARK: - Registry surface
 
-    @Test("Registry exposes the online, attachment, and bounded local tools")
+    @Test("Registry exposes exactly the four online and attachment tools")
     func registryDefinitions() {
         let names = makeRegistry().definitions.map { $0.function.name }
         #expect(names == [
             "web_search", "browse", "weather", "read_document",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
         ])
     }
 
@@ -163,9 +161,6 @@ final class BuiltinToolsTests {
         let registry = makeRegistry()
         let total = registry.definitions.count
         let defaults = freshDefaults()
-        for name in ["local_search", "local_read", "local_write", "local_trash", "local_run"] {
-            defaults.set(true, forKey: "rapid.tools.enabled.\(name)")
-        }
         let vm = ChatViewModel(tools: registry, toolDefaults: defaults)
         #expect(vm.enabledDefinitions.count == total)
         vm.setToolEnabled("browse", false)
@@ -184,23 +179,23 @@ final class BuiltinToolsTests {
         #expect(!second.enabledDefinitions.contains { $0.function.name == "weather" })
     }
 
-    @Test("Fresh defaults enable online and attachment tools and disable local workspace tools")
+    @Test("Fresh defaults enable every built-in tool")
     func freshToolDefaults() {
         let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
-        #expect(vm.disabledTools == ["local_search", "local_read", "local_write", "local_trash", "local_run"])
+        #expect(vm.disabledTools.isEmpty)
         #expect(Set(vm.enabledDefinitions.map { $0.function.name }) == [
             "web_search", "browse", "weather", "read_document",
         ])
     }
 
-    @Test("Explicit true preserves local tool opt-in and explicit false disables an online tool")
+    @Test("Explicit false disables a built-in tool while other tools stay enabled")
     func explicitToolDefaultsWin() {
         let defaults = freshDefaults()
-        defaults.set(true, forKey: "rapid.tools.enabled.local_write")
         defaults.set(false, forKey: "rapid.tools.enabled.web_search")
         let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: defaults)
         let enabled = Set(vm.enabledDefinitions.map { $0.function.name })
-        #expect(enabled.contains("local_write"))
+        #expect(vm.disabledTools == ["web_search"])
+        #expect(enabled == ["browse", "weather", "read_document"])
         #expect(!enabled.contains("web_search"))
     }
 

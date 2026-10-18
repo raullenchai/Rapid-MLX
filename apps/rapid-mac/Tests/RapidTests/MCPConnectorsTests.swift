@@ -630,7 +630,6 @@ final class MCPConnectorsTests {
         let names = makeComposite().definitions.map { $0.function.name }
         #expect(names == [
             "web_search", "browse", "weather", "read_document",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
         ])
     }
 
@@ -682,7 +681,6 @@ final class MCPConnectorsTests {
         // Connectors on: the connector tool sits alongside the built-in three.
         #expect(composite.definitions.map { $0.function.name } == [
             "web_search", "browse", "weather", "read_document",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
             "time__now",
         ])
         // And a call for it routes to the MCP side (reaching the approval gate),
@@ -699,7 +697,6 @@ final class MCPConnectorsTests {
         defaults.set(false, forKey: MCPConfigStore.enabledKey)
         #expect(composite.definitions.map { $0.function.name } == [
             "web_search", "browse", "weather", "read_document",
-            "local_search", "local_read", "local_write", "local_trash", "local_run",
         ])
     }
 

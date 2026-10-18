@@ -97,7 +97,6 @@ struct EngineProcessEnvironmentTests {
             "Server/PortSweep.swift": 2,
             "Services/ReonboardingReset.swift": 1,
             "UI/GitHubStarPromptCoordinator.swift": 1,
-            "Tools/LocalWorkspaceTools.swift": 1,
             "Server/DownloadManager.swift": 1,
         ]
         let auditedEngineLowLevelSites: [String: Int] = [
@@ -116,7 +115,6 @@ struct EngineProcessEnvironmentTests {
             "Server/PortSweep.swift": "/usr/sbin/netstat",
             "Services/ReonboardingReset.swift": "/bin/sh",
             "UI/GitHubStarPromptCoordinator.swift": "GitHubStarChild.spawn(",
-            "Tools/LocalWorkspaceTools.swift": "/usr/bin/sandbox-exec",
             "Server/DownloadManager.swift": "internal func _testingFinish(",
         ]
         for (relativePath, anchor) in allowlistAnchors {

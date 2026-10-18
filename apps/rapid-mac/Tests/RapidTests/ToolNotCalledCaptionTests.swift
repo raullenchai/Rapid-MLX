@@ -932,17 +932,13 @@ struct ToolNotCalledCaptionTests {
     /// Every tool the app ships, as a fresh install advertises them.
     private static let productionRoster = [
         "web_search", "browse", "weather", "read_document",
-        "local_search", "local_read", "local_write", "local_trash", "local_run",
     ]
 
-    /// 0.14.3 dogfood (2026-09-18): a fresh install advertises web search,
-    /// browse, weather, document reading and the local workspace tools.
-    /// None of them is a calculator — `local_run` is "Run development
-    /// command" behind an approval sheet — so a correct `391` to
-    /// "What is 17 * 23?" must not be told it should have called a tool.
+    /// The four built-ins cannot compute arithmetic, so a correct numeric
+    /// reply must not be told it should have called a tool.
     @Test("Gate 6: arithmetic prompt under the production roster → caption HIDDEN")
     func gateSixProductionRosterDoesNotCompute() {
-        for roster in [Self.productionRoster, ["web_search", "weather", "browse", "read_document"], ["local_run"]] {
+        for roster in [Self.productionRoster, ["web_search"], ["browse"], ["weather"], ["read_document"]] {
             let flag = ChatMessage.shouldFlagToolNotCalled(
                 userPrompt: "What is 17 * 23? Answer with just the number.",
                 assistantContent: "391",
@@ -982,13 +978,11 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["web_search"]))
         #expect(ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["fetchURL"]))
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["calculator"]))
-        #expect(!ChatMessage.advertisedToolCouldServe(prompt: weatherPrompt, toolNames: ["local_search", "local_read"]))
         let searchPrompt = "Search for Ada Lovelace's biography."
         #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["browse"]))
         // read_document only reads the user's own attachments — it cannot go and find anything.
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["read_document"]))
         #expect(ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["wiki-lookup"]))
-        #expect(!ChatMessage.advertisedToolCouldServe(prompt: searchPrompt, toolNames: ["local_run"]))
         #expect(!ChatMessage.advertisedToolCouldServe(prompt: "What is 17 * 23?", toolNames: []))
     }
 
@@ -1011,7 +1005,6 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.capabilities(ofToolNamed: "code_interpreter") == [.compute])
         #expect(ChatMessage.capabilities(ofToolNamed: "calculator") == [.compute])
         #expect(ChatMessage.capabilities(ofToolNamed: "web_search") == [.network, .retrieval])
-        #expect(ChatMessage.capabilities(ofToolNamed: "local_run") == [])
         #expect(ChatMessage.capabilities(ofToolNamed: "searchDocuments") == [.network, .retrieval])
         // Every shipped tool is classified by exact name, so a rename here
         // must be mirrored in ``builtinToolCapabilities``.

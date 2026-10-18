@@ -895,11 +895,6 @@ rapid.tools.enabled.web_search bool true
 rapid.tools.enabled.browse bool true
 rapid.tools.enabled.weather bool true
 rapid.tools.enabled.read_document bool true
-rapid.tools.enabled.local_search bool false
-rapid.tools.enabled.local_read bool false
-rapid.tools.enabled.local_write bool false
-rapid.tools.enabled.local_trash bool false
-rapid.tools.enabled.local_run bool false
 DEFAULTS
 }
 

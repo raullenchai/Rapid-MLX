@@ -1209,16 +1209,6 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// | live data (weather, prices, news) | network | web_search, browse, weather | search, web, weather, browse, fetch, http, url, news, stock, price, forecast, internet, crawl, scrape |
     /// | external retrieval (search for, look up) | retrieval | web_search, browse | search, web, browse, fetch, http, url, read, document, doc, pdf, page, file, find, lookup, wiki, retrieve, query |
     ///
-    /// The local workspace tools (`local_search`, `local_read`,
-    /// `local_write`, `local_trash`, `local_run`) serve none of the three
-    /// lanes. `local_run` can execute Python, but it is "Run development
-    /// command" behind an approval sheet, not a calculator: a model that
-    /// multiplies `17 * 23` in its head instead of asking permission to run
-    /// a shell did the right thing, and a caption telling the user it should
-    /// have run a tool is the false alarm this gate removes (0.14.3 dogfood,
-    /// 2026-09-18, default roster). A dedicated compute tool — `calculator`,
-    /// `code_interpreter`, `execute_python` — is a different matter and
-    /// keeps the caption.
     static func advertisedToolCouldServe(prompt: String, toolNames: [String]) -> Bool {
         var roster = Set<ToolCapability>()
         for name in toolNames {
@@ -1256,11 +1246,6 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // Reads the user's own attachments by id — grounding for a document
         // question (Gate 1c), not a way to search for or fetch anything.
         "read_document": [],
-        "local_search": [],
-        "local_read": [],
-        "local_write": [],
-        "local_trash": [],
-        "local_run": [],
     ]
 
     /// Capabilities of a tool judged by its name: built-ins by exact match,

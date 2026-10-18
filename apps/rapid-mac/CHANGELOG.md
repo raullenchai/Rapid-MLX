@@ -18,7 +18,7 @@ can actually understand.
 ## Unreleased
 
 - Removed Personal Intelligence from Desktop.
-- Local file and command tools in Chat now start off unless you explicitly enabled them; saved choices are preserved.
+- Removed local file and command tools from Chat. Built-in tools are Web Search, Browse Web Page, Weather, and Read Attached Document again, plus any connectors you add. Files you created are not touched.
 - Clarified privacy copy to explain when online tools send data to their services.
 
 ## [Unreleased]

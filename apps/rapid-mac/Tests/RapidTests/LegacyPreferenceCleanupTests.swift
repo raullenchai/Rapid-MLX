@@ -12,8 +12,17 @@ struct LegacyPreferenceCleanupTests {
         defaults.set(true, forKey: "Rapid.personalIntelligence.introductionCompleted")
         defaults.set(false, forKey: "Rapid.personalIntelligence.preferredEnabled")
         defaults.set("{legacy}", forKey: "Rapid.personalIntelligence.conversationStates")
+        for key in [
+            "rapid.tools.enabled.local_search",
+            "rapid.tools.enabled.local_read",
+            "rapid.tools.enabled.local_write",
+            "rapid.tools.enabled.local_trash",
+            "rapid.tools.enabled.local_run",
+        ] {
+            defaults.set(true, forKey: key)
+        }
         let retained: [String: Any] = [
-            "rapid.tools.enabled.local_write": true,
+            "rapid.tools.enabled.web_search": false,
             "conversation": "keep this",
             "Rapid.unrelated": false,
         ]
