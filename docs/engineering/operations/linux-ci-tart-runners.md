@@ -17,9 +17,14 @@ rollback, and rebuilding the image.
 | Image | `rmx-golden`, built from `ghcr.io/cirruslabs/ubuntu:24.04` |
 
 What the golden image contains: build-essential, git, curl, jq, zstd, unzip, and
-the GL/GLib shared libraries that OpenCV wheels need. It also has Node 22, a
-Swift toolchain (the hosted image ships one, and some tests check for `swift`),
-uv, and the GitHub Actions runner (linux-arm64).
+the GL/GLib shared libraries that OpenCV wheels need. It also has
+`python`/`python3` (system 3.12 via `python-is-python3`, because utility jobs
+call bare `python` without setup-python), the `gh` CLI, Node 22, a Swift
+toolchain (the hosted image ships one, and some tests check for `swift`), uv,
+and the GitHub Actions runner (linux-arm64).
+
+Before routing a new class of job here, grep its `run:` steps for every tool it
+calls without a setup action, and confirm the image provides each one.
 
 Python 3.10–3.13 is pre-populated in `/opt/hostedtoolcache` in the hosted
 layout, so `actions/setup-python` resolves versions without downloading. The
@@ -145,8 +150,11 @@ outside can lose ext4 delayed-allocation writes, and that left zero-length
 runner binaries in an early image. The build then aborts if it finds
 zero-length runner binaries.
 
-Validate a new image before relying on it. Push a branch that runs one
-`test-matrix` shard on `rapidmlx-tart`.
+Validate a new image before relying on it. Open a throwaway draft PR that
+hard-routes every `CI_LINUX_RUNNER` job to `rapidmlx-tart`, and run
+merge-on-green from that branch with `workflow_dispatch` and `dry_run=true`.
+Test shards alone are not enough: they use setup-python, while the utility jobs
+(main guard, merge on green) call the system `python`.
 
 ## Validation record (2026-10-18)
 

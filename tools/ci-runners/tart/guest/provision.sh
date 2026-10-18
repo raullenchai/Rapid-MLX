@@ -24,7 +24,16 @@ apt-get install -y --no-install-recommends \
   pkg-config libssl-dev libffi-dev zlib1g-dev libbz2-dev libreadline-dev \
   libsqlite3-dev liblzma-dev libncurses-dev tk-dev uuid-dev libicu74 \
   python3 python3-venv python3-pip gnupg lsb-release sudo rsync file \
-  libgl1 libglib2.0-0t64 libcurl4-openssl-dev libxml2-dev libstdc++-13-dev libncurses6 binutils
+  python-is-python3 libgl1 libglib2.0-0t64 libcurl4-openssl-dev libxml2-dev libstdc++-13-dev libncurses6 binutils
+
+# GitHub CLI (the hosted image ships it; workflow steps call `gh`).
+if ! command -v gh >/dev/null; then
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  apt-get update && apt-get install -y --no-install-recommends gh
+fi
 
 # Node.js (official tarball) for steps that call node/npm directly; JS actions
 # use the runner's bundled node.
