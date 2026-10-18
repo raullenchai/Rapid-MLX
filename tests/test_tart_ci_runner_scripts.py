@@ -37,7 +37,7 @@ def test_shellcheck():
 
 def test_node_checksum():
     provision = (TART / "guest/provision.sh").read_text()
-    assert re.search(r'NODE_SHA256="\$\{NODE_SHA256:-[0-9a-f]{64}\}"', provision)
+    assert re.search(r"\n  NODE_SHA256=[0-9a-f]{64}\n", provision)
     assert 'echo "$NODE_SHA256  /tmp/node.tar.xz" | sha256sum -c -' in provision
     assert "SHASUMS256.txt" not in provision
 

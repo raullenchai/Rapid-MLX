@@ -7,7 +7,11 @@ export DEBIAN_FRONTEND=noninteractive
 RUNNER_VERSION="${RUNNER_VERSION:-2.338.0}"
 RUNNER_SHA256="${RUNNER_SHA256:-628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b}"
 NODE_VERSION="${NODE_VERSION:-22.23.2}"
-NODE_SHA256="${NODE_SHA256:-fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8}"
+# Override NODE_VERSION and NODE_SHA256 together (linux-arm64 .tar.xz digest).
+if [ -z "${NODE_SHA256:-}" ]; then
+  [ "$NODE_VERSION" = 22.23.2 ] || { echo "set NODE_SHA256 for NODE_VERSION=$NODE_VERSION" >&2; exit 1; }
+  NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8
+fi
 # Python builds published for setup-python (linux-24.04-arm64). setup-python
 # resolves "3.12" etc. to these toolcache entries without any download.
 TOOLCACHE=/opt/hostedtoolcache
