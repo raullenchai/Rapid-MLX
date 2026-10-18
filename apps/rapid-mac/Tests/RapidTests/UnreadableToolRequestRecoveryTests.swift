@@ -57,6 +57,33 @@ struct UnreadableToolRequestRecoveryTests {
         #expect(UnreadableToolProtocol.requestBodies.count == 3)
         #expect(registry.runCount == 1)
         #expect(model.messages.last?.content == "The verified result is ready.")
+        let retryBody = try #require(UnreadableToolProtocol.requestBodies.dropFirst().first)
+        let retryJSON = try #require(JSONSerialization.jsonObject(with: retryBody) as? [String: Any])
+        #expect(retryJSON["max_tokens"] as? Int == 2048)
+    }
+
+    @Test("repeated early empty stops end with an honest answer")
+    func repeatedEarlyEmptyLength() async throws {
+        UnreadableToolProtocol.reset(
+            recoverOnSecondRequest: false,
+            emptyLengthOnFirst: true,
+            emptyLengthOnSecond: true
+        )
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://unreadable-tool")!,
+                session: UnreadableToolProtocol.session()
+            ),
+            tools: RecoveryToolRegistry(),
+            persistsConversations: false
+        )
+        model.send("东京今天天气怎么样", alias: "test-model")
+        for _ in 0..<300 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(UnreadableToolProtocol.requestBodies.count == 2)
+        #expect(model.messages.last?.content == ChatViewModel.unreadableToolFallbackChineseCopy)
+        #expect(model.messages.last?.status == .complete)
     }
 
     @Test("two malformed calls end in a tools-disabled honest answer")
@@ -215,13 +242,15 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var finalContent: String?
     nonisolated(unsafe) static var holdFinal = false
     nonisolated(unsafe) static var emptyLengthOnFirst = false
+    nonisolated(unsafe) static var emptyLengthOnSecond = false
 
     static func reset(
         recoverOnSecondRequest: Bool,
         unreadableOnFinal: Bool = false,
         finalContent: String? = nil,
         holdFinal: Bool = false,
-        emptyLengthOnFirst: Bool = false
+        emptyLengthOnFirst: Bool = false,
+        emptyLengthOnSecond: Bool = false
     ) {
         requestBodies = []
         self.recoverOnSecondRequest = recoverOnSecondRequest
@@ -229,6 +258,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
         self.finalContent = finalContent
         self.holdFinal = holdFinal
         self.emptyLengthOnFirst = emptyLengthOnFirst
+        self.emptyLengthOnSecond = emptyLengthOnSecond
     }
 
     static func session() -> URLSession {
@@ -254,7 +284,9 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
         if number == 3 && Self.holdFinal { return }
 
         let choice: [String: Any]
-        if number == 1 && Self.emptyLengthOnFirst {
+        if (number == 1 && Self.emptyLengthOnFirst)
+            || (number == 2 && Self.emptyLengthOnSecond)
+        {
             choice = ["delta": ["content": ""], "finish_reason": "length"]
         } else if number == 1 || (number == 2 && !Self.recoverOnSecondRequest) {
             choice = [

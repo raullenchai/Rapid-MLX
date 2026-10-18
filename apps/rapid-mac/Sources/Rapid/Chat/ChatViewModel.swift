@@ -2638,6 +2638,7 @@ final class ChatViewModel {
         var unreadableToolRequestCount = 0
         var forceUnreadableToolFallback = false
         var emptyEarlyToolRetryUsed = false
+        var retryingEarlyEmptyToolRequest = false
         // The confabulated draft we are replacing, kept until the correction
         // round produces a usable answer. Restored if the retry stream fails,
         // is cancelled, or comes back empty — a wrong-but-present answer beats
@@ -2776,6 +2777,8 @@ final class ChatViewModel {
             let wireCarriesAttachmentGrounding =
                 ChatViewModel.historyCarriesAttachmentGrounding(history)
             let request: ChatStreamClient.Request
+            let isEarlyEmptyRetryRound = retryingEarlyEmptyToolRequest
+            retryingEarlyEmptyToolRequest = false
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
                 request = ChatStreamClient.Request(
@@ -2783,7 +2786,8 @@ final class ChatViewModel {
                     messages: history,
                     temperature: resolved.temperature,
                     topP: resolved.topP,
-                    maxTokens: resolved.maxTokens,
+                    maxTokens: isEarlyEmptyRetryRound
+                        ? min(resolved.maxTokens, 2048) : resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
                     repetitionPenaltyIsImplicitDefault:
                         resolved.repetitionPenaltyIsImplicitDefault,
@@ -2795,6 +2799,7 @@ final class ChatViewModel {
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
+                    maxTokens: isEarlyEmptyRetryRound ? 2048 : 4096,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: false,
                     supportsImageInput: supportsImageInput
@@ -2813,12 +2818,26 @@ final class ChatViewModel {
             )
             switch outcome {
             case .terminal:
+                if isEarlyEmptyRetryRound,
+                   epoch == conversationEpoch,
+                   !Task.isCancelled,
+                   let retry = currentMessage(index: currentPlaceholder),
+                   retry.status == .failed,
+                   retry.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   retry.errorMessage.map({ error in
+                       error.hasPrefix("The model stopped before writing an answer.")
+                           || error.hasPrefix("Hit the Max Tokens limit before any output.")
+                           || error.hasPrefix("The model returned no text.")
+                   }) == true
+                {
+                    finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
+                    return
+                }
                 // The server may stop a looping sample before the token
                 // limit with no visible output. One fresh sample can recover
                 // the current-info turn without hiding a real budget limit.
                 if epoch == conversationEpoch,
                    !Task.isCancelled,
-                   !emptyEarlyToolRetryUsed,
                    !definitions.isEmpty,
                    !forceUnreadableToolFallback,
                    let empty = currentMessage(index: currentPlaceholder),
@@ -2826,7 +2845,12 @@ final class ChatViewModel {
                    empty.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                    empty.errorMessage?.hasPrefix("The model stopped before writing an answer.") == true
                 {
+                    if emptyEarlyToolRetryUsed {
+                        finishUnreadableToolFallback(at: currentPlaceholder, epoch: epoch)
+                        return
+                    }
                     emptyEarlyToolRetryUsed = true
+                    retryingEarlyEmptyToolRequest = true
                     prepareUnreadableToolRetry(at: currentPlaceholder, epoch: epoch)
                     continue
                 }
