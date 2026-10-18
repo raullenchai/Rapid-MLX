@@ -195,7 +195,11 @@ struct UnreadableToolRequestRecoveryTests {
     func fabricatedWeatherIsNeverShown(
         prompt: String, fabricated: String, expected: String
     ) async throws {
-        UnreadableToolProtocol.reset(recoverOnSecondRequest: false, secondContent: fabricated)
+        UnreadableToolProtocol.reset(
+            recoverOnSecondRequest: false,
+            secondContent: fabricated,
+            secondReasoning: "Weather is definitely 23°C and sunny."
+        )
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://unreadable-tool")!,
@@ -210,6 +214,9 @@ struct UnreadableToolRequestRecoveryTests {
         }
         #expect(UnreadableToolProtocol.requestBodies.count == 2)
         #expect(model.messages.last?.content == expected)
+        #expect(model.messages.last?.reasoning == "")
+        #expect(model.messages.last?.reasoningTruncated == false)
+        #expect(model.messages.last?.toolNotCalledFlagged == false)
         #expect(model.messages.last?.status == .complete)
     }
 
@@ -261,6 +268,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestBodies: [Data] = []
     nonisolated(unsafe) static var recoverOnSecondRequest = false
     nonisolated(unsafe) static var secondContent: String?
+    nonisolated(unsafe) static var secondReasoning: String?
     nonisolated(unsafe) static var holdSecond = false
     nonisolated(unsafe) static var emptyLengthOnFirst = false
     nonisolated(unsafe) static var emptyLengthOnSecond = false
@@ -268,6 +276,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
     static func reset(
         recoverOnSecondRequest: Bool,
         secondContent: String? = nil,
+        secondReasoning: String? = nil,
         holdSecond: Bool = false,
         emptyLengthOnFirst: Bool = false,
         emptyLengthOnSecond: Bool = false
@@ -275,6 +284,7 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
         requestBodies = []
         self.recoverOnSecondRequest = recoverOnSecondRequest
         self.secondContent = secondContent
+        self.secondReasoning = secondReasoning
         self.holdSecond = holdSecond
         self.emptyLengthOnFirst = emptyLengthOnFirst
         self.emptyLengthOnSecond = emptyLengthOnSecond
@@ -314,8 +324,11 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             ]
         } else if number == 2 && !Self.recoverOnSecondRequest {
             choice = [
-                "delta": ["content": Self.secondContent
-                    ?? "<tool_call>{\"name\":\"lookup\",\"arguments\":{"],
+                "delta": [
+                    "content": Self.secondContent
+                        ?? "<tool_call>{\"name\":\"lookup\",\"arguments\":{",
+                    "reasoning_content": Self.secondReasoning ?? ""
+                ],
                 "finish_reason": "stop"
             ]
         } else if number == 2 {

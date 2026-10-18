@@ -3145,11 +3145,13 @@ final class ChatViewModel {
         guard epoch == conversationEpoch, var message = currentMessage(index: index) else { return }
         let prompt = messages.prefix(index).last(where: { $0.role == .user })?.content ?? ""
         message.content = Self.unreadableToolFallbackCopy(for: prompt)
+        message.reasoning = ""
         message.toolCalls = nil
         message.stats = nil
         message.contentTruncated = false
         message.reasoningTruncated = false
         message.toolCallArtifactSuppressed = false
+        message.toolNotCalledFlagged = false
         message.status = .complete
         message.errorMessage = nil
         message.failureKind = nil
