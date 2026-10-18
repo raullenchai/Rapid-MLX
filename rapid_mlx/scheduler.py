@@ -230,8 +230,9 @@ logger = logging.getLogger(__name__)
 # One clamp warning per server process (the batch generator, and with it the
 # continuous-MTP router install, is recreated during the server's life).
 _CONTINUOUS_MTP_DEPTH_CLAMP_WARNED = False
-# Cohorts beat plain batching only up to 3 lanes; at 4+ the per-cycle
-# verify/rollback cost exceeds the speculative gain. Measurements:
+# At 4+ concurrent requests a cohort's per-cycle verify/rollback cost exceeds
+# the speculative gain and it trails plain batched decode, so larger bursts
+# stay on plain batched decode. Measurements:
 # docs/engineering/performance/2026-10-17-mtp-cohort-m3-ultra-long-context.md
 _CONTINUOUS_MTP_MAX_COHORT_LANES = 3
 _CONTINUOUS_MTP_OCCUPANCY_SKIP_LOGGED = False
