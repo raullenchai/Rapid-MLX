@@ -268,6 +268,43 @@ final class ChatViewModel {
     /// Production keeps the default enabled.
     private let persistsConversations: Bool
     private let conversationStoreURL: URL?
+    private var drafts = ConversationDrafts()
+    @ObservationIgnored private var draftSaveTask: Task<Void, Never>?
+
+    private var composerDraftKey: String {
+        conversations.contains(where: { $0.id == activeConversationID })
+            ? activeConversationID.uuidString : ConversationDrafts.newChatKey
+    }
+
+    var composerDraft: String {
+        get { drafts.text(for: composerDraftKey) }
+        set {
+            drafts.set(newValue, for: composerDraftKey)
+            guard persistsConversations else { return }
+            draftSaveTask?.cancel()
+            draftSaveTask = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(500)) }
+                catch { return }
+                self?.saveDrafts()
+            }
+        }
+    }
+
+    /// Called after the readiness gate, before send can save a new conversation.
+    func clearComposerDraft() {
+        drafts.set("", for: composerDraftKey)
+        saveDrafts()
+    }
+
+    private func saveDrafts() {
+        draftSaveTask?.cancel()
+        draftSaveTask = nil
+        guard persistsConversations else { return }
+        ConversationDraftStore.save(
+            drafts,
+            to: ConversationDraftStore.companionURL(forConversationStore: conversationStoreURL)
+        )
+    }
 
     /// v0.4.14: user-mutable sampling knobs. Optional in the init
     /// signature so existing tests don't have to spin one up — they
@@ -340,6 +377,11 @@ final class ChatViewModel {
         self.folders = persistsConversations
             ? ConversationFolderStore.load(from: Self.folderStoreURL(for: conversationStoreURL))
             : []
+        if persistsConversations {
+            drafts = ConversationDraftStore.load(
+                from: ConversationDraftStore.companionURL(forConversationStore: conversationStoreURL)
+            ).pruned(keeping: Set(conversations.map(\.id)))
+        }
     }
 
     /// The folder file that sits beside whichever conversation store is in
@@ -436,6 +478,12 @@ final class ChatViewModel {
                 )
             }
         } else {
+            // A suggestion sends without consuming the composer. Carry its
+            // untouched text through the unsaved -> saved identity transition.
+            // Normal sends have already cleared the reserved slot at the gate.
+            drafts.set(drafts.text(for: ConversationDrafts.newChatKey), for: activeConversationID.uuidString)
+            drafts.set("", for: ConversationDrafts.newChatKey)
+            saveDrafts()
             conversations.insert(
                 ChatConversation(
                     id: activeConversationID,
@@ -911,6 +959,7 @@ final class ChatViewModel {
     /// Load a saved conversation into the transcript, archiving whatever is
     /// currently open first. Cancels any in-flight stream.
     func selectConversation(_ id: UUID) {
+        saveDrafts()
         guard id != activeConversationID else { return }
         cancelInflightWork()
         conversationEpoch &+= 1
@@ -960,6 +1009,8 @@ final class ChatViewModel {
             lastFailureAlias = nil
         }
         conversations.removeAll { $0.id == id }
+        drafts.remove(id)
+        saveDrafts()
         saveConversations()
         documentCache.remove(contentsOf: attachmentIDs)
     }
@@ -1103,6 +1154,7 @@ final class ChatViewModel {
     /// Start a fresh conversation — drops the transcript and any stale
     /// error banner. The in-flight stream (if any) is cancelled first.
     func newConversation() {
+        saveDrafts()
         cancelInflightWork()
         conversationEpoch &+= 1
         // Fix: without this a New Chat during a stream leaves the empty
@@ -1524,6 +1576,7 @@ final class ChatViewModel {
     /// actor. The task's own cleanup remains harmless: it re-persists the same
     /// state if it ever gets to run.
     func stopAndPersist() {
+        saveDrafts()
         cancelInflightWork()
         guard isStreaming else { return }
         // App termination snapshots synchronously, before the cancelled

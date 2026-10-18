@@ -262,7 +262,15 @@ struct ChatView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(QuickstartCoordinator.self) private var quickstart
 
-    @State private var draft: String = ""
+    private var draft: String { viewModel.composerDraft }
+    private var draftBinding: Binding<String> {
+        let conversationID = viewModel.activeConversationID
+        return Binding(get: { viewModel.composerDraft }, set: {
+            // Ignore a final callback from the editor being removed on switch.
+            guard viewModel.activeConversationID == conversationID else { return }
+            viewModel.composerDraft = $0
+        })
+    }
     @State private var attachmentDrafts = ChatAttachmentDraftStore()
     /// A rejected photo is a capability explanation, not an attachment
     /// failure. Keep it outside the conversation-keyed attachment draft so it
@@ -831,7 +839,7 @@ struct ChatView: View {
                 // gated; the placeholder names the blocking step so the
                 // reason is visible before a single character is typed.
                 ComposeField(
-                    text: $draft,
+                    text: draftBinding,
                     focusToken: composeFocusToken,
                     isStreaming: viewModel.isStreaming,
                     placeholder: readiness.composerPlaceholder,
@@ -843,6 +851,8 @@ struct ChatView: View {
                         messages.last(where: { $0.role == .user })?.content
                     }
                 )
+                // A new editor also isolates marked IME text and undo history.
+                .id(viewModel.activeConversationID)
                 composerControls
             }
             .padding(.horizontal, RapidTheme.Space.md - 2)
@@ -1212,7 +1222,7 @@ struct ChatView: View {
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
         photoCapabilityNotice.dismiss()
-        draft = ""
+        viewModel.clearComposerDraft()
         let submission = attachmentDraft.takeSubmission()
         composeFocusToken &+= 1
         viewModel.send(
@@ -2993,6 +3003,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         view.onComposingChange = onComposingChange
         view.onPasteAttachments = onPasteAttachments
         view.onDropAttachments = onDropAttachments
+        context.coordinator.text = $text
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onCancel = onCancel
         context.coordinator.onPasteAttachments = onPasteAttachments

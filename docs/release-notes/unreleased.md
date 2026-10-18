@@ -5,6 +5,7 @@
 
 ## Highlights
 
+- **Chat drafts stay with their conversation**: unsent text is saved locally across app restarts, with a separate draft for New Chat.
 - **Image endpoint authentication**: image endpoints now require the API key when `--api-key` is set.
 - **Personal Intelligence removed**: Desktop now uses the ordinary Chat path. `/v1/models` cards no longer include `personal_intelligence_profile` or `personal_intelligence_qualification`; `/v1/agent/runs` remains available with its existing runtime and client execution mode. Local file and command tools have been removed from Chat. Built-in tools are Web Search, Browse Web Page, Weather, and Read Attached Document again, plus any connectors you add. Files you created are not touched. Privacy copy now explains online tool data sharing.
 

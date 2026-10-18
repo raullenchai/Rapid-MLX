@@ -22,7 +22,8 @@ struct AppTerminationTests {
             reapCatalog: { events.append("reap-catalog") },
             reapDownloads: { events.append("reap-downloads") },
             flushConversations: { events.append("flush-conversations") },
-            flushFolders: { events.append("flush-folders") }
+            flushFolders: { events.append("flush-folders") },
+            flushDrafts: { events.append("flush-drafts") }
         )
 
         #expect(events == [
@@ -40,6 +41,7 @@ struct AppTerminationTests {
             "reap-downloads",
             "flush-conversations",
             "flush-folders",
+            "flush-drafts",
         ])
     }
 }

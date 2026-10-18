@@ -1130,7 +1130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapCatalog: () -> Void = {},
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
-        flushFolders: () -> Void
+        flushFolders: () -> Void,
+        flushDrafts: () -> Void
     ) {
         // ORDER MATTERS — stop accepting process-global input before any
         // dependency teardown. Otherwise the dictation hotkey remains live
@@ -1163,6 +1164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // disagreeing about where a row lives.
         flushConversations()
         flushFolders()
+        flushDrafts()
     }
 
     /// The single clean-shutdown wiring, shared by ``applicationWillTerminate``
@@ -1194,7 +1196,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reapCatalog: { ModelCatalog.finishShutdown() },
             reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
             flushConversations: { ConversationStore.flush() },
-            flushFolders: { ConversationFolderStore.flush() }
+            flushFolders: { ConversationFolderStore.flush() },
+            flushDrafts: { ConversationDraftStore.flush() }
         )
     }
 }
