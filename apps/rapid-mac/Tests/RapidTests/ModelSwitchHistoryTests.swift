@@ -264,6 +264,26 @@ struct ModelSwitchHistoryTests {
         #expect(msg?.contains("Max Tokens") == false)
     }
 
+    @Test("#4870 reasoning-only length uses token usage for guidance", arguments: [408, 16384])
+    func reasoningOnlyLengthGuidance(completionTokens: Int) {
+        let outcome = ChatViewModel.classifyTerminal(
+            proseContent: "",
+            reasoningContent: "Let me think through this.",
+            toolCalls: nil,
+            finishReason: "length",
+            completionTokens: completionTokens,
+            maxTokens: 16384
+        )
+        guard case .reasoningOnlyTruncated(let hint) = outcome else {
+            Issue.record("Expected reasoning-only truncation, got: \(outcome)")
+            return
+        }
+        #expect(hint.contains("Max Tokens") == (completionTokens == 16384))
+        if completionTokens < 16384 {
+            #expect(hint == "The model stopped before writing an answer. Open the Reasoning section to see the partial trace, then try Regenerate.")
+        }
+    }
+
     @Test("#4870 empty length at the token budget keeps Max Tokens guidance")
     func lengthEmptyAtBudgetKeepsCopy() {
         let msg = ChatViewModel.zeroContentFailureMessage(
