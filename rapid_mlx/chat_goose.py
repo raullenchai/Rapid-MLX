@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -118,6 +119,31 @@ def _stop(process: subprocess.Popen) -> None:
             process.wait(timeout=3)
 
 
+def _run_goose(command: list[str], *, cwd: str, env: dict[str, str]) -> int:
+    """Keep Goose's terminal streams while the watchdog owns its tool tree."""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(ASSETS / "helper_watchdog.py"),
+            str(os.getpid()),
+            *command,
+        ],
+        cwd=cwd,
+        env=env,
+    )
+    try:
+        while True:
+            try:
+                return process.wait()
+            except KeyboardInterrupt:
+                if process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+    finally:
+        _stop(process)
+
+
 def _local_port(base_url: str) -> int | None:
     url = urlsplit(base_url)
     if (
@@ -129,6 +155,33 @@ def _local_port(base_url: str) -> int | None:
     ):
         return None
     return url.port or 80
+
+
+def _served_context_limit(base_url: str, model: str, api_key: str) -> int:
+    """Use the server's advertised model window, as Desktop Chat does."""
+    headers = {"Authorization": "Bearer " + api_key} if api_key else {}
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/models", headers=headers
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            models = json.load(response).get("data", [])
+        for entry in models:
+            if entry.get("id") == model:
+                limit = entry.get("context_window")
+                if isinstance(limit, int) and limit > 0:
+                    return limit
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return 32768
+
+
+def _metric_sequence(port: int, key: str) -> int:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/metrics", headers={"X-Metrics-Key": key}
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        return int(json.load(response)["sequence"])
 
 
 def _private_directory(path: Path) -> None:
@@ -179,31 +232,48 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     root = (
         _cache_root() / "workspaces" / hashlib.sha256(os.getcwd().encode()).hexdigest()
     )
-    for directory in (root, root / "config", root / "config" / "custom_providers"):
+    launch_id = secrets.token_hex(8)
+    run_root = root / "runs" / launch_id
+    provider_name = "custom_rapid_local_" + launch_id
+    provider_path = root / "config" / "custom_providers" / (provider_name + ".json")
+    contract_path = run_root / "chat-contract.json"
+    for directory in (
+        root,
+        root / "config",
+        root / "config" / "custom_providers",
+        root / "runs",
+        run_root,
+    ):
         _private_directory(directory)
     scoped_key, proxy_key = secrets.token_hex(32), secrets.token_hex(32)
     gate_port, bridge_port = _port(), _port()
     while bridge_port == gate_port:
         bridge_port = _port()
+    upstream_key = os.environ.get("RAPID_MLX_API_KEY", "")
     provider = {
-        "name": "custom_rapid_local",
+        "name": provider_name,
         "engine": "openai",
         "display_name": "Rapid Local",
         "api_key_env": "RAPID_LOCAL_WORK_KEY",
         "base_url": f"http://127.0.0.1:{bridge_port}/v1/chat/completions",
-        "models": [{"name": model, "context_limit": args.context_length or 262144}],
+        "models": [
+            {
+                "name": model,
+                "context_limit": args.context_length
+                or _served_context_limit(base_url, model, upstream_key),
+            }
+        ],
         "supports_streaming": True,
         "requires_auth": True,
         "dynamic_models": False,
     }
-    _write_owned(
-        root / "config" / "custom_providers" / "custom_rapid_local.json",
-        json.dumps(provider),
-    )
+    _write_owned(provider_path, json.dumps(provider))
     contract = {
         "system_prompt": args.system or "",
-        "use_goose_sampling_defaults": (
-            args.temperature == 0.7 and not max_tokens_explicit and not args.think
+        "use_goose_sampling_defaults": not (
+            getattr(args, "_temperature_was_explicit", args.temperature != 0.7)
+            or getattr(args, "_think_was_explicit", args.think)
+            or max_tokens_explicit
         ),
         "temperature": args.temperature,
         "top_p": 1.0,
@@ -211,8 +281,8 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         "repetition_penalty": 1.0,
         "enable_thinking": args.think,
     }
-    _write_owned(root / "chat-contract.json", json.dumps(contract))
-    shell = root / "bash"
+    _write_owned(contract_path, json.dumps(contract))
+    shell = run_root / "bash"
     if shell.is_symlink():
         raise RuntimeError("Goose workspace contains a symlink")
     if not shell.exists() or _sha256(shell) != _sha256(ASSETS / "helper_watchdog.py"):
@@ -231,23 +301,26 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     gate_env = {
         **common,
         "WORK_PROXY_BEARER": proxy_key,
+        "WORK_PROXY_UPSTREAM_BEARER": upstream_key or proxy_key,
         "WORK_PROXY_METRICS_KEY": secrets.token_hex(32),
     }
     bridge_env = {
         **common,
         "WORK_BRIDGE_SCOPED_KEY": scoped_key,
         "WORK_BRIDGE_UPSTREAM_KEY": proxy_key,
+        "WORK_BRIDGE_CONTRACT_FILE": str(contract_path),
     }
     goose_env = {
         **common,
         "RAPID_LOCAL_WORK_KEY": scoped_key,
-        "GOOSE_PROVIDER": "custom_rapid_local",
+        "GOOSE_PROVIDER": provider_name,
         "GOOSE_MODEL": model,
         "GOOSE_MODE": "approve",
         "GOOSE_SHELL": str(shell),
         "GOOSE_TELEMETRY_OFF": "1",
         "GOOSE_TELEMETRY_ENABLED": "false",
         "GOOSE_DISABLE_KEYRING": "1",
+        "WORK_HELPER_OWNERSHIP_TOKEN": secrets.token_hex(16),
     }
     processes: list[subprocess.Popen] = []
     try:
@@ -318,11 +391,12 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
                 return True
             if first_prompt:
                 break
+        metric_before = _metric_sequence(gate_port, gate_env["WORK_PROXY_METRICS_KEY"])
         command = [
             str(goose),
             "run",
             "--provider",
-            "custom_rapid_local",
+            provider_name,
             "--model",
             model,
             "--interactive",
@@ -335,16 +409,18 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
         ]
         if args.resume:
             command.append("--resume")
-        completed = subprocess.run(
-            command,
-            cwd=os.getcwd(),
-            env=goose_env,
-            check=False,
-        )
-        if completed.returncode:
-            print(
-                f"  Goose exited with status {completed.returncode}.", file=sys.stderr
-            )
+        args._goose_pending_prompt = first_prompt
+        goose_status = _run_goose(command, cwd=os.getcwd(), env=goose_env)
+        if goose_status:
+            if (
+                _metric_sequence(gate_port, gate_env["WORK_PROXY_METRICS_KEY"])
+                == metric_before
+            ):
+                return _fallback(
+                    f"Goose exited before starting (status {goose_status})"
+                )
+            print(f"  Goose exited with status {goose_status}.", file=sys.stderr)
+        args._goose_pending_prompt = None
         return True
     except (OSError, RuntimeError, TimeoutError) as exc:
         print(f"  Goose startup failed ({exc}); using built-in chat.", file=sys.stderr)
@@ -352,3 +428,9 @@ def run(args, base_url: str, model: str, *, max_tokens_explicit: bool) -> bool:
     finally:
         for process in reversed(processes):
             _stop(process)
+        for path in (shell, contract_path, provider_path):
+            path.unlink(missing_ok=True)
+        try:
+            run_root.rmdir()
+        except OSError:
+            pass

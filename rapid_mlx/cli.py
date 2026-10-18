@@ -12569,6 +12569,12 @@ def chat_command(args):
     # final answer both fit (the round-1 finding: ``chat qwen3.5-4b-4bit
     # --think`` filled the 2048 budget with reasoning and emitted an
     # empty answer with ``finish_reason='length'``).
+    args._temperature_was_explicit = args.temperature is not None
+    args._think_was_explicit = args.think is not None
+    if args.temperature is None:
+        args.temperature = 0.7
+    if args.think is None:
+        args.think = False
     user_passed_max_tokens = args.max_tokens is not None
     if args.max_tokens is None:
         args.max_tokens = 4096 if args.think else 2048
@@ -12965,7 +12971,12 @@ def chat_command(args):
 
         while True:
             try:
-                line = input(prompt).rstrip()
+                pending_goose_prompt = getattr(args, "_goose_pending_prompt", None)
+                if pending_goose_prompt is not None:
+                    args._goose_pending_prompt = None
+                    line = pending_goose_prompt
+                else:
+                    line = input(prompt).rstrip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break

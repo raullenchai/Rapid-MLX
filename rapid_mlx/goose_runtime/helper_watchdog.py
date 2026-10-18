@@ -18,6 +18,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--credential-bridge":
     listen_port, upstream_port = map(int, sys.argv[2:4])
     scoped = os.environ["WORK_BRIDGE_SCOPED_KEY"]
     upstream = os.environ["WORK_BRIDGE_UPSTREAM_KEY"]
+    contract_path = os.environ.get("WORK_BRIDGE_CONTRACT_FILE", "chat-contract.json")
 
     class Bridge(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -45,7 +46,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--credential-bridge":
                 # Desktop owns these per-turn settings. Goose may append its
                 # own tool instructions, but cannot silently replace the user
                 # instruction/memory layer or sampling controls.
-                with open("chat-contract.json", encoding="utf-8") as contract_file:
+                with open(contract_path, encoding="utf-8") as contract_file:
                     contract = json.load(contract_file)
                 request = json.loads(body)
                 messages = request.get("messages", [])
@@ -200,8 +201,10 @@ def token_descendants():
 
 while not stopping:
     try:
-        tree()
+        observed = tree()
         os.kill(owner, 0)
+        if root not in observed:
+            stopping = True
     except ProcessLookupError:
         stopping = True
     except subprocess.SubprocessError:

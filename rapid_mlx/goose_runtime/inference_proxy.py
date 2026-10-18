@@ -22,6 +22,7 @@ MODEL = sys.argv[3]
 FULL_ACCESS = len(sys.argv) > 4 and sys.argv[4] == "--full-access"
 GOOSE_CHAT = "--goose-chat" in sys.argv[4:]
 BEARER = os.environ["WORK_PROXY_BEARER"]
+UPSTREAM_BEARER = os.environ.get("WORK_PROXY_UPSTREAM_BEARER", BEARER)
 BEARER_FILE = os.environ.get("WORK_PROXY_BEARER_FILE", "")
 METRICS_KEY = os.environ.get("WORK_PROXY_METRICS_KEY", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -37,7 +38,7 @@ def upstream_bearer():
                 return handle.read().strip() or BEARER
         except OSError:
             pass
-    return BEARER
+    return UPSTREAM_BEARER
 
 
 def compact_goose_request(body):

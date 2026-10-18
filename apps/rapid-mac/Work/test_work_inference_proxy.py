@@ -52,6 +52,11 @@ class StreamRateTests(unittest.TestCase):
         ):
             spec.loader.exec_module(cls.module)
 
+    def test_proxy_keeps_scoped_and_upstream_bearers_separate(self):
+        with patch.object(self.module, "UPSTREAM_BEARER", "real-server-key"):
+            self.assertEqual(self.module.upstream_bearer(), "real-server-key")
+            self.assertEqual(self.module.BEARER, "test")
+
     def test_rate_is_available_before_terminal_usage(self):
         module = self.module
         rate = module.StreamRate()
@@ -218,7 +223,7 @@ class StreamRateTests(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             bridge_port = probe.getsockname()[1]
         with tempfile.TemporaryDirectory() as directory:
-            (pathlib.Path(directory) / "chat-contract.json").write_text(
+            (pathlib.Path(directory) / "scoped-contract.json").write_text(
                 json.dumps(
                     {
                         "system_prompt": "Use Swift. Remember the project.",
@@ -244,6 +249,9 @@ class StreamRateTests(unittest.TestCase):
                     **os.environ,
                     "WORK_BRIDGE_SCOPED_KEY": "scoped",
                     "WORK_BRIDGE_UPSTREAM_KEY": "upstream",
+                    "WORK_BRIDGE_CONTRACT_FILE": str(
+                        pathlib.Path(directory) / "scoped-contract.json"
+                    ),
                 },
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -287,7 +295,7 @@ class StreamRateTests(unittest.TestCase):
                 self.assertEqual(
                     received["chat_template_kwargs"], {"enable_thinking": False}
                 )
-                (pathlib.Path(directory) / "chat-contract.json").write_text(
+                (pathlib.Path(directory) / "scoped-contract.json").write_text(
                     json.dumps(
                         {"system_prompt": "", "use_goose_sampling_defaults": True}
                     )

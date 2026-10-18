@@ -2499,7 +2499,7 @@ def _add_chat_parser(
     chat_parser.add_argument(
         "--think",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help="Enable thinking/reasoning mode (default: off in chat REPL — "
         "reasoning models like Qwen3.5 otherwise leak raw chain-of-thought "
         "and can loop until max-tokens). Use --think to surface reasoning, "
@@ -2516,6 +2516,7 @@ def _add_chat_parser(
         "--no-thinking",
         dest="think",
         action="store_false",
+        default=None,
         help=argparse.SUPPRESS,
     )
     chat_parser.add_argument(
@@ -2535,7 +2536,7 @@ def _add_chat_parser(
     chat_parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
+        default=None,
         help="Sampling temperature (default: 0.7)",
     )
     chat_parser.add_argument(

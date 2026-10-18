@@ -58,6 +58,27 @@ def test_goose_archive_is_verified_and_cached(tmp_path, monkeypatch):
     assert downloads == [120]
 
 
+def test_context_limit_uses_authenticated_server_metadata(monkeypatch):
+    requests = []
+
+    def metadata(request, timeout):
+        requests.append(
+            (request.full_url, request.get_header("Authorization"), timeout)
+        )
+        return io.BytesIO(b'{"data":[{"id":"test-model","context_window":8192}]}')
+
+    monkeypatch.setattr(chat_goose.urllib.request, "urlopen", metadata)
+    assert (
+        chat_goose._served_context_limit(
+            "http://127.0.0.1:8123", "test-model", "real-server-key"
+        )
+        == 8192
+    )
+    assert requests == [
+        ("http://127.0.0.1:8123/v1/models", "Bearer real-server-key", 5)
+    ]
+
+
 def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     tmp_path, monkeypatch
 ):
@@ -66,6 +87,7 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     binary.chmod(0o700)
     monkeypatch.setattr(chat_goose, "_goose_binary", lambda: binary)
     monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(chat_goose, "_served_context_limit", lambda *_: 8192)
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "What causes tides?")
     monkeypatch.setenv("PATH", "/opt/user-tools:/usr/bin:/bin")
@@ -76,13 +98,25 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     (workspace / "config/permission.yaml").write_text("native Goose grants\n")
     commands = []
     environments = []
+    snapshots = []
 
     def capture_goose(command, **kwargs):
         commands.append(command)
         environments.append(kwargs["env"])
-        return SimpleNamespace(returncode=0)
+        name = kwargs["env"]["GOOSE_PROVIDER"]
+        snapshots.append(
+            (
+                json.loads(
+                    next((workspace / "runs").glob("*/chat-contract.json")).read_text()
+                ),
+                json.loads(
+                    (workspace / "config/custom_providers" / f"{name}.json").read_text()
+                ),
+            )
+        )
+        return 0
 
-    monkeypatch.setattr(chat_goose.subprocess, "run", capture_goose)
+    monkeypatch.setattr(chat_goose, "_run_goose", capture_goose)
     args = SimpleNamespace(
         mcp_config=None,
         mcp_max_rounds=8,
@@ -100,14 +134,18 @@ def test_goose_cli_starts_desktop_helpers_and_runs_pinned_harness(
     assert chat_goose.run(
         args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
     )
-    assert (workspace / "chat-contract.json").is_file()
-    assert (workspace / "config/custom_providers/custom_rapid_local.json").is_file()
+    assert snapshots[0][0]["use_goose_sampling_defaults"] is True
+    assert snapshots[0][1]["models"][0]["context_limit"] == 8192
     assert (workspace / "config/permission.yaml").read_text() == "native Goose grants\n"
-    assert (workspace / "bash").is_file()
+    assert not list((workspace / "runs").iterdir())
     assert len(commands) == 1
     assert "--no-profile" not in commands[0]
     assert "--no-session" not in commands[0]
     assert "--resume" in commands[0]
+    assert (
+        commands[0][commands[0].index("--provider") + 1]
+        == environments[0]["GOOSE_PROVIDER"]
+    )
     assert commands[0][commands[0].index("--with-builtin") + 1] == chat_goose.BUILTINS
     assert "/opt/user-tools" in environments[0]["PATH"]
     assert "WORK_PROXY_BEARER" not in environments[0]
@@ -121,11 +159,24 @@ def test_goose_cli_maps_sampling_and_system_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
     monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "Hello")
-    monkeypatch.setattr(
-        chat_goose.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
-    )
+    snapshots = []
+
+    def capture_goose(_command, **kwargs):
+        workspace = Path(kwargs["env"]["HOME"])
+        name = kwargs["env"]["GOOSE_PROVIDER"]
+        snapshots.append(
+            (
+                json.loads(
+                    next((workspace / "runs").glob("*/chat-contract.json")).read_text()
+                ),
+                json.loads(
+                    (workspace / "config/custom_providers" / f"{name}.json").read_text()
+                ),
+            )
+        )
+        return 0
+
+    monkeypatch.setattr(chat_goose, "_run_goose", capture_goose)
     args = SimpleNamespace(
         mcp_config=None,
         mcp_max_rounds=8,
@@ -142,17 +193,85 @@ def test_goose_cli_maps_sampling_and_system_flags(tmp_path, monkeypatch):
     assert chat_goose.run(
         args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=True
     )
-    workspace = next((tmp_path / "cache/workspaces").iterdir())
-    contract = json.loads((workspace / "chat-contract.json").read_text())
-    provider = json.loads(
-        (workspace / "config/custom_providers/custom_rapid_local.json").read_text()
-    )
+    contract, provider = snapshots[0]
     assert contract["system_prompt"] == "Be concise"
     assert contract["use_goose_sampling_defaults"] is False
     assert contract["temperature"] == 0.2
     assert contract["max_tokens"] == 512
     assert contract["enable_thinking"] is True
     assert provider["models"][0] == {"name": "test-model", "context_limit": 8192}
+
+
+def test_explicit_default_sampling_flags_override_goose_defaults(tmp_path, monkeypatch):
+    binary = tmp_path / "goose"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(chat_goose, "_goose_binary", lambda: binary)
+    monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "Hello")
+    captured = []
+
+    def capture(_command, **kwargs):
+        workspace = Path(kwargs["env"]["HOME"])
+        captured.append(
+            json.loads(
+                next((workspace / "runs").glob("*/chat-contract.json")).read_text()
+            )
+        )
+        return 0
+
+    monkeypatch.setattr(chat_goose, "_run_goose", capture)
+    args = SimpleNamespace(
+        mcp_config=None,
+        mcp_max_rounds=8,
+        response_timeout=600,
+        context_length=8192,
+        system=None,
+        temperature=0.7,
+        think=False,
+        _temperature_was_explicit=True,
+        _think_was_explicit=True,
+        max_tokens=2048,
+        disable_prefix_cache=True,
+        output_format="text",
+        resume=False,
+    )
+    assert chat_goose.run(
+        args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
+    )
+    assert captured[0]["use_goose_sampling_defaults"] is False
+    assert captured[0]["enable_thinking"] is False
+
+
+def test_early_goose_exit_replays_prompt_in_builtin_chat(tmp_path, monkeypatch, capsys):
+    binary = tmp_path / "goose"
+    binary.write_text("#!/bin/sh\nexit 1\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(chat_goose, "_goose_binary", lambda: binary)
+    monkeypatch.setattr(chat_goose, "_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(chat_goose.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "Keep this prompt")
+    monkeypatch.setattr(chat_goose, "_run_goose", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(chat_goose, "_metric_sequence", lambda *_args: 0)
+    args = SimpleNamespace(
+        mcp_config=None,
+        mcp_max_rounds=8,
+        response_timeout=600,
+        context_length=8192,
+        system=None,
+        temperature=0.7,
+        think=False,
+        max_tokens=2048,
+        disable_prefix_cache=True,
+        output_format="text",
+        resume=False,
+    )
+    assert not chat_goose.run(
+        args, "http://127.0.0.1:8123", "test-model", max_tokens_explicit=False
+    )
+    assert args._goose_pending_prompt == "Keep this prompt"
+    assert capsys.readouterr().err.count("Goose unavailable") == 1
 
 
 @pytest.mark.parametrize(
