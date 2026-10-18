@@ -250,6 +250,44 @@ struct ModelSwitchHistoryTests {
         #expect(msg?.contains("Max Tokens") == true)
     }
 
+    @Test("#4870 empty length below the token budget gives retry guidance", arguments: [false, true])
+    func lengthEmptyUnderBudgetGivesRetryGuidance(thinkingEnabled: Bool) {
+        let msg = ChatViewModel.zeroContentFailureMessage(
+            proseContent: "",
+            toolCalls: nil,
+            finishReason: "length",
+            thinkingEnabled: thinkingEnabled,
+            completionTokens: 408,
+            maxTokens: 16384
+        )
+        #expect(msg == "The model stopped before writing an answer. Try Regenerate, or start a new session.")
+        #expect(msg?.contains("Max Tokens") == false)
+    }
+
+    @Test("#4870 empty length at the token budget keeps Max Tokens guidance")
+    func lengthEmptyAtBudgetKeepsCopy() {
+        let msg = ChatViewModel.zeroContentFailureMessage(
+            proseContent: "",
+            toolCalls: nil,
+            finishReason: "length",
+            completionTokens: 16384,
+            maxTokens: 16384
+        )
+        #expect(msg?.contains("Max Tokens") == true)
+    }
+
+    @Test("#4870 partial usage keeps Max Tokens guidance", arguments: [false, true])
+    func lengthEmptyWithUnknownUsageKeepsCopy(knownCompletion: Bool) {
+        let msg = ChatViewModel.zeroContentFailureMessage(
+            proseContent: "",
+            toolCalls: nil,
+            finishReason: "length",
+            completionTokens: knownCompletion ? 408 : nil,
+            maxTokens: knownCompletion ? nil : 16384
+        )
+        #expect(msg?.contains("Max Tokens") == true)
+    }
+
     @Test("Whitespace-only content is treated as empty — \"   \\n\" is not a real reply")
     func whitespaceOnlyContentIsFlagged() {
         let msg = ChatViewModel.zeroContentFailureMessage(

@@ -2059,7 +2059,9 @@ final class ChatViewModel {
         proseContent: String,
         toolCalls: [ToolCall]?,
         finishReason: String?,
-        thinkingEnabled: Bool = false
+        thinkingEnabled: Bool = false,
+        completionTokens: Int? = nil,
+        maxTokens: Int? = nil
     ) -> String? {
         // Back-compat shim around the richer ``classifyTerminal``
         // helper. Callers that don't know about ``reasoningContent``
@@ -2071,7 +2073,9 @@ final class ChatViewModel {
             reasoningContent: "",
             toolCalls: toolCalls,
             finishReason: finishReason,
-            thinkingEnabled: thinkingEnabled
+            thinkingEnabled: thinkingEnabled,
+            completionTokens: completionTokens,
+            maxTokens: maxTokens
         )
         switch outcome {
         case .realCompletion, .reasoningOnlyTruncated:
@@ -2112,7 +2116,9 @@ final class ChatViewModel {
         reasoningContent: String,
         toolCalls: [ToolCall]?,
         finishReason: String?,
-        thinkingEnabled: Bool = false
+        thinkingEnabled: Bool = false,
+        completionTokens: Int? = nil,
+        maxTokens: Int? = nil
     ) -> TerminalOutcome {
         let proseEmpty = proseContent
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2138,6 +2144,11 @@ final class ChatViewModel {
             )
         }
         if finishReason == "length" {
+            if let completionTokens, let maxTokens, completionTokens < maxTokens {
+                return .emptyTurnFailure(
+                    message: "The model stopped before writing an answer. Try Regenerate, or start a new session."
+                )
+            }
             // #161: hybrid models with thinking ON routinely burn
             // the entire 4 K default ``max_tokens`` budget inside
             // ``<think>...</think>`` on a 4 B / 9 B-class model and
@@ -3707,7 +3718,9 @@ Your previous draft refused the question by claiming you lack real-time access o
                         reasoningContent: current.reasoning,
                         toolCalls: current.toolCalls,
                         finishReason: reason,
-                        thinkingEnabled: request.enableThinking
+                        thinkingEnabled: request.enableThinking,
+                        completionTokens: capturedCompletionTokens,
+                        maxTokens: request.maxTokens
                     )
                     switch outcome {
                     case .realCompletion:
