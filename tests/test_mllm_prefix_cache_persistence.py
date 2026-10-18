@@ -413,13 +413,36 @@ def test_missing_scheduler_and_generator(tmp_path, caplog):
     caplog.set_level("INFO")
     sched = scheduler(None)
     assert not sched.save_prefix_cache_to_disk(str(tmp_path))
-    assert sched.load_prefix_cache_from_disk(str(tmp_path)) == 0
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._is_mllm = True
     engine._engine = None
     assert not engine.save_cache_to_disk(str(tmp_path))
     assert engine.load_cache_from_disk(str(tmp_path)) == 0
     assert "no exact prefix scheduler available" in caplog.text
+
+
+@pytest.mark.parametrize("with_executor", [False, True])
+def test_restore_builds_lazy_generator_first(tmp_path, with_executor):
+    # The startup restore runs before the first request creates the batch
+    # generator; it must build it (on the owner thread) instead of dropping
+    # the snapshot.
+    source = generator()
+    key = add(source)
+    path = tmp_path / "cache"
+    assert source.save_exact_prefix_cache_to_disk(path)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        sched = scheduler(None, worker if with_executor else None)
+        built = []
+
+        def ensure():
+            if sched.batch_generator is None:
+                built.append(threading.get_ident())
+                sched.batch_generator = generator()
+
+        sched._ensure_batch_generator = ensure
+        assert sched.load_prefix_cache_from_disk(str(path)) == 1
+    assert list(sched.batch_generator._prefix_cache._exact_cache) == [key]
+    assert (built[0] != threading.get_ident()) == with_executor
 
 
 @pytest.mark.parametrize(
