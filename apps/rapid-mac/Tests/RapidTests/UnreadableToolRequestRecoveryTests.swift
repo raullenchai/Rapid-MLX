@@ -265,13 +265,22 @@ private final class RecoveryToolRegistry: ToolRegistry {
 }
 
 private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var requestBodies: [Data] = []
-    nonisolated(unsafe) static var recoverOnSecondRequest = false
-    nonisolated(unsafe) static var secondContent: String?
-    nonisolated(unsafe) static var secondReasoning: String?
-    nonisolated(unsafe) static var holdSecond = false
-    nonisolated(unsafe) static var emptyLengthOnFirst = false
-    nonisolated(unsafe) static var emptyLengthOnSecond = false
+    private struct Configuration: Sendable {
+        var recoverOnSecondRequest = false
+        var secondContent: String?
+        var secondReasoning: String?
+        var holdSecond = false
+        var emptyLengthOnFirst = false
+        var emptyLengthOnSecond = false
+    }
+
+    private static let stateLock = NSLock()
+    nonisolated(unsafe) private static var bodies: [Data] = []
+    nonisolated(unsafe) private static var configuration = Configuration()
+
+    static var requestBodies: [Data] {
+        stateLock.withLock { bodies }
+    }
 
     static func reset(
         recoverOnSecondRequest: Bool,
@@ -281,13 +290,17 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
         emptyLengthOnFirst: Bool = false,
         emptyLengthOnSecond: Bool = false
     ) {
-        requestBodies = []
-        self.recoverOnSecondRequest = recoverOnSecondRequest
-        self.secondContent = secondContent
-        self.secondReasoning = secondReasoning
-        self.holdSecond = holdSecond
-        self.emptyLengthOnFirst = emptyLengthOnFirst
-        self.emptyLengthOnSecond = emptyLengthOnSecond
+        stateLock.withLock {
+            bodies = []
+            configuration = Configuration(
+                recoverOnSecondRequest: recoverOnSecondRequest,
+                secondContent: secondContent,
+                secondReasoning: secondReasoning,
+                holdSecond: holdSecond,
+                emptyLengthOnFirst: emptyLengthOnFirst,
+                emptyLengthOnSecond: emptyLengthOnSecond
+            )
+        }
     }
 
     static func session() -> URLSession {
@@ -301,8 +314,10 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         let body = Self.readBody(from: request)
-        Self.requestBodies.append(body)
-        let number = Self.requestBodies.count
+        let (number, config) = Self.stateLock.withLock { () -> (Int, Configuration) in
+            Self.bodies.append(body)
+            return (Self.bodies.count, Self.configuration)
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -310,11 +325,11 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if number == 2 && Self.holdSecond { return }
+        if number == 2 && config.holdSecond { return }
 
         let choice: [String: Any]
-        if (number == 1 && Self.emptyLengthOnFirst)
-            || (number == 2 && Self.emptyLengthOnSecond)
+        if (number == 1 && config.emptyLengthOnFirst)
+            || (number == 2 && config.emptyLengthOnSecond)
         {
             choice = ["delta": ["content": ""], "finish_reason": "length"]
         } else if number == 1 {
@@ -322,12 +337,12 @@ private final class UnreadableToolProtocol: URLProtocol, @unchecked Sendable {
                 "delta": ["content": "<tool_call>{\"name\":\"lookup\",\"arguments\":{"],
                 "finish_reason": "stop"
             ]
-        } else if number == 2 && !Self.recoverOnSecondRequest {
+        } else if number == 2 && !config.recoverOnSecondRequest {
             choice = [
                 "delta": [
-                    "content": Self.secondContent
+                    "content": config.secondContent
                         ?? "<tool_call>{\"name\":\"lookup\",\"arguments\":{",
-                    "reasoning_content": Self.secondReasoning ?? ""
+                    "reasoning_content": config.secondReasoning ?? ""
                 ],
                 "finish_reason": "stop"
             ]
