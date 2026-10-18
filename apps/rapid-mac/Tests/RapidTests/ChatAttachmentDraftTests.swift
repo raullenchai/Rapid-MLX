@@ -528,9 +528,15 @@ struct ChatAttachmentDraftTests {
         #expect(stripped.contains(
             "if!adopted{DocumentContentCache.shared.remove(contentsOf:outcome.0.map(\\.attachment.id))}"
         ))
-        #expect(stripped.contains(
-            ".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()photoCapabilityNotice.dismiss()}"
-        ))
+        let activeConversationHandler: String = [
+            ".onChange(of:viewModel.activeConversationID){_,_in",
+            "ifcontrolActiveState==.key,",
+            "leteditor=NSApp.keyWindow?.firstResponderas?AutosizingTextView,",
+            "editor.accessibilityIdentifier()==AutosizingTextView.composeAccessibilityIdentifier",
+            "{composeFocusToken&+=1}",
+            "pruneAttachmentDrafts()photoCapabilityNotice.dismiss()}",
+        ].joined()
+        #expect(stripped.contains(activeConversationHandler))
         #expect(stripped.contains(".onChange(of:viewModel.conversations.map(\\.id)){_,_inpruneAttachmentDrafts()}"))
     }
 
