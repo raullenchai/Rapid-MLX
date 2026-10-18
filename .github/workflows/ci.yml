@@ -562,6 +562,7 @@ jobs:
             tests/test_mllm.py \
             tests/test_mllm_legacy_generate_deprecation.py \
             tests/test_prism_hadamard_qwen35.py \
+            tests/test_gdn_in_proj_fusion.py \
             tests/test_server.py \
             tests/test_server_import_isolation.py \
             tests/test_paged_cache.py \
