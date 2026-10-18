@@ -282,11 +282,19 @@ class TestExtendedVLMContract:
     def restore_class_patch(self, monkeypatch):
         from mlx_vlm.models.switch_layers import SwitchGLU as VLMSwitchGLU
 
-        monkeypatch.setattr(VLMSwitchGLU, "__call__", VLMSwitchGLU.__call__)
-        for name in ("_rapid_gate_up_fused_call", "_rapid_gate_up_original_call"):
-            monkeypatch.setattr(
-                VLMSwitchGLU, name, getattr(VLMSwitchGLU, name, None), raising=False
-            )
+        # Start every test from the pristine stock method with no patch
+        # markers (an earlier test in the process may have patched the
+        # class); monkeypatch restores the prior state afterwards.
+        pristine = VLMSwitchGLU.__dict__.get(
+            "_rapid_gate_up_original_call", VLMSwitchGLU.__call__
+        )
+        monkeypatch.setattr(VLMSwitchGLU, "__call__", pristine)
+        monkeypatch.setattr(
+            VLMSwitchGLU, "_rapid_gate_up_fused_call", False, raising=False
+        )
+        monkeypatch.setattr(
+            VLMSwitchGLU, "_rapid_gate_up_original_call", None, raising=False
+        )
 
     def test_qwen_mllm_wrapper_fuses_extended_family(self, monkeypatch):
         import mlx_vlm
@@ -366,6 +374,8 @@ class TestExtendedVLMContract:
             moe_fusion.fuse_gate_up(TinyVLMMoE(n_layers=1), extended_call_contract=True)
             == 1
         )
+        assert VLMSwitchGLU.__call__ is not stock
+        assert VLMSwitchGLU._rapid_gate_up_original_call is stock
         fresh = TinyVLMMoE(n_layers=1).layers[0]
         x, inds = _decode_inputs()
         weights = mx.ones(inds.shape, dtype=x.dtype)
