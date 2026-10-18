@@ -1,0 +1,297 @@
+{
+  "source_revision": "329fed00dde9f5e123f3c72ecf0a5842b90e9165",
+  "model": "qwen3.5-4b-4bit",
+  "observations": [
+    {
+      "journey": "email-1",
+      "prompt": "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+      "visible_text": [
+        "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+        "Subject: Leaking Kitchen Faucet - Request for Repair",
+        "Dear Landlord,",
+        "I hope this message finds you well. I'm writing to let you know that the kitchen faucet in my unit has been leaking for a few days. The dripping is becoming quite noticeable, and I wanted to bring it to your attention as soon as possible.",
+        "Could someone please schedule a repair for this week? I'm happy to be available at a time that works best for you.",
+        "Thank you for your help and I look forward to hearing from you soon.",
+        "Best regards,",
+        "[Your Name] [Your Unit/Apartment Number]"
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "email-2",
+      "prompt": "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+      "visible_text": [
+        "Help me write a short, polite email to my landlord about a leaking kitchen faucet. Ask if someone can repair it this week.",
+        "Subject: Request to Repair Leaking Kitchen Faucet",
+        "Dear [Landlord's Name],\nI hope you're having a good week. I'm writing to let you know that there is a leak coming from my kitchen faucet, which has been causing some water damage on the counter.\nCould you please let me know if someone can come out to repair it this week? I'm available for a repair appointment at your earliest convenience.\nThank you for your help and support.\nBest regards,\n[Your Name]"
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "cover-letter",
+      "prompt": "Write a short cover letter for a junior graphic designer applying to a small design studio. Use placeholders for the company and my name.",
+      "visible_text": [
+        "Write a short cover letter for a junior graphic designer applying to a small design studio. Use placeholders for the company and my name.",
+        "Subject: Junior Graphic Designer Application \u2013 [Your Name]\nDear Hiring Team at [Company Name],\nI am writing to express my enthusiastic interest in the Junior Graphic Designer position at [Company Name]. As a passionate and creative designer with a strong foundation in visual communication, I am eager to contribute my skills to your team's innovative projects.\nThroughout my time studying [or working] at [Your Institution/Previous Company], I have honed my abilities in [mention 1-2 key skills, e.g., typography, branding, print media], using tools such as [mention 1-2 software, e.g., Adobe Creative Suite, Figma]. I am particularly drawn to [Company Name]\u2019s work in [mention something specific about the company/industry], and I am excited about the opportunity to grow alongside a talented team.\nI would love the chance to discuss how my enthusiasm and design skills can contribute to [Company Name]\u2019s upcoming projects. Thank you for your time and consideration\u2014I look forward to hearing from you soon.\nSincerely,\n[Your Name]"
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "summary",
+      "prompt": "Summarize these meeting notes in exactly three bullet points: Launch moves from Monday to Thursday. Alex owns the release checklist. Priya will finish the help page by Wednesday. The team will review progress tomorrow at 10 am.",
+      "visible_text": [
+        "Summarize these meeting notes in exactly three bullet points: Launch moves from Monday to Thursday. Alex owns the release checklist. Priya will finish the help page by Wednesday. The team will review progress tomorrow at 10 am.",
+        "\u2022\tThe launch date has been rescheduled from Monday to Thursday.\n\u2022\tAlex is responsible for owning the release checklist, and Priya needs to complete the help page by Wednesday.\n\u2022\tThe team will review progress tomorrow at 10 am PDT."
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "workshop-titles",
+      "prompt": "Workshop Cedar: Suggest three concise titles for a team workshop about giving useful feedback.",
+      "visible_text": [
+        "Workshop Cedar: Suggest three concise titles for a team workshop about giving useful feedback.",
+        "Here are three concise workshop titles:",
+        "1.\tFeedback That Fires Results\n2.\tThe Feedback Flow: Clear, Constructive, Actionable\n3.\tFeedback for Growth: Giving & Receiving with Impact"
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "workshop-invitation",
+      "visible_text": [
+        "Workshop Cedar: Suggest three concise titles for a team workshop about giving useful feedback.",
+        "Here are three concise workshop titles:\n1.\tFeedback That Fires Results\n2.\tThe Feedback Flow: Clear, Constructive, Actionable\n3.\tFeedback for Growth: Giving & Receiving with Impact",
+        "Use the second title. Draft a two-sentence invitation for Friday at 2 pm in Room Cedar.",
+        "You're invited to \"The Feedback Flow: Clear, Constructive, Actionable\" on Friday at 2 PM in Room Cedar \u2014 join us to unlock a feedback practice that drives real impact and growth."
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "draft-to-summary",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Workshop-only draft: ask for RSVP by Thursday."
+      }
+    },
+    {
+      "journey": "draft-to-workshop",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Summary-only draft: ask for the next deadline."
+      }
+    },
+    {
+      "journey": "new-chat-draft",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Summary-only draft: ask for the next deadline."
+      }
+    },
+    {
+      "journey": "unsupported-docx",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "/private/tmp/dogfood-main-head/journeys/cedar-workshop-notes.docx"
+      },
+      "attachment_ids": [
+        "ChatView.AddAttachments"
+      ]
+    },
+    {
+      "journey": "txt-answer",
+      "visible_text": [
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12."
+      ]
+    },
+    {
+      "journey": "txt-followup",
+      "visible_text": [
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12.",
+        "What is the reference code? Reply with the code only.",
+        "CEDAR-7821"
+      ]
+    },
+    {
+      "journey": "edit",
+      "visible_text": [
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12.",
+        "What is the total budget in the attached brief? Reply with the amount only.",
+        "Version 2 of 2",
+        "$480"
+      ]
+    },
+    {
+      "journey": "retry",
+      "visible_text": [
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12.",
+        "What is the total budget in the attached brief? Reply with the amount only.",
+        "Version 2 of 2",
+        "$480",
+        "Response 2 of 2"
+      ]
+    },
+    {
+      "journey": "date-control",
+      "visible_text": [
+        "What is the current local date and time zone? Reply in one sentence.",
+        "The current local date and time is Sunday, October 18, 2026 at 9:09 AM (PDT, America/Los_Angeles)."
+      ]
+    },
+    {
+      "journey": "packing",
+      "visible_text": [
+        "Create a simple packing checklist for a weekend trip. Include clothing, toiletries, and travel documents.",
+        "Here\u2019s a simple weekend trip packing checklist:",
+        "\n",
+        "\ud83e\uddf3 Clothing\n\u2022\t2\u20133 T-shirts or casual tops\n\u2022\t1 pair of pants/jeans\n\u2022\t1 sweater or light jacket (for evening cool)\n\u2022\t1 pair of socks\n\u2022\tSleepwear\n\u2022\tComfortable walking shoes or sneakers",
+        "\n",
+        "\ud83e\uddf4 Toiletries\n\u2022\tToothbrush & toothpaste\n\u2022\tDeodorant\n\u2022\tShampoo, conditioner (if you forget at the hotel)\n\u2022\tBody wash or bar soap\n\u2022\tLip balm\n\u2022\tSunscreen (if going outdoors)\n\u2022\tBasic first aid: band-aids, pain reliever",
+        "\n",
+        "\ud83e\udeaa Travel Documents\n\u2022\tID or passport (depending on destination)\n\u2022\tDriver\u2019s license (if driving)\n\u2022\tReservation confirmations (hotel, activity tickets, etc.)\n\u2022\tPayment cards or a small amount of cash\n\u2022\tPhone charger & power bank\n\u2022\tAny tickets to events or activities",
+        "\n",
+        "\ud83c\udf92 Extras\n\u2022\tReusable water bottle\n\u2022\tSnacks (in case of long drives)\n\u2022\tPortable phone charger or power bank",
+        "Let me know your destination or trip type (beach, mountains, city, etc.) for a more tailored list!"
+      ],
+      "tool_chips": []
+    },
+    {
+      "journey": "before-quit",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Unsent Cedar draft: Please RSVP by Thursday afternoon."
+      }
+    },
+    {
+      "journey": "after-relaunch",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": ""
+      },
+      "visible_text": [
+        "Starting qwen3.5-4b-4bit",
+        "Warming up\u2026",
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12.",
+        "What is the total budget in the attached brief? Reply with the amount only.",
+        "Version 2 of 2",
+        "$480",
+        "Response 2 of 2",
+        "Starting qwen3.5-4b-4bit\u2026"
+      ],
+      "model": {
+        "identifier": "ModelPickerBar.ModelMenu",
+        "description": "Model",
+        "value": "qwen3.5-4b-4bit",
+        "enabled": true
+      }
+    },
+    {
+      "journey": "unloaded-draft",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Confirm the workshop budget in one short sentence."
+      },
+      "send": {
+        "identifier": "ChatView.SendOrStopButton",
+        "description": "Send message",
+        "enabled": false
+      },
+      "readiness": [
+        {
+          "identifier": "Readiness.Action",
+          "description": "Start",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "journey": "start-still-unsent",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Confirm the workshop budget in one short sentence."
+      },
+      "send": {
+        "identifier": "ChatView.SendOrStopButton",
+        "description": "Send message",
+        "enabled": true
+      }
+    },
+    {
+      "journey": "after-start-send",
+      "visible_text": [
+        "TXT file, cedar-workshop-notes.txt, TXT",
+        "According to the attached workshop brief, what are the total budget and number of attendees? Answer in one sentence.",
+        "The total budget is $480 and the number of attendees is 12.",
+        "What is the total budget in the attached brief? Reply with the amount only.",
+        "Version 2 of 2",
+        "$480",
+        "Response 2 of 2",
+        "Confirm the workshop budget in one short sentence.",
+        "The workshop budget is $480."
+      ]
+    },
+    {
+      "journey": "shift-return",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": "Reply with exactly: Keyboard works.\n"
+      }
+    },
+    {
+      "journey": "return-send",
+      "composer": {
+        "identifier": "rapid.chat.compose",
+        "description": "Message compose field",
+        "value": ""
+      },
+      "visible_text": [
+        "Reply with exactly: Keyboard works.",
+        "Keyboard works."
+      ]
+    },
+    {
+      "journey": "copy-response",
+      "clipboard": "Keyboard works.\n"
+    },
+    {
+      "journey": "stop",
+      "visible_text": [
+        "Write 80 numbered creative journal prompts. Give each a one-sentence explanation.",
+        "1.\tReflect on a moment when you felt truly understood, and describe how that feeling changed your perspective.\n2.\tImagine traveling to a world where emotions are visible; what color would your current mood be?\n3.\tWrite",
+        "Stopped."
+      ],
+      "send": {
+        "identifier": "ChatView.SendOrStopButton",
+        "description": "Send message",
+        "enabled": false
+      }
+    },
+    {
+      "journey": "after-stop",
+      "visible_text": [
+        "Write 80 numbered creative journal prompts. Give each a one-sentence explanation.",
+        "1.\tReflect on a moment when you felt truly understood, and describe how that feeling changed your perspective.\n2.\tImagine traveling to a world where emotions are visible; what color would your current mood be?\n3.\tWrite",
+        "Stopped.",
+        "Reply with exactly: Ready for the next question.",
+        "Ready for the next question."
+      ]
+    }
+  ]
+}

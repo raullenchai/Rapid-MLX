@@ -1,5 +1,9 @@
 # Desktop 0.16.3: English-first UX dogfood
 
+[Current main local-build regression](main-head-329fed00/README.md) verifies the
+writing/tool fixes and rechecks unfinished draft, file and readiness journeys.
+The observations below describe the earlier published release.
+
 [Two additional end-to-end journey rounds](journeys/README.md) cover follow-ups,
 drafts, history, attachments, editing, stopping, export and relaunch.
 
