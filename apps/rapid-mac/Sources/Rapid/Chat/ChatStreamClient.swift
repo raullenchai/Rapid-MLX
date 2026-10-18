@@ -254,8 +254,14 @@ struct ChatStreamClient {
                 }
             }
             self.imageMessageID = imageMessageIndex.map { modelMessages[$0].id }
-            self.messages = modelMessages.enumerated().map { index, message in
-                Wire.Message(from: message, includeImages: index == imageMessageIndex)
+            self.messages = modelMessages.enumerated().flatMap { index, message -> [Wire.Message] in
+                var rows: [Wire.Message] = []
+                if let prelude = message.wirePrelude,
+                    !prelude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    rows.append(Wire.Message(from: ChatMessage(role: .user, content: prelude), includeImages: false))
+                }
+                rows.append(Wire.Message(from: message, includeImages: index == imageMessageIndex))
+                return rows
             }
             self.temperature = temperature
             self.topP = topP

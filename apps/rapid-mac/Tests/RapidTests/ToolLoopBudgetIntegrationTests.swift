@@ -49,6 +49,11 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(synthesis["content"] as? String == Self.synthesisInstruction)
         #expect((synthesis["content"] as? String)?.contains("(Local time:") == false)
         #expect(messages[messages.count - 2]["role"] as? String == "tool")
+        // Clock rows precede the real prompt; the existing final synthesis
+        // control row stays last and receives no clock or tool guidance.
+        let promptIndex = try #require(messages.firstIndex { ($0["content"] as? String) == "Research this topic thoroughly" })
+        #expect(promptIndex > 0)
+        #expect((messages[promptIndex - 1]["content"] as? String)?.hasPrefix("(Local time:") == true)
         #expect(model.messages.filter { $0.role == .user }.map(\.content) == ["Research this topic thoroughly"])
         #expect(!model.messages.contains { $0.content.contains(Self.synthesisInstruction) })
     }

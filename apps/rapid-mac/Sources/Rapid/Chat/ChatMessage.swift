@@ -582,20 +582,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     var parentID: UUID?
     let createdAt: Date
 
-    /// Wire-only trailer appended after this row's prose AND its attachment
-    /// extracts — see ``modelContent``.
-    ///
-    /// Deliberately absent from ``CodingKeys``: it is set on the throwaway
-    /// array ``ChatViewModel`` builds for one request, never on the
-    /// transcript, so it is not part of the conversation and must not reach
-    /// `conversations.json`. ``init(from:)`` therefore restores it as `nil`.
-    ///
-    /// The one producer is ``ChatViewModel/stampingClockContext(on:calendar:)``,
-    /// which needs each user turn's wall clock to land after that turn's
-    /// attachment extracts. Writing it into ``content`` instead would put it
-    /// in FRONT of the extract, so the first request carrying a document and
-    /// the next one would diverge before the document rather than after it,
-    /// and the engine's prefix cache could not reuse the document.
+    /// Wire-only clock context emitted as a separate user-role message immediately
+    /// before this row. Keeping it outside the prose avoids needless tool calls;
+    /// deriving it from createdAt keeps follow-up requests append-only.
+    /// Absent from CodingKeys and reset to nil on decode, just like wireSuffix:
+    /// only throwaway request copies carry it, never the persisted transcript.
+    var wirePrelude: String?
+
+    /// Wire-only guidance appended after this row's prose and attachment extracts
+    /// by ChatViewModel.stampingToolGuidance. Absent from CodingKeys and reset
+    /// to nil on decode: request instructions must not reach conversations.json.
     var wireSuffix: String?
 
     init(
@@ -619,7 +615,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         wireVisibility: WireVisibility = .model,
         parentID: UUID? = nil,
         createdAt: Date = Date(),
-        wireSuffix: String? = nil
+        wireSuffix: String? = nil,
+        wirePrelude: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -642,6 +639,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.parentID = parentID
         self.createdAt = createdAt
         self.wireSuffix = wireSuffix
+        self.wirePrelude = wirePrelude
     }
 
     /// Codex r1 MAJOR-1: keep ``reasoningTruncated`` decodable from
@@ -767,6 +765,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // Transient by construction — a persisted turn carries no wire
         // trailer, and the next request mints a fresh one.
         self.wireSuffix = nil
+        self.wirePrelude = nil
     }
 
     /// Text sent to the model. Document extracts stay out of the visible

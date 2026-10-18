@@ -7,6 +7,8 @@
 
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
 
+- **Cleaner Desktop follow-ups**: the time note now appears separately before your message, keeping time available without prompting small models to call web tools on plain writing/coding turns. Tool replies preserve the language of Chinese questions. Strict-alternation chat templates now accept consecutive user turns. Fixes #4891.
+
 - **Consistent replies without tools**: buffered replies preserve model-emitted tool-call markup as text when no tools were offered, matching streaming replies. Fixes #4877.
 
 - **Cleaner Desktop answers after tool use**: chats that reach their tool budget now send the final-answer instruction as the last message, and show an answer or a clear fallback instead of raw tool-call markup. Fixes #4871.

@@ -127,12 +127,8 @@ struct ChatMessageActionsGoldenTests {
         )
         try stage.press("ChatView.Message.SaveEdit.\(saveSuffix)")
         try await stage.wait(for: "the edited prompt to be sent") {
-            // Prefix, not equality: the wire text of a user turn carries the
-            // per-turn clock trailer after the prose (see
-            // ``ChatViewModel.stampingClockContext``).
-            surface.fake.recordedPrompts().contains {
-                $0.hasPrefix("saved edited message prompt")
-            }
+            // Clock context is a separate row; the real user's prose stays exact.
+            surface.fake.recordedPrompts().contains("saved edited message prompt")
         }
         try await Self.waitForSettledReply(on: surface)
         #expect(stage.treeText().contains("saved edited message prompt"))

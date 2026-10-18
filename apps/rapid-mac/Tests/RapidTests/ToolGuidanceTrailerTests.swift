@@ -58,7 +58,7 @@ struct ToolGuidanceTrailerTests {
         ]
     }()
 
-    @Test("The guidance is a trailer on the newest user row, behind the clock, never in the system row")
+    @Test("The guidance is a trailer on the newest user row, with a separate clock prelude, never in the system row")
     func guidanceLandsOnTheNewestUserRow() {
         let wire = Self.assemble(Self.roundTwo)
         let system = wire[0]
@@ -69,12 +69,13 @@ struct ToolGuidanceTrailerTests {
         #expect(newestUser.role == .user)
         #expect(newestUser.content == "weather in Tokyo?", "the transcript row stays prose-only")
         let suffix = newestUser.wireSuffix ?? ""
-        #expect(suffix.hasPrefix("(Local time:"), "the clock trailer still comes first")
+        #expect(suffix == ChatViewModel.toolGuidance)
+        #expect(newestUser.wirePrelude?.hasPrefix("(Local time:") == true)
         #expect(suffix.hasSuffix(ChatViewModel.toolGuidance))
         #expect(newestUser.modelContent.hasSuffix(ChatViewModel.toolGuidance))
 
         // No other row carries it: not the earlier user row, not the tool row.
-        #expect(wire[1].wireSuffix?.contains(ChatViewModel.toolGuidance) == false)
+        #expect(wire[1].wireSuffix == nil)
         #expect(wire[5].role == .tool)
         #expect(wire[5].wireSuffix == nil)
     }
@@ -105,7 +106,27 @@ struct ToolGuidanceTrailerTests {
         }
         #expect(after[3].wireSuffix?.hasSuffix(ChatViewModel.toolGuidance) == true)
         #expect(after.last?.role == .user)
-        #expect(after.last?.wireSuffix?.contains(ChatViewModel.toolGuidance) == false)
+        #expect(after.last?.wireSuffix == nil)
+    }
+
+    @Test("Both guidance passes preserve prose, extracts, and the independent clock row")
+    func twoPassOrderingWithAttachments() throws {
+        let file = try ChatFileAttachment(filename: "report.pdf", kind: .pdf,
+            extractedText: "REPORT CONTENT", sourceByteCount: 14)
+        var history = Self.roundTwo
+        history[2].fileAttachments = [file]
+        let proseAndExtract = history[2].modelContent
+        history = ChatViewModel.stampingToolGuidance(on: history, toolsAdvertised: true)
+        history = ChatViewModel.stampingClockContext(on: history)
+        history = ChatViewModel.stampingToolGuidance(on: history, toolsAdvertised: true)
+        #expect(history[2].modelContent == proseAndExtract + "\n\n" + ChatViewModel.toolGuidance)
+        #expect(history[2].wireSuffix == ChatViewModel.toolGuidance)
+        #expect(history[2].wirePrelude == ChatViewModel.clockContext(at: history[2].createdAt))
+        #expect(!history[2].modelContent.contains("(Local time:"))
+        let withdrawn = ChatViewModel.stampingToolGuidance(on: history, toolsAdvertised: false)
+        #expect(withdrawn[2].modelContent == proseAndExtract)
+        #expect(withdrawn[2].wireSuffix == nil)
+        #expect(withdrawn[2].wirePrelude == history[2].wirePrelude)
     }
 
     @Test("No guidance without advertised tools or without a tool result this turn (#1549)")
@@ -155,7 +176,7 @@ struct ToolGuidanceTrailerTests {
         let threeData = try #require(await WireBodyCaptureProtocol.capture(request(Self.assemble(Self.nextTurn))))
         let twoRows = try Self.wireMessages(twoData)
         let threeRows = try Self.wireMessages(threeData)
-        #expect(threeRows.count == twoRows.count + 2)
+        #expect(threeRows.count == twoRows.count + 3)
         #expect(Array(threeRows.prefix(twoRows.count)) == twoRows,
                 "every row of round two must serialize identically on the next turn")
     }
@@ -189,9 +210,9 @@ struct ToolGuidanceTrailerTests {
         #expect(withdrawn.map(\.role) == pristine.map(\.role))
         #expect(withdrawn.map(\.modelContent) == pristine.map(\.modelContent),
                 "withdrawing the guidance restores every row's wire bytes")
-        // The clock trailer the guidance was joined behind survives intact.
-        #expect(withdrawn[3].wireSuffix?.hasPrefix("(Local time:") == true)
-        #expect(withdrawn[3].wireSuffix?.hasSuffix("\n\n") == false)
+        // Withdrawing a guidance-only suffix leaves the clock prelude intact.
+        #expect(withdrawn[3].wirePrelude == once[3].wirePrelude)
+        #expect(withdrawn[3].wireSuffix == nil)
     }
 
     @Test("The guidance says which message it binds, so an old stamp reads as history")
@@ -202,6 +223,7 @@ struct ToolGuidanceTrailerTests {
 
     @Test("Stripping removes only the terminal component the stamp joined")
     func stripIsExactAndTerminal() {
+        #expect(ChatViewModel.toolGuidance.hasSuffix("\n\nAnswer in the same language as the user's own message above, even when the tool result is in another language."))
         let g = ChatViewModel.toolGuidance
         #expect(ChatViewModel.strippingToolGuidance(from: nil) == nil)
         #expect(ChatViewModel.strippingToolGuidance(from: g) == nil)
@@ -225,6 +247,7 @@ struct ToolGuidanceTrailerTests {
         let cost: (ChatMessage) -> Int = { row in
             let toolArgs = (row.toolCalls ?? []).map(\.function.arguments).joined()
             return max(1, TokenEstimate.tokens(in: row.modelContent)
+                + (row.wirePrelude.map { TokenEstimate.tokens(in: $0) } ?? 0)
                 + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let bareTokens = bare.reduce(0) { $0 + cost($1) }

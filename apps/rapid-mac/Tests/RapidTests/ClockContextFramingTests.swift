@@ -22,14 +22,14 @@ struct ClockContextFramingTests {
         )
     }
 
-    @Test("User prose stays untouched and the wire trailer is one neutral annotation")
+    @Test("User prose stays untouched and the separate clock row is one neutral annotation")
     func neutralWireOnlyAnnotation() throws {
         let typed = "Help me write a short, polite email to my landlord."
         let row = ChatMessage(role: .user, content: typed, createdAt: instant)
         let stamped = ChatViewModel.stampingClockContext(on: [row], calendar: calendar)[0]
-        let trailer = try #require(stamped.wireSuffix)
+        let trailer = try #require(stamped.wirePrelude)
         #expect(stamped.content == typed)
-        #expect(stamped.modelContent == typed + "\n\n" + ChatViewModel.clockContext(at: row.createdAt, calendar: calendar))
+        #expect(stamped.modelContent == typed)
         #expect(trailer == "(Local time: Sunday, October 18, 2026 at 2:14 PM)")
         #expect(!trailer.contains("PDT"))
         #expect(!trailer.contains("PST"))
@@ -52,10 +52,10 @@ struct ClockContextFramingTests {
         #expect(system.modelContent == ChatViewModel.currentDateContext(now: instant, calendar: calendar))
         #expect(!system.modelContent.contains("(Local time:"))
         #expect(!system.modelContent.contains("(Current time:"))
-        #expect(system.wireSuffix == nil)
+        #expect(system.wirePrelude == nil)
         #expect(rows.dropFirst().allSatisfy { $0.role != .system })
         #expect(rows[2].modelContent == "Hi")
-        #expect(rows[2].wireSuffix == nil)
+        #expect(rows[2].wirePrelude == nil)
     }
 
     @Test("Follow-ups preserve earlier wire bytes and annotate every user row from createdAt")
@@ -70,11 +70,11 @@ struct ClockContextFramingTests {
         #expect(turnTwo.prefix(turnOne.count).map { Array($0.modelContent.utf8) } == turnOne.map { Array($0.modelContent.utf8) })
         #expect(turnThree.prefix(turnTwo.count).map { Array($0.modelContent.utf8) } == turnTwo.map { Array($0.modelContent.utf8) })
         for row in turnThree where row.role == .user {
-            #expect(row.wireSuffix == ChatViewModel.clockContext(at: row.createdAt, calendar: calendar))
-            #expect(row.modelContent == row.content + "\n\n" + ChatViewModel.clockContext(at: row.createdAt, calendar: calendar))
+            #expect(row.wirePrelude == ChatViewModel.clockContext(at: row.createdAt, calendar: calendar))
+            #expect(row.modelContent == row.content)
         }
-        #expect(turnThree[1].wireSuffix != turnThree[3].wireSuffix)
-        #expect(turnThree[3].wireSuffix != turnThree[5].wireSuffix)
+        #expect(turnThree[1].wirePrelude != turnThree[3].wirePrelude)
+        #expect(turnThree[3].wirePrelude != turnThree[5].wirePrelude)
     }
 
     @Test("Persistence drops wire annotations and restoration reconstructs identical bytes")
@@ -86,11 +86,16 @@ struct ClockContextFramingTests {
             ChatMessage(role: .user, content: typed[2], createdAt: instant.addingTimeInterval(600))
         ]
         let stamped = ChatViewModel.stampingClockContext(on: rows, calendar: calendar)
-        let decoded = try JSONDecoder().decode([ChatMessage].self, from: JSONEncoder().encode(stamped))
-        #expect(decoded.allSatisfy { $0.wireSuffix == nil })
+        let data = try JSONEncoder().encode(stamped)
+        let persisted = String(decoding: data, as: UTF8.self)
+        #expect(!persisted.contains("wirePrelude"))
+        #expect(!persisted.contains("wireSuffix"))
+        #expect(!persisted.contains("(Local time:"))
+        let decoded = try JSONDecoder().decode([ChatMessage].self, from: data)
+        #expect(decoded.allSatisfy { $0.wirePrelude == nil && $0.wireSuffix == nil })
         #expect(decoded.map(\.content) == typed)
         #expect(decoded.map(\.modelContent) == typed)
-        #expect(ChatViewModel.stampingClockContext(on: decoded, calendar: calendar).map(\.modelContent) == stamped.map(\.modelContent))
+        #expect(ChatViewModel.stampingClockContext(on: decoded, calendar: calendar).map(\.wirePrelude) == stamped.map(\.wirePrelude))
     }
 
     @Test("Retry appends current time only to the newest user row when the minute changes")
@@ -103,13 +108,13 @@ struct ClockContextFramingTests {
         ]
         let baseline = ChatViewModel.stampingClockContext(on: rows, calendar: calendar)
         let sameMinute = ChatViewModel.stampingClockContext(on: baseline, calendar: calendar, answeringAt: newest.addingTimeInterval(20))
-        #expect(sameMinute.map(\.modelContent) == baseline.map(\.modelContent))
+        #expect(sameMinute == baseline)
         let later = newest.addingTimeInterval(45 * 60)
         let retried = ChatViewModel.stampingClockContext(on: sameMinute, calendar: calendar, answeringAt: later)
         #expect(retried.prefix(2).map(\.modelContent) == baseline.prefix(2).map(\.modelContent))
         let extra = "\n(Current time: \(ChatViewModel.clockStampText(at: later, calendar: calendar)))"
-        #expect(retried[2].wireSuffix == ChatViewModel.clockContext(at: newest, calendar: calendar) + extra)
-        #expect(retried[2].modelContent == baseline[2].modelContent + extra)
+        #expect(retried[2].wirePrelude == ChatViewModel.clockContext(at: newest, calendar: calendar) + extra)
+        #expect(retried[2].modelContent == baseline[2].modelContent)
         #expect(retried.map(\.content) == rows.map(\.content))
     }
 
@@ -128,7 +133,7 @@ struct ClockContextFramingTests {
         #expect(line == "\n(Current time: Sunday, November 1, 2026 at 1:30 AM)")
     }
 
-    @Test("Clock annotation follows attachment extracts without changing their bytes")
+    @Test("Clock prelude preserves attachment extracts without changing their bytes")
     func attachmentOrdering() throws {
         let attachment = try ChatFileAttachment(
             filename: "invoice.pdf", kind: .pdf,
@@ -137,9 +142,68 @@ struct ClockContextFramingTests {
         let row = ChatMessage(role: .user, content: "What is the total?", fileAttachments: [attachment], createdAt: instant)
         let stamped = ChatViewModel.stampingClockContext(on: [row], calendar: calendar)[0]
         #expect(stamped.content == row.content)
-        #expect(stamped.modelContent == row.modelContent + "\n\n" + ChatViewModel.clockContext(at: instant, calendar: calendar))
-        let extract = try #require(stamped.modelContent.range(of: "TOTAL DUE 1,204.55"))
-        let annotation = try #require(stamped.modelContent.range(of: "(Local time:"))
-        #expect(extract.upperBound < annotation.lowerBound)
+        #expect(stamped.modelContent == row.modelContent)
+        #expect(stamped.modelContent.contains("TOTAL DUE 1,204.55"))
+        #expect(!stamped.modelContent.contains("(Local time:"))
+        #expect(stamped.wirePrelude == ChatViewModel.clockContext(at: instant, calendar: calendar))
+    }
+}
+
+@Suite("Clock prelude wire encoding")
+struct ClockPreludeWireTests {
+    private func encoded(_ rows: [ChatMessage]) throws -> [[String: Any]] {
+        let request = ChatStreamClient.Request(alias: "test", messages: rows, supportsImageInput: true)
+        return try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request.messages)) as? [[String: Any]])
+    }
+
+    @Test("Clock rows precede real users and preserve the complete encoded prefix")
+    func wireShapeAndPrefix() throws {
+        let first = ChatMessage(role: .user, content: "first", createdAt: Date(timeIntervalSince1970: 1000))
+        let second = ChatMessage(role: .user, content: "second", createdAt: Date(timeIntervalSince1970: 1600))
+        let system = ChatMessage(role: .system, content: "fixed date")
+        let one = try encoded(ChatViewModel.stampingClockContext(on: [system, first]))
+        let two = try encoded(ChatViewModel.stampingClockContext(on: [system, first, ChatMessage(role: .assistant, content: "answer"), second]))
+        #expect(two.map { $0["role"] as? String } == ["system", "user", "user", "assistant", "user", "user"])
+        #expect(two[1]["content"] as? String == ChatViewModel.clockContext(at: first.createdAt))
+        #expect(two[4]["content"] as? String == ChatViewModel.clockContext(at: second.createdAt))
+        #expect(two[2]["content"] as? String == "first")
+        #expect(two.last { $0["role"] as? String == "user" }?["content"] as? String == "second")
+        #expect(try JSONSerialization.data(withJSONObject: Array(two.prefix(one.count)), options: [.sortedKeys]) == JSONSerialization.data(withJSONObject: one, options: [.sortedKeys]))
+    }
+
+    @Test("Prelude rows never receive images, including inherited image focus")
+    func imageFocusUsesOriginalIndices() throws {
+        let image = try ChatImageAttachment(filename: "test.png", mimeType: "image/png", data: Data("image".utf8))
+        let first = ChatMessage(role: .user, content: "describe", imageAttachments: [image])
+        for history in [[first], [first, ChatMessage(role: .assistant, content: "answer"), ChatMessage(role: .user, content: "more")]] {
+            let stamped = ChatViewModel.stampingClockContext(on: history)
+            let request = ChatStreamClient.Request(alias: "test", messages: stamped, supportsImageInput: true)
+            #expect(request.imageMessageID == first.id)
+            let rows = try encoded(stamped)
+            #expect(rows[0]["content"] as? String == ChatViewModel.clockContext(at: first.createdAt))
+            let parts = try #require(rows[1]["content"] as? [[String: Any]])
+            #expect(parts.first?["text"] as? String == "describe")
+            #expect(parts.last?["type"] as? String == "image_url")
+        }
+    }
+
+    @MainActor
+    @Test("Clock preludes count toward the trim budget")
+    func preludeBudget() {
+        let rows = [ChatMessage(role: .system, content: "fixed"),
+            ChatMessage(role: .user, content: "first"),
+            ChatMessage(role: .assistant, content: "answer"),
+            ChatMessage(role: .user, content: "latest")]
+        let budget = rows.reduce(0) { $0 + max(1, TokenEstimate.tokens(in: $1.modelContent)) }
+        #expect(ChatViewModel.trimMessagesForContextWindow(rows, contextWindow: budget, keepFraction: 1).count == rows.count)
+        let stamped = ChatViewModel.stampingClockContext(on: rows)
+        #expect(ChatViewModel.trimMessagesForContextWindow(stamped, contextWindow: budget, keepFraction: 1).count < rows.count)
+    }
+
+    @Test("Blank preludes are omitted")
+    func blankPrelude() throws {
+        let rows = try encoded([ChatMessage(role: .user, content: "hello", wirePrelude: " \n ")])
+        #expect(rows.count == 1)
+        #expect(rows[0]["content"] as? String == "hello")
     }
 }

@@ -31,38 +31,36 @@ struct GoldenChatFakeContractTests {
         #expect(fake.events() == [.chatFinished(chunks: GoldenChatFake.contentChunks.count)])
     }
 
+    private func clockRow(_ fake: GoldenChatFake) throws -> String {
+        let body = try #require(fake.recordedBodies().last)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try #require(object["messages"] as? [[String: Any]])
+        return try #require(messages[1]["content"] as? String)
+    }
+
+    private func expectClock(for row: ChatMessage, in fake: GoldenChatFake) throws {
+        let clock = try clockRow(fake)
+        let expected = ChatViewModel.clockContext(at: row.createdAt)
+        #expect(clock.hasPrefix(expected))
+        let rest = String(clock.dropFirst(expected.count))
+        let firstMinute = (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down)
+        let lastMinute = (Date().timeIntervalSinceReferenceDate / 60).rounded(.down)
+        let validLines = stride(from: firstMinute, through: lastMinute, by: 1).map {
+            ChatViewModel.answeringNowLine(asked: row.createdAt,
+                answeringAt: Date(timeIntervalSinceReferenceDate: $0 * 60))
+        }
+        #expect(validLines.contains(rest))
+    }
+
     @MainActor
     @Test("A mounted surface routes a send through the fake and settles")
     func mountedSurfaceSendsAndSettles() async throws {
         let surface = GoldenChatSurface.mount()
         try await surface.sendPrompt("probe prompt")
         try await surface.waitForSendIdle()
-        // The mounted surface goes through the real request assembly, so the
-        // recorded prompt is the WIRE text: the user's prose followed by the
-        // per-turn clock trailer. Asserting both halves here makes this golden
-        // flow the end-to-end proof that #2330's "the model is told the
-        // current time" contract survived moving the clock off the system row
-        // (see ``ChatViewModel.stampingClockContext``).
-        let recorded = try #require(surface.fake.recordedPrompts().first)
-        #expect(surface.fake.recordedPrompts().count == 1)
-        #expect(recorded.hasPrefix("probe prompt"))
-        #expect(recorded.contains("(Local time:"))
+        #expect(surface.fake.recordedPrompts() == ["probe prompt"])
         let row = try #require(surface.chat.messages.first { $0.role == .user })
-        // A send that straddles a minute boundary may append a current-time line.
-        let expected = "probe prompt\n\n" + ChatViewModel.clockContext(at: row.createdAt)
-        #expect(recorded.hasPrefix(expected))
-        // The request instant lies between the row's createdAt and now, so the
-        // only valid extra line names one of the minutes in that window.
-        let rest = String(recorded.dropFirst(expected.count))
-        let firstMinute = (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let lastMinute = (Date().timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let validLines = stride(from: firstMinute, through: lastMinute, by: 1).map {
-            ChatViewModel.answeringNowLine(
-                asked: row.createdAt,
-                answeringAt: Date(timeIntervalSinceReferenceDate: $0 * 60)
-            )
-        }
-        #expect(validLines.contains(rest))
+        try expectClock(for: row, in: surface.fake)
     }
 
     @MainActor
@@ -79,11 +77,9 @@ struct GoldenChatFakeContractTests {
 
         let firstRow = try #require(surface.chat.messages.first { $0.role == .user })
         let firstWire = try #require(surface.fake.recordedPrompts().last)
-        let firstTrailer = try #require(
-            firstWire.range(of: "(Local time:").map { String(firstWire[$0.lowerBound...]) }
-        )
+        try expectClock(for: firstRow, in: surface.fake)
 
-        // Regenerate: the SAME row is re-sent, so the trailer must come back
+        // Regenerate: the SAME row is re-sent, so the prelude must come back
         // byte-identical. If it moved, every later turn in this conversation
         // would lose the shared prefix.
         let beforeRegenerate = surface.fake.recordedBodies().count
@@ -97,12 +93,12 @@ struct GoldenChatFakeContractTests {
         #expect(regeneratedRow.createdAt == firstRow.createdAt)
         let regeneratedWire = try #require(surface.fake.recordedPrompts().last)
         #expect(regeneratedWire == firstWire,
-                "Re-answering the same question must re-render it identically, trailer included.")
-        #expect(regeneratedWire.hasSuffix(firstTrailer))
+                "Re-answering the same question must re-render it identically, prelude checked separately.")
+        try expectClock(for: firstRow, in: surface.fake)
 
         // An edited send rewinds and calls `send`, which mints a fresh row —
         // so it reports the live clock. Asserted on `createdAt` rather than on
-        // the rendered text, because the trailer has minute resolution and a
+        // the rendered text, because the prelude has minute resolution and a
         // test that edits within the same minute would see the same string.
         #expect(surface.fake.recordedBodies().count == beforeRegenerate + 1,
                 "Sanity check: regenerate really did send a second request.")
@@ -121,8 +117,6 @@ struct GoldenChatFakeContractTests {
         #expect(editedRow.createdAt >= firstRow.createdAt)
         let editedWire = try #require(surface.fake.recordedPrompts().last)
         #expect(editedWire.hasPrefix("edited question"))
-        #expect(editedWire.contains(
-            ChatViewModel.clockContext(at: editedRow.createdAt)
-        ), "The edited row's trailer must be stamped from its OWN createdAt.")
+        try expectClock(for: editedRow, in: surface.fake)
     }
 }

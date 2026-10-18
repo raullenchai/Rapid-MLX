@@ -795,3 +795,139 @@ def test_unrelated_template_error_is_not_hidden():
     )
     with pytest.raises(Exception, match="different template failure"):
         apply_chat_template(tokenizer, _messages_with_assistant_tool_call("{}"))
+
+
+def test_alternating_consecutive_users_without_tools():
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    messages = [
+        {"role": "user", "content": "clock"},
+        {"role": "user", "content": "question"},
+    ]
+    original = copy.deepcopy(messages)
+    assert "user: clock\n\nquestion" in apply_chat_template(tokenizer, messages)
+    assert messages == original
+
+
+def test_alternating_tool_history_with_clock_rows():
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    messages = _messages_with_assistant_tool_call("{}")
+    messages.insert(0, {"role": "user", "content": "first clock"})
+    messages.insert(len(messages) - 1, {"role": "user", "content": "next clock"})
+    prompt = apply_chat_template(tokenizer, messages)
+    assert "first clock\n\n" in prompt
+    assert (
+        "Tool result call_1: sunny, 22C in Paris\n\nnext clock\n\nand tomorrow?"
+        in prompt
+    )
+
+
+def test_alternating_permissive_template_keeps_consecutive_users():
+    tokenizer = _fake_tokenizer_with_template("{{ messages|tojson }}")
+    prompt = apply_chat_template(
+        tokenizer,
+        [{"role": "user", "content": "clock"}, {"role": "user", "content": "question"}],
+    )
+    import json
+
+    assert len(json.loads(prompt)) == 2
+    assert tokenizer.apply_chat_template.call_count == 1
+
+
+def test_alternating_retry_failure_preserves_original_exception():
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    original = ValueError("Conversation roles must alternate user/assistant original")
+    tokenizer.apply_chat_template.side_effect = [original, RuntimeError("retry failed")]
+    with pytest.raises(ValueError) as raised:
+        apply_chat_template(
+            tokenizer,
+            [
+                {"role": "user", "content": "clock"},
+                {"role": "user", "content": "question"},
+            ],
+        )
+    assert raised.value is original
+
+
+@pytest.mark.parametrize("extra_index", [0, 1])
+@pytest.mark.parametrize("tools", [False, True])
+def test_alternating_refuses_user_metadata_loss(extra_index, tools):
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    messages = [
+        {"role": "user", "content": "clock"},
+        {"role": "user", "content": "question"},
+    ]
+    messages[extra_index]["name"] = "person"
+    if tools:
+        messages = _messages_with_assistant_tool_call("{}")[:-1] + messages
+    with pytest.raises(Exception, match="Conversation roles must alternate"):
+        apply_chat_template(tokenizer, messages)
+    retry = tokenizer.apply_chat_template.call_args_list[1].args[0]
+    assert any(row.get("name") == "person" for row in retry)
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (
+            "clock",
+            [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}],
+        ),
+        ([{"type": "text", "text": "clock"}], "question"),
+        ([{"type": "text", "text": "clock"}], [{"type": "text", "text": "question"}]),
+    ],
+)
+def test_alternating_multimodal_merge(left, right):
+    from rapid_mlx.utils.chat_template import _merge_adjacent_user_messages
+
+    messages = [{"role": "user", "content": left}, {"role": "user", "content": right}]
+    original = copy.deepcopy(messages)
+    expected_left = [{"type": "text", "text": left}] if isinstance(left, str) else left
+    expected_right = (
+        [{"type": "text", "text": right}] if isinstance(right, str) else right
+    )
+    assert _merge_adjacent_user_messages(messages) == [
+        {
+            "role": "user",
+            "content": expected_left
+            + [{"type": "text", "text": "\n\n"}]
+            + expected_right,
+        }
+    ]
+    assert messages == original
+
+    # Exercise the full error path with an applicator that can render parts.
+    import json
+
+    tokenizer = _fake_tokenizer_with_template("{{ messages|tojson }}")
+    render = tokenizer.apply_chat_template.side_effect
+
+    def strict_render(rows, **kwargs):
+        if any(
+            row["role"] != ("user" if index % 2 == 0 else "assistant")
+            for index, row in enumerate(rows)
+        ):
+            raise ValueError("Conversation roles must alternate user/assistant")
+        return render(rows, **kwargs)
+
+    tokenizer.apply_chat_template.side_effect = strict_render
+    from rapid_mlx.utils.chat_template import _normalize_text_only_content_arrays
+
+    assert json.loads(
+        apply_chat_template(tokenizer, messages)
+    ) == _merge_adjacent_user_messages(_normalize_text_only_content_arrays(messages))
+    assert tokenizer.apply_chat_template.call_count == 2
+    assert messages == original
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [None, {"role": "user", "content": "q"}],
+        [{"role": "user", "content": None}, {"role": "user", "content": "q"}],
+        [{"role": "user", "content": "q"}, {"role": "user", "content": None}],
+    ],
+)
+def test_alternating_merge_preserves_unsupported_rows(messages):
+    from rapid_mlx.utils.chat_template import _merge_adjacent_user_messages
+
+    assert _merge_adjacent_user_messages(messages) == messages

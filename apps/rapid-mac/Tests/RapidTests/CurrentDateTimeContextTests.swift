@@ -12,7 +12,7 @@ import Testing
 ///
 /// 0.14.1 dogfood split that context in two, and these tests pin the split as
 /// much as the original contract. The DATE goes in the leading system row; the
-/// wall CLOCK rides each user turn as a wire-only trailer. Putting a
+/// wall CLOCK rides each user turn as a separate wire-only clock row. Putting a
 /// minute-resolution string at the head of the prompt rewrote the first tokens
 /// of every request the moment the clock ticked, which cost the engine's
 /// prompt cache its prefix and re-prefilled the whole conversation — measured
@@ -22,7 +22,7 @@ import Testing
 ///
 ///   * the system row contains NO minute, and is byte-identical across a
 ///     minute boundary (`systemRowIsStableAcrossAMinute`);
-///   * the clock trailer is derived from each row's immutable `createdAt`, so
+///   * the clock prelude is derived from each row's immutable `createdAt`, so
 ///     every request is a strict EXTENSION of the previous one rather than a
 ///     rewrite of its tail (`stampsEveryUserRowFromItsOwnCreatedAt`).
 @Suite("Current date context")
@@ -100,7 +100,7 @@ struct CurrentDateTimeContextTests {
         #expect(ChatViewModel.clockContext(at: afterSpringForward, calendar: calendar).hasSuffix("4:30 AM)"))
     }
 
-    @Test("The clock trailer pins the wall clock of the instant it stamps")
+    @Test("The clock prelude pins the wall clock of the instant it stamps")
     func clockContextPinsTheInstant() {
         let out = ChatViewModel.clockContext(
             at: Self.instant("2026-08-25T14:37:00Z"),
@@ -142,16 +142,16 @@ struct CurrentDateTimeContextTests {
 
         // The OLDER user row keeps its own 7:37 — not "now". This is what
         // makes turn two a strict extension of turn one: had the first row
-        // been restamped (or its trailer removed), the stored prefix would no
+        // been restamped (or its prelude removed), the stored prefix would no
         // longer match and the engine would re-prefill from that row onward.
-        #expect(stamped[1].modelContent.hasSuffix("7:37 AM)"))
-        #expect(stamped[3].modelContent.hasSuffix("7:41 AM)"))
-        #expect(stamped[1].modelContent.hasPrefix("first question\n\n(Local time:"))
+        #expect(stamped[1].wirePrelude?.hasSuffix("7:37 AM)") == true)
+        #expect(stamped[3].wirePrelude?.hasSuffix("7:41 AM)") == true)
+        #expect(stamped[1].modelContent == "first question")
         // Non-user rows are never stamped: the assistant transcript has to
         // stay byte-identical to what the model produced, and the system row
         // is exactly where the clock must not be.
-        #expect(stamped[0].wireSuffix == nil)
-        #expect(stamped[2].wireSuffix == nil)
+        #expect(stamped[0].wirePrelude == nil)
+        #expect(stamped[2].wirePrelude == nil)
         #expect(stamped[2].modelContent == "first answer")
     }
 
@@ -166,7 +166,7 @@ struct CurrentDateTimeContextTests {
         ]
         let once = ChatViewModel.stampingClockContext(on: history, calendar: calendar)
         let twice = ChatViewModel.stampingClockContext(on: once, calendar: calendar)
-        #expect(once.first?.modelContent == twice.first?.modelContent,
+        #expect(once == twice,
                 "Stamping twice must not glue on two trailers — the wire text has to be a pure function of the row.")
     }
 
@@ -178,41 +178,27 @@ struct CurrentDateTimeContextTests {
         let stamped = ChatViewModel.stampingClockContext(
             on: history, calendar: Self.calendar("America/Los_Angeles")
         )
-        #expect(stamped.first?.wireSuffix == nil)
+        #expect(stamped.first?.wirePrelude == nil)
         #expect(stamped.first?.modelContent == "app context")
     }
 
-    @Test("The clock trailer lands AFTER the attachment extract")
-    func trailerFollowsTheDocumentExtract() throws {
-        // Ordering is load-bearing, not cosmetic. The document extract is the
-        // expensive part of the prompt and the part the cache must find
-        // unchanged; a trailer placed in FRONT of it would make two requests
-        // diverge BEFORE the document, so none of its tokens could be reused.
-        let attachment = try ChatFileAttachment(
-            filename: "invoice.pdf",
-            kind: .pdf,
-            extractedText: "TOTAL DUE 1,204.55",
-            sourceByteCount: 18
-        )
-        var message = ChatMessage(
-            role: .user, content: "what is the total?",
-            fileAttachments: [attachment], status: .complete
-        )
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
-
-        let wire = message.modelContent
-        let extractIndex = try #require(wire.range(of: "TOTAL DUE 1,204.55"))
-        let trailerIndex = try #require(wire.range(of: "(Local time:"))
-        #expect(extractIndex.upperBound < trailerIndex.lowerBound,
-                "The trailer must follow the extract, or the prompt diverges before the document and the cache cannot reuse it.")
-        #expect(wire.hasPrefix("what is the total?"))
+    @Test("The clock prelude leaves attachment extracts and blank prose unchanged")
+    func preludePreservesDocumentAndProse() throws {
+        let attachment = try ChatFileAttachment(filename: "invoice.pdf", kind: .pdf,
+            extractedText: "TOTAL DUE 1,204.55", sourceByteCount: 18)
+        for prose in ["what is the total?", "   "] {
+            let row = ChatMessage(role: .user, content: prose, fileAttachments: [attachment])
+            let stamped = ChatViewModel.stampingClockContext(on: [row])[0]
+            #expect(stamped.modelContent == row.modelContent)
+            #expect(stamped.wireSuffix == nil)
+            #expect(stamped.wirePrelude == ChatViewModel.clockContext(at: row.createdAt))
+        }
     }
 
-    @Test("An empty-prose row gains no leading blank line from the trailer")
-    func blankPromptDoesNotGainLeadingNewlines() {
-        var message = ChatMessage(role: .user, content: "   ", status: .complete)
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
-        #expect(message.modelContent.hasPrefix("(Local time:"))
+    @Test("Guidance-only suffix on blank prose has no leading blank line")
+    func blankProseGuidance() {
+        let message = ChatMessage(role: .user, content: "   ", wireSuffix: ChatViewModel.toolGuidance)
+        #expect(message.modelContent == ChatViewModel.toolGuidance)
     }
 
     @Test("A blank trailer is dropped rather than appended")
@@ -222,14 +208,14 @@ struct CurrentDateTimeContextTests {
         #expect(message.modelContent == "hello")
     }
 
-    @Test("The wire-only trailer is not persisted")
+    @Test("The separate wire-only clock row is not persisted")
     func trailerIsNotPersisted() throws {
         var message = ChatMessage(role: .user, content: "hello", status: .complete)
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
+        message.wirePrelude = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
         let round = try JSONDecoder().decode(
             ChatMessage.self, from: JSONEncoder().encode(message)
         )
-        #expect(round.wireSuffix == nil,
+        #expect(round.wirePrelude == nil,
                 "The clock belongs to one request, not to the conversation — persisting it would replay a stale time forever and bloat conversations.json.")
         #expect(round.content == "hello")
         #expect(round.modelContent == "hello")
@@ -268,7 +254,7 @@ struct CurrentDateTimeContextTests {
         #expect(before.contains("Monday, August 24, 2026"))
         #expect(after.contains("Tuesday, August 25, 2026"))
         #expect(before != after)
-        // The clock trailer rolls over too, from the same instants.
+        // The clock prelude rolls over too, from the same instants.
         let clockBefore = ChatViewModel.clockContext(
             at: Self.instant("2026-08-25T06:59:59Z"),
             calendar: Self.calendar("America/Los_Angeles")
@@ -424,21 +410,22 @@ struct CurrentDateContextWireTests {
         // The wall clock must NOT be in the system row — it is the first
         // thing in the prompt and a minute tick there costs a full re-prefill.
         #expect(!system.contains("(Local time:"))
-        // …and it must still be on the wire, on the user turn, so #2330's
+        // …and it must still be on the wire in a separate clock row, so #2330's
         // "the model is told the current time" contract survives the split.
         let user = try #require(
-            messages.first { $0["role"] as? String == "user" }?["content"] as? String
+            messages.last { $0["role"] as? String == "user" }?["content"] as? String
         )
         #expect(user.contains("what is the date today"))
-        #expect(user.contains("(Local time:"))
+        #expect(user == "what is the date today")
+        let clock = try #require(messages[1]["content"] as? String)
         let row = try #require(model.messages.first { $0.role == .user })
         // The row is minted just before the request instant is sampled; across
         // a minute boundary the send legitimately appends a current-time line.
-        let expected = "what is the date today\n\n" + ChatViewModel.clockContext(at: row.createdAt)
-        #expect(user.hasPrefix(expected))
+        let expected = ChatViewModel.clockContext(at: row.createdAt)
+        #expect(clock.hasPrefix(expected))
         // The request instant lies between the row's createdAt and now, so the
         // only valid extra line names one of the minutes in that window.
-        let rest = String(user.dropFirst(expected.count))
+        let rest = String(clock.dropFirst(expected.count))
         let firstMinute = (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down)
         let lastMinute = (Date().timeIntervalSinceReferenceDate / 60).rounded(.down)
         let validLines = stride(from: firstMinute, through: lastMinute, by: 1).map {
@@ -459,15 +446,15 @@ struct CurrentDateContextWireTests {
         let asked = Date(timeIntervalSince1970: 1_757_000_000)     // the original send
         let later = asked.addingTimeInterval(13 * 60)              // thirteen minutes on
 
-        // Regenerate / Retry reuse the SAME row, so its trailer keeps the
+        // Regenerate / Retry reuse the SAME row, so its prelude keeps the
         // time the question was asked. Stamping is a pure function of the
         // row, so re-running it later must not move the clock.
         let reused = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
         let firstPass = ChatViewModel.stampingClockContext(on: [reused], calendar: calendar)
         let secondPass = ChatViewModel.stampingClockContext(on: firstPass, calendar: calendar)
-        #expect(firstPass[0].wireSuffix == secondPass[0].wireSuffix,
+        #expect(firstPass[0].wirePrelude == secondPass[0].wirePrelude,
                 "Re-answering the same row must not change what that row renders, or every later turn loses the shared prefix.")
-        #expect(try #require(firstPass[0].wireSuffix).contains(
+        #expect(try #require(firstPass[0].wirePrelude).contains(
             ChatViewModel.clockContext(at: asked, calendar: calendar)))
 
         // An edited send mints a NEW row (editUserMessage rewinds and calls
@@ -476,13 +463,13 @@ struct CurrentDateContextWireTests {
         // broken the shared prefix at that row.
         let freshlySent = ChatMessage(role: .user, content: "what time is it now?", createdAt: later)
         let edited = ChatViewModel.stampingClockContext(on: [reused, freshlySent], calendar: calendar)
-        #expect(try #require(edited[1].wireSuffix).contains(
+        #expect(try #require(edited[1].wirePrelude).contains(
             ChatViewModel.clockContext(at: later, calendar: calendar)))
-        #expect(edited[0].wireSuffix != edited[1].wireSuffix,
+        #expect(edited[0].wirePrelude != edited[1].wirePrelude,
                 "Two rows sent thirteen minutes apart must not render the same clock.")
         // And the earlier row is untouched by the new one arriving: that is
         // the append-only property the prefix cache needs.
-        #expect(edited[0].wireSuffix == firstPass[0].wireSuffix)
+        #expect(edited[0].wirePrelude == firstPass[0].wirePrelude)
     }
 
     @Test("A late regenerate appends the answer time without rewriting the ask")
@@ -501,7 +488,7 @@ struct CurrentDateContextWireTests {
             calendar: calendar,
             answeringAt: muchLater
         )
-        let trailer = try #require(regenerated[1].wireSuffix)
+        let trailer = try #require(regenerated[1].wirePrelude)
 
         // The ask stamp is untouched and still leads: APPEND, not rewrite, so
         // the row's own rendering never changes retroactively.
@@ -513,7 +500,7 @@ struct CurrentDateContextWireTests {
 
         // Only the newest user row. An earlier turn renders exactly as it did
         // before, which is the append-only property the prefix cache needs.
-        #expect(regenerated[0].wireSuffix
+        #expect(regenerated[0].wirePrelude
             == ChatViewModel.clockContext(at: earlier.createdAt, calendar: calendar))
     }
 
@@ -526,14 +513,14 @@ struct CurrentDateContextWireTests {
         // The common path: the row was minted by this very request.
         let fresh = ChatViewModel.stampingClockContext(on: [row], calendar: calendar, answeringAt: asked)
         let unstamped = ChatViewModel.stampingClockContext(on: [row], calendar: calendar)
-        #expect(fresh[0].wireSuffix == unstamped[0].wireSuffix,
+        #expect(fresh[0].wirePrelude == unstamped[0].wirePrelude,
                 "Passing this request's own instant must be byte-identical to passing nothing, or every ordinary send pays for the regenerate feature.")
 
         // A regenerate twenty seconds on renders the same minute, so it still
         // says nothing new and still costs no prefix.
         let prompt = ChatViewModel.stampingClockContext(
             on: [row], calendar: calendar, answeringAt: asked.addingTimeInterval(20))
-        #expect(prompt[0].wireSuffix == unstamped[0].wireSuffix)
+        #expect(prompt[0].wirePrelude == unstamped[0].wirePrelude)
     }
 
     @Test("answeringNowLine speaks only when it has something to say")
@@ -551,7 +538,7 @@ struct CurrentDateContextWireTests {
     @Test("The system row and the message trailer agree on the date")
     func oneInstantRendersOneDate() {
         // codex round 6, blocking: the send site sampled `Date()` twice, once
-        // for the system row and once for the clock trailer, so a request
+        // for the system row and once for the clock prelude, so a request
         // assembled across local midnight could say "Today is the 11th" and
         // "(Local time: … the 12th)" in the same prompt. The send site
         // now threads one `requestInstant` into both. This pins the other half

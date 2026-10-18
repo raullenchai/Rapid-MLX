@@ -137,8 +137,8 @@ struct CustomInstructionsTests {
         #expect(after.contains("Wednesday, August 26, 2026 (GMT)"))
         #expect(before != after)
         // The preview shows what Rapid actually sends in the system row, and
-        // since 0.14.1 that is the DATE only — the wall clock rides each user
-        // turn instead, because a minute-resolution string at the head of the
+        // that is the DATE only — the wall clock precedes each user
+        // turn in a separate row, because a minute-resolution string at the head of the
         // prompt costs the engine's prefix cache a full re-prefill of the
         // conversation (measured 7.3 s vs 0.6 s). A preview that still quoted
         // a time would be showing a system row the app never sends.
@@ -174,7 +174,7 @@ struct CustomInstructionsTests {
         // The system row no longer carries the wall clock, so the caption has
         // to say where it went — otherwise the preview reads as "the model
         // does not know what time it is".
-        #expect(editor.contains("Each of your messages includes its local time."))
+        #expect(editor.contains("Each of your messages is preceded by its local time."))
         #expect(editor.contains("TimelineView(.periodic(from: .now, by: 60))"))
         #expect(editor.contains("at: context.date"))
         #expect(editor.contains("calendar: .autoupdatingCurrent"))

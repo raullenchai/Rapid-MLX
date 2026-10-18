@@ -698,9 +698,9 @@ def _flatten_tool_history_for_alternating_template(messages: list) -> list:
     Gemma 3's official template rejects every ``role="tool"`` message and
     requires strict user/assistant alternation.  Preserve the conversation by
     rendering structured assistant calls as text, converting tool results to a
-    user turn, and merging the immediately following user follow-up into that
-    turn.  Called only after the template explicitly reports its alternation
-    constraint, so native tool-aware templates retain their native shape.
+    user turn. Adjacent user turns are merged separately afterward. Called only
+    after the template explicitly reports its alternation constraint, so native
+    tool-aware templates retain their native shape.
     """
     flattened: list = []
     for message in messages:
@@ -746,19 +746,45 @@ def _flatten_tool_history_for_alternating_template(messages: list) -> list:
             else:
                 flattened.append({"role": "user", "content": text})
             continue
-        if role == "user" and flattened and isinstance(flattened[-1], dict):
-            previous = flattened[-1]
-            if previous.get("role") == "user" and str(
-                previous.get("content", "")
-            ).startswith("Tool result "):
-                content = message.get("content") or ""
-                flattened[-1] = {
-                    **previous,
-                    "content": f"{previous.get('content', '')}\n\n{content}",
-                }
-                continue
         flattened.append(message)
     return flattened
+
+
+def _merge_adjacent_user_messages(messages: list) -> list:
+    """Merge plain user turns only on a strict-alternation template's error path.
+
+    Preserve metadata-bearing rows unchanged rather than silently losing keys.
+    Multimodal content keeps its parts and receives an explicit text separator.
+    """
+    merged: list = []
+    for message in messages:
+        if (
+            merged
+            and isinstance(message, dict)
+            and isinstance(merged[-1], dict)
+            and message.get("role") == merged[-1].get("role") == "user"
+            and set(message) <= {"role", "content"}
+            and set(merged[-1]) <= {"role", "content"}
+            and isinstance(message.get("content"), (str, list))
+            and isinstance(merged[-1].get("content"), (str, list))
+        ):
+            left, right = merged[-1]["content"], message["content"]
+            if isinstance(left, str) and isinstance(right, str):
+                content: str | list = left + "\n\n" + right
+            else:
+                left_parts = (
+                    [{"type": "text", "text": left}] if isinstance(left, str) else left
+                )
+                right_parts = (
+                    [{"type": "text", "text": right}]
+                    if isinstance(right, str)
+                    else right
+                )
+                content = left_parts + [{"type": "text", "text": "\n\n"}] + right_parts
+            merged[-1] = {"role": "user", "content": content}
+        else:
+            merged.append(message)
+    return merged
 
 
 def _baseline_sanitize_messages(messages):
@@ -2640,23 +2666,29 @@ def _render_chat_template(
                 candidate_messages, **candidate_kwargs
             )
         except Exception as exc:
-            if "Conversation roles must alternate user/assistant" not in str(
-                exc
-            ) or not any(
+            if "Conversation roles must alternate user/assistant" not in str(exc):
+                raise
+            has_tools = any(
                 isinstance(message, dict) and message.get("role") == "tool"
                 for message in candidate_messages
-            ):
-                raise
-            flattened = _flatten_tool_history_for_alternating_template(
-                candidate_messages
             )
+            flattened = (
+                _flatten_tool_history_for_alternating_template(candidate_messages)
+                if has_tools
+                else candidate_messages
+            )
+            flattened = _merge_adjacent_user_messages(flattened)
             alternating_kwargs = dict(candidate_kwargs)
-            fallback_tools = alternating_kwargs.pop("tools", None)
-            if fallback_tools:
-                flattened = _inject_tools_into_messages(flattened, fallback_tools)
-            return template_applicator.apply_chat_template(
-                flattened, **alternating_kwargs
-            )
+            if has_tools:
+                fallback_tools = alternating_kwargs.pop("tools", None)
+                if fallback_tools:
+                    flattened = _inject_tools_into_messages(flattened, fallback_tools)
+            try:
+                return template_applicator.apply_chat_template(
+                    flattened, **alternating_kwargs
+                )
+            except Exception:
+                raise exc
 
     def _apply_with_mid_system_fallback(
         candidate_messages: list[dict], candidate_kwargs: dict

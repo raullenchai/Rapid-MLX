@@ -1883,6 +1883,7 @@ final class ChatViewModel {
                 .map(\.function.arguments)
                 .joined()
             return max(1, TokenEstimate.tokens(in: msg.modelContent)
+                + (msg.wirePrelude.map { TokenEstimate.tokens(in: $0) } ?? 0)
                 + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let totalTokens = max(1, messages.reduce(0) { $0 + perRowCost($1) })
@@ -2640,7 +2641,7 @@ final class ChatViewModel {
         // a blank message.
         var draftBeforeCorrection: String?
         // ONE instant for the whole turn, shared by the date row and the
-        // clock trailer of every round. codex caught that two `Date()` calls
+        // clock prelude of every round. codex caught that two `Date()` calls
         // can straddle local midnight, which would have the same request
         // asserting "Today is the 11th" in its system row and "sent … the
         // 12th" on its newest message. Taking it once per TURN rather than
@@ -2697,8 +2698,9 @@ final class ChatViewModel {
             )
             // First of the two guidance passes: stamped BEFORE the trim so
             // the guidance rows count toward the budget the trim works to.
-            // The clock trailer below rewrites every user row's trailer, and
-            // the second pass re-stamps the trimmed history behind it.
+            // Clock preludes are also counted before trimming; the second pass
+            // withdraws guidance whose evidence the trim removed.
+            history = ChatViewModel.stampingClockContext(on: history, answeringAt: requestInstant)
             history = ChatViewModel.stampingToolGuidance(
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
@@ -2723,8 +2725,8 @@ final class ChatViewModel {
             if forceGroundingCorrection {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
-            // After the trim and system preambles, each real user turn carries
-            // a neutral local-time annotation from createdAt, so the prompt stays
+            // After the trim and system preambles, each real user turn gets
+            // a separate clock row before it, derived from createdAt, so the prompt stays
             // append-only between turns and the engine's prefix cache can
             // reuse it. See ``currentDateContext`` for the measurement that
             // motivates moving the clock out of the system row, and
@@ -2738,8 +2740,8 @@ final class ChatViewModel {
                 on: history,
                 answeringAt: requestInstant
             )
-            // Second guidance pass, on the TRIMMED history and behind the
-            // clock trailer: a trim that dropped the evidence drops the
+            // Second guidance pass, on the TRIMMED history with independent
+            // clock preludes: a trim that dropped the evidence drops the
             // instruction with it (#1549). Stamped on user rows rather than
             // the system row so the prompt stays append-only across the tool
             // round and every turn after it — see ``stampingToolGuidance``.
@@ -3291,7 +3293,7 @@ final class ChatViewModel {
     ///
     /// Every user row whose turn (the rows up to the next user message)
     /// holds a tool result carries the guidance, and keeps carrying it on
-    /// later turns — like the clock trailer, the stamp is a pure function of
+    /// later turns — like the clock prelude, the stamp is a pure function of
     /// the row's own turn, so the bytes of a row never change once the turn
     /// behind it is complete. Stamping only the newest row was measured on
     /// Qwen3.8-27B (Studio, 2026-09-13): the tool round resumed from the
@@ -3322,7 +3324,7 @@ final class ChatViewModel {
     ///
     /// Called twice per round: once BEFORE ``trimMessagesForContextWindow``
     /// so the ~400 tokens per stamped row count toward the context budget,
-    /// and once after the clock trailer on the trimmed history, so evidence
+    /// and once after the clock prelude on the trimmed history, so evidence
     /// the trim dropped takes its instruction with it. The second pass can
     /// only remove guidance the first pass added, so the trimmed request
     /// never exceeds the budget the trim worked to.
@@ -3365,8 +3367,8 @@ final class ChatViewModel {
     /// transformation. Nothing request-scoped belongs here: the row is the
     /// head of every prompt, and any byte that changes between two turns
     /// costs the engine's prefix cache the whole conversation (that is why
-    /// the wall clock rides each user row and the tool guidance rides the
-    /// newest one — ``stampingClockContext``, ``stampingToolGuidance``).
+    /// the wall clock precedes each user row separately and tool guidance rides
+    /// each turn with its own tool result — ``stampingClockContext``, ``stampingToolGuidance``).
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
         dateContext: String? = nil,
@@ -3417,7 +3419,7 @@ final class ChatViewModel {
             to: [],
             // The preview shows what actually goes on the wire: the system
             // row carries the DATE only. A neutral local-time annotation rides
-            // each user turn as a wire-only trailer (``stampingClockContext``).
+            // each user turn in a separate wire-only user-role row before its prose (``stampingClockContext``).
             // Quoting it here would show a system row Rapid never sends;
             // the editor's caption tells the reader where the time went.
             dateContext: dateContext ?? currentDateContext(),
@@ -3446,7 +3448,7 @@ final class ChatViewModel {
     /// context that belongs in the leading system row.
     ///
     /// The wall clock deliberately does not appear here; a neutral local-time
-    /// annotation rides each user turn instead (``clockContext(at:calendar:)`` +
+    /// annotation precedes each user turn in a separate user-role row instead (``clockContext(at:calendar:)`` +
     /// ``stampingClockContext(on:calendar:)``). The engine's prompt cache
     /// reuses a request only when its token prefix is byte-identical to a
     /// stored one, and the system row is the FIRST thing in every request: a
@@ -3480,7 +3482,7 @@ final class ChatViewModel {
         // instant-specific: it flips mid-day at a daylight-saving transition
         // and would re-prefill every open conversation at 2 a.m. twice a
         // year, in the one block this whole change exists to hold still.
-        // Message trailers omit zone names to avoid priming regional lookups.
+        // Clock rows omit zone names to avoid priming regional lookups.
         return """
         [CURRENT DATE]
         Today is \(dateText) (\(zone.identifier)).
@@ -3506,7 +3508,7 @@ final class ChatViewModel {
         return formatter.string(from: instant)
     }
 
-    /// Neutral local-time annotation for a user row, outside the system row
+    /// Neutral local-time annotation for a separate user-role row before the user prose, outside the system row
     /// for the prefix-cache reason documented on ``currentDateContext``.
     /// The newest row supplies the request's local time (#2330).
     /// Issue #4859: the earlier "[MESSAGE SENT] ... was sent" wording made a
@@ -3541,7 +3543,9 @@ final class ChatViewModel {
         return "\n(Current time: \(nowText))"
     }
 
-    /// Annotate every user row with its local date and time, wire-only.
+    /// Give every user row a separate wire-only user-role clock row before it.
+    /// An in-row clock caused needless tool calls on writing/coding follow-ups.
+    /// Separate rows retain time awareness and append-only request prefixes.
     /// The full date avoids attaching yesterday's time to today's system date
     /// across midnight. Neutral wording avoids implying a user action (#4859).
     /// The newest user row supplies the request time for an ordinary send.
@@ -3553,36 +3557,14 @@ final class ChatViewModel {
     /// prompt cache requires: it reuses a stored entry only when that entry is
     /// a token-exact prefix of the new request.
     ///
-    /// Stamping only the newest row was tried first and does not work. The
-    /// trailer then has to be removed from that row on the following turn, the
-    /// stored entry stops being a prefix, and reuse is lost exactly as it was
-    /// with the clock in the system row. Measured on this engine
-    /// (qwen3.8-27b-4bit, ~2.3k-token prompt, M3 Ultra): newest-row-only
-    /// trailer 7.4 s on turn two; stamped-per-turn 0.8 s against 7.5 s cold.
+    /// System-row clocks and newest-row-only stamps both rewrite cached prefixes;
+    /// in-row localized, ISO, and tagged clocks retained needless tool calls.
     ///
-    /// The cost is roughly twenty tokens per user turn, bought with the entire
-    /// prefill of every follow-up — 15–17 s in the 0.14.1 document dogfood.
-    ///
-    /// What this means for the three ways a turn can be re-sent, because codex
-    /// asked and the answer is not uniform:
-    ///
-    ///   * **A new send** mints a fresh row (``send(_:alias:…)`` builds a
-    ///     ``ChatMessage`` with the default ``createdAt`` of `Date()`), so the
-    ///     trailer is the live clock. This is the common case.
-    ///   * **An edited send** goes through ``editUserMessage(id:newContent:…)``,
-    ///     which rewinds the path and calls ``send`` — so it, too, mints a new
-    ///     row and gets the live clock. Free: the edited text already broke
-    ///     the shared prefix at that row, so there is no reuse to protect.
-    ///   * **Regenerate / Retry** (``regenerateAnswer(afterUserAt:…)``) reuse
-    ///     the existing user row deliberately — the question was asked then,
-    ///     and re-answering it is not asking it again — so its annotation
-    ///     keeps the original ask time. But re-answering "what time is it?"
-    ///     three quarters of an hour later must not report the stale clock,
-    ///     which is why ``answeringNowLine`` APPENDS the answer time to that
-    ///     one row when the two instants differ. Append, not rewrite: the
-    ///     row's own stamp stays immutable, the common regenerate (same
-    ///     minute) adds nothing at all, and the bounded cache cost of the rare
-    ///     late one is documented on that helper.
+    /// New sends and edited sends mint a fresh createdAt and get a live clock.
+    /// Regenerate/retry reuse the original row and ask time; answeringNowLine
+    /// appends the answer time to the newest prelude when the minute differs.
+    /// Same-minute retries add nothing. A late retry only invalidates the tail
+    /// of the cached history, as documented on answeringNowLine.
     nonisolated static func stampingClockContext(
         on messages: [ChatMessage],
         calendar: Calendar = .autoupdatingCurrent,
@@ -3592,18 +3574,18 @@ final class ChatViewModel {
         var result = messages
         let newestUserIndex = result.lastIndex { $0.role == .user }
         for index in result.indices where result[index].role == .user {
-            var trailer = clockContext(
+            var prelude = clockContext(
                 at: result[index].createdAt,
                 calendar: calendar
             )
             if index == newestUserIndex, let answeringAt {
-                trailer += answeringNowLine(
+                prelude += answeringNowLine(
                     asked: result[index].createdAt,
                     answeringAt: answeringAt,
                     calendar: calendar
                 )
             }
-            result[index].wireSuffix = trailer
+            result[index].wirePrelude = prelude
         }
         return result
     }
@@ -3632,6 +3614,8 @@ You have access to tools that fetch real-time information. When you use one of t
 8. If a tool result is an error, refusal, or user decline, state the reason written in that result. Never replace it with a different explanation, and never claim the tool lacks a capability unless the result itself says so.
 
 These rules apply to every tool, not just web search. They bind the answer to THIS message and the tool results fetched for it. A later message that has no tool result of its own is answered normally; the tool results above remain ordinary conversation context for it.
+
+Answer in the same language as the user's own message above, even when the tool result is in another language.
 """
 
     /// Failure-specific instruction for the one correction round the tool loop
