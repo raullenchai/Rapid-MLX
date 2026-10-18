@@ -1979,7 +1979,7 @@
        "class": "argparse.BooleanOptionalAction",
        "completer": null,
        "const": null,
-       "default": false,
+       "default": null,
        "dest": "think",
        "help": "Enable thinking/reasoning mode (default: off in chat REPL — reasoning models like Qwen3.5 otherwise leak raw chain-of-thought and can loop until max-tokens). Use --think to surface reasoning, --no-think is also accepted for back-compat.",
        "metavar": null,
@@ -1995,7 +1995,7 @@
        "class": "argparse._StoreFalseAction",
        "completer": null,
        "const": false,
-       "default": true,
+       "default": null,
        "dest": "think",
        "help": "==SUPPRESS==",
        "metavar": null,
@@ -2040,7 +2040,7 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 0.7,
+       "default": null,
        "dest": "temperature",
        "help": "Sampling temperature (default: 0.7)",
        "metavar": null,
@@ -2142,6 +2142,40 @@
        "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
+       "choices": [
+        "text",
+        "stream-json"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "text",
+       "dest": "output_format",
+       "help": "Goose output format (default: text; stream-json is useful for scripts)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--output-format"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "resume",
+       "help": "Resume the previous Goose chat session in this workspace",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -2232,6 +2266,8 @@
         "response_timeout",
         "mcp_config",
         "mcp_max_rounds",
+        "output_format",
+        "resume",
         "disable_prefix_cache",
         "disable_disk_caches",
         "disable_model_downloads",
@@ -3696,7 +3732,7 @@
        "class": "argparse.BooleanOptionalAction",
        "completer": null,
        "const": null,
-       "default": false,
+       "default": null,
        "dest": "think",
        "help": "Enable thinking/reasoning mode (default: off in chat REPL — reasoning models like Qwen3.5 otherwise leak raw chain-of-thought and can loop until max-tokens). Use --think to surface reasoning, --no-think is also accepted for back-compat.",
        "metavar": null,
@@ -3712,7 +3748,7 @@
        "class": "argparse._StoreFalseAction",
        "completer": null,
        "const": false,
-       "default": true,
+       "default": null,
        "dest": "think",
        "help": "==SUPPRESS==",
        "metavar": null,
@@ -3757,7 +3793,7 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 0.7,
+       "default": null,
        "dest": "temperature",
        "help": "Sampling temperature (default: 0.7)",
        "metavar": null,
@@ -3859,6 +3895,40 @@
        "type": "rapid_mlx.cli_parser.positive_int"
       },
       {
+       "choices": [
+        "text",
+        "stream-json"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "text",
+       "dest": "output_format",
+       "help": "Goose output format (default: text; stream-json is useful for scripts)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--output-format"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "resume",
+       "help": "Resume the previous Goose chat session in this workspace",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -3949,6 +4019,8 @@
         "response_timeout",
         "mcp_config",
         "mcp_max_rounds",
+        "output_format",
+        "resume",
         "disable_prefix_cache",
         "disable_disk_caches",
         "disable_model_downloads",
