@@ -27,3 +27,4 @@
 - **MTP defaults work with copied model caches**: aliases can resolve a sole cached snapshot without `refs/main`; unavailable or ambiguous configs now explain why plain decode is used.
 - **Packaged license notices**: installed packages now include the license and notice files for the vendored speculative-decoding (MTP) code and the MiniCPM-V 4.7 vision model code.
 - **Faster text decode on multimodal Qwen MoE models**: text-only requests on the default vision-capable lane of multimodal Qwen3.6-35B-A3B-class MoE checkpoints now keep single-request caches and receive MoE gate+up fusion. They no longer run slower than `--no-mllm`.
+- **Oversized request errors reach clients**: oversized request bodies now receive an HTTP 413 JSON error naming the cap and `--max-request-bytes` instead of a connection reset.

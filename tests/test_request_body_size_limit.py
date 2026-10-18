@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import threading
+import time
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 # NIT from codex round 1: ``RequestBodyLimitMiddleware`` is pure ASGI
@@ -37,9 +40,11 @@ def _isolate_config():
     from rapid_mlx.config.server_config import get_config, reset_config
 
     reset_config()
+    original_timeout = get_config().body_receive_timeout_seconds
     yield
     # Restore default for the next module.
     get_config().max_request_bytes = 8 * 1024 * 1024
+    get_config().body_receive_timeout_seconds = original_timeout
 
 
 def _build_app() -> FastAPI:
@@ -257,8 +262,8 @@ def test_body_never_reaches_handler_on_413():
 def test_chunked_streaming_body_aborts_mid_stream():
     """The chunked / no-Content-Length / lying-Content-Length attack
     path. The client omits Content-Length and streams chunks past
-    the cap. The middleware MUST stop calling ``receive`` once the
-    running total exceeds the cap and emit a 413.
+    the cap. Downstream reads MUST stop once the running total exceeds
+    the cap; the middleware discards the remaining chunks before its 413.
 
     Without this guard, a Transfer-Encoding: chunked client could
     stream gigabytes before any byte-count gate fired."""
@@ -267,9 +272,12 @@ def test_chunked_streaming_body_aborts_mid_stream():
 
     get_config().max_request_bytes = 1024  # 1 KiB cap
 
+    downstream_chunks = []
+
     async def _draining_inner(scope, receive, send):
         while True:
             msg = await receive()
+            downstream_chunks.append(msg)
             if msg.get("type") == "http.disconnect":
                 return
             if not msg.get("more_body"):
@@ -325,16 +333,11 @@ def test_chunked_streaming_body_aborts_mid_stream():
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 413, sent
 
-    # The cap is 1024 B at 256 B/chunk → trip on chunk 5 (1280 > 1024).
-    # We must NOT have drained all 16 chunks.
-    assert received_count["n"] < total_chunks, (
-        f"middleware read {received_count['n']}/{total_chunks} chunks — "
-        "streaming abort regressed"
-    )
-    assert received_count["n"] <= 6, (
-        f"middleware over-read: {received_count['n']} chunks of "
-        f"{chunk_size} B vs limit 1024"
-    )
+    # Only the four in-range chunks reach downstream; chunk five trips
+    # the guard, and the remaining chunks are discarded by the middleware.
+    assert len(downstream_chunks) == 4
+    assert received_count["n"] == total_chunks
+    assert (b"connection", b"close") not in start["headers"]
 
 
 def test_no_double_response_when_handler_already_sent_headers():
@@ -520,3 +523,204 @@ def test_cli_flag_overrides_config_default():
     finally:
         server_mod._max_request_bytes = original
         server_mod._sync_config()
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_oversized_upload_receives_413_over_socket(chunked):
+    """A client still uploading must finish sendall and read the JSON rejection."""
+    import uvicorn
+
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import install_request_body_limit_middleware
+
+    get_config().max_request_bytes = 64 * 1024
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def _consume(request: Request):
+        return {"received_bytes": len(await request.body())}
+
+    install_request_body_limit_middleware(app)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=0, http="h11", log_level="warning")
+    )
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    address = listener.getsockname()
+    thread = threading.Thread(
+        target=server.run, kwargs={"sockets": [listener]}, daemon=True
+    )
+    try:
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert thread.is_alive(), "server failed to start"
+            assert time.monotonic() < deadline, "server startup timed out"
+            time.sleep(0.01)
+        body = b"x" * (4 * 1024 * 1024)
+        framing = (
+            "Transfer-Encoding: chunked" if chunked else f"Content-Length: {len(body)}"
+        )
+        with socket.create_connection(address, timeout=30) as client:
+            client.sendall(
+                (
+                    "POST /v1/chat/completions HTTP/1.1\r\n"
+                    "Host: localhost\r\n"
+                    "Connection: close\r\n"
+                    f"{framing}\r\n\r\n"
+                ).encode("ascii")
+            )
+            if chunked:
+                for offset in range(0, len(body), 16 * 1024):
+                    chunk = body[offset : offset + 16 * 1024]
+                    client.sendall(f"{len(chunk):x}\r\n".encode("ascii"))
+                    client.sendall(chunk)
+                    client.sendall(b"\r\n")
+                client.sendall(b"0\r\n\r\n")
+            else:
+                client.sendall(body)
+            response = bytearray()
+            while data := client.recv(64 * 1024):
+                response.extend(data)
+        headers, payload = bytes(response).split(b"\r\n\r\n", 1)
+        assert headers.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 413 ")
+        error = json.loads(payload)["error"]
+        assert error["code"] == "request_too_large"
+        assert "65536" in error["message"]
+        assert "--max-request-bytes" in error["message"]
+    finally:
+        server.should_exit = True
+        if thread.ident is not None:
+            thread.join(timeout=10)
+        listener.close()
+        assert not thread.is_alive(), "server thread did not shut down"
+
+
+def _run_rejection(receive, *, headers=(), app=None):
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().max_request_bytes = 1024
+
+    async def unexpected_app(scope, receive, send):
+        pytest.fail("fast rejection reached downstream")
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(
+        RequestBodyLimitMiddleware(app or unexpected_app)(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1/chat/completions",
+                "headers": headers,
+            },
+            receive,
+            send,
+        )
+    )
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["error"]["code"] == "request_too_large"
+    return sent[0]["headers"]
+
+
+def test_expect_continue_rejects_without_receiving():
+    async def receive():
+        pytest.fail("receive would invite the oversized upload")
+
+    headers = _run_rejection(
+        receive,
+        headers=[(b"Content-Length", b"4096"), (b"ExPeCt", b"100-CoNtInUe")],
+    )
+    assert (b"connection", b"close") in headers
+
+
+def test_drain_idle_timeout_closes_connection():
+    from rapid_mlx.config.server_config import get_config
+
+    get_config().body_receive_timeout_seconds = 0.001
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
+    assert (b"connection", b"close") in headers
+
+
+@pytest.mark.parametrize("busy", [False, True], ids=["waiting", "continuous-chunks"])
+def test_drain_total_budget_closes_connection(monkeypatch, busy):
+    import rapid_mlx.middleware.body_size as body_size
+
+    monkeypatch.setattr(body_size, "_DRAIN_TOTAL_SECONDS", 0.001)
+    calls = []
+
+    async def receive():
+        calls.append(True)
+        if busy:
+            # Complete a receive after the deadline without yielding: the
+            # next loop iteration must enforce the wall-clock budget too.
+            time.sleep(0.002)
+        else:
+            await asyncio.sleep(1)
+        return {"type": "http.request", "body": b"x", "more_body": True}
+
+    headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
+    assert calls
+    assert (b"connection", b"close") in headers
+
+
+@pytest.mark.parametrize("slow_path", [False, True])
+def test_disconnect_during_drain_closes_connection(slow_path):
+    calls = []
+
+    async def receive():
+        calls.append(True)
+        if slow_path and len(calls) == 1:
+            return {"type": "http.request", "body": b"x" * 4096, "more_body": True}
+        return {"type": "http.disconnect"}
+
+    async def app(scope, receive, send):
+        await receive()
+        pytest.fail("oversized chunk reached downstream")
+
+    headers = _run_rejection(
+        receive,
+        headers=[] if slow_path else [(b"content-length", b"4096")],
+        app=app if slow_path else None,
+    )
+    assert len(calls) == (2 if slow_path else 1)
+    assert (b"connection", b"close") in headers
+
+
+def test_final_oversized_chunk_needs_no_further_receive():
+    calls = []
+
+    async def receive():
+        calls.append(True)
+        assert len(calls) == 1, "receive called after the body completed"
+        return {"type": "http.request", "body": b"x" * 4096, "more_body": False}
+
+    async def app(scope, receive, send):
+        await receive()
+        pytest.fail("oversized chunk reached downstream")
+
+    headers = _run_rejection(receive, app=app)
+    assert len(calls) == 1
+    assert (b"connection", b"close") not in headers
+
+
+def test_disabled_receive_timeout_uses_bounded_drain_fallback(monkeypatch):
+    import rapid_mlx.middleware.body_size as body_size
+    from rapid_mlx.config.server_config import get_config
+
+    get_config().body_receive_timeout_seconds = 0
+    monkeypatch.setattr(body_size, "_DRAIN_IDLE_SECONDS_FALLBACK", 0.001)
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    headers = _run_rejection(receive, headers=[(b"content-length", b"4096")])
+    assert (b"connection", b"close") in headers

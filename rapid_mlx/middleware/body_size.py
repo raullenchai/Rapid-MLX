@@ -18,13 +18,14 @@ Why this lives at the ASGI layer (not a FastAPI ``Depends`` or
 * Running the cap as ASGI middleware lets us reject in two ways:
 
     1. **Honest ``Content-Length`` fast path** — advertised length over
-       cap → 413 with zero ``receive`` calls. Cheapest possible bounce.
+       cap → bounded read-and-discard drain, then 413. No body bytes
+       reach the downstream app. ``Expect: 100-continue`` skips the drain
+       so rejection does not invite an upload.
 
     2. **Streaming slow path** — wrap ``receive`` so it tallies streamed
-       body bytes. When the running total exceeds the cap we inject a
-       synthetic ``http.disconnect`` (Starlette's JSON parser honors it,
-       stops reading, raises) and the wrapper emits the 413 from the
-       outside. This covers ``Transfer-Encoding: chunked`` and any
+       body bytes. When the running total exceeds the cap we stop
+       downstream reads, drain the remainder within bounded time, and
+       emit the 413 from outside the app. This covers chunked uploads and any
        client that omits or understates ``Content-Length``.
 
 Mirrors :class:`rapid_mlx.routes.audio.AudioBodyLimitMiddleware` but
@@ -49,6 +50,9 @@ from typing import Any
 from ..config.server_config import get_config
 
 logger = logging.getLogger(__name__)
+
+_DRAIN_TOTAL_SECONDS = 30.0
+_DRAIN_IDLE_SECONDS_FALLBACK = 5.0
 
 
 # Methods that can carry a body large enough to be a DoS surface.
@@ -164,6 +168,35 @@ def _resolve_body_receive_timeout() -> float:
     return max(0.0, timeout)
 
 
+async def _drain_request_body(
+    receive, *, idle_timeout: float, total_budget: float
+) -> bool:
+    """Discard unread body bytes within idle and wall-clock bounds before a 413."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + total_budget
+    drained_bytes = 0
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.debug(
+                "body-size drain budget exhausted (discarded=%d)", drained_bytes
+            )
+            return False
+        try:
+            msg = await asyncio.wait_for(
+                receive(), timeout=min(idle_timeout, remaining)
+            )
+        except asyncio.TimeoutError:
+            logger.debug("body-size drain timed out (discarded=%d)", drained_bytes)
+            return False
+        if msg.get("type") == "http.disconnect":
+            return False
+        if msg.get("type") == "http.request":
+            drained_bytes += len(msg.get("body", b"") or b"")
+            if not msg.get("more_body", False):
+                return True
+
+
 class RequestBodyLimitMiddleware:
     """ASGI middleware enforcing :attr:`ServerConfig.max_request_bytes`."""
 
@@ -214,12 +247,25 @@ class RequestBodyLimitMiddleware:
                     advertised = None
                 break
 
+        drain_idle_timeout = receive_timeout or _DRAIN_IDLE_SECONDS_FALLBACK
         if limit > 0 and advertised is not None and advertised > limit:
+            expect_continue = any(
+                name.lower() == b"expect" and value.strip().lower() == b"100-continue"
+                for name, value in scope.get("headers", ())
+            )
+            drained = False
+            if not expect_continue:
+                drained = await _drain_request_body(
+                    receive,
+                    idle_timeout=drain_idle_timeout,
+                    total_budget=_DRAIN_TOTAL_SECONDS,
+                )
             await _send_413(
                 send,
                 advertised=advertised,
                 limit=limit,
                 streaming=False,
+                close_connection=not drained,
             )
             return
 
@@ -313,6 +359,7 @@ class RequestBodyLimitMiddleware:
                 # body-size cap (``--max-request-bytes 0``) still gets
                 # slow-DoS protection.
                 if limit > 0 and total["bytes"] > limit:
+                    body_complete["value"] = not msg.get("more_body", False)
                     raise _BodyTooLargeError(total["bytes"])
                 if not msg.get("more_body", False):
                     body_complete["value"] = True
@@ -469,12 +516,18 @@ class RequestBodyLimitMiddleware:
                         exc_info=True,
                     )
                 return
+            drained = body_complete["value"] or await _drain_request_body(
+                receive,
+                idle_timeout=drain_idle_timeout,
+                total_budget=_DRAIN_TOTAL_SECONDS,
+            )
             await _send_413(
                 send,
                 advertised=None,
                 limit=limit,
                 streaming=True,
                 streamed=exc.streamed_bytes,
+                close_connection=not drained,
             )
 
 
@@ -566,12 +619,12 @@ async def _send_413(
     limit: int,
     streaming: bool,
     streamed: int | None = None,
+    close_connection: bool = False,
 ) -> None:
     """Emit an OpenAI-shaped 413 JSON response from inside ASGI middleware.
 
     We hand-roll the response (rather than raise ``HTTPException``)
-    because the FastAPI exception machinery needs the request body to
-    be drained — exactly what we're trying to avoid. The envelope
+    to keep rejection outside downstream body parsing. The envelope
     matches the OpenAI error shape used by the rest of the codebase
     (see ``rapid_mlx/server.py::_http_exception_handler``):
 
@@ -594,15 +647,18 @@ async def _send_413(
             }
         }
     ).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+    ]
+    if close_connection:
+        headers.append((b"connection", b"close"))
     try:
         await send(
             {
                 "type": "http.response.start",
                 "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
+                "headers": headers,
             }
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
