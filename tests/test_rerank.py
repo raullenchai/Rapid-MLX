@@ -600,17 +600,29 @@ class _MarkerTokenizer(_CharTokenizer):
         return ids
 
 
+class _NonAdditiveMarkerTokenizer(_MarkerTokenizer):
+    """Tokenizer with a multi-passage cost singleton estimates cannot predict."""
+
+    def encode(self, text, add_special_tokens=True):
+        ids = super().encode(text, add_special_tokens=add_special_tokens)
+        if text.count('<passage id="') >= 3:
+            ids.extend([ord("x")] * 200)
+        return ids
+
+
 class _FakeJina:
     """Hidden state at each position encodes whether the previous char is a/b."""
 
     def __init__(self):
         self.calls = 0
+        self.prompt_lengths = []
         self.projector = lambda x: x
 
     def model(self, batch):
         import mlx.core as mx
 
         self.calls += 1
+        self.prompt_lengths.append(batch.shape[1])
         rows, prev = [], 0
         for token in batch[0].tolist():
             rows.append([1.0, float(prev == ord("a")), float(prev == ord("b")), 0.0])
@@ -672,9 +684,111 @@ def test_jina_scores_cosine_of_marker_states():
 
 def test_jina_splits_blocks_without_changing_scores():
     single = _jina_engine().score("qa", ["xa", "xb", "xc"]).scores
-    engine = _jina_engine(context_length=16, max_length=10)
+    engine = _jina_engine(context_length=720, max_length=10)
     assert engine.score("qa", ["xa", "xb", "xc"]).scores == pytest.approx(single)
     assert engine._model.calls == 3
+
+
+def test_jina_block_prompts_stay_within_context_length():
+    engine = _jina_engine(context_length=760)
+    documents = ["x" * 20] * 3
+
+    combined_length = len(
+        engine._tokenizer.encode(
+            engine._listwise_prompt("qa", documents, None),
+            add_special_tokens=False,
+        )
+    )
+    # The old raw-token budget admitted this block despite its rendered prompt
+    # exceeding the context window.
+    assert 2 * len("qa") + sum(map(len, documents)) <= engine._context_length
+    assert combined_length > engine._context_length
+
+    engine.score("qa", documents)
+
+    assert engine._model.calls == 3
+    assert max(engine._model.prompt_lengths) <= engine._context_length
+
+
+def test_jina_block_packing_tokenization_is_linear():
+    engine = _jina_engine()
+    documents = [f"document {index}" for index in range(126)]
+    real_encode = engine._tokenizer.encode
+    engine._tokenizer.encode = mock.Mock(wraps=real_encode)
+
+    engine.score("qa", documents)
+
+    # One raw-document encode, one singleton prompt, and only a constant number
+    # of packing/exact-block encodes per document (plus block inference).
+    assert engine._tokenizer.encode.call_count <= (
+        3 * len(documents) + engine._model.calls + 4
+    )
+
+
+def test_jina_exact_validation_splits_underestimated_block():
+    # A small max_length keeps the upstream raw-budget rule from closing the
+    # block first, so only the exact prompt check can split it.
+    engine = _jina_engine(context_length=900, max_length=8)
+    engine._tokenizer = _NonAdditiveMarkerTokenizer()
+    documents = ["xa"] * 4
+    assert (
+        len(
+            engine._tokenizer.encode(
+                engine._listwise_prompt("qa", documents, None),
+                add_special_tokens=False,
+            )
+        )
+        > engine._context_length
+    )
+
+    result = engine.score("qa", documents)
+
+    assert len(result.scores) == len(documents)
+    assert engine._model.calls == 2
+    assert max(engine._model.prompt_lengths) <= engine._context_length
+
+
+def test_jina_blocks_keep_upstream_raw_budget_boundary():
+    # Upstream closes a block once the raw budget left for documents is at
+    # most one max-length document, even when the full prompt would still fit.
+    engine = _jina_engine(context_length=100_000, max_length=50_000)
+    query_length = len(engine._tokenizer.encode("qa", add_special_tokens=False))
+    doc_length = 1000
+    budget = engine._context_length - 2 * query_length
+    per_block = next(
+        n for n in range(1, 200) if budget - n * doc_length <= engine.max_length
+    )
+    documents = ["x" * doc_length] * (per_block + 1)
+    assert len(engine._tokenizer.encode(documents[0], add_special_tokens=False)) == (
+        doc_length
+    )
+
+    engine.score("qa", documents)
+
+    assert engine._model.calls == 2
+
+
+def test_jina_context_overflow_policy():
+    from rapid_mlx.rerank import (
+        RerankDocumentTooLongError,
+        RerankInputTooLongError,
+    )
+
+    engine = _jina_engine(context_length=710)
+    engine.score("qa", ["x" * 20])
+    assert engine.num_truncations == 1
+    assert engine._model.prompt_lengths == [710]
+
+    engine = _jina_engine(context_length=710)
+    engine.overflow_policy = "error"
+    with pytest.raises(RerankDocumentTooLongError) as exc_info:
+        engine.score("qa", ["x" * 20])
+    assert exc_info.value.observed_tokens == 721
+
+    engine = _jina_engine(context_length=700)
+    with pytest.raises(RerankInputTooLongError) as exc_info:
+        engine.score("qa", ["x"])
+    assert exc_info.value.observed_tokens == 701
 
 
 def test_jina_overflow_policy():
@@ -1006,6 +1120,15 @@ def test_rerank_inference_error_propagates_once(rerank_client):
         "/v1/rerank", json={"query": "q", "documents": ["a"]}
     )
     assert resp.status_code == 500
+    assert resp.json() == {
+        "error": {
+            "message": "Rerank failed.",
+            "type": "server_error",
+            "code": "rerank_failed",
+            "param": None,
+        }
+    }
+    assert "boom" not in resp.text
     assert worker.calls == 0
     assert len(engine.threads) == 1
 

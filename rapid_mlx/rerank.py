@@ -788,32 +788,127 @@ class RerankEngine:
             text, length, cut = self._truncate_listwise(
                 document, self.max_length, index
             )
+            lengths.append(length)
             truncated += cut
             docs.append(text)
-            lengths.append(length)
+
+        def prompt_length(block_docs: list[str]) -> int:
+            return len(
+                self._tokenizer.encode(
+                    self._listwise_prompt(query, block_docs, instruction),
+                    add_special_tokens=False,
+                )
+            )
+
+        # Account for the complete rendered prompt. In particular, the ChatML
+        # turns and passage wrappers are not represented in the raw document
+        # token counts used by ``_truncate_listwise``.
+        empty_length = prompt_length([""])
+        if empty_length > self._context_length:
+            raise RerankInputTooLongError(
+                observed_tokens=empty_length, allowed_tokens=self._context_length
+            )
+        singleton_lengths = []
+        for index, document in enumerate(docs):
+            observed = prompt_length([document])
+            if observed <= self._context_length:
+                singleton_lengths.append(observed)
+                continue
+            if self.overflow_policy == "error":
+                raise RerankDocumentTooLongError(
+                    index=index,
+                    observed_tokens=observed,
+                    allowed_tokens=self._context_length,
+                )
+            ids = list(self._tokenizer.encode(document, add_special_tokens=False))
+            low, high = 0, len(ids)
+            while low < high:
+                midpoint = (low + high + 1) // 2
+                if (
+                    prompt_length([self._tokenizer.decode(ids[:midpoint])])
+                    <= self._context_length
+                ):
+                    low = midpoint
+                else:
+                    high = midpoint - 1
+            docs[index] = self._tokenizer.decode(ids[:low])
+            lengths[index] = low
+            singleton_lengths.append(prompt_length([docs[index]]))
+            truncated += 1
+
         if truncated:
             self.num_truncations += truncated
             logger.warning(
-                "Rerank truncation: %d of %d document(s) exceeded %d tokens and "
-                "were truncated. Set --rerank-overflow-policy error to reject "
-                "them instead.",
+                "Rerank truncation: %d of %d document(s) exceeded a token limit "
+                "and were truncated. Set --rerank-overflow-policy error to "
+                "reject them instead.",
                 truncated,
                 len(documents),
-                self.max_length,
             )
 
-        blocks: list[list[int]] = []
+        two_empty_length = prompt_length(["", ""])
+        # A second empty passage measures its wrapper, joining newline, and id.
+        # Extra room per passage conservatively covers wider header/id digits;
+        # the exact validation below handles tokenizer non-additivity.
+        per_doc_slack = max(0, two_empty_length - empty_length) + len(
+            str(max_block_documents)
+        )
+        fixed_slack = len(str(max_block_documents))
+
+        packed_blocks: list[list[int]] = []
         block: list[int] = []
-        capacity = self._context_length - 2 * query_length
-        for index, length in enumerate(lengths):
-            block.append(index)
-            capacity -= length
+        estimated_length = empty_length + fixed_slack
+        # Upstream ``rerank()`` also closes a block once the raw token budget
+        # left for documents drops to one maximum-length document; keep that
+        # rule so block boundaries (and the block-weighted query) match it.
+        upstream_budget = self._context_length - 2 * query_length
+        capacity = upstream_budget
+        for index in range(len(docs)):
+            candidate_length = (
+                estimated_length
+                + singleton_lengths[index]
+                - empty_length
+                + per_doc_slack
+            )
+            if block and (
+                len(block) >= max_block_documents
+                or candidate_length > self._context_length
+            ):
+                packed_blocks.append(block)
+                block = [index]
+                capacity = upstream_budget
+                estimated_length = (
+                    empty_length
+                    + fixed_slack
+                    + singleton_lengths[index]
+                    - empty_length
+                    + per_doc_slack
+                )
+            else:
+                block.append(index)
+                estimated_length = candidate_length
+            capacity -= lengths[index]
             if len(block) >= max_block_documents or capacity <= self.max_length:
-                blocks.append(block)
+                packed_blocks.append(block)
                 block = []
-                capacity = self._context_length - 2 * query_length
+                capacity = upstream_budget
+                estimated_length = empty_length + fixed_slack
         if block:
-            blocks.append(block)
+            packed_blocks.append(block)
+
+        def validated_blocks(block: list[int]) -> list[list[int]]:
+            if prompt_length([docs[i] for i in block]) <= self._context_length:
+                return [block]
+            # Every singleton was checked above, so recursive bisection must
+            # terminate with context-safe blocks even for non-additive tokenizers.
+            midpoint = len(block) // 2
+            return validated_blocks(block[:midpoint]) + validated_blocks(
+                block[midpoint:]
+            )
+
+        blocks = [
+            verified for block in packed_blocks for verified in validated_blocks(block)
+        ]
 
         def cosine(query_embed: mx.array, doc_embeds: mx.array) -> mx.array:
             norms = mx.linalg.norm(doc_embeds, axis=-1) * mx.linalg.norm(query_embed)

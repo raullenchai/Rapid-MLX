@@ -157,7 +157,7 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
             "documents",
         ) from exc
     except Exception as exc:
-        logger.error("Rerank failed: %s", exc)
+        logger.exception("Rerank failed")
         _telemetry_inference.emit_completed_request(
             model=telemetry_model_id(cfg.rerank_model_locked),
             endpoint="/v1/rerank",
@@ -166,7 +166,17 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
             result="failed",
             error_class=_telemetry_inference.classify_inference_failure(exc),
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": "Rerank failed.",
+                    "type": "server_error",
+                    "code": "rerank_failed",
+                    "param": None,
+                }
+            },
+        ) from exc
     logger.info(
         "Rerank: %d documents, %d tokens in %.2fs",
         len(documents),
