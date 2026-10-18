@@ -862,9 +862,17 @@ class StreamingToolCallFilter:
         extra_tags: Additional (open, close) tag pairs to suppress, beyond
                     the global _TOOL_CALL_TAGS. Useful for per-request or
                     per-agent customization without mutating global state.
+        enabled: When False, pass deltas through unchanged for requests
+                 without declared tools; their markup is ordinary text.
     """
 
-    def __init__(self, extra_tags: list[tuple[str, str]] | None = None):
+    def __init__(
+        self,
+        extra_tags: list[tuple[str, str]] | None = None,
+        *,
+        enabled: bool = True,
+    ):
+        self._enabled = enabled
         self._buffer = ""
         self._in_block = False
         self._close_tag = ""
@@ -879,6 +887,8 @@ class StreamingToolCallFilter:
 
     def process(self, delta: str) -> str:
         """Process a streaming delta. Returns text to emit (may be empty)."""
+        if not self._enabled:
+            return delta
         self._buffer += delta
 
         if self._in_block:

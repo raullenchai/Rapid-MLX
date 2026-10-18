@@ -5,6 +5,8 @@
 
 ## Highlights
 
+- **Consistent replies without tools**: buffered replies preserve model-emitted tool-call markup as text when no tools were offered, matching streaming replies. Fixes #4877.
+
 - **Cleaner Desktop answers after tool use**: chats that reach their tool budget now send the final-answer instruction as the last message, and show an answer or a clear fallback instead of raw tool-call markup. Fixes #4871.
 - **Chat drafts stay with their conversation**: unsent text is saved locally across app restarts, with a separate draft for New Chat.
 - **Desktop file paste**: pasting a file into the chat composer now attaches it, or explains which file types are supported, instead of inserting its local path.

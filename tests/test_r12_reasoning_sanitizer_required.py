@@ -641,9 +641,14 @@ def test_chat_route_reasoning_content_sanitized_across_tool_choice(tool_choice):
             f"on tool_choice={tool_choice!r}: reasoning={reasoning!r}"
         )
 
-    # And content stays clean too (defense-in-depth — the original
-    # sanitize_output gate has not regressed).
     content = msg.get("content") or ""
+    if tool_choice == "none":
+        # This case offers no tools: preserve the post-reasoning text verbatim.
+        assert content == _LEAKY_QWEN_RAW.split("</think>", 1)[1]
+        assert not msg.get("tool_calls")
+        assert resp.json()["choices"][0]["finish_reason"] == "stop"
+        return
+    # Tool-bearing requests still strip tool markup from visible content.
     for leak in _LEAK_MARKERS:
         assert leak not in content, (
             f"R12-MED-2 leak: {leak!r} survived in content "

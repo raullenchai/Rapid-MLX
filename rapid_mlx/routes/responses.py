@@ -3196,7 +3196,7 @@ async def _stream_responses(
         # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
         last_finish_reason: str | None = None
         last_response_metrics = None
-        tool_filter = StreamingToolCallFilter()
+        tool_filter = StreamingToolCallFilter(enabled=bool(chat_kwargs.get("tools")))
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
         # forces a tool_choice (``required`` or named-function), the

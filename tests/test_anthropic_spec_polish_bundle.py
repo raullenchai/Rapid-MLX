@@ -23,12 +23,14 @@ applied to the Anthropic route.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from rapid_mlx.config import reset_config
+from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.routes.anthropic import router as anthropic_router
@@ -164,15 +166,28 @@ def test_f7_tool_choice_none_strips_tools_from_engine_kwargs():
     )
 
 
-def test_f7_tool_choice_none_response_has_no_tool_use_block():
-    """F7 wire-level: the response content list must NOT carry any
-    ``tool_use`` block when ``tool_choice="none"``. Even if a defiant
-    model wrote raw ``<tool_call>{...}`` text (now impossible because
-    tools were stripped), the parser layer would still drop the
-    ``tool_use`` block under ``tool_choice="none"``.
-    """
-    engine = _RecordingEngine()
+@pytest.mark.parametrize("stream", [False, True])
+def test_f7_tool_choice_none_response_has_no_tool_use_block(stream):
+    """None removes tools: unsolicited markup stays text on both paths."""
+    raw = 'Before <tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}</tool_call> after'
+
+    class _UnsolicitedMarkupEngine(_RecordingEngine):
+        async def chat(self, messages, **kwargs):
+            self.last_chat_kwargs = kwargs
+            return GenerationOutput(
+                text=raw, raw_text=raw, finished=True, finish_reason="stop"
+            )
+
+        async def stream_chat(self, messages, **kwargs):
+            self.last_chat_kwargs = kwargs
+            yield GenerationOutput(
+                text=raw, new_text=raw, finished=True, finish_reason="stop"
+            )
+
+    engine = _UnsolicitedMarkupEngine()
     client = _make_client(engine)
+    get_config().enable_auto_tool_choice = True
+    get_config().tool_call_parser = "hermes"
     resp = client.post(
         "/v1/messages",
         json={
@@ -181,14 +196,43 @@ def test_f7_tool_choice_none_response_has_no_tool_use_block():
             "tools": _TOOLS_FIXTURE,
             "tool_choice": {"type": "none"},
             "messages": [{"role": "user", "content": "weather in Tokyo?"}],
+            "stream": stream,
         },
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    tool_use_blocks = [
-        b for b in body.get("content", []) if b.get("type") == "tool_use"
-    ]
-    assert tool_use_blocks == [], body
+    assert resp.status_code == 200, resp.text
+    assert engine.last_chat_kwargs is not None
+    assert not engine.last_chat_kwargs.get("tools")
+    if stream:
+        events = [
+            json.loads(line[6:])
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert not any(event["type"] == "error" for event in events), resp.text
+        blocks = [
+            event["content_block"]
+            for event in events
+            if event["type"] == "content_block_start"
+        ]
+        text = "".join(
+            event["delta"]["text"]
+            for event in events
+            if event["type"] == "content_block_delta"
+            and event["delta"]["type"] == "text_delta"
+        )
+        assert [
+            event["delta"]["stop_reason"]
+            for event in events
+            if event["type"] == "message_delta"
+        ] == ["end_turn"]
+        assert events[-1]["type"] == "message_stop"
+    else:
+        body = resp.json()
+        blocks = body["content"]
+        text = "".join(block["text"] for block in blocks if block["type"] == "text")
+        assert body["stop_reason"] == "end_turn"
+    assert all(block["type"] == "text" for block in blocks), resp.text
+    assert text == raw
 
 
 def test_f7_tool_choice_none_text_has_no_tool_call_marker():

@@ -2146,7 +2146,7 @@ async def _stream_anthropic_messages(
     # non-streaming branch uses (PR #515 codex round-12/14 BLOCKING
     # closure).
     accumulated_structured_tool_calls: list[dict] = []
-    tool_filter = StreamingToolCallFilter()
+    tool_filter = StreamingToolCallFilter(enabled=bool(chat_kwargs.get("tools")))
     # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
     # guard predated the abstract declaration and is the same silent-skip
     # shape that produced #500. The inner ``chat_template`` guard stays
