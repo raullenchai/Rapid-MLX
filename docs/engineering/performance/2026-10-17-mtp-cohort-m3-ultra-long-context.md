@@ -22,15 +22,15 @@ Date: 2026-10-17. Owner: Harbor. Follow-up to
   requests are live, the scheduler keeps plain batched decode. At 4 and 8
   lanes this recovers 23–24% for short prompts and 6–13% at 8k–16k, landing
   within 3% of plain batching. At 2 lanes it is unchanged from main.
-- **Cohorts at 2–3 lanes still trail plain batching on this host** (−5% to
-  −12% at 2 lanes). Whether to keep 2–3-lane cohorts is hardware-dependent
+- **2-lane cohorts still trail plain batching on this host** (−5% to −12%;
+  3 lanes were not measured against the text-only lane). Whether to keep 2–3-lane cohorts is hardware-dependent
   and is left as a follow-up (see the last section). It is not part of this
   change.
 - At 32k no cohort forms on this host. The scheduler's prefill memory gate
   admits one long prefill at a time, so the cap does not change 32k behavior.
 - **#4794:** under the cap, cohorts have at most 3 lanes and form only at
   ≤16k on this host. There the O(context) part of ragged KV rollback is an
-  expected 4–8% of the cycle, with a ≤12% upper bound if every cycle were
+  estimated 3–8% of the cycle, with a ≤12% upper bound if every cycle were
   ragged. Removing it cannot close the 24% steady-decode gap to plain batching
   at 16k × 2 lanes. It is immaterial to the routing decision, so #4794 is
   closed with these numbers. A design sketch is kept below in case wider
@@ -269,15 +269,18 @@ Isolated rollback medians (ms, 30 samples), uniform / ragged:
 | 8 | 0.57 / 3.95 | 0.68 / 11.06 | 0.72 / 19.55 | 0.69 / 37.31 |
 
 A cycle needs a ragged rollback only when the lanes accept different numbers
-of drafts. With the measured per-lane accept distribution and lanes treated
-as independent, about 65% of 2-lane cycles, 87% of 3-lane cycles, and nearly
-all cycles at 4 or more lanes are ragged. "Upper bound" below assumes every
+of drafts. `/metrics` reports only aggregate counters, so the ragged
+frequency is an estimate: with lanes treated as independent and an assumed
+per-lane distribution of 0 / 1 / 2 accepted drafts of 0.2 / 0.3 / 0.5
+(consistent with the measured 0.65 accept ratio), about 62% of 2-lane
+cycles, 84% of 3-lane cycles, and nearly all cycles at 4 or more lanes are
+ragged. "Upper bound" below assumes every
 cycle is ragged; "expected" applies those frequencies.
 
 | Point (cohort that formed) | Accept ratio | Cycle (ms) | O(context) part (ms) | Upper-bound share | Expected share |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 8k, 2 lanes (same session, main) | 0.660 | 27.8 | 1.53 | 5.5% | 3.6% |
-| 16k, 2 lanes (same session, main) | 0.651 | 34.1 | 4.02 | 11.8% | 7.7% |
+| 8k, 2 lanes (same session, main) | 0.660 | 27.8 | 1.53 | 5.5% | 3.4% |
+| 16k, 2 lanes (same session, main) | 0.651 | 34.1 | 4.02 | 11.8% | 7.3% |
 | 8k, 4 lanes (uncapped; no longer forms) | 0.658 | 43.8 | 3.32 | 7.6% | ≈7.6% |
 | 8k, 8 lanes (uncapped; no longer forms) | 0.650 | 68.2 | 7.11 | 10.4% | ≈10.4% |
 
@@ -287,7 +290,7 @@ rollback in situ at 27.8 ms (B=4, 16k), before #4777.
 
 Under the cap, the realistic cohorts on this host are 2–3 lanes at ≤16k. 3
 lanes form only at 8k, where the B=2–4 interpolation puts the expected share
-near 6%. Expected O(context) shares there are 4–8%, below the 10% bar. Even
+near 6%. Expected O(context) shares there are 3–8%, below the 10% bar. Even
 the upper bound at 16k × 2 lanes (11.8%) cannot close the steady-decode gap
 to text-lane plain at that point (135 vs 178 tok/s, −24%). **#4794 is
 therefore closed with these numbers and no layout change.** It becomes
@@ -325,7 +328,8 @@ Design sketch, kept for that case:
   MoE gate+up fusion and runs 4–22% slower end to end than the text-only lane
   for text-only traffic. Text-only serving defaults deserve their own measurement
   and decision.
-- 2–3-lane cohorts trail text-lane plain by 5–12% on M3 Ultra. Earlier
+- 2-lane cohorts trail text-lane plain by 5–12% on M3 Ultra (3 lanes not
+  measured against it). Earlier
   2-lane wins on other hardware were measured against `--no-spec-decode` and
   need a rerun against `--no-mllm` before deciding whether cohorts should
   form at all on a given host.
