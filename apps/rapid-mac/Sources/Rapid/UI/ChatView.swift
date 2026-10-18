@@ -378,6 +378,10 @@ struct ChatView: View {
         .onChange(of: readiness, initial: true) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.startAndSendIntent) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.isStreaming) { _, _ in resolveStartAndSend() }
+        .onDisappear {
+            // Normal startup keeps ChatView mounted: idle/starting/ready all map to .chat.
+            viewModel.startAndSendIntent = StartAndSendIntent()
+        }
         // Forward an external focus request onto the composer's own token.
         // Routed through the existing token rather than a second mechanism
         // so every focus request in this view — Send, Cmd+L, onboarding

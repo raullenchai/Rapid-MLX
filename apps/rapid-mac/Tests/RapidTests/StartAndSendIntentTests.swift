@@ -222,6 +222,7 @@ struct StartAndSendIntentTests {
         #expect(view.contains("guardviewModel.startAndSendIntent.pending==nilelse{return}"))
         #expect(view.contains("onReadinessAction(.start(alias:target))"))
         #expect(view.contains("ifcase.send=resolution{send()}"))
+        #expect(view.contains(".onDisappear{viewModel.startAndSendIntent=StartAndSendIntent()}"))
         #expect(view.contains(".help(readiness.composerSendTooltip)"))
         #expect(view.contains("?String(localized:\"Sendmessage\"):readiness.composerSendTooltip)"))
         #expect(view.contains("retryEnabled:readiness.sendAllowed"))
