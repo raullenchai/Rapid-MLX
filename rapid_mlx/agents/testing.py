@@ -1805,28 +1805,30 @@ class AgentTestRunner:
                         api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop",
                     )
                 else:
-                    setup_kwargs = {}
-                    if self.profile.name in {"hermes", "opencode"}:
 
-                        def guarded_probe(cmd: list[str], **kwargs):
-                            result = _run_guarded_agent(
-                                cmd,
-                                timeout=kwargs["timeout"],
-                                cwd=os.getcwd(),
-                                env=os.environ.copy(),
-                            )
-                            if kwargs.get("check"):
-                                result.check_returncode()
-                            return result
+                    def guarded_probe(cmd: list[str], **kwargs):
+                        result = _run_guarded_agent(
+                            cmd,
+                            timeout=kwargs["timeout"],
+                            cwd=os.getcwd(),
+                            env=os.environ.copy(),
+                        )
+                        if kwargs.get("check"):
+                            result.check_returncode()
+                        return result
 
-                        setup_kwargs["_probe_runner"] = guarded_probe
+                    probe_runner = (
+                        guarded_probe
+                        if self.profile.name in {"hermes", "opencode"}
+                        else None
+                    )
                     setup_agent_config(
                         self.profile,
                         base_url=self.base_url,
                         model_id=self.model_id,
                         agent_version=self.agent_version,
                         context_length=context_length,
-                        **setup_kwargs,
+                        _probe_runner=probe_runner,
                     )
             finally:
                 for key, value in previous.items():
