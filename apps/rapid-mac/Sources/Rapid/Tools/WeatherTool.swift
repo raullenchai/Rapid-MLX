@@ -1,17 +1,17 @@
 import Foundation
 
-/// Current weather lookup via two Open-Meteo endpoints:
+/// Current weather and daily forecast via two Open-Meteo endpoints:
 ///
 ///   1. ``geocoding-api.open-meteo.com/v1/search`` resolves the place.
 ///   2. ``api.open-meteo.com/v1/forecast`` returns current temperature,
-///      relative humidity, wind speed, and the WMO weather code.
+///      relative humidity, wind speed, WMO weather code, and daily forecasts.
 ///
 /// No API key is required. Falls back to a clean error result
 /// rather than throwing so the chat loop continues.
 enum WeatherTool {
     static let definition = ToolDefinition(
         name: "weather",
-        description: "Get current weather or current temperature for a city or place. Use this tool—not web_search—for current conditions. Pass the location from the user's request, preserving country or state/province qualifiers. This tool does not provide future forecasts, and ambiguous places are not guessed.",
+        description: "Get current conditions AND a daily forecast up to 7 days for a city or place (today, tomorrow, the next few days, this weekend). Use this tool, not web_search, for these questions. Each forecast day has its local date and weekday. Preserve country or state/province qualifiers from the user's location; ambiguous places are not guessed.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
@@ -26,6 +26,12 @@ enum WeatherTool {
                 "admin1": .object([
                     "type": .string("string"),
                     "description": .string("Optional state, province, or first-level administrative region used to disambiguate the place.")
+                ]),
+                "days": .object([
+                    "type": .string("integer"),
+                    "minimum": .number(1),
+                    "maximum": .number(7),
+                    "description": .string("Forecast days starting with the location's today: 2 covers tomorrow; 7 covers this weekend / the rest of the week. Defaults to 3; bounded to 1...7.")
                 ]),
                 "units": .object([
                     "type": .string("string"),
@@ -42,6 +48,23 @@ enum WeatherTool {
         let country: String?
         let admin1: String?
         let units: String?
+        let days: Int
+
+        enum CodingKeys: String, CodingKey {
+            case location, country, admin1, units, days
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            location = try values.decode(String.self, forKey: .location)
+            country = try values.decodeIfPresent(String.self, forKey: .country)
+            admin1 = try values.decodeIfPresent(String.self, forKey: .admin1)
+            units = try values.decodeIfPresent(String.self, forKey: .units)
+            let number = (try? values.decode(Double.self, forKey: .days))
+                ?? (try? values.decode(String.self, forKey: .days)).flatMap(Double.init)
+            // Clamp before converting so even enormous finite values cannot overflow Int.
+            days = number.flatMap { $0.isFinite ? Int(min(7, max(1, $0))) : nil } ?? 3
+        }
     }
 
     static func run(arguments: String) async -> ToolCallResult {
@@ -64,17 +87,13 @@ enum WeatherTool {
             guard let hit = geo else {
                 return unresolvedPlaceResult(location: location)
             }
-            let weather = try await fetchCurrentWeather(lat: hit.latitude, lon: hit.longitude, imperial: imperial)
-            let tempUnit = imperial ? "°F" : "°C"
-            let windUnit = imperial ? "mph" : "km/h"
-            var lines: [String] = []
-            lines.append("Current weather for \(hit.fullName):")
-            lines.append("  Conditions: \(weatherCodeLabel(weather.weatherCode))")
-            lines.append(String(format: "  Temperature: %.1f%@", weather.temperature, tempUnit))
-            lines.append("  Humidity: \(weather.humidity)%")
-            lines.append(String(format: "  Wind: %.1f %@", weather.windSpeed, windUnit))
-            lines.append("Data: Open-Meteo (timezone: \(hit.timezone ?? "n/a"))")
-            return ToolCallResult(toolCallID: "", content: lines.joined(separator: "\n"), isError: false)
+            let forecast = try await fetchForecast(
+                lat: hit.latitude, lon: hit.longitude, imperial: imperial, days: args.days
+            )
+            return ToolCallResult(toolCallID: "", content: formatReport(
+                place: hit.fullName, timezone: forecast.timezone ?? hit.timezone,
+                reading: forecast.current, daily: forecast.daily, imperial: imperial
+            ), isError: false)
         } catch {
             return ToolCallResult(
                 toolCallID: "",
@@ -386,28 +405,35 @@ enum WeatherTool {
         }
     }
 
-    static func fetchCurrentWeather(lat: Double, lon: Double, imperial: Bool) async throws -> WeatherReading {
-        guard let url = forecastURL(lat: lat, lon: lon, imperial: imperial) else {
+    static func fetchForecast(
+        lat: Double, lon: Double, imperial: Bool, days: Int = 3,
+        load: GeocodingLoader = { try await cappedData(for: $0) }
+    ) async throws -> ForecastResponse {
+        guard let url = forecastURL(lat: lat, lon: lon, imperial: imperial, days: days) else {
             throw NSError(domain: "WeatherTool", code: 3, userInfo: [NSLocalizedDescriptionKey: "could not build forecast URL"])
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
-        let (data, response) = try await cappedData(for: req)
+        let (data, response) = try await load(req)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "WeatherTool", code: 4, userInfo: [NSLocalizedDescriptionKey: "weather HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)"])
         }
-        guard let reading = parseForecastResponse(data) else {
+        guard let reading = try? JSONDecoder().decode(ForecastResponse.self, from: data) else {
             throw NSError(domain: "WeatherTool", code: 5, userInfo: [NSLocalizedDescriptionKey: "unrecognised forecast payload"])
         }
         return reading
     }
 
-    static func forecastURL(lat: Double, lon: Double, imperial: Bool) -> URL? {
+    static func forecastURL(lat: Double, lon: Double, imperial: Bool, days: Int = 3) -> URL? {
         var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
         components.queryItems = [
             URLQueryItem(name: "latitude", value: String(lat)),
             URLQueryItem(name: "longitude", value: String(lon)),
             URLQueryItem(name: "current", value: "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code"),
+            URLQueryItem(name: "daily", value: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum"),
+            URLQueryItem(name: "timezone", value: "auto"),
+            URLQueryItem(name: "forecast_days", value: String(min(7, max(1, days)))),
+            URLQueryItem(name: "precipitation_unit", value: imperial ? "inch" : "mm"),
             URLQueryItem(name: "temperature_unit", value: imperial ? "fahrenheit" : "celsius"),
             URLQueryItem(name: "wind_speed_unit", value: imperial ? "mph" : "kmh"),
         ]
@@ -415,10 +441,107 @@ enum WeatherTool {
     }
 
     static func parseForecastResponse(_ data: Data) -> WeatherReading? {
-        struct Response: Decodable {
-            let current: WeatherReading
+        (try? JSONDecoder().decode(ForecastResponse.self, from: data))?.current
+    }
+
+    struct ForecastResponse: Decodable {
+        let current: WeatherReading
+        let timezone: String?
+        let daily: DailyForecast?
+
+        enum CodingKeys: String, CodingKey { case current, timezone, daily }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            current = try values.decode(WeatherReading.self, forKey: .current)
+            timezone = try? values.decode(String.self, forKey: .timezone)
+            // A broken optional forecast must never discard valid current conditions.
+            daily = try? values.decode(DailyForecast.self, forKey: .daily)
         }
-        return (try? JSONDecoder().decode(Response.self, from: data))?.current
+    }
+
+    struct DailyForecast: Decodable {
+        let time: [String?]
+        let weatherCode: [Int?]
+        let maximum: [Double?]
+        let minimum: [Double?]
+        let precipitationProbability: [Double?]
+        let precipitation: [Double?]
+
+        enum CodingKeys: String, CodingKey {
+            case time
+            case weatherCode = "weather_code"
+            case maximum = "temperature_2m_max"
+            case minimum = "temperature_2m_min"
+            case precipitationProbability = "precipitation_probability_max"
+            case precipitation = "precipitation_sum"
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            time = try values.decode([String?].self, forKey: .time)
+            weatherCode = try values.decode([Int?].self, forKey: .weatherCode)
+            maximum = try values.decode([Double?].self, forKey: .maximum)
+            minimum = try values.decode([Double?].self, forKey: .minimum)
+            precipitationProbability = try values.decodeIfPresent([Double?].self, forKey: .precipitationProbability) ?? []
+            precipitation = try values.decodeIfPresent([Double?].self, forKey: .precipitation) ?? []
+        }
+
+        var count: Int {
+            [time.count, weatherCode.count, maximum.count, minimum.count].min() ?? 0
+        }
+    }
+
+    /// Parse date-only values in a fixed Gregorian/GMT calendar, never the Mac's calendar.
+    static func weekday(for date: String) -> String? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let parsed = formatter.date(from: date),
+              formatter.string(from: parsed) == date else { return nil }
+        formatter.dateFormat = "EEE"
+        return formatter.string(from: parsed)
+    }
+
+    static func formatReport(
+        place: String, timezone: String?, reading: WeatherReading,
+        daily: DailyForecast?, imperial: Bool
+    ) -> String {
+        let tempUnit = imperial ? "°F" : "°C"
+        let windUnit = imperial ? "mph" : "km/h"
+        let precipitationUnit = imperial ? "in" : "mm"
+        let zone = timezone ?? "n/a"
+        var lines: [String] = []
+        lines.append("Current weather for \(place):")
+        lines.append("  Conditions: \(weatherCodeLabel(reading.weatherCode))")
+        lines.append(String(format: "  Temperature: %.1f%@", reading.temperature, tempUnit))
+        lines.append("  Humidity: \(reading.humidity)%")
+        lines.append(String(format: "  Wind: %.1f %@", reading.windSpeed, windUnit))
+        if let daily {
+            var days: [String] = []
+            func number(_ value: Double?, decimals: Int = 1) -> String {
+                value.map { String(format: "%.*f", locale: Locale(identifier: "en_US_POSIX"), decimals, $0) } ?? "n/a"
+            }
+            for index in 0..<min(7, daily.count) {
+                guard let date = daily.time[index], !date.isEmpty else { continue }
+                let weekday = weekday(for: date) ?? "n/a"
+                let relative = index == 0 ? " (today)" : index == 1 ? " (tomorrow)" : ""
+                let conditions = daily.weatherCode[index].map(weatherCodeLabel) ?? "n/a"
+                let probability = daily.precipitationProbability.indices.contains(index) ? daily.precipitationProbability[index] : nil
+                let probabilityText = probability.map { "\(number($0, decimals: 0))%" } ?? "n/a"
+                let precipitation = daily.precipitation.indices.contains(index) ? daily.precipitation[index] : nil
+                days.append("  \(date) \(weekday)\(relative): \(conditions), \(number(daily.minimum[index]))–\(number(daily.maximum[index]))\(tempUnit), precip \(probabilityText), \(number(precipitation)) \(precipitationUnit)")
+            }
+            if !days.isEmpty {
+                lines.append("Daily forecast (local dates, timezone \(zone)):")
+                lines.append(contentsOf: days)
+            }
+        }
+        lines.append("Data: Open-Meteo (timezone: \(zone))")
+        return lines.joined(separator: "\n")
     }
 
     /// WMO weather-code → human label. Open-Meteo documents these

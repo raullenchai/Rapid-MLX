@@ -12,7 +12,7 @@ enum WebSearchTool {
 
     static let definition = ToolDefinition(
         name: "web_search",
-        description: "Search the web and get the top results (title + URL + snippet). Use this for current events, recent news, or facts that may have changed since training. Do not use it for current weather when the weather tool is available.",
+        description: "Search the web and get the top results (title + URL + snippet). Use this for current events, recent news, or facts that may have changed since training. Do not use it for current weather or weather forecasts up to 7 days ahead when the weather tool is available.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
