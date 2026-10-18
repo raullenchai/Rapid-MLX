@@ -243,11 +243,12 @@ struct ToolGuidanceTrailerTests {
         let bare = Self.assemble(Self.nextTurn, toolsAdvertised: false)
         let stamped = Self.assemble(Self.nextTurn)
         #expect(stamped.contains { $0.wireSuffix?.contains(ChatViewModel.toolGuidance) == true })
-        // Same accounting as the trim: prose plus tool-call arguments.
+        // Same accounting as the trim: prose, clock row (text plus its own
+        // message framing) and tool-call arguments.
         let cost: (ChatMessage) -> Int = { row in
             let toolArgs = (row.toolCalls ?? []).map(\.function.arguments).joined()
             return max(1, TokenEstimate.tokens(in: row.modelContent)
-                + (row.wirePrelude.map { TokenEstimate.tokens(in: $0) } ?? 0)
+                + (row.wirePrelude.map { TokenEstimate.tokens(in: $0) + TokenEstimate.messageFramingTokens } ?? 0)
                 + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let bareTokens = bare.reduce(0) { $0 + cost($1) }
