@@ -48,7 +48,11 @@ struct GoldenChatFakeContractTests {
         #expect(recorded.hasPrefix("probe prompt"))
         #expect(recorded.contains("(Local time:"))
         let row = try #require(surface.chat.messages.first { $0.role == .user })
-        #expect(recorded == "probe prompt\n\n" + ChatViewModel.clockContext(at: row.createdAt))
+        // A send that straddles a minute boundary may append a current-time line.
+        let expected = "probe prompt\n\n" + ChatViewModel.clockContext(at: row.createdAt)
+        #expect(recorded.hasPrefix(expected))
+        let rest = recorded.dropFirst(expected.count)
+        #expect(rest.isEmpty || rest.hasPrefix("\n(Current time: "))
     }
 
     @MainActor

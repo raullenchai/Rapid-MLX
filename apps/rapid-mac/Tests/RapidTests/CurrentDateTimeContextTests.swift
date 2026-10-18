@@ -433,7 +433,12 @@ struct CurrentDateContextWireTests {
         #expect(user.contains("what is the date today"))
         #expect(user.contains("(Local time:"))
         let row = try #require(model.messages.first { $0.role == .user })
-        #expect(user == "what is the date today\n\n" + ChatViewModel.clockContext(at: row.createdAt))
+        // The row is minted just before the request instant is sampled; across
+        // a minute boundary the send legitimately appends a current-time line.
+        let expected = "what is the date today\n\n" + ChatViewModel.clockContext(at: row.createdAt)
+        #expect(user.hasPrefix(expected))
+        let rest = user.dropFirst(expected.count)
+        #expect(rest.isEmpty || rest.hasPrefix("\n(Current time: "))
     }
     @MainActor
     @Test("An edited send gets the live clock; regenerate keeps the original ask time")
