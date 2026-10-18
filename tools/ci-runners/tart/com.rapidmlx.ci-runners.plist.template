@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.rapidmlx.ci-runners</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>__HOME__/ci-runners/bin/supervisor.sh</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ExitTimeOut</key><integer>120</integer>
+  <key>ProcessType</key><string>Standard</string>
+  <key>WorkingDirectory</key><string>__HOME__/ci-runners</string>
+  <key>StandardOutPath</key><string>__HOME__/ci-runners/logs/supervisor.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/ci-runners/logs/supervisor.log</string>
+</dict>
+</plist>
