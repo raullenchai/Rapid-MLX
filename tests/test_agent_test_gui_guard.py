@@ -65,17 +65,33 @@ def test_gui_launch_fails_even_if_agent_prints_expected_answer(
     assert list(real_home.iterdir()) == []
 
 
-def test_child_never_receives_cffixed_user_home(tmp_path, monkeypatch):
+def test_unguarded_child_preserves_cffixed_user_home(tmp_path, monkeypatch):
     monkeypatch.setenv("CFFIXED_USER_HOME", str(tmp_path / "real-home"))
     script = "import os; print(os.environ.get('CFFIXED_USER_HOME', 'absent'))"
     output, error = _agent_query(
         sys.executable,
         f"python -c {shlex.quote(script)}",
         "ignored",
-        env_overrides={"CFFIXED_USER_HOME": "also-forbidden"},
+        env_overrides={"CFFIXED_USER_HOME": "explicit-home"},
     )
     assert error is None
-    assert output.strip() == "absent"
+    assert output.strip() == "explicit-home"
+
+
+def test_unguarded_child_with_isolated_home_pins_foundation_home(tmp_path, monkeypatch):
+    real_home = tmp_path / "real-home"
+    fake_home = tmp_path / "fake-home"
+    monkeypatch.setenv("CFFIXED_USER_HOME", str(real_home))
+    script = "import os; print(os.environ['CFFIXED_USER_HOME'])"
+    output, error = _agent_query(
+        sys.executable,
+        f"python -c {shlex.quote(script)}",
+        "ignored",
+        env_overrides={"HOME": str(fake_home)},
+    )
+    assert error is None
+    assert output.strip() == str(fake_home)
+    assert os.environ["CFFIXED_USER_HOME"] == str(real_home)
 
 
 def test_guarded_child_uses_disposable_foundation_home(tmp_path, monkeypatch):

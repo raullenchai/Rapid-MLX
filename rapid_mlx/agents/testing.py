@@ -1087,7 +1087,11 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
-    child_env.pop("CFFIXED_USER_HOME", None)
+    # Foundation ignores HOME when CFFIXED_USER_HOME is absent. An explicit
+    # child HOME must therefore pin both; otherwise leave the caller's value
+    # alone for ordinary, unguarded _agent_query users.
+    if env_overrides and "HOME" in env_overrides:
+        child_env["CFFIXED_USER_HOME"] = child_env["HOME"]
     browser = (env_overrides or {}).get("BROWSER")
     marker_path = (env_overrides or {}).get(_GUI_LAUNCH_MARKER_ENV)
     launch_marker = (
@@ -1098,9 +1102,6 @@ def _agent_query(
         else None
     )
     if launch_marker is not None:
-        # Foundation ignores HOME when CFFIXED_USER_HOME is absent and uses
-        # the account's real home. Pin it to the disposable tree as well.
-        child_env["CFFIXED_USER_HOME"] = child_env["HOME"]
         # Never clear a prior attempt: a setup subprocess may reach its shim
         # after setup's check but before this first agent probe.
         if launch_marker.exists():
