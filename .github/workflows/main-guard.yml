@@ -16,13 +16,14 @@ concurrency:
   group: main-guard-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
-# CI_LINUX_RUNNER is a JSON runner spec (string or label array); unset uses ubuntu-latest.
+# CI_LINUX_LIGHT_RUNNER is a JSON runner spec (string or label array); unset uses ubuntu-latest.
+# These jobs are seconds-long control-plane work; heavy test shards use CI_LINUX_RUNNER (ci.yml).
 # Fork heads (pull_request, pull_request_target, workflow_run) always use ubuntu-latest.
-# Rollback: gh variable delete CI_LINUX_RUNNER
+# Rollback: gh variable delete CI_LINUX_LIGHT_RUNNER
 
 jobs:
   guard:
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

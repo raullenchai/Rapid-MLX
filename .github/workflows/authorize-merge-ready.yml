@@ -6,9 +6,10 @@ on:
 
 permissions: {}
 
-# CI_LINUX_RUNNER is a JSON runner spec (string or label array); unset uses ubuntu-latest.
+# CI_LINUX_LIGHT_RUNNER is a JSON runner spec (string or label array); unset uses ubuntu-latest.
+# These jobs are seconds-long control-plane work; heavy test shards use CI_LINUX_RUNNER (ci.yml).
 # Fork heads (pull_request, pull_request_target, workflow_run) always use ubuntu-latest.
-# Rollback: gh variable delete CI_LINUX_RUNNER
+# Rollback: gh variable delete CI_LINUX_LIGHT_RUNNER
 
 jobs:
   authorize-ready-head:
@@ -17,7 +18,7 @@ jobs:
       github.event.action == 'labeled' &&
       (github.event.label.name == 'merge-ready' ||
        github.event.label.name == 'merge-ready-mac')
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     permissions:
       issues: write
       pull-requests: read
@@ -138,7 +139,7 @@ jobs:
        (github.event.action == 'unlabeled' &&
         (github.event.label.name == 'merge-ready' ||
          github.event.label.name == 'merge-ready-mac')))
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     concurrency:
       group: merge-ready-stale-notice-${{ github.event.pull_request.number }}
       cancel-in-progress: false

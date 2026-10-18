@@ -27,16 +27,19 @@ concurrency:
 env:
   RAPID_MLX_TELEMETRY: "0"
 
-# CI_LINUX_RUNNER is a JSON runner spec (string or label array); unset uses ubuntu-latest.
+# Linux runner routing (JSON runner specs: a string or a label array; unset uses ubuntu-latest):
+# - CI_LINUX_RUNNER routes the heavy test-matrix shards.
+# - CI_LINUX_LIGHT_RUNNER routes every other (seconds-long) Linux job, so
+#   control-plane work never queues behind test shards on a small pool.
 # Fork heads (pull_request, pull_request_target, workflow_run) always use ubuntu-latest.
-# Rollback: gh variable delete CI_LINUX_RUNNER
+# Rollback: gh variable delete CI_LINUX_RUNNER (heavy); gh variable delete CI_LINUX_LIGHT_RUNNER (light)
 
 jobs:
   changes:
     permissions:
       contents: read
     if: ${{ !cancelled() }}
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     outputs:
       engine: ${{ steps.policy.outputs.engine }}
       desktop: ${{ steps.policy.outputs.desktop }}
@@ -120,7 +123,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine != 'true' &&
       needs.changes.outputs.desktop != 'true'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - name: Mark no-Mac merge lane
         run: echo "This head requires neither the engine nor Desktop lane."
@@ -132,7 +135,7 @@ jobs:
       needs.changes.result == 'success' &&
       (needs.changes.outputs.engine == 'true' ||
        needs.changes.outputs.desktop == 'true')
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - name: Mark Mac-required merge lane
         run: echo "This head requires the engine, Desktop, or both lanes."
@@ -142,7 +145,7 @@ jobs:
     if: >-
       !cancelled() &&
       needs.changes.result == 'success'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -194,7 +197,7 @@ jobs:
       !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -268,7 +271,7 @@ jobs:
       needs.changes.result == 'success' &&
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     permissions:
       contents: read
       pull-requests: read
@@ -306,7 +309,7 @@ jobs:
       !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -447,7 +450,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.test-matrix.result == 'success'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -702,7 +705,7 @@ jobs:
       needs.changes.outputs.engine == 'true' &&
       needs.linux-coverage.result == 'success' &&
       needs.test-apple-silicon.result == 'success'
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -836,7 +839,7 @@ jobs:
       - test-apple-silicon
       - changed-lines-coverage
       - l1-smoke
-    runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
     # Keep the required verdict terminal after failure or cancellation;
     # classifier and workload jobs above stop when their source is superseded.
     if: always()
