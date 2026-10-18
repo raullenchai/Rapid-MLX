@@ -6,6 +6,7 @@
 ## Highlights
 
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
+- **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
 
 - **Consistent replies without tools**: buffered replies preserve model-emitted tool-call markup as text when no tools were offered, matching streaming replies. Fixes #4877.
 

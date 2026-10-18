@@ -233,19 +233,22 @@ enum WeatherTool {
         let requestedName = matchKey(location)
         guard !requestedName.isEmpty else { return nil }
 
-        let requestedQualifiers = qualifiers.compactMap { qualifier -> Set<String>? in
+        let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, accepted: Set<String>)? in
             let key = matchKey(qualifier)
             guard !key.isEmpty else { return nil }
             let countryCodes = countryCodes(for: qualifier).map(matchKey)
             let alternate = traditionalGeocodingName(qualifier).map(matchKey)
-            return Set([key] + countryCodes + [alternate].compactMap { $0 })
+            return (key, Set([key] + countryCodes + [alternate].compactMap { $0 }))
         }
         let matches = candidates.filter { candidate in
             guard matchKey(candidate.name) == requestedName else { return false }
             let fields = Set([candidate.admin1, candidate.country, candidate.countryCode]
                 .compactMap { $0 }
                 .map(matchKey))
-            guard requestedQualifiers.allSatisfy({ !$0.isDisjoint(with: fields) }) else {
+            guard requestedQualifiers.allSatisfy({
+                !$0.accepted.isDisjoint(with: fields)
+                    || matchesSubdivision($0.key, candidate: candidate)
+            }) else {
                 return false
             }
             // Explicit country/state arguments must match their own fields.
@@ -262,7 +265,8 @@ enum WeatherTool {
                 let accepted = Set([matchKey(admin1)]
                     + [traditionalGeocodingName(admin1).map(matchKey)].compactMap { $0 })
                 guard let actual = candidate.admin1.map(matchKey),
-                      accepted.contains(actual) else { return false }
+                      accepted.contains(actual)
+                        || matchesSubdivision(matchKey(admin1), candidate: candidate) else { return false }
             }
             return true
         }
@@ -347,12 +351,59 @@ enum WeatherTool {
             .lowercased()
     }
 
+    private static let subdivisionNames: [String: [String: String]] = [
+        "US": [
+            "al": "Alabama", "ak": "Alaska", "az": "Arizona", "ar": "Arkansas",
+            "ca": "California", "co": "Colorado", "ct": "Connecticut", "de": "Delaware",
+            "dc": "District of Columbia", "fl": "Florida", "ga": "Georgia", "hi": "Hawaii",
+            "id": "Idaho", "il": "Illinois", "in": "Indiana", "ia": "Iowa",
+            "ks": "Kansas", "ky": "Kentucky", "la": "Louisiana", "me": "Maine",
+            "md": "Maryland", "ma": "Massachusetts", "mi": "Michigan", "mn": "Minnesota",
+            "ms": "Mississippi", "mo": "Missouri", "mt": "Montana", "ne": "Nebraska",
+            "nv": "Nevada", "nh": "New Hampshire", "nj": "New Jersey", "nm": "New Mexico",
+            "ny": "New York", "nc": "North Carolina", "nd": "North Dakota", "oh": "Ohio",
+            "ok": "Oklahoma", "or": "Oregon", "pa": "Pennsylvania", "ri": "Rhode Island",
+            "sc": "South Carolina", "sd": "South Dakota", "tn": "Tennessee", "tx": "Texas",
+            "ut": "Utah", "vt": "Vermont", "va": "Virginia", "wa": "Washington",
+            "wv": "West Virginia", "wi": "Wisconsin", "wy": "Wyoming",
+        ],
+        "CA": [
+            "ab": "Alberta", "bc": "British Columbia", "mb": "Manitoba", "nb": "New Brunswick",
+            "nl": "Newfoundland and Labrador", "ns": "Nova Scotia", "nt": "Northwest Territories",
+            "nu": "Nunavut", "on": "Ontario", "pe": "Prince Edward Island", "qc": "Quebec",
+            "sk": "Saskatchewan", "yt": "Yukon",
+        ],
+        "AU": [
+            "act": "Australian Capital Territory", "nsw": "New South Wales",
+            "nt": "Northern Territory", "qld": "Queensland", "sa": "South Australia",
+            "tas": "Tasmania", "vic": "Victoria", "wa": "Western Australia",
+        ],
+    ]
+
+    private static func matchesSubdivision(_ key: String, candidate: GeoHit) -> Bool {
+        // Abbreviations overlap across countries (WA, NT), so expand per candidate country.
+        guard let countryCode = candidate.countryCode,
+              let name = subdivisionNames[countryCode.uppercased()]?[key],
+              let admin1 = candidate.admin1 else { return false }
+        return matchKey(name) == matchKey(admin1)
+    }
+
+    // Everyday country spellings that are not ISO codes or CLDR names. The
+    // UK nations stay out: the geocoder reports them as admin1, and widening
+    // "Wales" to all of GB would let English namesakes compete.
+    private static let countryAliases: [String: String] = [
+        "usa": "US", "us": "US", "unitedstates": "US", "unitedstatesofamerica": "US",
+        "uk": "GB", "greatbritain": "GB", "britain": "GB", "unitedkingdom": "GB",
+        "uae": "AE",
+    ]
+
     private static func countryCodes(for value: String) -> [String] {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requested = matchKey(trimmed)
+        if let code = countryAliases[requested] { return [code] }
         if trimmed.count == 2, trimmed.unicodeScalars.allSatisfy(CharacterSet.letters.contains) {
             return [trimmed.uppercased()]
         }
-        let requested = matchKey(trimmed)
         guard !requested.isEmpty else { return [] }
         let english = Locale(identifier: "en_US")
         let codes = Locale.Region.isoRegions.compactMap { region -> String? in
