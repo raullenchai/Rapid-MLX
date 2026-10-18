@@ -2448,7 +2448,7 @@ def test_issue4824_context_extrapolation_and_padding():
     _workspace_sample(sched, 512, 512, 881_000_000)
     assert sched._prefill_workspace_max_context == 512
     rate = 881_000_000 / 512
-    expected = 2048 * (rate + 16 * 4 * 3 * (32768 - 512))
+    expected = 2048 * (rate + 16 * 4 * 8 * (32768 - 512))
     assert sched._prefill_workspace_bytes(row) == expected >= 2048 * rate
     shorter = _make_request("padded", 256)
     assert (
@@ -2475,7 +2475,7 @@ def test_issue4824_dense_attention_preserves_growth_prior_and_large_samples():
     }
     _workspace_sample(sched, 8192, 2048, 4_000_000_000)
     row = _make_request(tokens=32768)
-    growth = 2048 * (4_000_000_000 / 2048 + 32 * 4 * 3 * (32768 - 8192))
+    growth = 2048 * (4_000_000_000 / 2048 + 32 * 4 * 8 * (32768 - 8192))
     prior = 3.5 * 147456 / 2048 * (2048 * 32768)
     assert sched._prefill_workspace_bytes(row) == max(growth, prior)
     assert sched._prefill_workspace_bytes(row) >= growth
@@ -2521,9 +2521,9 @@ def test_issue4824_attention_heads_follow_text_tower_and_are_cached(holder, stru
     sched.model = SimpleNamespace(
         **{holder: {"num_attention_heads": 100, "text_config": text}}
     )
-    assert sched._resolve_prefill_attention_beta() == 192
+    assert sched._resolve_prefill_attention_beta() == 512
     text["num_attention_heads"] = 32
-    assert sched._resolve_prefill_attention_beta() == 192
+    assert sched._resolve_prefill_attention_beta() == 512
 
 
 @pytest.mark.parametrize("dispatch_both", [False, True])
@@ -2555,4 +2555,15 @@ def test_issue4824_sample_anchor_is_minimum_dispatched_context(dispatch_both):
 def test_issue4824_outer_structural_config_wins_over_decoy_text_heads():
     sched = _workspace_scheduler()
     sched.model.config["text_config"] = {"num_attention_heads": 100}
-    assert sched._resolve_prefill_attention_beta() == 192
+    assert sched._resolve_prefill_attention_beta() == 512
+
+
+def test_issue4824_non_fused_softcapped_attention_is_not_under_counted():
+    # Measured on hardware: a softcapped (non-fused attention) model with 8
+    # heads, chunk 256, calibrated on a 512-token prompt, peaked 544.3 MB per
+    # 8k row. The extrapolation must cover it.
+    sched = _workspace_scheduler(heads=8, kv_bytes=4096)
+    sched.config.prefill_step_size = sched.batch_generator.prefill_step_size = 256
+    _workspace_sample(sched, 512, 256, 85_000_000)
+    row = _make_request(tokens=8192)
+    assert sched._prefill_workspace_bytes(row) >= 544_300_000

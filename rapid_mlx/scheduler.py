@@ -380,9 +380,13 @@ _SHARED_PREFIX_SNAPSHOT_MIN_TOKENS = 1024
 # Measured on Qwen3.5-9B-4bit, 23k-token cold prefill, 2048-token chunks:
 # peak - weights = 3.2 GB for 0.75 GB of prompt KV (3.3x the KV beyond it).
 _COLD_PREFILL_TRANSIENT_KV_MULTIPLE = 3.5
-# A non-fused attention fallback materializes one layer's score matrix,
-# including mask/softmax copies at up to fp32.
-_PREFILL_ATTENTION_SCORE_COPIES = 3
+# Upper bound on prefill workspace growth per (query token x key token) per
+# attention head, in fp32 score-matrix copies, used only to extrapolate beyond
+# the longest context measured so far. Fused attention grows far less (35B MoE
+# hybrid: ~9 bytes per query x key token in total). Non-fused attention
+# materializes the score matrix with its scale/softcap/mask/softmax
+# intermediates; a softcapped model measured ~7 fp32 copies live per head.
+_PREFILL_ATTENTION_SCORE_COPIES = 8
 
 
 @dataclass
