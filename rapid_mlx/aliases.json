@@ -2671,6 +2671,14 @@
     "supports_spec_decode": false,
     "is_moe": true
   },
+  "lfm2.5-24b-a2b-4bit": {
+    "hf_path": "LiquidAI/LFM2.5-24B-A2B-MLX-4bit",
+    "tool_call_parser": "lfm",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
   "lfm2.5-2.6b-4bit": {
     "hf_path": "LiquidAI/LFM2.5-2.6B-MLX",
     "subfolder": "4bit",

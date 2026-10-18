@@ -151,6 +151,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "lfm2.5-1b-4bit": .unknown,
         "lfm2.5-8b-a1b-4bit": .unknown,
         "lfm2-24b-a2b-4bit": .unknown,
+        "lfm2.5-24b-a2b-4bit": .unknown,
         // Hy3 preview — tool + reasoning parser landed engine-side
         // (rapid-mlx #1070/#1072), Ultra-only integration matrix; not
         // yet benched by the desktop loop → .unknown until covered.
