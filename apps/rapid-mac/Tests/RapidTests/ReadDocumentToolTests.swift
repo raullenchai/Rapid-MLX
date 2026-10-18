@@ -54,6 +54,59 @@ struct ReadDocumentToolTests {
         )
     }
 
+    // MARK: - Request tool availability
+
+    private func offeredNames(
+        for messages: [ChatMessage],
+        toolExecutionsLeft: Int = 3,
+        documentReadsLeft: Int = 12
+    ) -> [String] {
+        let definitions = ["web_search", "browse", "weather", "read_document"].map {
+            ToolDefinition(name: $0, description: $0, parameters: .object(["type": .string("object")]))
+        }
+        return ChatViewModel.offeredDefinitions(
+            enabled: definitions,
+            hasAttachedDocument: ChatViewModel.conversationHasAttachedDocument(messages),
+            toolExecutionsLeft: toolExecutionsLeft,
+            documentReadsLeft: documentReadsLeft,
+            maxDocumentReads: 12
+        ).map { $0.function.name }
+    }
+
+    @Test("Plain and image-only histories offer web tools without the document reader")
+    func noDocumentReaderWithoutFiles() throws {
+        let image = try ChatImageAttachment(
+            filename: "diagram.png", mimeType: "image/png",
+            data: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        )
+        for history in [
+            [],
+            [ChatMessage(role: .user, content: "Write a story")],
+            [ChatMessage(role: .user, content: "Describe this", imageAttachments: [image])]
+        ] {
+            #expect(offeredNames(for: history) == ["web_search", "browse", "weather"])
+        }
+    }
+
+    @Test("An earlier attached file enables the reader and preserves independent budgets")
+    func earlierFileEnablesDocumentReader() throws {
+        let file = try ChatFileAttachment(
+            filename: "report.txt", kind: .txt,
+            extractedText: "Report contents", sourceByteCount: 15
+        )
+        let history = [
+            ChatMessage(role: .user, content: "Read this", fileAttachments: [file]),
+            ChatMessage(role: .assistant, content: "Ready"),
+            ChatMessage(role: .user, content: "Summarize it")
+        ]
+        #expect(offeredNames(for: history) == ["web_search", "browse", "weather", "read_document"])
+        #expect(offeredNames(for: history, documentReadsLeft: 0) == ["web_search", "browse", "weather"])
+        #expect(offeredNames(for: history, toolExecutionsLeft: 0, documentReadsLeft: 11) == ["read_document"])
+        #expect(offeredNames(for: history, toolExecutionsLeft: 0).isEmpty)
+        #expect(offeredNames(for: history, toolExecutionsLeft: 0, documentReadsLeft: 0).isEmpty)
+        #expect(offeredNames(for: [], toolExecutionsLeft: 0, documentReadsLeft: 11).isEmpty)
+    }
+
     // MARK: - Reach
 
     @Test("A document id that was never attached is refused, not looked up")

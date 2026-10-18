@@ -165,6 +165,40 @@ final class ChatViewModel {
 
     nonisolated static let documentToolNames: Set<String> = ["read_document"]
 
+    /// File readers are useful only when a document exists in the untrimmed history.
+    /// Images have their own input path and cannot be read by read_document.
+    nonisolated static func conversationHasAttachedDocument(_ messages: [ChatMessage]) -> Bool {
+        messages.contains { !$0.fileAttachments.isEmpty }
+    }
+
+    nonisolated static func offeredDefinitions(
+        enabled: [ToolDefinition],
+        hasAttachedDocument: Bool,
+        toolExecutionsLeft: Int,
+        documentReadsLeft: Int,
+        maxDocumentReads: Int
+    ) -> [ToolDefinition] {
+        var offered = enabled.filter {
+            hasAttachedDocument || !documentToolNames.contains($0.function.name)
+        }
+        if toolExecutionsLeft == 0 {
+            // Document reads may outlive the external tool budget — but
+            // only for a model that actually reads. Without this gate a
+            // runaway caller of external tools just spins on
+            // budget-exhausted error rows instead of reaching the bounded
+            // synthesis (golden journey: tool-loop-budget).
+            if documentReadsLeft < maxDocumentReads {
+                offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
+            } else {
+                offered = []
+            }
+        }
+        if documentReadsLeft == 0 {
+            offered = offered.filter { !Self.documentToolNames.contains($0.function.name) }
+        }
+        return offered
+    }
+
     nonisolated private static let toolBudgetSynthesisPreamble = """
     The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
     """
@@ -2599,22 +2633,13 @@ final class ChatViewModel {
             // ``servingAlias`` is the protected startup/default engine and is
             // no longer authoritative once secondary models are resident.
             let wireAlias = alias
-            var offered = enabledDefinitions
-            if toolExecutionsLeft == 0 {
-                // Document reads may outlive the external tool budget — but
-                // only for a model that actually reads. Without this gate a
-                // runaway caller of external tools just spins on
-                // budget-exhausted error rows instead of reaching the bounded
-                // synthesis (golden journey: tool-loop-budget).
-                if documentReadsLeft < maxDocumentReads {
-                    offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
-                } else {
-                    offered = []
-                }
-            }
-            if documentReadsLeft == 0 {
-                offered = offered.filter { !Self.documentToolNames.contains($0.function.name) }
-            }
+            let offered = Self.offeredDefinitions(
+                enabled: enabledDefinitions,
+                hasAttachedDocument: Self.conversationHasAttachedDocument(Array(messages.prefix(currentPlaceholder))),
+                toolExecutionsLeft: toolExecutionsLeft,
+                documentReadsLeft: documentReadsLeft,
+                maxDocumentReads: maxDocumentReads
+            )
             if offered.isEmpty { isFinalSynthesisRound = true }
             let definitions = isFinalSynthesisRound
                 ? []
@@ -3265,17 +3290,16 @@ final class ChatViewModel {
         // Identifier only, no abbreviation. codex caught that "PST"/"PDT" is
         // instant-specific: it flips mid-day at a daylight-saving transition
         // and would re-prefill every open conversation at 2 a.m. twice a
-        // year, in the one block this whole change exists to hold still. The
-        // abbreviation still rides on each message trailer, where it is
-        // describing a specific instant and is therefore correct there.
+        // year, in the one block this whole change exists to hold still.
+        // Message trailers omit zone names to avoid priming regional lookups.
         return """
         [CURRENT DATE]
         Today is \(dateText) (\(zone.identifier)).
         """
     }
 
-    /// One minute-resolution local timestamp: "<full date> at <h:mm a>
-    /// (<abbreviation>, <identifier>)". Shared by the local-time annotation and the
+    /// One minute-resolution local timestamp: "<full date> at <h:mm a>".
+    /// Omits zone names. Shared by the local-time annotation and the
     /// regenerate line so the two can never drift in format — and so
     /// comparing them for equality is a reliable "does this say anything new".
     nonisolated static func clockStampText(
@@ -3290,9 +3314,7 @@ final class ChatViewModel {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = zone
         formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
-        let stampText = formatter.string(from: instant)
-        let abbreviation = zone.abbreviation(for: instant) ?? zone.identifier
-        return "\(stampText) (\(abbreviation), \(zone.identifier))"
+        return formatter.string(from: instant)
     }
 
     /// Neutral local-time annotation for a user row, outside the system row

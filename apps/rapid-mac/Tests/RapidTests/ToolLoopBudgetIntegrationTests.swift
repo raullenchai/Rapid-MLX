@@ -67,6 +67,40 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(toolRows.count == 5)
         #expect(toolRows.filter { $0.content.contains("budget exhausted") }.count == 2)
     }
+    @Test("A plain request omits the reader and unsolicited document calls are refused")
+    func noFileOmitsAndRefusesDocumentReader() async throws {
+        ToolLoopBudgetProtocol.reset(documentReads: 6)
+        let registry = CountingToolRegistry(toolName: "read_document")
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://tool-loop")!,
+                session: ToolLoopBudgetProtocol.session()
+            ),
+            tools: registry,
+            persistsConversations: false
+        )
+        model.send("Write a story", alias: "test-model")
+        for _ in 0..<200 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isStreaming)
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 1)
+        let body = try #require(ToolLoopBudgetProtocol.requestBodies.first)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["tools"] == nil)
+        let advertised = ChatViewModel.offeredDefinitions(
+            enabled: registry.definitions, hasAttachedDocument: false,
+            toolExecutionsLeft: 3, documentReadsLeft: 12, maxDocumentReads: 12
+        )
+        let result = await NativeToolCallExecutor(registry: registry).execute(
+            ToolCall(id: "hallucinated", name: "read_document", arguments: "{}"),
+            advertised: advertised
+        )
+        #expect(result.isError)
+        #expect(!result.executed)
+        #expect(registry.runCount == 0)
+    }
+
     @Test("read_document draws on its own budget instead of the general three")
     func documentReadsDoNotSpendTheGeneralBudget() async throws {
         // Paging a long attachment is inherently multi-call. If those calls
@@ -84,7 +118,11 @@ struct ToolLoopBudgetIntegrationTests {
             persistsConversations: false
         )
 
-        model.send("Summarize the attached report", alias: "test-model")
+        let attachment = try ChatFileAttachment(
+            filename: "report.txt", kind: .txt,
+            extractedText: "Report contents", sourceByteCount: 15
+        )
+        model.send("Summarize the attached report", alias: "test-model", fileAttachments: [attachment])
         for _ in 0..<200 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -114,7 +152,11 @@ struct ToolLoopBudgetIntegrationTests {
             persistsConversations: false
         )
 
-        model.send("Read the whole thing", alias: "test-model")
+        let attachment = try ChatFileAttachment(
+            filename: "report.txt", kind: .txt,
+            extractedText: "Report contents", sourceByteCount: 15
+        )
+        model.send("Read the whole thing", alias: "test-model", fileAttachments: [attachment])
         for _ in 0..<400 where model.isStreaming {
             try await Task.sleep(for: .milliseconds(10))
         }

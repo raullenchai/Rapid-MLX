@@ -95,10 +95,9 @@ struct CurrentDateTimeContextTests {
         #expect(!before.contains("PST"))
         #expect(!before.contains("PDT"))
         #expect(before.contains("America/Los_Angeles"))
-        // The abbreviation still rides on the message trailer, where it
-        // describes a specific instant and so is correct.
-        #expect(ChatViewModel.clockContext(at: beforeSpringForward, calendar: calendar).contains("PST"))
-        #expect(ChatViewModel.clockContext(at: afterSpringForward, calendar: calendar).contains("PDT"))
+        // Trailers still use the correct local wall clock across the transition.
+        #expect(ChatViewModel.clockContext(at: beforeSpringForward, calendar: calendar).hasSuffix("1:30 AM)"))
+        #expect(ChatViewModel.clockContext(at: afterSpringForward, calendar: calendar).hasSuffix("4:30 AM)"))
     }
 
     @Test("The clock trailer pins the wall clock of the instant it stamps")
@@ -113,7 +112,7 @@ struct CurrentDateTimeContextTests {
         // current times, and a bare clock on an old row would attach
         // yesterday's time to today's [CURRENT DATE] across midnight.
         #expect(out == """
-        (Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))
+        (Local time: Tuesday, August 25, 2026 at 7:37 AM)
         """)
     }
 
@@ -145,8 +144,8 @@ struct CurrentDateTimeContextTests {
         // makes turn two a strict extension of turn one: had the first row
         // been restamped (or its trailer removed), the stored prefix would no
         // longer match and the engine would re-prefill from that row onward.
-        #expect(stamped[1].modelContent.hasSuffix("7:37 AM (PDT, America/Los_Angeles))"))
-        #expect(stamped[3].modelContent.hasSuffix("7:41 AM (PDT, America/Los_Angeles))"))
+        #expect(stamped[1].modelContent.hasSuffix("7:37 AM)"))
+        #expect(stamped[3].modelContent.hasSuffix("7:41 AM)"))
         #expect(stamped[1].modelContent.hasPrefix("first question\n\n(Local time:"))
         // Non-user rows are never stamped: the assistant transcript has to
         // stay byte-identical to what the model produced, and the system row
@@ -199,7 +198,7 @@ struct CurrentDateTimeContextTests {
             role: .user, content: "what is the total?",
             fileAttachments: [attachment], status: .complete
         )
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
 
         let wire = message.modelContent
         let extractIndex = try #require(wire.range(of: "TOTAL DUE 1,204.55"))
@@ -212,7 +211,7 @@ struct CurrentDateTimeContextTests {
     @Test("An empty-prose row gains no leading blank line from the trailer")
     func blankPromptDoesNotGainLeadingNewlines() {
         var message = ChatMessage(role: .user, content: "   ", status: .complete)
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
         #expect(message.modelContent.hasPrefix("(Local time:"))
     }
 
@@ -226,7 +225,7 @@ struct CurrentDateTimeContextTests {
     @Test("The wire-only trailer is not persisted")
     func trailerIsNotPersisted() throws {
         var message = ChatMessage(role: .user, content: "hello", status: .complete)
-        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles))"
+        message.wireSuffix = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
         let round = try JSONDecoder().decode(
             ChatMessage.self, from: JSONEncoder().encode(message)
         )

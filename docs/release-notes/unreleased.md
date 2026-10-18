@@ -7,6 +7,7 @@
 
 - **Chat drafts stay with their conversation**: unsent text is saved locally across app restarts, with a separate draft for New Chat.
 - **Desktop file paste**: pasting a file into the chat composer now attaches it, or explains which file types are supported, instead of inserting its local path.
+- **Fewer unrelated Desktop tool calls**: plain writing and coding chats no longer set off unrelated web searches or page browsing. Desktop offers the document reader only when the conversation has an attached file, and the per-message time note now shows only the local date and time, without the time-zone region. Fixes #4872.
 - **Image endpoint authentication**: image endpoints now require the API key when `--api-key` is set.
 - **Personal Intelligence removed**: Desktop now uses the ordinary Chat path. `/v1/models` cards no longer include `personal_intelligence_profile` or `personal_intelligence_qualification`; `/v1/agent/runs` remains available with its existing runtime and client execution mode. Local file and command tools have been removed from Chat. Built-in tools are Web Search, Browse Web Page, Weather, and Read Attached Document again, plus any connectors you add. Files you created are not touched. Privacy copy now explains online tool data sharing.
 
