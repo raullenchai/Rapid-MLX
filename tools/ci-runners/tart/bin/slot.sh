@@ -8,9 +8,17 @@ LOG_TAG="slot$N"
 STATE="$CI_ROOT/state/slot$N"
 mkdir -p "$CI_ROOT/state" "$LOG_DIR"
 
-VM_PID=""; EXEC_PID=""; RUNNER_ID=""
+VM_PID=""; EXEC_PID=""; RUNNER_ID=""; resp=""
 
 destroy_vm() {
+  if [ -z "$RUNNER_ID" ] && [ -n "${resp:-}" ]; then
+    local id
+    id=$(printf '%s' "$resp" | jq -r '.runner.id // empty' 2>/dev/null)
+    case "$id" in
+      ''|*[!0-9]*) ;;
+      *) RUNNER_ID="$id" ;;
+    esac
+  fi
   [ -n "$EXEC_PID" ] && kill "$EXEC_PID" 2>/dev/null
   "$TART" stop "$VM" --timeout 10 >/dev/null 2>&1
   [ -n "$VM_PID" ] && { kill "$VM_PID" 2>/dev/null; wait "$VM_PID" 2>/dev/null; }
@@ -20,7 +28,7 @@ destroy_vm() {
     echo "$RUNNER_ID" >> "$STATE.orphans"
     log "could not remove runner $RUNNER_ID; will retry"
   fi
-  VM_PID=""; EXEC_PID=""; RUNNER_ID=""; rm -f "$STATE.runner"
+  VM_PID=""; EXEC_PID=""; RUNNER_ID=""; resp=""; rm -f "$STATE.runner"
 }
 
 # Removed now, or already gone on GitHub.

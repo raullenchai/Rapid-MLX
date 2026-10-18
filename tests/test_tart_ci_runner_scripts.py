@@ -69,6 +69,48 @@ def test_slot_exit_trap():
     assert "''|*[!0-9]*)" in slot
 
 
+@pytest.mark.parametrize(
+    ("response", "runner_id", "expected"),
+    [
+        ('{"runner":{"id":42}}', "", "42\n"),
+        ('{"runner":{"id":"x"}}', "", ""),
+        ('{"runner":{}}', "", ""),
+        ("invalid json", "", ""),
+        ("", "", ""),
+        ('{"runner":{"id":42}}', "17", "17\n"),
+    ],
+)
+def test_slot_destroy_recovers_runner_id(tmp_path, response, runner_id, expected):
+    if not shutil.which("jq"):
+        pytest.skip("jq unavailable")
+    slot = (TART / "bin/slot.sh").read_text()
+    definitions = []
+    for name in ("destroy_vm", "runner_removed"):
+        match = re.search(rf"^{name}\(\) \{{\n.*?^\}}", slot, re.MULTILINE | re.DOTALL)
+        assert match, f"missing {name} definition"
+        definitions.append(match.group())
+    harness = (
+        "\n".join(definitions)
+        + """
+VM_PID=""; EXEC_PID=""; RUNNER_ID="$2"; resp="$3"
+VM=test; TART=true; STATE="$1/slot"
+delete_runner_if_idle() { printf '%s\\n' "$1"; }
+destroy_vm
+[ -z "$RUNNER_ID" ] && [ -z "$resp" ] || exit 1
+destroy_vm
+"""
+    )
+    result = subprocess.run(
+        ["/bin/bash", "-uc", harness, "test", str(tmp_path), runner_id, response],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert result.stdout == expected
+    assert result.stderr == ""
+
+
 def test_concurrent_build_exits_before_tart(tmp_path):
     lockf = shutil.which("lockf")
     if not lockf or not Path("/usr/bin/lockf").is_file():
