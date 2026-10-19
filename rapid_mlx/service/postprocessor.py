@@ -2647,7 +2647,9 @@ class StreamingPostProcessor:
                 # supports an optional ``content`` payload; merging
                 # here keeps the terminal chunk count unchanged.
                 if self._ambiguous_prefix_held:
-                    flush = self._ambiguous_prefix_held
+                    # #4925: these bytes follow any content the sanitizer
+                    # still holds, so resolve them through it in order.
+                    flush = self._content_sanitizer.process(self._ambiguous_prefix_held)
                     self._ambiguous_prefix_held = ""
                     finish_event = self._make_finish_event(output)
                     # Prepend the held bytes to whatever content the

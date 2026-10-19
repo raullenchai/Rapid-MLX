@@ -3333,3 +3333,22 @@ def test_reasoning_parser_eof_content_follows_sanitizer_tail():
         e.content or "" for e in events if e.type in ("content", "finish")
     )
     assert content == "[Ca<"
+
+
+def test_ambiguous_prefix_finish_flush_follows_sanitizer_tail():
+    """#4925: a finish-only flush of an ambiguous head stays after held text."""
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    pp = StreamingPostProcessor(
+        _make_cfg(reasoning_parser=Qwen3ReasoningParser()), enable_thinking=False
+    )
+    pp.reset()
+    events = []
+    for delta in ("literal [", "<"):
+        events += pp.process_chunk(_make_output(delta))
+    events += pp.process_chunk(_make_output("", finished=True, finish_reason="stop"))
+    events += pp.finalize()
+    content = "".join(
+        e.content or "" for e in events if e.type in ("content", "finish")
+    )
+    assert content == "literal [<"
