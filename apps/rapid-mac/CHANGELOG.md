@@ -15,13 +15,71 @@ can actually understand.
 > the app's archived `machinefi/rapid-desktop` repository, where that work
 > shipped before the app moved into this `raullenchai/Rapid-MLX` monorepo.
 
-## Unreleased
-
-- Removed Personal Intelligence from Desktop.
-- Removed local file and command tools from Chat. Built-in tools are Web Search, Browse Web Page, Weather, and Read Attached Document again, plus any connectors you add. Files you created are not touched.
-- Clarified privacy copy to explain when online tools send data to their services.
-
 ## [Unreleased]
+
+## [0.16.4] — 2026-10-18
+
+Rapid-MLX 0.16.4 makes Desktop chat simpler and more dependable: Personal Intelligence is replaced by the ordinary Chat path, tool-call replies are no longer empty or full of raw markup, weather and web tools ask less and answer more, and you can attach Word documents. The server gains `/v1/rerank`, a cache-warming API, MiniCPM-V 4.7 and LFM2.5 support, and faster concurrent and multimodal decoding.
+
+### Changes to note
+
+- **Personal Intelligence removed**: Desktop now uses the ordinary Chat path. Local file and command tools are gone from Chat; the built-in tools are Web Search, Browse Web Page, Weather, and Read Attached Document again, plus any connectors you add. Files you created are not touched, and the privacy copy now explains when online tools send data to their services. `/v1/models` cards no longer include `personal_intelligence_profile` or `personal_intelligence_qualification`; `/v1/agent/runs` remains available. ([#4860](https://github.com/raullenchai/Rapid-MLX/pull/4860), [#4865](https://github.com/raullenchai/Rapid-MLX/pull/4865))
+- **Image endpoints require the API key**: when the server runs with `--api-key`, every `/v1/images` route now requires it. ([#4851](https://github.com/raullenchai/Rapid-MLX/pull/4851))
+- **Bounded retrieval requests**: rerank requests now default to at most 1000 documents and embedding requests to 2048 inputs; larger requests return HTTP 400 (raise or disable the limits with `--rerank-max-documents` / `--embedding-max-inputs`). Empty rerank documents or instructions return 400, and a full retrieval queue returns 503 with `Retry-After: 1`. jina-reranker-v3 also scores large requests faster. ([#4839](https://github.com/raullenchai/Rapid-MLX/pull/4839))
+
+### Desktop chat
+
+- **No more empty replies or raw tool-call markup**: Qwen models using native XML tool calls no longer produce empty replies, and Desktop gives accurate retry guidance when a reply stops early ([#4876](https://github.com/raullenchai/Rapid-MLX/pull/4876)). Chats that reach their tool budget show an answer or a clear fallback instead of raw markup ([#4879](https://github.com/raullenchai/Rapid-MLX/pull/4879)), and an unreadable tool request is retried once before Desktop explains that live information could not be checked ([#4885](https://github.com/raullenchai/Rapid-MLX/pull/4885)).
+- **A general assistant by default**: Desktop sends a short default assistant instruction, so the starter model describes itself as a general assistant for writing, translation, explanation, and code rather than only its tools. It appears in the Effective System Prompt preview, and your custom instructions still apply after it. ([#4903](https://github.com/raullenchai/Rapid-MLX/pull/4903))
+- **Fewer unrelated tool calls**: plain writing and coding chats set off far fewer unrelated web searches and page visits, and the document reader is offered only when a file is attached ([#4875](https://github.com/raullenchai/Rapid-MLX/pull/4875)). The per-message local time is now a neutral note in its own row before your message, so email drafts are no longer answered as if already sent, and tool replies keep the language of Chinese questions. Chat templates that require strict user/assistant alternation now accept consecutive user turns ([#4861](https://github.com/raullenchai/Rapid-MLX/pull/4861), [#4894](https://github.com/raullenchai/Rapid-MLX/pull/4894)).
+- **Titles and follow-ups for starter chats**: default starter conversations now get generated titles and follow-up suggestions. ([#4908](https://github.com/raullenchai/Rapid-MLX/pull/4908))
+- **Word documents in chat**: attach, drop, or paste a `.docx` file and ask about it. Rapid reads only the document text, with strict size and time limits; files it cannot read safely get a message suggesting PDF or TXT. ([#4895](https://github.com/raullenchai/Rapid-MLX/pull/4895))
+- **Pasting a file attaches it**: pasting a file into the composer attaches it, or explains which file types are supported, instead of inserting its local path. ([#4867](https://github.com/raullenchai/Rapid-MLX/pull/4867))
+- **Start & Send**: when the chosen chat model is downloaded but stopped, Send starts it and sends your draft once it is ready; the draft stays put if startup is cancelled or fails ([#4878](https://github.com/raullenchai/Rapid-MLX/pull/4878)). With an empty composer, the disabled button explains in its tooltip and to VoiceOver that you type a message first ([#4906](https://github.com/raullenchai/Rapid-MLX/pull/4906)).
+- **Drafts stay with their conversation**: unsent text is saved locally across restarts, with a separate draft for New Chat. ([#4866](https://github.com/raullenchai/Rapid-MLX/pull/4866), [#4886](https://github.com/raullenchai/Rapid-MLX/pull/4886))
+- **Bold and italic in Chinese, Japanese, and Korean replies**: emphasis that starts or ends on full-width punctuation, such as `**注意：**请`, now renders instead of showing literal `**`. ([#4913](https://github.com/raullenchai/Rapid-MLX/pull/4913))
+- **One approval per web page fetch**: a redirect between a site's bare domain and `www.`, or from http to https on the same host, no longer asks for approval twice. A redirect to a different site still asks, and the prompt says which site redirected. ([#4919](https://github.com/raullenchai/Rapid-MLX/pull/4919))
+- **Cleaner first chat**: finishing setup no longer drops a setup message into your new conversation, and the empty chat no longer shows a Star on GitHub button. ([#4905](https://github.com/raullenchai/Rapid-MLX/pull/4905))
+- **Private files are owner-only from creation**: chat history, folders, drafts, connector settings, and local caches are written with owner-only permissions from the start instead of being tightened after the write. ([#4904](https://github.com/raullenchai/Rapid-MLX/pull/4904))
+- **Generated videos play in the app**: clicking a finished video's preview plays it instead of quitting Desktop. ([#4764](https://github.com/raullenchai/Rapid-MLX/pull/4764))
+
+### Weather
+
+- **Daily forecasts**: tomorrow, next-few-days, and this-weekend questions use the weather data source with local dates and weekdays instead of fetching web pages, and Settings describes the tool as current conditions plus a daily forecast of up to 7 days. ([#4893](https://github.com/raullenchai/Rapid-MLX/pull/4893), [#4920](https://github.com/raullenchai/Rapid-MLX/pull/4920))
+- **More places understood**: US, Canadian, and Australian state and province abbreviations and country aliases such as USA and UK are recognized ([#4898](https://github.com/raullenchai/Rapid-MLX/pull/4898)). Asking about a state or region tells the model to pick or ask for a city instead of retrying ([#4915](https://github.com/raullenchai/Rapid-MLX/pull/4915)). Chinese cities such as 德州 (Dezhou) are found, province names such as 山东省 or "Shandong Province" are accepted, and a call naming only a state or province no longer fails as unreadable ([#4921](https://github.com/raullenchai/Rapid-MLX/pull/4921)).
+
+### Server and API
+
+- **Document reranking with `/v1/rerank`**: start the server with `--rerank-model <hf-id>` to score and sort documents against a query (Qwen3-Reranker, mxbai-rerank-v2, jina-reranker-v3, and BGE reranker v2 cross-encoders such as bge-reranker-v2-m3). It runs alongside a chat model, an embedding model, or on its own, and embedding and rerank work no longer blocks other requests or health checks. Contributed by @weizenspreu. ([#4832](https://github.com/raullenchai/Rapid-MLX/pull/4832))
+- **Warm the cache before a request**: `POST /v1/cache/prefill` prefills a fixed system and tools prefix or a revisioned draft without generating text, so the next request starts sooner ([#4884](https://github.com/raullenchai/Rapid-MLX/pull/4884)). The exact system-and-tools prefix is cached so an agent's first real turn reuses it ([#4883](https://github.com/raullenchai/Rapid-MLX/pull/4883)).
+- **Consistent tool-call text handling**: buffered replies keep model-emitted tool-call markup as text when no tools were offered, matching streaming ([#4887](https://github.com/raullenchai/Rapid-MLX/pull/4887)), and `/v1/responses` does the same under `tool_choice: "none"` ([#4902](https://github.com/raullenchai/Rapid-MLX/pull/4902)). Unfinished tool payloads stay out of visible replies ([#4774](https://github.com/raullenchai/Rapid-MLX/pull/4774)), fenced XML tool-call examples, including ones with CR or CRLF line endings, stay as content ([#4775](https://github.com/raullenchai/Rapid-MLX/pull/4775), [#4802](https://github.com/raullenchai/Rapid-MLX/pull/4802)), and Nemotron prose containing a literal closing tag after a finished call is no longer withheld ([#4768](https://github.com/raullenchai/Rapid-MLX/pull/4768)).
+- **`/v1/responses` honors `max_tokens`**: it is treated as `max_output_tokens` instead of being ignored; conflicting values return 400. ([#4815](https://github.com/raullenchai/Rapid-MLX/pull/4815))
+- **Oversized uploads get an HTTP 413**: the server drains the rest of an oversized body (at most about 64 MiB, within 10 s) and returns a JSON error naming the cap and `--max-request-bytes`, instead of resetting the connection. ([#4831](https://github.com/raullenchai/Rapid-MLX/pull/4831))
+- **Accurate health after idle unload**: `/healthz` reports `model_loaded: false` while an idle-unloaded model is in standby, matching `/metrics`, and unload and reload transitions are logged. ([#4834](https://github.com/raullenchai/Rapid-MLX/pull/4834))
+- **Local pages work from `localhost` and `127.0.0.1` alike**: a page served from `http://localhost:<port>` can call the server on the same port when it is addressed as `127.0.0.1` or `[::1]`; other origins stay blocked. ([#4816](https://github.com/raullenchai/Rapid-MLX/pull/4816))
+- **Agent tests are safer**: `rapid-mlx agents codex --test` uses the address saved by `--setup` ([#4807](https://github.com/raullenchai/Rapid-MLX/pull/4807)), and `agents --test` no longer opens browsers or apps during a sign-in flow ([#4882](https://github.com/raullenchai/Rapid-MLX/pull/4882)).
+- **TensorFold lane setting is never silently ignored**: `RAPID_MLX_TENSORFOLD_LANES` above 1, or an invalid value, on a model not served through a qualified TensorFold profile now stops `rapid-mlx serve` at startup with an error. ([#4808](https://github.com/raullenchai/Rapid-MLX/pull/4808))
+- **MTP defaults work with copied model caches**: aliases resolve a sole cached snapshot without `refs/main`, and unavailable or ambiguous configs explain why plain decode is used. ([#4801](https://github.com/raullenchai/Rapid-MLX/pull/4801))
+- **PFlash threshold warning**: the server warns at startup when `--pflash-threshold-basis uncached` cannot apply and falls back to the total prompt length; the CLI reference now documents the sink/tail token budget. ([#4767](https://github.com/raullenchai/Rapid-MLX/pull/4767))
+- **Cache prefill works on Python 3.10**: prefill cancellation no longer relies on a Python 3.11-only call. ([#4900](https://github.com/raullenchai/Rapid-MLX/pull/4900))
+
+### Models
+
+- **MiniCPM-V 4.7 (experimental)**: `minicpm-v4.7-1b-8bit` and `minicpm-v4.7-35b-a3b-mxfp4` serve through the multimodal lane with tool calling and reasoning parsing preconfigured. ([#4745](https://github.com/raullenchai/Rapid-MLX/pull/4745))
+- **LFM2.5-24B-A2B**: `rapid-mlx serve lfm2.5-24b-a2b-4bit` loads LiquidAI's official 4-bit MLX build with tool calling and reasoning parsing preconfigured. ([#4852](https://github.com/raullenchai/Rapid-MLX/pull/4852))
+
+### Performance
+
+- **Long prompts prefill concurrently when memory allows**: the scheduler no longer over-estimates long-prompt prefill memory (about 300 GB estimated vs about 45 GB measured for a 32k-token prompt on a 35B MoE hybrid model), so concurrent 32k-token requests are no longer forced to run one at a time. ([#4835](https://github.com/raullenchai/Rapid-MLX/pull/4835))
+- **Faster text on multimodal Qwen MoE models**: text-only requests on the default vision-capable lane of Qwen3.6-35B-A3B-class checkpoints keep single-request caches, use fused MoE and GDN projections, and no longer run slower than `--no-mllm`. Short 2–8-token blocks produce byte-identical output to the unfused model. ([#4825](https://github.com/raullenchai/Rapid-MLX/pull/4825), [#4837](https://github.com/raullenchai/Rapid-MLX/pull/4837), [#4841](https://github.com/raullenchai/Rapid-MLX/pull/4841))
+- **Vision-model servers keep text prefix caches across restarts**: text-only prompt-prefix caches are restored after a restart; image-bearing prefixes are never persisted. ([#4829](https://github.com/raullenchai/Rapid-MLX/pull/4829))
+- **Faster opt-in MTP cohorts under load**: continuous self-MTP forms a cohort only with at most 3 live requests and never grows past 3 lanes; with 4 or more concurrent requests the rest use plain batched decode, measured 23–24% faster for short prompts and 6–13% faster at 8k–16k-token prompts than the previous cohort. Cohort rollback overhead is lower too. ([#4822](https://github.com/raullenchai/Rapid-MLX/pull/4822), [#4777](https://github.com/raullenchai/Rapid-MLX/pull/4777))
+
+### Packaging
+
+- **Smaller Desktop app**: the bundled runtime no longer ships build-only headers, test suites, or Intel code slices, and only the math font the app renders with is included — about 14 MB off the DMG and more than 110 MB and 11,000 files off the installed app. ([#4797](https://github.com/raullenchai/Rapid-MLX/pull/4797), [#4798](https://github.com/raullenchai/Rapid-MLX/pull/4798))
+- **Local Search works on stock Macs**: the default index location and index folders under `/tmp` or `/var` no longer fail with a 503 because of standard macOS deny ACLs or directory aliases; unsafe ancestor permissions still fail with a message naming the path. ([#4814](https://github.com/raullenchai/Rapid-MLX/pull/4814))
+- **Packaged license notices**: installed packages include the license and notice files for the vendored speculative-decoding (MTP) code and the MiniCPM-V 4.7 vision model code. ([#4812](https://github.com/raullenchai/Rapid-MLX/pull/4812))
 
 ## [0.16.3] — 2026-10-17
 
@@ -4345,7 +4403,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.3...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.4...HEAD
+[0.16.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.3...rapid-mac-v0.16.4
 [0.16.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.2...rapid-mac-v0.16.3
 [0.16.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.1...rapid-mac-v0.16.2
 [0.16.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.0...rapid-mac-v0.16.1
