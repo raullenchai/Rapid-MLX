@@ -356,9 +356,10 @@ def test_helper_scans_at_most_tool_count_cap(monkeypatch):
 
 
 def test_oversized_auto_finds_safe_name_after_grammar_tool_cap():
-    tools = [tool("bad>name") for _ in range(400)]
-    tools[300] = tool("search")
-    req = request(tools=tools)
+    req = request(tools=many_tools(400))
+    # Validation rejects unsafe names on input, so mutate after construction.
+    for item in req.tools[:300]:
+        item.function["name"] = "bad>name"
 
     assert not chat._tools_within_grammar_bounds(req.tools)
     assert chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine()) is None
