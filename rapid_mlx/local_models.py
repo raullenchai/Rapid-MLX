@@ -55,10 +55,22 @@ def _checkpoint_dir(repo: str, external: bool) -> str | None:
     return str(metadata.snapshot_dir)
 
 
+_TOKENIZER_VOCAB_FILES = frozenset(
+    {
+        "tokenizer.json",
+        "tokenizer.model",
+        "vocab.json",
+        "vocab.txt",
+        "spiece.model",
+        "tiktoken.model",
+    }
+)
+
+
 def _has_tokenizer(files: tuple[str, ...]) -> bool:
+    """A tokenizer vocabulary, not just ``tokenizer_config.json`` metadata."""
     return any(
-        name.startswith(("tokenizer", "vocab")) or name.endswith(".tiktoken")
-        for name in files
+        name in _TOKENIZER_VOCAB_FILES or name.endswith(".tiktoken") for name in files
     )
 
 

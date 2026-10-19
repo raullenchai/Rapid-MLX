@@ -51,6 +51,7 @@ def write_model(
     (directory / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "{{ messages }}"} if template else {})
     )
+    (directory / "tokenizer.json").write_text("{}")
     if weights:
         (directory / "model.safetensors").write_bytes(b"fake")
     return directory
@@ -107,10 +108,7 @@ def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolu
     assert args._original_alias == first_run.FIRST_RUN_MODEL
     assert args._serve_default_selected and args._telemetry_auto_selected
     err = capsys.readouterr().err
-    assert (
-        f"starting {first_run.FIRST_RUN_MODEL} (already on this Mac, no download)."
-        in err
-    )
+    assert f"starting {first_run.FIRST_RUN_MODEL} (already on this Mac)." in err
     assert "Override: rapid-mlx serve <model>" in err
     assert "has not been catalog-tested" not in err
 
@@ -565,9 +563,10 @@ def test_catalog_external_serves_without_note(
 def test_catalog_checkpoint_without_config_or_tokenizer_is_not_offered(cache):
     repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
     directory = snapshot(cache, repo)
-    (directory / "tokenizer_config.json").unlink()
+    (directory / "tokenizer.json").unlink()
+    # Tokenizer metadata without a vocabulary is still an incomplete download.
     assert lm.discover_runnable_chat_models() == []
-    (directory / "tokenizer_config.json").write_text("{}")
+    (directory / "tokenizer.json").write_text("{}")
     (directory / "config.json").unlink()
     assert lm.discover_runnable_chat_models() == []
 
@@ -590,3 +589,20 @@ def test_fit_uses_selected_checkpoint_not_whole_repo(cache):
     (old / "model.safetensors").write_bytes(b"x" * (64 << 10))
     (found,) = lm.discover_runnable_chat_models(ram_bytes=1024)
     assert found.size_bytes == 4
+
+
+@pytest.mark.parametrize("vocab", ["tokenizer.model", "vocab.json", "qwen.tiktoken"])
+def test_tokenizer_vocabulary_formats(cache, vocab):
+    directory = snapshot(cache, "org/chat")
+    (directory / "tokenizer.json").unlink()
+    (directory / vocab).write_text("x")
+    assert [m.repo for m in lm.discover_runnable_chat_models()] == ["org/chat"]
+
+
+def test_external_checkpoint_without_vocabulary_is_not_offered(
+    cache, tmp_path, monkeypatch
+):
+    root = tmp_path / "external"
+    (write_model(root / "acme" / "chat") / "tokenizer.json").unlink()
+    monkeypatch.setattr(ma, "DEFAULT_EXTERNAL_MODEL_ROOTS", (str(root),))
+    assert lm.discover_runnable_chat_models() == []

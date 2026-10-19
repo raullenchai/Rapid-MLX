@@ -14868,7 +14868,7 @@ def main():
             args._serve_default_selected = True
             print(
                 f"  No model specified — starting {chosen.model} "
-                "(already on this Mac, no download).",
+                "(already on this Mac).",
                 file=sys.stderr,
             )
             if not chosen.cataloged:
