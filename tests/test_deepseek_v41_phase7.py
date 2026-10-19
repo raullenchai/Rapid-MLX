@@ -645,6 +645,9 @@ def test_local_override_never_breaks_other_models(monkeypatch, model):
     monkeypatch.setattr(
         _version_check, "print_staleness_warning_if_any", lambda **_: None
     )
+    # Host-independent: the memory guards run first and differ per runner.
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *args, **kw: None)
     reached = []
 
     def stop(name):
