@@ -5864,7 +5864,13 @@ def serve_command(args):
     )
 
     _v41_artifact = product_artifact(args.model)
-    _v41_local = local_product_path(_v41_artifact)
+    # The qualification override only applies to the co-located product lane;
+    # it must never affect any other model, including the original V4.1 lane.
+    _v41_local = (
+        local_product_path(_v41_artifact)
+        if _v41_artifact is not None and _v41_artifact.draft_subfolder
+        else None
+    )
     _owns_v41_product_download = is_product_target(args.model)
     if _v41_artifact is not None and _v41_local is None:
         require_pins(_v41_artifact)

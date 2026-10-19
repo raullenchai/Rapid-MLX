@@ -421,7 +421,7 @@ def require_pins(artifact: ProductArtifact) -> None:
 def local_product_path(artifact: ProductArtifact | None) -> Path | None:
     """Explicit qualification override; never turns an unknown model into V4.1."""
     value = os.environ.get(LOCAL_MODEL_DIR_ENV)
-    if value is None:
+    if value is None or not value.strip():
         return None
     if artifact is None or not artifact.draft_subfolder:
         raise ValueError(f"{LOCAL_MODEL_DIR_ENV} requires deepseek-v41-flash-1017")
@@ -436,7 +436,7 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
         "dspark/model.safetensors.index.json",
         "dspark/model-mtp.safetensors",
     )
-    complete = bool(value.strip()) and all((root / name).is_file() for name in required)
+    complete = all((root / name).is_file() for name in required)
     for directory in (root, root / "dspark") if complete else ():
         try:
             index = json.loads((directory / "model.safetensors.index.json").read_text())

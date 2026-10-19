@@ -207,7 +207,7 @@ def test_local_override_is_explicit_logged_and_bypasses_pins(
         a.resolve_product_paths(a.FLASH_1017, allow_local=False)
 
 
-@pytest.mark.parametrize("value", ["", "/does/not/exist"])
+@pytest.mark.parametrize("value", ["/does/not/exist", "/"])
 def test_bad_local_override_does_not_fall_back(monkeypatch, value):
     monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, value)
     with pytest.raises(ValueError, match="incomplete local"):
@@ -621,3 +621,37 @@ def test_block_sizes_routed_experts_per_layer():
         experts_per_layer=(4, 8),
     )
     assert [Block(i, args).ffn.gate.weight.shape[0] for i in range(2)] == [4, 8]
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_empty_local_override_is_unset(monkeypatch, value):
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, value)
+    assert a.local_product_path(a.FLASH_1017) is None
+    assert a.local_product_path(None) is None
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("model", ["deepseek-v41-flash-reap-2bit", "qwen3-0.6b-4bit"])
+def test_local_override_never_breaks_other_models(monkeypatch, model):
+    from rapid_mlx import _version_check, cli
+    from tests.test_deepseek_v41_artifacts import _product_serve_args
+
+    args = _product_serve_args()
+    args.model = model
+    args._original_alias = model
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, "/anything")
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(
+        _version_check, "print_staleness_warning_if_any", lambda **_: None
+    )
+    reached = []
+
+    def stop(name):
+        # Runs right after the override lookup; reaching it proves no ValueError.
+        reached.append(name)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(a, "is_product_target", stop)
+    with pytest.raises(SystemExit):
+        cli.serve_command(args)
+    assert reached == [model]
