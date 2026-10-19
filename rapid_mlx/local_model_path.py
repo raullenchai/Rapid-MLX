@@ -279,12 +279,17 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
         )
-    # Whisper can use weights.npz; text and vision loaders use safetensors.
-    weights = [
-        path
-        for pattern in ("*.safetensors", "*.bin", "weights.npz")
-        for path in root.glob(pattern)
-    ]
+    # mlx-lm loads model*.safetensors at the root. PyTorch .bin files and
+    # auxiliary safetensors do not make a text checkpoint serveable.
+    try:
+        model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        model_type = None  # Leave malformed configs to the loader's typed error.
+    weights = list(root.glob("model*.safetensors"))
+    if model_type == "whisper":
+        weights.extend((root / "weights.npz", root / "weights.safetensors"))
+    elif model_type == "kokoro":
+        weights.append(root / "kokoro-v1_0.safetensors")
     for path in weights:
         if path.is_file() and not os.access(path, os.R_OK):
             raise PermissionError(errno.EACCES, "Cannot read model weights", str(path))

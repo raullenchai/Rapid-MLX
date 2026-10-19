@@ -51,6 +51,18 @@ def test_local_model_preflight_ignores_unselected_nested_weights(tmp_path):
         validate_local_model_for_serve(str(root))
 
 
+@pytest.mark.parametrize(
+    "filename", ["pytorch_model.bin", "weights.npz", "adapter.safetensors"]
+)
+def test_text_model_requires_loader_visible_safetensors(tmp_path, filename):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / filename).write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
 def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
     root = tmp_path / "model"
     (root / "variant").mkdir(parents=True)
@@ -71,13 +83,20 @@ def test_programmatic_server_load_rejects_missing_config_before_engine(tmp_path)
         load_model(str(root))
 
 
-@pytest.mark.parametrize("layout", ["whisper", "image", "video"])
+@pytest.mark.parametrize(
+    "layout", ["whisper", "whisper-safetensors", "kokoro", "image", "video"]
+)
 def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
     root = tmp_path / layout
     root.mkdir()
-    if layout == "whisper":
+    if layout.startswith("whisper"):
         (root / "config.json").write_text('{"model_type":"whisper"}')
-        (root / "weights.npz").write_bytes(b"data")
+        (
+            root / ("weights.npz" if layout == "whisper" else "weights.safetensors")
+        ).write_bytes(b"data")
+    elif layout == "kokoro":
+        (root / "config.json").write_text('{"model_type":"kokoro"}')
+        (root / "kokoro-v1_0.safetensors").write_bytes(b"data")
     else:
         (
             root / ("model_index.json" if layout == "image" else "split_model.json")
