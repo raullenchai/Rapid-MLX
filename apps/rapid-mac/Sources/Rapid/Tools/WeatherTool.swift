@@ -619,7 +619,9 @@ enum WeatherTool {
         candidates: [GeoHit]
     ) -> String? {
         let requestedKey = matchKey(requestedName)
-        guard !requestedKey.isEmpty else { return nil }
+        // Contradictory country qualifiers ("Texas, Canada" + country US)
+        // are a qualifier problem, not evidence of a region.
+        guard !requestedKey.isEmpty, countryHints.count <= 1 else { return nil }
 
         let tableMatches = subdivisionNames.flatMap { countryCode, subdivisions in
             subdivisions.compactMap { abbreviation, name -> SubdivisionMatch? in
