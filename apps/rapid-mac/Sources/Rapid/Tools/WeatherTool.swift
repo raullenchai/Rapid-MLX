@@ -284,6 +284,7 @@ enum WeatherTool {
         }
         if !hasMajorNamesake, let label = regionLabel(
             requestedName: query.name,
+            admin1: admin1,
             countryHints: countryHints,
             candidates: allCandidates
         ) {
@@ -589,6 +590,7 @@ enum WeatherTool {
 
     private static func regionLabel(
         requestedName: String,
+        admin1: String?,
         countryHints: Set<String>,
         candidates: [GeoHit]
     ) -> String? {
@@ -609,9 +611,24 @@ enum WeatherTool {
             ? tableMatches
             : tableMatches.filter { countryHints.contains($0.countryCode) }
         let isAbbreviation = tableMatches.contains { matchKey($0.abbreviation) == requestedKey }
+        // An explicit admin1 must name the same region ("Texas", "TX") or its
+        // country ("USA", which models often put there); a contradicting one
+        // (Texas + California) is a qualifier problem, not a region.
+        let explicitAdmin1 = cleaned(admin1)
+        func admin1Agrees(_ accepted: Set<String>, countryCode: String?) -> Bool {
+            guard let explicitAdmin1 else { return true }
+            let key = matchKey(explicitAdmin1)
+            if key == requestedKey || accepted.contains(key) { return true }
+            guard let countryCode else { return false }
+            return countryCodes(for: explicitAdmin1).contains { $0.uppercased() == countryCode.uppercased() }
+        }
         if hintedTableMatches.count == 1,
            !isAbbreviation || !countryHints.isEmpty || tableMatches.count == 1,
-           let subdivision = hintedTableMatches.first {
+           let subdivision = hintedTableMatches.first,
+           admin1Agrees(
+               [matchKey(subdivision.name), matchKey(subdivision.abbreviation)],
+               countryCode: subdivision.countryCode
+           ) {
             return placeLabel(
                 subdivision.name,
                 englishCountryName(for: subdivision.countryCode),
@@ -634,7 +651,8 @@ enum WeatherTool {
                 matchKey(admin1),
                 traditionalGeocodingName(admin1).map(matchKey),
             ].compactMap { $0 })
-            guard !requestedAdminKeys.isDisjoint(with: candidateKeys) else { return false }
+            guard !requestedAdminKeys.isDisjoint(with: candidateKeys),
+                  admin1Agrees(candidateKeys, countryCode: candidate.countryCode) else { return false }
             guard !countryHints.isEmpty else { return true }
             let candidateCodes = Set(
                 ([candidate.countryCode].compactMap { $0 } + [candidate.country].compactMap { $0 })

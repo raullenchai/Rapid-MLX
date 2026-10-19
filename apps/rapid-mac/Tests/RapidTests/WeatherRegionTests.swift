@@ -101,6 +101,8 @@ struct WeatherRegionTests {
         ("Texas, US", nil, nil),
         ("Texas, USA", nil, nil),
         ("Texas", "USA", "Texas"),
+        ("Texas", "US", "TX"),
+        ("Texas, USA", nil, "USA"),
         ("Texas, TX", nil, nil),
     ])
     func texasQualifiers(location: String, country: String?, admin1: String?) async throws {
@@ -181,6 +183,15 @@ struct WeatherRegionTests {
         )
         #expect(australia.content.contains("Victoria, Australia"))
         #expect(australia.content.contains("state or region"))
+    }
+
+    @Test("A contradicting explicit admin1 is a qualifier mismatch, not a region")
+    func texasWithCaliforniaAdmin1() async throws {
+        let result = try await Self.result(
+            location: "Texas", admin1: "California", fixtures: ["Texas": Self.texas]
+        )
+        #expect(!result.content.contains("state or region"))
+        #expect(result.content.contains("found places named \"Texas\", but none matching \"California\""))
     }
 
     @Test("A known city excluded by its qualifiers asks for one corrected retry")
