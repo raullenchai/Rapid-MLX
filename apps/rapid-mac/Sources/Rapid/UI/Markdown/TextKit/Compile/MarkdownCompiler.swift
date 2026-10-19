@@ -433,9 +433,14 @@ struct MarkdownCompiler: Sendable {
         _ source: String, depth: Int, into items: inout [MarkdownItem]
     ) {
         guard !source.isEmpty else { return }
-        let document = Document(parsing: source, options: Self.parseOptions)
+        let document = Document(parsing: CJKEmphasisFlanking.prepare(source), options: Self.parseOptions)
+        let firstItem = items.count
         for child in document.children {
             appendBlocks(from: child, depth: depth, into: &items)
+        }
+        // Include a preceding image grid: appendImages may merge into it.
+        for index in max(0, firstItem - 1)..<items.count {
+            items[index] = strippingCJKSentinels(items[index])
         }
     }
 
@@ -563,7 +568,7 @@ struct MarkdownCompiler: Sendable {
             case let image as Markdown.Image:
                 // An image whose source will not parse is dropped rather than
                 // rendered as a broken tile.
-                guard let source = image.source, let url = URL(string: source) else {
+                guard let source = image.source, let url = URL(string: CJKEmphasisFlanking.strip(source)) else {
                     return nil
                 }
                 urls.append(url)
@@ -623,10 +628,42 @@ struct MarkdownCompiler: Sendable {
     /// the source text is not ours, and is dropped before segmentation so it
     /// can never be read as an index.
     static func withoutStraySentinels(_ source: String) -> String {
-        guard source.contains(sentinelOpen) || source.contains(sentinelClose) else {
+        guard source.contains(sentinelOpen) || source.contains(sentinelClose)
+                || source.contains(CJKEmphasisFlanking.sentinel) else {
             return source
         }
-        return source.filter { $0 != sentinelOpen && $0 != sentinelClose }
+        return CJKEmphasisFlanking.strip(source).filter { $0 != sentinelOpen && $0 != sentinelClose }
+    }
+
+    /// Remove emphasis bridges before post-processing; drop empty runs and
+    /// coalesce adjacent equal styles after the bridges have disappeared.
+    func strippingCJKSentinels(_ item: MarkdownItem) -> MarkdownItem {
+        func runs(_ input: [InlineRun]) -> [InlineRun] {
+            merge(input.map { run in
+                var result = run
+                result.text = CJKEmphasisFlanking.strip(run.text)
+                return result
+            })
+        }
+        switch item {
+        case .text(var block):
+            block.runs = runs(block.runs)
+            return .text(block)
+        case .table(var block):
+            block.header = block.header.map(runs)
+            block.rows = block.rows.map { $0.map(runs) }
+            return .table(block)
+        case .code(var block):
+            block.code = CJKEmphasisFlanking.strip(block.code)
+            block.language = block.language.map(CJKEmphasisFlanking.strip)
+            return .code(block)
+        case .images(var block):
+            block.altTexts = block.altTexts.map(CJKEmphasisFlanking.strip)
+            return .images(block)
+        case .math:
+            // Display math never passes through appendMarkdown.
+            return item
+        }
     }
 
     /// Swap sentinels back for math runs, everywhere runs can appear.
@@ -794,7 +831,7 @@ struct MarkdownCompiler: Sendable {
 
         case let link as Markdown.Link:
             var nested = style
-            nested.link = link.destination.flatMap(URL.init(string:))
+            nested.link = link.destination.flatMap { URL(string: CJKEmphasisFlanking.strip($0)) }
             for child in link.children { collectInline(child, style: nested, into: &runs) }
 
         default:
