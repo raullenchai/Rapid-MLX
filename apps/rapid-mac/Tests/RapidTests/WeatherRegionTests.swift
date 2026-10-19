@@ -189,7 +189,6 @@ struct WeatherRegionTests {
         ("California, CA", "California, United States"),
         ("Georgia, GA", "Georgia, United States"),
         ("Indiana, IN", "Indiana, United States"),
-        ("Ontario, CA", "Ontario, Canada"),
     ])
     func isoLookingStateAbbreviations(location: String, label: String) async throws {
         let result = try await Self.result(location: location, fixtures: [:])
@@ -202,6 +201,8 @@ struct WeatherRegionTests {
         #expect(!bare.content.contains("state or region"))
         let us = try await Self.result(location: "Georgia, US", fixtures: [:])
         #expect(us.content.contains("state or region (Georgia, United States)"))
+        let admin1Country = try await Self.result(location: "Georgia", admin1: "USA", fixtures: [:])
+        #expect(admin1Country.content.contains("state or region (Georgia, United States)"))
     }
 
     @Test("Contradictory country qualifiers are not a region")

@@ -269,7 +269,8 @@ enum WeatherTool {
 
         let allCandidates = originalCandidates + alternateCandidates
         let countryHints = regionCountryHints(
-            requestedName: query.name, country: country, commaQualifiers: query.commaQualifiers
+            requestedName: query.name, country: country, admin1: admin1,
+            commaQualifiers: query.commaQualifiers
         )
         // A major city sharing the region's name (Victoria, Canada; Ontario,
         // California) keeps the ordinary ambiguity advice: a country or
@@ -579,6 +580,7 @@ enum WeatherTool {
     private static func regionCountryHints(
         requestedName: String,
         country: String?,
+        admin1: String?,
         commaQualifiers: [String]
     ) -> Set<String> {
         // A comma qualifier that restates the requested subdivision
@@ -605,8 +607,13 @@ enum WeatherTool {
         // Two-letter qualifiers such as "TX" are passed through as codes by
         // countryCodes(for:); keep only real ISO regions so a state code is
         // never mistaken for a country hint.
+        // A country spelled out in admin1 ("USA", a common model habit) is a
+        // country hint too; two-letter admin1 values stay state codes.
+        let admin1Country = cleaned(admin1).flatMap { value in
+            value.count > 2 && !countryCodes(for: value).isEmpty ? value : nil
+        }
         let isoRegions = Set(Locale.Region.isoRegions.map { $0.identifier.uppercased() })
-        return hints.union(([country].compactMap(cleaned) + qualifiers)
+        return hints.union(([country, admin1Country].compactMap(cleaned) + qualifiers)
             .flatMap(countryCodes(for:))
             .map { $0.uppercased() }
             .filter(isoRegions.contains))
