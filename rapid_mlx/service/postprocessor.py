@@ -3845,14 +3845,6 @@ class StreamingPostProcessor:
         """
         events = []
 
-        # Preserve accumulation only for bytes already held by our sanitizer.
-        # The parser's later EOF release has never belonged to this accumulator.
-        accumulated_tail = (
-            copy.copy(self._content_sanitizer).flush()
-            if self._content_sanitizer_accumulates
-            else ""
-        )
-
         finalize_raw = getattr(self.tool_parser, "finalize_legacy_raw_stream", None)
         if callable(finalize_raw):
             raw_delta = finalize_raw(
@@ -4232,16 +4224,21 @@ class StreamingPostProcessor:
         # held tail. Feed them through it in order, then drain it once, so
         # split markup resolves exactly as in the buffered reply (#4925).
         resolved_events = []
+        emitted = []
         for event in events:
             if event.type == "content" and event.content:
                 resolved = self._content_sanitizer.process(event.content)
                 if not resolved:
                     continue
+                emitted.append(resolved)
                 event = dataclasses.replace(event, content=resolved)
             resolved_events.append(event)
         events = resolved_events
         resolved_content = self._content_sanitizer.flush()
-        self.accumulated_text += accumulated_tail
+        if self._content_sanitizer_accumulates:
+            # Accumulate exactly what this path emits at EOF, after split
+            # markup has resolved, so stripped bytes never land here.
+            self.accumulated_text += "".join(emitted) + resolved_content
         last_content = next(
             (i for i in range(len(events) - 1, -1, -1) if events[i].type == "content"),
             None,

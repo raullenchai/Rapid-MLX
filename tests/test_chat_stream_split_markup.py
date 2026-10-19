@@ -202,3 +202,42 @@ def test_sanitizer_held_prefix_precedes_structured_tool_call(inline_finish):
         == "before ["
     )
     assert not any(choice["delta"].get("content") for choice in choices[call_index:])
+
+
+def test_logprobs_reported_once_for_multi_content_output(monkeypatch):
+    from rapid_mlx.api.models import TokenLogProb
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.routes import chat
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    monkeypatch.setattr(
+        chat,
+        "_extract_streaming_token_logprobs",
+        lambda output, *a, **k: [
+            TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
+        ],
+    )
+    process_chunk = StreamingPostProcessor.process_chunk
+
+    def two_content_events(self, output):
+        if output.new_text == "ab":
+            return [
+                StreamEvent(type="content", content="a"),
+                StreamEvent(type="content", content="b"),
+            ]
+        return process_chunk(self, output)
+
+    monkeypatch.setattr(StreamingPostProcessor, "process_chunk", two_content_events)
+    client = client_for(ReplayEngine(["ab"], "stop"))
+    response = client.post(
+        "/v1/chat/completions",
+        json={**_payload("missing"), "stream": True, "logprobs": True},
+    )
+    assert response.status_code == 200, response.text
+    tokens = [
+        entry["token"]
+        for event in sse(response.text)
+        for choice in event.get("choices", [])
+        for entry in (choice.get("logprobs") or {}).get("content", [])
+    ]
+    assert tokens == ["ab", ""]

@@ -7813,13 +7813,16 @@ async def stream_chat_completion(
                 _held_logprobs = _build_chunk_logprobs(output)
                 if _held_logprobs:
                     _held_logprob_entries.extend(_held_logprobs.content)
+            # Each output's logprobs ride on exactly one content chunk.
+            _output_logprobs_pending = want_logprobs and not _defer_logprobs
             for event in _chunk_events:
                 if event.type == "content":
                     _event_logprobs = (
                         _with_held_logprobs(_build_chunk_logprobs(output))
-                        if want_logprobs and not _defer_logprobs
+                        if _output_logprobs_pending
                         else None
                     )
+                    _output_logprobs_pending = False
                     if _buffer_forced_content:
                         if _forced_wire_quarantine:
                             # A channel boundary bisected marker-shaped content.

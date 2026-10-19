@@ -3274,7 +3274,8 @@ def test_content_sanitizer_tail_precedes_parser_held_content():
     pp.tool_accumulated_text = "raw"
     events = pp.finalize()
     assert [event.content for event in events if event.content] == ["< after"]
-    assert pp.accumulated_text == "before <"
+    # The accumulating path records exactly what it emitted at EOF.
+    assert pp.accumulated_text == "before < after"
     pp.tool_parser.flush_held_content.assert_called_once_with("raw")
 
 
@@ -3352,3 +3353,16 @@ def test_ambiguous_prefix_finish_flush_follows_sanitizer_tail():
         e.content or "" for e in events if e.type in ("content", "finish")
     )
     assert content == "literal [<"
+
+
+def test_finalize_accumulates_only_resolved_eof_content():
+    """#4925: markup completed by EOF content never lands in accumulated_text."""
+    pp = StreamingPostProcessor(_make_cfg())
+    pp._process_channel_routed("before [Calling", _make_output(channel="content"))
+    pp.tool_parser = MagicMock()
+    pp.tool_parser.finalize_legacy_raw_stream.return_value = None
+    pp.tool_parser.flush_held_content.return_value = " tool: x]"
+    pp.tool_accumulated_text = "raw"
+    events = pp.finalize()
+    assert not any(event.content for event in events)
+    assert pp.accumulated_text == "before "
