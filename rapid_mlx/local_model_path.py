@@ -336,28 +336,41 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                             errno.ENOENT, "Missing model component", str(weight)
                         )
                 return
-            weight_components = (
-                "transformer",
-                "unet",
-                "vae",
-                "text_encoder",
-                "text_encoder_2",
-                "prior",
-                "decoder",
-            )
+            metadata_components = {
+                "scheduler",
+                "tokenizer",
+                "tokenizer_2",
+                "processor",
+                "feature_extractor",
+                "image_processor",
+            }
             required = [
                 component
-                for component in weight_components
-                if component in manifest and manifest[component] is not None
+                for component, declaration in manifest.items()
+                if not component.startswith("_")
+                and component not in metadata_components
+                and declaration is not None
             ]
             if not required:
                 raise FileNotFoundError(
                     errno.ENOENT, "Missing model components", str(manifest_path)
                 )
             for component in required:
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", component):
+                    raise FileNotFoundError(
+                        errno.ENOENT, "Invalid model component", str(manifest_path)
+                    )
+                component_dir = root / component
+                missing_shards = _missing_index_shards(component_dir, recursive=False)
+                if missing_shards:
+                    raise FileNotFoundError(
+                        errno.ENOENT,
+                        "Missing model component",
+                        str(component_dir / missing_shards[0]),
+                    )
                 component_files = (
-                    *(root / component).glob("*.safetensors"),
-                    *(root / component).glob("*.npz"),
+                    *component_dir.glob("*.safetensors"),
+                    *component_dir.glob("*.npz"),
                     root / f"{component}.safetensors",
                 )
                 if not any(

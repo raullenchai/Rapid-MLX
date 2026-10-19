@@ -202,6 +202,23 @@ def test_disabled_optional_image_component_needs_no_weights(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_custom_image_component_and_indexed_shards(tmp_path):
+    root = tmp_path / "image"
+    component = root / "custom_encoder"
+    component.mkdir(parents=True)
+    (root / "model_index.json").write_text(
+        '{"_class_name":"CustomPipeline","custom_encoder":[],"scheduler":[]}'
+    )
+    (component / "one.safetensors").write_bytes(b"data")
+    (component / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"one": "one.safetensors", "two": "two.safetensors"}})
+    )
+    with pytest.raises(FileNotFoundError, match="Missing model component"):
+        validate_local_model_for_serve(str(root))
+    (component / "two.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
 def test_bonsai_manifest_uses_packed_component_layout(tmp_path):
     root = tmp_path / "bonsai"
     root.mkdir()
