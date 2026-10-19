@@ -185,6 +185,17 @@ struct WeatherRegionTests {
         #expect(australia.content.contains("state or region"))
     }
 
+    @Test("A state restated by an abbreviation that is also an ISO code stays a region", arguments: [
+        ("California, CA", "California, United States"),
+        ("Georgia, GA", "Georgia, United States"),
+        ("Indiana, IN", "Indiana, United States"),
+        ("Ontario, CA", "Ontario, Canada"),
+    ])
+    func isoLookingStateAbbreviations(location: String, label: String) async throws {
+        let result = try await Self.result(location: location, fixtures: [:])
+        #expect(result.content.contains("state or region (\(label))"))
+    }
+
     @Test("A contradicting explicit admin1 is a qualifier mismatch, not a region")
     func texasWithCaliforniaAdmin1() async throws {
         let result = try await Self.result(
