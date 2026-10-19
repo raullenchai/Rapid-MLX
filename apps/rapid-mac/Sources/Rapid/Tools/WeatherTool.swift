@@ -628,12 +628,14 @@ enum WeatherTool {
         // Two-letter qualifiers such as "TX" are passed through as codes by
         // countryCodes(for:); keep only real ISO regions so a state code is
         // never mistaken for a country hint.
-        // A country spelled out in admin1 ("USA", a common model habit) is a
-        // country hint too; two-letter admin1 values stay state codes.
-        let admin1Country = cleaned(admin1).flatMap { value in
-            value.count > 2 && !countryCodes(for: value).isEmpty ? value : nil
-        }
+        // A country in admin1 ("USA", "US", a common model habit) is a country
+        // hint too, unless it is also a supported state code (CA, WA).
         let isoRegions = Set(Locale.Region.isoRegions.map { $0.identifier.uppercased() })
+        let subdivisionCodes = Set(subdivisionNames.values.flatMap { $0.keys.map(matchKey) })
+        let admin1Country = cleaned(admin1).flatMap { value -> String? in
+            guard !subdivisionCodes.contains(matchKey(value)) else { return nil }
+            return countryCodes(for: value).contains { isoRegions.contains($0.uppercased()) } ? value : nil
+        }
         return hints.union(([country, admin1Country].compactMap(cleaned) + qualifiers)
             .flatMap(countryCodes(for:))
             .map { $0.uppercased() }

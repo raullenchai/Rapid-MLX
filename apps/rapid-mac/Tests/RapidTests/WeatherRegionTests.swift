@@ -205,6 +205,8 @@ struct WeatherRegionTests {
         #expect(us.content.contains("state or region (Georgia, United States)"))
         let admin1Country = try await Self.result(location: "Georgia", admin1: "USA", fixtures: [:])
         #expect(admin1Country.content.contains("state or region (Georgia, United States)"))
+        let admin1Code = try await Self.result(location: "Georgia", admin1: "US", fixtures: [:])
+        #expect(admin1Code.content.contains("state or region (Georgia, United States)"))
     }
 
     @Test("A conflicting comma subdivision is not a region", arguments: [
