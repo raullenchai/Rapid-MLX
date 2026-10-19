@@ -2435,9 +2435,10 @@ final class ChatViewModel {
         guard target.id != anchor.id else { return false }
 
         // Suggestions and a pending generated title describe the branch the
-        // user is leaving. Cancel them before adopting another visible path,
-        // otherwise switching back could resurrect an old rail.
+        // user is leaving. Cancel both before adopting another visible path,
+        // otherwise stale work could land after the switch.
         cancelInflightWork()
+        cancelTitleTask(for: activeConversationID)
         // From here on the operation MUTATES: leave the snapshot (its node
         // values may be stale — see ``TreeSnapshot``) and work on the live
         // buffers, which always carry the finished content.
@@ -2528,7 +2529,10 @@ final class ChatViewModel {
         // and persisted, so it must carry the finished content of every row.
         let tree = liveTree()
         guard tree.contains(where: { $0.id == id }) else { return false }
+        // Optional work derived from the old transcript must not publish
+        // after its source message has been removed.
         cancelInflightWork()
+        cancelTitleTask(for: activeConversationID)
         let doomed = MessageTree.subtree(of: id, in: tree)
         let remaining = tree.filter { !doomed.contains($0.id) }
         guard !remaining.isEmpty else {

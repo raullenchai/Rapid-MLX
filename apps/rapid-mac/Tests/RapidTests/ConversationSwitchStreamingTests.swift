@@ -362,6 +362,83 @@ struct ConversationSwitchStreamingTests {
         )
     }
 
+    @Test("Switching branches cancels the pending title for the abandoned branch")
+    func branchSwitchCancelsTitle() async throws {
+        let store = try isolatedStore()
+        defer {
+            ConversationStore.flush()
+            try? FileManager.default.removeItem(at: store.root)
+        }
+        let user = ChatMessage(role: .user, content: "first question")
+        let original = ChatMessage(
+            role: .assistant,
+            content: "original answer",
+            parentID: user.id,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let replacement = ChatMessage(
+            role: .assistant,
+            content: "replacement answer",
+            parentID: user.id,
+            createdAt: Date(timeIntervalSince1970: 2)
+        )
+        let transcript = [user, replacement]
+        let branched = conversation(
+            title: "first question",
+            messages: transcript,
+            branches: [original]
+        )
+        ConversationStore.save([branched], to: store.file)
+        ConversationStore.flush()
+        let model = ChatViewModel(conversationStoreURL: store.file)
+        model.selectConversation(branched.id)
+        let gate = TitleCompletionGate()
+
+        model.scheduleTitle(for: branched.id, transcript: transcript) { _ in
+            await gate.complete()
+        }
+        #expect(model.hasPendingTitleTask(for: branched.id))
+        #expect(model.selectBranch(at: 0, forSiblingOf: replacement.id))
+        #expect(!model.hasPendingTitleTask(for: branched.id))
+
+        await gate.release(with: "Abandoned branch title")
+        for _ in 0..<10 { await Task.yield() }
+        let saved = model.conversations.first { $0.id == branched.id }
+        #expect(saved?.title == "first question")
+        #expect(saved?.hasGeneratedTitle == false)
+    }
+
+    @Test("Deleting a message cancels its pending title")
+    func deletingMessageCancelsTitle() async throws {
+        let store = try isolatedStore()
+        defer {
+            ConversationStore.flush()
+            try? FileManager.default.removeItem(at: store.root)
+        }
+        let user = ChatMessage(role: .user, content: "question")
+        let answer = ChatMessage(role: .assistant, content: "answer")
+        let transcript = [user, answer]
+        let conversation = conversation(title: "question", messages: transcript)
+        ConversationStore.save([conversation], to: store.file)
+        ConversationStore.flush()
+        let model = ChatViewModel(conversationStoreURL: store.file)
+        model.selectConversation(conversation.id)
+        let gate = TitleCompletionGate()
+
+        model.scheduleTitle(for: conversation.id, transcript: transcript) { _ in
+            await gate.complete()
+        }
+        #expect(model.hasPendingTitleTask(for: conversation.id))
+        #expect(model.deleteMessage(id: answer.id))
+        #expect(!model.hasPendingTitleTask(for: conversation.id))
+
+        await gate.release(with: "Deleted message title")
+        for _ in 0..<10 { await Task.yield() }
+        let saved = model.conversations.first { $0.id == conversation.id }
+        #expect(saved?.title == "question")
+        #expect(saved?.hasGeneratedTitle == false)
+    }
+
     @Test("Deleting a conversation cancels its pending title")
     func deletingCancelsTitle() async throws {
         let store = try isolatedStore()
