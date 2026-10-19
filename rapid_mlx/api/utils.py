@@ -533,9 +533,12 @@ class StreamingContentSanitizer:
 
     def __init__(self):
         self._pending = ""
+        #: Characters fed so far; lets callers tell which deltas it saw.
+        self.consumed = 0
 
     def process(self, delta: str) -> str:
         """Emit the resolved prefix, following the sanitizer's re.sub scan."""
+        self.consumed += len(delta)
         text = self._pending + delta
         cut = 0
         while cut < len(text):

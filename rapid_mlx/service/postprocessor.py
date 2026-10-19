@@ -2633,6 +2633,11 @@ class StreamingPostProcessor:
         """Whether streamed content text is held back pending later deltas."""
         return self._content_sanitizer.holding
 
+    @property
+    def content_consumed(self) -> int:
+        """Characters of content text that have entered the hold-back."""
+        return self._content_sanitizer.consumed
+
     def _process_chunk_events(self, output: GenerationOutput) -> list[StreamEvent]:
         """Build events before resolving content held across a tool boundary."""
         delta_text = output.new_text

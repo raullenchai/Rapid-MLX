@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Content sanitization must be independent of engine delta boundaries (#4925)."""
 
+import re
+
 import pytest
 
 from rapid_mlx.api.utils import StreamingContentSanitizer, sanitize_content_for_stream
@@ -114,8 +116,9 @@ def test_endpoint_parity(mode, text, chunking):
             assert marker not in content
 
 
-@pytest.mark.parametrize("text", [GEMMA, CALLING, PROSE, PLAIN])
-def test_logprobs_content_parity(text, monkeypatch):
+@pytest.mark.parametrize("text", [GEMMA, CALLING, PROSE, PLAIN, "hello <tail"])
+@pytest.mark.parametrize("chunking", ["whole", "characters", "words"])
+def test_logprobs_content_parity(text, chunking, monkeypatch):
     from rapid_mlx.api.models import TokenLogProb
     from rapid_mlx.routes import chat
 
@@ -127,7 +130,13 @@ def test_logprobs_content_parity(text, monkeypatch):
             TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
         ],
     )
-    client = client_for(ReplayEngine(list(text), "stop"))
+    if chunking == "whole":
+        deltas = [text]
+    elif chunking == "characters":
+        deltas = list(text)
+    else:
+        deltas = [part for part in re.split(r"(?<=[ <])", text) if part]
+    client = client_for(ReplayEngine(deltas, "stop"))
     get_config().tool_call_parser = "hermes"
     response = client.post(
         "/v1/chat/completions",
@@ -144,17 +153,15 @@ def test_logprobs_content_parity(text, monkeypatch):
     assert "".join(
         choice["delta"].get("content") or "" for choice in choices
     ) == sanitize_content_for_stream(text)
-    tokens = []
+    tokens = ""
+    content = ""
     for choice in choices:
+        content += choice["delta"].get("content") or ""
         if not choice.get("logprobs"):
             continue
-        chunk_tokens = "".join(e["token"] for e in choice["logprobs"]["content"])
-        # Held text is released together with the logprobs of its tokens.
-        assert sanitize_content_for_stream(chunk_tokens) == (
-            choice["delta"].get("content") or ""
-        ), choice
-        tokens.append(chunk_tokens)
-    # Every generated token's logprob is reported exactly once, in order.
+        tokens += "".join(e["token"] for e in choice["logprobs"]["content"])
+        # A token's logprob never arrives before the chunk completing its text.
+        assert content.startswith(sanitize_content_for_stream(tokens)), choice
     assert "".join(tokens) == text
 
 

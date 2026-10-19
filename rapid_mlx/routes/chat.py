@@ -7795,13 +7795,21 @@ async def stream_chat_completion(
             if _chunk_matched_stop:
                 stream_matched_stop = _chunk_matched_stop
 
-            _held_before = processor.content_held
+            _consumed_before = processor.content_consumed
             _chunk_events = processor.process_chunk(output)
-            if (
+            # A token whose text was held or stripped by the content
+            # hold-back reports its logprobs on the chunk that completes
+            # its text (or the terminal chunk), never before.
+            _defer_logprobs = (
                 want_logprobs
-                and (_held_before or processor.content_held)
-                and not any(e.type in ("content", "finish") for e in _chunk_events)
-            ):
+                and processor.content_consumed != _consumed_before
+                and not any(e.type == "finish" for e in _chunk_events)
+                and (
+                    processor.content_held
+                    or not any(e.type == "content" for e in _chunk_events)
+                )
+            )
+            if _defer_logprobs:
                 _held_logprobs = _build_chunk_logprobs(output)
                 if _held_logprobs:
                     _held_logprob_entries.extend(_held_logprobs.content)
@@ -7809,7 +7817,7 @@ async def stream_chat_completion(
                 if event.type == "content":
                     _event_logprobs = (
                         _with_held_logprobs(_build_chunk_logprobs(output))
-                        if want_logprobs
+                        if want_logprobs and not _defer_logprobs
                         else None
                     )
                     if _buffer_forced_content:
