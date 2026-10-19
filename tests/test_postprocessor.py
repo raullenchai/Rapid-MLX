@@ -2522,19 +2522,16 @@ class TestCoverageGaps:
         )
 
     def test_channel_routed_sanitize_empty(self):
-        """Line 216: content becomes None after sanitize_output."""
-        from unittest.mock import patch
+        """Content becomes None when the streaming sanitizer removes markup."""
 
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        # sanitize_output returns empty → content becomes None
-        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
-            out = _make_output("some text", channel="content")
-            events = pp.process_chunk(out)
-            content_events = [e for e in events if e.type == "content"]
-            assert len(content_events) == 0
+        out = _make_output("[Calling tool: f()]", channel="content")
+        events = pp.process_chunk(out)
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 0
 
     def test_reasoning_path_tool_detected_then_finish(self):
         """Lines 276-279: tool_calls_detected then finish in reasoning path."""
@@ -2575,12 +2572,11 @@ class TestCoverageGaps:
         assert any(e.finish_reason == "tool_calls" for e in events3)
 
     def test_reasoning_path_sanitize_to_none(self):
-        """Line 294: content sanitizes to empty in reasoning path."""
-        from unittest.mock import patch
+        """Content sanitizes to empty in the reasoning path."""
 
         parser = MagicMock()
         delta_msg = MagicMock()
-        delta_msg.content = "text that sanitizes away"
+        delta_msg.content = "[Calling tool: f()]"
         delta_msg.reasoning = None
         parser.extract_reasoning_streaming.return_value = delta_msg
 
@@ -2588,23 +2584,20 @@ class TestCoverageGaps:
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
-            events = pp.process_chunk(_make_output("text"))
-            content_events = [e for e in events if e.type == "content"]
-            assert len(content_events) == 0
+        events = pp.process_chunk(_make_output("[Calling tool: f()]"))
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 0
 
     def test_standard_path_sanitize_to_none(self):
-        """Line 350: content sanitizes to empty in standard path."""
-        from unittest.mock import patch
+        """Content sanitizes to empty in the standard path."""
 
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
-            events = pp.process_chunk(_make_output("text"))
-            content_events = [e for e in events if e.type == "content"]
-            assert len(content_events) == 0
+        events = pp.process_chunk(_make_output("[Calling tool: f()]"))
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 0
 
     def test_standard_path_tool_detected_then_finish(self):
         """Lines 334-335: tool_calls_detected + finish in standard path."""
@@ -2662,14 +2655,8 @@ class TestCoverageGaps:
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        # Text that sanitizes to nothing
-        from unittest.mock import patch
-
-        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
-            events = pp.process_chunk(_make_output("some text"))
-            # sanitize returned empty, no finish → empty list
-            content_events = [e for e in events if e.type == "content"]
-            assert len(content_events) == 0
+        events = pp.process_chunk(_make_output("[Calling tool: f()]"))
+        assert events == []
 
 
 # =====================================================================
@@ -3184,3 +3171,108 @@ class TestRequestForwardedToToolParser:
                 by_index[call["index"]] += call["function"].get("arguments", "")
         assert json.loads(by_index[0]) == {"value": "first"}
         assert json.loads(by_index[1]) == {"value": second_value}
+
+
+@pytest.mark.parametrize("path", ["channel_routed", "with_reasoning", "standard"])
+@pytest.mark.parametrize("site", ["main", "mixed", "post_tool"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<|tool_call>call:get_weather{"city":"Paris"}<tool_call|>',
+        '[Calling tool: get_weather({"city":"Paris"})]',
+        "Use <|tool_call>call:x{}<tool_call|> to call.",
+        "plain text with lone <",
+    ],
+)
+def test_content_sanitizer_emission_sites(path, site, text):
+    """Every content emission seam shares hold-back state, including EOF."""
+    from rapid_mlx.api.utils import (
+        StreamingContentSanitizer,
+        sanitize_content_for_stream,
+    )
+
+    for deltas in [[text[:i], text[i:]] for i in range(len(text) + 1)] + [list(text)]:
+        parser = MagicMock()
+        parser.extract_reasoning_streaming.side_effect = (
+            lambda previous, current, delta: DeltaMessage(content=delta)
+        )
+        parser.finish_stream.return_value = None
+        pp = StreamingPostProcessor(
+            _make_cfg(reasoning_parser=parser if path == "with_reasoning" else None),
+        )
+        pp.reset()
+        process = getattr(pp, f"_process_{path}")
+        if site == "mixed":
+            pp.tool_parser = MagicMock()
+            # Reject only the call half; the content half must still survive.
+            pp._detect_tool_calls = lambda delta: {
+                "content": delta,
+                "tool_calls": [{"index": 0}],
+                "preserve_post_tool_content": True,
+            }
+            pp._apply_forced_tool_choice_filter = lambda calls: []
+        elif site == "post_tool":
+            pp.tool_calls_detected = True
+            pp._preserve_post_tool_content = True
+        events = []
+        for delta in deltas:
+            events.extend(process(delta, _make_output(delta)))
+        if pp.tool_parser:
+            pp.tool_parser.finalize_legacy_raw_stream.return_value = None
+            pp.tool_parser.flush_held_content.return_value = ""
+        events.extend(pp.finalize())
+        expected = sanitize_content_for_stream(text)
+        content = "".join(event.content or "" for event in events)
+        assert content == expected, (path, site, deltas)
+        if path == "channel_routed":
+            assert pp.accumulated_text == expected
+        elif path == "with_reasoning":
+            # The parser's raw-input accumulator already includes the held tail.
+            assert pp.accumulated_text == text
+        else:
+            assert pp.accumulated_text == ""
+        # The route's second sanitizer preserves the same concatenation.
+        route_sanitizer = StreamingContentSanitizer()
+        wire = "".join(
+            route_sanitizer.process(event.content) for event in events if event.content
+        )
+        assert wire + route_sanitizer.flush() == expected
+        assert not any(event.content for event in pp.finalize())
+
+
+def test_content_sanitizer_structured_narration_and_reset():
+    pp = StreamingPostProcessor(_make_cfg(), tools_requested=True)
+    pp._filter_declared_calls = lambda calls: calls
+    pp._apply_forced_tool_choice_filter = lambda calls: calls
+    pp._process_channel_routed("before <", _make_output(channel="content"))
+    # Structured narration belongs to the same CONTENT stream as prior prose.
+    events = pp._process_channel_routed(
+        " b",
+        _make_output(
+            channel="content",
+            tool_calls=[{"name": "weather", "arguments": "{}"}],
+        ),
+    )
+    assert events[0].content == "< b"
+    assert pp.accumulated_text == "before < b"
+    assert not any(event.content for event in pp.finalize())
+    pp.reset()
+    pp._process_channel_routed("discard <", _make_output(channel="content"))
+    pp.reset()
+    events = pp._process_channel_routed("fresh", _make_output(channel="content"))
+    assert events[0].content == "fresh"
+    assert pp.accumulated_text == "fresh"
+    assert pp.finalize() == []
+
+
+def test_content_sanitizer_tail_precedes_parser_held_content():
+    pp = StreamingPostProcessor(_make_cfg())
+    pp._process_channel_routed("before <", _make_output(channel="content"))
+    pp.tool_parser = MagicMock()
+    pp.tool_parser.finalize_legacy_raw_stream.return_value = None
+    pp.tool_parser.flush_held_content.return_value = " after"
+    pp.tool_accumulated_text = "raw"
+    events = pp.finalize()
+    assert [event.content for event in events if event.content] == ["<", " after"]
+    assert pp.accumulated_text == "before <"
+    pp.tool_parser.flush_held_content.assert_called_once_with("raw")

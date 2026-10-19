@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Content sanitization must be independent of engine delta boundaries (#4925)."""
+
+import pytest
+
+from rapid_mlx.api.utils import StreamingContentSanitizer, sanitize_content_for_stream
+from rapid_mlx.config import get_config, reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from tests.test_tool_call_finish_reason import TOOLS, ReplayEngine, client_for, sse
+
+GEMMA = '<|tool_call>call:get_weather{"city":"Paris"}<tool_call|>'
+CALLING = '[Calling tool: get_weather({"city":"Paris"})]'
+PROSE = "Use <|tool_call>call:x{}<tool_call|> to call."
+PLAIN = "plain text with lone <"
+UNIT_TEXTS = [
+    GEMMA,
+    CALLING,
+    PROSE,
+    "a<|im_end|>b",
+    "x</think>y",
+    "[Calling tool: unterminated",
+    "<|tool_call>unterminated",
+    "Hello <|tool_call>a<tool_call|> and [Calling tool: b] end",
+    "a < b [c] <d> e<",
+    # Every token alternative, whitespace in Calling, and nested candidates.
+    '<|abc><abc|><|abc|><|a"b><a"b|></think>',
+    "[Calling  tool: <|tool_call>nested] end",
+    "[Calling\ntool: nested [Calling tool: x] end",
+    "<|tool_call>nested [Calling tool: x<tool_call|> tail",
+    '[CaX <|abc! <abc! </thix <|abc|! <a"|! end',
+]
+
+
+@pytest.fixture(autouse=True)
+def _restore_config():
+    yield
+    reset_config()
+
+
+@pytest.mark.parametrize("text", UNIT_TEXTS)
+def test_sanitizer_all_boundaries(text):
+    for deltas in [[text[:i], text[i:]] for i in range(len(text) + 1)] + [list(text)]:
+        sanitizer = StreamingContentSanitizer()
+        actual = "".join(sanitizer.process(delta) for delta in deltas)
+        assert actual + sanitizer.flush() == sanitize_content_for_stream(text), deltas
+        assert sanitizer.flush() == ""
+
+
+def test_sanitizer_promptness():
+    sanitizer = StreamingContentSanitizer()
+    assert sanitizer.flush() == ""
+    assert sanitizer.process("a ") == "a "
+    assert sanitizer.process("<") == ""
+    assert sanitizer.process(" b") == "< b"
+    assert sanitizer.process("x < y") == "x < y"
+    assert sanitizer.process("x [y]") == "x [y]"
+    assert sanitizer.process("[") == ""
+    assert sanitizer.process("z]") == "[z]"
+    assert sanitizer.flush() == ""
+
+
+def _payload(mode):
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Weather?"}],
+        "max_tokens": 128,
+    }
+    if mode != "missing":
+        payload.update(tools=TOOLS, tool_choice=mode)
+    return payload
+
+
+ENDPOINT_CASES = [
+    (text, chunking)
+    for text in [GEMMA, CALLING, PROSE, PLAIN]
+    for chunking in ["whole", "characters"]
+]
+ENDPOINT_CASES += [(GEMMA, i) for i in range(len(GEMMA) + 1)]
+
+
+@pytest.mark.parametrize("mode", ["missing", "none", "auto"])
+@pytest.mark.parametrize("text,chunking", ENDPOINT_CASES)
+def test_endpoint_parity(mode, text, chunking):
+    if chunking == "whole":
+        deltas = [text]
+    elif chunking == "characters":
+        deltas = list(text)
+    else:
+        deltas = [text[:chunking], text[chunking:]]
+    client = client_for(ReplayEngine(deltas, "stop"))
+    get_config().tool_call_parser = "hermes"
+    payload = _payload(mode)
+    buffered = client.post("/v1/chat/completions", json=payload)
+    assert buffered.status_code == 200, buffered.text
+    message = buffered.json()["choices"][0]["message"]
+    response = client.post("/v1/chat/completions", json={**payload, "stream": True})
+    assert response.status_code == 200, response.text
+    events = sse(response.text)
+    assert not any("error" in event for event in events), response.text
+    choices = [choice for event in events for choice in event.get("choices", [])]
+    content = "".join(choice["delta"].get("content") or "" for choice in choices)
+    assert content == (message.get("content") or "")
+    names = [
+        call["function"]["name"]
+        for choice in choices
+        for call in choice["delta"].get("tool_calls", [])
+        if call.get("function", {}).get("name")
+    ]
+    assert names == [
+        call["function"]["name"] for call in message.get("tool_calls") or []
+    ]
+    for marker in ["<|tool_call>", "[Calling tool"]:
+        if marker not in (message.get("content") or ""):
+            assert marker not in content
+
+
+@pytest.mark.parametrize("text", [GEMMA, CALLING, PROSE, PLAIN])
+def test_logprobs_content_parity(text, monkeypatch):
+    from rapid_mlx.api.models import TokenLogProb
+    from rapid_mlx.routes import chat
+
+    # Keep actual logprob payloads present even on held/empty content chunks.
+    monkeypatch.setattr(
+        chat,
+        "_extract_streaming_token_logprobs",
+        lambda *a, **k: [
+            TokenLogProb(token="x", logprob=-0.5, bytes=[120], top_logprobs=[])
+        ],
+    )
+    client = client_for(ReplayEngine(list(text), "stop"))
+    get_config().tool_call_parser = "hermes"
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            **_payload("missing"),
+            "stream": True,
+            "logprobs": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    assert "".join(
+        choice["delta"].get("content") or "" for choice in choices
+    ) == sanitize_content_for_stream(text)
+    logprob_choices = [choice for choice in choices if choice.get("logprobs")]
+    assert logprob_choices
+    if text != PLAIN:
+        # Deltas that are entirely held/stripped markup still carry logprobs.
+        assert any(not choice["delta"].get("content") for choice in logprob_choices)
+    assert all(
+        choice["logprobs"]["content"][0]["logprob"] == -0.5
+        for choice in logprob_choices
+    )
+
+
+@pytest.mark.parametrize("inline_finish", [False, True])
+def test_held_prefix_precedes_tool_call(inline_finish, monkeypatch):
+    from rapid_mlx.domain.events import StreamEvent
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    process_chunk = StreamingPostProcessor.process_chunk
+
+    def process_with_content_prefix(self, output):
+        # Isolate the serialization seam from the tool parser's own hold-back.
+        if output.channel == "content":
+            return [StreamEvent(type="content", content=output.new_text)]
+        return process_chunk(self, output)
+
+    monkeypatch.setattr(
+        StreamingPostProcessor, "process_chunk", process_with_content_prefix
+    )
+
+    class OrderedEngine(ReplayEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text="before <",
+                new_text="before <",
+                channel="content",
+                finished=False,
+                finish_reason=None,
+            )
+            yield GenerationOutput(
+                text="",
+                new_text="",
+                channel="tool_call",
+                tool_calls=[{"name": "get_weather", "arguments": '{"city":"Paris"}'}],
+                finished=inline_finish,
+                finish_reason="stop" if inline_finish else None,
+            )
+            if not inline_finish:
+                yield GenerationOutput(
+                    text="", new_text="", finished=True, finish_reason="stop"
+                )
+
+    client = client_for(OrderedEngine([], "stop"))
+    get_config().tool_call_parser = "hermes"
+    response = client.post(
+        "/v1/chat/completions", json={**_payload("auto"), "stream": True}
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    call_index = next(
+        i for i, choice in enumerate(choices) if choice["delta"].get("tool_calls")
+    )
+    assert (
+        "".join(choice["delta"].get("content") or "" for choice in choices[:call_index])
+        == "before <"
+    )
+    assert choices[call_index - 1]["delta"]["content"] == "<"
+    assert not any(choice.get("finish_reason") for choice in choices[:call_index])

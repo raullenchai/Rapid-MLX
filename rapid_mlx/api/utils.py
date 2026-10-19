@@ -521,6 +521,57 @@ def sanitize_content_for_stream(text: str | None) -> str:
     return _sanitize_for_stream(text, _FINAL_SANITIZER)
 
 
+# Partial forms of _FINAL_SANITIZER's angle tokens and [Calling\s+tool.
+_CONTENT_PARTIAL_TOKEN = re.compile(
+    r'<(?:\|[a-z_"]*\|?|[a-z_"]*\|?|/(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?)'
+)
+_CONTENT_PARTIAL_CALLING = re.compile(r"\[Calling\s+(?:t(?:o(?:o)?)?)?")
+
+
+class StreamingContentSanitizer:
+    """Hold unresolved markup so content sanitization ignores chunking (#4925)."""
+
+    def __init__(self):
+        self._pending = ""
+
+    def process(self, delta: str) -> str:
+        """Emit the resolved prefix, following the sanitizer's re.sub scan."""
+        text = self._pending + delta
+        cut = 0
+        while cut < len(text):
+            if text[cut] not in "<[":
+                cut += 1
+                continue
+            # A complete opener may still become a full suppressed block.
+            if (
+                text.startswith("<|tool_call>", cut)
+                and text.find("<tool_call|>", cut + len("<|tool_call>")) < 0
+            ):
+                break
+            match = _FINAL_SANITIZER.match(text, cut)
+            if match:
+                # The optional ] lets this greedy match grow until closed.
+                if text.startswith("[Calling", cut) and not match[0].endswith("]"):
+                    break
+                cut = match.end()
+                continue
+            tail = text[cut:]
+            if (
+                _CONTENT_PARTIAL_TOKEN.fullmatch(tail)
+                or "[Calling".startswith(tail)
+                or _CONTENT_PARTIAL_CALLING.fullmatch(tail)
+            ):
+                break
+            cut += 1
+        self._pending = text[cut:]
+        return sanitize_content_for_stream(text[:cut])
+
+    def flush(self) -> str:
+        """Resolve any trailing prefix at the end of a content segment."""
+        text, self._pending = self._pending, ""
+        return sanitize_content_for_stream(text)
+
+
 def _sanitize_for_stream(text: str | None, pattern: re.Pattern[str]) -> str:
     """Shared body for the per-delta streaming sanitizers."""
     if not text:

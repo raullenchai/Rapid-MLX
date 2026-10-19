@@ -58,6 +58,7 @@ from ..api.tool_calling import (
     validate_output_against_schema,
 )
 from ..api.utils import (
+    StreamingContentSanitizer,
     UnsupportedContentBlockError,
     clean_output_text,
     decode_inline_tool_call_arguments,
@@ -7487,12 +7488,13 @@ async def stream_chat_completion(
         # ``processor.accumulated_text`` is unsuitable (it also holds raw
         # reasoning/parser input).
         _streamed_content_parts: list[str] = []
+        _content_sanitizer = StreamingContentSanitizer()
 
         def _content_sse_chunk(
             text: str, chunk_logprobs: ChoiceLogProbs | None = None
         ) -> str:
             """Serialize one content delta, preserving requested logprobs."""
-            wire_text = sanitize_content_for_stream(text)
+            wire_text = _content_sanitizer.process(text)
             _streamed_content_parts.append(wire_text)
             if not want_logprobs:
                 return _fast_sse_chunk(wire_text, "content")
@@ -7508,6 +7510,13 @@ async def stream_chat_completion(
                 ],
             )
             return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+
+        def _flush_content_sanitizer():
+            # #4925: release held prose before calls/finish, without re-sanitizing.
+            wire_text = _content_sanitizer.flush()
+            if wire_text:
+                _streamed_content_parts.append(wire_text)
+                yield f'{_sse_prefix}"content":{json.dumps(wire_text)}{_sse_suffix}'
 
         # Start the engine and wait only for scheduler admission before
         # exposing the public request id. Waiting for the first generated
@@ -7838,6 +7847,8 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    for _content_chunk in _flush_content_sanitizer():
+                        yield _content_chunk
                     # r7-A R7-H1: streaming-lane parity with the
                     # non-stream chat path. The same
                     # ``normalize_ui_tars_chat_tool_call_arguments``
@@ -8202,6 +8213,9 @@ async def stream_chat_completion(
                             continue
                         yield _content_sse_chunk(_text, _logprobs)
                 _forced_content_pending.clear()
+
+        for _content_chunk in _flush_content_sanitizer():
+            yield _content_chunk
 
         # Required/named requests must never report a successful stop after
         # dropping every call. Headers are already sent, so signal a stream
