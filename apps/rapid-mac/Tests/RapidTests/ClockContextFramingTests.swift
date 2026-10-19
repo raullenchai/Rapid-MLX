@@ -35,6 +35,8 @@ struct ClockContextFramingTests {
         #expect(ChatViewModel.conversationStart(in: [earlier, first, second]) == first.createdAt)
         #expect(ChatViewModel.conversationStart(in: []) == nil)
         #expect(ChatViewModel.conversationStart(in: [earlier, ChatMessage(role: .system, content: "system")]) == nil)
+        let hidden = ChatMessage(role: .user, content: "hidden", wireVisibility: .transcriptOnly, createdAt: instant.addingTimeInterval(-3600))
+        #expect(ChatViewModel.conversationStart(in: [hidden, first, second]) == first.createdAt)
     }
 
     @Test("Two-turn wire shape has one stable system clock and untouched user prose")

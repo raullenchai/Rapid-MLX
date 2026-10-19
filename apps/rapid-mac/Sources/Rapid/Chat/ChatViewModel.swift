@@ -3451,7 +3451,7 @@ final class ChatViewModel {
 
     /// Read the untrimmed request history so trimming cannot move the start.
     nonisolated static func conversationStart(in messages: [ChatMessage]) -> Date? {
-        messages.first { $0.role == .user }?.createdAt
+        messages.first { $0.role == .user && $0.wireVisibility == .model }?.createdAt
     }
 
     /// One minute-resolution local timestamp: "<full date> at <h:mm a>".
