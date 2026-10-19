@@ -732,6 +732,7 @@ def _tools_within_grammar_bounds(
     max_tools: int = _TOOL_GRAMMAR_MAX_TOOLS,
     max_schema_bytes: int = _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
     max_schema_depth: int = _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
+    whole_tool: bool = False,
 ) -> bool:
     """True iff the client tools list is small/shallow enough to compile safely.
 
@@ -744,7 +745,8 @@ def _tools_within_grammar_bounds(
     (even one giant single tool) is rejected after touching only a bounded
     prefix. A rejected request falls back to free-form (never hard-fails) — the
     grammar constraint is best-effort, so refusing to compile a giant schema
-    simply loses the structural guarantee, not the request.
+    simply loses the structural guarantee, not the request. ``whole_tool``
+    instead bounds the complete tool objects rendered by the template probe.
     """
     tools = tools or ()
     if len(tools) > max_tools:
@@ -765,6 +767,17 @@ def _tools_within_grammar_bounds(
         return False
     try:
         for t in tools:
+            if whole_tool:
+                complete_tool = (
+                    t
+                    if isinstance(t, dict)
+                    else {
+                        "type": getattr(t, "type", None),
+                        "function": getattr(t, "function", None),
+                    }
+                )
+                _walk_size_and_depth(complete_tool, budget, 0, max_schema_depth)
+                continue
             fn = t.function if hasattr(t, "function") else t.get("function", t)
             if isinstance(fn, dict):
                 name = fn.get("name")
@@ -1001,9 +1014,9 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
     schema exceeds the grammar-compile bounds, raise HTTP 400 so the caller sees
     the failure explicitly. Auto requests whose template renders a native XML
     wire incompatible with the configured grammar are exempt because the shared
-    builder decision declines their grammar. A separate hard cap bounds that
-    exact template-render probe. The legacy free-form fallback also survives on
-    the explicit opt-OUT path.
+    builder decision declines their grammar. A separate hard cap bounds the
+    complete rendered tools payload used by that exact template probe. The
+    legacy free-form fallback also survives on the explicit opt-OUT path.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return  # opted out / no tools / no parser / "none" — legacy free-form.
@@ -1014,6 +1027,7 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
             max_tools=_TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
             max_schema_bytes=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
             max_schema_depth=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
+            whole_tool=True,
         )
         if within_probe_bounds and _auto_tool_grammar_declined_for_native_wire(
             engine, cfg, request

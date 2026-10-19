@@ -100,6 +100,13 @@ def many_tools(count=300):
     return [tool(f"tool_{index}") for index in range(count)]
 
 
+def described_tools(description_bytes, count=300):
+    tools = many_tools(count)
+    for item in tools:
+        item["function"]["description"] = "x" * description_bytes
+    return tools
+
+
 def oversized_bytes_tool():
     return tool(
         "large",
@@ -232,6 +239,43 @@ def test_above_probe_cap_400_without_template_render(monkeypatch, tools):
 
     assert exc.value.status_code == 400
     probe.assert_not_called()
+
+
+def test_descriptions_above_complete_probe_cap_400_without_render(monkeypatch):
+    probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
+    monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
+    tools = described_tools(chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES // 300 + 1)
+    req = request(tools=tools)
+
+    assert not chat._tools_within_grammar_bounds(req.tools)
+    with pytest.raises(HTTPException) as exc:
+        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+
+    assert exc.value.status_code == 400
+    probe.assert_not_called()
+
+
+def test_modest_descriptions_within_complete_probe_cap_allow_xml_decline():
+    req = request(tools=described_tools(16))
+
+    assert (
+        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+        is None
+    )
+
+
+def test_complete_probe_bound_walks_plain_dict_tool_extensions():
+    tools = [tool("plain")]
+    tools[0]["extension"] = "x" * chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES
+
+    assert chat._tools_within_grammar_bounds(tools)
+    assert not chat._tools_within_grammar_bounds(
+        tools,
+        max_tools=chat._TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
+        max_schema_bytes=chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
+        max_schema_depth=chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
+        whole_tool=True,
+    )
 
 
 def test_helper_name_scan_does_not_read_parameter_schemas(monkeypatch):
