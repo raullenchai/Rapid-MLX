@@ -43,14 +43,14 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
-              AXButton title="复制" enabled=true
+              AXButton title="Copy" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
-              AXButton title="复制" enabled=true
+              AXButton title="Copy" enabled=true
             AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
-              AXButton title="复制" enabled=true
+              AXButton title="Copy" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true

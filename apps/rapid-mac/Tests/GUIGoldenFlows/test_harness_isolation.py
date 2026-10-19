@@ -16,6 +16,68 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_persona_language_is_pinned_across_launches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "home").mkdir()
+            shell = (
+                function("start_persona")
+                + "\n"
+                + function("relaunch_persona")
+                + r'''
+ROOT=/stub
+APP_SOURCE=/stub/app
+OUT_ROOT="$1"
+cleanup_persona() { :; }
+seed_persona_feature_defaults() { :; }
+stop_app() { :; }
+cleanup_fake_sidecars() { :; }
+wait_for_window() { :; }
+env() { :; }
+jq() { :; }
+mktemp() { printf '%s\n' "$OUT_ROOT"; }
+/stub/scripts/dogfood-isolate.sh() { echo /stub/app; }
+/usr/libexec/PlistBuddy() { echo test.bundle; }
+launch_persona_app() { printf '<%s>' "$@"; printf '\n'; }
+start_persona default
+relaunch_persona
+start_persona localized RAPID_GUI_APP_LANGUAGE=zh-Hans FAKE_OTHER=value
+relaunch_persona
+start_persona reset
+relaunch_persona
+start_persona empty RAPID_GUI_APP_LANGUAGE=
+relaunch_persona
+'''
+            )
+            result = subprocess.run(
+                ["/bin/bash", "-eu", "-c", shell, "test", tmp],
+                text=True,
+                capture_output=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                f"<{mode}><-AppleLanguages><({language})>"
+                for language in ("en", "zh-Hans", "en", "en")
+                for mode in ("truncate", "append")
+            ],
+        )
+
+    def test_baselines_only_contain_cjk_in_explicitly_localized_journeys(self):
+        # The zh-Hans localized-photo-hint journey has no committed baseline.
+        # Add exact localized baseline filenames here if it gains any.
+        localized_baselines = set()
+        cjk = re.compile(
+            r"[\u2e80-\u2fff\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf"
+            r"\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff66-\uff9f"
+            r"\U00020000-\U000323af]"
+        )
+        snapshots = ROOT / "Tests/GUIGoldenFlows/__Snapshots__"
+        for path in sorted(snapshots.rglob("*.txt")):
+            with self.subTest(baseline=path.name):
+                if path.name not in localized_baselines:
+                    self.assertNotRegex(path.read_text(), cjk)
+
     def test_feature_inventory_matches_product_defaults(self):
         table = subprocess.check_output(
             [

@@ -63,6 +63,7 @@ LAUNCH_STARTED_MS=0
 LAUNCH_DURATION_MS=0
 LAUNCH_COUNT=0
 PERSONA_ENV=()
+PERSONA_APP_LANGUAGE="en"
 
 usage() {
     cat <<'EOF'
@@ -983,6 +984,8 @@ start_persona() {
     cleanup_persona
     OUT="$OUT_ROOT/$name"
     PERSONA_ENV=("$@")
+    # Baselines must not depend on the host language (#4941).
+    PERSONA_APP_LANGUAGE="en"
     PERSONA="$(mktemp -d "/tmp/rapid-golden-${name}.XXXXXX")"
     mkdir -p "$OUT"
     if [[ "$name" == "fresh-install" ]]; then
@@ -1011,7 +1014,7 @@ start_persona() {
         --arg event_log "$OUT/fake-events.jsonl" \
         --arg pull_state "$OUT/pulled-models" \
         '{FAKE_EVENT_LOG: $event_log, FAKE_PULL_STATE: $pull_state}' > "$config"
-    local assignment key value updated app_language=""
+    local assignment key value updated
     # macOS ships Bash 3.2, where expanding a declared-but-empty array under
     # `set -u` raises "unbound variable". The `+` form expands to nothing
     # when the array has no elements and preserves argv boundaries otherwise.
@@ -1019,17 +1022,13 @@ start_persona() {
         key="${assignment%%=*}"
         value="${assignment#*=}"
         if [[ "$key" == "RAPID_GUI_APP_LANGUAGE" ]]; then
-            app_language="$value"
+            PERSONA_APP_LANGUAGE="${value:-en}"
         fi
         updated="$config.next"
         jq --arg key "$key" --arg value "$value" '.[$key] = $value' "$config" > "$updated"
         mv "$updated" "$config"
     done
-    if [[ -n "$app_language" ]]; then
-        launch_persona_app truncate -AppleLanguages "($app_language)"
-    else
-        launch_persona_app truncate
-    fi
+    launch_persona_app truncate -AppleLanguages "($PERSONA_APP_LANGUAGE)"
     wait_for_window
 }
 
@@ -1040,7 +1039,7 @@ relaunch_persona() {
     # #1618 the app's unsafe global port sweep hid this ownership leak by
     # killing the old fake (and potentially an operator's real server too).
     cleanup_fake_sidecars
-    launch_persona_app append
+    launch_persona_app append -AppleLanguages "($PERSONA_APP_LANGUAGE)"
     wait_for_window
 }
 

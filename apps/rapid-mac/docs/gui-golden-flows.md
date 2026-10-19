@@ -532,6 +532,8 @@ difference, so a PR that removes a button, reparents a control, renames an
 identifier, drops an icon or flips an enabled state produces a reviewable diff
 instead of passing silently.
 
+Personas pin the app language to English unless the journey sets `RAPID_GUI_APP_LANGUAGE`.
+
 **This is the cheap layer of appearance testing and it is structural only.** It
 cannot see colour, spacing, typography or anything else that never reaches the
 accessibility layer; the PNG snapshots in `Tests/RapidTests/__Snapshots__` stay
