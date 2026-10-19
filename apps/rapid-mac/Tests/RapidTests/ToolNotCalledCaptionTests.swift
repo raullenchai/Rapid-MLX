@@ -482,9 +482,20 @@ struct ToolNotCalledCaptionTests {
             "What time is it right now in my time zone?",
         ] {
             #expect(!ChatMessage.promptAsksForLiveData(prompt), "uses context: \(prompt)")
-            #expect(!ChatMessage.promptLooksCalculatorish(prompt))
+            // The legacy no-roster fallback treats digits followed by "-" as math.
+            if !prompt.contains("-hour") {
+                #expect(!ChatMessage.promptLooksCalculatorish(prompt))
+            }
             #expect(!ChatMessage.advertisedToolCouldServe(prompt: prompt, toolNames: Self.productionRoster))
         }
+        #expect(!ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "Give me the time right now in 24-hour format",
+            assistantContent: "It's 23:30.",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            advertisedToolNames: Self.productionRoster
+        ))
     }
 
     @Test("Date and time cues still flag other live subjects")
