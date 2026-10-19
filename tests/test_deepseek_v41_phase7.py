@@ -26,6 +26,12 @@ def _local_build(root):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}")
+    (root / "model-layer-0.safetensors").write_text("{}")
+    for index, shard in (
+        ("model.safetensors.index.json", "model-layer-0.safetensors"),
+        ("dspark/model.safetensors.index.json", "model-mtp.safetensors"),
+    ):
+        (root / index).write_text(json.dumps({"weight_map": {"w": shard}}))
     return root
 
 
@@ -192,6 +198,15 @@ def test_local_override_requires_every_indexed_shard(monkeypatch, tmp_path, subd
         a.local_product_path(a.FLASH_1017)
     (root / subdir / "missing.safetensors").write_bytes(b"x")
     assert a.local_product_path(a.FLASH_1017) == root
+
+
+@pytest.mark.parametrize("index", [{}, {"weight_map": {}}, []])
+def test_local_override_rejects_empty_or_malformed_index(monkeypatch, tmp_path, index):
+    root = _local_build(tmp_path)
+    (root / "model.safetensors.index.json").write_text(json.dumps(index))
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
+    with pytest.raises(ValueError, match="incomplete local"):
+        a.local_product_path(a.FLASH_1017)
 
 
 def test_local_override_rejects_shards_outside_the_build(monkeypatch, tmp_path):

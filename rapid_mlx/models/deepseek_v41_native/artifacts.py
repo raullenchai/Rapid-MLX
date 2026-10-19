@@ -172,8 +172,8 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
     for directory in (root, root / "dspark") if complete else ():
         try:
             index = json.loads((directory / "model.safetensors.index.json").read_text())
-            shards = set(index.get("weight_map", {}).values())
-        except (ValueError, AttributeError):
+            shards = set(index["weight_map"].values()) or {"<empty weight_map>"}
+        except (ValueError, AttributeError, KeyError, TypeError):
             shards = {"<unreadable index>"}
         # Shard names must be plain files inside the selected build.
         complete = complete and all(
