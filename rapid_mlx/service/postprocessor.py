@@ -2628,6 +2628,11 @@ class StreamingPostProcessor:
             )
             events.insert(index, StreamEvent(type="content", content=content))
 
+    @property
+    def content_held(self) -> bool:
+        """Whether streamed content text is held back pending later deltas."""
+        return self._content_sanitizer.holding
+
     def _process_chunk_events(self, output: GenerationOutput) -> list[StreamEvent]:
         """Build events before resolving content held across a tool boundary."""
         delta_text = output.new_text

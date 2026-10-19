@@ -119,12 +119,12 @@ def test_logprobs_content_parity(text, monkeypatch):
     from rapid_mlx.api.models import TokenLogProb
     from rapid_mlx.routes import chat
 
-    # Keep actual logprob payloads present even on held/empty content chunks.
+    # One logprob entry per engine delta, labelled with that delta's text.
     monkeypatch.setattr(
         chat,
         "_extract_streaming_token_logprobs",
-        lambda *a, **k: [
-            TokenLogProb(token="x", logprob=-0.5, bytes=[120], top_logprobs=[])
+        lambda output, *a, **k: [
+            TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
         ],
     )
     client = client_for(ReplayEngine(list(text), "stop"))
@@ -144,15 +144,18 @@ def test_logprobs_content_parity(text, monkeypatch):
     assert "".join(
         choice["delta"].get("content") or "" for choice in choices
     ) == sanitize_content_for_stream(text)
-    logprob_choices = [choice for choice in choices if choice.get("logprobs")]
-    assert logprob_choices
-    if text != PLAIN:
-        # Deltas that are entirely held/stripped markup still carry logprobs.
-        assert any(not choice["delta"].get("content") for choice in logprob_choices)
-    assert all(
-        choice["logprobs"]["content"][0]["logprob"] == -0.5
-        for choice in logprob_choices
-    )
+    tokens = []
+    for choice in choices:
+        if not choice.get("logprobs"):
+            continue
+        chunk_tokens = "".join(e["token"] for e in choice["logprobs"]["content"])
+        # Held text is released together with the logprobs of its tokens.
+        assert sanitize_content_for_stream(chunk_tokens) == (
+            choice["delta"].get("content") or ""
+        ), choice
+        tokens.append(chunk_tokens)
+    # Every generated token's logprob is reported exactly once, in order.
+    assert "".join(tokens) == text
 
 
 @pytest.mark.parametrize("inline_finish", [False, True])

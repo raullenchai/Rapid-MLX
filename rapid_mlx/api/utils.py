@@ -566,6 +566,11 @@ class StreamingContentSanitizer:
         self._pending = text[cut:]
         return sanitize_content_for_stream(text[:cut])
 
+    @property
+    def holding(self) -> bool:
+        """Whether unresolved text is waiting for a later delta."""
+        return bool(self._pending)
+
     def flush(self) -> str:
         """Resolve any trailing prefix at the end of a content segment."""
         text, self._pending = self._pending, ""
