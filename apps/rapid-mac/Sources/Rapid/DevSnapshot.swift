@@ -1362,7 +1362,6 @@ enum DevSnapshot {
                     cachedModels: catalog,
                     catalogLoaded: loaded,
                     onSkip: {},
-                    onSeedWelcome: { true },
                     onCompleted: {},
                     // A fixed probe so the Review screen's free-space row is
                     // deterministic across runs rather than reporting whatever

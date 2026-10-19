@@ -1086,14 +1086,11 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(!coord.done, "readiness alone must not complete onboarding")
         #expect(coord.hasPendingReady)
 
-        var seeded = 0
-        #expect(coord.confirmStartChatting(seedWelcome: { seeded += 1; return true }))
+        #expect(coord.confirmStartChatting())
         #expect(coord.done)
-        #expect(seeded == 1)
         #expect(coord.phase == .dismissed)
-        // Idempotent: a repeated activation seeds nothing more.
-        #expect(!coord.confirmStartChatting(seedWelcome: { seeded += 1; return true }))
-        #expect(seeded == 1)
+        // Idempotent: a repeated activation cannot complete again.
+        #expect(!coord.confirmStartChatting())
         coord._testingReset()
     }
 

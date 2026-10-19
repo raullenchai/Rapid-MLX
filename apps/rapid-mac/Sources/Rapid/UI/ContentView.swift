@@ -1517,32 +1517,11 @@ struct ContentView: View {
             // Settings window took over the catalogue; Browse all models is now
             // a micro-stage inside Step 2, so there is nothing to lower and
             // nothing for the parent to know about (Paper 05.2.J · S1).
-            onSeedWelcome: seedQuickstartWelcome,
             onCompleted: {
                 modelChoiceRecoveryRequested = false
                 finishOnboardingHandoff()
             }
         )
-    }
-
-    /// Steps 1 + 2 of the Start chatting transaction: make sure the chat the
-    /// user is about to land in exists, and put the welcome message in it —
-    /// exactly once, enforced by the coordinator that calls this.
-    ///
-    /// ``ChatViewModel`` always holds an open conversation, so "ensure the
-    /// session exists" is a matter of making that conversation the one on
-    /// screen rather than creating anything. Returning the append's own
-    /// verdict (rather than an unconditional ``true``) is what lets the
-    /// coordinator tell a landed welcome from one still owed.
-    private func seedQuickstartWelcome() -> Bool {
-        section = .chat
-        // A transcript that already holds messages is not a failed seed —
-        // it is somebody's conversation, and dropping an onboarding intro
-        // into the middle of it would be worse than skipping the greeting.
-        // Either way nothing is left owed, so this reports success and the
-        // coordinator does not record a pending welcome.
-        guard chat.messages.isEmpty else { return true }
-        return chat.seedAssistantWelcome(quickstart.seedMessage)
     }
 
     /// The parent's half of the Start chatting transaction, run once, only

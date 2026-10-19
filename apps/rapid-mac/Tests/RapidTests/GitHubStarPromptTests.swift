@@ -25,12 +25,15 @@ struct GitHubStarPromptTests {
                 "https://github.com/raullenchai/Rapid-MLX/issues/new?template=feature_request.yml")
     }
 
-    @Test("Star entry stays in Chat and onboarding never covers the composer")
+    @Test("Empty chat has no star entry and the value-moment prompt remains wired")
     func productionWiring() throws {
         let chat = try Self.source("ChatView.swift")
         let content = try Self.source("ContentView.swift")
 
-        #expect(chat.contains("GitHubStarButton()"))
+        #expect(!chat.contains("GitHub" + "StarButton"))
+        #expect(!chat.contains("GitHub.Star." + "EmptyState"))
+        #expect(content.contains("GitHubStarPromptCard()"))
+        #expect(content.contains("GitHubStarPromptCoordinator"))
         #expect(!content.contains("OnboardingCompletePrompt"))
         #expect(!content.contains("showOnboardingCompletePrompt"))
     }

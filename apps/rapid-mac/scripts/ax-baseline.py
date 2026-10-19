@@ -313,39 +313,6 @@ def normalize_update_overlay_children(children: list[Node]) -> list[Node]:
     return remaining[:pill_index] + [update] + remaining[pill_index:]
 
 
-def normalize_empty_state_star_children(children: list[Node]) -> list[Node]:
-    """Keep the empty-state star before the readiness subtree it precedes.
-
-    SwiftUI flattens the centered empty-state hero and bottom compose bar into
-    one AX sibling list.  Their authored order is stable, but managed runners
-    have returned the uniquely identified star button on either side of the
-    readiness group.  Move only that button, and only when exactly one direct
-    sibling subtree contains ``Readiness.Action``.  Hierarchy and every other
-    sibling's relative order remain regression-sensitive.
-    """
-    star_indexes = [
-        index
-        for index, child in enumerate(children)
-        if child.record.get("identifier") == "GitHub.Star.EmptyState"
-    ]
-    readiness_indexes = [
-        index
-        for index, child in enumerate(children)
-        if _subtree_has_identifier(child, "Readiness.Action")
-    ]
-    if len(star_indexes) != 1 or len(readiness_indexes) != 1:
-        return children
-
-    star = children[star_indexes[0]]
-    remaining = [child for child in children if child is not star]
-    readiness_index = next(
-        index
-        for index, child in enumerate(remaining)
-        if _subtree_has_identifier(child, "Readiness.Action")
-    )
-    return remaining[:readiness_index] + [star] + remaining[readiness_index:]
-
-
 def _subtree_has_identifier(node: Node, identifier: str) -> bool:
     return node.record.get("identifier") == identifier or any(
         _subtree_has_identifier(child, identifier) for child in node.children
@@ -689,7 +656,6 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
             children = normalize_toolbar_children(children)
         children = normalize_transient_overlay_children(children)
         children = normalize_update_overlay_children(children)
-        children = normalize_empty_state_star_children(children)
         for child in children:
             walk(
                 child, depth + 1, sort_children=False, parent_is_toolbar=node_is_toolbar

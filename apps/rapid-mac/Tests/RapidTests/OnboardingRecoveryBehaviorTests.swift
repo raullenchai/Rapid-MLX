@@ -1131,7 +1131,7 @@ struct OnboardingRecoveryBehaviorTests {
 
         coord.enterStarting()
         coord.enterReady()
-        #expect(coord.confirmStartChatting(seedWelcome: { true }))
+        #expect(coord.confirmStartChatting())
 
         #expect(coord.done)
         #expect(!coord.setupBegun)

@@ -64,23 +64,6 @@ struct QuickstartStarterPolicyTests {
         coordinator.applyDefaultChoice(hardware: hardware(8), catalog: [])
 
         #expect(coordinator.selection.alias == "lfm2.5-1b-4bit")
-        #expect(coordinator.seedMessage.contains("selected to fit this Mac"))
-        #expect(coordinator.seedMessage.contains("ready for your first message"))
-    }
-
-    @Test(
-        "Every automatic RAM-tier welcome avoids a fixed download-time promise",
-        arguments: [8.0, 15.99, 16.0, 64.0]
-    )
-    func starterWelcomeIsHardwareTruthful(ramGB: Double) {
-        let coordinator = QuickstartCoordinator()
-        coordinator.applyDefaultChoice(hardware: hardware(ramGB), catalog: [])
-
-        let copy = coordinator.seedMessage
-        #expect(copy.contains(coordinator.selection.displayName))
-        #expect(copy.contains("selected to fit this Mac"))
-        #expect(copy.contains("ready for your first message"))
-        #expect(!copy.localizedCaseInsensitiveContains("minute"))
     }
 
     @Test("The automatic 8 GB choice keeps its lowest-memory spoken category")
@@ -99,23 +82,6 @@ struct QuickstartStarterPolicyTests {
         #expect(!standardLabel.contains("Lowest memory"))
     }
 
-    @Test("The 8 GB starter provenance survives a deferred-seed relaunch")
-    func baselineStarterSurvivesRelaunch() {
-        let suite = "QuickstartStarterPolicyTests.relaunch.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let first = QuickstartCoordinator(defaults: defaults)
-        first.applyDefaultChoice(hardware: hardware(8), catalog: [])
-        defaults.set(true, forKey: QuickstartCoordinator.awaitingSeedKey)
-        defaults.set(first.selection.alias, forKey: QuickstartCoordinator.awaitingSeedAliasKey)
-
-        let relaunched = QuickstartCoordinator(defaults: defaults)
-        #expect(relaunched.selection.alias == "lfm2.5-1b-4bit")
-        #expect(relaunched.seedMessage.contains("selected to fit this Mac"))
-        #expect(!relaunched.seedMessage.localizedCaseInsensitiveContains("minute"))
-    }
-
     @Test("The 1.2B choice remains a fallback, not a starter, on a 16 GB Mac")
     func lowMemoryChoiceIsContextual() {
         let coordinator = QuickstartCoordinator()
@@ -125,8 +91,10 @@ struct QuickstartStarterPolicyTests {
         )
         coordinator.select(QuickstartCoordinator.lowMemoryChoice)
 
-        #expect(!coordinator.seedMessage.contains("selected to fit this Mac"))
-        #expect(coordinator.seedMessage.contains("running entirely on your Mac"))
+        #expect(coordinator.selection == QuickstartCoordinator.lowMemoryChoice)
+        coordinator.applyDefaultChoice(hardware: hardware(16), catalog: [])
+        #expect(coordinator.selection == QuickstartCoordinator.lowMemoryChoice,
+                "a refresh must preserve the explicit low-memory choice")
     }
 
     @Test("An eligible cached chat model wins without a download")

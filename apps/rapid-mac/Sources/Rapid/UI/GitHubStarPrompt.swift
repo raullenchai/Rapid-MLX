@@ -13,38 +13,6 @@ enum GitHubCommunity {
     static let didShowOnboardingPromptKey = "Rapid.didShowOnboardingGitHubStarPrompt"
 }
 
-struct GitHubStarButton: View {
-    var onOpen: () -> Void = {}
-    var accessibilityIdentifier = "GitHub.Star.EmptyState"
-
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        Button {
-            onOpen()
-            openURL(GitHubCommunity.repositoryURL)
-        } label: {
-            Label("Star on GitHub", systemImage: "star")
-                .font(.rapid(size: 12, weight: .medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(RapidTheme.brandPrimaryDeep)
-        .background(
-            Capsule(style: .continuous)
-                .fill(RapidTheme.brandPrimaryTint)
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .stroke(RapidTheme.brandPrimary.opacity(0.55), lineWidth: 1)
-        )
-        .contentShape(Capsule(style: .continuous))
-        .accessibilityIdentifier(accessibilityIdentifier)
-        .accessibilityHint("Opens the Rapid-MLX repository in your browser")
-    }
-}
-
 /// A quiet, nonmodal value-moment card. It sits above the workspace instead
 /// of reflowing it, takes no focus, and remains until the user chooses.
 struct GitHubStarPromptCard: View {

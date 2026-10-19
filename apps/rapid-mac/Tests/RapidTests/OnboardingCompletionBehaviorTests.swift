@@ -20,7 +20,7 @@ import Testing
 ///      subprocess reports a listening port — is pinned as forbidden
 ///      rather than merely unimplemented.
 ///   3. **Completion is confirmed and idempotent.** Start chatting runs
-///      one transaction: seed once, persist once, retire the pending
+///      one transaction: persist once, retire the pending
 ///      record, release the surface. Repeated readiness notifications
 ///      and repeated activations are both no-ops.
 ///
@@ -252,7 +252,6 @@ final class OnboardingCompletionBehaviorTests {
             !defaults.bool(forKey: QuickstartCoordinator.storageKey),
             "readiness must not persist completion"
         )
-        #expect(!coord.hasSeededWelcome, "readiness must not seed the welcome message")
     }
 
     @Test("Readiness alone does NOT dismiss the onboarding surface")
@@ -291,26 +290,23 @@ final class OnboardingCompletionBehaviorTests {
 
         // And a late notification after the user has already finished must
         // not drag them back onto a screen they dismissed.
-        var seeds = 0
-        _ = coord.confirmStartChatting { seeds += 1; return true }
+        _ = coord.confirmStartChatting()
         #expect(coord.phase == .dismissed)
         coord.enterReady()
         #expect(coord.phase == .dismissed, "a late readiness tick must not resurrect Ready")
-        #expect(seeds == 1)
     }
 
     // MARK: - 3. Start chatting is one idempotent transaction
 
-    @Test("Start chatting completes exactly once and seeds exactly once")
+    @Test("Start chatting completes exactly once")
     func startChattingCompletesOnce() {
         let coord = makeCoordinator()
         coord.enterStarting()
         coord.enterReady()
 
-        var seeds = 0
         var transitions = 0
         func activate() {
-            if coord.confirmStartChatting(seedWelcome: { seeds += 1; return true }) {
+            if coord.confirmStartChatting() {
                 transitions += 1
             }
         }
@@ -322,25 +318,21 @@ final class OnboardingCompletionBehaviorTests {
         activate()
 
         #expect(transitions == 1, "only the first activation may run the transition")
-        #expect(seeds == 1, "the welcome message must be seeded exactly once")
         #expect(coord.done)
-        #expect(coord.hasSeededWelcome)
         #expect(coord.phase == .dismissed)
     }
 
     @Test("Start chatting before Ready is a no-op")
     func startChattingRequiresReady() {
         let coord = makeCoordinator()
-        var seeds = 0
         for phase in ["idle", "downloading", "starting"] {
             switch phase {
             case "downloading": coord.enterDownloading()
             case "starting":    coord.enterStarting()
             default:            break
             }
-            #expect(!coord.confirmStartChatting { seeds += 1; return true })
+            #expect(!coord.confirmStartChatting())
         }
-        #expect(seeds == 0)
         #expect(!coord.done, "nothing outside Ready may complete onboarding")
     }
 
@@ -351,7 +343,7 @@ final class OnboardingCompletionBehaviorTests {
         coord.enterReady()
         #expect(coord.hasPendingReady, "Ready must record that a confirmation is owed")
 
-        _ = coord.confirmStartChatting { true }
+        _ = coord.confirmStartChatting()
 
         #expect(coord.done)
         #expect(defaults.bool(forKey: QuickstartCoordinator.storageKey))
@@ -508,40 +500,19 @@ final class OnboardingCompletionBehaviorTests {
         clearPersistedState()
     }
 
-    // MARK: - 5. Welcome seeding
+    // MARK: - 5. Completion preserves an empty conversation
 
-    @Test("The welcome message lands in the transcript exactly once")
-    func welcomeSeedsExactlyOnce() {
-        let chat = ChatViewModel(persistsConversations: false)
-        #expect(chat.messages.isEmpty)
-
-        #expect(chat.seedAssistantWelcome("Welcome aboard."))
-        #expect(chat.messages.count == 1)
-        #expect(chat.messages.first?.role == .assistant)
-        #expect(chat.messages.first?.content == "Welcome aboard.")
-        #expect(chat.messages.first?.status == .complete,
-                "a locally authored welcome must never render as a live stream")
-
-        // A second attempt must not append. In production the coordinator
-        // already guarantees one call; this is the defence in depth that
-        // makes a stray second call harmless rather than duplicating.
-        #expect(!chat.seedAssistantWelcome("Welcome aboard."))
-        #expect(chat.messages.count == 1)
-    }
-
-    @Test("Seeding never interrupts a conversation that already has content")
-    func welcomeNeverInterruptsAnExistingChat() {
-        let chat = ChatViewModel(persistsConversations: false)
-        chat.devSeedMessages([ChatMessage(role: .user, content: "hello")])
-        #expect(!chat.seedAssistantWelcome("Welcome aboard."))
-        #expect(chat.messages.count == 1, "no intro may be injected into somebody's chat")
-    }
-
-    @Test("Empty welcome copy is refused rather than appended blank")
-    func emptyWelcomeIsRefused() {
-        let chat = ChatViewModel(persistsConversations: false)
-        #expect(!chat.seedAssistantWelcome("   \n  "))
-        #expect(chat.messages.isEmpty)
+    @Test("Start chatting hands off without appending a setup message")
+    func completionLeavesTranscriptEmpty() throws {
+        let content = try Self.strippedSource("Sources/Rapid/UI/ContentView.swift")
+        #expect(!content.contains("seed" + "QuickstartWelcome"))
+        #expect(!content.contains("seed" + "AssistantWelcome"))
+        #expect(!content.contains("onSeed" + "Welcome"))
+        let handoff = "privatefuncfinishOnboardingHandoff(){section=.chat" +
+            #"VoiceOverAnnouncer.announce("Setupcomplete.Openingyourfirstchat.")"# +
+            "composerFocusRequest&+=1}"
+        #expect(content.contains(handoff),
+                "completion must only route, announce, and focus; it must not append a chat turn")
     }
 
     // MARK: - 6. The completion transaction's wiring
@@ -556,8 +527,8 @@ final class OnboardingCompletionBehaviorTests {
         #expect(body.contains(#"Button("Startchatting"){completeOnboarding()}"#),
                 "the Ready screen must offer the Start chatting action")
         // The confirmation must run the coordinator transaction, not a
-        // local shortcut that bypasses seeding / persistence.
-        #expect(body.contains("coordinator.confirmStartChatting(seedWelcome:onSeedWelcome)"))
+        // local shortcut that bypasses persistence.
+        #expect(body.contains("coordinator.confirmStartChatting()"))
         // No fake work between the click and the app. Direction D renders
         // Ready through the shared outcome block, which has no progress slot
         // at all; pin the absence directly rather than through the retired
@@ -589,7 +560,7 @@ final class OnboardingCompletionBehaviorTests {
         // repeated activation cannot re-run the transition.
         let view = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
         #expect(
-            view.contains("guardcoordinator.confirmStartChatting(seedWelcome:onSeedWelcome)else{return}onCompleted()"),
+            view.contains("guardcoordinator.confirmStartChatting()else{return}onCompleted()"),
             "the parent transition must run only when the coordinator says it completed"
         )
     }

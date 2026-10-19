@@ -24,9 +24,8 @@ import SwiftUI
 /// (c) the server isn't already busy with something else. The chooser picks a
 /// hardware-fit starter, preferring an eligible cached chat model, and uses the
 /// existing ``DownloadManager`` only when the chosen model is not on disk. It
-/// then auto-spawns that selection and
-/// drops the user into chat with a single seeded assistant message
-/// introducing the model.
+/// then auto-spawns that selection and opens chat after the user confirms
+/// Start chatting. The empty-state subtitle identifies the ready model.
 ///
 /// ## Starter policy
 ///
@@ -88,7 +87,7 @@ import SwiftUI
 /// bytes-on-disk monitor for the first-impression cold install — see the
 /// ``kickoffDownload`` rationale). The bigger options pass ``nil`` and
 /// fall back to tqdm file-count progress; both drive an identical
-/// download → serve → seed pipeline.
+/// download → serve → confirmation pipeline.
 struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     enum Tier: Equatable, Sendable {
         case starter
@@ -234,7 +233,7 @@ final class QuickstartCoordinator {
         /// asked and never confirmed. Now readiness only moves us here: the
         /// full-window surface stays up, nothing is persisted, and the flow
         /// ends only when the user activates Start chatting
-        /// (``confirmStartChatting(seedWelcome:)``).
+        /// (``confirmStartChatting()``).
         case ready
         /// Terminal. The onboarding surface has released the frame, either
         /// because the user confirmed Ready or because they revised their
@@ -410,44 +409,17 @@ final class QuickstartCoordinator {
     /// model, or chat-history evidence at coordinator initialization.
     static let priorUseStorageKey: String = "rapid.quickstart.v1.priorUse"
 
-    /// Welcome message seeded into the active session after the sidecar
-    /// comes online, so the user always lands in chat with a friendly
-    /// intro rather than an empty transcript. Interpolates the chosen
-    /// model's display name.
-    ///
-    /// An authored starter keeps the short onboarding framing. A cached or
-    /// manually selected alternative gets a plainer intro without implying it
-    /// was downloaded specifically for setup.
-    var seedMessage: String {
-        if selection.alias == baselineStarterAlias {
-            return """
-You're chatting with \(selection.displayName), selected to fit this Mac. You're \
-ready for your first message. Open the picker any time to choose a different \
-model; the Recommended row is tailored to this Mac's memory.
-"""
-        }
-        return """
-You're chatting with \(selection.displayName), running entirely on your Mac. \
-Open the picker any time to switch models.
-"""
-    }
-
     /// Current phase of the state machine.
     private(set) var phase: Phase = .idle
 
     /// Which model the wizard's "choose your first model" step has
     /// selected. Defaults to (and recommends) the starter; the chooser
     /// reassigns it via ``select(_:)`` before the download kicks off.
-    /// Everything downstream (download, serve, seed, progress copy, the
+    /// Everything downstream (download, serve, progress copy, the
     /// ContentView visibility gate's alias check) reads this instead of
     /// a pinned constant.
     private(set) var selection: QuickstartModelChoice = QuickstartCoordinator.defaultChoice
-    /// RAM-only starter identity for this launch. Unlike ``choice.tier``, this
-    /// is contextual: 1.2B is the starter below 16 GB and remains the explicit
-    /// low-memory fallback everywhere else.
-    private var baselineStarterAlias = QuickstartCoordinator.defaultChoice.alias {
-        didSet { defaults.set(baselineStarterAlias, forKey: Self.baselineStarterAliasKey) }
-    }
+
     /// False after the user or persisted session chose a concrete model, so a
     /// later catalog refresh can never replace explicit intent.
     private var selectionUsesAutomaticPolicy = true
@@ -769,7 +741,6 @@ Open the picker any time to switch models.
     /// the selection is still automatic.
     func applyDefaultChoice(hardware: MacHardware, catalog: [ModelEntry]) {
         guard case .idle = phase, selectionUsesAutomaticPolicy else { return }
-        baselineStarterAlias = Self.baselineChoice(hardware: hardware).alias
         selection = Self.defaultChoice(hardware: hardware, catalog: catalog)
     }
 
@@ -777,7 +748,6 @@ Open the picker any time to switch models.
     /// cache refreshes must not retarget a starter the chooser already shows.
     func settleDefaultChoice(hardware: MacHardware, catalog: [ModelEntry]) {
         guard case .idle = phase, selectionUsesAutomaticPolicy else { return }
-        baselineStarterAlias = Self.baselineChoice(hardware: hardware).alias
         selection = Self.defaultChoice(hardware: hardware, catalog: catalog)
         selectionUsesAutomaticPolicy = false
     }
@@ -800,64 +770,6 @@ Open the picker any time to switch models.
     /// remount cannot manufacture or accidentally preserve eligibility.
     @ObservationIgnored
     private(set) var desktopFunnelFlowToken: DesktopFunnelReporter.FlowToken?
-
-    /// True once the seeded assistant message has been appended to the
-    /// active session. Stops ``markReady`` from double-seeding when the
-    /// observation pipeline fires multiple ``.ready`` transitions for
-    /// the same start (auto-respawn cycle, scheduler tick, …).
-    private(set) var hasSeededWelcome: Bool = false
-
-    /// Codex r4 MAJOR: provenance flag for the deferred-seed retry path.
-    /// Set ONLY when ``markReady`` was called from inside a real
-    /// Quickstart flow whose seed returned ``false`` (no active session
-    /// yet). The parent view's ``.onChange(of: store.activeID)``
-    /// observer consults this flag before retrying — without it, the
-    /// observer could fire a stray Quickstart welcome into a normal
-    /// chat for a user who dismissed Quickstart and later picked
-    /// gemma3-1b-qat-4bit manually.
-    ///
-    /// Cleared on:
-    ///   * successful seed (markReady seed -> true)
-    ///   * user-initiated revoke (releaseInFlight)
-    ///   * a fresh Quickstart click (enterDownloading)
-    ///   * server moves to a different alias (ContentView observer)
-    ///   * test reset
-    ///
-    /// Codex r5 MAJOR: persisted to UserDefaults so a deferred-welcome
-    /// flow survives quit-mid-flow. Without persistence, a user who
-    /// reached Quickstart ``.ready`` but quit before ``activeID``
-    /// landed would re-launch with ``ServerManager.lastServedAlias``
-    /// already set to gemma3-1b-qat-4bit (so Quickstart eligibility
-    /// falls), in-memory flag lost, welcome permanently skipped.
-    private(set) var awaitingWelcomeSeed: Bool {
-        didSet {
-            defaults.set(awaitingWelcomeSeed, forKey: Self.awaitingSeedKey)
-            // #1524: pin the alias the deferred seed is waiting on. Before
-            // #1524 every comparison used the single pinned static, so a
-            // quit-mid-flow relaunch trivially matched. Now the live
-            // ``selection`` drives the seed target, but ``selection`` is
-            // NOT persisted — a fresh ``QuickstartCoordinator()`` re-inits
-            // it to the static standard choice. Persisting the target alias
-            // here (and restoring ``selection`` from it in ``init``) keeps
-            // the ContentView seed observers comparing the served alias
-            // against the model that was actually in flight, so a
-            // non-default pick's welcome message survives the relaunch.
-            if awaitingWelcomeSeed {
-                defaults.set(selection.alias, forKey: Self.awaitingSeedAliasKey)
-            } else {
-                defaults.removeObject(forKey: Self.awaitingSeedAliasKey)
-            }
-        }
-    }
-
-    /// UserDefaults key for the persistent ``awaitingWelcomeSeed``
-    /// flag. Versioned alongside ``storageKey``.
-    static let awaitingSeedKey: String = "rapid.quickstart.v1.awaitingSeed"
-
-    /// UserDefaults key for the alias a persisted deferred seed is
-    /// waiting on (#1524). Only meaningful while ``awaitingSeedKey`` is
-    /// true; cleared in lockstep by the ``awaitingWelcomeSeed`` didSet.
-    static let awaitingSeedAliasKey: String = "rapid.quickstart.v1.awaitingSeedAlias"
 
     /// Provenance for an onboarding flow that reached ``Phase/ready`` but
     /// has NOT been confirmed with Start chatting (Paper 05.1.G —
@@ -888,7 +800,6 @@ Open the picker any time to switch models.
     /// ``enterDownloading``, ``skipForNow``, selecting a different alias,
     /// and ``_testingReset``.
     static let pendingReadyAliasKey: String = "rapid.quickstart.v1.pendingReadyAlias"
-    static let baselineStarterAliasKey: String = "rapid.quickstart.v1.baselineStarterAlias"
 
     /// Provenance for "this install has been inside setup before and never
     /// finished it" (Paper 05.1 state 18 — "Relaunch, setup incomplete").
@@ -967,8 +878,6 @@ Open the picker any time to switch models.
             || ServerManager.lastServedAlias(defaults: defaults) != nil
             || hasChatHistory
         self.defaults = defaults
-        self.baselineStarterAlias = defaults.string(forKey: Self.baselineStarterAliasKey)
-            ?? Self.defaultChoice.alias
         self.done = storedDone
         self.legacyDone = storedLegacyDone
         self.hasPriorUse = storedPriorUse
@@ -978,21 +887,7 @@ Open the picker any time to switch models.
         // makes "never restore a fake active transfer" true by construction
         // rather than by remembering to avoid it.
         self.setupBegun = storedSetupBegun
-        // Codex r5: read the persisted awaiting-seed flag so a
-        // quit-mid-deferred-flow relaunch can resume the welcome
-        // injection once an active session lands. (Assigning a stored
-        // property in ``init`` does NOT trigger the didSet, so this read
-        // can't clobber the persisted alias below.)
-        self.awaitingWelcomeSeed = defaults.bool(forKey: Self.awaitingSeedKey)
         self.pendingReadyAlias = defaults.string(forKey: Self.pendingReadyAliasKey)
-        // #1524: if a deferred seed survived a quit, restore the model it
-        // was waiting on so the seed observers match the served alias and
-        // the welcome copy names the right model (not the reset default).
-        if self.awaitingWelcomeSeed,
-           let alias = defaults.string(forKey: Self.awaitingSeedAliasKey) {
-            self.selection = Self.choice(forAlias: alias)
-            self.selectionUsesAutomaticPolicy = false
-        }
         // An unconfirmed Ready flow restores its model and drops the user
         // back at the chooser rather than the welcome hero — they already
         // made this choice, and re-asking "would you like to get started?"
@@ -1011,13 +906,9 @@ Open the picker any time to switch models.
         }
     }
 
-    /// Resolve a wizard choice from a persisted alias — used to restore
-    /// ``selection`` after a quit-mid-deferred-seed relaunch (#1524). The
-    /// seed target is always one of ``onboardingChoices`` in the common
-    /// (same-version) case; falls back to a minimal choice that still
-    /// carries the alias so the seed comparison matches even if the
-    /// onboarding ladder changed between the version that persisted and
-    /// the version that restores.
+    /// Resolve a wizard choice from an alias, including a pending Ready flow
+    /// restored on relaunch. Unknown aliases retain a minimal choice when the
+    /// onboarding ladder has changed between versions.
     static func choice(forAlias alias: String) -> QuickstartModelChoice {
         if let match = onboardingChoices.first(where: { $0.alias == alias }) {
             return match
@@ -1087,10 +978,7 @@ Open the picker any time to switch models.
         catalogSort = .familyThenSize
         catalogScrollID = nil
         selection = Self.defaultChoice
-        baselineStarterAlias = Self.defaultChoice.alias
         selectionUsesAutomaticPolicy = true
-        hasSeededWelcome = false
-        awaitingWelcomeSeed = false
         pendingReadyAlias = nil
         // Union of both sides of the #1946 merge, not either one: each
         // cleared a flag the other did not, and dropping either leaves the
@@ -1109,10 +997,11 @@ Open the picker any time to switch models.
         // is a launch-time ``let``, so removing the key is what takes effect
         // on the relaunch this reset triggers.
         defaults.removeObject(forKey: Self.legacyStorageKey)
-        defaults.removeObject(forKey: Self.awaitingSeedKey)
-        defaults.removeObject(forKey: Self.awaitingSeedAliasKey)
+        // Clean up deferred-message preferences left by older builds.
+        defaults.removeObject(forKey: "rapid.quickstart.v1.awaitingSeed")
+        defaults.removeObject(forKey: "rapid.quickstart.v1.awaitingSeedAlias")
         defaults.removeObject(forKey: Self.pendingReadyAliasKey)
-        defaults.removeObject(forKey: Self.baselineStarterAliasKey)
+        defaults.removeObject(forKey: "rapid.quickstart.v1.baselineStarterAlias")
     }
 
     /// The name 44 call sites in the suite and ``DevSnapshot`` already use.
@@ -1135,7 +1024,6 @@ Open the picker any time to switch models.
     /// back to it on the next launch would be re-asking.
     func skipForNow() {
         clearPendingReady()
-        awaitingWelcomeSeed = false
         // Codex review (#2033 finding 1): ``startCachedModel(_:)``'s
         // ``Phase/skippingDownload`` beat is an unstructured `Task` that is
         // NOT cancelled by the view disappearing, and its own guard only
@@ -1153,24 +1041,10 @@ Open the picker any time to switch models.
         }
     }
 
-    /// External clearer for the awaiting-seed provenance flag. Called
-    /// from ContentView's ``.onChange(of: server.state)`` observer
-    /// when the server moves to a foreign alias while a deferred-seed
-    /// is pending — without this, a user who reached the deferred-seed
-    /// state then switched away then later switched back would get a
-    /// stale welcome injected (codex r5 MODERATE).
-    func clearPendingSeed() {
-        awaitingWelcomeSeed = false
-    }
-
     /// Mark the Quickstart download as in-flight. The card swaps to
     /// the progress view that reads ``DownloadManager`` directly.
-    /// Clears any stale ``awaitingWelcomeSeed`` flag — a fresh user-
-    /// initiated Quickstart click invalidates any pending-seed state
-    /// from a prior aborted flow.
     func enterDownloading() {
         phase = .downloading
-        awaitingWelcomeSeed = false
         // A fresh pull is a fresh flow: whatever reached Ready before is no
         // longer the thing being confirmed.
         clearPendingReady()
@@ -1266,36 +1140,17 @@ Open the picker any time to switch models.
         phase = .failed(message: message, origin: origin)
     }
 
-    /// Release the in-flight phase WITHOUT seeding the welcome or
-    /// flipping ``done``. Used when the user has revised their intent
-    /// mid-flow — clicked a DIFFERENT model in the still-visible
-    /// picker, server lands at ``.ready(other-alias)``. We don't treat
-    /// this as a failure (the user got what they wanted), but we also
-    /// don't pretend Quickstart finished (they never saw the welcome).
-    /// Phase flips to ``.ready`` so the visibility predicate's
-    /// in-flight gate releases and ChatView takes the frame.
-    ///
-    /// Also clears any stale ``awaitingWelcomeSeed`` flag so the
-    /// parent's ``.onChange(of: activeID)`` retry observer doesn't
-    /// fire a stray welcome message after the user revised intent.
+    /// Release the in-flight phase without completing onboarding.
+    /// Used when the user changes models or leaves the flow.
     func releaseInFlight() {
         phase = .dismissed
-        awaitingWelcomeSeed = false
         clearPendingReady()
     }
 
     /// Readiness landed for the selected model: park onboarding on the
     /// Ready screen and record that a confirmation is outstanding.
     ///
-    /// This is deliberately the WHOLE of what readiness does. Before
-    /// Onboarding V3 this method also seeded the welcome message and wrote
-    /// the completion flag, so the app decided on the user's behalf that
-    /// setup was finished the instant a subprocess reported a port was
-    /// listening. Paper 05.1.G retires that ending explicitly ("Kept for the
-    /// record, not for build … must not be re-introduced"): readiness is
-    /// something to state, and completion is something to confirm.
-    ///
-    /// So nothing is persisted here except the provenance saying a
+    /// Nothing is persisted here except the provenance saying a
     /// confirmation is owed, and the surface stays up.
     ///
     /// Idempotent, because readiness is not a single event: an auto-respawn
@@ -1313,35 +1168,11 @@ Open the picker any time to switch models.
     /// The user activated **Start chatting** — the single completion
     /// transaction for onboarding.
     ///
-    /// Runs, in order: seed the welcome message exactly once, persist the
-    /// completion flag, retire the pending-Ready provenance, and release the
-    /// surface. Everything outside this object's ownership — routing to
-    /// Chat, announcing completion, moving keyboard focus — is the caller's
-    /// half of the transaction and runs only when this returns ``true``.
-    ///
-    /// Idempotent by construction: the guard is the phase itself, so a
-    /// double-click, a repeated key activation, or a stray re-entry after
-    /// completion all return ``false`` without seeding a second welcome,
-    /// re-writing the flag, or re-running the caller's transition.
-    ///
-    /// - Parameter seedWelcome: appends the welcome assistant message to the
-    ///   intended chat session, returning ``true`` when it actually landed.
-    ///   A ``false`` return does NOT block completion — the user asked to
-    ///   start chatting and must not be stranded on a screen they already
-    ///   dismissed — but it does leave ``awaitingWelcomeSeed`` set so the
-    ///   parent's retry observer can land the message once a session exists.
-    /// - Returns: ``true`` when this call performed the transaction.
+    /// Persists completion, clears pending readiness, and dismisses once.
+    /// Returns false outside Ready so repeated activations do not repeat the handoff.
     @discardableResult
-    func confirmStartChatting(seedWelcome: () -> Bool) -> Bool {
+    func confirmStartChatting() -> Bool {
         guard case .ready = phase else { return false }
-        if !hasSeededWelcome {
-            if seedWelcome() {
-                hasSeededWelcome = true
-                awaitingWelcomeSeed = false
-            } else {
-                awaitingWelcomeSeed = true
-            }
-        }
         markDone()
         clearPendingReady()
         phase = .dismissed
@@ -1584,24 +1415,12 @@ struct QuickstartView: View {
     /// now, by ``browseAllModels()``.
     var onSkip: () -> Void
 
-    /// Callback the parent supplies for seeding the welcome message
-    /// into the intended chat session. Closing over ``ChatViewModel``
-    /// from outside keeps Quickstart from importing the entire chat
-    /// module surface. Returns ``true`` when the message actually landed
-    /// (a session existed and the append succeeded) so the coordinator
-    /// can tell "seeded" from "still owed" (codex r2 MAJOR).
-    ///
-    /// Called from exactly one place — the Start chatting transaction —
-    /// so the welcome is a consequence of the user finishing setup rather
-    /// than of a subprocess reporting a listening port.
-    var onSeedWelcome: () -> Bool
-
     /// The parent's half of the Start chatting transaction, run ONLY after
-    /// ``QuickstartCoordinator/confirmStartChatting(seedWelcome:)`` reports
+    /// ``QuickstartCoordinator/confirmStartChatting()`` reports
     /// it performed the state change.
     ///
     /// Split this way so the two halves cannot disagree about whether
-    /// completion happened: the coordinator owns seeding, persistence and
+    /// completion happened: the coordinator owns persistence and
     /// dismissal; the parent owns routing to Chat, the accessibility
     /// announcement and composer focus — none of which this view has the
     /// environment to do, and all of which must fire exactly once.
@@ -1636,9 +1455,8 @@ struct QuickstartView: View {
                     DesktopFunnelReporter.enqueueOnboardingShown(flowToken: token)
                 }
             }
-            // Observe serve transitions so we can flip to ``.ready`` (and
-            // seed the welcome message) as soon as the sidecar comes
-            // online. ``.task(id:)`` re-fires on every ``server.state``
+            // Observe serve transitions so we can show Ready for confirmation
+            // as soon as the sidecar comes online. ``.task(id:)`` re-fires on every ``server.state``
             // change — the serve-side handoff is the only thing we need
             // to react to here; the download side is driven by the
             // explicit "Download & start" tap below.
@@ -4235,7 +4053,7 @@ struct QuickstartView: View {
     /// half (route to Chat, announce, focus the composer) runs only on that
     /// verdict, so a double activation cannot fire a second transition.
     private func completeOnboarding() {
-        guard coordinator.confirmStartChatting(seedWelcome: onSeedWelcome) else { return }
+        guard coordinator.confirmStartChatting() else { return }
         onCompleted()
     }
 
@@ -4309,9 +4127,8 @@ struct QuickstartView: View {
                 if warning.severity == .unsafe {
                     Button(warning.confirmTitle) {
                         // Re-enters ``start`` with the guard bypassed. We stay in
-                        // ``.starting``; ``handleServerStateChange`` seeds the
-                        // welcome and dismisses the sheet once the child reaches
-                        // ``.ready``.
+                        // ``.starting``; ``handleServerStateChange`` opens the
+                        // Ready screen once the child reaches ``.ready``.
                         server.confirmPendingMemoryLoad(warning)
                     }
                     .buttonStyle(.onboardingOutline)
@@ -5075,9 +4892,8 @@ struct QuickstartView: View {
         // both ordering paths converge on ``enterReady``.
         if case .ready(let alias) = server.state,
            alias == coordinator.selection.alias {
-            // Onboarding V3: this is the WHOLE readiness effect. Nothing is
-            // seeded, nothing is persisted and nothing is dismissed here —
-            // the user does that from the Ready screen. Repeat notifications
+            // Readiness records a pending confirmation and opens Ready.
+            // Completion and dismissal wait for the user. Repeat notifications
             // (auto-respawn, residency tick) land on an idempotent no-op.
             coordinator.enterReady()
             return
@@ -5106,8 +4922,7 @@ struct QuickstartView: View {
         if case .ready(let alias) = server.state,
            alias != coordinator.selection.alias,
            case .starting = coordinator.phase {
-            // Don't seed (their chosen model is what they want to chat
-            // with) and don't flip the persistent done flag — they
+            // Don't flip the persistent done flag — they
             // never finished Quickstart, so a fresh install on a
             // different Mac should still see it.
             coordinator.releaseInFlight()

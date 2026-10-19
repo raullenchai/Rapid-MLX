@@ -773,7 +773,6 @@ struct ChatView: View {
                 titleEmphasis: .display,
                 mark: { CheetahLogo(size: 116) }
             )
-            GitHubStarButton()
         }
     }
 

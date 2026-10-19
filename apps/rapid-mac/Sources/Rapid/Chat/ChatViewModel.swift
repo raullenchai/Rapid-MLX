@@ -1237,34 +1237,6 @@ final class ChatViewModel {
         branchChoices.removeAll()
     }
 
-    /// Append a locally authored assistant message to the open conversation.
-    ///
-    /// The one caller is the onboarding completion transaction, which lands
-    /// its welcome message in the chat the user is about to be dropped into.
-    /// There is no network round trip and no stream: the text is written
-    /// straight into the transcript as a finished assistant turn, so it can
-    /// never wedge the typing indicator or the streaming gate.
-    ///
-    /// A transcript that already holds messages is left alone. Onboarding
-    /// completion is a one-shot event, but the app can reach it with a live
-    /// conversation on screen (a user who skipped setup, chatted, then came
-    /// back to it), and injecting a stray intro into the middle of somebody's
-    /// conversation is worse than skipping the pleasantry.
-    ///
-    /// - Returns: ``true`` when the message landed in the transcript.
-    @discardableResult
-    func seedAssistantWelcome(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        guard messages.isEmpty else { return false }
-        appendMessage(ChatMessage(
-            role: .assistant,
-            content: trimmed,
-            wireVisibility: .transcriptOnly
-        ))
-        return true
-    }
-
     /// Fires a detached background task to review the completed exchange
     /// and upsert any durable facts into ``memoryStore``. Called from the
     /// ``isStreaming`` didSet when a turn ends; never blocks the UI or

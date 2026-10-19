@@ -12,7 +12,6 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXButton id="GitHub.Star.EmptyState" desc="Star on GitHub" help="Opens the Rapid-MLX repository in your browser" enabled=true
           AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true

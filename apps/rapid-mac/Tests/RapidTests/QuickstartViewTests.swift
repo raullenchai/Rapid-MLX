@@ -11,7 +11,7 @@ import Testing
 ///   (no persisted done flag) AND (no last-served alias) AND
 ///   (server in .idle / .stopped)
 /// - state machine transitions idle → downloading → starting → ready,
-///   with the seeded welcome message firing exactly once per flow
+///   with completion firing exactly once per flow
 /// - failure path stays in .failed without flipping the persistent
 ///   done bit so the next launch re-offers the card
 /// - friendlyFailureMessage classifier handles the common cold-start
@@ -35,29 +35,6 @@ struct QuickstartViewTests {
     }
 
     // MARK: - Pinned identifiers
-
-    @Test("Seeded welcome copy names the model and points at the picker")
-    func seedMessageReadsWell() {
-        let copy = makeCoordinator().seedMessage
-        #expect(copy.contains(QuickstartCoordinator.defaultChoice.displayName))
-        #expect(copy.lowercased().contains("picker"))
-        #expect(copy.contains("ready for your first message"))
-        #expect(!copy.localizedCaseInsensitiveContains("minute"))
-    }
-
-    @Test("F-LWT-1: welcome message does NOT promise tool calling on 0.6B")
-    func seedMessageDropsToolCallPromise() {
-        // The pre-F-LWT-1 copy promised "It handles tool calls
-        // (calculator, web search) reliably"; the swap explicitly
-        // removes that promise because 0.6B cannot keep it. Users
-        // who want the tool-calling demo trade up via the picker's
-        // Recommended Default.
-        let lowered = makeCoordinator().seedMessage.lowercased()
-        #expect(!lowered.contains("tool call"))
-        #expect(!lowered.contains("tool_call"))
-        #expect(!lowered.contains("calculator"))
-        #expect(!lowered.contains("web search"))
-    }
 
     @Test("The standard starter is the approved 16 GB choice")
     func standardStarterIsFourB() {
@@ -168,157 +145,19 @@ struct QuickstartViewTests {
         #expect(coord.phase == .ready)
         #expect(!coord.done, "readiness alone must NOT flip the persistent done flag")
 
-        var seedCount = 0
-        let completed = coord.confirmStartChatting { seedCount += 1; return true }
+        let completed = coord.confirmStartChatting()
         #expect(completed)
         #expect(coord.phase == .dismissed)
         #expect(coord.done, "Start chatting must flip the persistent done flag")
-        #expect(seedCount == 1, "seed closure must fire exactly once")
 
         // A second activation (double click, repeated key) must not
-        // re-seed, re-write, or re-run the parent's transition.
-        let completedAgain = coord.confirmStartChatting { seedCount += 1; return true }
+        // re-write or re-run the parent's transition.
+        let completedAgain = coord.confirmStartChatting()
         #expect(!completedAgain)
-        #expect(seedCount == 1, "seed closure must not double-fire")
         #expect(coord.done)
     }
 
-    @Test("Seed that cannot land must not block the completion the user asked for")
-    func seedFailureStillCompletes() {
-        let coord = makeCoordinator()
-        coord.enterStarting()
-        coord.enterReady()
-        // Simulate "the welcome could not be appended". The user pressed
-        // Start chatting; stranding them on a screen they just dismissed
-        // because a courtesy message failed would be strictly worse than
-        // starting without it.
-        let completed = coord.confirmStartChatting { false }
-        #expect(completed, "completion must not be gated on the welcome landing")
-        #expect(coord.done)
-        #expect(coord.phase == .dismissed)
-        #expect(!coord.hasSeededWelcome, "hasSeededWelcome must NOT flip when the seed reported failure")
-        #expect(coord.awaitingWelcomeSeed, "a welcome that never landed is still owed")
-    }
-
-    @Test("awaitingWelcomeSeed clears on revoke / fresh-Quickstart click")
-    func awaitingWelcomeSeedClearsOnIntentChange() {
-        // Provenance scenario codex flagged: without the flag, a user
-        // who dismissed Quickstart and later manually started
-        // gemma3-1b-qat-4bit from the picker could see a stray welcome
-        // injected into their first chat. Pin that:
-        //   1. releaseInFlight (foreign-alias revoke) clears the flag
-        //   2. enterDownloading (fresh Quickstart click) clears any
-        //      stale flag from a prior aborted flow
-        let coord = makeCoordinator()
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { false }
-        #expect(coord.awaitingWelcomeSeed)
-
-        // Scenario 1: user clicks "or browse all models" or picks
-        // another alias from the picker → releaseInFlight.
-        coord.releaseInFlight()
-        #expect(!coord.awaitingWelcomeSeed)
-
-        // Reset and set it again to test the other clear path.
-        coord._testingReset()
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { false }
-        #expect(coord.awaitingWelcomeSeed)
-
-        // Scenario 2: user clicks Get started AGAIN (kicks a fresh
-        // flow). enterDownloading clears the stale provenance so the
-        // new flow's own seed cycle controls the flag.
-        coord.enterDownloading()
-        #expect(!coord.awaitingWelcomeSeed)
-    }
-
-    @Test("Codex r5 MAJOR: awaitingWelcomeSeed persists across coordinator init")
-    func awaitingSeedSurvivesRelaunch() {
-        // Quit-mid-flow scenario codex flagged: the welcome was owed but
-        // never landed, and the in-memory flag dies with the process.
-        // Persistence is what stops the message being skipped forever.
-        let coord = makeCoordinator()
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { false }
-        #expect(coord.awaitingWelcomeSeed)
-
-        // Simulate process restart by constructing a fresh coordinator
-        // — same shape as ``donePersists`` test above. The persisted
-        // flag must round-trip.
-        let next = QuickstartCoordinator()
-        #expect(next.awaitingWelcomeSeed, "awaitingWelcomeSeed must survive across coordinator init")
-        next._testingReset()
-    }
-
-    @Test("#1524: a non-default wizard pick's deferred seed restores its selection on relaunch")
-    func awaitingSeedRestoresNonDefaultSelectionAcrossRelaunch() {
-        // #1524 regression: the deferred-seed path persists a flag but
-        // ``selection`` is NOT persisted — a fresh coordinator re-inits it
-        // to ``defaultChoice``. Before the alias-persist fix, a user who
-        // picked a BIGGER model and quit with the welcome still owed would
-        // relaunch with ``selection`` reset, and the welcome copy would
-        // name the wrong model.
-        let bigger = QuickstartCoordinator.onboardingChoices.first { !$0.isStarter }
-        #expect(bigger != nil, "onboarding ladder must offer a non-starter trade-up")
-        guard let bigger else { return }
-
-        let coord = makeCoordinator()
-        coord.select(bigger)
-        #expect(coord.selection == bigger, "select() must retarget while idle")
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { false }
-        #expect(coord.awaitingWelcomeSeed)
-
-        // Simulate process restart: the fresh coordinator must restore
-        // ``selection`` to the bigger pick (from the persisted alias), not
-        // fall back to the default.
-        let next = QuickstartCoordinator()
-        #expect(next.awaitingWelcomeSeed, "flag must survive relaunch")
-        #expect(next.selection.alias == bigger.alias,
-                "selection must be restored to the in-flight non-default pick, not reset to defaultChoice")
-        #expect(next.selection == bigger, "the full restored choice must round-trip (name + isStarter drive the seed copy)")
-        #expect(!next.seedMessage.contains(QuickstartCoordinator.defaultChoice.displayName),
-                "the welcome copy must name the restored model, not the default")
-        next._testingReset()
-    }
-
-    @Test("Codex r5 MODERATE: clearPendingSeed clears flag (used by ContentView server-state observer)")
-    func clearPendingSeedExposesExternalClear() {
-        // The ContentView observer for ``server.state`` needs an
-        // external entry point to drop the provenance flag when the
-        // user switches to a different model after entering the
-        // deferred-seed state. Pin the public surface.
-        let coord = makeCoordinator()
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { false }
-        #expect(coord.awaitingWelcomeSeed)
-        coord.clearPendingSeed()
-        #expect(!coord.awaitingWelcomeSeed)
-        // Idempotent — clearing twice is a no-op.
-        coord.clearPendingSeed()
-        #expect(!coord.awaitingWelcomeSeed)
-    }
-
-    @Test("Codex r4 MAJOR: successful seed does NOT set awaitingWelcomeSeed (steady-state)")
-    func successfulSeedNeverSetsAwaiting() {
-        // The flag is supposed to be a provenance signal for the
-        // DEFERRED path only. A completion whose seed lands on the first
-        // call must never raise it.
-        let coord = makeCoordinator()
-        coord.enterStarting()
-        coord.enterReady()
-        _ = coord.confirmStartChatting { true }
-        #expect(coord.done)
-        #expect(coord.hasSeededWelcome)
-        #expect(!coord.awaitingWelcomeSeed)
-    }
-
-    @Test("releaseInFlight: phase dismisses WITHOUT seed or done")
+    @Test("releaseInFlight: phase dismisses without completing onboarding")
     func releaseInFlightDoesNotCommit() {
         // Codex r2 BLOCKING: user clicks Get started, then picks a
         // DIFFERENT model from the still-visible picker. The
@@ -333,7 +172,6 @@ struct QuickstartViewTests {
         coord.releaseInFlight()
         #expect(coord.phase == .dismissed)
         #expect(!coord.done, "releaseInFlight must NOT flip the persistent done flag")
-        #expect(!coord.hasSeededWelcome)
         #expect(!coord.hasPendingReady, "a revoked flow leaves no Ready confirmation owed")
     }
 
@@ -410,7 +248,6 @@ struct QuickstartViewTests {
         coord._testingReset()
         #expect(!coord.done)
         #expect(coord.phase == .idle)
-        #expect(!coord.hasSeededWelcome)
         #expect(!coord.hasPendingReady)
     }
 
@@ -493,7 +330,7 @@ struct QuickstartViewTests {
         let coord = makeCoordinator()
         coord.enterDownloading()
         coord.enterReady()
-        _ = coord.confirmStartChatting { true }
+        _ = coord.confirmStartChatting()
         #expect(coord.done)
         #expect(coord.phase == .dismissed)
         // Even with the terminal phase still set, an isEligible read on

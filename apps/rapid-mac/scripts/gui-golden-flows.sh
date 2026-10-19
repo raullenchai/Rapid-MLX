@@ -2402,14 +2402,10 @@ flow_cached_quickstart() {
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
-    assert_tree_text "$OUT/ready.json" "chatting with fake-alias, running entirely on your Mac."
-    # This PR deliberately disables Markdown smart typography so the
-    # transcript preserves the bytes emitted by the model. Keep this AX
-    # contract on the straight apostrophe the product now renders; matching
-    # the pre-fix curly spelling made a correct, exactly-once welcome look
-    # absent in the merge candidate.
-    [[ "$(jq '[.data.ui_elements[]? | select(.value? | strings | startswith("You\u0027re chatting with fake-alias, running entirely on your Mac."))] | length' "$OUT/ready.json")" == 1 ]] \
-        || die "Quickstart welcome was not seeded exactly once after confirmation"
+    assert_tree_text "$OUT/ready.json" "Chatting with fake-alias"
+    # Completing setup leaves the transcript empty; readiness supplies the subtitle.
+    [[ "$(jq '[.data.ui_elements[]? | select(.value? | strings | startswith("You\u0027re chatting with"))] | length' "$OUT/ready.json")" == 0 ]] \
+        || die "Quickstart appended an unexpected setup message"
     if jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
         "$OUT/fake-events.jsonl" >/dev/null; then
         die "cached Quickstart invoked rapid-mlx pull instead of the start-only path"
@@ -2436,9 +2432,8 @@ flow_cached_curated_tradeup() {
             | select(((.description // "") | contains("Download 2.9 GB")) | not)' \
         "$OUT/chooser.json" >/dev/null \
         || die "cached hardware-fit starter is hidden or advertises a download"
-    # Finish the exact 16 GB starter journey without a network pull. The
-    # welcome is shown only after the model is ready, so it must describe that
-    # achieved state instead of promising a network-dependent duration.
+    # Finish the exact 16 GB starter journey without a network pull and
+    # show the ready model in the empty-state subtitle.
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
     # The 16 GB fixture owns recommendation policy, not the host's live
     # pressure. A busy hosted runner can therefore (correctly) ask for the
@@ -2461,12 +2456,7 @@ flow_cached_curated_tradeup() {
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
-    assert_tree_text "$OUT/ready.json" "selected to fit this Mac."
-    assert_tree_text "$OUT/ready.json" "ready for your first message."
-    if jq -e '.. | strings | select(test("about a minute"; "i"))' \
-        "$OUT/ready.json" >/dev/null; then
-        die "16 GB starter welcome still promises a fixed download time"
-    fi
+    assert_tree_text "$OUT/ready.json" "Chatting with qwen3.5-4b-4bit"
     cleanup_persona
 }
 
