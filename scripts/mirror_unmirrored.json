@@ -105,6 +105,21 @@
       "hf_path": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"
+    },
+    {
+      "hf_path": "ibm-granite/granite-4.2-30b-q8-mlx",
+      "reason": "owner-approved low-demand mirror pruning; Hugging Face fallback",
+      "since": "2026-10-19"
+    },
+    {
+      "hf_path": "ibm-granite/granite-4.2-30b-q4-mlx",
+      "reason": "owner-approved low-demand mirror pruning; Hugging Face fallback",
+      "since": "2026-10-19"
+    },
+    {
+      "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
+      "reason": "owner-approved low-demand mirror pruning; Hugging Face fallback",
+      "since": "2026-10-19"
     }
   ]
 }
