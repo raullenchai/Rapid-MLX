@@ -256,6 +256,8 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     root = Path(model_ref).expanduser().absolute()
     if not root.is_dir():
         raise NotADirectoryError(errno.ENOTDIR, "Expected a model directory", str(root))
+    if not os.access(root, os.R_OK | os.X_OK):
+        raise PermissionError(errno.EACCES, "Cannot read model directory", str(root))
     # Non-text lanes use their own manifests and validate their component
     # layouts in their loaders; a root config.json is not universal.
     if any(
@@ -266,17 +268,22 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     config = root / "config.json"
     if not config.is_file():
         raise FileNotFoundError(errno.ENOENT, "Missing model config", str(config))
+    if not os.access(config, os.R_OK):
+        raise PermissionError(errno.EACCES, "Cannot read model config", str(config))
     missing_shards = _missing_index_shards(root)
     if missing_shards:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
         )
     # Whisper can use weights.npz; text and vision loaders use safetensors.
-    weights = (
+    weights = [
         path
         for pattern in ("*.safetensors", "*.bin", "weights.npz")
         for path in root.rglob(pattern)
-    )
+    ]
+    for path in weights:
+        if path.is_file() and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, "Cannot read model weights", str(path))
     if not any(path.is_file() and path.stat().st_size > 0 for path in weights):
         raise FileNotFoundError(
             errno.ENOENT, "Missing model weights", str(root / "model.safetensors")
@@ -287,6 +294,11 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
     """Give a local serve error a concrete repair command."""
     root = Path(model_ref).expanduser().absolute()
     filename = Path(exc.filename) if isinstance(exc.filename, str) else None
+    if isinstance(exc, PermissionError):
+        return (
+            f"A file in {root} cannot be read by this user.",
+            f"Grant read access with `chmod -R u+rX {shlex.quote(str(root))}`, then retry.",
+        )
     if not root.exists():
         cause = f"Local model path {root} does not exist."
     elif not root.is_dir():

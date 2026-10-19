@@ -15065,7 +15065,7 @@ def main():
             resolved = resolve_model(args.model)
             if getattr(args, "command", None) == "serve":
                 validate_local_model_for_serve(resolved)
-        except (FileNotFoundError, NotADirectoryError) as exc:
+        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 

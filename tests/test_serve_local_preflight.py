@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -93,6 +94,24 @@ def test_missing_index_shard_is_rejected_before_engine(tmp_path):
     ) as raised:
         validate_local_model_for_serve(str(root))
     assert serve_error_class(raised.value, model_ref=str(root)) == "local_path_missing"
+
+
+def test_unreadable_local_config_reports_permissions(tmp_path, monkeypatch):
+    root = tmp_path / "model"
+    root.mkdir()
+    config = root / "config.json"
+    config.write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors").write_bytes(b"weights")
+    access = os.access
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.os.access",
+        lambda path, mode: False if path == config else access(path, mode),
+    )
+    with pytest.raises(PermissionError) as raised:
+        validate_local_model_for_serve(str(root))
+    cause, step = local_serve_preflight_lines(str(root), raised.value)
+    assert "cannot be read" in cause
+    assert "chmod -R u+rX" in step
 
 
 def test_cache_path_suggests_catalog_alias(tmp_path):
