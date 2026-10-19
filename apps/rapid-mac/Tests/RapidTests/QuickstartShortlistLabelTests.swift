@@ -51,7 +51,19 @@ struct QuickstartShortlistLabelTests {
             recommendedForPhysicalRAMGB: ram
         )
         // Being on disk changes what it costs, not how capable it is.
-        #expect(cached == "19.03 GiB · \(pick.capabilityPct)%")
+        #expect(cached == "19.03 GiB · \(pick.capabilityPct)% capability")
+    }
+
+    @Test("Setup labels the capability score exactly as the model picker does")
+    func capabilityLabelMatchesPicker() throws {
+        let pick = try #require(
+            RAMBucketedDefault.picks(forPhysicalRAMGB: 256).first { $0.caveat == nil }
+        )
+        let label = ModelPickerBar.capabilityText(pick.capabilityPct)
+        #expect(label == "\(pick.capabilityPct)% capability")
+        #expect(QuickstartView.recommendationSizeText(from: pick).hasSuffix(" · \(label)"))
+        #expect(ModelPickerBar.recommendedTagline(pick: pick, isPrimary: true)
+                .contains(label))
     }
 
     @Test("An uncached row is byte-identical to the lane it replaced")
