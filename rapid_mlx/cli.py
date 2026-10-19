@@ -5378,7 +5378,7 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
         args, "no_spec_decode", False
     ):
         print(
-            "error: deepseek-v41-flash-reap-2bit always uses its qualified "
+            "error: the DeepSeek V4.1 product lane always uses its qualified "
             "DSpark K4 runtime; do not pass --speculative-config or "
             "--no-spec-decode.",
             file=sys.stderr,
@@ -5854,9 +5854,20 @@ def serve_command(args):
     _owns_pinned_image_download = bool(
         _serve_profile is not None and _serve_profile.hf_path in IMAGE_MODEL_DATA_FILES
     )
-    from .models.deepseek_v41_native.artifacts import is_product_target
+    from .models.deepseek_v41_native.artifacts import (
+        REAP,
+        is_product_target,
+        local_product_path,
+        product_artifact,
+        require_pins,
+        resolve_product_paths,
+    )
 
+    _v41_artifact = product_artifact(args.model)
+    _v41_local = local_product_path(_v41_artifact)
     _owns_v41_product_download = is_product_target(args.model)
+    if _v41_artifact is not None and _v41_local is None:
+        require_pins(_v41_artifact)
     if _owns_v41_product_download:
         # This qualified lane intentionally carries a lower output cap than
         # the generic server. Keep the override local to this model so the PR
@@ -6218,7 +6229,19 @@ def serve_command(args):
     # ImageEngine. The
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
-    if _owns_v41_product_download:
+    if _owns_v41_product_download and _v41_artifact != REAP:
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        assert _v41_artifact is not None
+        with failure_stage("download"):
+            if _v41_local is None:
+                _check_disk_space(
+                    _v41_artifact.target_repo,
+                    force=getattr(args, "force_disk_check", False),
+                    revision_override=_v41_artifact.target_revision,
+                )
+            resolve_product_paths(_v41_artifact)
+    elif _owns_v41_product_download:
         from rapid_mlx.telemetry.server_start import failure_stage
 
         from .models.deepseek_v41_native.artifacts import (
@@ -7059,6 +7082,7 @@ def serve_command(args):
 
         server._sync_config()
         run_v41_server(
+            model_name=args.model,
             host=args.host,
             port=_resolved_serve_port(args),
             port_explicit=port_explicit_for(args),
@@ -11236,6 +11260,21 @@ def pull_command(args):
         TARGET_REVISION,
         verify_mtp_snapshot,
     )
+
+    from .models.deepseek_v41_native.artifacts import (
+        product_artifact,
+        require_pins,
+        resolve_product_paths,
+    )
+
+    artifact = product_artifact(primary_repo)
+    if artifact is not None and artifact.draft_subfolder:
+        require_pins(artifact)  # Pull never accepts a local qualification override.
+        _check_disk_space(
+            artifact.target_repo, revision_override=artifact.target_revision
+        )
+        resolve_product_paths(artifact, allow_local=False)
+        return
 
     if primary_repo == TARGET_REPO:
         _check_disk_space(

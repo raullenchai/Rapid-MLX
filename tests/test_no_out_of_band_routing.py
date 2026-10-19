@@ -619,6 +619,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Wan generation tuning. These are read only after aliases.json has
         # selected the audited video-gen lane; none can alter LLM routing.
         "RAPID_MLX_WAN_MODEL_DIR",
+        # Source directory override for the registered 1017 lane only;
+        # cannot change routing, decoding, memory or protocol limits.
+        "RAPID_MLX_V41_MODEL_DIR",
         "RAPID_MLX_WAN_STEPS",
         "RAPID_MLX_WAN_SCHEDULER",
         "RAPID_MLX_WAN_TILING",

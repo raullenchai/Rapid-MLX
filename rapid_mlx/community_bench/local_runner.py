@@ -1178,25 +1178,45 @@ def _text_speculative_execution(repo_id: str) -> dict[str, Any] | None:
     if not _is_deepseek_v41_benchmark_target(repo_id):
         return None
     from rapid_mlx.models.deepseek_v41_native.artifacts import (
+        REAP,
         mtp_model_identity_digest,
+        product_artifact,
     )
 
+    artifact = product_artifact(repo_id)
+    assert artifact is not None
     return {
         "method": "dspark",
         "max_draft_tokens": 5,
-        "draft_model_identity_digest": mtp_model_identity_digest(),
+        "draft_model_identity_digest": (
+            mtp_model_identity_digest()
+            if artifact == REAP
+            else mtp_model_identity_digest(artifact)
+        ),
     }
 
 
 def _with_v41_sidecar_identity(
-    primary: dict[str, Any], mtp_snapshot_path: str
+    primary: dict[str, Any], mtp_snapshot_path: str, repo_id: str | None = None
 ) -> dict[str, Any]:
     """Record the external DSpark sidecar beside the target checkpoint."""
-    from rapid_mlx.models.deepseek_v41_native.artifacts import MTP_REPO
+    from rapid_mlx.models.deepseek_v41_native.artifacts import (
+        MTP_REPO,
+        product_artifact,
+    )
+
+    artifact = product_artifact(repo_id)
 
     combined = copy.deepcopy(primary)
     sidecar = unresolved_model_identity(
-        MTP_REPO, "text_generation", snapshot_path=mtp_snapshot_path
+        artifact.mtp_repo if artifact else MTP_REPO,
+        "text_generation",
+        **(
+            {"subfolder": artifact.draft_subfolder}
+            if artifact and artifact.draft_subfolder
+            else {}
+        ),
+        snapshot_path=mtp_snapshot_path,
     )["components"][0]
     sidecar["component_id"] = "sidecar"
     sidecar["role"] = "other"
@@ -1298,11 +1318,13 @@ async def _text_measurements(
 
         if use_v41_runtime:
             from rapid_mlx.models.deepseek_v41_native.artifacts import (
-                MTP_REPO,
-                MTP_REVISION,
-                TARGET_REVISION,
+                REAP,
                 download_mtp_snapshot,
                 download_target_snapshot,
+                product_artifact,
+                require_pins,
+                require_product_memory,
+                resolve_product_paths,
             )
 
             executor = concurrent.futures.ThreadPoolExecutor(
@@ -1312,14 +1334,28 @@ async def _text_measurements(
             )
 
             def load_v41_runtime() -> tuple[Any, Any, Any, str, str]:
-                target_path = download_target_snapshot()
-                mtp_path = download_mtp_snapshot()
+                artifact = product_artifact(repo_id)
+                assert artifact is not None
+                if artifact == REAP:
+                    target_path = download_target_snapshot()
+                    mtp_path = download_mtp_snapshot()
+                else:
+                    require_product_memory(artifact)
+                    require_pins(artifact)
+                    target_path, mtp_path = resolve_product_paths(
+                        artifact, allow_local=False
+                    )
                 model, tokenizer, runtime = _deepseek_v41_load_product_runtime(
                     str(target_path),
                     str(mtp_path),
-                    target_revision=TARGET_REVISION,
-                    mtp_revision=MTP_REVISION,
-                    mtp_identity=MTP_REPO,
+                    target_revision=artifact.target_revision,
+                    mtp_revision=artifact.mtp_revision,
+                    mtp_identity=artifact.mtp_repo,
+                    **(
+                        {"mixed_target_precision": True}
+                        if artifact.draft_subfolder
+                        else {}
+                    ),
                 )
                 return model, tokenizer, runtime, str(target_path), str(mtp_path)
 
@@ -1365,7 +1401,9 @@ async def _text_measurements(
             ),
         )
         if mtp_source is not None:
-            loaded_identity = _with_v41_sidecar_identity(loaded_identity, mtp_source)
+            loaded_identity = _with_v41_sidecar_identity(
+                loaded_identity, mtp_source, repo_id
+            )
         capture = _LOADED_IDENTITY.get()
         if capture is not None:
             capture["identity"] = loaded_identity

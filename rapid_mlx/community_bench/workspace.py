@@ -66,14 +66,23 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
     if task_type == "text_generation":
         from rapid_mlx.model_aliases import resolve_profile
         from rapid_mlx.models.deepseek_v41_native.artifacts import (
+            REAP,
             is_product_target,
+            product_artifact,
+            require_pins,
             require_product_memory,
         )
 
         profile = resolve_profile(alias)
         if profile is not None and is_product_target(profile.hf_path):
             try:
-                require_product_memory()
+                artifact = product_artifact(profile.hf_path)
+                assert artifact is not None
+                if artifact == REAP:
+                    require_product_memory()
+                else:
+                    require_product_memory(artifact)
+                    require_pins(artifact)
             except RuntimeError as exc:
                 return {"status": "unavailable", "message": str(exc)}
             except Exception:

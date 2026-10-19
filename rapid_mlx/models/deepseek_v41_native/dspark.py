@@ -73,7 +73,10 @@ def _safe_shard(root: Path, name: object) -> Path:
         # arbitrary local sidecar symlinks remain rejected so a crafted index
         # cannot escape its artifact boundary.
         resolved = path.resolve(strict=True)
-        blobs = (root.parents[1] / "blobs").resolve()
+        snapshot = root.parent if root.name == "dspark" else root
+        if snapshot.parent.name != "snapshots":
+            raise ValueError(f"DSpark shard symlink leaves its Hub repository: {name}")
+        blobs = (snapshot.parents[1] / "blobs").resolve()
         try:
             resolved.relative_to(blobs)
         except ValueError as exc:
@@ -198,6 +201,10 @@ class DSparkWeights:
 
     def __init__(self, path: str | Path):
         self.path = Path(path).resolve()
+        # Packed builds carry the complete indexed draft beside the target.
+        # Accept either the target root or the explicit sidecar directory.
+        if (self.path / "dspark" / "model.safetensors.index.json").is_file():
+            self.path = self.path / "dspark"
         if not self.path.is_dir():
             raise NotADirectoryError(self.path)
         raw = _read_object(self.path / "config.json")

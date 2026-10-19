@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,11 +59,168 @@ MTP_ALLOW_PATTERNS = tuple(file.name for file in MTP_FILES)
 MIN_UNIFIED_MEMORY_GB = 224.0
 
 
+@dataclass(frozen=True)
+class ProductArtifact:
+    alias: str
+    target_repo: str
+    target_revision: str | None
+    mtp_repo: str
+    mtp_revision: str | None
+    mtp_files: tuple[ArtifactFile, ...] | None
+    draft_subfolder: str = ""
+    target_files: tuple[ArtifactFile, ...] | None = None
+    min_memory_gb: float = MIN_UNIFIED_MEMORY_GB
+
+
+REAP = ProductArtifact(
+    "deepseek-v41-flash-reap-2bit",
+    TARGET_REPO,
+    TARGET_REVISION,
+    MTP_REPO,
+    MTP_REVISION,
+    MTP_FILES,
+)
+# UPLOAD OWNER: replace BOTH revision placeholders with the uploaded commit
+# and populate complete target/draft size + SHA-256 manifests. Never use main.
+FLASH_1017 = ProductArtifact(
+    alias="deepseek-v41-flash-1017",
+    target_repo="rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
+    target_revision=None,  # TODO(upload): immutable 40-character commit
+    mtp_repo="rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
+    mtp_revision=None,  # TODO(upload): same commit as target
+    mtp_files=None,  # TODO(upload): config, index, model-mtp.safetensors
+    target_files=None,  # TODO(upload): metadata and ALL indexed target shards
+    draft_subfolder="dspark",
+)
+PRODUCT_ARTIFACTS = {item.alias: item for item in (REAP, FLASH_1017)}
+LOCAL_MODEL_DIR_ENV = "RAPID_MLX_V41_MODEL_DIR"
+
+
+def product_artifact(model_name: str | None) -> ProductArtifact | None:
+    return next(
+        (
+            item
+            for item in PRODUCT_ARTIFACTS.values()
+            if model_name in (item.alias, item.target_repo)
+        ),
+        None,
+    )
+
+
+def require_pins(artifact: ProductArtifact) -> None:
+    """Reject unpublished/incomplete contracts before any Hub or disk probe."""
+    if not artifact.draft_subfolder:
+        return  # The original released contract is unchanged.
+    revisions = (artifact.target_revision, artifact.mtp_revision)
+    manifests = (artifact.target_files, artifact.mtp_files)
+    valid = (
+        all(re.fullmatch(r"[0-9a-f]{40}", rev or "") for rev in revisions)
+        and revisions[0] == revisions[1]
+        and all(manifests)
+    )
+    for files in manifests:
+        for item in files or ():
+            valid = valid and (
+                item.size > 0
+                and bool(re.fullmatch(r"[0-9a-f]{64}", item.sha256))
+                and Path(item.name).name == item.name
+                and item.name not in (".", "..")
+            )
+    target_names = {item.name for item in artifact.target_files or ()}
+    draft_names = {item.name for item in artifact.mtp_files or ()}
+    if (
+        not valid
+        or not {
+            "config.json",
+            "model.safetensors.index.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "engram_token_map.json",
+        }
+        <= target_names
+        or not {
+            "config.json",
+            "model.safetensors.index.json",
+            "model-mtp.safetensors",
+        }
+        <= draft_names
+    ):
+        raise RuntimeError(
+            f"{artifact.alias}: upload revision/file pins are unset or invalid"
+        )
+
+
+def local_product_path(artifact: ProductArtifact | None) -> Path | None:
+    """Explicit qualification override; never turns an unknown model into V4.1."""
+    value = os.environ.get(LOCAL_MODEL_DIR_ENV)
+    if value is None:
+        return None
+    if artifact is None or not artifact.draft_subfolder:
+        raise ValueError(f"{LOCAL_MODEL_DIR_ENV} requires deepseek-v41-flash-1017")
+    root = Path(value).expanduser().resolve()
+    required = (
+        "config.json",
+        "model.safetensors.index.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "engram_token_map.json",
+        "dspark/config.json",
+        "dspark/model.safetensors.index.json",
+        "dspark/model-mtp.safetensors",
+    )
+    if not value.strip() or not all((root / name).is_file() for name in required):
+        raise ValueError(
+            f"{LOCAL_MODEL_DIR_ENV}: incomplete local target/dspark build: {root}"
+        )
+    logging.getLogger(__name__).warning(
+        "UNPINNED LOCAL QUALIFICATION: %s=%s; bypassing downloads and revision/hash "
+        "verification. Memory and greedy/text/input limits still apply.",
+        LOCAL_MODEL_DIR_ENV,
+        root,
+    )
+    return root
+
+
+def resolve_product_paths(
+    artifact: ProductArtifact, *, allow_local: bool = True
+) -> tuple[Path, Path]:
+    if not allow_local and LOCAL_MODEL_DIR_ENV in os.environ:
+        raise ValueError("local qualification override is only supported by serve")
+    local = local_product_path(artifact) if allow_local else None
+    if local is not None:
+        return local, local / artifact.draft_subfolder
+    require_pins(artifact)
+    if not artifact.draft_subfolder:
+        return download_target_snapshot(), download_mtp_snapshot()
+    from ..._mirror import pinned_snapshot_download
+
+    assert artifact.target_revision is not None
+    assert artifact.target_files is not None and artifact.mtp_files is not None
+    logging.getLogger(__name__).info(
+        "Resolving pinned V4.1 target + co-located draft: %s @ %s (%.2f GB pinned files)",
+        artifact.target_repo,
+        artifact.target_revision,
+        sum(item.size for item in (*artifact.target_files, *artifact.mtp_files)) / 1e9,
+    )
+    target = Path(
+        pinned_snapshot_download(artifact.target_repo, artifact.target_revision)
+    )
+    draft = target / artifact.draft_subfolder
+    for root, files in ((target, artifact.target_files), (draft, artifact.mtp_files)):
+        assert files is not None
+        names = {item.name for item in files}
+        index = json.loads((root / "model.safetensors.index.json").read_text())
+        if not set(index["weight_map"].values()) <= names:
+            raise ValueError("indexed shards are missing from the pinned file manifest")
+        _verify_files(root, files)
+    return target, draft
+
+
 def is_product_target(model_name: str | None) -> bool:
-    return model_name == TARGET_REPO
+    return product_artifact(model_name) is not None
 
 
-def mtp_model_identity_digest() -> str:
+def mtp_model_identity_digest(artifact: ProductArtifact = REAP) -> str:
     """Stable identity digest for the exact DSpark sidecar byte set.
 
     Community Benchmark's execution contract requires an external speculative
@@ -69,25 +230,33 @@ def mtp_model_identity_digest() -> str:
     """
     from rapid_mlx.catalog import rcj_digest
 
+    require_pins(artifact)
+    files = artifact.mtp_files or ()
+
     components = [
         {
             "component_id": "primary",
             "role": "primary",
             "source": {
                 "kind": "huggingface",
-                "repo_id": MTP_REPO,
-                "resolved_revision": MTP_REVISION,
+                "repo_id": artifact.mtp_repo,
+                "resolved_revision": artifact.mtp_revision,
+                **(
+                    {"subfolder": artifact.draft_subfolder}
+                    if artifact.draft_subfolder
+                    else {}
+                ),
             },
             "artifact": {
                 "format": "mlx-safetensors",
                 "manifest_digest": rcj_digest(
                     [
                         {"name": item.name, "size": item.size, "sha256": item.sha256}
-                        for item in MTP_FILES
+                        for item in files
                     ]
                 ),
                 "manifest_basis": "content_sha256",
-                "total_size_bytes": sum(item.size for item in MTP_FILES),
+                "total_size_bytes": sum(item.size for item in files),
             },
             "quantization": {"kind": "unknown", "base_dtype": "unknown"},
         }
@@ -100,7 +269,7 @@ def mtp_model_identity_digest() -> str:
     return rcj_digest(projection)
 
 
-def require_product_memory() -> float:
+def require_product_memory(artifact: ProductArtifact = REAP) -> float:
     """Fail closed for programmatic callers that bypass the CLI catalog gate."""
     import psutil
 
@@ -108,10 +277,10 @@ def require_product_memory() -> float:
     # Linux CI). Importing the general hardware module eagerly imports MLX even
     # though this check only needs physical memory.
     total = float(psutil.virtual_memory().total) / (1024**3)
-    if total < MIN_UNIFIED_MEMORY_GB:
+    if total < artifact.min_memory_gb:
         raise RuntimeError(
             "DeepSeek V4.1 DSpark K4 requires at least "
-            f"{MIN_UNIFIED_MEMORY_GB:.0f} GiB unified memory; this Mac reports "
+            f"{artifact.min_memory_gb:.0f} GiB unified memory; this Mac reports "
             f"{total:.1f} GiB"
         )
     return total
@@ -133,13 +302,19 @@ def verify_mtp_snapshot(snapshot: str | Path) -> Path:
     contained by this repository's ``blobs`` directory. Regular files (and
     non-CAS symlinks) are hashed directly.
     """
+    return _verify_files(snapshot, MTP_FILES)
+
+
+def _verify_files(snapshot: str | Path, files: tuple[ArtifactFile, ...]) -> Path:
     root = Path(snapshot).resolve()
+    if root.name == "dspark":
+        root = root.parent
     blobs = (
         (root.parents[1] / "blobs").resolve()
         if root.parent.name == "snapshots"
         else None
     )
-    for expected in MTP_FILES:
+    for expected in files:
         link = Path(snapshot) / expected.name
         if not link.is_file():
             raise FileNotFoundError(f"missing pinned DSpark artifact: {expected.name}")

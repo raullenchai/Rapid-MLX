@@ -253,6 +253,7 @@ def load_product_runtime(
     target_revision: str,
     mtp_revision: str,
     mtp_identity: str | None = None,
+    mixed_target_precision: bool = False,
 ):
     model, _args = load(
         target_path,
@@ -260,7 +261,9 @@ def load_product_runtime(
         engram_ssd_offload=supports_engram_ssd_offload(target_path),
     )
     model.eval_interval = 40
-    install_target_qmv(model)
+    installed = install_target_qmv(model)
+    if not mixed_target_precision and installed != len(model.layers):
+        raise RuntimeError("qualified REAP target QMV must be installed on every layer")
     weights = DSparkWeights(mtp_path)
     weights.attach_target(model)
     weights.pin_mtp()
