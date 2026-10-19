@@ -730,3 +730,14 @@ def test_empty_local_override_does_not_block_pinned_resolution(monkeypatch):
     monkeypatch.setattr(a, "download_mtp_snapshot", lambda: "m")
     assert a.resolve_product_paths(a.REAP, allow_local=False) == ("t", "m")
     assert seen == [a.REAP]
+
+
+@pytest.mark.parametrize("artifact", [a.REAP, a.FLASH_1017])
+def test_benchmark_readiness_checks_each_lane_memory_guard(monkeypatch, artifact):
+    from rapid_mlx.community_bench.workspace import benchmark_runtime_readiness
+
+    seen = []
+    monkeypatch.setattr(a, "require_product_memory", lambda *args: seen.append(args))
+    status = benchmark_runtime_readiness(artifact.alias, "text_generation")
+    assert status == {"status": "ready", "message": None}
+    assert seen == [()] if artifact == a.REAP else [(artifact,)]
