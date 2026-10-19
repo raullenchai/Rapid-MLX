@@ -85,17 +85,12 @@ def supports_engram_ssd_offload(path: str) -> bool:
             prefix = f"layers.{layer_id}.engram.embed"
             keys = (prefix + ".weight", prefix + ".scales", prefix + ".biases")
             filenames = [mapping.get(key) for key in keys]
-            if (
-                any(
-                    not isinstance(filename, str) or not filename
-                    for filename in filenames
-                )
-                or len(set(filenames)) != 1
+            if any(
+                not isinstance(filename, str) or not filename for filename in filenames
             ):
                 return False
-            filename = filenames[0]
-            assert isinstance(filename, str)
-            resolve_indexed_shard(path, filename)
+            for filename in filenames:
+                resolve_indexed_shard(path, filename)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
     return True
@@ -274,7 +269,7 @@ def load(
                             "scales": prefix + ".scales",
                             "biases": prefix + ".biases",
                         }
-                        filenames = []
+                        shard_paths = {}
                         for key in keys.values():
                             filename = engram_mapping.get(key)
                             if not isinstance(filename, str) or not filename:
@@ -282,15 +277,9 @@ def load(
                                     "Engram SSD offload is missing indexed tensor: "
                                     f"{key}"
                                 )
-                            filenames.append(filename)
-                        if len(set(filenames)) != 1:
-                            raise ValueError(
-                                "Engram affine tensors must share one shard"
-                            )
-                        filename = filenames[0]
-                        shard_path = resolve_indexed_shard(path, filename)
+                            shard_paths[key] = resolve_indexed_shard(path, filename)
                         layer.engram.embed = DiskQuantizedEngramEmbedding(
-                            shard_path,
+                            shard_paths,
                             weight_key=keys["weight"],
                             scales_key=keys["scales"],
                             biases_key=keys["biases"],

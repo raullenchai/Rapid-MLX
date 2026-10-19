@@ -413,7 +413,9 @@ def test_all_two_bit_no_draft_payload_unchanged(tmp_path):
     expected = {
         "model-layer-0.safetensors": "1f343858474fa8398136e0355e4c84aebde527d91fc54755fc989a31d3b335a6",
         "model-top.safetensors": "4d9f379e576eeae43f3dd0f3401b175399cad5fe9eeef73adca6c85526bdc405",
-        "model-engram-0.safetensors": "1976bd5292787b19e9704f97fcc8412201be592696739bd196db3866991deb92",
+        # Engram tensors moved into weight/affine shards; tensor bytes unchanged.
+        "model-engram-0-weight.safetensors": "56c90abde1bc3e0aaf9ac51d1d84ddb9d7bf6184120beeba8c7f45989339d0e9",
+        "model-engram-0-affine.safetensors": "87427a96684496e4499cee14d8097c09938270eb44eff2aa63624d06618db070",
     }
     for name, digest in expected.items():
         assert (

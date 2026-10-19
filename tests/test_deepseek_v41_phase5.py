@@ -69,7 +69,8 @@ def test_reuse_matches_fresh_bytes_and_inodes(source, reuse_build, tmp_path, bit
     assert provenance == report["reuse"]
     assert len(provenance["allocation_sha256"]) == 64
     assert "dspark/model-mtp.safetensors" in provenance["reused"]
-    assert "model-engram-0.safetensors" in provenance["reused"]
+    assert "model-engram-0-weight.safetensors" in provenance["reused"]
+    assert "model-engram-0-affine.safetensors" in provenance["reused"]
 
 
 @pytest.mark.requires_mlx

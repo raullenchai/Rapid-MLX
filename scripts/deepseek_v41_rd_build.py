@@ -312,7 +312,8 @@ def groups_for(entries):
         group = (
             "mtp"
             if e.component == "mtp"
-            else "engram-" + layer[1]
+            # Weight and affine tensors split so each file fits hub size limits.
+            else f"engram-{layer[1]}-{'weight' if e.name.endswith('.weight') else 'affine'}"
             if e.component == "engram_ssd"
             else "layer-" + layer[1]
             if layer

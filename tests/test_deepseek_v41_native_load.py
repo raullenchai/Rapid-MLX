@@ -137,6 +137,20 @@ def test_engram_ssd_capability_requires_affine_indexed_layout(tmp_path) -> None:
 
     assert supports_engram_ssd_offload(str(tmp_path))
 
+    # Weight and affine tensors may live in separate shards (hub file limits).
+    (tmp_path / "affine.safetensors").touch()
+    split = (
+        '{"weight_map":{'
+        '"layers.1.engram.embed.weight":"shard.safetensors",'
+        '"layers.1.engram.embed.scales":"affine.safetensors",'
+        '"layers.1.engram.embed.biases":"affine.safetensors"}}'
+    )
+    index.write_text(split)
+    assert supports_engram_ssd_offload(str(tmp_path))
+
+    (tmp_path / "affine.safetensors").unlink()
+    assert not supports_engram_ssd_offload(str(tmp_path))
+
     index.write_text('{"weight_map":{}}')
     assert not supports_engram_ssd_offload(str(tmp_path))
 
@@ -284,10 +298,6 @@ def test_load_rejects_missing_or_invalid_offload_index(
                 key: value for key, value in mapping.items() if key != keys["biases"]
             },
             "missing indexed tensor",
-        ),
-        (
-            lambda mapping, keys: {**mapping, keys["biases"]: "other.safetensors"},
-            "must share one shard",
         ),
     ],
 )

@@ -200,8 +200,8 @@ def test_streamed_conversion_actual_bytes_router_and_shared_inodes(
             sum(f.stat().st_size for f in (tmp_path / name).glob("*.safetensors"))
             == reports[-1]["total_safetensors_file_bytes"]
         )
-    engram_a = tmp_path / "a" / "model-engram-0.safetensors"
-    engram_b = tmp_path / "b" / "model-engram-0.safetensors"
+    engram_a = tmp_path / "a" / "model-engram-0-weight.safetensors"
+    engram_b = tmp_path / "b" / "model-engram-0-weight.safetensors"
     assert engram_a.stat().st_ino == engram_b.stat().st_ino
     assert not engram_a.is_symlink()
     from rapid_mlx.models.deepseek_v41_native.load import resolve_indexed_shard
