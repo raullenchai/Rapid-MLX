@@ -346,7 +346,8 @@ def test_allocator_cli_checks_provenance_stability_and_payload_costs(
         "argv",
         [
             "allocate",
-            "--granularity", "legacy-expert",
+            "--granularity",
+            "legacy-expert",
             "--scores",
             str(scores),
             "--errors",
