@@ -18,7 +18,8 @@ enum ReplyScript {
         return cjkLetters > otherLetters
     }
 
-    /// Han must outnumber kana and hangul before choosing a Chinese cue.
+    /// CJK-majority text with Han and no kana or hangul. Ordinary Japanese is
+    /// mostly Han but always carries kana, so any kana means not Chinese.
     nonisolated static func isChinese(_ text: String) -> Bool {
         guard usesCJK(text) else { return false }
         var han = 0
@@ -32,6 +33,6 @@ enum ReplyScript {
                 kanaAndHangul += 1
             }
         }
-        return han > kanaAndHangul
+        return han > 0 && kanaAndHangul == 0
     }
 }

@@ -445,12 +445,13 @@ struct SmallModelBehaviourTests {
 
 @Suite("Background assist language and voice")
 struct BackgroundAssistLanguageTests {
-    @Test("Chinese cues require Han majority", arguments: [
+    @Test("Chinese cues require Han and no kana or hangul", arguments: [
         ("明天会下雨吗", true, true), ("hello world", false, false),
         ("漢字かなカナかな", true, false), ("漢字한국어한국어", true, false),
         ("かな", true, false), ("한국어", true, false),
         ("中a", false, false), ("123?!", false, false), ("中文a", true, true),
         ("漢かな", true, false), ("漢字かな", true, false),
+        ("日本語の文法を説明して", true, false),
     ])
     func scriptSignal(_ text: String, _ cjk: Bool, _ chinese: Bool) {
         #expect(ReplyScript.usesCJK(text) == cjk)
