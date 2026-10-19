@@ -822,11 +822,26 @@ def _emit_rejection(args: Any, exc: PreflightRejectedError) -> None:
         emit_model_pull_failed(exc, model_ref=shown)
 
 
+def _note_uncataloged_serve(args: Any) -> None:
+    """Identify local models whose catalog compatibility has not been tested."""
+    ref = getattr(args, "_original_alias", None) or getattr(args, "model", "")
+    if (
+        args.command == "serve"
+        and not getattr(args, "_serve_default_selected", False)
+        and not _is_catalog_or_registry_model(ref)
+    ):
+        print(
+            f"  Note: {ref} is not in the Rapid-MLX catalog, "
+            "so it has not been catalog-tested here.",
+            file=sys.stderr,
+        )
+
+
 def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
     """Run the preflight for ``serve``/``pull`` args; exit 1 on a rejection.
 
-    Silent (no output, no state change) for every model it does not apply to
-    and whenever metadata cannot be read. On an interactive terminal a passing
+    Cached or offline uncataloged serve targets receive a compatibility note.
+    Unreadable local metadata stays silent. On an interactive terminal a passing
     check prints a short summary before the download starts.
     """
     funnel = _funnel()
@@ -837,6 +852,8 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         raise SystemExit(1)
     unchecked, target = _target_status(args)
     if target is None:
+        if unchecked in ("cached", "no_verdict"):
+            _note_uncataloged_serve(args)
         if unchecked is not None:
             funnel.set_preflight(unchecked)
         return
@@ -850,6 +867,8 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             inspection = inspect_hub(ref)
     if inspection is None:
         return
+    if is_local:
+        _note_uncataloged_serve(args)
     supported = supported_model_types()
     # ``pull`` is storage-only and may target another Mac, and ``--disk-stream``
     # serves MoE experts from disk; only a plain ``serve`` refuses a checkpoint

@@ -951,7 +951,11 @@ def test_hook_local_paths(hook, capsys, tmp_path):
     (good / "model.safetensors").write_bytes(b"x")
     (good / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     hook(None, _args(model=str(good)), tty=True)
-    assert capsys.readouterr() == ("", "")
+    assert capsys.readouterr() == (
+        "",
+        f"  Note: {good} is not in the Rapid-MLX catalog, "
+        "so it has not been catalog-tested here.\n",
+    )
 
     gguf = tmp_path / "m-Q8_0.gguf"
     gguf.write_bytes(b"x")
@@ -1094,7 +1098,13 @@ def test_golden_working_paths_are_unchanged(
     seen, out, err = _run_main_golden(monkeypatch, capsys, argv, GOLDEN_PASSING)
     assert seen == [dispatched]
     assert out == expected_out
-    assert err == ""
+    if argv[0] == "serve":
+        assert err == (
+            f"  Note: {argv[1]} is not in the Rapid-MLX catalog, "
+            "so it has not been catalog-tested here.\n"
+        )
+    else:
+        assert err == ""
 
 
 def test_serve_dispatches_typed_local_path_as_absolute(monkeypatch, capsys, tmp_path):

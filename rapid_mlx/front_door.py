@@ -84,6 +84,8 @@ class FrontDoorState:
     agent: str | None = None
     selected: str = ""
     quick_start_size: str = "~3 GB"
+    local_default: str | None = None
+    local_default_cataloged: bool = True
 
     @property
     def attach_port(self) -> int | None:
@@ -184,7 +186,7 @@ def _can_chat(model: str) -> bool:
 
 def _default_model(state: FrontDoorState) -> str:
     """Server model → last used → a cached recipe pick for this Mac (best
-    first) → the quick-start model."""
+    first) → a policy-ranked local model → the quick-start model."""
     if (
         state.server is not None
         and state.server.attachable
@@ -197,7 +199,11 @@ def _default_model(state: FrontDoorState) -> str:
     for pick in [best, *(p for p in state.picks if p is not best)]:
         if pick.get("cached") or pick["alias"] in state.cached:
             return str(pick["alias"])
-    return QUICK_START_MODEL
+    return (
+        state.local_default
+        if QUICK_START_MODEL not in state.cached and state.local_default
+        else QUICK_START_MODEL
+    )
 
 
 def gather_state(version: str) -> FrontDoorState:
@@ -228,6 +234,13 @@ def gather_state(version: str) -> FrontDoorState:
         agent=first_run.preferred_agent(),
         quick_start_size=quick_start_size_label(),
     )
+    if QUICK_START_MODEL not in cached and _default_model(state) == QUICK_START_MODEL:
+        from rapid_mlx.local_models import select_default_local_model
+
+        chosen = select_default_local_model(ram_gb)
+        if chosen is not None:
+            state.local_default = chosen.model
+            state.local_default_cataloged = chosen.cataloged
     state.selected = _default_model(state)
     return state
 
@@ -326,6 +339,13 @@ def render_screen(state: FrontDoorState) -> str:
     best = best_pick(state.picks)
     if model == QUICK_START_MODEL:
         target = f"{model} ({_quick_start_facts(state)})"
+    elif model == state.local_default:
+        label = (
+            "downloaded"
+            if state.local_default_cataloged
+            else "on this Mac · not catalog-tested"
+        )
+        target = f"{model} ({label})"
     elif model in state.cached or (model == best["alias"] and best.get("cached")):
         target = f"{model} (downloaded)"
     else:

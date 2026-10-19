@@ -231,8 +231,25 @@ Start the OpenAI-compatible API server.
 ### Usage
 
 ```bash
-rapid-mlx serve <model> [options]
+rapid-mlx serve [model] [options]
 ```
+
+With no model, `serve` selects a complete local chat model that fits this Mac,
+without downloading. It prefers the RAM-tier starter baseline, then other tier
+candidates, other catalog chat models, and finally locally verified uncataloged
+chat models. If none is available, it exits with a model-required message.
+`chat` and `run` prefer the cached quick-start model before this policy and keep
+the quick-start download when no local model is suitable. Attaching chat to an
+existing server does not scan local models. The bare command keeps its server,
+last-used, and cached recipe preferences before the local fallback.
+
+Discovery includes the Hugging Face cache and another MLX app's default model
+folder (`~/.lmstudio/models` or `~/.cache/lm-studio/models`), using the
+`<root>/<publisher>/<repo>/` layout. These external folders are read-only:
+models are served in place. `RAPID_MLX_EXTRA_MODEL_ROOTS` adds folders before
+the defaults (path-separated or a JSON array). You can serve a complete local
+uncataloged model by repo id or directory; it carries a note that it has not
+been catalog-tested here. Pass an explicit model to override selection.
 
 ### Options
 

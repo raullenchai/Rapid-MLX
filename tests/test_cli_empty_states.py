@@ -13,6 +13,9 @@ from rapid_mlx import cli
 def test_serve_without_model_is_concise_and_points_to_recipe(capsys):
     with (
         mock.patch.object(sys, "argv", ["rapid-mlx", "serve"]),
+        mock.patch(
+            "rapid_mlx.local_models.select_default_local_model", return_value=None
+        ),
         pytest.raises(SystemExit) as exc_info,
     ):
         cli.main()

@@ -37,13 +37,12 @@ def test_select_chat_default_cold_cache_returns_starter(monkeypatch):
     assert already_cached is False
 
 
-def test_select_chat_default_always_starter_never_arbitrary_cached(monkeypatch):
-    # Even when other (possibly non-chat) models are cached, we pick the
-    # known-good starter — never the most-recently-downloaded alias.
+def test_select_chat_default_nonchat_cached_is_not_selected(monkeypatch):
+    # A non-chat cached alias never displaces the cold-cache starter.
     monkeypatch.setattr(
         fr,
         "cached_known_aliases",
-        lambda: [("embeddinggemma-300m-8bit", 200.0), ("gpt-oss-20b-mxfp4-q8", 100.0)],
+        lambda: [("embeddinggemma-300m-8bit", 200.0)],
     )
     alias, already_cached = fr.select_chat_default()
     assert alias == fr.FIRST_RUN_MODEL

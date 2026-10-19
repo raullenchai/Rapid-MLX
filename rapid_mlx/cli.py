@@ -9255,28 +9255,10 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
 
 
 def _external_model_roots() -> list[str]:
-    """Directories to scan for models another MLX runtime downloaded.
+    """Existing configured roots and another MLX app's default model folders."""
+    from rapid_mlx.model_aliases import external_model_root_paths
 
-    Read from ``RAPID_MLX_EXTRA_MODEL_ROOTS`` (``os.pathsep``-separated,
-    same convention as ``PATH``). Empty by default: scanning a user's
-    disk uninvited is not ours to decide, and a wrong guess costs a slow
-    recursive walk on every ``ls``.
-
-    The desktop app populates this from the folder the user picked in
-    Settings, which is why the env var is the interface rather than a
-    hardcoded list of every MLX tool's default location.
-    """
-    raw = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip()
-    if not raw:
-        return []
-    from rapid_mlx.model_aliases import _external_model_root_values
-
-    roots: list[str] = []
-    for part in _external_model_root_values(raw):
-        path = os.path.expanduser(part.strip())
-        if path and os.path.isdir(path):
-            roots.append(os.path.realpath(path))
-    return roots
+    return external_model_root_paths()
 
 
 def _scan_external_model_dirs(
@@ -14878,13 +14860,32 @@ def main():
         and not getattr(args, "embedding_model", None)
         and not getattr(args, "rerank_model", None)
     ):
-        print("rapid-mlx serve: a model is required.", file=sys.stderr)
-        print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)
-        print(
-            "  Or start a small one:   rapid-mlx serve qwen3.5-4b-4bit",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        from rapid_mlx.local_models import select_default_local_model
+
+        chosen = select_default_local_model()
+        if chosen is not None:
+            args.model = chosen.model
+            args._serve_default_selected = True
+            print(
+                f"  No model specified — starting {chosen.model} "
+                "(already on this Mac, no download).",
+                file=sys.stderr,
+            )
+            if not chosen.cataloged:
+                print(
+                    f"  Note: {chosen.repo} is not in the Rapid-MLX catalog, "
+                    "so it has not been catalog-tested here.",
+                    file=sys.stderr,
+                )
+            print("  Override: rapid-mlx serve <model>", file=sys.stderr)
+        else:
+            print("rapid-mlx serve: a model is required.", file=sys.stderr)
+            print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)
+            print(
+                "  Or start a small one:   rapid-mlx serve qwen3.5-4b-4bit",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     # ``bench --submit`` is a removed invocation. Reject it at the parse
     # boundary so global model resolution and the auto-pull gate cannot do
@@ -14899,9 +14900,9 @@ def main():
     elif getattr(args, "command", None) == "serve":
         # Auto-selection is telemetry context, separate from the established
         # internal-spawn marker whose only valid value remains ``"1"``.
-        args._telemetry_auto_selected = (
-            os.environ.pop("RAPID_MLX_AUTO_SELECTED", "") == "1"
-        )
+        args._telemetry_auto_selected = os.environ.pop(
+            "RAPID_MLX_AUTO_SELECTED", ""
+        ) == "1" or getattr(args, "_serve_default_selected", False)
 
     # Cheetah launch banner. Interactive only — stdout must be a real
     # terminal, not a pipe/redirect, and none of the machine-facing opt-outs
@@ -14973,26 +14974,39 @@ def main():
         )
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
-    # Resolve the starter alias HERE — before the alias→path resolution below —
-    # so it flows through the normal resolve + download path (and the
-    # ``_original_alias`` banner) exactly as if the user had typed it. Always
-    # the known-good starter, never an arbitrary cached model (which could be a
-    # non-chat checkpoint); the bare-command nameplate lists cached models for
-    # explicit selection instead.
+    # Select a complete, policy-ranked chat model before normal resolution.
     if (
         getattr(args, "command", None) in ("chat", "run")
         and getattr(args, "model", None) is None
     ):
-        from rapid_mlx.first_run import FIRST_RUN_MODEL_SIZE, select_chat_default
+        from rapid_mlx.first_run import (
+            FIRST_RUN_MODEL,
+            FIRST_RUN_MODEL_SIZE,
+            select_chat_default,
+        )
 
         _cmd = getattr(args, "command", "chat")
-        _sel_alias, _starter_cached = select_chat_default()
+        if args.base_url or args.port is not None:
+            # Attaching retains the historical starter identity without discovery.
+            _sel_alias, _starter_cached = FIRST_RUN_MODEL, False
+        else:
+            _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
         if sys.stdin.isatty() and not (args.base_url or args.port is not None):
             if _starter_cached:
-                print(
-                    f"  No model specified — using {_sel_alias} (already downloaded)."
+                _where = (
+                    "already downloaded"
+                    if _sel_alias == FIRST_RUN_MODEL
+                    else "already on this Mac"
                 )
+                print(f"  No model specified — using {_sel_alias} ({_where}).")
+                from rapid_mlx.model_aliases import list_profiles
+
+                if _sel_alias not in list_profiles():
+                    print(
+                        f"  Note: {_sel_alias} is not in the Rapid-MLX catalog, "
+                        "so it has not been catalog-tested here."
+                    )
             else:
                 print(
                     f"  No model specified — using {_sel_alias} "
@@ -15000,15 +15014,15 @@ def main():
                 )
             print(f"  Browse: rapid-mlx models · Override: rapid-mlx {_cmd} <model>")
             print()
-        # We intentionally do NOT special-case the download gate for the
-        # auto-selected starter. The starter is a small (~2.5 GB) model, well
-        # under the gate's 10 GiB confirm threshold, so the gate never prompts
-        # for it regardless — deferring to the gate's own authoritative
-        # ``is_repo_cached`` + threshold policy is simpler and safer than a
-        # bypass flag derived from a fail-silent pre-scan. Non-interactive
-        # (CI / pipe): no notice (it is TTY-only); ``main()`` sets the starter
-        # and falls through to the same gate a bare ``rapid-mlx chat`` always
-        # used, so scripted callers are unchanged (no new exit-1 path).
+        # Local selection uses the ordinary resolution and download gates.
+        # Discovery is a fail-silent hint, so it must not bypass the gate's
+        # authoritative is_repo_cached check or confirmation thresholds.
+        # Complete cached choices normally pass without downloading; the
+        # cold-cache starter (~3.1 GB) remains below the 10 GiB confirmation
+        # threshold. A cache that changes after discovery is rechecked by the
+        # existing gate, just as for an explicitly named model.
+        # Non-interactive sessions keep the notice TTY-only and retain the
+        # existing download and exit behavior.
 
     # An explicit image precision selects a concrete curated alias BEFORE the
     # ordinary alias/download gates run. That ordering makes the 15.98 GB bf16

@@ -1028,6 +1028,28 @@ def raise_if_draft_only_model(model_ref: object) -> None:
         raise DraftModelNotServableError(conflict)
 
 
+# Another MLX app's default model folders; probed read-only when present.
+DEFAULT_EXTERNAL_MODEL_ROOTS = ("~/.lmstudio/models", "~/.cache/lm-studio/models")
+
+
+def external_model_root_paths() -> list[str]:
+    """Configured roots followed by existing default folders, canonical and unique."""
+    roots: list[str] = []
+    values = _external_model_root_values(
+        os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "")
+    )
+    for value in (*values, *DEFAULT_EXTERNAL_MODEL_ROOTS):
+        try:
+            if not value.strip():
+                continue
+            path = os.path.realpath(os.path.expanduser(value.strip()))
+            if os.path.isdir(path) and path not in roots:
+                roots.append(path)
+        except (OSError, ValueError):
+            continue
+    return roots
+
+
 def resolve_model(name: str) -> str:
     """Resolve a model alias to its full HuggingFace path.
 
@@ -1055,9 +1077,9 @@ def resolve_model(name: str) -> str:
         profile = _load().get(target)
         return profile.hf_path if profile is not None else target
     # Preserve the historical resolver hot path exactly unless the external
-    # feature is configured. In particular, ordinary chat/serve resolution
+    # roots are available. In particular, ordinary chat/serve resolution
     # must not introduce a cache/download-gate probe.
-    if not os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip():
+    if not external_model_root_paths():
         if "/" in name:
             canonical = _alias_for_hf_path(name)
             if canonical is not None:
@@ -1121,17 +1143,9 @@ def _resolve_external_model_path(name: str) -> str | None:
     if profile is not None and profile.hf_path != name:
         external_names.append(profile.hf_path)
 
-    raw_roots = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "")
-    if not raw_roots:
-        return None
-
     from ._download_gate import _snapshot_is_complete
 
-    trusted_roots = [
-        os.path.realpath(os.path.expanduser(value.strip()))
-        for value in _external_model_root_values(raw_roots)
-        if value.strip()
-    ]
+    trusted_roots = external_model_root_paths()
     for root in trusted_roots:
         for external_name in external_names:
             parts = _external_model_identifier_parts(external_name)

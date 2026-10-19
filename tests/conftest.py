@@ -1088,3 +1088,9 @@ def _telemetry_tests_run_off_the_build_machine(request, monkeypatch):
 
     for name in (DO_NOT_TRACK_ENV, *CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_external_model_roots(monkeypatch):
+    """Never discover the host's model folders in tests."""
+    monkeypatch.setattr("rapid_mlx.model_aliases.DEFAULT_EXTERNAL_MODEL_ROOTS", ())

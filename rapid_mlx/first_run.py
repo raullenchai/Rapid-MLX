@@ -5,7 +5,7 @@ Three CLI surfaces share this module (wired in ``rapid_mlx/cli.py``):
   * ``rapid-mlx`` (bare command) → the interactive front door in
     ``rapid_mlx/front_door.py``, which uses the probes here (cached aliases,
     detected agents, last-used model).
-  * ``rapid-mlx chat`` with no model → auto-select the known-good starter, so
+  * ``rapid-mlx chat`` with no model → prefer a runnable local chat model, so
     the user's only decision is typing ``chat`` (everything else is a default
     + override).
   * The first successful ``chat`` exit → a one-time "connect your agent" tip.
@@ -76,9 +76,8 @@ def cached_known_aliases(
     alias, most-recently-modified first.
 
     Unmapped cache entries (a raw HF repo with no alias in ``aliases.json``)
-    are omitted — an unknown profile is unsafe to auto-select as the chat
-    default. Returns ``[]`` on a cold cache or any scan error. ``cache_rows``
-    reuses a ``_scan_hf_cache_models()`` result the caller already holds.
+    are omitted; shared local discovery handles those separately. Returns ``[]``
+    on a cold cache or scan error; ``cache_rows`` reuses a scan the caller holds.
     """
     try:
         # Lazy import: cli.py imports this module, so importing it back at
@@ -104,22 +103,18 @@ def cached_known_aliases(
 
 
 def select_chat_default() -> tuple[str, bool]:
-    """Pick the model for ``rapid-mlx chat`` / ``run`` when the user gave no
-    model. Always the first-run starter (:data:`FIRST_RUN_MODEL`) — a known
-    chat/tool-call-capable, dogfood-tested alias.
+    """Prefer the cached starter, then a complete, policy-ranked local chat model.
 
-    Returns ``(alias, already_cached)``, where ``already_cached`` reports only
-    whether the starter itself is downloaded (it drives the "already
-    downloaded" vs "one-time download" notice — nothing else).
-
-    We deliberately do NOT auto-pick the most-recently-cached alias: it could
-    be a non-chat checkpoint (embedding / transcription), and silently
-    selecting a model the user never named invites surprise and a hard-to-read
-    failure. The bare-command front door still LISTS cached models so a
-    returning user can pick one explicitly.
+    Return ``(model, already_cached)``; a cold cache retains the starter download.
+    Discovery only admits chat-capable models and never accesses the network.
     """
     cached_aliases = {alias for alias, _ in cached_known_aliases()}
-    return FIRST_RUN_MODEL, FIRST_RUN_MODEL in cached_aliases
+    if FIRST_RUN_MODEL in cached_aliases:
+        return FIRST_RUN_MODEL, True
+    from rapid_mlx.local_models import select_default_local_model
+
+    chosen = select_default_local_model()
+    return (chosen.model, True) if chosen is not None else (FIRST_RUN_MODEL, False)
 
 
 # --------------------------------------------------------------------------
