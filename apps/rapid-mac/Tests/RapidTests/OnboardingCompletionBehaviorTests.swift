@@ -502,6 +502,19 @@ final class OnboardingCompletionBehaviorTests {
 
     // MARK: - 5. Completion preserves an empty conversation
 
+    @Test("Confirming Ready leaves the open conversation empty")
+    func confirmationLeavesConversationEmpty() {
+        let chat = ChatViewModel(persistsConversations: false)
+        let coord = makeCoordinator()
+        coord.enterStarting()
+        coord.enterReady()
+        #expect(chat.messages.isEmpty)
+        #expect(coord.confirmStartChatting())
+        #expect(coord.done)
+        #expect(chat.messages.isEmpty, "completing setup must not add a transcript turn")
+        clearPersistedState()
+    }
+
     @Test("Start chatting hands off without appending a setup message")
     func completionLeavesTranscriptEmpty() throws {
         let content = try Self.strippedSource("Sources/Rapid/UI/ContentView.swift")
