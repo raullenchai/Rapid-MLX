@@ -101,6 +101,7 @@ struct WeatherRegionTests {
         ("Texas, US", nil, nil),
         ("Texas, USA", nil, nil),
         ("Texas", "USA", "Texas"),
+        ("Texas, TX", nil, nil),
     ])
     func texasQualifiers(location: String, country: String?, admin1: String?) async throws {
         let result = try await Self.result(
@@ -172,5 +173,26 @@ struct WeatherRegionTests {
         #expect(result.content.contains("no well-known city or town named"))
         #expect(result.content.contains("TX"))
         #expect(!result.content.contains("Add a country"))
+    }
+
+    @Test("A lone accent-folded small namesake is not found, not ambiguous")
+    func foldOnlyNamesakeNotFound() async throws {
+        let xian = Data(#"""
+        {"results":[{"name":"Xián","latitude":42.0,"longitude":-8.0,"country":"Spain","country_code":"ES","admin1":"Galicia","population":40}]}
+        """#.utf8)
+        let result = try await Self.result(location: "Xian", fixtures: ["Xian": xian])
+        #expect(result.content.contains("no well-known city or town named"))
+        #expect(!result.content.contains("Add a country"))
+    }
+
+    @Test("Repeating a city name as admin1 does not make it a region")
+    func cityNameAsAdmin1IsNotRegion() async throws {
+        let paris = Data(#"""
+        {"results":[{"name":"Paris","latitude":48.85,"longitude":2.35,"country":"France","country_code":"FR","admin1":"Île-de-France","population":2138551}]}
+        """#.utf8)
+        let result = try await Self.result(
+            location: "Paris", country: "France", admin1: "Paris", fixtures: ["Paris": paris]
+        )
+        #expect(!result.content.contains("state or region"))
     }
 }

@@ -248,14 +248,15 @@ enum WeatherTool {
         let countryHints = regionCountryHints(country: country, commaQualifiers: query.commaQualifiers)
         if let label = regionLabel(
             requestedName: query.name,
-            explicitAdmin1: admin1,
-            commaQualifiers: query.commaQualifiers,
             countryHints: countryHints,
             candidates: allCandidates
         ) {
             return .region(label: label)
         }
 
+        // Only several same-named places that carry population data are a
+        // real choice for the user; lone fold-only or population-less hamlets
+        // are not, and asking for more qualifiers would only invite a retry.
         let hasPlausibleMatch = [
             (query.name, originalCandidates),
             (traditionalGeocodingName(query.name), alternateCandidates),
@@ -264,7 +265,7 @@ enum WeatherTool {
             return matchingGeocodingCandidates(
                 location: name, qualifiers: query.qualifiers,
                 candidates: candidates, country: country, admin1: admin1
-            ).contains { $0.population != nil || literalKey($0.name) != literalKey(name) }
+            ).filter { $0.population != nil }.count >= 2
         }
         return hasPlausibleMatch ? .ambiguous : .notFound
     }
@@ -515,15 +516,18 @@ enum WeatherTool {
         country: String?,
         commaQualifiers: [String]
     ) -> Set<String> {
-        Set(([country].compactMap(cleaned) + commaQualifiers)
+        // Two-letter qualifiers such as "TX" are passed through as codes by
+        // countryCodes(for:); keep only real ISO regions so a state code is
+        // never mistaken for a country hint.
+        let isoRegions = Set(Locale.Region.isoRegions.map { $0.identifier.uppercased() })
+        return Set(([country].compactMap(cleaned) + commaQualifiers)
             .flatMap(countryCodes(for:))
-            .map { $0.uppercased() })
+            .map { $0.uppercased() }
+            .filter(isoRegions.contains))
     }
 
     private static func regionLabel(
         requestedName: String,
-        explicitAdmin1: String?,
-        commaQualifiers: [String],
         countryHints: Set<String>,
         candidates: [GeoHit]
     ) -> String? {
@@ -552,14 +556,6 @@ enum WeatherTool {
                 englishCountryName(for: subdivision.countryCode),
                 fallback: subdivision.name
             )
-        }
-
-        let explicitRegionNames = [explicitAdmin1].compactMap(cleaned) + commaQualifiers
-        if explicitRegionNames.contains(where: { matchKey($0) == requestedKey }) {
-            let countryName = countryHints.count == 1
-                ? countryHints.first.flatMap(englishCountryName(for:))
-                : nil
-            return placeLabel(requestedName, countryName, fallback: requestedName)
         }
 
         let requestedAdminKeys = Set([
