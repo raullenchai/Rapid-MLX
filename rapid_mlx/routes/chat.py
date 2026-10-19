@@ -347,8 +347,14 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     return None
 
 
-def _template_renders_native_xml_tool_call(engine, request, name) -> bool | None:
-    """Probe the served template's assistant tool-call wire format."""
+def _template_renders_native_xml_tool_call(
+    engine, request, name, *, tools=None
+) -> bool | None:
+    """Probe the served template's assistant tool-call wire format.
+
+    ``tools`` may replace the request payload for bounded auto-mode probes. Forced
+    tool-prefix callers omit it and retain the full request-tool behavior.
+    """
     template = served_chat_template(engine) if engine is not None else None
     if isinstance(template, dict):
         template = template.get("tool_use") or template.get("default")
@@ -383,9 +389,13 @@ def _template_renders_native_xml_tool_call(engine, request, name) -> bool | None
     if resolved_thinking is not None:
         probe_kwargs["enable_thinking"] = resolved_thinking
     try:
+        probe_tools = request.tools if tools is None else tools
         rendered, _ = render_jinja_template(
             [probe_messages[:-1], probe_messages],
-            tools=[t.model_dump(exclude_none=True) for t in request.tools],
+            tools=[
+                t.model_dump(exclude_none=True) if hasattr(t, "model_dump") else t
+                for t in probe_tools
+            ],
             chat_template=template,
             **probe_kwargs,
         )
@@ -906,8 +916,9 @@ def _tool_grammar_eligible(cfg, request) -> bool:
     optional-call auto grammar. An oversized schema is NOT silently dropped here
     when the constraint is active: it stays ineligible for the OFFLOAD (so we
     never enter the compile pool), but the route raises HTTP 400 via
-    ``_enforce_tool_grammar_bounds_or_400`` (#561) rather than falling back —
-    the free-form fallback is reserved for the explicit opt-OUT path.
+    ``_enforce_tool_grammar_bounds_or_400`` (#561) rather than falling back,
+    except when its bounded template probe proves the builder will decline an
+    auto grammar for a mismatched native wire.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return False
@@ -918,7 +929,64 @@ def _tool_grammar_eligible(cfg, request) -> bool:
     return _tools_within_grammar_bounds(getattr(request, "tools", None))
 
 
-def _enforce_tool_grammar_bounds_or_400(cfg, request) -> None:
+def _auto_tool_grammar_declined_for_native_wire(
+    engine, cfg, request, parser=None
+) -> bool:
+    """Whether auto grammar is declined after one bounded native-wire probe.
+
+    The real history and template kwargs are retained, but the template sees only
+    one minimal tool. Name discovery scans at most the grammar tool-count cap and
+    never reads client parameter schemas.
+    """
+    choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
+    if choice is None or choice["mode"] != "auto":
+        return False
+
+    try:
+        if parser is None:
+            from ..tool_parsers import ToolParserManager
+
+            parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
+            parser = parser_cls(tokenizer=getattr(engine, "tokenizer", None))
+        info = parser.structure_info()
+    except Exception:
+        return False
+    if info is None:
+        return False
+
+    probe_name = None
+    for index, tool in enumerate(getattr(request, "tools", None) or ()):
+        if index >= _TOOL_GRAMMAR_MAX_TOOLS:
+            break
+        function = (
+            tool.function if hasattr(tool, "function") else tool.get("function", tool)
+        )
+        name = (
+            function.get("name")
+            if isinstance(function, dict)
+            else getattr(function, "name", None)
+        )
+        if isinstance(name, str) and _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(name):
+            probe_name = name
+            break
+    if probe_name is None:
+        return False
+
+    probe_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": probe_name,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    return _template_renders_native_xml_tool_call(
+        engine, request, probe_name, tools=probe_tools
+    ) is True and not info(probe_name).begin.startswith("<tool_call>\n<function=")
+
+
+def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
     """#561: reject an oversized tool schema with HTTP 400 on the active path.
 
     Operator DECISION (2026-07): under the DEFAULT-ON constrained tool-calling
@@ -926,14 +994,20 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request) -> None:
     lose its structural guarantee. When the constraint is ACTIVE (operator has
     not opted out, tools + parser + a constrainable ``tool_choice``) and the
     schema exceeds the grammar-compile bounds, raise HTTP 400 so the caller sees
-    the failure explicitly. The legacy free-form fallback survives ONLY on the
-    explicit opt-OUT path (``_tool_grammar_constraint_active`` returns False),
-    preserving backward-compatible behavior for operators who disable the
-    feature.
+    the failure explicitly. Auto requests whose template renders a native XML
+    wire incompatible with the configured grammar are exempt because the shared
+    builder decision declines their grammar. The legacy free-form fallback also
+    survives on the explicit opt-OUT path.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return  # opted out / no tools / no parser / "none" — legacy free-form.
     if not _tools_within_grammar_bounds(getattr(request, "tools", None)):
+        if _auto_tool_grammar_declined_for_native_wire(engine, cfg, request):
+            logger.info(
+                "Oversized tool schema proceeding free-form: auto grammar "
+                "declined for template native wire"
+            )
+            return
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1727,6 +1801,14 @@ def _maybe_build_tool_grammar_processor(
         parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
         parser = parser_cls(tokenizer=tokenizer)
 
+        if _auto_tool_grammar_declined_for_native_wire(
+            engine, cfg, request, parser=parser
+        ):
+            logger.debug(
+                "Skipping auto tool grammar: parser wire differs from native XML"
+            )
+            return None
+
         # Flatten OpenAI tools -> [{name, parameters}] for the grammar builder.
         flat_tools = []
         for t in request.tools:
@@ -1758,30 +1840,6 @@ def _maybe_build_tool_grammar_processor(
                     "additionalProperties": False,
                 }
             flat_tools.append({"name": name, "parameters": params})
-
-        if choice["mode"] == "auto":
-            info = parser.structure_info()
-            if info is not None:
-                probe_name = next(
-                    (
-                        t["name"]
-                        for t in flat_tools
-                        if _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(t["name"])
-                    ),
-                    None,
-                )
-                if (
-                    probe_name is not None
-                    and _template_renders_native_xml_tool_call(
-                        engine, request, probe_name
-                    )
-                    is True
-                    and not info(probe_name).begin.startswith("<tool_call>\n<function=")
-                ):
-                    logger.debug(
-                        "Skipping auto tool grammar: parser wire differs from native XML"
-                    )
-                    return None
 
         # Select the builder quantifier from the tagged mode (#558 PR-5):
         #   * ``auto``     -> pass ``"auto"``: the (...)* grammar, may emit ZERO
@@ -5034,11 +5092,11 @@ async def _create_chat_completion_impl(
     # the request is ineligible, admission is at capacity, or the build fails.
     #
     # #561: reject an oversized/over-deep/over-count schema with HTTP 400 BEFORE
-    # the offload when the constraint is active (default-on). This must run
-    # before ``_offload_tool_grammar_build`` — the offload treats an oversized
-    # schema as ineligible and returns ``None`` (silent free-form), which under
-    # default-on would drop the structural guarantee the operator asked for.
-    _enforce_tool_grammar_bounds_or_400(cfg, request)
+    # the offload when the constraint is active (default-on), unless the shared
+    # bounded probe proves auto grammar will be declined for a mismatched native
+    # wire. This must run before ``_offload_tool_grammar_build`` — the offload
+    # treats an oversized schema as ineligible and returns ``None``.
+    _enforce_tool_grammar_bounds_or_400(cfg, request, engine=engine)
     # LINE① (#558): decide reasoning-gated forced-grammar eligibility. Engage only
     # when a thinking budget is set AND the template PREFILLS an unclosed
     # ``<think>`` (seed state "open") — the exact condition under which the coupled
