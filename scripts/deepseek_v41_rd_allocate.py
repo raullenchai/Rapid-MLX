@@ -221,6 +221,11 @@ def main():
     p.add_argument("--min-split-overlap", type=float, default=0.9)
     p.add_argument("--output-dir", type=Path, required=True)
     a = p.parse_args()
+    if a.preset and (
+        a.max_prune_fraction is not None or a.rd_fallback or a.allow_hot_pruning
+    ):
+        # A release preset is a fixed policy; overrides would mislabel output.
+        p.error("--preset fixes the pruning policy; drop the policy override flags")
     preset = (
         PRESETS[a.preset]
         if a.preset

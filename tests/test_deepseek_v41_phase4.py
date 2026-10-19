@@ -96,6 +96,21 @@ def test_cli_requires_explicit_prune_policy_without_preset(monkeypatch):
         main()
 
 
+@pytest.mark.parametrize(
+    "override",
+    [["--max-prune-fraction", "0.5"], ["--rd-fallback"], ["--allow-hot-pruning"]],
+)
+def test_cli_rejects_policy_overrides_with_preset(monkeypatch, capsys, override):
+    from scripts.deepseek_v41_rd_allocate import main
+
+    args = ["allocate", "--scores", "m", "--errors", "m", "--costs", "m"]
+    preset = ["--preset", next(iter(PRESETS))]
+    monkeypatch.setattr(sys, "argv", [*args, *preset, *override, "--output-dir", "m"])
+    with pytest.raises(SystemExit):
+        main()
+    assert "fixes the pruning policy" in capsys.readouterr().err
+
+
 def test_hot_slice_audit_counts_reap_and_empty_layers():
     result = {"layers": {"0": {"kept_expert_ids": [1]}, "1": {"kept_expert_ids": [0]}}}
     counts = np.array([[[9, 1], [0, 0]], [[2, 2], [3, 1]], [[1, 1], [1, 1]]])
