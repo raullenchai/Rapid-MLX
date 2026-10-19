@@ -2229,6 +2229,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "date", "day", "weekday", "time", "clock", "today", "right", "now",
             "current", "local", "please", "tell", "me", "can", "could", "would",
             "you", "give", "show", "may", "i", "have", "know", "to", "like",
+            "thanks", "thank", "month", "year", "hour", "exactly",
         ]
         let words = prompt.split { !$0.isLetter && !$0.isNumber }
         return words.allSatisfy { requestWords.contains(String($0)) }

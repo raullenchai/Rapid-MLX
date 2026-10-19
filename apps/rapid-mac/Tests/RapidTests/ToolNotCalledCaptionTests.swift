@@ -471,6 +471,8 @@ struct ToolNotCalledCaptionTests {
             "What’s today’s date?", "Today's day of the week, please.",
             "Which day is it right now?", "May I have today's date, please?",
             "I'd like to know today's date.",
+            "What's today's date, thanks?", "What is today's day of the month?",
+            "What time is it right now, exactly?",
         ] {
             #expect(!ChatMessage.promptAsksForLiveData(prompt), "uses context: \(prompt)")
             #expect(!ChatMessage.promptLooksCalculatorish(prompt))
