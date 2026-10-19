@@ -84,12 +84,10 @@ def supports_engram_ssd_offload(path: str) -> bool:
         for layer_id in args.engram_layer_ids:
             prefix = f"layers.{layer_id}.engram.embed"
             keys = (prefix + ".weight", prefix + ".scales", prefix + ".biases")
-            filenames = [mapping.get(key) for key in keys]
-            if any(
-                not isinstance(filename, str) or not filename for filename in filenames
-            ):
-                return False
-            for filename in filenames:
+            for key in keys:
+                filename = mapping.get(key)
+                if not isinstance(filename, str) or not filename:
+                    return False
                 resolve_indexed_shard(path, filename)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
