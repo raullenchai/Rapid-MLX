@@ -1,4 +1,5 @@
 import Foundation
+import Markdown
 import Testing
 @testable import Rapid
 
@@ -105,7 +106,7 @@ struct MarkdownCJKEmphasisTests {
         #expect(!F.isCJK("\u{2e9a}"))
     }
 
-    @Test func scannerBoundaries() {
+    @Test func parserAndDelimiterBoundaries() {
         let unchanged = [
             "中文 \\_强调_中文", "中文 `**（x）**`",
             "中文 `` `**（x）**` ``", "中文 `unmatched", "中文 `a``b`",
@@ -122,7 +123,7 @@ struct MarkdownCJKEmphasisTests {
         #expect(CJKEmphasisFlanking.prepare("中文 `unclosed **（x）**现").contains(CJKEmphasisFlanking.sentinel))
         #expect(CJKEmphasisFlanking.prepare("````\n中文**（x）**现\n```\n~~~~\n````") == "````\n中文**（x）**现\n```\n~~~~\n````")
         #expect(CJKEmphasisFlanking.prepare("```bad`info\n中文**（x）**现").contains(CJKEmphasisFlanking.sentinel))
-        #expect(CJKEmphasisFlanking.prepare("    中文**（x）**现").contains(CJKEmphasisFlanking.sentinel))
+        #expect(CJKEmphasisFlanking.prepare("    中文**（x）**现") == "    中文**（x）**现")
         // Exercise all neighbour pairs and delimiter types.
         let neighbours = ["中", "）", "a", "!", " ", "😀", "\t", ""]
         for before in neighbours {
@@ -133,6 +134,54 @@ struct MarkdownCJKEmphasisTests {
                 }
             }
         }
+    }
+
+    @Test(arguments: ["- ```\n  x\n  ```", "> ```\n> x\n> ```",
+                      "- ```\n  由**（x）**现\n  ```", "> ```\n> 由**（x）**现\n> ```"])
+    func nestedFences(_ code: String) {
+        let source = code + "\n\n**注意：**请"
+        let prepared = CJKEmphasisFlanking.prepare(source)
+        #expect(prepared.hasPrefix(code + "\n\n"))
+        #expect(runs(source).contains { $0.text == "注意：" && $0.isStrong })
+        let output = compiler.compile(source).items.flatMap(strings)
+        #expect(output.contains(code.contains("由") ? "由**（x）**现\n" : "x\n"))
+        #expect(output.allSatisfy { !$0.contains(CJKEmphasisFlanking.sentinel) })
+    }
+
+    @Test(arguments: [
+        "中文\n\n    由**（x）**现\n", "中文 `first\n由**（x）**现\nlast`",
+        "中文 ``first\r\n由**（x）**现\r\nlast``",
+        "<div>\n由**（x）**现\n</div>", "中文 <span title=\"由**（x）**现\">尾</span>",
+        "| 中文 |\n| --- |\n| `由**（x）**现` |",
+        "- > ```\n  > 由**（x）**现\n  > ```", "中**<br>"
+    ])
+    func opaqueNodesAreUnchanged(_ source: String) {
+        #expect(CJKEmphasisFlanking.prepare(source) == source)
+        let prepared = CJKEmphasisFlanking.prepare(source + "\n\n**注意：**请")
+        #expect(prepared.hasPrefix(source + "\n\n"))
+    }
+
+    @Test(arguments: ["\r", "\r\n", "\n"])
+    func lineEndings(_ newline: String) {
+        let source = "引言" + newline + "由**瑞利散射（R）**现象" + newline + "**注意：**请" + newline
+        #expect(runs(source).contains { $0.text == "瑞利散射（R）" && $0.isStrong })
+        #expect(runs(source).contains { $0.text == "注意：" && $0.isStrong })
+        #expect(CJKEmphasisFlanking.strip(CJKEmphasisFlanking.prepare(source)) == source)
+        let boundaries = "中文**" + newline + "**中文"
+        #expect(CJKEmphasisFlanking.prepare(boundaries) == boundaries)
+    }
+
+    @Test func mixedLanguageWithoutBridgesIsUnchanged() {
+        let source = "中文 **bold** text"
+        #expect(CJKEmphasisFlanking.prepare(source) == source)
+    }
+
+    @Test func missingOpaqueRangeUsesEnclosingRange() {
+        let source = "由**（x）**现"
+        let fullRange = source.startIndex..<source.endIndex
+        let document = Document(Paragraph(InlineCode(source), InlineHTML("<b>")), CodeBlock(source), HTMLBlock("<hr>"))
+        #expect(CJKEmphasisFlanking.opaqueRanges(in: document, source: source, enclosing: fullRange)
+                == Array(repeating: fullRange, count: 4))
     }
 
     @Test func bridgeSelection() {

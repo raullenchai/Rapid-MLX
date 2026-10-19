@@ -1,4 +1,5 @@
 import Foundation
+import Markdown
 
 /// Adapts emphasis flanking for CJK prose before handing it to unmodified cmark.
 /// CJK punctuation behaves like a letter for flanking; a CJK neighbour also
@@ -96,68 +97,69 @@ enum CJKEmphasisFlanking {
     static func prepare(_ source: String) -> String {
         guard source.contains("*") || source.contains("_"),
               source.unicodeScalars.contains(where: isCJK) else { return source }
-        var output = ""
-        var fence: (character: Unicode.Scalar, length: Int)?
-        // Keep line endings verbatim; inline code matching is intentionally
-        // limited to a single line. A shorter or different-character fence cannot close.
-        for (lineIndex, line) in source.components(separatedBy: "\n").enumerated() {
-            if lineIndex > 0 { output += "\n" }
-            let scalars = Array(line.unicodeScalars)
-            let indent = scalars.prefix(while: { $0 == " " }).count
-            let start = indent
-            if indent <= 3, start < scalars.count,
-               scalars[start] == "`" || scalars[start] == "~" {
-                let character = scalars[start]
-                let length = scalars[start...].prefix(while: { $0 == character }).count
-                let rest = scalars.dropFirst(start + length)
-                if let active = fence {
-                    if character == active.character, length >= active.length,
-                       rest.allSatisfy({ $0 == " " || $0 == "\t" || $0 == "\r" }) { fence = nil }
-                    output += line
-                    continue
-                } else if length >= 3, character != "`" || !rest.contains("`") {
-                    fence = (character, length)
-                    output += line
-                    continue
+        // Collect edits without rebuilding ordinary text or guessing code syntax.
+        let scalars = source.unicodeScalars
+        var candidates: [(position: String.Index, run: String.Index)] = []
+        var index = scalars.startIndex
+        while index < scalars.endIndex {
+            let character = scalars[index]
+            var end = scalars.index(after: index)
+            if character == "\\", end < scalars.endIndex {
+                end = scalars.index(after: end)
+            } else if character == "*" || character == "_" {
+                while end < scalars.endIndex, scalars[end] == character {
+                    end = scalars.index(after: end)
+                }
+                let previous = index == scalars.startIndex ? nil : scalars[scalars.index(before: index)]
+                let before = previous == "\r" || previous == "\n" ? nil : previous
+                let next = end == scalars.endIndex ? nil : scalars[end]
+                let after = next == "\r" || next == "\n" ? nil : next
+                let desired = flanking(before: before, after: after, delimiter: character)
+                if desired != flanking(before: before, after: after, delimiter: character, cjkFriendly: false),
+                   let placement = bridgePlacement(before: before, after: after,
+                                                   delimiter: character, desired: desired) {
+                    if placement.before { candidates.append((index, index)) }
+                    if placement.after { candidates.append((end, index)) }
                 }
             }
-            if fence != nil { output += line; continue }
-            var index = 0
-            while index < scalars.count {
-                let character = scalars[index]
-                var end = index + 1
-                if character == "\\", end < scalars.count {
-                    end += 1
-                } else if character == "`" || character == "*" || character == "_" {
-                    while end < scalars.count, scalars[end] == character { end += 1 }
-                    if character == "`" {
-                        var cursor = end
-                        while cursor < scalars.count {
-                            if scalars[cursor] != "`" { cursor += 1; continue }
-                            let closeStart = cursor
-                            while cursor < scalars.count, scalars[cursor] == "`" { cursor += 1 }
-                            if cursor - closeStart == end - index { end = cursor; break }
-                        }
-                    } else {
-                        let before = index == 0 ? nil : scalars[index - 1]
-                        let after = end == scalars.count ? nil : scalars[end]
-                        let desired = flanking(before: before, after: after, delimiter: character)
-                        if desired != flanking(before: before, after: after, delimiter: character, cjkFriendly: false),
-                           let placement = bridgePlacement(before: before, after: after,
-                                                           delimiter: character, desired: desired) {
-                            if placement.before { output += sentinel }
-                            output.unicodeScalars.append(contentsOf: scalars[index..<end])
-                            if placement.after { output += sentinel }
-                            index = end
-                            continue
-                        }
-                    }
-                }
-                output.unicodeScalars.append(contentsOf: scalars[index..<end])
-                index = end
-            }
+            index = end
         }
+        guard !candidates.isEmpty else { return source }
+
+        let document = Document(parsing: source, options: MarkdownCompiler.parseOptions)
+        let excluded = opaqueRanges(in: document, source: source,
+                                    enclosing: source.startIndex..<source.endIndex)
+        // Keep the run as well as the insertion point: a bridge immediately
+        // after a closing delimiter can sit at the opaque range's upper bound.
+        candidates.removeAll { candidate in
+            excluded.contains { $0.contains(candidate.run) || $0.contains(candidate.position) }
+        }
+        guard !candidates.isEmpty else { return source }
+
+        var output = ""
+        var start = source.startIndex
+        for candidate in candidates {
+            output += source[start..<candidate.position]
+            output += sentinel
+            start = candidate.position
+        }
+        output += source[start...]
         return output
+    }
+
+    /// Parsed opaque nodes include their syntax delimiters. If a node has no
+    /// source range, exclude its enclosing node, conservatively covering all
+    /// of the missing node's lines instead of guessing at code boundaries.
+    static func opaqueRanges(
+        in markup: Markup, source: String, enclosing: Range<String.Index>
+    ) -> [Range<String.Index>] {
+        let range = MarkdownCompiler.sourceRange(of: markup, in: source) ?? enclosing
+        switch markup {
+        case is CodeBlock, is InlineCode, is HTMLBlock, is InlineHTML:
+            return [range]
+        default:
+            return markup.children.flatMap { opaqueRanges(in: $0, source: source, enclosing: range) }
+        }
     }
 
     static func strip(_ string: String) -> String {

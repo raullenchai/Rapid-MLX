@@ -291,7 +291,7 @@ struct MarkdownCompiler: Sendable {
         }
     }
 
-    private static func sourceRange(
+    static func sourceRange(
         of markup: Markup,
         in source: String
     ) -> Range<String.Index>? {
