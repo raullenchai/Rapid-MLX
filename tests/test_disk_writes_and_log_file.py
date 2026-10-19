@@ -460,7 +460,7 @@ def test_serve_sends_all_output_to_log_file(tmp_path):
     # The CLI's own telemetry notice is printed before serve redirects its
     # output and depends on this host's saved consent.
     env["RAPID_MLX_TELEMETRY"] = "0"
-    # The empty model directory makes the server stop during startup.
+    # The empty model directory is rejected before engine startup.
     result = subprocess.run(
         [
             sys.executable,
@@ -487,11 +487,9 @@ def test_serve_sends_all_output_to_log_file(tmp_path):
     assert result.stdout == ""
     assert result.stderr == ""
     content = target.read_text()
-    assert "Disk caches disabled by --disable-disk-caches" in content
-    assert (
-        "--kv-disk-checkpoint-interval 64 ignored: disk caches disabled by "
-        "--disable-disk-caches" in content
-    )
+    assert "Cause:" in content
+    assert "missing config.json" in content
+    assert "Next step:" in content
 
 
 def _parse(argv):

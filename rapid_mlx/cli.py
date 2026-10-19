@@ -15073,6 +15073,17 @@ def main():
                     exc, alias_or_path=resolved, failure_stage="resolve"
                 )
             if getattr(args, "command", None) == "serve":
+                from rapid_mlx import log_file
+
+                try:
+                    target, source = log_file.resolve_validated(
+                        getattr(args, "log_file", None)
+                    )
+                    if target is not None and source is not None:
+                        log_file.apply(target, source)
+                except log_file.LogFileError as log_exc:
+                    print(f"error: {log_exc}", file=sys.stderr)
+                    raise SystemExit(2) from None
                 cause, step = local_serve_preflight_lines(resolved, exc)
                 print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
             else:
