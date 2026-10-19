@@ -32,6 +32,8 @@ UNIT_TEXTS = [
     "[Calling\ntool: nested [Calling tool: x] end",
     "<|tool_call>nested [Calling tool: x<tool_call|> tail",
     '[CaX <|abc! <abc! </thix <|abc|! <a"|! end',
+    # The whole-text pattern ends a Calling span at its first ``]``.
+    "pre [Calling tool: f([1, [2]])] post",
 ]
 
 
