@@ -124,9 +124,10 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 _EXCLUDED_PATHS = frozenset(
     {
         "/v1/audio/transcriptions",
-        # Multipart video uploads have a dedicated 20 MiB file / 21 MiB
-        # request cap plus pre-parse authentication in routes.video.
+        # Both video creation and extension uploads have a dedicated 20 MiB
+        # file / 21 MiB request cap plus pre-parse authentication in routes.video.
         "/v1/videos",
+        "/v1/videos/extend",
         # Multipart image-edit uploads have a dedicated 25 MB cap enforced
         # pre-parse by ``routes.images.ImageBodyLimitMiddleware``; the generic
         # 8 MiB JSON cap would otherwise reject a legitimate large init image.
