@@ -1326,6 +1326,8 @@ def test_server_start_exit_delivery_and_crash_gap(
     )
     fake_model = home / "fake-model"
     fake_model.mkdir()
+    (fake_model / "config.json").write_text('{"model_type":"qwen3"}')
+    (fake_model / "model.safetensors").write_bytes(b"weights")
     sink = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
     sink.bodies = []  # type: ignore[attr-defined]
     thread = threading.Thread(target=sink.serve_forever, daemon=True)
