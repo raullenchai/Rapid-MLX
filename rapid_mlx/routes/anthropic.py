@@ -1925,6 +1925,10 @@ async def _stream_anthropic_messages(
             cfg.reasoning_parser_name
         )
 
+    # Whitespace-only text that would open a block, held until visible text
+    # follows so the streamed text does not depend on chunking.
+    held_text_ws = ""
+
     def _gate_thinking_pieces(
         pieces: list[tuple[str, str]],
         current_block_type: str | None,
@@ -1977,6 +1981,7 @@ async def _stream_anthropic_messages(
         # ``effective`` is one of None / "text" / "thinking" and
         # reflects what ``_emit_content_pieces`` will have open after
         # consuming the pieces ``out`` so far.
+        nonlocal held_text_ws
         effective: str | None = current_block_type
         out: list[tuple[str, str]] = []
         for block_type, text in pieces:
@@ -2009,6 +2014,7 @@ async def _stream_anthropic_messages(
                     continue
                 # Non-whitespace thinking content. Reasoning-enabled
                 # keeps as thinking; non-thinking demotes to text.
+                held_text_ws = ""
                 if _reasoning_enabled:
                     out.append(("thinking", text))
                     effective = "thinking"
@@ -2028,7 +2034,13 @@ async def _stream_anthropic_messages(
                     # yields ``[thinking, tool_use]``. Whitespace INSIDE an
                     # already-open text block (effective == "text") is kept —
                     # that is genuine intra-text spacing, not a blank opener.
+                    # Hold it rather than drop it: if visible text follows,
+                    # it leads that text, exactly as when both arrive in one
+                    # delta.
+                    held_text_ws += text
                     continue
+                if block_type == "text":
+                    text, held_text_ws = held_text_ws + text, ""
                 out.append((block_type, text))
                 # ``block_type`` is already not "thinking" in this
                 # branch — track the effective open block as that type.
@@ -2409,7 +2421,10 @@ async def _stream_anthropic_messages(
         engine_tool_calls = getattr(output, "tool_calls", None) or []
         if engine_tool_calls:
             accumulated_structured_tool_calls.extend(engine_tool_calls)
-            continue
+            # Only tool_call / reasoning channel text is an argument
+            # summary; plain or content text is visible, as in buffered.
+            if getattr(output, "channel", None) not in (None, "content"):
+                continue
 
         if delta_text:
             accumulated_text += delta_text

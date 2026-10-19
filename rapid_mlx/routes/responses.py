@@ -3861,7 +3861,10 @@ async def _stream_responses(
             engine_tool_calls = getattr(output, "tool_calls", None) or []
             if engine_tool_calls:
                 accumulated_structured_tool_calls.extend(engine_tool_calls)
-                continue
+                # Only tool_call / reasoning channel text is an argument
+                # summary; plain or content text is visible, as in buffered.
+                if getattr(output, "channel", None) not in (None, "content"):
+                    continue
 
             if not delta_text:
                 continue
