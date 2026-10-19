@@ -448,6 +448,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Dismiss agent tip")
+                .accessibilityIdentifier("Chat.AgentTip.DismissButton")
             }
             HStack(spacing: RapidTheme.Space.md) {
                 Text("Connect a coding agent or SDK to your local server.")
@@ -461,11 +462,13 @@ struct ChatView: View {
                         "http://127.0.0.1:\(server.activePort)/v1\n\(model)", forType: .string
                     )
                 }
+                .accessibilityIdentifier("Chat.AgentTip.CopyDetailsButton")
                 .disabled(!readiness.sendAllowed)
                 Button("Agent setup") {
                     chatAgentTipDismissed = true
                     onOpenAgentSetup()
                 }
+                .accessibilityIdentifier("Chat.AgentTip.SetupButton")
             }
         }
         .padding(.horizontal, RapidTheme.Space.xl)
