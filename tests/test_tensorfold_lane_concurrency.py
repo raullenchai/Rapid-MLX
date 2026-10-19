@@ -698,6 +698,51 @@ def test_provider_unregisters_after_scheduler_submission_failure(stalled_provide
     backend.close()
 
 
+def test_close_cancels_job_registered_before_scheduler_submission(stalled_provider):
+    backend, provider, _, stopped, jobs = stalled_provider
+    submit_entered, resume_submit = Event(), Event()
+
+    def submit(job):
+        jobs.append(job)
+        submit_entered.set()
+        assert resume_submit.wait(2), "submit was not released after close returned"
+
+    backend._app.scheduler.submit = submit
+    executor = ThreadPoolExecutor(max_workers=1)
+    close_errors = []
+    close_thread = None
+
+    def close():
+        try:
+            backend.close()
+        except Exception as exc:
+            close_errors.append(exc)
+
+    try:
+        future = executor.submit(provider.generate, None, None, "prompt")
+        assert submit_entered.wait(1)
+        close_thread = threading.Thread(target=close, daemon=True)
+        close_thread.start()
+        close_thread.join(1)
+        assert not close_thread.is_alive(), "close waited for scheduler submission"
+        assert not close_errors
+        assert stopped.is_set()
+
+        resume_submit.set()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            future.result(timeout=1)
+        assert not backend._active
+        assert jobs[0].cancellation.event.is_set()
+    finally:
+        resume_submit.set()
+        for job in jobs:
+            job.cancellation.cancel()
+            job.chunks.put(None)
+        if close_thread is not None:
+            close_thread.join(2)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def test_serial_provider_close_releases_registered_worker(stalled_provider):
     backend, provider, submitted, stopped, jobs = stalled_provider
     with ThreadPoolExecutor(max_workers=1) as executor:
