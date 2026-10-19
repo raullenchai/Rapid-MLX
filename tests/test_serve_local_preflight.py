@@ -202,6 +202,16 @@ def test_disabled_optional_image_component_needs_no_weights(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_weightless_third_tokenizer_does_not_need_weights(tmp_path):
+    root = tmp_path / "image"
+    root.mkdir()
+    (root / "model_index.json").write_text(
+        '{"_class_name":"Pipeline","transformer":[],"tokenizer_3":["transformers","T5TokenizerFast"]}'
+    )
+    (root / "transformer.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
 def test_custom_image_component_and_indexed_shards(tmp_path):
     root = tmp_path / "image"
     component = root / "custom_encoder"

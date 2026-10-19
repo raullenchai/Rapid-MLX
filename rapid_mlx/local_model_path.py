@@ -338,8 +338,6 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                 return
             metadata_components = {
                 "scheduler",
-                "tokenizer",
-                "tokenizer_2",
                 "processor",
                 "feature_extractor",
                 "image_processor",
@@ -349,6 +347,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                 for component, declaration in manifest.items()
                 if not component.startswith("_")
                 and component not in metadata_components
+                and not component.startswith("tokenizer")
                 and declaration is not None
             ]
             if not required:

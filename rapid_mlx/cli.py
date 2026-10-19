@@ -15058,6 +15058,7 @@ def main():
         from rapid_mlx.user_aliases import UserAliasError
 
         resolved = args.model
+        validating_local_model = False
         try:
             supplied_model = args.model
             if getattr(args, "command", None) == "serve":
@@ -15066,8 +15067,14 @@ def main():
             raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
             if getattr(args, "command", None) == "serve":
+                validating_local_model = True
                 validate_local_model_for_serve(resolved)
         except (OSError, InvalidModelConfig) as exc:
+            if not validating_local_model and not isinstance(
+                exc, (FileNotFoundError, NotADirectoryError, PermissionError)
+            ):
+                print(f"\n  Error: Model resolution failed: {exc}", file=sys.stderr)
+                raise SystemExit(1) from None
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
