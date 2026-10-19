@@ -365,19 +365,10 @@ final class BrowseContentCache: @unchecked Sendable {
         guard ensureDiskDirectory(dir, fileManager: fm) else { return }
         guard let data = try? JSONEncoder().encode(entry) else { return }
         let url = dir.appendingPathComponent(Self.diskFileName(for: key), isDirectory: false)
-        // ``.atomic`` so a torn write never surfaces as a half-decoded page on
-        // the next read (loadFromDisk would just miss and re-fetch).
+        // Atomic replacement keeps cached pages complete and owner-only from creation.
         do {
-            try data.write(to: url, options: [.atomic])
+            try OwnerOnlyFile.writeAtomically(data, to: url)
         } catch {
-            return
-        }
-        do {
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            // The write landed but could not be restricted. Discard it rather
-            // than leave browsed content world-readable.
-            try? fm.removeItem(at: url)
             return
         }
         sweepDiskLocked(dir)

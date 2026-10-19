@@ -83,6 +83,8 @@ struct DocumentCacheLifecycleTests {
             text: "SALARY 12345 CONFIDENTIAL"
         ))
         #expect(FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: diskFile(dir, id).path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
 
         cache.remove(id)
 

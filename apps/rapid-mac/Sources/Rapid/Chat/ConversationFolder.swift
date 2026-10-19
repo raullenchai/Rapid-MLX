@@ -128,12 +128,9 @@ enum ConversationFolderStore {
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            // 0600 for the same reason the transcripts are: folder names are
+            // Owner-only from creation: folder names are
             // user content ("Divorce", "Job hunt") and leak intent on their own.
-            try? data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: url.path
-            )
+            try? OwnerOnlyFile.writeAtomically(data, to: url)
         }
     }
 

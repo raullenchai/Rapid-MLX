@@ -340,11 +340,8 @@ enum CrashReporter {
             context: contextLabel
         )
         guard let data = try? JSONEncoder().encode(marker) else { return }
-        try? data.write(to: markerURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: markerURL.path
-        )
+        // Keep marker bytes owner-only from creation.
+        try? OwnerOnlyFile.writeAtomically(data, to: markerURL)
     }
 
     // MARK: - Exception handler
@@ -412,11 +409,8 @@ private func crashReporterExceptionHook(_ ex: NSException) {
             "\(TelemetryConfig.sessionID).json",
             isDirectory: false
         )
-        try? data.write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: url.path
-        )
+        // Keep marker bytes owner-only from creation.
+        try? OwnerOnlyFile.writeAtomically(data, to: url)
         // Tell the signal handler to leave the file alone. The
         // runtime will follow this write with objc_terminate ->
         // SIGABRT on the same thread; without this flag the signal

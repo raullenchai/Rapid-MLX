@@ -24,6 +24,7 @@
 - **Start & Send**: when the chosen chat model is downloaded but stopped, Send starts it and sends the draft once it is ready; the draft stays put if startup is cancelled or fails. Fixes #4854.
 - **Desktop current-info answers recover more often**: chat retries an unreadable tool request once, then explains when live information could not be checked. Weather lookup also retries unresolved simplified Chinese place names in traditional script.
 - **Chat drafts stay with their conversation**: unsent text is saved locally across app restarts, with a separate draft for New Chat.
+- **Private Desktop files are owner-only from creation**: chat history, folders, drafts, connector settings, and local caches are now written with owner-only permissions from the start instead of being tightened after the write. Fixes #4868.
 - **Desktop file paste**: pasting a file into the chat composer now attaches it, or explains which file types are supported, instead of inserting its local path.
 - **Fewer unrelated Desktop tool calls**: plain writing and coding chats set off far fewer unrelated web searches and page visits, and no longer call a document reader when nothing is attached. Desktop offers the document reader only when the conversation has an attached file, and the per-message time note now shows only the local date and time, without the time-zone region. Fixes #4872.
 - **Reliable automatic tool calls**: fixed empty replies when Qwen models use native XML tool calls; Desktop now gives accurate retry guidance when an empty reply stops before its token limit.

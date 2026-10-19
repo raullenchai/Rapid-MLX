@@ -225,31 +225,12 @@ final class MCPConfigStore {
                 // 0700 keeps it out of reach of other accounts on a shared Mac.
                 attributes: [.posixPermissions: 0o700]
             )
-            // createDirectory does NOT tighten an already-existing directory,
-            // so a `~/.config/rapid-mlx` created earlier at the umask default
-            // (e.g. 0755) would leave the 0600-window argument below false.
-            // Set it explicitly, every time — this is what shields the brief
-            // post-rename window where the file still carries the umask mode.
+            // Tighten already-existing directories as well.
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o700], ofItemAtPath: dir.path
             )
-            // Atomic so a crash mid-write can't leave the engine reading a
-            // truncated config on next launch.
-            try data.write(to: fileURL, options: [.atomic])
-            // `.atomic` writes via a temp file and renames, which does NOT
-            // carry permissions across — set them after the rename, every
-            // time, or the mode silently reverts to the default umask.
-            //
-            // There is a brief window between the rename and this chmod where
-            // the file carries the umask default (typically 0644). It is not
-            // reachable: `.atomic`'s temp file is created inside `dir`, and
-            // `dir` is 0700, so no other account can traverse into it to read
-            // the file during that window regardless of the file's own mode.
-            // The 0600 is defence in depth on top of the 0700 directory.
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: fileURL.path
-            )
+            // Atomic replacement keeps config complete and owner-only from creation.
+            try OwnerOnlyFile.writeAtomically(data, to: fileURL)
             servers = sorted
             loadError = nil
         } catch {

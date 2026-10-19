@@ -475,17 +475,18 @@ final class DocumentContentCache: @unchecked Sendable {
         guard let data = try? JSONEncoder().encode(entry) else { return false }
         let url = dir.appendingPathComponent(Self.diskFileName(for: key), isDirectory: false)
         do {
-            try data.write(to: url, options: [.atomic])
+            // Document text stays owner-only from creation through atomic replacement.
+            try OwnerOnlyFile.writeAtomically(data, to: url)
         } catch {
             return false
         }
         do {
             try fm.setAttributes(
-                [.modificationDate: accessedAt, .posixPermissions: 0o600],
+                [.modificationDate: accessedAt],
                 ofItemAtPath: url.path
             )
         } catch {
-            // Never retain document text with permissive file access.
+            // Discard entries whose access timestamp could not be recorded.
             try? fm.removeItem(at: url)
             return false
         }

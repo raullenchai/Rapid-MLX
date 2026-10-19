@@ -215,6 +215,8 @@ final class TelemetryTests {
             sharedIDURL: sharedURL
         )
 
+        let attributes = try FileManager.default.attributesOfItem(atPath: sharedURL.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         #expect(resolved == "desktop-legacy-id")
         #expect(try String(contentsOf: sharedURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == resolved)
         #expect(defaults.bool(forKey: TelemetryConfig.sharedClientIDMigrationKey))

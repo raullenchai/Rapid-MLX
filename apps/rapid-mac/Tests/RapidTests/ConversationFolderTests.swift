@@ -6,6 +6,18 @@ import Testing
 @MainActor
 @Suite("Conversation folders")
 struct ConversationFolderTests {
+    @Test("Folder saves are owner-only and preserve their contents")
+    func savePermissions() throws {
+        let url = try isolatedStore().deletingLastPathComponent().appendingPathComponent("folders.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let folder = ChatFolder(name: "Private folder")
+        ConversationFolderStore.save([folder], to: url)
+        ConversationFolderStore.flush()
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(ConversationFolderStore.load(from: url).map(\.id) == [folder.id])
+    }
+
     private func isolatedStore() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-folders-\(UUID().uuidString)")

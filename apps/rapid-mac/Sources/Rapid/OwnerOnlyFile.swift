@@ -1,0 +1,47 @@
+import Darwin
+import Foundation
+
+/// Atomic replacement whose temporary and published bytes are owner-only.
+enum OwnerOnlyFile {
+    static func writeAtomically(_ data: Data, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        let prefix = directory.appendingPathComponent(".\(url.lastPathComponent).tmp.XXXXXX")
+        var template = Array(prefix.path.utf8CString)
+        let descriptor = mkstemp(&template)
+        guard descriptor >= 0 else { throw posixError() }
+        let temporaryPath = String(
+            decoding: template.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        var descriptorIsOpen = true
+        var shouldRemoveTemporary = true
+        defer {
+            if descriptorIsOpen { Darwin.close(descriptor) }
+            if shouldRemoveTemporary { _ = unlink(temporaryPath) }
+        }
+
+        try data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let count = Darwin.write(descriptor, base.advanced(by: offset), buffer.count - offset)
+                if count < 0 && errno == EINTR { continue }
+                guard count >= 0 else { throw posixError() }
+                guard count > 0 else { throw POSIXError(.EIO) }
+                offset += count
+            }
+        }
+        guard fchmod(descriptor, mode_t(0o600)) == 0 else { throw posixError() }
+        guard fsync(descriptor) == 0 else { throw posixError() }
+        let closeResult = Darwin.close(descriptor)
+        // Darwin releases the descriptor even when close reports an error.
+        descriptorIsOpen = false
+        guard closeResult == 0 else { throw posixError() }
+        guard rename(temporaryPath, url.path) == 0 else { throw posixError() }
+        shouldRemoveTemporary = false
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}

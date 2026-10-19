@@ -364,13 +364,8 @@ enum ConversationStore {
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            // Owner-only (0600): chat transcripts are private. The atomic
-            // write would otherwise inherit the umask default (often 0644 =
-            // world-readable), exposing history to other local users.
-            try? data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: url.path
-            )
+            // Chat transcripts stay owner-only (0600), including during the atomic write.
+            try? OwnerOnlyFile.writeAtomically(data, to: url)
         }
     }
 

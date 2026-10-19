@@ -146,11 +146,8 @@ enum TelemetryIdentity {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            try Data("\(value)\n".utf8).write(to: url, options: .atomic)
-            try fm.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: url.path
-            )
+            // Identity bytes are owner-only from creation.
+            try OwnerOnlyFile.writeAtomically(Data("\(value)\n".utf8), to: url)
             return true
         } catch {
             // Telemetry state must never make the app fail. The

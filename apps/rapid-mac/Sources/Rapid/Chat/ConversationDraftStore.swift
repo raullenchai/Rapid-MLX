@@ -86,15 +86,8 @@ enum ConversationDraftStore {
                 let data = try JSONEncoder().encode(drafts)
                 let directory = url.deletingLastPathComponent()
                 try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-                let temporary = directory.appendingPathComponent(".drafts-\(UUID().uuidString).tmp")
-                defer { try? fm.removeItem(at: temporary) }
-                // Set permissions at creation so no published or temporary bytes are exposed.
-                guard fm.createFile(
-                    atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]
-                ) else { throw CocoaError(.fileWriteUnknown) }
-                guard rename(temporary.path, url.path) == 0 else {
-                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-                }
+                // Draft bytes stay owner-only from creation through atomic replacement.
+                try OwnerOnlyFile.writeAtomically(data, to: url)
             } catch {
                 NSLog("Failed to save conversation drafts to %@: %@", url.path, String(describing: error))
             }
