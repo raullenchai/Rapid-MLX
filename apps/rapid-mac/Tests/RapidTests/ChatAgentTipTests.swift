@@ -16,5 +16,9 @@ struct ChatAgentTipTests {
         #expect(ChatView.hasSuccessfulReply([
             ChatMessage(role: .assistant, content: "Hello", status: .complete)
         ]))
+
+        var stopped = ChatMessage(role: .assistant, content: "Partial", status: .streaming)
+        ChatViewModel.finaliseCancellation(message: &stopped)
+        #expect(!ChatView.hasSuccessfulReply([stopped]))
     }
 }

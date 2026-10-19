@@ -429,6 +429,7 @@ struct ChatView: View {
         messages.contains {
             $0.role == .assistant && $0.status == .complete
                 && $0.wireVisibility == .model && !$0.content.isEmpty
+                && $0.errorMessage != "Stopped."
         }
     }
 
