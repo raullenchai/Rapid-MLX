@@ -369,6 +369,8 @@ def test_audio_fork_never_prefetches_for_vision_degrade(monkeypatch):
     _mock_vision_absent(monkeypatch)
     monkeypatch.setattr(cli, "_run_optional_runtime_guard", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    # Stub the port preflight so the test never depends on host port 8000.
+    monkeypatch.setattr(cli, "_port_collision_host", lambda *_a, **_kw: None)
     served = []
     monkeypatch.setattr(
         cli, "_serve_audio_mode", lambda args, entry: served.append((args, entry))
