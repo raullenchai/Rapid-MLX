@@ -194,12 +194,11 @@ def test_non_post_video_keeps_generic_advertised_cap(video_client, path, method)
 
 @pytest.mark.parametrize("method", ["POST", "DELETE", "PUT", "PATCH", "GET"])
 def test_size_guard_preserves_method_and_path_boundaries(method):
-    for path in ("/v1/videos", "/v1/videos/extend"):
+    for path in ("/v1/videos", "/v1/videos/extend", "/v1/images/edits"):
         assert _path_is_guarded(path, method) is (method != "POST")
         assert _path_is_guarded(path + "/x", method) is True
-    for path in ("/v1/audio/transcriptions", "/v1/images/edits"):
-        assert _path_is_guarded(path) is False
-        assert _path_is_guarded(path, method) is False
+    assert _path_is_guarded("/v1/audio/transcriptions") is False
+    assert _path_is_guarded("/v1/audio/transcriptions", method) is False
 
 
 @pytest.mark.parametrize(

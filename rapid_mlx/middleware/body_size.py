@@ -121,21 +121,24 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 # domain-appropriate cap. We skip them here so the generic 8 MiB JSON
 # cap doesn't trample a 25 MB Whisper upload that the audio middleware
 # already validates. See ``rapid_mlx/routes/audio.py``.
-_EXCLUDED_PATHS = frozenset(
+_EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
+
+
+# POST-only exclusions: these upload routes have their own POST-only gates
+# that authenticate before reading and apply a dedicated cap. Other methods
+# keep the generic cap because those gates do not cover them.
+# Video uploads: 20 MiB file / 21 MiB request cap in routes.video.
+_POST_ONLY_EXCLUDED_PATHS = frozenset(
     {
-        "/v1/audio/transcriptions",
-        # Multipart image-edit uploads have a dedicated 25 MB cap enforced
+        "/v1/videos",
+        "/v1/videos/extend",
+        # Multipart image-edit POST uploads have a dedicated 25 MB cap enforced
         # pre-parse by ``routes.images.ImageBodyLimitMiddleware``; the generic
         # 8 MiB JSON cap would otherwise reject a legitimate large init image.
+        # Other methods retain the generic cap because that gate is POST-only.
         "/v1/images/edits",
     }
 )
-
-
-# Only POST video uploads have a dedicated 20 MiB file / 21 MiB request
-# cap and pre-parse authentication in routes.video. Other methods still need
-# the generic cap because the video middleware does not cover them.
-_POST_ONLY_EXCLUDED_PATHS = frozenset({"/v1/videos", "/v1/videos/extend"})
 
 
 def _path_is_guarded(path: str | None, method: str = "POST") -> bool:

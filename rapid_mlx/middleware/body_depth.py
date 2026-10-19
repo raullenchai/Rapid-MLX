@@ -63,6 +63,10 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 # middleware (``rapid_mlx/routes/audio.py``) owns its own cap.
 _EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
 
+_POST_MULTIPART_GATED_PATHS = frozenset(
+    {"/v1/videos", "/v1/videos/extend", "/v1/images/edits"}
+)
+
 # JSON-API paths whose clients are known to historically omit
 # ``Content-Type`` (the OpenAI Python client < 0.27 did this; some
 # bare-bones curl scripts still do). For these specific paths an
@@ -269,14 +273,11 @@ class RequestBodyDepthMiddleware:
         path = scope.get("path")
         if not _path_is_guarded(path):
             return await self.app(scope, receive, send)
-        # Video POST routes accept multipart Form/File data, not JSON. Skip
-        # buffering even for a claimed JSON type: the downstream video gate
-        # must authenticate before reading, then enforce its 21 MiB cap.
+        # Image-edit and video POST routes accept multipart Form/File data,
+        # not JSON. Skip buffering even for a claimed JSON type: their
+        # downstream gates authenticate before reading, then enforce their caps.
         # Other methods retain both the generic size and depth gates.
-        if scope.get("method") == "POST" and path in {
-            "/v1/videos",
-            "/v1/videos/extend",
-        }:
+        if scope.get("method") == "POST" and path in _POST_MULTIPART_GATED_PATHS:
             return await self.app(scope, receive, send)
         max_depth = resolve_max_body_depth()
         if max_depth <= 0:
