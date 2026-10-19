@@ -28,6 +28,16 @@ JSON_TEMPLATE = """{# <function= <parameter= are inactive source markers #}
 <tool_call>{{ call.function | tojson }}</tool_call>
 {% endfor %}
 {% endfor %}"""
+LENGTH_DEPENDENT_TEMPLATE = """{# <function= <parameter= source markers #}
+{% for message in messages %}
+{% for call in message.tool_calls or [] %}
+{% if tools|length <= 1 %}
+<tool_call>\n<function={{ call.function.name }}><parameter=value>x</parameter></function></tool_call>
+{% else %}
+<tool_call>{{ call.function | tojson }}</tool_call>
+{% endif %}
+{% endfor %}
+{% endfor %}"""
 
 
 def engine(template=XML_TEMPLATE):
@@ -105,6 +115,17 @@ def oversized_bytes_tool():
     )
 
 
+def nested_schema(depth):
+    schema = {"type": "string"}
+    for _ in range(depth):
+        schema = {"allOf": [schema]}
+    return schema
+
+
+def oversized_depth_tool(depth=20):
+    return tool("deep", nested_schema(depth))
+
+
 @pytest.fixture(autouse=True)
 def _restore_config():
     yield
@@ -119,7 +140,10 @@ def constrain_tools(monkeypatch):
     monkeypatch.setattr(tool_grammar, "are_single_special_tokens", lambda *args: True)
 
 
-@pytest.mark.parametrize("tools", [many_tools(), [oversized_bytes_tool()]])
+@pytest.mark.parametrize(
+    "tools",
+    [many_tools(), [oversized_bytes_tool()], [oversized_depth_tool()]],
+)
 def test_gate_exempts_oversized_auto_native_xml(tools):
     req = request(tools=tools)
     assert chat._tool_grammar_eligible(cfg(), req) is False
@@ -156,37 +180,61 @@ def test_opt_out_oversized_still_free_form(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("template", [XML_TEMPLATE, JSON_TEMPLATE])
-@pytest.mark.parametrize("thinking", [True, False])
-@pytest.mark.parametrize("history", [True, False])
-def test_bounded_probe_agrees_with_full_tools(template, thinking, history):
-    req = request(
-        tools=[tool("search"), tool("forecast")], thinking=thinking, history=history
-    )
-    minimal = [tool("search")]
-    full = chat._template_renders_native_xml_tool_call(engine(template), req, "search")
-    bounded = chat._template_renders_native_xml_tool_call(
-        engine(template), req, "search", tools=minimal
-    )
-    assert bounded is full
-
-
-def test_gate_probe_is_one_minimal_tool(monkeypatch):
+def test_gate_probe_uses_full_request_tools(monkeypatch):
     probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
     monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
     req = request(tools=many_tools())
 
     chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine())
 
-    sent_tools = probe.call_args.kwargs["tools"]
-    assert sent_tools == [tool("tool_0")]
-    assert sent_tools[0]["function"]["parameters"] == {
-        "type": "object",
-        "properties": {},
-    }
+    assert probe.call_args.args[1] is req
+    assert probe.call_args.kwargs == {}
+    assert chat._auto_tool_grammar_declined_for_native_wire(engine(), cfg(), req)
 
 
-def test_helper_handles_dict_and_object_tools_without_reading_schemas():
+def test_exact_probe_respects_tool_count_dependent_wire():
+    req = request(tools=many_tools())
+    assert not chat._auto_tool_grammar_declined_for_native_wire(
+        engine(LENGTH_DEPENDENT_TEMPLATE), cfg(), req
+    )
+    with pytest.raises(HTTPException) as exc:
+        chat._enforce_tool_grammar_bounds_or_400(
+            cfg(), req, engine(LENGTH_DEPENDENT_TEMPLATE)
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        many_tools(chat._TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS + 1),
+        [
+            tool(
+                "too_large",
+                {
+                    "type": "string",
+                    "description": "x" * chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
+                },
+            )
+        ],
+        [oversized_depth_tool(chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH + 1)],
+    ],
+    ids=["tool-count", "schema-bytes", "schema-depth"],
+)
+def test_above_probe_cap_400_without_template_render(monkeypatch, tools):
+    probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
+    monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
+    req = request()
+    req.tools = tools
+
+    with pytest.raises(HTTPException) as exc:
+        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+
+    assert exc.value.status_code == 400
+    probe.assert_not_called()
+
+
+def test_helper_name_scan_does_not_read_parameter_schemas(monkeypatch):
     class Function:
         name = "object_tool"
 
@@ -197,6 +245,8 @@ def test_helper_handles_dict_and_object_tools_without_reading_schemas():
     class Tool:
         function = Function()
 
+    probe = Mock(return_value=True)
+    monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
     req = request()
     req.tools = [Tool()]
     assert chat._auto_tool_grammar_declined_for_native_wire(engine(), cfg(), req)

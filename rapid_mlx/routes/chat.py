@@ -347,14 +347,8 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     return None
 
 
-def _template_renders_native_xml_tool_call(
-    engine, request, name, *, tools=None
-) -> bool | None:
-    """Probe the served template's assistant tool-call wire format.
-
-    ``tools`` may replace the request payload for bounded auto-mode probes. Forced
-    tool-prefix callers omit it and retain the full request-tool behavior.
-    """
+def _template_renders_native_xml_tool_call(engine, request, name) -> bool | None:
+    """Probe the served template's assistant tool-call wire format."""
     template = served_chat_template(engine) if engine is not None else None
     if isinstance(template, dict):
         template = template.get("tool_use") or template.get("default")
@@ -389,13 +383,9 @@ def _template_renders_native_xml_tool_call(
     if resolved_thinking is not None:
         probe_kwargs["enable_thinking"] = resolved_thinking
     try:
-        probe_tools = request.tools if tools is None else tools
         rendered, _ = render_jinja_template(
             [probe_messages[:-1], probe_messages],
-            tools=[
-                t.model_dump(exclude_none=True) if hasattr(t, "model_dump") else t
-                for t in probe_tools
-            ],
+            tools=[t.model_dump(exclude_none=True) for t in request.tools],
             chat_template=template,
             **probe_kwargs,
         )
@@ -562,6 +552,9 @@ _TOOL_GRAMMAR_MAX_INFLIGHT = 8  # admitted (running + queued) cap before fallbac
 _TOOL_GRAMMAR_MAX_SCHEMA_BYTES = 64 * 1024  # 64 KiB serialized per tools list
 _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH = 32  # nested object/array nesting cap
 _TOOL_GRAMMAR_MAX_TOOLS = 256  # per-request tool-count cap (alternation width)
+_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES = 4 * _TOOL_GRAMMAR_MAX_SCHEMA_BYTES
+_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH = 2 * _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH
+_TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS = 4 * _TOOL_GRAMMAR_MAX_TOOLS
 _tool_grammar_build_executor = None
 _tool_grammar_executor_init_lock = threading.Lock()
 _tool_grammar_inflight = 0
@@ -667,7 +660,12 @@ def _charge_json_scalar_bytes(value, budget: list[int]) -> None:
         raise _BoundsExceededError
 
 
-def _walk_size_and_depth(obj, budget: list[int], depth: int) -> None:
+def _walk_size_and_depth(
+    obj,
+    budget: list[int],
+    depth: int,
+    max_depth: int = _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
+) -> None:
     """Estimate serialized size + nesting depth, aborting the INSTANT a cap trips.
 
     Walks a JSON-like object accumulating an APPROXIMATE serialized byte count
@@ -694,7 +692,7 @@ def _walk_size_and_depth(obj, budget: list[int], depth: int) -> None:
     # depth-``MAX`` container would be rejected at depth ``MAX+1`` even though no
     # further object/array exists). Each container checks the cap on ENTRY.
     if isinstance(obj, dict):
-        if depth > _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH:
+        if depth > max_depth:
             raise _BoundsExceededError
         budget[0] -= 2  # {}
         if budget[0] < 0:
@@ -709,9 +707,9 @@ def _walk_size_and_depth(obj, budget: list[int], depth: int) -> None:
                 raise _BoundsExceededError
             # ``"key"`` — O(1)-safe charge of the (possibly Unicode) key.
             _charge_json_scalar_bytes(k if isinstance(k, str) else str(k), budget)
-            _walk_size_and_depth(v, budget, depth + 1)
+            _walk_size_and_depth(v, budget, depth + 1, max_depth)
     elif isinstance(obj, (list, tuple)):
-        if depth > _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH:
+        if depth > max_depth:
             raise _BoundsExceededError
         budget[0] -= 2  # []
         if budget[0] < 0:
@@ -721,14 +719,20 @@ def _walk_size_and_depth(obj, budget: list[int], depth: int) -> None:
                 budget[0] -= 1  # ``,`` only BETWEEN elements
                 if budget[0] < 0:
                     raise _BoundsExceededError
-            _walk_size_and_depth(v, budget, depth + 1)
+            _walk_size_and_depth(v, budget, depth + 1, max_depth)
     else:
         # Scalar leaf: string / number / bool / None. O(1)-safe true-byte charge;
         # NOT a nesting level, so it is exempt from the container-depth cap.
         _charge_json_scalar_bytes(obj, budget)
 
 
-def _tools_within_grammar_bounds(tools) -> bool:
+def _tools_within_grammar_bounds(
+    tools,
+    *,
+    max_tools: int = _TOOL_GRAMMAR_MAX_TOOLS,
+    max_schema_bytes: int = _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
+    max_schema_depth: int = _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
+) -> bool:
     """True iff the client tools list is small/shallow enough to compile safely.
 
     Bounds the COMPLETE flattened grammar input — tool COUNT, tool NAMES, and
@@ -743,11 +747,11 @@ def _tools_within_grammar_bounds(tools) -> bool:
     simply loses the structural guarantee, not the request.
     """
     tools = tools or ()
-    if len(tools) > _TOOL_GRAMMAR_MAX_TOOLS:
+    if len(tools) > max_tools:
         logger.warning(
             "tool-grammar: %d tools exceeds %d-tool cap; free-form",
             len(tools),
-            _TOOL_GRAMMAR_MAX_TOOLS,
+            max_tools,
         )
         return False
     # One shared byte budget across ALL tools so the cap bounds the total
@@ -756,7 +760,7 @@ def _tools_within_grammar_bounds(tools) -> bool:
     # tools) up front so the cap bounds the ACTUAL serialized envelope exactly,
     # not just the tool bodies (codex #558-PR3 nit — charge N-1 commas, not N).
     envelope = 2 + max(0, len(tools) - 1)
-    budget = [_TOOL_GRAMMAR_MAX_SCHEMA_BYTES - envelope]
+    budget = [max_schema_bytes - envelope]
     if budget[0] < 0:
         return False
     try:
@@ -768,12 +772,14 @@ def _tools_within_grammar_bounds(tools) -> bool:
             else:
                 name = getattr(fn, "name", None)
                 params = getattr(fn, "parameters", None)
-            _walk_size_and_depth({"name": name, "parameters": params}, budget, 0)
+            _walk_size_and_depth(
+                {"name": name, "parameters": params}, budget, 0, max_schema_depth
+            )
     except _BoundsExceededError:
         logger.warning(
             "tool-grammar: tools input exceeds %d-byte / depth-%d cap; free-form",
-            _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
-            _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
+            max_schema_bytes,
+            max_schema_depth,
         )
         return False
     except Exception:
@@ -917,8 +923,8 @@ def _tool_grammar_eligible(cfg, request) -> bool:
     when the constraint is active: it stays ineligible for the OFFLOAD (so we
     never enter the compile pool), but the route raises HTTP 400 via
     ``_enforce_tool_grammar_bounds_or_400`` (#561) rather than falling back,
-    except when its bounded template probe proves the builder will decline an
-    auto grammar for a mismatched native wire.
+    except when its separately capped exact template probe proves the builder
+    will decline an auto grammar for a mismatched native wire.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return False
@@ -932,11 +938,10 @@ def _tool_grammar_eligible(cfg, request) -> bool:
 def _auto_tool_grammar_declined_for_native_wire(
     engine, cfg, request, parser=None
 ) -> bool:
-    """Whether auto grammar is declined after one bounded native-wire probe.
+    """Whether auto grammar is declined by the builder's exact native-wire probe.
 
-    The real history and template kwargs are retained, but the template sees only
-    one minimal tool. Name discovery scans at most the grammar tool-count cap and
-    never reads client parameter schemas.
+    Name discovery scans at most the grammar tool-count cap and never reads client
+    parameter schemas. The caller separately bounds oversized render work.
     """
     choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
     if choice is None or choice["mode"] != "auto":
@@ -972,22 +977,11 @@ def _auto_tool_grammar_declined_for_native_wire(
     if probe_name is None:
         return False
 
-    probe_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": probe_name,
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-    ]
     # The gate calls this outside any handler, so a template or parser-factory
     # failure must mean "not declined" (keep the prior 400), never a 500.
     try:
         if (
-            _template_renders_native_xml_tool_call(
-                engine, request, probe_name, tools=probe_tools
-            )
+            _template_renders_native_xml_tool_call(engine, request, probe_name)
             is not True
         ):
             return False
@@ -1007,13 +1001,23 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
     schema exceeds the grammar-compile bounds, raise HTTP 400 so the caller sees
     the failure explicitly. Auto requests whose template renders a native XML
     wire incompatible with the configured grammar are exempt because the shared
-    builder decision declines their grammar. The legacy free-form fallback also
-    survives on the explicit opt-OUT path.
+    builder decision declines their grammar. A separate hard cap bounds that
+    exact template-render probe. The legacy free-form fallback also survives on
+    the explicit opt-OUT path.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return  # opted out / no tools / no parser / "none" — legacy free-form.
-    if not _tools_within_grammar_bounds(getattr(request, "tools", None)):
-        if _auto_tool_grammar_declined_for_native_wire(engine, cfg, request):
+    tools = getattr(request, "tools", None)
+    if not _tools_within_grammar_bounds(tools):
+        within_probe_bounds = _tools_within_grammar_bounds(
+            tools,
+            max_tools=_TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
+            max_schema_bytes=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
+            max_schema_depth=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
+        )
+        if within_probe_bounds and _auto_tool_grammar_declined_for_native_wire(
+            engine, cfg, request
+        ):
             logger.info(
                 "Oversized tool schema proceeding free-form: auto grammar "
                 "declined for template native wire"
@@ -5103,10 +5107,10 @@ async def _create_chat_completion_impl(
     # the request is ineligible, admission is at capacity, or the build fails.
     #
     # #561: reject an oversized/over-deep/over-count schema with HTTP 400 BEFORE
-    # the offload when the constraint is active (default-on), unless the shared
-    # bounded probe proves auto grammar will be declined for a mismatched native
-    # wire. This must run before ``_offload_tool_grammar_build`` — the offload
-    # treats an oversized schema as ineligible and returns ``None``.
+    # the offload when the constraint is active (default-on), unless a separately
+    # capped exact probe proves auto grammar will be declined for a mismatched
+    # native wire. This must run before ``_offload_tool_grammar_build`` — the
+    # offload treats an oversized schema as ineligible and returns ``None``.
     _enforce_tool_grammar_bounds_or_400(cfg, request, engine=engine)
     # LINE① (#558): decide reasoning-gated forced-grammar eligibility. Engage only
     # when a thinking budget is set AND the template PREFILLS an unclosed
