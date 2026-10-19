@@ -382,3 +382,43 @@ def test_logprobs_released_held_text_excludes_tool_call_tokens(monkeypatch, held
         for entry in (choice.get("logprobs") or {}).get("content", [])
     ]
     assert markup not in tokens
+
+
+def test_logprobs_held_narration_with_tool_call_keeps_its_logprobs(monkeypatch):
+    """An output whose own narration is held and released keeps its logprobs."""
+    from rapid_mlx.api.models import TokenLogProb
+    from rapid_mlx.routes import chat
+
+    monkeypatch.setattr(
+        chat,
+        "_extract_streaming_token_logprobs",
+        lambda output, *a, **k: [
+            TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
+        ],
+    )
+
+    class NarrationAndToolEngine(ReplayEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text="[",
+                new_text="[",
+                channel="content",
+                tool_calls=[{"name": "get_weather", "arguments": '{"city":"Paris"}'}],
+                finished=False,
+            )
+            yield GenerationOutput(
+                text="", new_text="", finished=True, finish_reason="stop"
+            )
+
+    client = client_for(NarrationAndToolEngine([], "stop"))
+    get_config().tool_call_parser = "hermes"
+    response = client.post(
+        "/v1/chat/completions",
+        json={**_payload("auto"), "stream": True, "logprobs": True},
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    released = next(c for c in choices if c["delta"].get("content") == "[")
+    assert "[" in [e["token"] for e in released["logprobs"]["content"]]

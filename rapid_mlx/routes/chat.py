@@ -7819,9 +7819,13 @@ async def stream_chat_completion(
             _output_logprobs_pending = want_logprobs and not _defer_logprobs
             for event in _chunk_events:
                 if event.type == "content":
-                    if event.released_held:
+                    if (
+                        event.released_held
+                        and processor.content_consumed == _consumed_before
+                    ):
                         # #4957: text released ahead of a structured tool
-                        # call carries only the held tokens' logprobs.
+                        # call carries only the held tokens' logprobs unless
+                        # this output's own text is part of it.
                         _event_logprobs = (
                             _with_held_logprobs(None) if want_logprobs else None
                         )
