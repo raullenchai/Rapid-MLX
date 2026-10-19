@@ -484,6 +484,31 @@ def test_v41_model_identity_includes_the_measured_sidecar(tmp_path: Path) -> Non
     ContractValidator().validate_model_identity(combined)
 
 
+def test_v41_colocated_sidecar_reads_the_draft_dir_at_its_revision(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from rapid_mlx.community_bench.run_builder import unresolved_model_identity
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    # The loader hands back the draft directory itself:
+    # .../snapshots/<sha>/dspark. The subfolder is source metadata only.
+    revision = "c" * 40
+    draft = tmp_path / "snapshots" / revision / "dspark"
+    draft.mkdir(parents=True)
+    (draft / "config.json").write_text(json.dumps({"model_type": "dspark"}))
+    primary = unresolved_model_identity(
+        artifacts.FLASH_1017.target_repo, "text_generation"
+    )
+    sidecar = local_runner._with_v41_sidecar_identity(
+        primary, str(draft), artifacts.FLASH_1017.target_repo
+    )["components"][1]
+
+    assert sidecar["source"]["subfolder"] == "dspark"
+    assert sidecar["source"]["resolved_revision"] == revision
+
+
 def test_v41_speculative_provenance_is_target_specific() -> None:
     from rapid_mlx.models.deepseek_v41_native import artifacts
 
