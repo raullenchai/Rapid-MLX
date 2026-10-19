@@ -667,3 +667,19 @@ def test_valid_external_copy_backs_up_rejected_hub_copy(cache, tmp_path, monkeyp
     (found,) = lm.discover_runnable_chat_models()
     assert found.external and found.repo == repo
     assert found.model == str(directory)
+
+
+def test_serve_notes_wait_for_log_file(monkeypatch, capsys, tmp_path):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    plain = SimpleNamespace(log_file=None)
+    lm.serve_startup_note(plain, "now")
+    assert capsys.readouterr().err == "now\n"
+    logged = SimpleNamespace(log_file=str(tmp_path / "serve.log"))
+    lm.serve_startup_note(logged, "first")
+    lm.serve_startup_note(logged, "second")
+    assert capsys.readouterr().err == ""
+    lm.flush_serve_startup_notes(logged)
+    lm.flush_serve_startup_notes(plain)
+    assert capsys.readouterr().err == "first\nsecond\n"

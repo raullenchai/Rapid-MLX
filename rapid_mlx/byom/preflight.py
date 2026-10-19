@@ -830,10 +830,12 @@ def _note_uncataloged_serve(args: Any) -> None:
         and not getattr(args, "_serve_default_selected", False)
         and not _is_catalog_or_registry_model(ref)
     ):
-        print(
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(
+            args,
             f"  Note: {ref} is not in the Rapid-MLX catalog, "
             "so it has not been catalog-tested here.",
-            file=sys.stderr,
         )
 
 

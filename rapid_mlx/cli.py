@@ -5733,6 +5733,9 @@ def serve_command(args):
     except log_file.LogFileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+    from rapid_mlx.local_models import flush_serve_startup_notes
+
+    flush_serve_startup_notes(args)
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
     _validate_local_search_exposure_or_exit(args)
 
@@ -14860,24 +14863,27 @@ def main():
         and not getattr(args, "embedding_model", None)
         and not getattr(args, "rerank_model", None)
     ):
-        from rapid_mlx.local_models import select_default_local_model
+        from rapid_mlx.local_models import (
+            select_default_local_model,
+            serve_startup_note,
+        )
 
         chosen = select_default_local_model()
         if chosen is not None:
             args.model = chosen.model
             args._serve_default_selected = True
-            print(
+            serve_startup_note(
+                args,
                 f"  No model specified — starting {chosen.model} "
                 "(already on this Mac).",
-                file=sys.stderr,
             )
             if not chosen.cataloged:
-                print(
+                serve_startup_note(
+                    args,
                     f"  Note: {chosen.repo} is not in the Rapid-MLX catalog, "
                     "so it has not been catalog-tested here.",
-                    file=sys.stderr,
                 )
-            print("  Override: rapid-mlx serve <model>", file=sys.stderr)
+            serve_startup_note(args, "  Override: rapid-mlx serve <model>")
         else:
             print("rapid-mlx serve: a model is required.", file=sys.stderr)
             print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)

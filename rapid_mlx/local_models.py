@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from rapid_mlx.byom.preflight import Inspection
@@ -89,6 +90,31 @@ def _packed_quantization(config: dict) -> bool:
         isinstance(config.get(key), dict) and "quant_method" in config[key]
         for key in ("quantization", "quantization_config")
     )
+
+
+def serve_startup_note(args: Any, line: str) -> None:
+    """Print a ``serve`` startup note on stderr, or hold it for the log file.
+
+    With ``--log-file`` (or its environment equivalent) all serve output
+    belongs in the log, which ``serve_command`` opens later; it flushes the
+    held notes right after redirecting.
+    """
+    from rapid_mlx import log_file
+
+    target, _source = log_file.resolve(getattr(args, "log_file", None))
+    if target is None:
+        print(line, file=sys.stderr)
+        return
+    notes = getattr(args, "_startup_notes", None)
+    if notes is None:
+        notes = []
+        args._startup_notes = notes
+    notes.append(line)
+
+
+def flush_serve_startup_notes(args: Any) -> None:
+    for line in getattr(args, "_startup_notes", None) or ():
+        print(line, file=sys.stderr)
 
 
 def _uncataloged_chat(
