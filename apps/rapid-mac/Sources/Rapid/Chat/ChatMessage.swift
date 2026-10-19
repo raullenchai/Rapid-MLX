@@ -2221,6 +2221,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// context injected by ChatViewModel.currentDateContext and clockContext.
     /// Ignore "today's" / "right now" only for those requests; other live
     /// keywords still win, and any other subject keeps the live-data caution.
+    /// Numbers and format/timezone words are format qualifiers, not live subjects.
     private static func promptOnlyAsksForDateOrTime(_ prompt: String) -> Bool {
         guard ["date", "day", "weekday", "time", "clock"].contains(where: {
             containsKeyword($0, in: prompt)
@@ -2230,12 +2231,15 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "date", "day", "weekday", "time", "clock", "today", "right", "now",
             "current", "local", "please", "tell", "me", "can", "could", "would",
             "you", "give", "show", "may", "i", "have", "know", "to", "like",
-            "thanks", "thank", "month", "year", "hour", "exactly",
+            "thanks", "thank", "month", "year", "hour", "hours", "exactly",
             "in", "my", "here", "timezone", "zone", "format", "formatted", "as",
             "iso", "mm", "dd", "yy", "yyyy", "numbers", "number",
+            "military", "standard", "utc", "gmt",
         ]
         let words = prompt.split { !$0.isLetter && !$0.isNumber }
-        return words.allSatisfy { requestWords.contains(String($0)) }
+        return words.allSatisfy {
+            requestWords.contains(String($0)) || $0.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+        }
     }
 
     /// True when `prompt` carries arithmetic that stands on its own — a
