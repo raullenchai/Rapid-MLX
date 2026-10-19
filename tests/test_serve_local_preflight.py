@@ -63,6 +63,18 @@ def test_text_model_requires_loader_visible_safetensors(tmp_path, filename):
         validate_local_model_for_serve(str(root))
 
 
+@pytest.mark.parametrize(
+    "model_type",
+    ["gemma4", "gemma4_assistant", "gemma4_unified", "embedding_gemma2"],
+)
+def test_native_loaders_accept_nonmodel_safetensors_name(tmp_path, model_type):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text(json.dumps({"model_type": model_type}))
+    (root / "weights.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
 def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
     root = tmp_path / "model"
     (root / "variant").mkdir(parents=True)

@@ -279,13 +279,22 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
         )
-    # mlx-lm loads model*.safetensors at the root. PyTorch .bin files and
-    # auxiliary safetensors do not make a text checkpoint serveable.
+    # mlx-lm loads model*.safetensors at the root. Native Gemma 4 and
+    # EmbeddingGemma 2 loaders accept any root safetensors filename.
+    # PyTorch .bin files do not make any of these checkpoints serveable.
     try:
         model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
         model_type = None  # Leave malformed configs to the loader's typed error.
-    weights = list(root.glob("model*.safetensors"))
+    native_any_safetensors = model_type in {
+        "gemma4",
+        "gemma4_assistant",
+        "gemma4_unified",
+        "embedding_gemma2",
+    }
+    weights = list(
+        root.glob("*.safetensors" if native_any_safetensors else "model*.safetensors")
+    )
     if model_type == "whisper":
         weights.extend((root / "weights.npz", root / "weights.safetensors"))
     elif model_type == "kokoro":
