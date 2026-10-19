@@ -359,6 +359,9 @@ def parse_args() -> argparse.Namespace:
         help="comma-separated layer ids for a small parity fixture; default is all",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--reuse-from", type=Path, help="reuse identical allocation shards"
+    )
     return parser.parse_args()
 
 
@@ -384,11 +387,14 @@ def main() -> None:
                     args.shared_engram.resolve(),
                     json.loads(args.allocation.read_text()),
                     args.dry_run,
+                    args.reuse_from.resolve() if args.reuse_from else None,
                 ),
                 indent=2,
             )
         )
         return
+    if args.reuse_from:
+        raise ValueError("--reuse-from requires --allocation")
     source = args.source.resolve()
     destination = args.destination.resolve()
     if not source.is_dir():

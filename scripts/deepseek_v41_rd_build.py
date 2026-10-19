@@ -3,11 +3,16 @@
 
 No whole-shard load. A projection/expert or Engram row chunk is the largest
 source read. The dry run imports no MLX and never creates a destination.
+
+--reuse-from links unchanged shards after source identity, semantic plan, exact
+header and size checks. Inputs must be immutable: payloads are not rehashed.
+Reuse provenance lives in reuse-provenance.json to preserve fresh config/index bytes.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -426,7 +431,61 @@ def write_group(path, entries, index, config, row_chunk=65536):
     temporary.replace(path)
 
 
-def build(source, destination, shared, allocation, dry_run=False):
+def matching_file(path, entries):
+    """Compare exact serialized header and size without reading tensor payloads."""
+    raw = header(entries)
+    if not path.is_file() or path.stat().st_size != 8 + len(raw) + sum(
+        e.nbytes for e in entries
+    ):
+        return False
+    with path.open("rb") as f:
+        return f.read(8) == struct.pack("<Q", len(raw)) and f.read(len(raw)) == raw
+
+
+def group_path(group):
+    filename = f"model-{group}.safetensors"
+    return Path("dspark") / filename if group == "mtp" else Path(filename)
+
+
+def existing_parent(path):
+    while not path.exists():
+        path = path.parent
+    return path
+
+
+def reuse_plan(reuse_from, destination, index, config, identity, groups):
+    """Check semantic plans as well as headers (same-shaped expert swaps differ)."""
+    config_bytes = (reuse_from / "config.json").read_bytes()
+    previous = json.loads(config_bytes)["rapid_quantization"]
+    if previous["shared_engram_identity"] != identity:
+        raise ValueError("reuse build source identity mismatch")
+    if reuse_from.stat().st_dev != existing_parent(destination.parent).stat().st_dev:
+        raise ValueError("reuse build and destination must be on the same filesystem")
+    old_allocation = previous["allocation"]
+    result = {
+        "from": str(reuse_from),
+        "allocation_sha256": hashlib.sha256(
+            json.dumps(old_allocation, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "reused": [],
+        "rewritten": [],
+    }
+    old_entries, _, _ = plan(index, config, old_allocation)
+    old_groups = groups_for(old_entries)
+    for group, es in groups.items():
+        path = reuse_from / group_path(group)
+        # Entry equality covers sources, kept router rows, precision and policy.
+        match = old_groups.get(group) == es and matching_file(path, es)
+        if match and path.stat().st_dev != reuse_from.stat().st_dev:
+            raise ValueError(
+                "reuse file and destination must be on the same filesystem"
+            )
+        result["reused" if match else "rewritten"].append(str(group_path(group)))
+    return result
+
+
+def build(source, destination, shared, allocation, dry_run=False, reuse_from=None):
     if allocation.get("keep_mtp"):
         allocation = {"mtp_expert_bits": 4, **allocation}
     config = json.loads((source / "config.json").read_text())
@@ -438,12 +497,7 @@ def build(source, destination, shared, allocation, dry_run=False):
         and report["resident_tensor_bytes"] > allocation["budget_bytes"]
     ):
         raise ValueError("allocation exceeds resident byte target")
-    if dry_run:
-        return report
-    if destination.exists():
-        raise FileExistsError(destination)
     # Pin immutable shared tables to source config + index/header identity.
-    import hashlib
 
     identity = hashlib.sha256(
         json.dumps(
@@ -457,6 +511,16 @@ def build(source, destination, shared, allocation, dry_run=False):
             sort_keys=True,
         ).encode()
     ).hexdigest()
+    groups = groups_for(entries)
+    reuse = (
+        reuse_plan(reuse_from, destination, index, config, identity, groups)
+        if reuse_from is not None
+        else None
+    )
+    if dry_run:
+        return {**report, **({"reuse": reuse} if reuse is not None else {})}
+    if destination.exists():
+        raise FileExistsError(destination)
     shared_path = shared / identity
     shared_path.mkdir(parents=True, exist_ok=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -467,13 +531,19 @@ def build(source, destination, shared, allocation, dry_run=False):
     destination.mkdir()
     mapping = {}
     mtp_mapping = {}
-    for group, es in groups_for(entries).items():
+    for group, es in groups.items():
         filename = f"model-{group}.safetensors"
         target = destination / filename
         if group == "mtp":
             (destination / "dspark").mkdir()
             target = destination / "dspark" / filename
-        if group.startswith("engram-"):
+        if reuse is not None and str(group_path(group)) in reuse["reused"]:
+            # Recheck before linking; builds used as reuse inputs must be immutable.
+            original = reuse_from / group_path(group)
+            if not matching_file(original, es):
+                raise ValueError(f"reuse file changed during build: {original}")
+            os.link(original, target)
+        elif group.startswith("engram-"):
             common = shared_path / filename
             if not common.exists():
                 write_group(common, es, index, config)
@@ -547,7 +617,11 @@ def build(source, destination, shared, allocation, dry_run=False):
     (destination / "README.md").write_text(
         "# Experimental pruned native build\n\nUnqualified. Vision omitted; see config for optional DSpark sidecar. Engram files are hard links to a shared immutable payload.\n"
     )
-    return report
+    if reuse is not None:
+        (destination / "reuse-provenance.json").write_text(
+            json.dumps(reuse, indent=2) + "\n"
+        )
+    return {**report, **({"reuse": reuse} if reuse is not None else {})}
 
 
 def main():
@@ -557,6 +631,7 @@ def main():
     p.add_argument("--destination", type=Path, required=True)
     p.add_argument("--shared-engram", type=Path, required=True)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--reuse-from", type=Path)
     a = p.parse_args()
     print(
         json.dumps(
@@ -566,6 +641,7 @@ def main():
                 a.shared_engram.resolve(),
                 json.loads(a.allocation.read_text()),
                 a.dry_run,
+                a.reuse_from.resolve() if a.reuse_from else None,
             ),
             indent=2,
         )

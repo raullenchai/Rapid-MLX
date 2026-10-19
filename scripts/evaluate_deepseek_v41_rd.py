@@ -180,7 +180,7 @@ def collect(a):
     (a.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 
-def compare(reference: Path, candidate: Path):
+def compare(reference: Path, candidate: Path, subset=False):
     rm = json.loads((reference / "metadata.json").read_text())
     cm = json.loads((candidate / "metadata.json").read_text())
     if rm["mode"] != "unpruned_reference":
@@ -188,12 +188,15 @@ def compare(reference: Path, candidate: Path):
     if (
         rm["model_revision"] != cm["model_revision"]
         or rm["tokenizer_sha256"] != cm["tokenizer_sha256"]
-        or set(rm["slices"]) != set(cm["slices"])
-        or not rm["slices"]
+        or not set(cm["slices"]).issubset(rm["slices"])
+        or (not subset and set(rm["slices"]) != set(cm["slices"]))
+        or not cm["slices"]
     ):
         raise ValueError("cache provenance/slice mismatch")
     results = {}
     for name in rm["slices"]:
+        if name not in cm["slices"]:
+            continue
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
             raise ValueError("unsafe slice name")
         if rm["slices"][name]["corpus_sha256"] != cm["slices"][name]["corpus_sha256"]:
@@ -235,6 +238,7 @@ def compare(reference: Path, candidate: Path):
     return {
         "mode": cm["mode"],
         "slices": results,
+        **({"compared_slices": list(results)} if subset else {}),
         "worst_domain_kl_nats": max(v["kl_nats"] for v in results.values()),
         "mean_domain_kl_nats": float(np.mean([v["kl_nats"] for v in results.values()])),
     }
@@ -292,6 +296,7 @@ def main():
     metrics.add_argument("--reference", type=Path, required=True)
     metrics.add_argument("--candidate", type=Path, required=True)
     metrics.add_argument("--output", type=Path, required=True)
+    metrics.add_argument("--subset", action="store_true")
     select = sub.add_parser("select")
     select.add_argument(
         "--points",
@@ -304,7 +309,7 @@ def main():
     if a.command == "collect":
         collect(a)
     elif a.command == "compare":
-        result = compare(a.reference, a.candidate)
+        result = compare(a.reference, a.candidate, subset=a.subset)
         a.output.parent.mkdir(parents=True, exist_ok=True)
         a.output.write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result, indent=2))

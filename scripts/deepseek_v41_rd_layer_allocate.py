@@ -20,6 +20,25 @@ PRESETS = {
 }
 
 
+def router_row_bytes(costs):
+    costs = np.asarray(costs)
+    row = int(costs[0, 1] - 5 * (costs[0, 2] - costs[0, 1]) // 2)
+    if row < 0 or not np.all(costs == costs[0]):
+        raise ValueError("layer allocator requires equal-shaped expert matrices")
+    return row
+
+
+def routed_and_router_bytes(costs, kept, bits, row=None):
+    """Equal-shaped gate/up/down matrices, including one router row per expert."""
+    costs = np.asarray(costs)
+    if row is None:
+        row = router_row_bytes(costs)
+    return (
+        sum(int(costs[kept, b - 1].sum()) - len(kept) * row for b in bits) // 3
+        + len(kept) * row
+    )
+
+
 def layer_allocate(
     selection,
     q,
@@ -119,11 +138,7 @@ def layer_allocate(
             else [(b, b, b) for b in (2, 3, 4)]
         )
         # Equal matrix parameter counts are specific to this checkpoint.
-        row = int(
-            costs[layer, 0, 1] - 5 * (costs[layer, 0, 2] - costs[layer, 0, 1]) // 2
-        )
-        if row < 0 or not np.all(costs[layer] == costs[layer, 0]):
-            raise ValueError("layer allocator requires equal-shaped expert matrices")
+        row = router_row_bytes(costs[layer])
         for bits in widths:
             if projection_q is None:
                 keep_q = q[layer, :, bits[0] - 1]
@@ -147,14 +162,7 @@ def layer_allocate(
                 kept = np.array(
                     sorted(set(range(s.shape[1])) - set(ordered[:removed])), int
                 )
-                size = (
-                    sum(
-                        int(costs[layer, kept, b - 1].sum()) - len(kept) * row
-                        for b in bits
-                    )
-                    // 3
-                    + len(kept) * row
-                )
+                size = routed_and_router_bytes(costs[layer], kept, bits, row)
                 loss = float(
                     s[layer, ordered[:removed]].sum()
                     + (s[layer, kept] * keep_q[kept]).sum()
