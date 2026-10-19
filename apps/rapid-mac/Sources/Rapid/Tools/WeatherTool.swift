@@ -44,7 +44,7 @@ enum WeatherTool {
     )
 
     struct Args: Decodable {
-        let location: String
+        let location: String?
         let country: String?
         let admin1: String?
         let units: String?
@@ -56,7 +56,7 @@ enum WeatherTool {
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
-            location = try values.decode(String.self, forKey: .location)
+            location = try values.decodeIfPresent(String.self, forKey: .location)
             country = try values.decodeIfPresent(String.self, forKey: .country)
             admin1 = try values.decodeIfPresent(String.self, forKey: .admin1)
             units = try values.decodeIfPresent(String.self, forKey: .units)
@@ -67,15 +67,18 @@ enum WeatherTool {
         }
     }
 
+    static func effectiveLocation(_ args: Args) -> String? {
+        cleaned(args.location) ?? cleaned(args.admin1) ?? cleaned(args.country)
+    }
+
     static func run(arguments: String) async -> ToolCallResult {
         let toolName = "weather"
         guard let data = arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(Args.self, from: data) else {
             return ToolCallResult(toolCallID: "", content: "\(toolName) error: could not parse arguments JSON", isError: true)
         }
-        let location = args.location.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !location.isEmpty else {
-            return ToolCallResult(toolCallID: "", content: "\(toolName) error: empty location", isError: true)
+        guard let location = effectiveLocation(args) else {
+            return ToolCallResult(toolCallID: "", content: #"weather error: missing required "location" argument. Pass a city name, for example {"location": "Austin, Texas"}."#, isError: true)
         }
         let imperial = (args.units?.lowercased() == "imperial")
         do {
@@ -267,6 +270,13 @@ enum WeatherTool {
             }
         }
 
+        if let hit = try await romanizedGeocodingHit(
+            name: query.name, qualifiers: query.qualifiers,
+            country: country, admin1: admin1, load: load
+        ) {
+            return .place(hit)
+        }
+
         let allCandidates = originalCandidates + alternateCandidates
         let countryHints = regionCountryHints(
             requestedName: query.name, country: country, admin1: admin1,
@@ -345,9 +355,10 @@ enum WeatherTool {
 
     private static func geocodingCandidates(
         name: String,
-        load: GeocodingLoader
+        load: GeocodingLoader,
+        language: String? = nil
     ) async throws -> [GeoHit] {
-        guard let url = geocodingURL(location: name) else {
+        guard let url = geocodingURL(location: name, language: language) else {
             throw NSError(domain: "WeatherTool", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not build geocoding URL"])
         }
         var request = URLRequest(url: url)
@@ -359,6 +370,42 @@ enum WeatherTool {
         return decodeGeocodingCandidates(data)
     }
 
+    // Keep the last-resort retry separate from unresolved-place handling.
+    private static func romanizedGeocodingHit(
+        name: String, qualifiers: [String], country: String?, admin1: String?,
+        load: GeocodingLoader
+    ) async throws -> GeoHit? {
+        guard containsHan(name), let latin = romanizedKey(name), !latin.isEmpty else { return nil }
+        let candidates = try await geocodingCandidates(name: latin, load: load, language: "zh")
+        return selectGeocodingHit(
+            location: name, qualifiers: qualifiers, candidates: candidates,
+            country: country, admin1: admin1, romanized: true
+        )
+    }
+
+    private static func containsHan(_ value: String) -> Bool {
+        value.unicodeScalars.contains {
+            (0x3400...0x4DBF).contains($0.value) || (0x4E00...0x9FFF).contains($0.value)
+                || (0x20000...0x323AF).contains($0.value)
+        }
+    }
+
+    private static func hanPlaceKey(_ value: String) -> String {
+        let simplified = value.applyingTransform(
+            StringTransform(rawValue: "Hant-Hans"), reverse: false
+        ) ?? value
+        let key = matchKey(simplified)
+        if key.count > 2, let suffix = key.last, "市县縣".contains(suffix) {
+            return String(key.dropLast())
+        }
+        return key
+    }
+
+    private static func romanizedKey(_ value: String) -> String? {
+        value.applyingTransform(.toLatin, reverse: false)?
+            .applyingTransform(.stripDiacritics, reverse: false).map(matchKey)
+    }
+
     static func traditionalGeocodingName(_ name: String) -> String? {
         guard let traditional = name.applyingTransform(
             StringTransform(rawValue: "Hans-Hant"), reverse: false
@@ -366,14 +413,14 @@ enum WeatherTool {
         return traditional
     }
 
-    static func geocodingURL(location: String) -> URL? {
+    static func geocodingURL(location: String, language: String? = nil) -> URL? {
         var components = URLComponents(string: "https://geocoding-api.open-meteo.com/v1/search")!
         components.queryItems = [
             URLQueryItem(name: "name", value: location),
             URLQueryItem(name: "count", value: "5"),
             URLQueryItem(name: "format", value: "json"),
         ]
-        if let language = geocodingLanguage(for: location) {
+        if let language = language ?? geocodingLanguage(for: location) {
             components.queryItems?.append(URLQueryItem(name: "language", value: language))
         }
         return components.url
@@ -384,11 +431,12 @@ enum WeatherTool {
         location: String,
         qualifiers: [String] = [],
         country: String? = nil,
-        admin1: String? = nil
+        admin1: String? = nil,
+        romanized: Bool = false
     ) -> GeoHit? {
         return selectGeocodingHit(
             location: location, qualifiers: qualifiers,
-            candidates: decodeGeocodingCandidates(data), country: country, admin1: admin1
+            candidates: decodeGeocodingCandidates(data), country: country, admin1: admin1, romanized: romanized
         )
     }
 
@@ -404,21 +452,17 @@ enum WeatherTool {
         qualifiers: [String],
         candidates: [GeoHit],
         country: String? = nil,
-        admin1: String? = nil
+        admin1: String? = nil,
+        romanized: Bool = false
     ) -> GeoHit? {
         let matches = matchingGeocodingCandidates(
             location: location, qualifiers: qualifiers,
-            candidates: candidates, country: country, admin1: admin1
+            candidates: candidates, country: country, admin1: admin1, romanized: romanized
         )
         guard !matches.isEmpty else { return nil }
 
-        let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, accepted: Set<String>)? in
-            let key = matchKey(qualifier)
-            guard !key.isEmpty else { return nil }
-            let countryCodes = countryCodes(for: qualifier).map(matchKey)
-            let alternate = traditionalGeocodingName(qualifier).map(matchKey)
-            return (key, Set([key] + countryCodes + [alternate].compactMap { $0 }))
-        }
+        let requestedQualifiers = qualifiers.filter { !matchKey($0).isEmpty }
+
         // Rank same-named candidates by population so a well-known city
         // dominates its tiny homonyms (Tokyo over the villages).
         let ranked = matches.sorted { ($0.population ?? 0) > ($1.population ?? 0) }
@@ -457,34 +501,48 @@ enum WeatherTool {
         qualifiers: [String],
         candidates: [GeoHit],
         country: String?,
-        admin1: String?
+        admin1: String?,
+        romanized: Bool = false
     ) -> [GeoHit] {
         let requestedName = matchKey(location)
         guard !requestedName.isEmpty else { return [] }
-        let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, accepted: Set<String>)? in
+
+        let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, value: String)? in
             let key = matchKey(qualifier)
             guard !key.isEmpty else { return nil }
-            let countryCodes = countryCodes(for: qualifier).map(matchKey)
-            let alternate = traditionalGeocodingName(qualifier).map(matchKey)
-            return (key, Set([key] + countryCodes + [alternate].compactMap { $0 }))
+            return (key, qualifier)
         }
         return candidates.filter { candidate in
-            guard matchKey(candidate.name) == requestedName else { return false }
-            let fields = Set([candidate.admin1, candidate.country, candidate.countryCode]
+            if romanized {
+                // Latin spellings can be homophones. Verify the localized Han
+                // identity before using population to rank matching places.
+                guard hanPlaceKey(candidate.name) == hanPlaceKey(location) else { return false }
+                guard (candidate.population ?? 0) >= 100_000,
+                      let code = candidate.countryCode?.uppercased(),
+                      ["CN", "TW", "HK", "MO"].contains(code) else { return false }
+            } else {
+                guard matchKey(candidate.name) == requestedName else { return false }
+            }
+            let fields = [candidate.admin1, candidate.country, candidate.countryCode]
                 .compactMap { $0 }
-                .map(matchKey))
-            guard requestedQualifiers.allSatisfy({
-                !$0.accepted.isDisjoint(with: fields)
-                    || matchesSubdivision($0.key, candidate: candidate)
+            guard requestedQualifiers.allSatisfy({ qualifier in
+                fields.contains { field in
+                    qualifierKeys(
+                        qualifier.value,
+                        romanized: romanized && containsHan(qualifier.value) != containsHan(field)
+                    ).contains(matchKey(field))
+                }
+                    || candidate.admin1.map { admin in
+                        adminMatches(qualifier.value, admin, romanized: romanized)
+                    } == true
+                    || matchesSubdivision(qualifier.key, candidate: candidate)
             }) else {
                 return false
             }
             // Explicit country/state arguments must match their own fields.
             // A namesake province cannot satisfy a requested country.
             if let country = cleaned(country) {
-                let accepted = Set([matchKey(country)]
-                    + countryCodes(for: country).map(matchKey)
-                    + [traditionalGeocodingName(country).map(matchKey)].compactMap { $0 })
+                let accepted = qualifierKeys(country, romanized: romanized)
                 let actual = Set([candidate.country, candidate.countryCode]
                     .compactMap { $0 }.map(matchKey))
                 guard !accepted.isDisjoint(with: actual) else { return false }
@@ -494,6 +552,7 @@ enum WeatherTool {
                     + [traditionalGeocodingName(admin1).map(matchKey)].compactMap { $0 })
                 guard let actual = candidate.admin1.map(matchKey),
                       accepted.contains(actual)
+                        || adminMatches(admin1, candidate.admin1 ?? "", romanized: romanized)
                         || matchesSubdivision(matchKey(admin1), candidate: candidate) else { return false }
             }
             return true
@@ -541,6 +600,62 @@ enum WeatherTool {
         )
         return String(folded.unicodeScalars.filter(CharacterSet.alphanumerics.contains))
             .lowercased()
+    }
+
+    // Administrative suffixes never participate in matching the place name.
+    private static func adminKey(_ value: String) -> String {
+        let folded = value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        ).lowercased()
+        var words = folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        if words.count > 1,
+           let last = words.last,
+           ["province", "state", "prefecture", "sheng", "shi"].contains(String(last)) {
+            words.removeLast()
+        }
+        let key = matchKey(words.joined(separator: " "))
+        for suffix in ["特别行政区", "特別行政區", "自治区", "自治區", "省", "市", "州", "县", "縣"] {
+            if key.hasSuffix(suffix), key.count - suffix.count >= 2 {
+                return String(key.dropLast(suffix.count))
+            }
+        }
+        return key
+    }
+
+    private static func adminMatches(_ requested: String, _ actual: String, romanized: Bool) -> Bool {
+        // Han homophones must retain their distinct administrative identities.
+        let useRomanized = romanized && containsHan(requested) != containsHan(actual)
+        return !adminKeys(requested, romanized: useRomanized).isDisjoint(
+            with: adminKeys(actual, romanized: useRomanized)
+        )
+    }
+
+    private static func adminKeys(_ value: String, romanized: Bool) -> Set<String> {
+        let forms = [value, traditionalGeocodingName(value), value.applyingTransform(
+            StringTransform(rawValue: "Hant-Hans"), reverse: false
+        )].compactMap { $0 }
+        var keys = Set(forms.map(adminKey))
+        if romanized, containsHan(value) {
+            keys.formUnion(forms.compactMap { romanizedKey(adminKey($0)) })
+        }
+        return keys
+    }
+
+    private static func qualifierKeys(_ value: String, romanized: Bool) -> Set<String> {
+        var keys = Set([matchKey(value)] + countryCodes(for: value).map(matchKey)
+            + [traditionalGeocodingName(value).map(matchKey)].compactMap { $0 })
+        if romanized, containsHan(value) {
+            keys.formUnion([romanizedKey(value)].compactMap { $0 })
+            // Preserve localized country names as ISO forms on the Latin retry.
+            for code in ["CN", "TW", "HK", "MO"] {
+                let names = ["zh_Hans", "zh_Hant"].compactMap {
+                    Locale(identifier: $0).localizedString(forRegionCode: code)
+                } + (code == "CN" ? ["中国", "中國"] : [])
+                if names.map(matchKey).contains(matchKey(value)) { keys.insert(matchKey(code)) }
+            }
+        }
+        return keys
     }
 
     private static func literalKey(_ value: String) -> String {

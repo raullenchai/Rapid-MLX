@@ -15,6 +15,7 @@
 - **Weather tool description**: Settings now describes the Weather tool as current conditions plus a daily forecast of up to 7 days.
 - **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
 - **Weather for states and regions**: asking for the weather in a US state or other region now tells the model to pick or ask for a city instead of retrying, and unknown places no longer suggest adding a country. Fixes #4910.
+- **Chinese city weather and region-only calls**: weather lookups now find Chinese cities such as 德州 (Dezhou) that the local-language search misses, accept province names with suffixes such as 山东省 or "Shandong Province", and a call that names only a state or province no longer fails as unreadable arguments. Fixes #4916. Fixes #4917.
 
 - **Word documents in Desktop chat**: attach, drop, or paste a `.docx` file and ask about it. Rapid reads only the document text with strict size and time limits; files it cannot read safely get a clear message suggesting PDF or TXT. Fixes #4869.
 
