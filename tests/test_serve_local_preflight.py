@@ -52,6 +52,14 @@ def test_local_model_preflight_ignores_unselected_nested_weights(tmp_path):
         validate_local_model_for_serve(str(root))
 
 
+def test_model_file_argument_is_a_missing_local_directory(tmp_path):
+    file = tmp_path / "model.safetensors"
+    file.write_bytes(b"weights")
+    with pytest.raises(NotADirectoryError) as failure:
+        validate_local_model_for_serve(str(file))
+    assert serve_error_class(failure.value, model_ref=str(file)) == "local_path_missing"
+
+
 @pytest.mark.parametrize(
     "filename", ["pytorch_model.bin", "weights.npz", "adapter.safetensors"]
 )
@@ -164,7 +172,9 @@ def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
         (root / "kokoro-v1_0.safetensors").write_bytes(b"data")
     else:
         if layout == "image":
-            (root / "model_index.json").write_text('{"_class_name":"Pipeline"}')
+            (root / "model_index.json").write_text(
+                '{"_class_name":"Pipeline","transformer":[]}'
+            )
         else:
             (root / "split_model.json").write_text('{"components":["transformer"]}')
         (root / "transformer.safetensors").write_bytes(b"data")
@@ -177,17 +187,14 @@ def test_incomplete_nontext_manifest_is_rejected(tmp_path, layout):
     root.mkdir()
     name = "model_index.json" if layout == "image" else "split_model.json"
     (root / name).write_text(
-        '{"_class_name":"Pipeline"}'
+        '{"_class_name":"Pipeline","transformer":[]}'
         if layout == "image"
         else '{"components":["transformer"]}'
     )
     with pytest.raises(FileNotFoundError) as failure:
         validate_local_model_for_serve(str(root))
     cause, step = local_serve_preflight_lines(str(root), failure.value)
-    if layout == "video":
-        assert "component" in cause
-    else:
-        assert "model weights" in cause
+    assert "component" in cause
     assert "rapid-mlx serve" in step
 
 
@@ -209,6 +216,18 @@ def test_auxiliary_params_does_not_hide_incomplete_text_model(tmp_path):
     (root / "config.json").write_text('{"model_type":"qwen3"}')
     (root / "sidecar" / "weights.safetensors").parent.mkdir()
     (root / "sidecar" / "weights.safetensors").write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_incidental_pipeline_manifest_does_not_hide_incomplete_text_model(tmp_path):
+    root = tmp_path / "text"
+    root.mkdir()
+    (root / "model_index.json").write_text(
+        '{"_class_name":"Pipeline","transformer":[]}'
+    )
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "transformer.safetensors").write_bytes(b"data")
     with pytest.raises(FileNotFoundError, match="Missing model weights"):
         validate_local_model_for_serve(str(root))
 

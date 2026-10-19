@@ -271,6 +271,19 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         # params.json is also used as auxiliary metadata by some text models.
         if name == "params.json" and (root / "config.json").is_file():
             continue
+        if name == "model_index.json" and (root / "config.json").is_file():
+            from .model_metadata import config_indicates_multimodal
+
+            try:
+                config_data = json.loads(
+                    (root / "config.json").read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                config_data = {}
+            if not isinstance(config_data, dict) or not config_indicates_multimodal(
+                config_data
+            ):
+                continue
         if not os.access(manifest_path, os.R_OK):
             raise PermissionError(
                 errno.EACCES, "Cannot read model manifest", str(manifest_path)
@@ -306,10 +319,40 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                         errno.ENOENT, "Missing model component", str(weight)
                     )
             return
+        if name == "model_index.json":
+            weight_components = (
+                "transformer",
+                "unet",
+                "vae",
+                "text_encoder",
+                "text_encoder_2",
+                "prior",
+                "decoder",
+            )
+            required = [
+                component for component in weight_components if component in manifest
+            ]
+            if not required:
+                raise FileNotFoundError(
+                    errno.ENOENT, "Missing model components", str(manifest_path)
+                )
+            for component in required:
+                component_files = (
+                    *(root / component).glob("*.safetensors"),
+                    *(root / component).glob("*.npz"),
+                    root / f"{component}.safetensors",
+                )
+                if not any(
+                    path.is_file() and path.stat().st_size > 0
+                    for path in component_files
+                ):
+                    raise FileNotFoundError(
+                        errno.ENOENT, "Missing model component", str(root / component)
+                    )
+            return
         if not any(
             path.is_file() and path.stat().st_size > 0
-            for pattern in ("*.safetensors", "*.npz")
-            for path in root.rglob(pattern)
+            for path in root.glob("*.safetensors")
         ):
             raise FileNotFoundError(
                 errno.ENOENT, "Missing model weights", str(root / "model.safetensors")
