@@ -6,12 +6,13 @@ enum OwnerOnlyFile {
     static func writeAtomically(
         _ data: Data,
         to url: URL,
-        beforeWrite: (String) throws -> Void = { _ in }
+        beforeWrite: (_ temporaryPath: String, _ descriptor: Int32) throws -> Void = { _, _ in }
     ) throws {
         let directory = url.deletingLastPathComponent()
         let prefix = directory.appendingPathComponent(".\(url.lastPathComponent).tmp.XXXXXX")
         var template = Array(prefix.path.utf8CString)
-        let descriptor = mkstemp(&template)
+        // Close-on-exec so a concurrently spawned child cannot inherit the descriptor.
+        let descriptor = mkostemp(&template, O_CLOEXEC)
         guard descriptor >= 0 else { throw posixError() }
         let temporaryPath = String(
             decoding: template.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
@@ -24,7 +25,7 @@ enum OwnerOnlyFile {
             if shouldRemoveTemporary { _ = unlink(temporaryPath) }
         }
 
-        try beforeWrite(temporaryPath)
+        try beforeWrite(temporaryPath, descriptor)
 
         try data.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }

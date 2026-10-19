@@ -34,8 +34,9 @@ final class OwnerOnlyFileTests: XCTestCase {
         let data = Data("private contents".utf8)
         var observedTemporaryFile = false
 
-        try OwnerOnlyFile.writeAtomically(data, to: url) { temporaryPath in
+        try OwnerOnlyFile.writeAtomically(data, to: url) { temporaryPath, descriptor in
             observedTemporaryFile = true
+            XCTAssertNotEqual(fcntl(descriptor, F_GETFD) & FD_CLOEXEC, 0)
             let temporaryURL = URL(fileURLWithPath: temporaryPath)
             XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryPath))
             XCTAssertEqual(temporaryURL.deletingLastPathComponent().path, dir.path)
@@ -57,7 +58,7 @@ final class OwnerOnlyFileTests: XCTestCase {
         let url = dir.appendingPathComponent("private.json")
         var observedTemporaryFile = false
 
-        XCTAssertThrowsError(try OwnerOnlyFile.writeAtomically(Data("private".utf8), to: url) { temporaryPath in
+        XCTAssertThrowsError(try OwnerOnlyFile.writeAtomically(Data("private".utf8), to: url) { temporaryPath, _ in
             observedTemporaryFile = true
             XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryPath))
             throw TestError.beforeWrite
