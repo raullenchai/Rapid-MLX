@@ -655,3 +655,54 @@ def test_local_override_never_breaks_other_models(monkeypatch, model):
     with pytest.raises(SystemExit):
         cli.serve_command(args)
     assert reached == [model]
+
+
+@pytest.mark.requires_mlx
+def test_original_lane_server_ignores_local_override(monkeypatch, tmp_path):
+    from rapid_mlx.models.deepseek_v41_native import server
+    from rapid_mlx.speculative.dflash import server as serial
+    from tests.test_deepseek_v41_artifacts import _Tokenizer
+
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, "/anything")
+    calls = {}
+
+    class Executor:
+        def submit(self, fn):
+            return SimpleNamespace(result=fn)
+
+    monkeypatch.setattr(serial, "_dflash_executor", Executor())
+    monkeypatch.setattr(server, "require_product_memory", lambda *_: None)
+    monkeypatch.setattr(server, "download_target_snapshot", lambda: tmp_path / "t")
+    monkeypatch.setattr(server, "download_mtp_snapshot", lambda: tmp_path / "m")
+
+    def load(*args, **kwargs):
+        calls["load"] = args, kwargs
+        return object(), _Tokenizer(), object()
+
+    monkeypatch.setattr(server, "load_product_runtime", load)
+    monkeypatch.setattr(serial, "_build_app", lambda **kw: calls.update(app=kw))
+    monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", lambda *args, **kw: None)
+    server.run_server(
+        model_name=a.REAP.alias,
+        host="127.0.0.1",
+        port=8000,
+        served_model_name="reap",
+        default_max_tokens=4096,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+    assert calls["load"] == (
+        (str(tmp_path / "t"), str(tmp_path / "m")),
+        {
+            "target_revision": a.REAP.target_revision,
+            "mtp_revision": a.REAP.mtp_revision,
+            "mtp_identity": a.REAP.mtp_repo,
+        },
+    )
+
+
+def test_original_lane_resolution_ignores_local_override(monkeypatch, tmp_path):
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, "/anything")
+    monkeypatch.setattr(a, "download_target_snapshot", lambda: tmp_path / "t")
+    monkeypatch.setattr(a, "download_mtp_snapshot", lambda: tmp_path / "m")
+    assert a.resolve_product_paths(a.REAP) == (tmp_path / "t", tmp_path / "m")

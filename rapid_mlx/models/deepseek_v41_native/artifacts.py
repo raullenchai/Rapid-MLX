@@ -478,7 +478,11 @@ def resolve_product_paths(
 ) -> tuple[Path, Path]:
     if not allow_local and LOCAL_MODEL_DIR_ENV in os.environ:
         raise ValueError("local qualification override is only supported by serve")
-    local = local_product_path(artifact) if allow_local else None
+    local = (
+        local_product_path(artifact)
+        if allow_local and artifact.draft_subfolder
+        else None
+    )
     if local is not None:
         _RESOLVED[artifact.alias] = (local, local / artifact.draft_subfolder, True)
         return local, local / artifact.draft_subfolder

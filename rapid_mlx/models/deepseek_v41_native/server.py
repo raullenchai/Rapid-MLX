@@ -11,7 +11,6 @@ from .artifacts import (
     require_product_memory,
     REAP,
     product_artifact,
-    local_product_path,
     resolve_product_paths,
     take_resolved_product_paths,
 )
@@ -61,7 +60,8 @@ def run_server(
         require_product_memory(artifact)
     with failure_stage("download"):
         if artifact == REAP:
-            local = local_product_path(artifact) is not None
+            # The original lane never takes the local qualification override.
+            local = False
             target_path = download_target_snapshot()
             mtp_path = download_mtp_snapshot()
         else:
