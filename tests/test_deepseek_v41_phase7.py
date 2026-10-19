@@ -143,6 +143,18 @@ def test_published_snapshot_requires_all_indexed_shards(monkeypatch, tmp_path):
         a.resolve_product_paths(artifact)
 
 
+@pytest.mark.parametrize("subdir", ["", "dspark"])
+def test_published_snapshot_rejects_unpinned_shards(monkeypatch, tmp_path, subdir):
+    artifact = _pinned_build(tmp_path)
+    monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
+    monkeypatch.setattr(
+        "rapid_mlx._mirror.pinned_snapshot_download", lambda *_: str(tmp_path)
+    )
+    (tmp_path / subdir / "zzz.safetensors").write_bytes(b"override")
+    with pytest.raises(ValueError, match="unpinned safetensors"):
+        a.resolve_product_paths(artifact)
+
+
 def test_local_override_is_explicit_logged_and_bypasses_pins(
     monkeypatch, tmp_path, caplog
 ):

@@ -212,6 +212,11 @@ def resolve_product_paths(
         index = json.loads((root / "model.safetensors.index.json").read_text())
         if not set(index["weight_map"].values()) <= names:
             raise ValueError("indexed shards are missing from the pinned file manifest")
+        # The loader reads every top-level shard, so an unlisted one could
+        # silently override verified tensors.
+        unpinned = sorted({p.name for p in root.glob("*.safetensors")} - names)
+        if unpinned:
+            raise ValueError(f"unpinned safetensors in the pinned snapshot: {unpinned}")
         _verify_files(root, files)
     return target, draft
 
