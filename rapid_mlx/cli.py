@@ -15054,6 +15054,7 @@ def main():
             validate_local_model_for_serve,
         )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
+        from rapid_mlx.model_load_errors import InvalidModelConfig
         from rapid_mlx.user_aliases import UserAliasError
 
         resolved = args.model
@@ -15065,7 +15066,12 @@ def main():
             resolved = resolve_model(args.model)
             if getattr(args, "command", None) == "serve":
                 validate_local_model_for_serve(resolved)
-        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
+        except (
+            FileNotFoundError,
+            NotADirectoryError,
+            PermissionError,
+            InvalidModelConfig,
+        ) as exc:
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
@@ -15084,7 +15090,15 @@ def main():
                 except log_file.LogFileError as log_exc:
                     print(f"error: {log_exc}", file=sys.stderr)
                     raise SystemExit(2) from None
-                cause, step = local_serve_preflight_lines(resolved, exc)
+                if isinstance(exc, InvalidModelConfig):
+                    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+
+                    cause, step = startup_error_lines(exc, resolved) or (
+                        "Local config.json is invalid.",
+                        "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
+                    )
+                else:
+                    cause, step = local_serve_preflight_lines(resolved, exc)
                 print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
             else:
                 message = local_model_failure_message(

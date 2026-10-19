@@ -49,12 +49,15 @@ def truncated_local_weights(model_ref: object) -> bool:
 
 
 def malformed_numeric_config(exc: BaseException, model_ref: object) -> str | None:
-    """Find a known numeric config field with a nonnumeric value."""
+    """Find the numeric field named by our independent config validator."""
+    from .model_load_errors import InvalidModelConfig
+
     local = _local_config(model_ref)
-    if local is None or not any(
-        isinstance(error, (TypeError, ValueError)) for error in _chain(exc)
-    ):
+    if local is None:
         return None
+    messages = [
+        str(error) for error in _chain(exc) if isinstance(error, InvalidModelConfig)
+    ]
     for key in (
         "hidden_size",
         "intermediate_size",
@@ -65,8 +68,10 @@ def malformed_numeric_config(exc: BaseException, model_ref: object) -> str | Non
         "vocab_size",
     ):
         value = local[1].get(key)
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, int)
+        if (
+            any(f"{key} must be an integer" in message for message in messages)
+            and value is not None
+            and (isinstance(value, bool) or not isinstance(value, int))
         ):
             return key
     return None

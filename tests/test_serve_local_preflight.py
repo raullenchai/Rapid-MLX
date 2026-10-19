@@ -15,6 +15,7 @@ from rapid_mlx.local_model_path import (
     validate_local_model_for_serve,
 )
 from rapid_mlx.local_serve_diagnostics import startup_error_lines
+from rapid_mlx.model_load_errors import InvalidModelConfig
 from rapid_mlx.telemetry.model_events import serve_error_class
 
 
@@ -73,6 +74,39 @@ def test_native_loaders_accept_nonmodel_safetensors_name(tmp_path, model_type):
     (root / "config.json").write_text(json.dumps({"model_type": model_type}))
     (root / "weights.safetensors").write_bytes(b"data")
     validate_local_model_for_serve(str(root))
+
+
+def test_indexed_native_embedding_accepts_arbitrary_shard_name(tmp_path):
+    root = tmp_path / "embedding"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"embedding_gemma2"}')
+    (root / "weights.safetensors").write_bytes(b"data")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"weight": "weights.safetensors"}})
+    )
+    validate_local_model_for_serve(str(root))
+
+
+def test_indexed_text_model_rejects_unloaded_shard_name(tmp_path):
+    root = tmp_path / "text"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "weights.safetensors").write_bytes(b"data")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"weight": "weights.safetensors"}})
+    )
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+@pytest.mark.parametrize("model_type", [[], {}])
+def test_malformed_model_type_reaches_loader_diagnostic(tmp_path, model_type):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text(json.dumps({"model_type": model_type}))
+    (root / "model.safetensors").write_bytes(b"data")
+    with pytest.raises(InvalidModelConfig, match="model_type"):
+        validate_local_model_for_serve(str(root))
 
 
 def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
@@ -193,11 +227,22 @@ def test_bad_numeric_config_is_actionable(tmp_path):
     root.mkdir()
     (root / "config.json").write_text('{"model_type":"qwen3","hidden_size":"wrong"}')
     (root / "model.safetensors").write_bytes(b"weights")
-    error = TypeError("unsupported operand type(s) for /: 'int' and 'str'")
+    with pytest.raises(InvalidModelConfig, match="hidden_size") as failure:
+        validate_local_model_for_serve(str(root))
+    error = failure.value
     assert serve_error_class(error, model_ref=str(root)) == "invalid_config"
     cause, step = startup_error_lines(error, str(root))
     assert "hidden_size" in cause
     assert "config.json" in step
+
+
+def test_unrelated_type_error_does_not_claim_bad_numeric_config(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3","hidden_size":"wrong"}')
+    (root / "model.safetensors").write_bytes(b"weights")
+    error = TypeError("unrelated loader failure")
+    assert serve_error_class(error, model_ref=str(root)) != "invalid_config"
 
 
 def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
@@ -207,9 +252,11 @@ def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
     root.mkdir()
     (root / "config.json").write_text('{"model_type":"qwen3","hidden_size":"wrong"}')
     (root / "model.safetensors").write_bytes(b"weights")
+    with pytest.raises(InvalidModelConfig) as failure:
+        validate_local_model_for_serve(str(root))
     _print_model_load_error(
         SimpleNamespace(model=str(root)),
-        TypeError("unsupported operand type(s) for /: 'int' and 'str'"),
+        failure.value,
     )
     rendered = capsys.readouterr().err
     assert "Cause: config.json has a nonnumeric hidden_size value." in rendered

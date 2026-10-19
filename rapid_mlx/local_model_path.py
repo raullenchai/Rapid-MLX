@@ -274,18 +274,23 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         raise FileNotFoundError(errno.ENOENT, "Missing model config", str(config))
     if not os.access(config, os.R_OK):
         raise PermissionError(errno.EACCES, "Cannot read model config", str(config))
+    from .model_load_errors import validate_model_config_file
+
+    validate_model_config_file(root)
     missing_shards = _missing_index_shards(root, recursive=False)
     if missing_shards:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
         )
-    # mlx-lm loads model*.safetensors at the root. Native Gemma 4 and
+    # mlx-lm loads model*.safetensors at the root even with an index. Native Gemma 4 and
     # EmbeddingGemma 2 loaders accept any root safetensors filename.
     # PyTorch .bin files do not make any of these checkpoints serveable.
     try:
         model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
         model_type = None  # Leave malformed configs to the loader's typed error.
+    if not isinstance(model_type, str):
+        model_type = None
     native_any_safetensors = model_type in {
         "gemma4",
         "gemma4_assistant",
