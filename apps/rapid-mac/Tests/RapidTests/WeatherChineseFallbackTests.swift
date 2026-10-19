@@ -96,6 +96,37 @@ struct WeatherChineseFallbackTests {
         }
     }
 
+    @Test("Romanized fallback preserves the official Shaanxi spelling", arguments: [
+        ("Shanxi Province", false), ("Shaanxi", true), ("陕西省", true),
+    ])
+    func shaanxiAdmin(admin1: String, accepted: Bool) async throws {
+        for actual in ["陕西", "陝西"] {
+            for commaQualifier in [false, true] {
+                let requests = Requests()
+                let hit = try await WeatherTool.geocode(
+                    location: commaQualifier ? "渭南, \(admin1)" : "渭南",
+                    country: nil, admin1: commaQualifier ? nil : admin1
+                ) { request in
+                    let url = try #require(request.url)
+                    await requests.record(url)
+                    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+                    #expect(items?.first { $0.name == "language" }?.value == "zh")
+                    let name = items?.first { $0.name == "name" }?.value
+                    let data = name == "weinan"
+                        ? Self.payload(name: "渭南市", admin1: actual, population: 468941)
+                        : Data(#"{"results":[]}"#.utf8)
+                    return (data, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+                }
+                #expect((hit != nil) == accepted)
+                if accepted { #expect(hit?.admin1 == actual) }
+                let names = await requests.urls.map {
+                    URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "name" }?.value
+                }
+                #expect(names == ["渭南", "weinan"])
+            }
+        }
+    }
+
     @Test("Romanized fallback rejects small and foreign namesakes", arguments: [(99999, "CN"), (900000, "JP")])
     func unsafeNamesakes(population: Int, code: String) async throws {
         let hit = try await WeatherTool.geocode(location: "德州", country: nil, admin1: nil) { request in

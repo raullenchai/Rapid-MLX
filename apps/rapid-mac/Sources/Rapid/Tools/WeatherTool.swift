@@ -637,7 +637,12 @@ enum WeatherTool {
         )].compactMap { $0 }
         var keys = Set(forms.map(adminKey))
         if romanized, containsHan(value) {
-            keys.formUnion(forms.compactMap { romanizedKey(adminKey($0)) })
+            keys.formUnion(forms.compactMap {
+                let key = adminKey($0)
+                // The official spelling distinguishes Shaanxi from Shanxi (山西).
+                if key == "陕西" || key == "陝西" { return "shaanxi" }
+                return romanizedKey(key)
+            })
         }
         return keys
     }
