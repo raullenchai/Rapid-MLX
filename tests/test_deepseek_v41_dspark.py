@@ -13,6 +13,7 @@ from rapid_mlx.models.deepseek_v41_native.dspark import (
     DSpark,
     DSparkWeights,
     Weights,
+    _required_tensors,
     _safe_shard,
     _validate_config,
     verify_greedy,
@@ -93,6 +94,38 @@ def test_loader_rejects_index_shard_mismatch(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(mx, "load", lambda path: {"mtp.0.other": mx.zeros((1,))})
     with pytest.raises(ValueError, match="index/shard mismatch"):
         DSparkWeights(tmp_path)
+
+
+def _load_with(tmp_path, monkeypatch, names):
+    (tmp_path / "config.json").write_text(json.dumps(_config()))
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {name: "model.safetensors" for name in names}})
+    )
+    (tmp_path / "model.safetensors").touch()
+    monkeypatch.setattr(
+        mx,
+        "load",
+        lambda path: {name: mx.zeros((1,), dtype=mx.bfloat16) for name in names},
+    )
+    return DSparkWeights(tmp_path)
+
+
+@pytest.mark.parametrize("markov_quantized", [False, True])
+def test_markov_head_accepts_dense_or_complete_affine(
+    tmp_path, monkeypatch, markov_quantized
+) -> None:
+    names = set(_required_tensors(_config()))
+    if markov_quantized:
+        for projection in ("markov_head.embed", "markov_head.head"):
+            names |= {f"mtp.2.{projection}.scales", f"mtp.2.{projection}.biases"}
+    weights = _load_with(tmp_path, monkeypatch, names)
+    assert set(weights.entries) == names
+
+
+def test_markov_head_rejects_incomplete_affine(tmp_path, monkeypatch) -> None:
+    names = set(_required_tensors(_config())) | {"mtp.2.markov_head.head.scales"}
+    with pytest.raises(ValueError, match="incomplete affine triple"):
+        _load_with(tmp_path, monkeypatch, names)
 
 
 def test_release_tensor_drops_both_backing_and_resident_references() -> None:

@@ -445,6 +445,7 @@ def test_local_cli_skips_generic_and_pinned_downloads(monkeypatch, tmp_path):
     monkeypatch.setattr(generic_server, "configure_logging", lambda _: "warning")
     calls = []
     monkeypatch.setattr(server, "run_server", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     cli.serve_command(args)
     assert memory == [a.FLASH_1017.alias]
     assert calls[0]["model_name"] == a.FLASH_1017.target_repo
