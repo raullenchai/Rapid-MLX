@@ -401,6 +401,23 @@ def test_truncated_native_weight_is_corrupt_weights(tmp_path):
     assert serve_error_class(error, model_ref=str(root)) == "corrupt_weights"
 
 
+def test_weight_scan_io_error_does_not_hide_original_error(tmp_path, monkeypatch):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors").write_bytes(b"data")
+    real_rglob = type(root).rglob
+
+    def broken_rglob(path, pattern):
+        if path == root:
+            raise OSError(errno.EIO, "disk read failed")
+        return real_rglob(path, pattern)
+
+    monkeypatch.setattr(type(root), "rglob", broken_rglob)
+    error = RuntimeError("[read] Unable to read 5 bytes from file.")
+    assert serve_error_class(error, model_ref=str(root)) == "other"
+
+
 def test_bad_numeric_config_is_actionable(tmp_path):
     root = tmp_path / "model"
     root.mkdir()
@@ -426,6 +443,11 @@ def test_unrelated_type_error_does_not_claim_bad_numeric_config(tmp_path):
 
 def test_unrelated_mlx_core_error_does_not_claim_metal_failure():
     assert serve_error_class(RuntimeError("mlx.core shape mismatch")) == "other"
+
+
+def test_metal_out_of_memory_uses_memory_remedy():
+    error = RuntimeError("Metal allocation failed: out of memory")
+    assert serve_error_class(error) == "insufficient_memory"
 
 
 def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):

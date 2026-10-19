@@ -56,10 +56,13 @@ def truncated_local_weights(model_ref: object) -> bool:
         validate_local_model_for_serve(str(root))
     except (OSError, InvalidModelConfig):
         return False
-    return any(
-        path.is_file() and os.access(path, os.R_OK)
-        for path in root.rglob("*.safetensors")
-    )
+    try:
+        return any(
+            path.is_file() and os.access(path, os.R_OK)
+            for path in root.rglob("*.safetensors")
+        )
+    except OSError:
+        return False
 
 
 def malformed_numeric_config(exc: BaseException, model_ref: object) -> str | None:
