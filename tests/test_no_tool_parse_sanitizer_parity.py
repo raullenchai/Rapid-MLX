@@ -4,7 +4,7 @@
 import pytest
 
 from rapid_mlx.api.utils import sanitize_output
-from rapid_mlx.config import get_config
+from rapid_mlx.config import get_config, reset_config
 from tests.test_tool_call_finish_reason import ReplayEngine, client_for, sse
 
 GEMMA_CALL = '<|tool_call>call:get_weather{"city":"Paris"}<tool_call|>'
@@ -21,6 +21,15 @@ RESPONSES_TOOL = {
         "required": ["city"],
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def _restore_config():
+    # client_for and the parser override mutate the process-wide config.
+    yield
+    reset_config()
+
+
 MESSAGES_TOOL = {
     "name": "get_weather",
     "input_schema": RESPONSES_TOOL["parameters"],
@@ -119,7 +128,9 @@ def test_buffered_and_streaming_tool_markup_parity(route, mode, text, chunking):
 
     parsing_enabled = mode == "auto"
     if not parsing_enabled:
-        assert not any("error" in event for event in events), streaming_response.text
+        assert not any(
+            "error" in event or event.get("type") == "error" for event in events
+        ), streaming_response.text
         assert buffered == text
         assert not buffered_calls
         assert not streamed_calls
