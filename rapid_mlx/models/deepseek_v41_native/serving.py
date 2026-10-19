@@ -59,7 +59,10 @@ class ExactDirectDownSwitchGLU(SwitchGLU):
     """Stock gate/up numerics plus the qualified exact 2-bit down QMV."""
 
     def __call__(self, x, indices):
-        if int(x.shape[0]) * int(indices.shape[-1]) > 36:
+        if (
+            not supports_target_qmv(self)
+            or int(x.shape[0]) * int(indices.shape[-1]) > 36
+        ):
             return super().__call__(x, indices)
         expanded = mx.expand_dims(x, (-2, -3))
         up = self.up_proj(expanded, indices).squeeze(-2)
@@ -74,14 +77,34 @@ class ExactDirectDownSwitchGLU(SwitchGLU):
         return down.reshape(tokens, topk, -1)
 
 
+def supports_target_qmv(experts: Any) -> bool:
+    down = experts.down_proj
+    return (
+        getattr(down, "bits", None) == 2
+        and getattr(down, "group_size", None) == 64
+        and getattr(down, "mode", "affine") == "affine"
+        and getattr(down, "scales", None) is not None
+        and getattr(down, "biases", None) is not None
+        and down.scales.dtype in (mx.bfloat16, mx.float16)
+        and down.biases.dtype == down.scales.dtype
+        and down.weight.ndim == down.scales.ndim == down.biases.ndim == 3
+        and down.scales.shape == down.biases.shape
+        and down.weight.shape[:2] == down.scales.shape[:2]
+        and down.weight.shape[2] * 16 == down.scales.shape[2] * 64
+        and down.scales.shape[1] % 8 == 0
+        and not hasattr(experts, "gate_up_proj")
+    )
+
+
 def install_target_qmv(model: Any) -> int:
     replaced = 0
     for layer in model.layers:
         experts = layer.ffn.experts
         if not isinstance(experts, SwitchGLU):
             raise TypeError(f"unsupported expert module: {type(experts).__name__}")
-        experts.__class__ = ExactDirectDownSwitchGLU
-        replaced += 1
+        if supports_target_qmv(experts):
+            experts.__class__ = ExactDirectDownSwitchGLU
+            replaced += 1
     return replaced
 
 
@@ -230,6 +253,7 @@ def load_product_runtime(
     target_revision: str,
     mtp_revision: str,
     mtp_identity: str | None = None,
+    mixed_target_precision: bool = False,
 ):
     model, _args = load(
         target_path,
@@ -237,8 +261,9 @@ def load_product_runtime(
         engram_ssd_offload=supports_engram_ssd_offload(target_path),
     )
     model.eval_interval = 40
-    if install_target_qmv(model) != len(model.layers):
-        raise RuntimeError("failed to install target affine-2bit QMV on every layer")
+    installed = install_target_qmv(model)
+    if not mixed_target_precision and installed != len(model.layers):
+        raise RuntimeError("qualified REAP target QMV must be installed on every layer")
     weights = DSparkWeights(mtp_path)
     weights.attach_target(model)
     weights.pin_mtp()

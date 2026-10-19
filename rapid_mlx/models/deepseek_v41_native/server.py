@@ -6,12 +6,14 @@ from functools import partial
 from typing import Any
 
 from .artifacts import (
-    MTP_REPO,
-    MTP_REVISION,
-    TARGET_REVISION,
     download_mtp_snapshot,
     download_target_snapshot,
     require_product_memory,
+    REAP,
+    product_artifact,
+    local_product_path,
+    resolve_product_paths,
+    take_resolved_product_paths,
 )
 from .serving import (
     generate,
@@ -42,6 +44,7 @@ def run_server(
     max_concurrent_requests: int = 256,
     cors_policy: Any | None = None,
     reasoning_parser_name: str | None = "deepseek_v4",
+    model_name: str = REAP.alias,
 ) -> None:
     import uvicorn
 
@@ -49,18 +52,39 @@ def run_server(
 
     from rapid_mlx.telemetry.server_start import failure_stage
 
-    require_product_memory()
+    artifact = product_artifact(model_name)
+    if artifact is None:
+        raise ValueError(f"unknown V4.1 product artifact: {model_name}")
+    if artifact == REAP:
+        require_product_memory()
+    else:
+        require_product_memory(artifact)
     with failure_stage("download"):
-        target_path = download_target_snapshot()
-        mtp_path = download_mtp_snapshot()
+        if artifact == REAP:
+            local = local_product_path(artifact) is not None
+            target_path = download_target_snapshot()
+            mtp_path = download_mtp_snapshot()
+        else:
+            # Reuse the CLI's verified prefetch (and its single override
+            # warning); otherwise resolve and verify here.
+            resolved = take_resolved_product_paths(artifact)
+            if resolved is None:
+                resolve_product_paths(artifact)
+                resolved = take_resolved_product_paths(artifact)
+            assert resolved is not None
+            target_path, mtp_path, local = resolved
 
     def _load_all():
+        target_revision = "local-unpinned" if local else artifact.target_revision
+        mtp_revision = "local-unpinned" if local else artifact.mtp_revision
+        assert target_revision is not None and mtp_revision is not None
         return load_product_runtime(
             str(target_path),
             str(mtp_path),
-            target_revision=TARGET_REVISION,
-            mtp_revision=MTP_REVISION,
-            mtp_identity=MTP_REPO,
+            target_revision=target_revision,
+            mtp_revision=mtp_revision,
+            mtp_identity=str(mtp_path) if local else artifact.mtp_repo,
+            **({"mixed_target_precision": True} if artifact.draft_subfolder else {}),
         )
 
     # Product runtime construction materializes both downloaded checkpoints.

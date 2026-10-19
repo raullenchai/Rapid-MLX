@@ -19,6 +19,8 @@ Engram layers apply their gated n-gram lookup to the hc-expanded stream
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -59,7 +61,15 @@ class Block(nn.Module):
         self.hc_eps = args.hc_eps
 
         self.attn = Attention(layer_id, args)
-        self.ffn = MoE(args)
+        self.ffn = MoE(
+            replace(
+                args,
+                n_routed_experts=args.experts_per_layer[layer_id],
+                experts_per_layer=(),
+            )
+            if args.experts_per_layer
+            else args
+        )
         self.attn_norm = RMSNorm(args.dim, args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, args.norm_eps)
 

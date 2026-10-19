@@ -44,6 +44,7 @@ class ModelArgs:
 
     # MoE
     n_routed_experts: int = 384
+    experts_per_layer: tuple[int, ...] = ()
     n_shared_experts: int = 1
     n_activated_experts: int = 6
     score_func: str = "sqrtsoftplus"
@@ -100,6 +101,19 @@ class ModelArgs:
     n_mtp_layers: int = 0
     dspark_target_layer_ids: tuple[int, ...] = ()
     vision_n_layers: int = 0
+
+    def __post_init__(self):
+        if self.experts_per_layer and (
+            len(self.experts_per_layer) != self.n_layers
+            or any(
+                type(n) is not int
+                or not self.n_activated_experts <= n <= self.n_routed_experts
+                for n in self.experts_per_layer
+            )
+        ):
+            raise ValueError(
+                "experts_per_layer must cover every layer and preserve top-k"
+            )
 
     @property
     def nope_head_dim(self) -> int:
@@ -158,6 +172,7 @@ class ModelArgs:
             window_size=_get(c, "sliding_window", "window_size", default=128),
             norm_eps=_get(c, "rms_norm_eps", "norm_eps", default=1e-20),
             n_routed_experts=_get(c, "n_routed_experts", default=384),
+            experts_per_layer=tuple(c.get("experts_per_layer", ())),
             n_shared_experts=_get(c, "n_shared_experts", default=1),
             n_activated_experts=_get(
                 c, "num_experts_per_tok", "n_activated_experts", default=6

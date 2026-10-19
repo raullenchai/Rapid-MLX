@@ -238,14 +238,19 @@ def test_disk_engram_rejects_header_contract_mismatch(tmp_path):
         )
 
     with pytest.raises(ValueError, match="byte length"):
+        _header, mapping, data_start = disk._open_shard(path)
         disk._tensor_view(
-            {
-                "outside": {
-                    "dtype": "U32",
-                    "shape": [8, 4],
-                    "data_offsets": [len(disk._mapping), len(disk._mapping) + 128],
-                }
-            },
+            (
+                {
+                    "outside": {
+                        "dtype": "U32",
+                        "shape": [8, 4],
+                        "data_offsets": [len(mapping), len(mapping) + 128],
+                    }
+                },
+                mapping,
+                data_start,
+            ),
             "outside",
             dtype="U32",
             numpy_dtype=np.dtype("<u4"),
@@ -345,11 +350,12 @@ def test_disk_engram_rejects_malformed_header_entries(header, message):
 
 
 def test_disk_engram_rejects_missing_tensor(tmp_path):
-    _resident, disk, _keys, _path = _modules(tmp_path)
+    _resident, disk, _keys, path = _modules(tmp_path)
+    _header, mapping, data_start = disk._open_shard(path)
 
     with pytest.raises(ValueError, match="missing Engram tensor"):
         disk._tensor_view(
-            {},
+            ({}, mapping, data_start),
             "missing",
             dtype="U32",
             numpy_dtype=np.dtype("<u4"),
@@ -384,3 +390,38 @@ def test_disk_engram_allows_empty_safetensors_tensor_ranges():
         },
         data_size=1,
     )
+
+
+def test_disk_engram_reads_affine_tensors_from_separate_shards(tmp_path):
+    resident, disk, keys, path = _modules(tmp_path)
+    disk.close()
+    tensors = mx.load(str(path))
+    weight_path = tmp_path / "weight.safetensors"
+    affine_path = tmp_path / "affine.safetensors"
+    mx.save_safetensors(str(weight_path), {keys["weight"]: tensors[keys["weight"]]})
+    mx.save_safetensors(
+        str(affine_path),
+        {keys[key]: tensors[keys[key]] for key in ("scales", "biases")},
+    )
+    split = DiskQuantizedEngramEmbedding(
+        {
+            keys["weight"]: weight_path,
+            keys["scales"]: affine_path,
+            keys["biases"]: affine_path,
+        },
+        weight_key=keys["weight"],
+        scales_key=keys["scales"],
+        biases_key=keys["biases"],
+        num_embeddings=8,
+        dim=64,
+        group_size=32,
+        bits=2,
+    )
+    indices = mx.array([[1, 7, 3]], mx.int32)
+    actual, expected = split(indices), resident(indices)
+    mx.eval(actual, expected)
+
+    assert mx.array_equal(actual, expected).item()
+    assert len(split._shards) == 2
+    split.close()
+    assert split._shards == []

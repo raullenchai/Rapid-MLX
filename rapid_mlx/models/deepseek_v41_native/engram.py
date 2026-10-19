@@ -29,6 +29,7 @@ import math
 import mmap
 import struct
 from collections import OrderedDict
+from collections.abc import Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
@@ -257,7 +258,10 @@ class QuantizedEngramEmbedding(nn.Module):
 
 
 class DiskQuantizedEngramEmbedding(nn.Module):
-    """Selected-row affine Engram reader backed by a safetensors mmap.
+    """Selected-row affine Engram reader backed by safetensors mmaps.
+
+    ``path`` is one shard holding all three affine tensors, or a mapping from
+    each tensor key to its shard (a 4-bit table can exceed hub file limits).
 
     Only packed rows requested by the current n-gram hashes cross into MLX.
     A bounded raw-row LRU absorbs repeated decode lookups without retaining a
@@ -266,7 +270,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
 
     def __init__(
         self,
-        path: str | Path,
+        path: str | Path | Mapping[str, str | Path],
         *,
         weight_key: str,
         scales_key: str,
@@ -293,30 +297,19 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         self._cache: OrderedDict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = (
             OrderedDict()
         )
-        self._file = None
-        self._mapping = None
+        self._shards: list[tuple] = []
         self._weight = self._scales = self._biases = None
         try:
-            self._file = Path(path).open("rb")
-            length_raw = self._file.read(8)
-            if len(length_raw) != 8:
-                raise ValueError("truncated safetensors header")
-            header_length = struct.unpack("<Q", length_raw)[0]
-            file_size = self._file.seek(0, 2)
-            if (
-                header_length > _MAX_SAFETENSORS_HEADER_SIZE
-                or header_length > file_size - 8
-            ):
-                raise ValueError("invalid safetensors header length")
-            self._file.seek(8)
-            header = json.loads(self._file.read(header_length))
-            self._data_start = 8 + header_length
-            self._validate_header_ranges(header, file_size - self._data_start)
-            self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
-            if hasattr(self._mapping, "madvise"):
-                self._mapping.madvise(mmap.MADV_RANDOM)
+            opened: dict[Path, tuple] = {}
+
+            def shard(key):
+                source = Path(path[key] if isinstance(path, Mapping) else path)
+                if source not in opened:
+                    opened[source] = self._open_shard(source)
+                return opened[source]
+
             self._weight = self._tensor_view(
-                header,
+                shard(weight_key),
                 weight_key,
                 dtype="U32",
                 numpy_dtype=np.dtype("<u4"),
@@ -324,14 +317,14 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             )
             quant_shape = (num_embeddings, dim // group_size)
             self._scales = self._tensor_view(
-                header,
+                shard(scales_key),
                 scales_key,
                 dtype="BF16",
                 numpy_dtype=np.dtype("<u2"),
                 shape=quant_shape,
             )
             self._biases = self._tensor_view(
-                header,
+                shard(biases_key),
                 biases_key,
                 dtype="BF16",
                 numpy_dtype=np.dtype("<u2"),
@@ -342,13 +335,41 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             )
         except Exception:
             self._weight = self._scales = self._biases = None
-            try:
-                if self._mapping is not None:
-                    self._mapping.close()
-            finally:
-                if self._file is not None:
-                    self._file.close()
+            self._close_shards()
             raise
+
+    def _open_shard(self, source: Path) -> tuple:
+        """Open one shard; return ``(header, mapping, data_start)``."""
+        file = source.open("rb")
+        self._shards.append((file, None))
+        length_raw = file.read(8)
+        if len(length_raw) != 8:
+            raise ValueError("truncated safetensors header")
+        header_length = struct.unpack("<Q", length_raw)[0]
+        file_size = file.seek(0, 2)
+        if (
+            header_length > _MAX_SAFETENSORS_HEADER_SIZE
+            or header_length > file_size - 8
+        ):
+            raise ValueError("invalid safetensors header length")
+        file.seek(8)
+        header = json.loads(file.read(header_length))
+        data_start = 8 + header_length
+        self._validate_header_ranges(header, file_size - data_start)
+        mapping = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+        self._shards[-1] = (file, mapping)
+        if hasattr(mapping, "madvise"):
+            mapping.madvise(mmap.MADV_RANDOM)
+        return header, mapping, data_start
+
+    def _close_shards(self) -> None:
+        shards, self._shards = self._shards, []
+        for file, mapping in shards:
+            try:
+                if mapping is not None:
+                    mapping.close()
+            finally:
+                file.close()
 
     @staticmethod
     def _validate_header_ranges(header, data_size: int) -> None:
@@ -380,7 +401,8 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         if expected_start != data_size:
             raise ValueError("safetensors tensor offsets do not cover the data buffer")
 
-    def _tensor_view(self, header, key, *, dtype, numpy_dtype, shape):
+    def _tensor_view(self, shard, key, *, dtype, numpy_dtype, shape):
+        header, mapping, data_start = shard
         entry = header.get(key)
         if entry is None or entry.get("dtype") != dtype:
             raise ValueError(f"invalid or missing Engram tensor: {key}")
@@ -388,17 +410,13 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             raise ValueError(f"invalid Engram tensor shape: {key}")
         start, end = entry.get("data_offsets", (-1, -1))
         expected = math.prod(shape) * numpy_dtype.itemsize
-        if (
-            start < 0
-            or end - start != expected
-            or self._data_start + end > len(self._mapping)
-        ):
+        if start < 0 or end - start != expected or data_start + end > len(mapping):
             raise ValueError(f"invalid Engram tensor byte length: {key}")
         return np.ndarray(
             shape,
             dtype=numpy_dtype,
-            buffer=self._mapping,
-            offset=self._data_start + start,
+            buffer=mapping,
+            offset=data_start + start,
         )
 
     @staticmethod
@@ -527,12 +545,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         with self._lock:
             self._cache.clear()
             self._weight = self._scales = self._biases = None
-            try:
-                if self._mapping is not None:
-                    self._mapping.close()
-            finally:
-                if self._file is not None:
-                    self._file.close()
+            self._close_shards()
 
     def __del__(self):
         try:

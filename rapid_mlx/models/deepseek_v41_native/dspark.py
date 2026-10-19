@@ -73,7 +73,10 @@ def _safe_shard(root: Path, name: object) -> Path:
         # arbitrary local sidecar symlinks remain rejected so a crafted index
         # cannot escape its artifact boundary.
         resolved = path.resolve(strict=True)
-        blobs = (root.parents[1] / "blobs").resolve()
+        snapshot = root.parent if root.name == "dspark" else root
+        if snapshot.parent.name != "snapshots":
+            raise ValueError(f"DSpark shard symlink leaves its Hub repository: {name}")
+        blobs = (snapshot.parents[1] / "blobs").resolve()
         try:
             resolved.relative_to(blobs)
         except ValueError as exc:
@@ -182,11 +185,14 @@ def _required_tensors(config: dict) -> set[str]:
                 )
     final = "mtp.2"
     required.add(final + ".norm.weight")
-    for projection in ("confidence_head.proj", "markov_head.embed", "markov_head.head"):
-        required.update(
-            f"{final}.{projection}.{suffix}"
-            for suffix in ("weight", "scales", "biases")
-        )
+    required.update(
+        f"{final}.confidence_head.proj.{suffix}"
+        for suffix in ("weight", "scales", "biases")
+    )
+    # These small I/O matrices may be dense BF16 in high-precision builds;
+    # the adapter's linear/embedding paths already support dense tensors.
+    for projection in ("markov_head.embed", "markov_head.head"):
+        required.add(f"{final}.{projection}.weight")
     return required
 
 
@@ -195,6 +201,10 @@ class DSparkWeights:
 
     def __init__(self, path: str | Path):
         self.path = Path(path).resolve()
+        # Packed builds carry the complete indexed draft beside the target.
+        # Accept either the target root or the explicit sidecar directory.
+        if (self.path / "dspark" / "model.safetensors.index.json").is_file():
+            self.path = self.path / "dspark"
         if not self.path.is_dir():
             raise NotADirectoryError(self.path)
         raw = _read_object(self.path / "config.json")
@@ -238,6 +248,13 @@ class DSparkWeights:
             raise ValueError(
                 f"DSpark index/shard mismatch (missing={missing[:1]}, extra={extra[:1]})"
             )
+        for name in self._arrays:
+            if name.endswith(".weight"):
+                base = name.removesuffix(".weight")
+                if (base + ".scales" in self._arrays) != (
+                    base + ".biases" in self._arrays
+                ):
+                    raise ValueError(f"incomplete affine triple: {base}")
         missing_contract = sorted(_required_tensors(self.config) - set(self._arrays))
         if missing_contract:
             raise ValueError(
