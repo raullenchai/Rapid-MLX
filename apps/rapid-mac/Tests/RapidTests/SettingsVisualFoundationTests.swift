@@ -430,6 +430,17 @@ struct SettingsVisualFoundationTests {
         #expect(SettingsToolsPanel.summary(for: "future_tool", fallback: "raw") == "raw")
     }
 
+    @Test("Weather summaries describe current conditions and a daily forecast")
+    func weatherSummaryMatchesToolDescription() {
+        let summary = SettingsToolsPanel.summary(for: "weather", fallback: "")
+        #expect(summary.contains("current conditions"))
+        #expect(summary.contains("daily forecast of up to 7 days"))
+
+        let description = WeatherTool.definition.function.description
+        #expect(description.contains("current conditions"))
+        #expect(description.contains("daily forecast up to 7 days"))
+    }
+
     @Test("Tool rows still key their state on the wire identifier")
     func toolRowsKeyOnWireIdentifier() throws {
         let source = try strippedSource("Sources/Rapid/UI/SettingsToolsPanel.swift")

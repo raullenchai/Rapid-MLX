@@ -210,7 +210,7 @@ struct SettingsToolsPanel: View {
         case "browse":
             return String(localized: "Opens a web page you or the model names and reads it. You approve each page.")
         case "weather":
-            return String(localized: "Gets the current weather for a place you name.")
+            return String(localized: "Gets current conditions and a daily forecast of up to 7 days for a place you name.")
         case "read_document":
             // States the retention window because it is the one thing about
             // this tool a user cannot discover by using it: everything else is

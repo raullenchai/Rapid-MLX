@@ -10,6 +10,7 @@
 - **Titles and follow-ups for starter chats**: default starter conversations now get generated titles and follow-up suggestions; the engine reports `concurrent_text_requests` in the model profile. Fixes #4874.
 - **Cleaner first chat in Desktop**: finishing setup no longer drops a setup message into your new conversation, and the empty chat no longer shows a Star on GitHub button; the occasional star prompt after Rapid has helped you is unchanged. Refs #4855.
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
+- **Weather tool description**: Settings now describes the Weather tool as current conditions plus a daily forecast of up to 7 days.
 - **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
 
 - **Word documents in Desktop chat**: attach, drop, or paste a `.docx` file and ask about it. Rapid reads only the document text with strict size and time limits; files it cannot read safely get a clear message suggesting PDF or TXT. Fixes #4869.

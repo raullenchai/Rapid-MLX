@@ -9060,12 +9060,12 @@
         }
       }
     },
-    "Gets the current weather for a place you name." : {
+    "Gets current conditions and a daily forecast of up to 7 days for a place you name." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "获取你指定地点的当前天气。"
+            "value" : "获取你指定地点的当前天气和最多 7 天的每日预报。"
           }
         }
       }
