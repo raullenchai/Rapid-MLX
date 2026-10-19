@@ -221,13 +221,23 @@ def main():
     p.add_argument("--min-split-overlap", type=float, default=0.9)
     p.add_argument("--output-dir", type=Path, required=True)
     a = p.parse_args()
-    preset = PRESETS.get(a.preset, PRESETS["T256"])
+    preset = (
+        PRESETS[a.preset]
+        if a.preset
+        else {"max_prune_fraction": None, "fallback": False, "allow_hot_pruning": False}
+    )
     fallback = preset["fallback"] or a.rd_fallback
     allow_hot_pruning = preset["allow_hot_pruning"] or a.allow_hot_pruning
     if allow_hot_pruning and (not fallback or a.granularity == "legacy-expert"):
         raise ValueError(
             "--allow-hot-pruning requires --rd-fallback and layer/projection granularity"
         )
+    if (
+        a.preset is None
+        and a.max_prune_fraction is None
+        and a.granularity != "legacy-expert"
+    ):
+        p.error("pass --preset or an explicit --max-prune-fraction")
     if not 0 <= a.min_split_overlap <= 1:
         raise ValueError("split-overlap threshold must be between zero and one")
     with (

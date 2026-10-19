@@ -194,6 +194,17 @@ def test_local_override_requires_every_indexed_shard(monkeypatch, tmp_path, subd
     assert a.local_product_path(a.FLASH_1017) == root
 
 
+def test_local_override_rejects_shards_outside_the_build(monkeypatch, tmp_path):
+    root = _local_build(tmp_path / "build")
+    (tmp_path / "outside.safetensors").write_bytes(b"x")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "../outside.safetensors"}})
+    )
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
+    with pytest.raises(ValueError, match="incomplete local"):
+        a.local_product_path(a.FLASH_1017)
+
+
 @pytest.mark.parametrize("artifact", [None, a.REAP])
 def test_local_override_cannot_select_unrelated_or_original_lane(monkeypatch, artifact):
     monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, "/anything")
@@ -332,6 +343,7 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
         cors_origins=[],
         uvicorn_log_level="warning",
         resolved_paths=(root, root / "dspark"),
+        resolved_local=True,
     )
     assert calls["memory"] == a.FLASH_1017
     assert calls["load"] == (

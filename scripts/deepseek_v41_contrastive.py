@@ -63,7 +63,8 @@ def contrastive(
             references.append(matches[0])
     ref = r[references]
     ratios = r[ids["cold"]] / np.maximum(ref, 1e-30)
-    enough = counts[ids["cold"]] >= min_cold_routes
+    # An expert the matched reference never routes has no ratio evidence.
+    enough = (counts[ids["cold"]] >= min_cold_routes) & (counts[references] > 0)
     stable = (ratios.min(axis=1) >= cold_ratio) & enough.all(axis=1)
     stable &= (ratios.max(axis=1) - ratios.min(axis=1)) <= ratio_tolerance * np.maximum(
         ratios.max(axis=1), 1e-30

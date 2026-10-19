@@ -46,6 +46,13 @@ def test_contrastive_specialist_generalist_never_and_ratio():
     )
 
 
+def test_contrastive_needs_reference_routes_for_a_ratio():
+    r, counts, names, roles = slices()
+    counts = counts.copy()
+    counts[3, :, 0, 1] = 0  # the matched reference never routes expert 1
+    assert not contrastive(r, counts, names, roles)["candidate"][0, 1]
+
+
 def test_contrastive_requires_same_cold_topic_stable_in_both_halves():
     r, c, names, roles = slices()
     r[2, 1, 0, 1] = 0.1

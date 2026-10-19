@@ -87,6 +87,15 @@ def test_cli_rejects_hot_pruning_without_fallback_before_reading_inputs(monkeypa
         main()
 
 
+def test_cli_requires_explicit_prune_policy_without_preset(monkeypatch):
+    from scripts.deepseek_v41_rd_allocate import main
+
+    args = ["allocate", "--scores", "m", "--errors", "m", "--costs", "m"]
+    monkeypatch.setattr(sys, "argv", [*args, "--output-dir", "m"])
+    with pytest.raises(SystemExit):
+        main()
+
+
 def test_hot_slice_audit_counts_reap_and_empty_layers():
     result = {"layers": {"0": {"kept_expert_ids": [1]}, "1": {"kept_expert_ids": [0]}}}
     counts = np.array([[[9, 1], [0, 0]], [[2, 2], [3, 1]], [[1, 1], [1, 1]]])

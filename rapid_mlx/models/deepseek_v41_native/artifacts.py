@@ -175,7 +175,11 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
             shards = set(index.get("weight_map", {}).values())
         except (ValueError, AttributeError):
             shards = {"<unreadable index>"}
-        complete = complete and all((directory / s).is_file() for s in shards)
+        # Shard names must be plain files inside the selected build.
+        complete = complete and all(
+            isinstance(s, str) and Path(s).name == s and (directory / s).is_file()
+            for s in shards
+        )
     if not complete:
         raise ValueError(
             f"{LOCAL_MODEL_DIR_ENV}: incomplete local target/dspark build: {root}"

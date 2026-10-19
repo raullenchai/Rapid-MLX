@@ -46,6 +46,7 @@ def run_server(
     reasoning_parser_name: str | None = "deepseek_v4",
     model_name: str = REAP.alias,
     resolved_paths: tuple[Path, Path] | None = None,
+    resolved_local: bool = False,
 ) -> None:
     import uvicorn
 
@@ -60,7 +61,8 @@ def run_server(
         require_product_memory()
     else:
         require_product_memory(artifact)
-    local = local_product_path(artifact)
+    # Reuse the CLI's resolution (and its single override warning) when given.
+    local = resolved_local if resolved_paths is not None else local_product_path(artifact)
     with failure_stage("download"):
         if artifact == REAP:
             target_path = download_target_snapshot()

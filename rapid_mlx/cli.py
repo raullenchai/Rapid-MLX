@@ -7106,6 +7106,7 @@ def serve_command(args):
             cors_policy=server.get_resolved_cors_policy(),
             reasoning_parser_name=args.reasoning_parser,
             resolved_paths=_v41_resolved_paths,
+            resolved_local=_v41_local is not None,
         )
         return
 
