@@ -448,6 +448,10 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
             isinstance(s, str) and Path(s).name == s and (directory / s).is_file()
             for s in shards
         )
+        # The loader globs every shard, so an unindexed one would load too.
+        complete = (
+            complete and {p.name for p in directory.glob("*.safetensors")} == shards
+        )
     if not complete:
         raise ValueError(
             f"{LOCAL_MODEL_DIR_ENV}: incomplete local target/dspark build: {root}"
@@ -476,7 +480,7 @@ def take_resolved_product_paths(
 def resolve_product_paths(
     artifact: ProductArtifact, *, allow_local: bool = True
 ) -> tuple[Path, Path]:
-    if not allow_local and LOCAL_MODEL_DIR_ENV in os.environ:
+    if not allow_local and os.environ.get(LOCAL_MODEL_DIR_ENV, "").strip():
         raise ValueError("local qualification override is only supported by serve")
     local = (
         local_product_path(artifact)

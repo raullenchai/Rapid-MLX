@@ -217,6 +217,8 @@ def test_bad_local_override_does_not_fall_back(monkeypatch, value):
 @pytest.mark.parametrize("subdir", ["", "dspark"])
 def test_local_override_requires_every_indexed_shard(monkeypatch, tmp_path, subdir):
     root = _local_build(tmp_path)
+    for shard in (root / subdir).glob("*.safetensors"):
+        shard.unlink()
     (root / subdir / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"w": "missing.safetensors"}})
     )
@@ -706,3 +708,23 @@ def test_original_lane_resolution_ignores_local_override(monkeypatch, tmp_path):
     monkeypatch.setattr(a, "download_target_snapshot", lambda: tmp_path / "t")
     monkeypatch.setattr(a, "download_mtp_snapshot", lambda: tmp_path / "m")
     assert a.resolve_product_paths(a.REAP) == (tmp_path / "t", tmp_path / "m")
+
+
+@pytest.mark.parametrize("subdir", ["", "dspark"])
+def test_local_override_rejects_unindexed_shards(monkeypatch, tmp_path, subdir):
+    root = _local_build(tmp_path)
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
+    assert a.local_product_path(a.FLASH_1017) == root
+    (root / subdir / "stale.safetensors").write_bytes(b"x")
+    with pytest.raises(ValueError, match="incomplete local"):
+        a.local_product_path(a.FLASH_1017)
+
+
+def test_empty_local_override_does_not_block_pinned_resolution(monkeypatch):
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, " ")
+    seen = []
+    monkeypatch.setattr(a, "require_pins", lambda artifact: seen.append(artifact))
+    monkeypatch.setattr(a, "download_target_snapshot", lambda: "t")
+    monkeypatch.setattr(a, "download_mtp_snapshot", lambda: "m")
+    assert a.resolve_product_paths(a.REAP, allow_local=False) == ("t", "m")
+    assert seen == [a.REAP]
