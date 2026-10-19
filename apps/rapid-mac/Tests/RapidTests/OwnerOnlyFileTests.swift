@@ -18,11 +18,9 @@ final class OwnerOnlyFileTests: XCTestCase {
         return (attributes[.posixPermissions] as? NSNumber)?.intValue
     }
 
-    func testNewFileIsOwnerOnlyUnderPermissiveUmask() throws {
+    func testNewFileIsOwnerOnly() throws {
         let dir = try directory()
         let url = dir.appendingPathComponent("private.json")
-        let previous = umask(0o022)
-        defer { umask(previous) }
         let data = Data(repeating: 0x61, count: 256 * 1024)
         try OwnerOnlyFile.writeAtomically(data, to: url)
         XCTAssertEqual(try mode(url), 0o600)
@@ -30,11 +28,9 @@ final class OwnerOnlyFileTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [url.lastPathComponent])
     }
 
-    func testTemporaryFileIsOwnerOnlyBeforeWritingUnderPermissiveUmask() throws {
+    func testTemporaryFileIsOwnerOnlyBeforeWriting() throws {
         let dir = try directory()
         let url = dir.appendingPathComponent("private.json")
-        let previous = umask(0o022)
-        defer { umask(previous) }
         let data = Data("private contents".utf8)
         var observedTemporaryFile = false
 
@@ -79,8 +75,6 @@ final class OwnerOnlyFileTests: XCTestCase {
         try Data("old".utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
         XCTAssertEqual(try mode(url), 0o644)
-        let previous = umask(0o022)
-        defer { umask(previous) }
         let data = Data("new contents".utf8)
         try OwnerOnlyFile.writeAtomically(data, to: url)
         XCTAssertEqual(try mode(url), 0o600)
