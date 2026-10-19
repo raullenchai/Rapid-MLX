@@ -618,6 +618,6 @@ def test_stream_tool_markup_matches_buffered_request_capability(
             )
             assert json.loads(arguments) == {"query": "x"}
     # Both routes bypass parsing under none and preserve the raw model text.
-    parsing_enabled = tools_mode == "auto"
+    parsing_enabled = declared and tools_mode == "auto"
     expected = "answer" if chunks == "structured" else ("" if parsing_enabled else raw)
     assert streamed == buffered == expected
