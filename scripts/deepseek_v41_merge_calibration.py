@@ -168,6 +168,7 @@ def merge_calibration(pass_files, output):
         document_disjointness="caller responsibility; not provable from score arrays",
         mean_reconstruction="saved MAN/MSAN half means multiplied by route counts",
     )
+    output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("xb") as handle:
         save_scores(
             handle,

@@ -30,6 +30,8 @@ def read_tensor(tensor):
         "F16": np.float16,
         "F32": np.float32,
         "U8": np.uint8,
+        # Source FP4 experts are stored as I8 but hold packed e2m1 nibble
+        # pairs; dequant_fp4 unpacks raw bytes, so they must stay unsigned.
         "I8": np.uint8,
         "F8_E4M3": np.uint8,
         "F8_E4M3FN": np.uint8,
