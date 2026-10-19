@@ -79,9 +79,32 @@ def test_forced_grammar_deliberately_uses_parser_json_wire(monkeypatch, caplog, 
     assert r"{\"name\": \"search\"" in grammar
     assert "<function=search>" not in grammar
 
+    from rapid_mlx.api import reasoning_budget
+
+    # Drive the REASONING-GATED forced path (line①): a reasoning model whose
+    # template prefills an open ``<think>`` with a thinking budget set. Only the
+    # model/tokenizer facts are stubbed; the gate decision itself is real.
+    req = req.model_copy(
+        update={"enable_thinking": True, "reasoning_max_tokens": 64, "max_tokens": 4096}
+    )
+    think_end_id = 7
     monkeypatch.setattr(tool_grammar, "get_lltokenizer", lambda tokenizer: object())
-    monkeypatch.setattr(tool_grammar, "resolve_reasoning_sentinels", lambda *args: ())
+    monkeypatch.setattr(
+        tool_grammar,
+        "resolve_reasoning_sentinels",
+        lambda *args: ("<think>", "</think>"),
+    )
     monkeypatch.setattr(tool_grammar, "model_stop_token_ids", lambda tokenizer: ())
+    monkeypatch.setattr(
+        chat,
+        "_line1_probe_seed",
+        lambda *args: ("<|im_start|>assistant\n<think>\n", True),
+    )
+    monkeypatch.setattr(chat, "_engine_output_vocab_size", lambda engine: 1000)
+    monkeypatch.setattr(chat, "_resolve_tool_start_exclusion_ids", lambda *args: (11,))
+    monkeypatch.setattr(
+        reasoning_budget, "resolve_think_token_ids", lambda *args: (6, think_end_id)
+    )
     # Run the REAL builder through the route helper; only the llguidance-backed
     # processor is replaced by a recorder, so the installed grammar is asserted.
     build = Mock(wraps=tool_grammar.build_tool_grammar)
@@ -102,6 +125,9 @@ def test_forced_grammar_deliberately_uses_parser_json_wire(monkeypatch, caplog, 
     assert build.call_args.args[1] == "required"
     assert "Skipping auto tool grammar" not in caplog.text
     assert isinstance(processor, RecordingProcessor)
+    # The reasoning gate engaged and the gated grammar is the parser's JSON wire.
+    assert processor.reasoning_gate_id == think_end_id
+    assert build.call_args.kwargs["reasoning_sentinels"] == ()
     assert r"{\"name\": \"search\"" in processor.grammar
     assert "<function=search>" not in processor.grammar
 
