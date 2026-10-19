@@ -105,7 +105,9 @@ def install_moe_probe(runtime, observer=None, allocation=None, mass_observer=Non
         for expert, gate, weight in zip(
             picks.tolist()[0], normalized.tolist()[0], weights.tolist()[0]
         ):
-            output = self.expert(base + f".experts.{expert}", x).astype(mx.float32)
+            # Unit weight gives the gate-free output; the routing weight is
+            # applied exactly once below.
+            output = self.expert(base + f".experts.{expert}", x, 1.0).astype(mx.float32)
             if observer is not None:
                 norm = mx.sqrt(mx.sum(mx.square(output)))
                 mx.eval(norm)
