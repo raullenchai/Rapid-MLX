@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Content sanitization must be independent of engine delta boundaries (#4925)."""
 
+import random
 import re
 
 import pytest
 
+from rapid_mlx.api import utils
 from rapid_mlx.api.utils import StreamingContentSanitizer, sanitize_content_for_stream
 from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
@@ -46,6 +48,48 @@ def test_sanitizer_all_boundaries(text):
         actual = "".join(sanitizer.process(delta) for delta in deltas)
         assert actual + sanitizer.flush() == sanitize_content_for_stream(text), deltas
         assert sanitizer.flush() == ""
+
+
+@pytest.mark.parametrize("text", UNIT_TEXTS)
+def test_sanitizer_random_chunking(text):
+    rng = random.Random(4925)
+    for _ in range(50):
+        cuts = sorted(rng.sample(range(len(text) + 1), min(4, len(text) + 1)))
+        deltas = [text[a:b] for a, b in zip([0, *cuts], [*cuts, len(text)])]
+        sanitizer = StreamingContentSanitizer()
+        actual = "".join(sanitizer.process(delta) for delta in deltas)
+        assert actual + sanitizer.flush() == sanitize_content_for_stream(text), deltas
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    [("<|tool_call>call:x{", "}<tool_call|>"), ("[Calling tool: x(", ")]")],
+)
+def test_sanitizer_open_block_is_not_rescanned(monkeypatch, opener, closer):
+    """A long unclosed block costs O(delta) per delta, not a full rescan."""
+    calls = []
+    real = utils._FINAL_SANITIZER
+
+    class _Counting:
+        def match(self, text, pos):
+            calls.append(pos)
+            return real.match(text, pos)
+
+        def sub(self, repl, text):
+            return real.sub(repl, text)
+
+    monkeypatch.setattr(utils, "_FINAL_SANITIZER", _Counting())
+    sanitizer = StreamingContentSanitizer()
+    assert sanitizer.process("pre " + opener) == "pre "
+    scans = len(calls)
+    for _ in range(200):
+        assert sanitizer.process("ab") == ""
+    assert len(calls) == scans
+    assert sanitizer.holding
+    released = "".join(sanitizer.process(char) for char in closer + " post")
+    text = "pre " + opener + "ab" * 200 + closer + " post"
+    assert "pre " + released + sanitizer.flush() == sanitize_content_for_stream(text)
+    assert not sanitizer.holding
 
 
 def test_sanitizer_promptness():
