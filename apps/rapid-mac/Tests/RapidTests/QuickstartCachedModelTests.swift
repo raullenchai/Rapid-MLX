@@ -230,6 +230,23 @@ struct QuickstartCachedModelTests {
         ) == .alreadyHere(cachedCount: 6))
     }
 
+    @Test("a compacted authored model renders once, in its own lane")
+    func compactedAuthoredRowIsNotDuplicated() {
+        let rows = [entry("chat-a"), entry("chat-b"), entry("qwen3.5-9b-4bit"),
+                    entry("qwen3.5-4b-4bit")]
+        let shortlist = QuickstartView.shortlist(
+            catalog: rows,
+            selection: "qwen3.5-4b-4bit",
+            physicalRAMGB: 16
+        )
+        #expect(shortlist.cached.map(\.alias) == ["qwen3.5-4b-4bit"])
+        #expect(shortlist.tradeUps.map(\.alias).contains("qwen3.5-9b-4bit"))
+        #expect(!shortlist.cachedAlternates.map(\.alias).contains("qwen3.5-9b-4bit"))
+        #expect(shortlist.cachedAlternates.map(\.alias) == ["chat-a", "chat-b"])
+        let all = shortlist.visibleAliases(includeCachedAlternates: true)
+        #expect(all.filter { $0 == "qwen3.5-9b-4bit" }.count == 1)
+    }
+
     @Test("a short cached list is not compacted")
     func shortCachedListStaysExpanded() {
         let rows = [entry("chat-a"), entry("chat-b"), entry("qwen3.5-4b-4bit")]

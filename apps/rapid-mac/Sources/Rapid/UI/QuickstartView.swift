@@ -3370,19 +3370,30 @@ struct QuickstartView: View {
             }
             return physicalRAMGB.map { choice.isVisible(onRAMGB: $0) } ?? true
         }
+        let starters = choices.filter {
+            $0.alias == starterAlias && !existingAliases.contains($0.alias)
+        }
+        let lowMemory = choices.filter {
+            $0.isLowMemory
+                && $0.alias != starterAlias
+                && !existingAliases.contains($0.alias)
+        }
+        // A compacted cached row that an authored lane already renders (with
+        // its ON THIS MAC badge) must not also sit in the disclosure: expanding
+        // it would show the same model twice.
+        var laneAliases = Set(starters.map(\.alias))
+        laneAliases.formUnion(recommended.map(\.alias))
+        laneAliases.formUnion(lowMemory.map(\.alias))
+        laneAliases.formUnion(tradeUps.map(\.alias))
         return Shortlist(
             cached: existing,
-            cachedAlternates: cachedPresentation.alternates,
+            cachedAlternates: cachedPresentation.alternates.filter {
+                !laneAliases.contains($0.alias)
+            },
             cachedDecisionCount: cachedDecisionCount,
-            starters: choices.filter {
-                $0.alias == starterAlias && !existingAliases.contains($0.alias)
-            },
+            starters: starters,
             recommended: recommended,
-            lowMemory: choices.filter {
-                $0.isLowMemory
-                    && $0.alias != starterAlias
-                    && !existingAliases.contains($0.alias)
-            },
+            lowMemory: lowMemory,
             tradeUps: tradeUps,
             yourPick: native.contains(selection)
                 ? nil
