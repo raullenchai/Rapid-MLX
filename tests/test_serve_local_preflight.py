@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import errno
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +49,52 @@ def test_local_model_preflight_allows_nested_weights(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+@pytest.mark.parametrize("layout", ["whisper", "image", "video"])
+def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
+    root = tmp_path / layout
+    root.mkdir()
+    if layout == "whisper":
+        (root / "config.json").write_text('{"model_type":"whisper"}')
+        (root / "weights.npz").write_bytes(b"data")
+    else:
+        (
+            root / ("model_index.json" if layout == "image" else "split_model.json")
+        ).write_text("{}")
+    validate_local_model_for_serve(str(root))
+
+
+def test_empty_local_alias_directory_keeps_catalog_fallback(tmp_path, monkeypatch):
+    from rapid_mlx.model_aliases import resolve_model
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3-0.6b-4bit").mkdir()
+    resolved = resolve_model("qwen3-0.6b-4bit")
+    assert resolved != "qwen3-0.6b-4bit"
+    validate_local_model_for_serve(resolved)
+
+
+def test_missing_index_shard_is_rejected_before_engine(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model-00001.safetensors").write_bytes(b"data")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "a": "model-00001.safetensors",
+                    "b": "model-00002.safetensors",
+                }
+            }
+        )
+    )
+    with pytest.raises(
+        FileNotFoundError, match="Missing indexed model shard"
+    ) as raised:
+        validate_local_model_for_serve(str(root))
+    assert serve_error_class(raised.value, model_ref=str(root)) == "local_path_missing"
+
+
 def test_cache_path_suggests_catalog_alias(tmp_path):
     root = (
         tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / "revision"
@@ -76,6 +124,22 @@ def test_bad_numeric_config_is_actionable(tmp_path):
     cause, step = startup_error_lines(error, str(root))
     assert "hidden_size" in cause
     assert "config.json" in step
+
+
+def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
+    from rapid_mlx.cli import _print_model_load_error
+
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3","hidden_size":"wrong"}')
+    (root / "model.safetensors").write_bytes(b"weights")
+    _print_model_load_error(
+        SimpleNamespace(model=str(root)),
+        TypeError("unsupported operand type(s) for /: 'int' and 'str'"),
+    )
+    rendered = capsys.readouterr().err
+    assert "Cause: config.json has a nonnumeric hidden_size value." in rendered
+    assert "Next step: Correct hidden_size" in rendered
 
 
 @pytest.mark.parametrize(

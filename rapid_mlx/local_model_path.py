@@ -256,13 +256,28 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     root = Path(model_ref).expanduser().absolute()
     if not root.is_dir():
         raise NotADirectoryError(errno.ENOTDIR, "Expected a model directory", str(root))
+    # Non-text lanes use their own manifests and validate their component
+    # layouts in their loaders; a root config.json is not universal.
+    if any(
+        (root / name).is_file()
+        for name in ("model_index.json", "split_model.json", "params.json")
+    ):
+        return
     config = root / "config.json"
     if not config.is_file():
         raise FileNotFoundError(errno.ENOENT, "Missing model config", str(config))
-    # Some supported lanes keep weights in subdirectories or use other formats.
-    # The text loader's conventional safetensors absence is diagnosed here only
-    # when there is no alternate checkpoint file to let a lane inspect.
-    if not any(root.rglob("*.safetensors")) and not any(root.rglob("*.bin")):
+    missing_shards = _missing_index_shards(root)
+    if missing_shards:
+        raise FileNotFoundError(
+            errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
+        )
+    # Whisper can use weights.npz; text and vision loaders use safetensors.
+    weights = (
+        path
+        for pattern in ("*.safetensors", "*.bin", "weights.npz")
+        for path in root.rglob(pattern)
+    )
+    if not any(path.is_file() and path.stat().st_size > 0 for path in weights):
         raise FileNotFoundError(
             errno.ENOENT, "Missing model weights", str(root / "model.safetensors")
         )

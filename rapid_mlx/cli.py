@@ -1013,6 +1013,8 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         "other",
         "corrupt_weights",
         "incompatible_weights",
+        "invalid_config",
+        "backend_load_failed",
     ) and (detail := startup_error_lines(exc, model_ref)):
         print(f"\n  Error loading model: {exc}", file=sys.stderr)
         print(f"  Cause: {detail[0]}", file=sys.stderr)
@@ -15054,15 +15056,15 @@ def main():
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
 
+        resolved = args.model
         try:
             supplied_model = args.model
             if getattr(args, "command", None) == "serve":
                 args.model = resolved_model_ref(args.model)
-            if getattr(args, "command", None) == "serve":
-                validate_local_model_for_serve(args.model)
-            else:
-                raise_if_missing_local_model(args.model)
+            raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
+            if getattr(args, "command", None) == "serve":
+                validate_local_model_for_serve(resolved)
         except (FileNotFoundError, NotADirectoryError) as exc:
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
@@ -15071,7 +15073,7 @@ def main():
                     exc, alias_or_path=args.model, failure_stage="resolve"
                 )
             if getattr(args, "command", None) == "serve":
-                cause, step = local_serve_preflight_lines(args.model, exc)
+                cause, step = local_serve_preflight_lines(resolved, exc)
                 print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
             else:
                 message = local_model_failure_message(
