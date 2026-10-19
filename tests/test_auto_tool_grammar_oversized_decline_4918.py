@@ -552,7 +552,9 @@ async def test_oversized_auto_finds_safe_name_after_grammar_tool_cap():
     )
 
 
-async def test_helper_returns_false_when_parser_construction_fails(monkeypatch):
+async def test_helper_propagates_parser_construction_failure_and_gate_keeps_400(
+    monkeypatch,
+):
     from rapid_mlx.tool_parsers import ToolParserManager
 
     class BrokenParser:
@@ -564,9 +566,8 @@ async def test_helper_returns_false_when_parser_construction_fails(monkeypatch):
             raise RuntimeError("broken parser constructor")
 
     monkeypatch.setattr(ToolParserManager, "get_tool_parser", lambda name: BrokenParser)
-    assert not chat._auto_tool_grammar_declined_for_native_wire(
-        engine(), cfg(), request()
-    )
+    with pytest.raises(RuntimeError, match="broken parser constructor"):
+        chat._auto_tool_grammar_declined_for_native_wire(engine(), cfg(), request())
     with pytest.raises(HTTPException) as exc:
         await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine()
@@ -679,14 +680,75 @@ async def test_gate_keeps_400_when_parser_factory_fails(monkeypatch, factory):
     assert exc.value.status_code == 400
 
 
-async def test_gate_keeps_400_when_probe_raises(monkeypatch):
+def test_helper_propagates_structure_info_failure():
+    parser = SimpleNamespace(
+        structure_info=Mock(side_effect=RuntimeError("structure unavailable"))
+    )
+
+    with pytest.raises(RuntimeError, match="structure unavailable"):
+        chat._auto_tool_grammar_declined_for_native_wire(
+            engine(), cfg(), request(), parser
+        )
+
+
+@pytest.mark.parametrize(
+    ("factory", "exception"),
+    [
+        (lambda name: None, AttributeError),
+        (lambda name: SimpleNamespace(begin=None), AttributeError),
+        (Mock(side_effect=ValueError("rejected name")), ValueError),
+    ],
+)
+def test_helper_propagates_parser_factory_failures(factory, exception):
+    parser = SimpleNamespace(structure_info=lambda: factory)
+
+    with pytest.raises(exception):
+        chat._auto_tool_grammar_declined_for_native_wire(
+            engine(), cfg(), request(), parser
+        )
+
+
+async def test_helper_propagates_probe_failure_and_gate_keeps_400(monkeypatch):
     monkeypatch.setattr(
         chat,
         "_template_renders_native_xml_tool_call",
         Mock(side_effect=KeyError("template blew up")),
     )
+    parser = SimpleNamespace(
+        structure_info=lambda: lambda name: SimpleNamespace(begin="<tool_call>")
+    )
+    with pytest.raises(KeyError, match="template blew up"):
+        chat._auto_tool_grammar_declined_for_native_wire(
+            engine(), cfg(), request(), parser
+        )
     with pytest.raises(HTTPException) as exc:
         await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine()
         )
     assert exc.value.status_code == 400
+
+
+def test_builder_factory_failure_falls_back_without_building(monkeypatch):
+    from rapid_mlx.api import tool_grammar
+    from rapid_mlx.tool_parsers import ToolParserManager
+
+    class Parser:
+        @classmethod
+        def supports_grammar(cls):
+            return True
+
+        def __init__(self, tokenizer):  # noqa: ARG002
+            pass
+
+        def structure_info(self):
+            return Mock(side_effect=RuntimeError("wire info unavailable"))
+
+    monkeypatch.setattr(ToolParserManager, "get_tool_parser", lambda name: Parser)
+    monkeypatch.setattr(tool_grammar, "get_lltokenizer", lambda tokenizer: object())
+    monkeypatch.setattr(tool_grammar, "are_single_special_tokens", lambda *args: True)
+    monkeypatch.setattr(tool_grammar, "resolve_reasoning_sentinels", lambda *args: ())
+    build = Mock(return_value=None)
+    monkeypatch.setattr(tool_grammar, "build_tool_grammar", build)
+
+    assert chat._maybe_build_tool_grammar_processor(engine(), cfg(), request()) is None
+    build.assert_not_called()

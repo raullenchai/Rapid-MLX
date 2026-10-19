@@ -955,21 +955,20 @@ def _auto_tool_grammar_declined_for_native_wire(
 
     Name discovery scans at most the native-wire probe tool-count cap and never
     reads client parameter schemas. The caller separately bounds oversized render
-    work.
+    work. Parser construction, structure lookup, template probing, and wire-info
+    failures propagate so each caller preserves its established fallback: the
+    builder falls back to free-form, while the oversized async gate keeps its 400.
     """
     choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
     if choice is None or choice["mode"] != "auto":
         return False
 
-    try:
-        if parser is None:
-            from ..tool_parsers import ToolParserManager
+    if parser is None:
+        from ..tool_parsers import ToolParserManager
 
-            parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
-            parser = parser_cls(tokenizer=getattr(engine, "tokenizer", None))
-        info = parser.structure_info()
-    except Exception:
-        return False
+        parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
+        parser = parser_cls(tokenizer=getattr(engine, "tokenizer", None))
+    info = parser.structure_info()
     if info is None:
         return False
 
@@ -991,18 +990,9 @@ def _auto_tool_grammar_declined_for_native_wire(
     if probe_name is None:
         return False
 
-    # The gate calls this outside any handler, so a template or parser-factory
-    # failure must mean "not declined" (keep the prior 400), never a 500.
-    try:
-        if (
-            _template_renders_native_xml_tool_call(engine, request, probe_name)
-            is not True
-        ):
-            return False
-        begin = getattr(info(probe_name), "begin", None)
-    except Exception:
-        return False
-    return isinstance(begin, str) and not begin.startswith("<tool_call>\n<function=")
+    return _template_renders_native_xml_tool_call(
+        engine, request, probe_name
+    ) is True and not info(probe_name).begin.startswith("<tool_call>\n<function=")
 
 
 def _enforce_tool_grammar_bounds_or_400(cfg, request) -> None:
