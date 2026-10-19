@@ -523,6 +523,7 @@ def test_pull_uses_pinned_product_resolution(monkeypatch):
     assert resolved == [((a.FLASH_1017,), {"allow_local": False})]
 
 
+@pytest.mark.requires_mlx
 def test_pinned_cli_checks_disk_before_resolution(monkeypatch):
     from rapid_mlx import _version_check, cli
     from rapid_mlx import server as generic_server
