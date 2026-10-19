@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import re
+import shlex
 from pathlib import Path, PurePosixPath
 
 MAX_MISSING_LOCAL_MODEL_FILES = 5
@@ -295,7 +296,12 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
             cause,
             "Serve its containing model directory with `rapid-mlx serve /path/to/model`.",
         )
+    if filename == root / "config.json":
+        return (
+            cause,
+            f"Restore config.json from the matching checkpoint, then run `rapid-mlx serve {shlex.quote(str(root))}`.",
+        )
     return (
         cause,
-        "Complete the checkpoint with `rapid-mlx pull owner/model`, then serve its model directory.",
+        f"Restore the checkpoint weights, then run `rapid-mlx serve {shlex.quote(str(root))}`.",
     )
