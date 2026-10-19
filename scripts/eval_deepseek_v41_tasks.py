@@ -504,6 +504,14 @@ def execute_code(code, tests, entry, timeout, scratch):
             # dyld/Python startup stat the root directory entry itself.
             '(allow file-read* (literal "/") '
             + " ".join(f"(subpath {json.dumps(p)})" for p in sorted(roots))
+            # Interpreter startup realpath()s its prefix; stat each ancestor only.
+            + ")(allow file-read-metadata "
+            + " ".join(
+                f"(literal {json.dumps(str(parent))})"
+                for parent in sorted(
+                    {str(a) for p in roots for a in Path(p).parents} - {"/"}
+                )
+            )
             + ")(allow file-write-data "
             + " ".join(
                 f"(literal {json.dumps(str(directory / name))})"

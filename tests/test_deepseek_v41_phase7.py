@@ -80,16 +80,43 @@ def test_original_registry_contract_and_identity_unchanged():
     )
 
 
+def _unpinned(monkeypatch):
+    unpinned = replace(
+        a.FLASH_1017,
+        target_revision=None,
+        mtp_revision=None,
+        target_files=None,
+        mtp_files=None,
+    )
+    monkeypatch.setitem(a.PRODUCT_ARTIFACTS, unpinned.alias, unpinned)
+    return unpinned
+
+
+def test_shipped_pins_are_complete_and_immutable():
+    a.require_pins(a.FLASH_1017)
+    assert a.FLASH_1017.target_revision == a.FLASH_1017.mtp_revision
+    names = {item.name for item in a.FLASH_1017.target_files or ()}
+    assert {f"model-layer-{i}.safetensors" for i in range(40)} <= names
+    assert {
+        f"model-engram-{layer}-{part}.safetensors"
+        for layer in (1, 14)
+        for part in ("weight", "affine")
+    } <= names
+    # Hub per-file limit is 50 GB.
+    assert max(item.size for item in a.FLASH_1017.target_files or ()) < 50e9
+
+
 @pytest.mark.parametrize("operation", ["resolve", "identity", "pull"])
 def test_unset_pins_fail_before_network(monkeypatch, operation):
     monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
+    unpinned = _unpinned(monkeypatch)
     monkeypatch.setattr(
         "rapid_mlx._mirror.pinned_snapshot_download",
         lambda *_a, **_k: pytest.fail("network reached"),
     )
     with pytest.raises(RuntimeError, match="pins are unset"):
         if operation == "identity":
-            a.mtp_model_identity_digest(a.FLASH_1017)
+            a.mtp_model_identity_digest(unpinned)
         elif operation == "pull":
             from rapid_mlx import cli
 
@@ -102,7 +129,7 @@ def test_unset_pins_fail_before_network(monkeypatch, operation):
                 )
             )
         else:
-            a.resolve_product_paths(a.FLASH_1017)
+            a.resolve_product_paths(unpinned)
 
 
 @pytest.mark.parametrize(
@@ -420,9 +447,10 @@ def test_local_cli_skips_generic_and_pinned_downloads(monkeypatch, tmp_path):
     assert calls[0]["default_max_tokens"] == 4096
 
 
-def test_benchmark_new_lane_fails_closed_until_upload():
+def test_benchmark_new_lane_fails_closed_without_pins(monkeypatch):
     from rapid_mlx.community_bench.local_runner import _text_speculative_execution
 
+    _unpinned(monkeypatch)
     with pytest.raises(RuntimeError, match="pins are unset"):
         _text_speculative_execution(a.FLASH_1017.target_repo)
 
