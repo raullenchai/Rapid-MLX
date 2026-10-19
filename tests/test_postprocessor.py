@@ -3366,3 +3366,23 @@ def test_finalize_accumulates_only_resolved_eof_content():
     events = pp.finalize()
     assert not any(event.content for event in events)
     assert pp.accumulated_text == "before "
+
+
+def test_finalize_eof_content_precedes_recovered_tool_call():
+    """#4925: held text and later EOF content both precede a recovered call."""
+    pp = StreamingPostProcessor(_make_cfg())
+    assert pp._sanitize_content("before [", accumulate=True) == "before "
+    pp.tool_parser = MagicMock()
+    pp.tool_parser.finalize_legacy_raw_stream.return_value = {
+        "tool_calls": [{"name": "weather", "arguments": "{}"}]
+    }
+    pp.tool_parser.flush_held_content.return_value = " after"
+    pp.tool_accumulated_text = "raw"
+    pp._preserve_post_tool_content = True
+    pp._filter_declared_calls = lambda calls, **kwargs: calls
+    events = pp.finalize()
+    assert [(e.type, e.content) for e in events][:2] == [
+        ("content", "[ after"),
+        ("tool_call", None),
+    ]
+    assert pp.accumulated_text == "before [ after"

@@ -9,7 +9,6 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import copy
-import dataclasses
 import inspect
 import json
 import logging
@@ -4223,33 +4222,26 @@ class StreamingPostProcessor:
         # bytes) is later in the same content stream than the sanitizer's
         # held tail. Feed them through it in order, then drain it once, so
         # split markup resolves exactly as in the buffered reply (#4925).
+        # The resolved text is emitted as one content event ahead of any
+        # recovered tool call, since all of it precedes the call on the wire.
+        resolved_parts = []
         resolved_events = []
-        emitted = []
         for event in events:
-            if event.type == "content" and event.content:
-                resolved = self._content_sanitizer.process(event.content)
-                if not resolved:
-                    continue
-                emitted.append(resolved)
-                event = dataclasses.replace(event, content=resolved)
+            if event.type == "content":
+                if event.content:
+                    resolved_parts.append(
+                        self._content_sanitizer.process(event.content)
+                    )
+                continue
             resolved_events.append(event)
         events = resolved_events
-        resolved_content = self._content_sanitizer.flush()
+        resolved_parts.append(self._content_sanitizer.flush())
+        resolved_content = "".join(resolved_parts)
         if self._content_sanitizer_accumulates:
             # Accumulate exactly what this path emits at EOF, after split
             # markup has resolved, so stripped bytes never land here.
-            self.accumulated_text += "".join(emitted) + resolved_content
-        last_content = next(
-            (i for i in range(len(events) - 1, -1, -1) if events[i].type == "content"),
-            None,
-        )
-        if last_content is not None and resolved_content:
-            events.insert(
-                last_content + 1,
-                StreamEvent(type="content", content=resolved_content),
-            )
-        else:
-            self._insert_content_before_tool_call(events, resolved_content)
+            self.accumulated_text += resolved_content
+        self._insert_content_before_tool_call(events, resolved_content)
 
         # H-07: ```json fence-strip on the finalize event list AND
         # drain any held tail in the SAME pass. The route's

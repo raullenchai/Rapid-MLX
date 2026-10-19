@@ -7442,7 +7442,9 @@ async def stream_chat_completion(
         ) -> ChoiceLogProbs | None:
             if not _held_logprob_entries:
                 return logprobs
-            entries = _held_logprob_entries + (logprobs.content if logprobs else [])
+            entries = _held_logprob_entries + (
+                (logprobs.content or []) if logprobs else []
+            )
             _held_logprob_entries.clear()
             return ChoiceLogProbs(content=entries)
 
@@ -7811,7 +7813,7 @@ async def stream_chat_completion(
             )
             if _defer_logprobs:
                 _held_logprobs = _build_chunk_logprobs(output)
-                if _held_logprobs:
+                if _held_logprobs and _held_logprobs.content:
                     _held_logprob_entries.extend(_held_logprobs.content)
             # Each output's logprobs ride on exactly one content chunk.
             _output_logprobs_pending = want_logprobs and not _defer_logprobs

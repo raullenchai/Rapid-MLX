@@ -531,10 +531,10 @@ _CONTENT_PARTIAL_CALLING = re.compile(r"\[Calling\s+(?:t(?:o(?:o)?)?)?")
 class StreamingContentSanitizer:
     """Hold unresolved markup so content sanitization ignores chunking (#4925)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._pending = ""
         #: Characters fed so far; lets callers tell which deltas it saw.
-        self.consumed = 0
+        self.consumed: int = 0
 
     def process(self, delta: str) -> str:
         """Emit the resolved prefix, following the sanitizer's re.sub scan."""
