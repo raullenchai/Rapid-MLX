@@ -198,11 +198,17 @@ def test_real_dogfood_entrypoints_share_the_host_guards() -> None:
     assert 'size_args=(--model "$MODEL")' in mvp
     assert 'exec "$SCRIPT_DIR/dogfood-host-precheck.sh"' in ax
     assert 'exec "$ROOT/scripts/dogfood-host-precheck.sh"' in golden
-    # The launch helper centralizes the host guard for localized, default,
-    # and restart launches.
+    # The launch helper centralizes the host guard for first and restart
+    # launches, and both pin the persona language (#4941).
     assert golden.count("DOGFOOD_WORKING_SET_GB=0.1") == 2
-    assert golden.count("launch_persona_app ") == 3
-    assert "launch_persona_app append" in golden
+    assert golden.count("launch_persona_app ") == 2
+    assert (
+        'launch_persona_app truncate -AppleLanguages "($PERSONA_APP_LANGUAGE)"'
+        in golden
+    )
+    assert (
+        'launch_persona_app append -AppleLanguages "($PERSONA_APP_LANGUAGE)"' in golden
+    )
 
 
 def test_gui_ax_smoke_delivers_real_user_input() -> None:
