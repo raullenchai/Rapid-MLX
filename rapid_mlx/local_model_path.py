@@ -434,9 +434,9 @@ def validate_local_model_for_serve(model_ref: object) -> None:
             try:
                 weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
                 weights = [
-                    root.joinpath(*PurePosixPath(name).parts)
+                    root.joinpath(*PurePosixPath(relative_name).parts)
                     for raw in weight_map.values()
-                    if (name := _safe_relative_name(raw)) is not None
+                    if (relative_name := _safe_relative_name(raw)) is not None
                 ]
             except (
                 OSError,
