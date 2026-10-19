@@ -165,14 +165,29 @@ struct WeatherRegionTests {
         #expect(result.content.contains("could not uniquely identify"))
     }
 
-    @Test("A city with an unmatched state qualifier is not found")
+    @Test("A known city excluded by its qualifiers asks for one corrected retry")
     func chicagoWrongState() async throws {
         let result = try await Self.result(
             location: "Chicago, TX", fixtures: ["Chicago": Self.chicago]
         )
-        #expect(result.content.contains("no well-known city or town named"))
-        #expect(result.content.contains("TX"))
-        #expect(!result.content.contains("Add a country"))
+        #expect(result.content.contains("found places named \"Chicago\", but none matching \"TX\""))
+        #expect(result.content.contains("only the place name"))
+        #expect(!result.content.contains("state or region"))
+    }
+
+    @Test("A city whose admin1 shares its name is never a region")
+    func tokyoWithCountryAsAdmin1() async throws {
+        let tokyo = Data(#"""
+        {"results":[
+          {"name":"Tokyo","latitude":35.69,"longitude":139.69,"country":"Japan","country_code":"JP","admin1":"Tokyo","population":9733276},
+          {"name":"Tokyo","latitude":-9.0,"longitude":147.0,"country":"Papua New Guinea","country_code":"PG","admin1":"Central Province"}
+        ]}
+        """#.utf8)
+        let result = try await Self.result(
+            location: "Tokyo, Japan", admin1: "Japan", fixtures: ["Tokyo": tokyo]
+        )
+        #expect(!result.content.contains("state or region"))
+        #expect(result.content.contains("found places named \"Tokyo\", but none matching \"Japan\"."))
     }
 
     @Test("A lone accent-folded small namesake is not found, not ambiguous")

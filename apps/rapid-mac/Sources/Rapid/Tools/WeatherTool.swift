@@ -126,6 +126,10 @@ enum WeatherTool {
             )))
         case .ambiguous:
             return .failure(UnresolvedPlace(result: ambiguousPlaceResult(location: location)))
+        case .qualifierMismatch:
+            return .failure(UnresolvedPlace(result: qualifierMismatchResult(
+                location: location, country: country, admin1: admin1
+            )))
         case .notFound:
             return .failure(UnresolvedPlace(result: notFoundPlaceResult(
                 location: location, country: country, admin1: admin1
@@ -154,6 +158,24 @@ enum WeatherTool {
         )
     }
 
+    static func qualifierMismatchResult(
+        location: String,
+        country: String? = nil,
+        admin1: String? = nil
+    ) -> ToolCallResult {
+        let query = geocodingQuery(location: location, country: country, admin1: admin1)
+        return ToolCallResult(
+            toolCallID: "",
+            content: "weather: found places named \"\(query.name)\", but none matching \"\(uniqueQualifiers(query.qualifiers).joined(separator: ", "))\". Call weather once more with only the place name, or with the correct country or state/province from the user's message.",
+            isError: true
+        )
+    }
+
+    private static func uniqueQualifiers(_ qualifiers: [String]) -> [String] {
+        var seen = Set<String>()
+        return qualifiers.filter { seen.insert(matchKey($0)).inserted }
+    }
+
     static func notFoundPlaceResult(
         location: String,
         country: String? = nil,
@@ -162,7 +184,7 @@ enum WeatherTool {
         let query = geocodingQuery(location: location, country: country, admin1: admin1)
         let qualifierText = query.qualifiers.isEmpty
             ? ""
-            : " matching \"\(query.qualifiers.joined(separator: ", "))\""
+            : " matching \"\(uniqueQualifiers(query.qualifiers).joined(separator: ", "))\""
         return ToolCallResult(
             toolCallID: "",
             content: "weather: no well-known city or town named \"\(query.name)\" was found\(qualifierText). Adding more country or state/province qualifiers will not help. Use a specific city or town name, or ask the user which place they mean.",
@@ -198,6 +220,7 @@ enum WeatherTool {
         case place(GeoHit)
         case region(label: String)
         case ambiguous
+        case qualifierMismatch
         case notFound
     }
 
@@ -267,7 +290,32 @@ enum WeatherTool {
                 candidates: candidates, country: country, admin1: admin1
             ).filter { $0.population != nil }.count >= 2
         }
-        return hasPlausibleMatch ? .ambiguous : .notFound
+        if hasPlausibleMatch { return .ambiguous }
+
+        // A known place with this name exists, but the extra country/state
+        // qualifiers excluded it (e.g. a country passed as admin1). One retry
+        // with corrected qualifiers can succeed, unlike a missing place.
+        let hasQualifiedMatch = [
+            (query.name, originalCandidates),
+            (traditionalGeocodingName(query.name), alternateCandidates),
+        ].contains { name, candidates in
+            guard let name else { return false }
+            return !matchingGeocodingCandidates(
+                location: name, qualifiers: query.qualifiers,
+                candidates: candidates, country: country, admin1: admin1
+            ).isEmpty
+        }
+        let hasUnqualifiedKnownPlace = !query.qualifiers.isEmpty && [
+            (query.name, originalCandidates),
+            (traditionalGeocodingName(query.name), alternateCandidates),
+        ].contains { name, candidates in
+            guard let name else { return false }
+            return matchingGeocodingCandidates(
+                location: name, qualifiers: [],
+                candidates: candidates, country: nil, admin1: nil
+            ).contains { $0.population != nil }
+        }
+        return !hasQualifiedMatch && hasUnqualifiedKnownPlace ? .qualifierMismatch : .notFound
     }
 
     private static func geocodingCandidates(
@@ -562,7 +610,12 @@ enum WeatherTool {
             requestedKey,
             traditionalGeocodingName(requestedName).map(matchKey),
         ].compactMap { $0 })
-        if let candidate = candidates.first(where: { candidate in
+        // A first-level region named like a returned place is a city-state
+        // or capital (Tokyo, 北京), not a region to refuse.
+        let namedPlaceExists = candidates.contains {
+            requestedAdminKeys.contains(matchKey($0.name))
+        }
+        if !namedPlaceExists, let candidate = candidates.first(where: { candidate in
             guard let admin1 = candidate.admin1 else { return false }
             let candidateKeys = Set([
                 matchKey(admin1),
