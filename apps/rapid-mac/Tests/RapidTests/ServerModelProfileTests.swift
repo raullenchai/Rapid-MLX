@@ -73,6 +73,7 @@ final class ServerModelProfileTests {
           "capabilities": ["text", "vision", "tools"],
           "serving_lane": "vision",
           "serving_lane_reason": "vision_hybrid_runtime_supported",
+          "concurrent_text_requests": true,
           "speculative_decoding": {
             "configured": true,
             "method": "mtp",
@@ -97,6 +98,7 @@ final class ServerModelProfileTests {
         #expect(profile.capabilities == ["text", "vision", "tools"])
         #expect(profile.servingLane == "vision")
         #expect(profile.servingLaneReason == "vision_hybrid_runtime_supported")
+        #expect(profile.concurrentTextRequests == true)
         #expect(profile.speculativeDecoding == ServerSpeculativeDecoding(
             configured: true,
             method: "mtp",
@@ -131,6 +133,7 @@ final class ServerModelProfileTests {
         #expect(profile.capabilities == nil)
         #expect(profile.servingLane == nil)
         #expect(profile.servingLaneReason == nil)
+        #expect(profile.concurrentTextRequests == nil)
         #expect(profile.speculativeDecoding == nil)
     }
 

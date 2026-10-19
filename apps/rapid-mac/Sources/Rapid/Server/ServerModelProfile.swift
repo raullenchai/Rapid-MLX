@@ -211,6 +211,7 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
     /// machine-readable reason for that decision.
     let servingLane: String?
     let servingLaneReason: String?
+    let concurrentTextRequests: Bool?
     /// Inference modality from ``AliasProfile.modality``. Today
     /// only ``"text"`` and ``"text-diffusion"`` are populated by
     /// the server; ``"vision"`` / ``"image-gen"`` are reserved
@@ -270,6 +271,7 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         case capabilities
         case servingLane = "serving_lane"
         case servingLaneReason = "serving_lane_reason"
+        case concurrentTextRequests = "concurrent_text_requests"
         case modality
         // FU-3 — snake_case wire shape matches the rapid-mlx
         // ``AliasProfile`` JSON contract (per-alias SSOT).
@@ -299,6 +301,7 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         capabilities: [String]? = nil,
         servingLane: String? = nil,
         servingLaneReason: String? = nil,
+        concurrentTextRequests: Bool? = nil,
         modality: String? = nil,
         reasoningChatFloor: Int? = nil,
         reasoningToolsFloor: Int? = nil,
@@ -316,6 +319,7 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         self.capabilities = capabilities
         self.servingLane = servingLane
         self.servingLaneReason = servingLaneReason
+        self.concurrentTextRequests = concurrentTextRequests
         self.modality = modality
         self.reasoningChatFloor = reasoningChatFloor
         self.reasoningToolsFloor = reasoningToolsFloor

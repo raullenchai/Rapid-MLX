@@ -618,27 +618,22 @@ final class ChatViewModel {
         messages.filter { $0.role == .user }.count == 1
     }
 
-    /// Whether the engine's lane will batch our request alongside the
-    /// reader's, or serialise it in front of their next turn.
+    /// Whether text-only background requests can run alongside the reader's.
     ///
-    /// The `--mllm` vision lane runs one request at a time, so a background
-    /// call there is not free — it is a queue. The live profile's
-    /// `serving_lane` is the authoritative execution decision. Its
-    /// `modality` remains `text` even for vision-capable models and therefore
-    /// cannot distinguish the serialised lane.
-    ///
-    /// An unknown or older profile allows. Otherwise a sidecar predating
-    /// `serving_lane` would disable both features permanently, and the damage
-    /// on that path is already bounded by `max_tokens`, the deadline, and the
-    /// fact that the reader's next send cancels us. A mismatched profile also
-    /// allows rather than letting stale metadata decide for another alias.
+    /// The vision lane is not inherently serialised: the live engine reports
+    /// concurrency through `concurrentTextRequests`. Older engines without
+    /// that field keep the conservative lane-name rule: text or an absent
+    /// lane allows. Unknown profiles and mismatched aliases also allow.
+    /// Requests remain bounded by max_tokens, a deadline, and cancellation
+    /// on send.
     nonisolated static func laneAllowsBackgroundWork(
         _ profile: ServerModelProfile?, alias: String
     ) -> Bool {
         guard let profile,
-              profile.id.caseInsensitiveCompare(alias) == .orderedSame,
-              let servingLane = profile.servingLane
+              profile.id.caseInsensitiveCompare(alias) == .orderedSame
         else { return true }
+        if let concurrent = profile.concurrentTextRequests { return concurrent }
+        guard let servingLane = profile.servingLane else { return true }
         return servingLane == "text"
     }
 

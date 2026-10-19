@@ -236,11 +236,13 @@ struct BackgroundAssistGatingTests {
     // MARK: - Which lane will batch us
 
     private func profile(
-        id: String = "m", servingLane: String?, modality: String = "text"
+        id: String = "m", servingLane: String?, concurrentTextRequests: Bool? = nil,
+        modality: String = "text"
     ) -> ServerModelProfile {
         ServerModelProfile(
             id: id,
             servingLane: servingLane,
+            concurrentTextRequests: concurrentTextRequests,
             modality: modality
         )
     }
@@ -252,13 +254,9 @@ struct BackgroundAssistGatingTests {
         ))
     }
 
-    /// The `--mllm` lane runs one request at a time, so anything we send
-    /// there is not batched alongside the reader's turn — it is queued in
-    /// front of their next one.
-    ///
-    /// The server still reports `modality: text` for this payload. The live
-    /// `serving_lane` is what distinguishes its execution path.
-    @Test("A serialised vision lane with text modality refuses")
+    /// Without concurrency metadata, older vision profiles remain conservative,
+    /// even when their modality is text.
+    @Test("A vision lane without concurrency metadata refuses")
     func visionLaneRefuses() throws {
         let payload = #"{"id":"m","serving_lane":"vision","modality":"text"}"#
         let liveProfile = try JSONDecoder().decode(
@@ -267,6 +265,24 @@ struct BackgroundAssistGatingTests {
         #expect(!ChatViewModel.laneAllowsBackgroundWork(
             liveProfile, alias: "m"
         ))
+    }
+
+    @Test("Live concurrency overrides the lane name", arguments: [
+        ("vision", true), ("vision", false), ("text", false)
+    ])
+    func explicitConcurrency(lane: String, concurrent: Bool) {
+        #expect(ChatViewModel.laneAllowsBackgroundWork(
+            profile(servingLane: lane, concurrentTextRequests: concurrent), alias: "m"
+        ) == concurrent)
+    }
+
+    @Test("Decoded vision concurrency allows background work")
+    func decodedConcurrentVisionAllows() throws {
+        let payload = #"{"id":"m","serving_lane":"vision","concurrent_text_requests":true}"#
+        let liveProfile = try JSONDecoder().decode(
+            ServerModelProfile.self, from: Data(payload.utf8)
+        )
+        #expect(ChatViewModel.laneAllowsBackgroundWork(liveProfile, alias: "m"))
     }
 
     @Test("An older profile without a serving lane allows")

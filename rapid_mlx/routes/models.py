@@ -314,6 +314,15 @@ def _served_lane_fields(model_id: str) -> tuple[str | None, str | None]:
     )
 
 
+def _served_text_concurrency(model_id: str) -> bool | None:
+    """Return live text concurrency only for a real bool; never fail discovery."""
+    try:
+        value = getattr(_engine_for(model_id), "concurrent_text_requests", None)
+        return value if isinstance(value, bool) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _served_experimental(model_id: str) -> bool:
     """Return architecture-derived experimental truth for a live model.
 
@@ -1177,6 +1186,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     audio_lanes=audio_lanes,
                     serving_lane=serving_lane,
                     serving_lane_reason=serving_lane_reason,
+                    concurrent_text_requests=_served_text_concurrency(model_id),
                     speculative_decoding=speculative_decoding,
                 )
         except Exception:  # noqa: BLE001
@@ -1192,6 +1202,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             audio_lanes=audio_lanes,
             serving_lane=serving_lane,
             serving_lane_reason=serving_lane_reason,
+            concurrent_text_requests=_served_text_concurrency(model_id),
             speculative_decoding=speculative_decoding,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
@@ -1237,6 +1248,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         audio_lanes=audio_lanes,
         serving_lane=serving_lane,
         serving_lane_reason=serving_lane_reason,
+        concurrent_text_requests=_served_text_concurrency(model_id),
         speculative_decoding=speculative_decoding,
     )
 

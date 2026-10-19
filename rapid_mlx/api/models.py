@@ -2659,6 +2659,8 @@ class ModelInfo(BaseModel):
     # served through a text fallback. Discovery-only entries keep ``None``.
     serving_lane: str | None = None
     serving_lane_reason: str | None = None
+    # Live-engine truth; None for discovery-only entries and older engines.
+    concurrent_text_requests: bool | None = None
     # Max prompt-token context window the loaded engine advertises
     # for this id. Populated only when the entry maps to an actively
     # loaded engine (single-model serve, or the matching ModelEntry

@@ -1365,6 +1365,28 @@ class BatchedEngine(BaseEngine):
         return "vision" if self._is_mllm else "text"
 
     @property
+    def concurrent_text_requests(self) -> bool | None:
+        """Whether the live scheduler can run text-only requests concurrently.
+
+        Unknown before ``start()`` completes (``_loaded``) or when no
+        multimodal scheduler is available.
+        The vision lane may use either a native text or multimodal scheduler.
+        """
+        if not getattr(self, "_loaded", False):
+            return None
+        if not getattr(self, "_is_mllm", False) or getattr(
+            self, "_mllm_native_text_engine", False
+        ):
+            from ..scheduler import SchedulerConfig
+
+            config = getattr(self, "_scheduler_config", None) or SchedulerConfig()
+            return getattr(config, "max_num_seqs", 1) > 1
+        scheduler = getattr(self, "_mllm_scheduler", None)
+        if scheduler is not None:
+            return getattr(getattr(scheduler, "config", None), "max_num_seqs", 1) > 1
+        return None
+
+    @property
     def serving_lane_reason(self) -> str | None:
         """Stable reason supplied by the shared serving-lane contract."""
         return self._serving_lane_reason
