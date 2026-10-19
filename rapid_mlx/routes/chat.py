@@ -981,9 +981,20 @@ def _auto_tool_grammar_declined_for_native_wire(
             },
         }
     ]
-    return _template_renders_native_xml_tool_call(
-        engine, request, probe_name, tools=probe_tools
-    ) is True and not info(probe_name).begin.startswith("<tool_call>\n<function=")
+    # The gate calls this outside any handler, so a template or parser-factory
+    # failure must mean "not declined" (keep the prior 400), never a 500.
+    try:
+        if (
+            _template_renders_native_xml_tool_call(
+                engine, request, probe_name, tools=probe_tools
+            )
+            is not True
+        ):
+            return False
+        begin = getattr(info(probe_name), "begin", None)
+    except Exception:
+        return False
+    return isinstance(begin, str) and not begin.startswith("<tool_call>\n<function=")
 
 
 def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:

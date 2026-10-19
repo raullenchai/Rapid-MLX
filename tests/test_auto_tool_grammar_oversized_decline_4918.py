@@ -333,3 +333,46 @@ def test_chat_route_oversized_auto_native_xml_returns_response(monkeypatch):
 
     assert response.status_code == 200, response.text
     assert response.json()["choices"][0]["message"]["content"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda name: None,
+        lambda name: SimpleNamespace(begin=None),
+        Mock(side_effect=ValueError("rejected name")),
+    ],
+)
+def test_gate_keeps_400_when_parser_factory_fails(monkeypatch, factory):
+    from rapid_mlx.tool_parsers import ToolParserManager
+
+    class Parser:
+        @classmethod
+        def supports_grammar(cls):
+            return True
+
+        def __init__(self, tokenizer):  # noqa: ARG002
+            pass
+
+        def structure_info(self):
+            return factory
+
+    monkeypatch.setattr(ToolParserManager, "get_tool_parser", lambda name: Parser)
+    with pytest.raises(HTTPException) as exc:
+        chat._enforce_tool_grammar_bounds_or_400(
+            cfg(), request(tools=many_tools()), engine()
+        )
+    assert exc.value.status_code == 400
+
+
+def test_gate_keeps_400_when_probe_raises(monkeypatch):
+    monkeypatch.setattr(
+        chat,
+        "_template_renders_native_xml_tool_call",
+        Mock(side_effect=KeyError("template blew up")),
+    )
+    with pytest.raises(HTTPException) as exc:
+        chat._enforce_tool_grammar_bounds_or_400(
+            cfg(), request(tools=many_tools()), engine()
+        )
+    assert exc.value.status_code == 400
