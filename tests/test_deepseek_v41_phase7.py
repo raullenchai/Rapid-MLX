@@ -344,8 +344,9 @@ def test_colocated_hub_shard_accepts_only_its_repo_blobs(tmp_path):
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize("prefetched", [True, False])
 def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, prefetched
 ):
     from rapid_mlx.models.deepseek_v41_native import server
     from rapid_mlx.speculative.dflash import server as serial
@@ -373,9 +374,15 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
     monkeypatch.setattr(
         "rapid_mlx._uvicorn.run_uvicorn", lambda *args, **kw: calls.update(listener=kw)
     )
-    monkeypatch.setattr(
-        server, "resolve_product_paths", lambda *_a, **_k: pytest.fail("re-resolved")
-    )
+    monkeypatch.setattr(a, "_RESOLVED", {})
+    if prefetched:
+        # Serve reuses the CLI's verified prefetch instead of resolving again.
+        a.resolve_product_paths(a.FLASH_1017)
+        monkeypatch.setattr(
+            server,
+            "resolve_product_paths",
+            lambda *_a, **_k: pytest.fail("re-resolved"),
+        )
     server.run_server(
         model_name=a.FLASH_1017.alias,
         host="127.0.0.1",
@@ -384,8 +391,6 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
         default_max_tokens=4096,
         cors_origins=[],
         uvicorn_log_level="warning",
-        resolved_paths=(root, root / "dspark"),
-        resolved_local=True,
     )
     assert calls["memory"] == a.FLASH_1017
     assert calls["load"] == (
@@ -485,3 +490,12 @@ def test_mixed_target_runtime_accepts_partial_qmv_and_colocated_draft(monkeypatc
     )
     assert loaded is model
     assert paths == ["/target/dspark"]
+
+
+def test_resolution_is_taken_once(monkeypatch, tmp_path):
+    root = _local_build(tmp_path)
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
+    monkeypatch.setattr(a, "_RESOLVED", {})
+    a.resolve_product_paths(a.FLASH_1017)
+    assert a.take_resolved_product_paths(a.FLASH_1017) == (root, root / "dspark", True)
+    assert a.take_resolved_product_paths(a.FLASH_1017) is None

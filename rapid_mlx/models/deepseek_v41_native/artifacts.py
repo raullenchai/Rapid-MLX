@@ -461,6 +461,18 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
     return root
 
 
+# Verified resolutions, so serve reuses the CLI's prefetch without accepting
+# caller-supplied paths: (target, draft, is_local_override) per alias.
+_RESOLVED: dict[str, tuple[Path, Path, bool]] = {}
+
+
+def take_resolved_product_paths(
+    artifact: ProductArtifact,
+) -> tuple[Path, Path, bool] | None:
+    """Pop this process's last verified resolution of ``artifact``, if any."""
+    return _RESOLVED.pop(artifact.alias, None)
+
+
 def resolve_product_paths(
     artifact: ProductArtifact, *, allow_local: bool = True
 ) -> tuple[Path, Path]:
@@ -468,6 +480,7 @@ def resolve_product_paths(
         raise ValueError("local qualification override is only supported by serve")
     local = local_product_path(artifact) if allow_local else None
     if local is not None:
+        _RESOLVED[artifact.alias] = (local, local / artifact.draft_subfolder, True)
         return local, local / artifact.draft_subfolder
     require_pins(artifact)
     if not artifact.draft_subfolder:
@@ -498,6 +511,7 @@ def resolve_product_paths(
         if unpinned:
             raise ValueError(f"unpinned safetensors in the pinned snapshot: {unpinned}")
         _verify_files(root, files)
+    _RESOLVED[artifact.alias] = (target, draft, False)
     return target, draft
 
 

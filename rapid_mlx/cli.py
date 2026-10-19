@@ -5866,7 +5866,6 @@ def serve_command(args):
     _v41_artifact = product_artifact(args.model)
     _v41_local = local_product_path(_v41_artifact)
     _owns_v41_product_download = is_product_target(args.model)
-    _v41_resolved_paths = None
     if _v41_artifact is not None and _v41_local is None:
         require_pins(_v41_artifact)
     if _owns_v41_product_download:
@@ -6241,7 +6240,7 @@ def serve_command(args):
                     force=getattr(args, "force_disk_check", False),
                     revision_override=_v41_artifact.target_revision,
                 )
-            _v41_resolved_paths = resolve_product_paths(_v41_artifact)
+            resolve_product_paths(_v41_artifact)
     elif _owns_v41_product_download:
         from rapid_mlx.telemetry.server_start import failure_stage
 
@@ -7105,8 +7104,6 @@ def serve_command(args):
             max_concurrent_requests=args.max_concurrent_requests,
             cors_policy=server.get_resolved_cors_policy(),
             reasoning_parser_name=args.reasoning_parser,
-            resolved_paths=_v41_resolved_paths,
-            resolved_local=_v41_local is not None,
         )
         return
 

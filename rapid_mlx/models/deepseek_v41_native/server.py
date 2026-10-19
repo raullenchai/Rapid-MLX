@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import partial
-from pathlib import Path
 from typing import Any
 
 from .artifacts import (
@@ -14,6 +13,7 @@ from .artifacts import (
     product_artifact,
     local_product_path,
     resolve_product_paths,
+    take_resolved_product_paths,
 )
 from .serving import (
     generate,
@@ -45,8 +45,6 @@ def run_server(
     cors_policy: Any | None = None,
     reasoning_parser_name: str | None = "deepseek_v4",
     model_name: str = REAP.alias,
-    resolved_paths: tuple[Path, Path] | None = None,
-    resolved_local: bool = False,
 ) -> None:
     import uvicorn
 
@@ -61,17 +59,20 @@ def run_server(
         require_product_memory()
     else:
         require_product_memory(artifact)
-    # Reuse the CLI's resolution (and its single override warning) when given.
-    local = resolved_local if resolved_paths is not None else local_product_path(artifact)
     with failure_stage("download"):
         if artifact == REAP:
+            local = local_product_path(artifact) is not None
             target_path = download_target_snapshot()
             mtp_path = download_mtp_snapshot()
-        elif resolved_paths is not None:
-            # The CLI already resolved and verified this exact artifact.
-            target_path, mtp_path = resolved_paths
         else:
-            target_path, mtp_path = resolve_product_paths(artifact)
+            # Reuse the CLI's verified prefetch (and its single override
+            # warning); otherwise resolve and verify here.
+            resolved = take_resolved_product_paths(artifact)
+            if resolved is None:
+                resolve_product_paths(artifact)
+                resolved = take_resolved_product_paths(artifact)
+            assert resolved is not None
+            target_path, mtp_path, local = resolved
 
     def _load_all():
         target_revision = "local-unpinned" if local else artifact.target_revision
