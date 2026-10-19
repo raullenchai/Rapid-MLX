@@ -135,7 +135,9 @@ fi
 # notarytool reports Accepted before the ticket is always reachable from
 # Apple's ticket-delivery service; stapling immediately afterwards can fail
 # with exit 68 (NSURLError -1005 "network connection was lost"). Retry the
-# staple with backoff. `stapler validate` below stays mandatory.
+# staple with backoff. `stapler validate` below stays mandatory; it queries
+# the same service and can hit the same transient error right after a
+# successful staple, so it retries with the same backoff.
 echo "==> stapler staple $STAPLE_TARGET"
 staple_delays=(15 30 60 120)
 staple_attempt=1
@@ -149,7 +151,17 @@ until xcrun stapler staple "$STAPLE_TARGET"; do
     sleep "$delay"
     staple_attempt=$((staple_attempt + 1))
 done
-xcrun stapler validate "$STAPLE_TARGET"
+validate_attempt=1
+until xcrun stapler validate "$STAPLE_TARGET"; do
+    if (( validate_attempt > ${#staple_delays[@]} )); then
+        echo "==> stapler validate FAILED after ${validate_attempt} attempts"
+        exit 1
+    fi
+    delay="${staple_delays[$((validate_attempt - 1))]}"
+    echo "==> stapler validate attempt ${validate_attempt} failed; retrying in ${delay}s"
+    sleep "$delay"
+    validate_attempt=$((validate_attempt + 1))
+done
 
 echo "==> Gatekeeper assessment"
 # stapler validate (above) is the authoritative staple check and

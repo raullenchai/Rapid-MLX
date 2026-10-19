@@ -1,4 +1,4 @@
-"""notarize.sh retries a transiently failing staple and still validates it."""
+"""notarize.sh retries a transiently failing staple or validate."""
 
 from __future__ import annotations
 
@@ -26,6 +26,15 @@ case "$1 $2" in
       exit 68
     fi
     ;;
+  "stapler validate")
+    count_file="$STUB_DIR/validate-count"
+    n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$count_file"
+    if (( n <= VALIDATE_FAILURES )); then
+      echo "The validate action failed! Error 68." >&2
+      exit 68
+    fi
+    ;;
 esac
 exit 0
 """
@@ -45,7 +54,7 @@ def _write_stub(path: Path, body: str) -> None:
 
 
 def _run(
-    tmp_path: Path, staple_failures: int
+    tmp_path: Path, staple_failures: int, validate_failures: int = 0
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -66,6 +75,7 @@ def _run(
         "STUB_LOG": str(log),
         "STUB_DIR": str(tmp_path),
         "STAPLE_FAILURES": str(staple_failures),
+        "VALIDATE_FAILURES": str(validate_failures),
     }
     proc = subprocess.run(
         ["bash", str(SCRIPT), str(submit), str(tmp_path / "Rapid.app")],
@@ -96,4 +106,25 @@ def test_staple_gives_up_without_validating(tmp_path: Path) -> None:
     assert "stapler staple FAILED after 5 attempts" in proc.stdout
     assert sum(c.startswith("xcrun stapler staple") for c in calls) == 5
     assert not any(c.startswith("xcrun stapler validate") for c in calls)
+    assert not any(c.startswith("spctl") for c in calls)
+
+
+@pytest.mark.parametrize("failures", [1, 4])
+def test_validate_retries_after_staple(tmp_path: Path, failures: int) -> None:
+    proc, calls = _run(tmp_path, 0, failures)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    target = tmp_path / "Rapid.app"
+    assert calls.count(f"xcrun stapler staple {target}") == 1
+    assert calls.count(f"xcrun stapler validate {target}") == failures + 1
+    assert [c for c in calls if c.startswith("sleep")] == [
+        f"sleep {d}" for d in (15, 30, 60, 120)[:failures]
+    ]
+    assert any(c.startswith("spctl") for c in calls)
+
+
+def test_validate_gives_up_without_assessing(tmp_path: Path) -> None:
+    proc, calls = _run(tmp_path, 0, 5)
+    assert proc.returncode != 0
+    assert "stapler validate FAILED after 5 attempts" in proc.stdout
+    assert sum(c.startswith("xcrun stapler validate") for c in calls) == 5
     assert not any(c.startswith("spctl") for c in calls)
