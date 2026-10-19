@@ -1005,7 +1005,7 @@ def _auto_tool_grammar_declined_for_native_wire(
     return isinstance(begin, str) and not begin.startswith("<tool_call>\n<function=")
 
 
-def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
+def _enforce_tool_grammar_bounds_or_400(cfg, request) -> None:
     """#561: reject an oversized tool schema with HTTP 400 on the active path.
 
     Operator DECISION (2026-07): under the DEFAULT-ON constrained tool-calling
@@ -1013,31 +1013,14 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
     lose its structural guarantee. When the constraint is ACTIVE (operator has
     not opted out, tools + parser + a constrainable ``tool_choice``) and the
     schema exceeds the grammar-compile bounds, raise HTTP 400 so the caller sees
-    the failure explicitly. Auto requests whose template renders a native XML
-    wire incompatible with the configured grammar are exempt because the shared
-    builder decision declines their grammar. A separate hard cap bounds the
-    complete rendered tools payload used by that exact template probe. The
-    legacy free-form fallback also survives on the explicit opt-OUT path.
+    the failure explicitly. The legacy free-form fallback survives ONLY on the
+    explicit opt-OUT path (``_tool_grammar_constraint_active`` returns False),
+    preserving backward-compatible behavior for operators who disable the
+    feature.
     """
     if not _tool_grammar_constraint_active(cfg, request):
         return  # opted out / no tools / no parser / "none" — legacy free-form.
-    tools = getattr(request, "tools", None)
-    if not _tools_within_grammar_bounds(tools):
-        within_probe_bounds = _tools_within_grammar_bounds(
-            tools,
-            max_tools=_TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
-            max_schema_bytes=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
-            max_schema_depth=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
-            whole_tool=True,
-        )
-        if within_probe_bounds and _auto_tool_grammar_declined_for_native_wire(
-            engine, cfg, request
-        ):
-            logger.info(
-                "Oversized tool schema proceeding free-form: auto grammar "
-                "declined for template native wire"
-            )
-            return
+    if not _tools_within_grammar_bounds(getattr(request, "tools", None)):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -1049,6 +1032,72 @@ def _enforce_tool_grammar_bounds_or_400(cfg, request, engine=None) -> None:
                 "free-form tool calling."
             ),
         )
+
+
+async def _offload_native_wire_decline_probe(engine, cfg, request) -> bool:
+    """Run the exact native-wire decline probe in the bounded build executor."""
+    if not _try_admit_tool_grammar_build():
+        logger.warning(
+            "tool-grammar: compile-admission pool full (>= %d in-flight); "
+            "oversized native-wire probe declined",
+            _TOOL_GRAMMAR_MAX_INFLIGHT,
+        )
+        return False
+    try:
+        fut = _get_tool_grammar_build_executor().submit(
+            _auto_tool_grammar_declined_for_native_wire,
+            engine,
+            cfg,
+            request,
+        )
+    except Exception:
+        _release_tool_grammar_build()
+        logger.exception("tool-grammar: native-wire probe submission failed")
+        return False
+    track_build = getattr(engine, "track_tool_grammar_build", None)
+    if callable(track_build):
+        track_build(fut)
+    fut.add_done_callback(lambda _f: _release_tool_grammar_build())
+    try:
+        return bool(await asyncio.shield(asyncio.wrap_future(fut)))
+    except Exception:
+        logger.exception("tool-grammar: off-loop native-wire probe failed")
+        return False
+
+
+async def _enforce_tool_grammar_bounds_or_400_async(cfg, request, engine) -> None:
+    """Allow a bounded oversized auto request only when its wire probe declines."""
+    try:
+        _enforce_tool_grammar_bounds_or_400(cfg, request)
+        return
+    except HTTPException as exc:
+        if exc.status_code != 400:
+            raise
+
+        choice = _normalize_tool_choice_for_grammar(
+            getattr(request, "tool_choice", None)
+        )
+        tools = getattr(request, "tools", None)
+        within_probe_bounds = (
+            choice is not None
+            and choice["mode"] == "auto"
+            and _tools_within_grammar_bounds(
+                tools,
+                max_tools=_TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
+                max_schema_bytes=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
+                max_schema_depth=_TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
+                whole_tool=True,
+            )
+        )
+        if within_probe_bounds and await _offload_native_wire_decline_probe(
+            engine, cfg, request
+        ):
+            logger.info(
+                "Oversized tool schema proceeding free-form: auto grammar "
+                "declined for template native wire"
+            )
+            return
+        raise
 
 
 # Conservative token allowance for the wire envelope a forced call always needs
@@ -5124,9 +5173,10 @@ async def _create_chat_completion_impl(
     # #561: reject an oversized/over-deep/over-count schema with HTTP 400 BEFORE
     # the offload when the constraint is active (default-on), unless a separately
     # capped exact probe proves auto grammar will be declined for a mismatched
-    # native wire. This must run before ``_offload_tool_grammar_build`` — the
-    # offload treats an oversized schema as ineligible and returns ``None``.
-    _enforce_tool_grammar_bounds_or_400(cfg, request, engine=engine)
+    # native wire. The oversized exemption probe runs in the admission-gated
+    # executor. This must precede ``_offload_tool_grammar_build`` — that offload
+    # treats an oversized schema as ineligible and returns ``None``.
+    await _enforce_tool_grammar_bounds_or_400_async(cfg, request, engine)
     # LINE① (#558): decide reasoning-gated forced-grammar eligibility. Engage only
     # when a thinking budget is set AND the template PREFILLS an unclosed
     # ``<think>`` (seed state "open") — the exact condition under which the coupled

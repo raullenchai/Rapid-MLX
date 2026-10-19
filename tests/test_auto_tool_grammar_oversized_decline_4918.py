@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Oversized auto tools stay free-form when the template's native wire wins."""
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -147,19 +148,32 @@ def constrain_tools(monkeypatch):
     monkeypatch.setattr(tool_grammar, "are_single_special_tokens", lambda *args: True)
 
 
+@pytest.fixture(autouse=True)
+def restore_tool_grammar_admission():
+    prior = chat._tool_grammar_inflight
+    yield
+    chat._tool_grammar_inflight = prior
+
+
 @pytest.mark.parametrize(
     "tools",
     [many_tools(), [oversized_bytes_tool()], [oversized_depth_tool()]],
 )
-def test_gate_exempts_oversized_auto_native_xml(tools):
+async def test_gate_exempts_oversized_auto_native_xml(tools):
     req = request(tools=tools)
     assert chat._tool_grammar_eligible(cfg(), req) is False
-    assert chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine()) is None
-
-
-def test_json_wire_oversized_auto_still_400():
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        chat._enforce_tool_grammar_bounds_or_400(cfg(), req)
+    assert exc.value.status_code == 400
+    assert (
+        await chat._enforce_tool_grammar_bounds_or_400_async(cfg(), req, engine())
+        is None
+    )
+
+
+async def test_json_wire_oversized_auto_still_400():
+    with pytest.raises(HTTPException) as exc:
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine(JSON_TEMPLATE)
         )
     assert exc.value.status_code == 400
@@ -169,43 +183,189 @@ def test_json_wire_oversized_auto_still_400():
     "choice",
     ["required", {"type": "function", "function": {"name": "tool_0"}}],
 )
-def test_forced_oversized_native_xml_still_400(choice):
+async def test_forced_oversized_native_xml_still_400(choice):
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools(), choice=choice), engine()
         )
     assert exc.value.status_code == 400
 
 
-def test_opt_out_oversized_still_free_form(monkeypatch):
+async def test_opt_out_oversized_still_free_form(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "0")
     assert (
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools(), choice="required"), engine()
         )
         is None
     )
 
 
-def test_gate_probe_uses_full_request_tools(monkeypatch):
+async def test_gate_probe_uses_full_request_tools(monkeypatch):
     probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
     monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
     req = request(tools=many_tools())
 
-    chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine())
+    await chat._enforce_tool_grammar_bounds_or_400_async(cfg(), req, engine())
 
     assert probe.call_args.args[1] is req
     assert probe.call_args.kwargs == {}
     assert chat._auto_tool_grammar_declined_for_native_wire(engine(), cfg(), req)
 
 
-def test_exact_probe_respects_tool_count_dependent_wire():
+async def test_gate_probe_runs_off_event_loop_thread(monkeypatch):
+    event_loop_thread = threading.get_ident()
+    probe_threads = []
+    original = chat._auto_tool_grammar_declined_for_native_wire
+
+    def record_thread(*args, **kwargs):
+        probe_threads.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        chat, "_auto_tool_grammar_declined_for_native_wire", record_thread
+    )
+
+    await chat._enforce_tool_grammar_bounds_or_400_async(
+        cfg(), request(tools=many_tools()), engine()
+    )
+
+    assert probe_threads
+    assert probe_threads[0] != event_loop_thread
+
+
+async def test_gate_probe_admission_refused_keeps_400(monkeypatch):
+    probe = Mock(return_value=True)
+    monkeypatch.setattr(chat, "_try_admit_tool_grammar_build", lambda: False)
+    monkeypatch.setattr(chat, "_auto_tool_grammar_declined_for_native_wire", probe)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), request(tools=many_tools()), engine()
+        )
+
+    assert exc.value.status_code == 400
+    probe.assert_not_called()
+
+
+async def test_gate_probe_submission_failure_releases_admission(monkeypatch):
+    class BrokenExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("executor shut down")
+
+    prior = chat._tool_grammar_inflight
+    release = Mock(wraps=chat._release_tool_grammar_build)
+    monkeypatch.setattr(chat, "_get_tool_grammar_build_executor", BrokenExecutor)
+    monkeypatch.setattr(chat, "_release_tool_grammar_build", release)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), request(tools=many_tools()), engine()
+        )
+
+    assert exc.value.status_code == 400
+    release.assert_called_once_with()
+    assert chat._tool_grammar_inflight == prior
+
+
+async def test_gate_probe_success_releases_admission_and_tracks_future():
+    prior = chat._tool_grammar_inflight
+    tracked = []
+    tracked_engine = engine()
+    tracked_engine.track_tool_grammar_build = tracked.append
+
+    await chat._enforce_tool_grammar_bounds_or_400_async(
+        cfg(), request(tools=many_tools()), tracked_engine
+    )
+
+    assert len(tracked) == 1
+    assert tracked[0].done()
+    assert chat._tool_grammar_inflight == prior
+
+
+async def test_gate_probe_worker_failure_keeps_400(monkeypatch):
+    monkeypatch.setattr(
+        chat,
+        "_auto_tool_grammar_declined_for_native_wire",
+        Mock(side_effect=RuntimeError("probe failed")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), request(tools=many_tools()), engine()
+        )
+
+    assert exc.value.status_code == 400
+
+
+async def test_gate_probe_cancelled_caller_propagates_and_holds_slot(monkeypatch):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    started = threading.Event()
+    finish = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    prior = chat._tool_grammar_inflight
+
+    def blocking_probe(*args, **kwargs):
+        started.set()
+        finish.wait(timeout=5)
+        return True
+
+    monkeypatch.setattr(
+        chat, "_auto_tool_grammar_declined_for_native_wire", blocking_probe
+    )
+    monkeypatch.setattr(chat, "_get_tool_grammar_build_executor", lambda: pool)
+
+    try:
+        task = asyncio.create_task(
+            chat._offload_native_wire_decline_probe(
+                engine(), cfg(), request(tools=many_tools())
+            )
+        )
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert started.is_set()
+        assert chat._tool_grammar_inflight == prior + 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert chat._tool_grammar_inflight == prior + 1
+    finally:
+        finish.set()
+        pool.shutdown(wait=True)
+
+    for _ in range(200):
+        if chat._tool_grammar_inflight == prior:
+            break
+        await asyncio.sleep(0.005)
+    assert chat._tool_grammar_inflight == prior
+
+
+async def test_async_gate_propagates_non_bounds_http(monkeypatch):
+    def unavailable(cfg, request):  # noqa: ARG001
+        raise HTTPException(status_code=503, detail="unavailable")
+
+    monkeypatch.setattr(chat, "_enforce_tool_grammar_bounds_or_400", unavailable)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), request(tools=many_tools()), engine()
+        )
+
+    assert exc.value.status_code == 503
+
+
+async def test_exact_probe_respects_tool_count_dependent_wire():
     req = request(tools=many_tools())
     assert not chat._auto_tool_grammar_declined_for_native_wire(
         engine(LENGTH_DEPENDENT_TEMPLATE), cfg(), req
     )
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), req, engine(LENGTH_DEPENDENT_TEMPLATE)
         )
     assert exc.value.status_code == 400
@@ -228,20 +388,22 @@ def test_exact_probe_respects_tool_count_dependent_wire():
     ],
     ids=["tool-count", "schema-bytes", "schema-depth"],
 )
-def test_above_probe_cap_400_without_template_render(monkeypatch, tools):
+async def test_above_probe_cap_400_without_template_render(monkeypatch, tools):
     probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
     monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
     req = request()
     req.tools = tools
 
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), req, engine(XML_TEMPLATE)
+        )
 
     assert exc.value.status_code == 400
     probe.assert_not_called()
 
 
-def test_descriptions_above_complete_probe_cap_400_without_render(monkeypatch):
+async def test_descriptions_above_complete_probe_cap_400_without_render(monkeypatch):
     probe = Mock(wraps=chat._template_renders_native_xml_tool_call)
     monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
     tools = described_tools(chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES // 300 + 1)
@@ -249,17 +411,21 @@ def test_descriptions_above_complete_probe_cap_400_without_render(monkeypatch):
 
     assert not chat._tools_within_grammar_bounds(req.tools)
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), req, engine(XML_TEMPLATE)
+        )
 
     assert exc.value.status_code == 400
     probe.assert_not_called()
 
 
-def test_modest_descriptions_within_complete_probe_cap_allow_xml_decline():
+async def test_modest_descriptions_within_complete_probe_cap_allow_xml_decline():
     req = request(tools=described_tools(16))
 
     assert (
-        chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine(XML_TEMPLATE))
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), req, engine(XML_TEMPLATE)
+        )
         is None
     )
 
@@ -355,17 +521,20 @@ def test_helper_scans_at_most_tool_count_cap(monkeypatch):
     probe.assert_not_called()
 
 
-def test_oversized_auto_finds_safe_name_after_grammar_tool_cap():
+async def test_oversized_auto_finds_safe_name_after_grammar_tool_cap():
     req = request(tools=many_tools(400))
     # Validation rejects unsafe names on input, so mutate after construction.
     for item in req.tools[:300]:
         item.function["name"] = "bad>name"
 
     assert not chat._tools_within_grammar_bounds(req.tools)
-    assert chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine()) is None
+    assert (
+        await chat._enforce_tool_grammar_bounds_or_400_async(cfg(), req, engine())
+        is None
+    )
 
 
-def test_helper_returns_false_when_parser_construction_fails(monkeypatch):
+async def test_helper_returns_false_when_parser_construction_fails(monkeypatch):
     from rapid_mlx.tool_parsers import ToolParserManager
 
     class BrokenParser:
@@ -381,7 +550,7 @@ def test_helper_returns_false_when_parser_construction_fails(monkeypatch):
         engine(), cfg(), request()
     )
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine()
         )
     assert exc.value.status_code == 400
@@ -470,7 +639,7 @@ def test_chat_route_oversized_auto_native_xml_returns_response(monkeypatch):
         Mock(side_effect=ValueError("rejected name")),
     ],
 )
-def test_gate_keeps_400_when_parser_factory_fails(monkeypatch, factory):
+async def test_gate_keeps_400_when_parser_factory_fails(monkeypatch, factory):
     from rapid_mlx.tool_parsers import ToolParserManager
 
     class Parser:
@@ -486,20 +655,20 @@ def test_gate_keeps_400_when_parser_factory_fails(monkeypatch, factory):
 
     monkeypatch.setattr(ToolParserManager, "get_tool_parser", lambda name: Parser)
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine()
         )
     assert exc.value.status_code == 400
 
 
-def test_gate_keeps_400_when_probe_raises(monkeypatch):
+async def test_gate_keeps_400_when_probe_raises(monkeypatch):
     monkeypatch.setattr(
         chat,
         "_template_renders_native_xml_tool_call",
         Mock(side_effect=KeyError("template blew up")),
     )
     with pytest.raises(HTTPException) as exc:
-        chat._enforce_tool_grammar_bounds_or_400(
+        await chat._enforce_tool_grammar_bounds_or_400_async(
             cfg(), request(tools=many_tools()), engine()
         )
     assert exc.value.status_code == 400
