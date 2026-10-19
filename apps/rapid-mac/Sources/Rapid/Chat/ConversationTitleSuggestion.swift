@@ -141,7 +141,9 @@ enum ConversationTitleSuggestion {
         // A script mismatch keeps the derived title in the user's language
         // (#4937). For a CJK conversation any CJK letter is enough: a title
         // such as "Python 列表反转方法" is half Latin by count and is still
-        // the right name for a Chinese question about Python.
+        // the right name for a Chinese question about Python. The other
+        // direction stays a majority test so an English chat about a CJK
+        // word ("Meaning of 你好") keeps its title.
         if let reference, reference.contains(where: \.isLetter) {
             let matches = ReplyScript.usesCJK(reference)
                 ? ReplyScript.containsCJK(title)

@@ -521,6 +521,7 @@ struct BackgroundAssistLanguageTests {
         ("天空散射", "123?!", true), ("Sky scattering", "", true),
         ("Python 列表反转方法", "Python 里怎么反转一个列表？", true),
         ("Python list 反转", "How do I reverse a Python list?", true),
+        ("Meaning of 你好", "What does 你好 mean?", true),
         ("列表反转方法", "How do I reverse a Python list?", false),
     ])
     func titleScript(_ title: String, _ reference: String, _ accepted: Bool) {
