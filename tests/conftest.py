@@ -1010,6 +1010,39 @@ def server_url(request):
 
 
 @pytest.fixture
+def deterministic_apc_host_memory(monkeypatch):
+    """Pin the host-memory inputs that gate APC exact-cache admission.
+
+    ``APCManager._make_room`` admits an entry only when ``_memory_headroom()``
+    is large enough, and that headroom is read from live host state: free RAM
+    (``_free_ram_bytes``), the Metal working set captured at construction
+    (``_metal_working_set_bytes``), and the process-wide MLX active/cache
+    counters. On a loaded host the real values refuse admission and unrelated
+    tests fail. Tests that exercise low-memory behavior still monkeypatch their
+    own values after this fixture runs, which overrides these defaults.
+    """
+    from rapid_mlx.models.mlx_vlm_vendored import apc
+
+    real_mx = apc.mx
+
+    class _PinnedMemoryMx:
+        def __getattr__(self, name):
+            return getattr(real_mx, name)
+
+        @staticmethod
+        def get_active_memory():
+            return 0
+
+        @staticmethod
+        def get_cache_memory():
+            return 0
+
+    monkeypatch.setattr(apc, "_free_ram_bytes", lambda: 256 << 30)
+    monkeypatch.setattr(apc, "_metal_working_set_bytes", lambda: 64 << 30)
+    monkeypatch.setattr(apc, "mx", _PinnedMemoryMx())
+
+
+@pytest.fixture
 def clean_doctor_runtime_state(monkeypatch):
     """Reset every doctor runtime selection and probe cache around a test."""
     from rapid_mlx.doctor import env_health

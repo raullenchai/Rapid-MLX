@@ -12,7 +12,10 @@ pass it through — including when it's ``None``.
 import pytest
 
 pytest.importorskip("mlx")
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("deterministic_apc_host_memory"),
+]
 
 
 import base64

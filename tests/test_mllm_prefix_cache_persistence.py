@@ -10,7 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("mlx")
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("deterministic_apc_host_memory"),
+]
 
 import mlx.core as mx
 
@@ -703,12 +706,13 @@ def test_save_serialization_error_preserves_committed_snapshot(
     def explode(*args, **kwargs):
         raise RuntimeError("cannot serialize cache state")
 
-    monkeypatch.setattr(apc.DiskBlockStore, "save_exact_cache", explode)
-    assert not gen.save_exact_prefix_cache_to_disk(path)
+    # Scope the patch so restoring it keeps the module's pinned host memory.
+    with monkeypatch.context() as patch:
+        patch.setattr(apc.DiskBlockStore, "save_exact_cache", explode)
+        assert not gen.save_exact_prefix_cache_to_disk(path)
     assert (path / "index.json").read_bytes() == before
     assert not Path(str(path) + ".new").exists()
     assert "snapshot save failed: cannot serialize cache state" in caplog.text
-    monkeypatch.undo()
     fresh = generator()
     assert fresh.load_exact_prefix_cache_from_disk(path) == 1
     assert list(fresh._prefix_cache._exact_cache) == [key]
