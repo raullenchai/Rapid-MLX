@@ -474,6 +474,9 @@ struct ToolNotCalledCaptionTests {
             "I'd like to know today's date.",
             "What's today's date, thanks?", "What is today's day of the month?",
             "What time is it right now, exactly?",
+            "What's today's date in my timezone?",
+            "What's today's date in MM/DD/YYYY format?",
+            "What time is it right now in my time zone?",
         ] {
             #expect(!ChatMessage.promptAsksForLiveData(prompt), "uses context: \(prompt)")
             #expect(!ChatMessage.promptLooksCalculatorish(prompt))
@@ -490,6 +493,7 @@ struct ToolNotCalledCaptionTests {
             "today's top headlines", "what is today's close?", "right now, how many users?",
             "What's today's date and latest version?", "today's date and this week's events",
             "What time is the game right now?", "today's update", "right now, runtime?",
+            "today's date in the news", "what is my portfolio worth right now",
         ] {
             #expect(ChatMessage.promptAsksForLiveData(prompt), "still live: \(prompt)")
         }
