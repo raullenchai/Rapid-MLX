@@ -137,6 +137,13 @@ router = APIRouter()
 _NONPROGRESS_RETRY_BUFFER_LIMIT = 4 * 1024 * 1024
 
 
+def _tool_parse_request(openai_request: ChatCompletionRequest) -> ChatCompletionRequest:
+    # Mirror chat/Messages: tool_choice="none" leaves tool markup as text.
+    if openai_request.tool_choice == "none" and openai_request.tools:
+        return openai_request.model_copy(update={"tools": None})
+    return openai_request
+
+
 def _should_prime_deepseek_codex_exec(
     responses_request: ResponsesRequest, tool_parser: str | None
 ) -> bool:
@@ -1934,7 +1941,7 @@ async def _non_stream(
         _engine_calls = getattr(output, "tool_calls", None)
         _unused_text, _detected_calls = _parse_tool_calls_with_parser(
             output.text,
-            openai_request,
+            _tool_parse_request(openai_request),
             structured_tool_calls=_engine_calls,
             finish_reason=output.finish_reason,
         )
@@ -2279,7 +2286,7 @@ async def _non_stream(
     engine_tool_calls = getattr(output, "tool_calls", None)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
         output.text,
-        openai_request,
+        _tool_parse_request(openai_request),
         structured_tool_calls=engine_tool_calls,
         finish_reason=output.finish_reason,
     )
@@ -3196,7 +3203,10 @@ async def _stream_responses(
         # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
         last_finish_reason: str | None = None
         last_response_metrics = None
-        tool_filter = StreamingToolCallFilter(enabled=bool(chat_kwargs.get("tools")))
+        tool_filter = StreamingToolCallFilter(
+            enabled=bool(chat_kwargs.get("tools"))
+            and openai_request.tool_choice != "none"
+        )
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
         # forces a tool_choice (``required`` or named-function), the
@@ -4374,7 +4384,7 @@ async def _stream_responses(
         # loop silently terminated with no items emitted.
         _, parsed_tool_calls = _parse_tool_calls_with_parser(
             accumulated_raw,
-            openai_request,
+            _tool_parse_request(openai_request),
             structured_tool_calls=accumulated_structured_tool_calls or None,
         )
 

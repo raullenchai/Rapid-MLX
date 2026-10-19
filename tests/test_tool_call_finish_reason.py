@@ -565,15 +565,10 @@ def test_stream_tool_markup_matches_buffered_request_capability(
             if event["type"] == "response.output_text.delta"
         )
         terminal = events[-1]
-        no_answer = tools_mode == "none" and chunks != "structured"
-        assert body["status"] == ("failed" if no_answer else "completed")
-        if no_answer:
-            # Existing behavior: hidden calls with no final answer fail SSE.
-            assert terminal["type"] == "response.failed", response.text
-            assert terminal["response"]["error"]["code"] == "model_no_final_answer"
-        else:
-            assert terminal["type"] == "response.completed", response.text
-            assert terminal["response"]["status"] == "completed"
+        # Responses now preserves markup under none, so the text completes normally.
+        assert body["status"] == "completed"
+        assert terminal["type"] == "response.completed", response.text
+        assert terminal["response"]["status"] == "completed"
         for items in (
             body["output"],
             terminal["response"]["output"],
@@ -622,7 +617,7 @@ def test_stream_tool_markup_matches_buffered_request_capability(
                 and event["delta"]["type"] == "input_json_delta"
             )
             assert json.loads(arguments) == {"query": "x"}
-    # Messages removes converted tools for none, so both paths preserve text.
-    parsing_enabled = declared and not (route == "messages" and tools_mode == "none")
+    # Both routes bypass parsing under none and preserve the raw model text.
+    parsing_enabled = tools_mode == "auto"
     expected = "answer" if chunks == "structured" else ("" if parsing_enabled else raw)
     assert streamed == buffered == expected

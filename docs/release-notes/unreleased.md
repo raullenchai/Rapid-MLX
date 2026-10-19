@@ -13,6 +13,7 @@
 - **Cleaner Desktop follow-ups**: the time note now appears separately before your message, keeping time available without prompting small models to call web tools on plain writing/coding turns. Tool replies preserve the language of Chinese questions. Strict-alternation chat templates now accept consecutive user turns. Fixes #4891.
 
 - **Consistent replies without tools**: buffered replies preserve model-emitted tool-call markup as text when no tools were offered, matching streaming replies. Fixes #4877.
+- **Responses `tool_choice: "none"` matches chat and Messages**: `/v1/responses` no longer parses tool calls under `tool_choice: "none"`; model-emitted tool-call markup is returned as ordinary text on both streaming and non-streaming replies. Fixes #4888.
 
 - **Cleaner Desktop answers after tool use**: chats that reach their tool budget now send the final-answer instruction as the last message, and show an answer or a clear fallback instead of raw tool-call markup. Fixes #4871.
 - **Start & Send**: when the chosen chat model is downloaded but stopped, Send starts it and sends the draft once it is ready; the draft stays put if startup is cancelled or fails. Fixes #4854.
