@@ -28,8 +28,11 @@ enum ReplyScript {
         return (cjkLetters, otherLetters)
     }
 
-    /// CJK-majority text with Han and no kana or hangul. Ordinary Japanese is
-    /// mostly Han but always carries kana, so any kana means not Chinese.
+    /// CJK-majority text with Han and no kana or hangul: the text that gets
+    /// the Han-script title and chip cues. Ordinary Japanese always carries
+    /// kana, so it is excluded. Short Han-only Japanese ("東京天気") cannot be
+    /// told apart, which is why those cues are written in Han script but ask
+    /// for "the user's language", never for Chinese by name.
     nonisolated static func isChinese(_ text: String) -> Bool {
         guard usesCJK(text) else { return false }
         var han = 0

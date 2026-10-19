@@ -142,7 +142,7 @@ enum FollowUpSuggestion {
         "do you need", "do you want", "would you like", "will you like",
         "can i help", "may i help", "how can i help", "can i assist",
         "want me to", "like me to", "need me to",
-        "anything else you", "anything else i can",
+        "anything else you need", "anything else you'd like", "anything else i can",
         "需要我", "我可以帮", "我能帮", "我来帮", "帮你", "帮您",
         "你需要", "您需要", "你想要", "您想要", "你想让", "您想让", "你希望",
         "您希望", "需要帮助",

@@ -469,8 +469,8 @@ struct BackgroundAssistLanguageTests {
         let original = "You are a conversation titler. Given a chat, you output a short noun "
             + "phrase naming what it is about, and nothing else. Use the language of the chat."
         #expect(title[0].content == original + (chinese
-            ? " The user wrote in Chinese, so the name must be in Chinese." : ""))
-        let cue = chinese ? "用 4 到 10 个字的中文概括这段对话的主题：" : "Name it in 2 to 5 words:"
+            ? " The user did not write in English, so the name must not be in English." : ""))
+        let cue = chinese ? "用 4 到 10 个字概括这段对话的主题，使用与用户相同的语言：" : "Name it in 2 to 5 words:"
         #expect(title[1].content == "Chat:\nUser: \(user)\nAssistant: Light scatters.\n\n\(cue)")
         #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == user)
         let followUp = try #require(FollowUpSuggestion.messages(forTurn: transcript))
@@ -510,7 +510,7 @@ struct BackgroundAssistLanguageTests {
         ]
         #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == "为什么天空是蓝色的？")
         #expect(ConversationTitleSuggestion.messages(forFirstExchange: transcript)?.last?.content
-            .contains("用 4 到 10 个字的中文概括这段对话的主题：") == true)
+            .contains("用 4 到 10 个字概括这段对话的主题，使用与用户相同的语言：") == true)
     }
 
     @Test("Title script must match a reference with letters", arguments: [
@@ -542,7 +542,8 @@ struct BackgroundAssistLanguageTests {
         "DO YOU NEED help?", "Will you like more?",
         "May I help?", "How can I help?", "Can I assist?",
         "Want me to continue?", "Like me to continue?", "Need me to continue?",
-        "Is there anything else you need?", "Anything else I can do?",
+        "Is there anything else you need?", "Anything else you'd like?",
+        "Anything else I can do?",
         "需要我继续吗？", "我能帮忙吗？", "我来帮忙吗？", "帮你看看吗？",
         "帮您看看吗？", "您需要什么？", "你想要什么？", "您想要什么？", "您想让我做什么？",
         "你希望怎样？", "您希望怎样？", "需要帮助吗？",
@@ -558,6 +559,7 @@ struct BackgroundAssistLanguageTests {
         "你能解释一下吗？", "帮我解释一下好吗？",
         "Can you provide an example?", "Which framework do you prefer?",
         "Is there anything else I should know?", "还有其他方法吗？",
+        "Is there anything else you recommend?",
         "这会让我的电脑变慢吗？", "是不是要我先安装 Python？",
     ])
     func userVoice(_ question: String) {

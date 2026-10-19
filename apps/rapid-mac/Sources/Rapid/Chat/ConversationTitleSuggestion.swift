@@ -61,10 +61,10 @@ enum ConversationTitleSuggestion {
         guard let exchange = firstExchange(in: transcript) else { return nil }
         let chinese = ReplyScript.isChinese(exchange.user.content)
         let cue = chinese
-            ? "用 4 到 10 个字的中文概括这段对话的主题："
+            ? "用 4 到 10 个字概括这段对话的主题，使用与用户相同的语言："
             : "Name it in 2 to 5 words:"
         let instruction = chinese
-            ? systemPrompt + " The user wrote in Chinese, so the name must be in Chinese."
+            ? systemPrompt + " The user did not write in English, so the name must not be in English."
             : systemPrompt
 
         let prompt = """
