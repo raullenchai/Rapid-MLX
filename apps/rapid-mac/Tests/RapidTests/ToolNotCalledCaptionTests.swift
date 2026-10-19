@@ -480,6 +480,9 @@ struct ToolNotCalledCaptionTests {
             "Give me the time right now in 24-hour format",
             "What time is it right now in 12-hour format?",
             "What time is it right now in my time zone?",
+            "Do you know today's date?", "How can I find the time right now?",
+            "Can you check what time it is right now for me?",
+            "Hey, what's today's date?", "Is it Monday today? What's today's day?",
         ] {
             #expect(!ChatMessage.promptAsksForLiveData(prompt), "uses context: \(prompt)")
             // The legacy no-roster fallback treats digits followed by "-" as math.
@@ -509,6 +512,7 @@ struct ToolNotCalledCaptionTests {
             "What time is the game right now?", "today's update", "right now, runtime?",
             "today's date in the news", "what is my portfolio worth right now",
             "today's 10 top headlines", "what is the 10 year yield right now",
+            "What time is it right now in Tokyo?",
         ] {
             #expect(ChatMessage.promptAsksForLiveData(prompt), "still live: \(prompt)")
         }
