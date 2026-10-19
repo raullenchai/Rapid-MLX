@@ -2614,18 +2614,25 @@ class StreamingPostProcessor:
             tail = self._content_sanitizer.flush()
             if self._content_sanitizer_accumulates:
                 self.accumulated_text += tail
-            self._insert_content_before_tool_call(events, tail)
+            self._insert_content_before_tool_call(events, tail, released_held=True)
         return events
 
     @staticmethod
-    def _insert_content_before_tool_call(events: list[StreamEvent], content: str):
+    def _insert_content_before_tool_call(
+        events: list[StreamEvent], content: str, *, released_held: bool = False
+    ):
         """Keep resolved content ahead of the next structured call, or at EOF."""
         if content:
             index = next(
                 (i for i, event in enumerate(events) if event.type == "tool_call"),
                 len(events),
             )
-            events.insert(index, StreamEvent(type="content", content=content))
+            events.insert(
+                index,
+                StreamEvent(
+                    type="content", content=content, released_held=released_held
+                ),
+            )
 
     @property
     def content_held(self) -> bool:

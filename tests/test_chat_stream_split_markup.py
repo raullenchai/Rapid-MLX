@@ -322,3 +322,63 @@ def test_logprobs_finish_chunk_carry_their_held_text(monkeypatch, last):
     final = next(choice for choice in choices if choice.get("finish_reason"))
     assert final["delta"].get("content") == sanitize_content_for_stream(last)
     assert [e["token"] for e in final["logprobs"]["content"]] == [last]
+
+
+@pytest.mark.parametrize("held", ["[", "<|", "[Calli"])
+def test_logprobs_released_held_text_excludes_tool_call_tokens(monkeypatch, held):
+    """Text released ahead of a tool call carries only its own logprobs (#4957)."""
+    from rapid_mlx.api.models import TokenLogProb
+    from rapid_mlx.routes import chat
+
+    monkeypatch.setattr(
+        chat,
+        "_extract_streaming_token_logprobs",
+        lambda output, *a, **k: [
+            TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
+        ],
+    )
+    markup = '<tool_call>{"name":"get_weather"}</tool_call>'
+
+    class HeldThenToolEngine(ReplayEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text="ok " + held, new_text="ok " + held, finished=False
+            )
+            yield GenerationOutput(
+                text="ok " + held + markup,
+                new_text=markup,
+                channel="tool_call",
+                tool_calls=[{"name": "get_weather", "arguments": '{"city":"Paris"}'}],
+                finished=False,
+            )
+            yield GenerationOutput(
+                text="", new_text="", finished=True, finish_reason="stop"
+            )
+
+    client = client_for(HeldThenToolEngine([], "stop"))
+    get_config().tool_call_parser = "hermes"
+    response = client.post(
+        "/v1/chat/completions",
+        json={**_payload("auto"), "stream": True, "logprobs": True},
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    call_index = next(
+        i for i, choice in enumerate(choices) if choice["delta"].get("tool_calls")
+    )
+    contents = [choice["delta"].get("content") or "" for choice in choices]
+    released = sanitize_content_for_stream(held)
+    assert released
+    assert "".join(contents[:call_index]) == "ok " + released
+    assert contents[call_index - 1] == released
+    logprobs = choices[call_index - 1]["logprobs"]["content"]
+    assert [e["token"] for e in logprobs] == ["ok " + held]
+    tokens = [
+        entry["token"]
+        for choice in choices
+        if choice["delta"].get("content")
+        for entry in (choice.get("logprobs") or {}).get("content", [])
+    ]
+    assert markup not in tokens
