@@ -105,7 +105,9 @@ def _safe_relative_name(value: object) -> str | None:
     return path.as_posix()
 
 
-def _missing_index_shards(root: Path, *, recursive: bool = True) -> list[str]:
+def _missing_index_shards(
+    root: Path, *, recursive: bool = True, primary_only: bool = False
+) -> list[str]:
     missing: set[str] = set()
     try:
         indexes = sorted(
@@ -116,6 +118,8 @@ def _missing_index_shards(root: Path, *, recursive: bool = True) -> list[str]:
     except OSError:
         return []
     for index_path in indexes:
+        if primary_only and index_path.name != "model.safetensors.index.json":
+            continue
         try:
             payload = json.loads(index_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -330,7 +334,9 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                 "decoder",
             )
             required = [
-                component for component in weight_components if component in manifest
+                component
+                for component in weight_components
+                if component in manifest and manifest[component] is not None
             ]
             if not required:
                 raise FileNotFoundError(
@@ -369,7 +375,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     # tokenizer.load_model_checked calls incomplete_checkpoint_reason() before
     # mlx-lm; that boundary rejects stale indexes even if mlx-lm's own glob
     # would otherwise load a consolidated model.safetensors.
-    missing_shards = _missing_index_shards(root, recursive=False)
+    missing_shards = _missing_index_shards(root, recursive=False, primary_only=True)
     if missing_shards:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])

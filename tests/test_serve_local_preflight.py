@@ -147,6 +147,17 @@ def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_unrelated_root_adapter_index_does_not_block_text_checkpoint(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors").write_bytes(b"data")
+    (root / "adapter.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"adapter": "missing.safetensors"}})
+    )
+    validate_local_model_for_serve(str(root))
+
+
 def test_programmatic_server_load_rejects_missing_config_before_engine(tmp_path):
     from rapid_mlx.server import load_model
 
@@ -178,6 +189,16 @@ def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
         else:
             (root / "split_model.json").write_text('{"components":["transformer"]}')
         (root / "transformer.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
+def test_disabled_optional_image_component_needs_no_weights(tmp_path):
+    root = tmp_path / "image"
+    root.mkdir()
+    (root / "model_index.json").write_text(
+        '{"_class_name":"Pipeline","transformer":[],"text_encoder_2":null}'
+    )
+    (root / "transformer.safetensors").write_bytes(b"data")
     validate_local_model_for_serve(str(root))
 
 
