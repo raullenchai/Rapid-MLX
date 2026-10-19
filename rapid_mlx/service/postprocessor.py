@@ -2648,8 +2648,10 @@ class StreamingPostProcessor:
                 # here keeps the terminal chunk count unchanged.
                 if self._ambiguous_prefix_held:
                     # #4925: these bytes follow any content the sanitizer
-                    # still holds, so resolve them through it in order.
+                    # still holds; resolve them in order and drain it, since
+                    # this finish event is the terminal content position.
                     flush = self._content_sanitizer.process(self._ambiguous_prefix_held)
+                    flush += self._content_sanitizer.flush()
                     self._ambiguous_prefix_held = ""
                     finish_event = self._make_finish_event(output)
                     # Prepend the held bytes to whatever content the
