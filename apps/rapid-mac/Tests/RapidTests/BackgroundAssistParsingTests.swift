@@ -453,7 +453,8 @@ struct BackgroundAssistLanguageTests {
         ("漢かな", true, false), ("漢字かな", true, false),
         ("日本語の文法を説明して", true, false),
         ("请解释 Python list comprehension", false, true),
-        ("What does 你好 mean?", false, false), ("用 Python 写一个 hello world", false, true),
+        ("What does 你好 mean?", false, false),
+        ("㐀㐁", true, true), ("𠀀𠀁", true, true), ("豈更", true, true), ("ｶﾀｶﾅ", true, false), ("用 Python 写一个 hello world", false, true),
     ])
     func scriptSignal(_ text: String, _ cjk: Bool, _ chinese: Bool) {
         #expect(ReplyScript.usesCJK(text) == cjk)

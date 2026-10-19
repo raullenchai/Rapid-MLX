@@ -59,14 +59,36 @@ enum ReplyScript {
     /// "the user's language", never for Chinese by name.
     nonisolated static func isChinese(_ text: String) -> Bool {
         guard writesInCJK(text) else { return false }
-        return !text.unicodeScalars.contains {
-            (0x3040...0x30FF).contains($0.value) || (0xAC00...0xD7AF).contains($0.value)
-        }
+        return !text.unicodeScalars.contains(where: isKanaOrHangul)
     }
 
     private nonisolated static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
-        (0x4E00...0x9FFF).contains(scalar.value)         // unified ideographs
-            || (0x3040...0x30FF).contains(scalar.value)  // kana
-            || (0xAC00...0xD7AF).contains(scalar.value)  // hangul
+        isHan(scalar) || isKanaOrHangul(scalar)
+    }
+
+    private nonisolated static func isHan(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x4E00...0x9FFF,       // unified ideographs
+             0x3400...0x4DBF,       // extension A
+             0xF900...0xFAFF,       // compatibility ideographs
+             0x20000...0x323AF:     // supplementary extensions
+            return true
+        default:
+            return false
+        }
+    }
+
+    private nonisolated static func isKanaOrHangul(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3040...0x30FF,       // hiragana, katakana
+             0x31F0...0x31FF,       // katakana phonetic extensions
+             0xFF66...0xFF9F,       // half-width katakana
+             0x1100...0x11FF,       // hangul jamo
+             0x3130...0x318F,       // hangul compatibility jamo
+             0xAC00...0xD7AF:       // hangul syllables
+            return true
+        default:
+            return false
+        }
     }
 }
