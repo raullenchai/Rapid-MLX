@@ -339,6 +339,17 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
             # shard under a user-supplied local model is not a download failure.
             # ModuleNotFoundError is handled separately below because mlx-lm
             # uses it for an unknown architecture module.
+            if (
+                isinstance(current, NotADirectoryError)
+                and isinstance(model_ref, str)
+                and Path(model_ref).suffix == ".safetensors"
+                and isinstance(current.filename, str)
+                and Path(current.filename).expanduser().absolute()
+                == Path(model_ref).expanduser().absolute() / "config.json"
+            ):
+                # Preserve the existing single-file loader classification.
+                # The new preflight uses the file itself as filename instead.
+                return "corrupt_weights"
             if isinstance(
                 current, (FileNotFoundError, NotADirectoryError)
             ) and not isinstance(current, ModuleNotFoundError):
