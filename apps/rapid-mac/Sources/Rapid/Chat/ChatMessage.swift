@@ -2199,11 +2199,11 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// "temperature" does not fire on "temperatures"' neighbours and
     /// "current" does not fire on "concurrent".
     static func promptAsksForLiveData(_ prompt: String) -> Bool {
-        let lowered = prompt.lowercased()
+        let lowered = prompt.lowercased().replacingOccurrences(of: "’", with: "'")
         let liveKeywords: [String] = [
             "google for",
             "latest news", "latest version", "news about",
-            "today's", "this week's", "right now",
+            "this week's",
             "current price", "stock price", "exchange rate",
             "current weather",
             // Looser than the phrases above, and deliberately so: a
@@ -2212,7 +2212,26 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "weather", "temperature", "forecast"
         ]
         for kw in liveKeywords where containsKeyword(kw, in: lowered) { return true }
-        return false
+        let hasClockCue = ["today's", "right now"].contains { containsKeyword($0, in: lowered) }
+        return hasClockCue && !promptOnlyAsksForDateOrTime(lowered)
+    }
+
+    /// A pure date, weekday, or clock-time request can use the local date/time
+    /// context injected by ChatViewModel.currentDateContext and clockContext.
+    /// Ignore "today's" / "right now" only for those requests; other live
+    /// keywords still win, and any other subject keeps the live-data caution.
+    private static func promptOnlyAsksForDateOrTime(_ prompt: String) -> Bool {
+        guard ["date", "day", "weekday", "time", "clock"].contains(where: {
+            containsKeyword($0, in: prompt)
+        }) else { return false }
+        let requestWords: Set<String> = [
+            "what", "which", "s", "d", "is", "it", "the", "a", "and", "of", "week",
+            "date", "day", "weekday", "time", "clock", "today", "right", "now",
+            "current", "local", "please", "tell", "me", "can", "could", "would",
+            "you", "give", "show", "may", "i", "have", "know", "to", "like",
+        ]
+        let words = prompt.split { !$0.isLetter && !$0.isNumber }
+        return words.allSatisfy { requestWords.contains(String($0)) }
     }
 
     /// True when `prompt` carries arithmetic that stands on its own — a

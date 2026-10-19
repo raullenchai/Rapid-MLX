@@ -157,7 +157,8 @@ enum WeatherTool {
         return ToolCallResult(
             toolCallID: "",
             content: "weather: \"\(location)\" is a state or region\(parenthetical), not a single place, so it has no single forecast. Do not retry weather with this region name or with more qualifiers, and do not search the web for it. Ask the user which city they mean, or call weather once with one major city in that region and say in your answer which city the forecast is for.",
-            isError: true
+            isError: true,
+            failureKind: .needsClarification
         )
     }
 

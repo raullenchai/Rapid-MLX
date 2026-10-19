@@ -333,7 +333,7 @@ final class DeclinedToolDiagnosisTests {
         #expect(diagnosis.severity == .notice)
     }
 
-    /// The quiet lane is exactly the outcomes the USER chose, and nothing else.
+    /// The quiet lane holds deliberate outcomes and designed clarifications.
     ///
     /// Enumerated rather than derived so adding a kind cannot join the quiet
     /// lane by accident: a new case lands on ``.error`` and fails here until
@@ -354,16 +354,41 @@ final class DeclinedToolDiagnosisTests {
         .userDeclined,
         .downloadCancelled,
         .requestSuperseded,
+        .needsClarification,
     ]
 
-    @Test("Only the user's own choices are notices; every other kind stays an error")
-    func onlyUserChoicesAreNotices() {
+    @Test("Deliberate outcomes and clarifications are notices; other kinds stay errors")
+    func onlyDeliberateOutcomesAndClarificationsAreNotices() {
         for kind in FailureDiagnosis.Kind.allCases {
             let expected: FailureDiagnosis.Severity =
                 Self.noticeKinds.contains(kind) ? .notice : .error
             #expect(kind.severity == expected, "unexpected severity for \(kind.rawValue)")
             #expect(FailureDiagnoser.diagnosis(for: kind).severity == expected)
         }
+    }
+
+    @Test("A clarification uses neutral copy without an inline recovery action")
+    func clarificationCopyIsNeutral() {
+        let diagnosis = FailureDiagnoser.diagnosis(for: .needsClarification)
+        #expect(diagnosis.severity == .notice)
+        #expect(diagnosis.message == "Needs a more specific place. The reply asks which one you mean.")
+        #expect(!diagnosis.message.lowercased().contains("ask again"))
+        #expect(!diagnosis.message.contains("didn't go through"))
+        #expect(diagnosis.action == nil)
+        #expect(FailureDiagnosis.inlineToolCardAction(for: diagnosis, canRouteToSettings: true) == nil)
+    }
+
+    @Test("Tool cards collapse clarifications and successes while retaining failure and running detail")
+    func toolCardExpansionPolicy() {
+        for kind in FailureDiagnosis.Kind.allCases {
+            #expect(FailureDiagnosis.toolCardStartsExpanded(
+                resultStatus: .failed,
+                diagnosis: FailureDiagnoser.diagnosis(for: kind)
+            ) == (kind != .needsClarification), "unexpected expansion for \(kind)")
+        }
+        #expect(!FailureDiagnosis.toolCardStartsExpanded(resultStatus: .complete, diagnosis: nil))
+        #expect(FailureDiagnosis.toolCardStartsExpanded(resultStatus: nil, diagnosis: nil))
+        #expect(FailureDiagnosis.toolCardStartsExpanded(resultStatus: .failed, diagnosis: nil))
     }
 
     @Test("A broken download stays an error even though a cancelled one does not")
@@ -402,6 +427,27 @@ final class DeclinedToolDiagnosisTests {
     }
 
     // MARK: - Persistence
+
+    @Test("A clarification row preserves its V2 kind and a downgrade-safe legacy kind")
+    func clarificationRowUsesBothKeys() throws {
+        let result = WeatherTool.regionResult(location: "Texas", label: "Texas, United States")
+        let row = ChatMessage(
+            role: .tool,
+            content: result.content,
+            status: .failed,
+            failureKind: result.failureKind,
+            toolCallID: "weather_1"
+        )
+        let object = try encodedObject(for: row)
+        #expect(object["failureKind"] as? String == "toolFailed")
+        #expect(object["failureKindV2"] as? String == "needsClarification")
+        let data = try JSONEncoder().encode(row)
+        let restored = try JSONDecoder().decode(ChatMessage.self, from: data)
+        #expect(restored.failureKind == .needsClarification)
+        #expect(restored.status == .failed)
+        #expect(restored.content == result.content)
+        #expect(restored.toolFailureDiagnosis(toolName: "weather").severity == .notice)
+    }
 
     @Test("A decline this build wrote is still a decline when the transcript reopens")
     func declinedKindSurvivesAnEncodeDecodeRound() throws {
@@ -453,6 +499,7 @@ final class DeclinedToolDiagnosisTests {
             )
         }
         #expect(FailureDiagnosis.Kind.userDeclined.legacyPersistedKind == .toolFailed)
+        #expect(FailureDiagnosis.Kind.needsClarification.legacyPersistedKind == .toolFailed)
         // The condition this kind describes used to land on webSearchUnavailable,
         // so that is what an older build should keep showing for it.
         #expect(FailureDiagnosis.Kind.webSearchRateLimited.legacyPersistedKind == .webSearchUnavailable)

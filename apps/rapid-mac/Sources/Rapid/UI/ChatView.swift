@@ -2357,8 +2357,8 @@ private struct MessageRow: View {
 /// One dispatched tool call, with its arguments and (once it lands) its
 /// result behind a disclosure. Expanded while the tool is still running so
 /// the user sees what is happening; auto-collapses on success so a long
-/// transcript stays skimmable, and stays expanded on failure because the
-/// error detail is the useful part.
+/// transcript stays skimmable. Clarifications also collapse; other failures
+/// stay expanded because the error detail is the useful part.
 private struct ToolCallChip: View {
     let call: ToolCall
     let result: ChatMessage?
@@ -2384,8 +2384,10 @@ private struct ToolCallChip: View {
 
     private var expanded: Bool {
         if userToggled { return manualExpanded }
-        guard let result else { return true }
-        return result.status == .failed
+        return FailureDiagnosis.toolCardStartsExpanded(
+            resultStatus: result?.status,
+            diagnosis: failureDiagnosis
+        )
     }
 
     /// Pretty-printed if the model emitted real JSON, sanitised raw string if
@@ -2455,6 +2457,7 @@ private struct ToolCallChip: View {
     private var statusIcon: String {
         guard result != nil else { return "ellipsis.circle" }
         guard let failureDiagnosis else { return "checkmark.circle.fill" }
+        if failureDiagnosis.kind == .needsClarification { return "questionmark.circle" }
         if failureDiagnosis.severity == .notice { return "hand.raised" }
         if failureDiagnosis.kind == .browsePageTooLarge { return "exclamationmark.triangle.fill" }
         return "exclamationmark.octagon.fill"

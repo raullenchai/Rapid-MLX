@@ -461,6 +461,60 @@ struct ToolNotCalledCaptionTests {
         #expect(!ChatMessage.promptIsAttachmentAnswerable("what does this say?"))
     }
 
+    @Test("Injected date and time questions are not live-data requests")
+    func dateAndTimeUseInjectedContext() {
+        for prompt in [
+            "What's today's date?", "what is today's date and day?",
+            "What time is it right now?", "what day is it right now",
+            "today's date please", "Please tell me today's weekday.",
+            "Right now, could you tell me the time and date?",
+            "What’s today’s date?", "Today's day of the week, please.",
+            "Which day is it right now?", "May I have today's date, please?",
+            "I'd like to know today's date.",
+        ] {
+            #expect(!ChatMessage.promptAsksForLiveData(prompt), "uses context: \(prompt)")
+            #expect(!ChatMessage.promptLooksCalculatorish(prompt))
+            #expect(!ChatMessage.advertisedToolCouldServe(prompt: prompt, toolNames: Self.productionRoster))
+        }
+    }
+
+    @Test("Date and time cues still flag other live subjects")
+    func dateAndTimeCuesKeepOtherSubjectsLive() {
+        for prompt in [
+            "today's date and the weather in Paris", "what's the weather right now",
+            "today's news", "today's weather", "today's stock price of AAPL",
+            "what is bitcoin trading at right now", "who is winning the game right now",
+            "today's top headlines", "what is today's close?", "right now, how many users?",
+            "What's today's date and latest version?", "today's date and this week's events",
+            "What time is the game right now?", "today's update", "right now, runtime?",
+        ] {
+            #expect(ChatMessage.promptAsksForLiveData(prompt), "still live: \(prompt)")
+        }
+    }
+
+    @Test("Production roster cautions on live prices and weather, not the injected date")
+    func dateAndLiveAnswersUnderProductionRoster() {
+        for (prompt, answer, expected) in [
+            ("What's today's date?", "Today is Sunday, October 18, 2026.", false),
+            ("What's today's stock price of AAPL?", "$231.40", true),
+            ("What's the weather in Paris right now?", "18°C and sunny.", true),
+        ] {
+            #expect(ChatMessage.contentLooksLikeRawAnswer(answer))
+            if expected {
+                #expect(ChatMessage.promptLooksCalculatorish(prompt))
+                #expect(ChatMessage.advertisedToolCouldServe(prompt: prompt, toolNames: Self.productionRoster))
+            }
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: answer,
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                advertisedToolNames: Self.productionRoster
+            ) == expected, "unexpected caution: \(prompt)")
+        }
+    }
+
     @Test("promptAsksForLiveData draws the line at a moving target")
     func liveDataContract() {
         // Names a moving target: no attached document can hold the answer.

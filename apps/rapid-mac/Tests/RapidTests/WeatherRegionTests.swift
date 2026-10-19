@@ -85,9 +85,37 @@ struct WeatherRegionTests {
     func texasRegion() async throws {
         let result = try await Self.result(location: "Texas", fixtures: ["Texas": Self.texas])
         #expect(result.isError)
+        #expect(result.failureKind == .needsClarification)
         #expect(result.content.contains("Texas, United States"))
         #expect(result.content.contains("Do not retry weather"))
         #expect(!result.content.contains("Add a country"))
+    }
+
+    @Test("Region clarification preserves the exact model-facing instructions")
+    func regionClarificationPreservesContent() {
+        for label in ["Texas, United States", ""] {
+            let result = WeatherTool.regionResult(location: "Texas", label: label)
+            let parenthetical = label.isEmpty ? "" : " (\(label))"
+            #expect(result.isError)
+            #expect(result.failureKind == .needsClarification)
+            #expect(result.content == "weather: \"Texas\" is a state or region\(parenthetical), not a single place, so it has no single forecast. Do not retry weather with this region name or with more qualifiers, and do not search the web for it. Ask the user which city they mean, or call weather once with one major city in that region and say in your answer which city the forecast is for.")
+        }
+    }
+
+    @Test("Missing and ambiguous weather locations stay real failures")
+    func realWeatherErrorsStayFailures() async {
+        let missing = await WeatherTool.run(arguments: "{}")
+        let ambiguous = WeatherTool.ambiguousPlaceResult(location: "Springfield")
+        for result in [missing, ambiguous] {
+            #expect(result.isError)
+            let kind = result.failureKind ?? FailureDiagnoser.toolFailureKind(
+                toolName: "weather", content: result.content, isError: result.isError
+            )
+            #expect(kind == .toolFailed)
+            if let kind {
+                #expect(FailureDiagnoser.diagnosis(for: kind).severity == .error)
+            }
+        }
     }
 
     @Test("Unique bare subdivision abbreviation is a region")

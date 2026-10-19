@@ -96,6 +96,7 @@ struct FailureDiagnosisView: View {
         // Unfilled, and tinted secondary above: the user turned this down on
         // purpose, so it reads as a note rather than a stop sign.
         case .userDeclined: return "hand.raised"
+        case .needsClarification: return "questionmark.circle"
         case .fileNotFound: return "doc.questionmark"
         case .downloadFailed, .downloadSourceUnavailable: return "arrow.down.circle"
         // Unfilled and tinted secondary by ``diagnosisIcon``, for the same

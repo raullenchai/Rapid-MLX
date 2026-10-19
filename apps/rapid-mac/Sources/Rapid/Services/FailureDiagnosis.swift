@@ -5,9 +5,8 @@ import Foundation
 /// context; views render only this stable copy and, when available, one
 /// concrete recovery action.
 ///
-/// Most kinds describe a genuine fault. One does not: ``Kind/userDeclined``
-/// is the user answering "no" to a permission prompt, which is an ordinary
-/// outcome and must never be dressed as a malfunction — see ``Severity``.
+/// Most kinds describe a genuine fault. Deliberate outcomes and designed
+/// clarifications must never be dressed as malfunctions — see ``Severity``.
 struct FailureDiagnosis: Equatable, Sendable {
     enum Kind: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
         case modelOutOfMemory
@@ -37,6 +36,9 @@ struct FailureDiagnosis: Equatable, Sendable {
         case fileNotFound
         case filePermissionDenied
         case toolFailed
+        /// A designed clarification: the tool needs a more specific place,
+        /// and the model should ask the user rather than report a malfunction.
+        case needsClarification
         case userDeclined
         case downloadFailed
         /// The user stopped the pull themselves. Distinct from
@@ -85,7 +87,9 @@ struct FailureDiagnosis: Equatable, Sendable {
         /// closest ancestor here. See ``ChatMessage/encode(to:)``.
         var legacyPersistedKind: Kind {
             switch self {
-            case .userDeclined:
+            // Older builds decode the legacy key strictly. Keep new notice
+            // kinds on the generic tool ancestor there; V2 preserves the kind.
+            case .userDeclined, .needsClarification:
                 return .toolFailed
             // Added in #1580, after the same release ``userDeclined`` post-dates,
             // so it carries the same hazard: an older build decoding this raw
@@ -124,8 +128,9 @@ struct FailureDiagnosis: Equatable, Sendable {
     ///
     /// Something the app (or the network, or the model) got wrong is an
     /// ``error``: red, alarming, worth interrupting for. Something the USER
-    /// chose is a ``notice``: it explains why nothing came back and then gets
-    /// out of the way. Painting a deliberate "Don't allow" red tells the user
+    /// chose, or a designed clarification, is a ``notice``: it explains the
+    /// outcome and then gets out of the way. Painting a deliberate "Don't allow"
+    /// red tells the user
     /// their own decision was a malfunction, and — because the copy on that
     /// lane is written for faults — blames their input for it.
     enum Severity: String, Equatable, Hashable, Sendable {
@@ -194,6 +199,16 @@ struct FailureDiagnosis: Equatable, Sendable {
 
     var severity: Severity { kind.severity }
 
+    /// Running tools stay open. Clarifications collapse like successful
+    /// results; every other failed result keeps its existing expanded detail.
+    static func toolCardStartsExpanded(
+        resultStatus: ChatMessage.Status?,
+        diagnosis: FailureDiagnosis?
+    ) -> Bool {
+        guard let resultStatus else { return true }
+        return resultStatus == .failed && diagnosis?.kind != .needsClarification
+    }
+
     /// The recovery action a tool card may render inline, or nil for "render
     /// no button". Three gates, all load-bearing:
     ///
@@ -235,8 +250,8 @@ struct FailureDiagnosis: Equatable, Sendable {
 
 extension FailureDiagnosis.Kind {
     /// Deliberately an exhaustive switch with no `default`: a new kind must
-    /// state whether it is a fault the app is reporting or an outcome the user
-    /// chose, rather than inheriting the alarming lane by omission.
+    /// state whether it is a fault or an ordinary outcome, rather than
+    /// inheriting the alarming lane by omission.
     var severity: FailureDiagnosis.Severity {
         switch self {
         // Both of these are the user's own answer, not a malfunction: one
@@ -247,7 +262,8 @@ extension FailureDiagnosis.Kind {
         // exactly what was asked (load the new model) and nothing malfunctioned,
         // so this is a calm notice, not a red fault. The recovery is simply to
         // ask again against the model that is now loaded.
-        case .userDeclined, .downloadCancelled, .requestSuperseded:
+        // A region's missing city is a designed clarification, not a fault.
+        case .userDeclined, .downloadCancelled, .requestSuperseded, .needsClarification:
             return .notice
         // A throttled backend is something that went wrong out in the world,
         // not something the user picked — it stays on the error lane, and its
@@ -348,6 +364,9 @@ enum FailureDiagnoser {
             // and leave the recovery — asking again — on the button.
             message = "A tool step didn't go through. The model can usually recover if you ask again."
             action = .retry
+        case .needsClarification:
+            message = "Needs a more specific place. The reply asks which one you mean."
+            action = nil
         case .userDeclined:
             // Nothing went wrong, so the copy states the outcome and stops.
             // No action button: the app has nothing to fix and nothing to
