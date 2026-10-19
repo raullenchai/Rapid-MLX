@@ -207,6 +207,14 @@ struct WeatherRegionTests {
         #expect(admin1Country.content.contains("state or region (Georgia, United States)"))
     }
 
+    @Test("A conflicting comma subdivision is not a region", arguments: [
+        "Texas, California", "California, NY",
+    ])
+    func conflictingCommaSubdivision(location: String) async throws {
+        let result = try await Self.result(location: location, fixtures: [:])
+        #expect(!result.content.contains("state or region"))
+    }
+
     @Test("Contradictory country qualifiers are not a region")
     func contradictoryCountries() async throws {
         let result = try await Self.result(

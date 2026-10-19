@@ -285,7 +285,15 @@ enum WeatherTool {
                 candidates: candidates, country: country, admin1: admin1
             ).contains { ($0.population ?? 0) >= 100_000 }
         }
-        if !hasMajorNamesake, let label = regionLabel(
+        // Every comma qualifier must restate the region or name a country;
+        // anything else ("Texas, California") is a qualifier problem.
+        let hasForeignQualifier = query.commaQualifiers.contains { qualifier in
+            regionCountryHints(
+                requestedName: query.name, country: nil, admin1: nil,
+                commaQualifiers: [qualifier]
+            ).isEmpty && !restatesSubdivision(qualifier, requestedName: query.name)
+        }
+        if !hasMajorNamesake, !hasForeignQualifier, let label = regionLabel(
             requestedName: query.name,
             admin1: admin1,
             countryHints: countryHints,
@@ -575,6 +583,17 @@ enum WeatherTool {
         let countryCode: String
         let name: String
         let abbreviation: String
+    }
+
+    private static func restatesSubdivision(_ qualifier: String, requestedName: String) -> Bool {
+        let requestedKey = matchKey(requestedName)
+        let key = matchKey(qualifier)
+        return subdivisionNames.values.contains { subdivisions in
+            subdivisions.contains { abbreviation, name in
+                let keys = [matchKey(abbreviation), matchKey(name)]
+                return keys.contains(requestedKey) && keys.contains(key)
+            }
+        }
     }
 
     private static func regionCountryHints(
