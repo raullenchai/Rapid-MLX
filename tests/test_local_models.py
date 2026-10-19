@@ -656,3 +656,14 @@ def test_catalog_checkpoint_without_chat_template_is_not_offered(cache):
     repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
     snapshot(cache, repo, template=False)
     assert lm.discover_runnable_chat_models() == []
+
+
+def test_valid_external_copy_backs_up_rejected_hub_copy(cache, tmp_path, monkeypatch):
+    repo = "org/chat"
+    (snapshot(cache, repo) / "tokenizer.json").unlink()
+    root = tmp_path / "external"
+    directory = write_model(root / repo)
+    monkeypatch.setattr(ma, "DEFAULT_EXTERNAL_MODEL_ROOTS", (str(root),))
+    (found,) = lm.discover_runnable_chat_models()
+    assert found.external and found.repo == repo
+    assert found.model == str(directory)

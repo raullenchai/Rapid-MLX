@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -229,13 +229,14 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
         ]
         hub_repos = {row[0] for row in hub}
         rows = [(row, False) for row in hub]
-        rows.extend(
-            (row, True)
-            for row in _scan_external_model_dirs()
-            if row[0] not in hub_repos
-        )
-        found = []
+        rows.extend((row, True) for row in _scan_external_model_dirs())
+        found: list[LocalModel] = []
+        accepted_hub: set[str] = set()
         for (repo, _size, mtime), external in rows:
+            # The managed Hub copy wins when it passes; an external copy of the
+            # same repo is only a fallback for a Hub copy that did not.
+            if external and repo in accepted_hub:
+                continue
             try:
                 model = _judge_checkpoint(
                     repo,
@@ -245,10 +246,17 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
                     supported=supported,
                     ram_bytes=ram_bytes,
                 )
+                if model is not None and external and repo in hub_repos:
+                    # The id would resolve to the rejected Hub copy; serve the
+                    # verified external directory by path instead.
+                    directory = _checkpoint_dir(repo, True)
+                    model = replace(model, model=directory) if directory else None
             except Exception:
                 log.debug("Could not inspect local model %s", repo, exc_info=True)
                 continue
             if model is not None:
+                if not external:
+                    accepted_hub.add(repo)
                 found.append(model)
         return found
     except Exception:
