@@ -307,4 +307,30 @@ struct WeatherChineseFallbackTests {
         #expect(result.isError)
         #expect(result.content == "weather error: could not parse arguments JSON")
     }
+
+    @Test("A failed romanized retry falls back to unresolved-place handling")
+    func romanizedRetryFailureIsBestEffort() async throws {
+        let resolution = try await WeatherTool.resolvePlace(location: "德州", country: nil, admin1: nil) { request in
+            let url = try #require(request.url)
+            let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "name" }?.value
+            if name == "dezhou" { throw URLError(.timedOut) }
+            return (Self.villages, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+        }
+        guard case .place = resolution else { return }
+        Issue.record("expected an unresolved resolution")
+    }
+
+    @Test("Cancellation during the romanized retry still propagates")
+    func romanizedRetryCancellationPropagates() async throws {
+        await #expect(throws: CancellationError.self) {
+            _ = try await WeatherTool.resolvePlace(location: "德州", country: nil, admin1: nil) { request in
+                let url = try #require(request.url)
+                let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "name" }?.value
+                if name == "dezhou" { throw CancellationError() }
+                return (Self.villages, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+            }
+        }
+    }
 }

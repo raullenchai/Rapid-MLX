@@ -270,12 +270,18 @@ enum WeatherTool {
             }
         }
 
-        if let hit = try await romanizedGeocodingHit(
-            name: query.name, qualifiers: query.qualifiers,
-            country: country, admin1: admin1, load: load
-        ) {
-            return .place(hit)
-        }
+        // The romanized retry is best effort: if it fails, fall through to the
+        // unresolved-place handling for the candidates already fetched.
+        do {
+            if let hit = try await romanizedGeocodingHit(
+                name: query.name, qualifiers: query.qualifiers,
+                country: country, admin1: admin1, load: load
+            ) {
+                return .place(hit)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {}
 
         let allCandidates = originalCandidates + alternateCandidates
         let countryHints = regionCountryHints(
