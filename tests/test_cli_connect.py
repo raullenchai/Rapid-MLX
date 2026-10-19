@@ -499,7 +499,7 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
     ep = connect.ServerEndpoints("::1", 9123, model="my served model")
     out = connect.render_serve_next(ep, api_key="key with ' quote")
     assert out.count("Next:") == 1
-    assert len(out.splitlines()) == 10
+    assert len(out.splitlines()) == 13
     assert "curl -i -sS " in out
     assert "http://[::1]:9123/v1/chat/completions" in out
     assert "my served model" in out
@@ -507,17 +507,22 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
     assert "rapid-mlx agents opencode --setup" in out
     assert "Set RAPID_MLX_API_KEY to the server key first." in out
     assert "key with ' quote" not in out
-    assert "More agents: claude-code, codex; full list: rapid-mlx agents" in out
+    assert "Full list: rapid-mlx agents" in out
     assert "--base-url 'http://[::1]:9123/v1'" in out
-    setup = out.splitlines()[3].split("Connect a coding agent: ", 1)[1]
-    assert shlex.split(setup) == [
-        "rapid-mlx",
-        "agents",
-        "opencode",
-        "--setup",
-        "--base-url",
-        "http://[::1]:9123/v1",
-    ]
+    for agent in ("opencode", "claude-code", "codex"):
+        setup = next(
+            line.strip()
+            for line in out.splitlines()
+            if line.strip().startswith(f"rapid-mlx agents {agent} --setup")
+        )
+        assert shlex.split(setup) == [
+            "rapid-mlx",
+            "agents",
+            agent,
+            "--setup",
+            "--base-url",
+            "http://[::1]:9123/v1",
+        ]
     assert "OpenAI SDK base_url: http://[::1]:9123/v1; model: my served model" in out
     assert "from openai import OpenAI" in out
     assert 'environ["RAPID_MLX_API_KEY"]' in out
@@ -526,7 +531,7 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
 def test_serve_next_has_no_auth_header_without_key():
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
     assert "Authorization" not in out
-    assert len(out.splitlines()) == 9
+    assert len(out.splitlines()) == 12
     assert (
         connect.render_serve_next(connect.ServerEndpoints("", 0, "m", listen_fd=3))
         == ""
