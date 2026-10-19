@@ -23,7 +23,7 @@ class HarnessIsolationTests(unittest.TestCase):
                 function("start_persona")
                 + "\n"
                 + function("relaunch_persona")
-                + r'''
+                + r"""
 ROOT=/stub
 APP_SOURCE=/stub/app
 OUT_ROOT="$1"
@@ -46,7 +46,7 @@ start_persona reset
 relaunch_persona
 start_persona empty RAPID_GUI_APP_LANGUAGE=
 relaunch_persona
-'''
+"""
             )
             result = subprocess.run(
                 ["/bin/bash", "-eu", "-c", shell, "test", tmp],
