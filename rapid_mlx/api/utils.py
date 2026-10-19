@@ -103,6 +103,8 @@ def strip_special_tokens(text: str) -> str:
 # ``api.anthropic_adapter._thinking_block_content`` and
 # ``service.helpers._build_reasoning_rescue_payload``, both of which
 # call the dedicated ``strip_reasoning_channel_markup`` helper below.
+# Requests that do not parse tools use a content-only variant which
+# preserves tool-call-shaped text while stripping every other marker.
 # =============================================================================
 
 _FINAL_SANITIZER_ALTERNATIVES = (
@@ -151,6 +153,16 @@ _FINAL_SANITIZER_ALTERNATIVES = (
 #: CONTENT channel. ``</tool_call>`` is deliberately absent — see the
 #: block above.
 _FINAL_SANITIZER = re.compile(_FINAL_SANITIZER_ALTERNATIVES, re.DOTALL)
+
+# Preserve tool-call markup when the request cannot turn it into a call. The
+# negative lookaheads keep the two asymmetric tool-call tokens out of the
+# otherwise-identical generic token alternatives.
+_FINAL_SANITIZER_NO_TOOL_MARKUP = re.compile(
+    r"<\|(?!tool_call>)[a-z_\"]+>|<(?!tool_call\|>)[a-z_\"]+\|>"
+    r"|<\|[a-z_]+\|>"
+    r"|</think>",
+    re.DOTALL,
+)
 
 #: REASONING channel. Same set PLUS the ``</tool_call>`` closer.
 #:
@@ -225,16 +237,18 @@ def strip_reasoning_channel_markup(text: str) -> str:
     return _REASONING_CHANNEL_TAG_RE.sub("", text)
 
 
-def sanitize_output(text: str) -> str:
+def sanitize_output(text: str, *, strip_tool_markup: bool = True) -> str:
     """Final catch-all sanitizer for client-facing content.
 
     This is the LAST defense against markup leakage. Runs after all
     parsers and filters. Strips anything that looks like a special token
     or internal markup pattern.
 
-    Designed to be aggressive — better to over-strip than to leak.
+    ``strip_tool_markup=False`` preserves tool-call-shaped text for requests
+    where tool parsing is disabled, while still removing other special tokens.
     """
-    return _sanitize_with(text, _FINAL_SANITIZER)
+    pattern = _FINAL_SANITIZER if strip_tool_markup else _FINAL_SANITIZER_NO_TOOL_MARKUP
+    return _sanitize_with(text, pattern)
 
 
 def _sanitize_with(text: str, pattern: re.Pattern[str]) -> str:

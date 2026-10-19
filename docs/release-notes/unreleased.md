@@ -6,3 +6,5 @@
 ## Highlights
 
 **<Named thing>** — what changed, and why a user should care. Link the merged PR.
+
+- **Buffered tool-text parity**: buffered `/v1/responses` and `/v1/messages` replies now return tool-call-like text unchanged when no tools are offered or `tool_choice` is `none`, matching streaming replies. Fixes #4901.

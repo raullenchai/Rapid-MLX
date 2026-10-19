@@ -2284,9 +2284,10 @@ async def _non_stream(
             )
 
     engine_tool_calls = getattr(output, "tool_calls", None)
+    tool_parse_request = _tool_parse_request(openai_request)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
         output.text,
-        _tool_parse_request(openai_request),
+        tool_parse_request,
         structured_tool_calls=engine_tool_calls,
         finish_reason=output.finish_reason,
     )
@@ -2371,7 +2372,10 @@ async def _non_stream(
     final_content = None
     if cleaned_text:
         final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        final_content = sanitize_output(final_content)
+        final_content = sanitize_output(
+            final_content,
+            strip_tool_markup=bool(tool_parse_request.tools),
+        )
         # R7-M4 (Vlad r7 — 0.8.8 sweep): mirror the chat-route fence-strip
         # so a model that wraps a ``json_object`` / ``json_schema`` body
         # in a ```json ... ``` markdown fence has the fence peeled off
@@ -2474,15 +2478,21 @@ async def _non_stream(
         _record_nonstream_failure(engine, request, "output_contract_unmet")
         return Response(content=json.dumps(payload), media_type="application/json")
 
+    assistant_message = AssistantMessage(
+        content=final_content,
+        reasoning_content=reasoning_text,
+        tool_calls=tool_calls,
+    )
+    if not tool_parse_request.tools:
+        # The request-aware sanitizer already handled non-tool markup. Restore
+        # tool-shaped text removed by AssistantMessage's context-free validator.
+        assistant_message.content = final_content
+
     openai_response = ChatCompletionResponse(
         model=cfg.model_name or openai_request.model,
         choices=[
             ChatCompletionChoice(
-                message=AssistantMessage(
-                    content=final_content,
-                    reasoning_content=reasoning_text,
-                    tool_calls=tool_calls,
-                ),
+                message=assistant_message,
                 finish_reason=finish_reason,
             )
         ],

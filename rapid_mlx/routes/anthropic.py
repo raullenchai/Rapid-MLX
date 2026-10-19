@@ -1203,7 +1203,10 @@ async def create_anthropic_message(
             # chat.py:669 so the two surfaces don't diverge on what they
             # consider "sanitized" client-facing content. Pre-existing gap
             # flagged by codex during the #413 review.
-            final_content = sanitize_output(final_content)
+            final_content = sanitize_output(
+                final_content,
+                strip_tool_markup=bool(chat_kwargs.get("tools")),
+            )
 
         # Issue #569: never silently drop. Mirror the OpenAI route's
         # rescue so the Anthropic surface gets the same protection
@@ -1304,15 +1307,21 @@ async def create_anthropic_message(
                 final_content, {call.function.name for call in tool_calls}
             )
 
+        assistant_message = AssistantMessage(
+            content=final_content,
+            reasoning_content=reasoning_text,
+            tool_calls=tool_calls,
+        )
+        if not chat_kwargs.get("tools"):
+            # The request-aware sanitizer already handled non-tool markup.
+            # Preserve tool-shaped text through the context-free validator.
+            assistant_message.content = final_content
+
         openai_response = ChatCompletionResponse(
             model=cfg.model_name or openai_request.model,
             choices=[
                 ChatCompletionChoice(
-                    message=AssistantMessage(
-                        content=final_content,
-                        reasoning_content=reasoning_text,
-                        tool_calls=tool_calls,
-                    ),
+                    message=assistant_message,
                     finish_reason=finish_reason,
                 )
             ],
@@ -1339,6 +1348,7 @@ async def create_anthropic_message(
         anthropic_response = openai_to_anthropic(
             openai_response,
             cfg.model_name or anthropic_request.model,
+            strip_tool_markup=bool(chat_kwargs.get("tools")),
             reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
             # H-03: forward the engine-surfaced matched stop string so
             # the response carries ``stop_reason="stop_sequence"`` +

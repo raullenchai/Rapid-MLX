@@ -571,6 +571,7 @@ def openai_to_anthropic(
     response: ChatCompletionResponse,
     model: str,
     *,
+    strip_tool_markup: bool = True,
     reasoning_enabled: bool = True,
     matched_stop: str | None = None,
 ) -> AnthropicResponse:
@@ -580,6 +581,7 @@ def openai_to_anthropic(
     Args:
         response: OpenAI ChatCompletionResponse
         model: Model name for the response
+        strip_tool_markup: Whether content-channel tool-call markup is removed.
         reasoning_enabled: Whether the served alias is configured with a
             ``reasoning_parser`` (i.e. structurally capable of producing
             reasoning text). When False, the ``thinking`` block is never
@@ -672,7 +674,9 @@ def openai_to_anthropic(
         # ``_thinking_block_content`` already trims the rescue-tail
         # suffix from ``thinking_body`` before this gate runs, so the
         # comparison stays True there.
-        sanitized_text = sanitize_output(text) if text else text
+        sanitized_text = (
+            sanitize_output(text, strip_tool_markup=strip_tool_markup) if text else text
+        )
         emit_thinking = (
             reasoning_enabled
             and thinking_body is not None
