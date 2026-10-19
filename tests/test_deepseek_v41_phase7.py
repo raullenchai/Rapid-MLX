@@ -217,10 +217,9 @@ def test_bad_local_override_does_not_fall_back(monkeypatch, value):
 @pytest.mark.parametrize("subdir", ["", "dspark"])
 def test_local_override_requires_every_indexed_shard(monkeypatch, tmp_path, subdir):
     root = _local_build(tmp_path)
-    for shard in (root / subdir).glob("*.safetensors"):
-        shard.unlink()
+    weight_map = {p.name: p.name for p in (root / subdir).glob("*.safetensors")}
     (root / subdir / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {"w": "missing.safetensors"}})
+        json.dumps({"weight_map": {**weight_map, "w": "missing.safetensors"}})
     )
     monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
     with pytest.raises(ValueError, match="incomplete local"):
