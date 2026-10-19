@@ -196,7 +196,8 @@ def test_disabled_optional_image_component_needs_no_weights(tmp_path):
     root = tmp_path / "image"
     root.mkdir()
     (root / "model_index.json").write_text(
-        '{"_class_name":"Pipeline","transformer":[],"text_encoder_2":null}'
+        '{"_class_name":"Pipeline","transformer":[],"text_encoder_2":null,'
+        '"image_encoder":[null,null]}'
     )
     (root / "transformer.safetensors").write_bytes(b"data")
     validate_local_model_for_serve(str(root))

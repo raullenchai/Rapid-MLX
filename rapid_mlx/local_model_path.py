@@ -337,6 +337,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                 and component not in metadata_components
                 and not component.startswith("tokenizer")
                 and isinstance(declaration, list)
+                and declaration != [None, None]
             ]
             if not required:
                 raise FileNotFoundError(
