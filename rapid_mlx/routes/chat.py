@@ -1054,10 +1054,13 @@ async def _offload_native_wire_decline_probe(engine, cfg, request) -> bool:
         _release_tool_grammar_build()
         logger.exception("tool-grammar: native-wire probe submission failed")
         return False
+    fut.add_done_callback(lambda _f: _release_tool_grammar_build())
     track_build = getattr(engine, "track_tool_grammar_build", None)
     if callable(track_build):
-        track_build(fut)
-    fut.add_done_callback(lambda _f: _release_tool_grammar_build())
+        try:
+            track_build(fut)
+        except Exception:
+            logger.exception("tool-grammar: failed to track native-wire probe")
     try:
         return bool(await asyncio.shield(asyncio.wrap_future(fut)))
     except Exception:

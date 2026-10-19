@@ -283,6 +283,24 @@ async def test_gate_probe_success_releases_admission_and_tracks_future():
     assert chat._tool_grammar_inflight == prior
 
 
+async def test_gate_probe_tracking_failure_still_completes_and_releases_admission():
+    prior = chat._tool_grammar_inflight
+    tracked_engine = engine()
+    tracked_engine.track_tool_grammar_build = Mock(
+        side_effect=RuntimeError("tracking unavailable")
+    )
+
+    assert (
+        await chat._enforce_tool_grammar_bounds_or_400_async(
+            cfg(), request(tools=many_tools()), tracked_engine
+        )
+        is None
+    )
+
+    tracked_engine.track_tool_grammar_build.assert_called_once()
+    assert chat._tool_grammar_inflight == prior
+
+
 async def test_gate_probe_worker_failure_keeps_400(monkeypatch):
     monkeypatch.setattr(
         chat,
