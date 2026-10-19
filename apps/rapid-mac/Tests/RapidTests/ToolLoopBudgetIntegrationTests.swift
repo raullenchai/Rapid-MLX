@@ -49,11 +49,19 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(synthesis["content"] as? String == Self.synthesisInstruction)
         #expect((synthesis["content"] as? String)?.contains("(Local time:") == false)
         #expect(messages[messages.count - 2]["role"] as? String == "tool")
-        // Clock rows precede the real prompt; the existing final synthesis
-        // control row stays last and receives no clock or tool guidance.
+        // The real prompt immediately follows the system row; synthesis stays last.
         let promptIndex = try #require(messages.firstIndex { ($0["content"] as? String) == "Research this topic thoroughly" })
-        #expect(promptIndex > 0)
-        #expect((messages[promptIndex - 1]["content"] as? String)?.hasPrefix("(Local time:") == true)
+        #expect(promptIndex == 1)
+        let start = try #require(model.messages.first { $0.role == .user }?.createdAt)
+        let expectedStart = "This conversation started on \(ChatViewModel.clockStampText(at: start)) (local time)."
+        let systemText = try #require(system["content"] as? String)
+        #expect(systemText.hasSuffix(expectedStart))
+        for body in ToolLoopBudgetProtocol.requestBodies {
+            let round = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let rows = try #require(round["messages"] as? [[String: Any]])
+            #expect(rows.first?["content"] as? String == systemText)
+            #expect(!String(decoding: body, as: UTF8.self).contains("(Local time:"))
+        }
         #expect(model.messages.filter { $0.role == .user }.map(\.content) == ["Research this topic thoroughly"])
         #expect(!model.messages.contains { $0.content.contains(Self.synthesisInstruction) })
     }

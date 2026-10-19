@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -139,12 +141,8 @@ struct CustomInstructionsTests {
         #expect(before.contains("Tuesday, August 25, 2026 (GMT)"))
         #expect(after.contains("Wednesday, August 26, 2026 (GMT)"))
         #expect(before != after)
-        // The preview shows what Rapid actually sends in the system row, and
-        // that is the DATE only — the wall clock precedes each user
-        // turn in a separate row, because a minute-resolution string at the head of the
-        // prompt costs the engine's prefix cache a full re-prefill of the
-        // conversation (measured 7.3 s vs 0.6 s). A preview that still quoted
-        // a time would be showing a system row the app never sends.
+        // Previews omit conversation start because there may be no conversation.
+        #expect(!before.contains("This conversation started on"))
         #expect(!before.contains("11:59 PM"))
         #expect(!after.contains("12:01 AM"))
         #expect(!before.contains("(Local time:"))
@@ -161,6 +159,17 @@ struct CustomInstructionsTests {
         #expect(tokyoPreview != before)
     }
 
+    @Test("Effective system prompt disclosure lays out without conversation context")
+    func effectivePromptDisclosureLayout() {
+        let host = NSHostingView(rootView: EffectiveSystemPromptDisclosure(
+            global: "", conversation: "",
+            accessibilityIdentifier: "Test.EffectiveSystemPrompt"
+        ))
+        host.layoutSubtreeIfNeeded()
+        #expect(host.fittingSize.width > 0)
+        #expect(host.fittingSize.height > 0)
+    }
+
     @Test("System prompt UI names global and conversation precedence explicitly")
     func systemPromptTerminologyAndPreviewWiring() throws {
         let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
@@ -174,10 +183,7 @@ struct CustomInstructionsTests {
         #expect(editor.contains("this prompt wins."))
         #expect(editor.contains("DisclosureGroup(\"Effective System Prompt\""))
         #expect(editor.contains("Tool and attachment context may be added when you send."))
-        // The system row no longer carries the wall clock, so the caption has
-        // to say where it went — otherwise the preview reads as "the model
-        // does not know what time it is".
-        #expect(editor.contains("Each of your messages is preceded by its local time."))
+        #expect(editor.contains("Preview includes current automatic context. When you send, the time the conversation started is added after the date. Tool and attachment context may be added when you send."))
         #expect(editor.contains("TimelineView(.periodic(from: .now, by: 60))"))
         #expect(editor.contains("at: context.date"))
         #expect(editor.contains("calendar: .autoupdatingCurrent"))

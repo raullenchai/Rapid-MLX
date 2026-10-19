@@ -1882,15 +1882,7 @@ final class ChatViewModel {
             let toolArgs = (msg.toolCalls ?? [])
                 .map(\.function.arguments)
                 .joined()
-            let preludeTokens: Int
-            if let prelude = msg.wirePrelude,
-                !prelude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                preludeTokens = TokenEstimate.tokens(in: prelude) + TokenEstimate.messageFramingTokens
-            } else {
-                preludeTokens = 0
-            }
             return max(1, TokenEstimate.tokens(in: msg.modelContent)
-                + preludeTokens
                 + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let totalTokens = max(1, messages.reduce(0) { $0 + perRowCost($1) })
@@ -2647,17 +2639,9 @@ final class ChatViewModel {
         // is cancelled, or comes back empty — a wrong-but-present answer beats
         // a blank message.
         var draftBeforeCorrection: String?
-        // ONE instant for the whole turn, shared by the date row and the
-        // clock prelude of every round. codex caught that two `Date()` calls
-        // can straddle local midnight, which would have the same request
-        // asserting "Today is the 11th" in its system row and "sent … the
-        // 12th" on its newest message. Taking it once per TURN rather than
-        // per round matters for the prefix cache too: the clock stamp is
-        // minute-granular, and a tool loop whose rounds straddle a minute
-        // boundary would otherwise grow an "answering now" line on the
-        // newest user row mid-loop and re-prefill everything behind it
-        // (measured on Qwen3.8-27B: the third round resumed from the 1547-
-        // token boundary instead of the 2054-token entry of the round before).
+        // Sample the date once per send so every tool round has the same
+        // system row even if the loop crosses midnight. The start time comes
+        // from the untrimmed history's first user row, never the current minute.
         let requestInstant = Date()
 
         while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
@@ -2699,16 +2683,17 @@ final class ChatViewModel {
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
                 baseInstruction: ChatViewModel.baseAssistantInstruction,
-                dateContext: ChatViewModel.currentDateContext(now: requestInstant),
+                dateContext: ChatViewModel.currentDateContext(
+                    now: requestInstant,
+                    conversationStart: ChatViewModel.conversationStart(in: history)
+                ),
                 memoryContext: memoryContext,
                 global: globalInstruction,
                 conversation: conversationInstruction
             )
             // First of the two guidance passes: stamped BEFORE the trim so
             // the guidance rows count toward the budget the trim works to.
-            // Clock preludes are also counted before trimming; the second pass
-            // withdraws guidance whose evidence the trim removed.
-            history = ChatViewModel.stampingClockContext(on: history, answeringAt: requestInstant)
+            // The second pass withdraws guidance whose evidence the trim removed.
             history = ChatViewModel.stampingToolGuidance(
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
@@ -2733,26 +2718,10 @@ final class ChatViewModel {
             if forceGroundingCorrection {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
-            // After the trim and system preambles, each real user turn gets
-            // a separate clock row before it, derived from createdAt, so the prompt stays
-            // append-only between turns and the engine's prefix cache can
-            // reuse it. See ``currentDateContext`` for the measurement that
-            // motivates moving the clock out of the system row, and
-            // ``stampingClockContext`` for why it is every user row rather
-            // than just the newest one.
-            // ``answeringAt`` is this request's instant: it changes nothing
-            // for an ordinary send (the newest row was minted just now) and
-            // only speaks up when a regenerate is re-answering a question
-            // asked in an earlier minute — see ``answeringNowLine``.
-            history = ChatViewModel.stampingClockContext(
-                on: history,
-                answeringAt: requestInstant
-            )
-            // Second guidance pass, on the TRIMMED history with independent
-            // clock preludes: a trim that dropped the evidence drops the
-            // instruction with it (#1549). Stamped on user rows rather than
-            // the system row so the prompt stays append-only across the tool
-            // round and every turn after it — see ``stampingToolGuidance``.
+            // The date and first user row's start time were added before the
+            // trim, keeping the system row stable across turns and tool rounds.
+            // Second guidance pass: a trim that dropped the evidence drops the
+            // instruction with it (#1549). Guidance stays on user rows.
             history = ChatViewModel.stampingToolGuidance(
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
@@ -3301,7 +3270,7 @@ final class ChatViewModel {
     ///
     /// Every user row whose turn (the rows up to the next user message)
     /// holds a tool result carries the guidance, and keeps carrying it on
-    /// later turns — like the clock prelude, the stamp is a pure function of
+    /// later turns — the stamp is a pure function of
     /// the row's own turn, so the bytes of a row never change once the turn
     /// behind it is complete. Stamping only the newest row was measured on
     /// Qwen3.8-27B (Studio, 2026-09-13): the tool round resumed from the
@@ -3332,7 +3301,7 @@ final class ChatViewModel {
     ///
     /// Called twice per round: once BEFORE ``trimMessagesForContextWindow``
     /// so the ~400 tokens per stamped row count toward the context budget,
-    /// and once after the clock prelude on the trimmed history, so evidence
+    /// and once on the trimmed history, so evidence
     /// the trim dropped takes its instruction with it. The second pass can
     /// only remove guidance the first pass added, so the trimmed request
     /// never exceeds the budget the trim worked to.
@@ -3369,14 +3338,10 @@ final class ChatViewModel {
         return remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : remaining
     }
 
-    /// Merge base identity, current-date context, pre-existing system, memory,
-    /// global, and conversation layers into one leading system row. Local chat
-    /// templates often reject a second system message, so every caller must go through this
-    /// transformation. Nothing request-scoped belongs here: the row is the
-    /// head of every prompt, and any byte that changes between two turns
-    /// costs the engine's prefix cache the whole conversation (that is why
-    /// the wall clock precedes each user row separately and tool guidance rides
-    /// each turn with its own tool result — ``stampingClockContext``, ``stampingToolGuidance``).
+    /// Merge base identity, date and conversation-start context, existing system,
+    /// memory, global, and conversation layers into one leading system row.
+    /// Its stable head preserves strict-extension prefix-cache reuse across turns
+    /// and tool rounds; per-turn tool guidance stays on user rows.
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
         baseInstruction: String? = nil,
@@ -3417,7 +3382,8 @@ final class ChatViewModel {
     /// Read-only preview of the Desktop-authored system prompt shared by
     /// Settings and the per-conversation editor. It deliberately uses the
     /// same assembly function as the wire path so displayed precedence and
-    /// automatic context cannot drift from what Rapid sends.
+    /// automatic date context match request assembly. It omits the conversation
+    /// start because there may be no conversation; sending adds that fixed time.
     nonisolated static func effectiveSystemPrompt(
         baseInstruction: String? = baseAssistantInstruction,
         dateContext: String? = nil,
@@ -3428,11 +3394,8 @@ final class ChatViewModel {
         addingInstructionLayers(
             to: [],
             baseInstruction: baseInstruction,
-            // The preview shows what actually goes on the wire: the system
-            // row carries the DATE without the clock. A neutral local-time annotation rides
-            // each user turn in a separate wire-only user-role row before its prose (``stampingClockContext``).
-            // Quoting it here would show a system row Rapid never sends;
-            // the editor's caption tells the reader where the time went.
+            // A preview may have no conversation. Sending adds its fixed start
+            // time after the date; the disclosure caption explains that layer.
             dateContext: dateContext ?? currentDateContext(),
             memoryContext: memoryContext,
             global: global,
@@ -3440,45 +3403,30 @@ final class ChatViewModel {
         ).first?.content ?? ""
     }
 
-    /// Request-time current-date context for the leading system row, so a small
-    /// model does not guess "today" from training memory (issue #2330, where
-    /// `qwen3.5-4b-4bit` answered "Friday, May 24, 2024" and then insisted it
-    /// had no way to know the date). This supplies the Mac's authoritative
-    /// local date as a system-prompt template variable at request time — the
-    /// pattern peer desktop chat products use — rather than relying on the
-    /// model to infer it must search for the date, and without adding a
-    /// local-clock tool or touching tool routing.
+    /// Local date and optional conversation-start time for the leading system
+    /// row, so a small model does not guess "today" or the time of day from
+    /// training memory (#2330).
     ///
-    /// Injected per `send` (each request recomputes it against the live clock),
-    /// so it cannot go stale across midnight, a time-zone change, a restored
-    /// conversation, or a long-lived session. `now` and the calendar's time
-    /// zone are injectable so tests can pin the exact output and cover
-    /// rollover.
+    /// The engine's prompt cache reuses a stored entry only when it is a
+    /// token-exact prefix of the new request, and the system row is the head
+    /// of every request. A per-request minute here re-prefills the whole
+    /// conversation on every follow-up (measured on qwen3.8-27b-4bit, M3 Ultra,
+    /// 2.3k-token prompt: 0.6 s append-only second turn vs 7.3 s with only the
+    /// minute changed; 15–17 s per follow-up with an 8-page PDF attached).
+    /// So the time is the first user row's persisted, immutable createdAt:
+    /// byte-identical across turns and tool rounds. The block changes only at
+    /// local midnight, on a zone change, or when the first message is edited
+    /// (which changes the prefix anyway).
     ///
-    /// The calendar day, time zone and nothing finer — the half of #2330's
-    /// context that belongs in the leading system row.
-    ///
-    /// The wall clock deliberately does not appear here; a neutral local-time
-    /// annotation precedes each user turn in a separate user-role row instead (``clockContext(at:calendar:)`` +
-    /// ``stampingClockContext(on:calendar:)``). The engine's prompt cache
-    /// reuses a request only when its token prefix is byte-identical to a
-    /// stored one, and the system row is the FIRST thing in every request: a
-    /// minute-resolution string there rewrites the head of the prompt the
-    /// moment the clock ticks, which turns an append-only follow-up into a
-    /// full re-prefill of the whole conversation, document and all.
-    ///
-    /// Measured against this engine on an M3 Ultra (qwen3.8-27b-4bit, a
-    /// 2.3k-token prompt): an append-only second turn with a byte-identical
-    /// system row answers in 0.6 s; the same second turn with only the minute
-    /// changed costs 7.3 s — the cold-start prefill, paid again. With an
-    /// 8-page PDF attached the desktop was paying 15–17 s on EVERY follow-up.
-    ///
-    /// Day granularity still moves once per day, so a conversation spanning
-    /// local midnight re-prefills exactly once. That is the price of keeping
-    /// #2330's guarantee that the model never has to guess the date.
+    /// #4891: the earlier shape, a separate English "(Local time: …)" user row
+    /// before every user message, pushed the 4B starter toward English replies
+    /// and needless tool calls; the same text in the system row did not.
+    /// Tradeoff: later turns see the conversation's start time, not the minute
+    /// of the newest message. Previews omit the start.
     nonisolated static func currentDateContext(
         now: Date = Date(),
-        calendar inputCalendar: Calendar = .autoupdatingCurrent
+        calendar inputCalendar: Calendar = .autoupdatingCurrent,
+        conversationStart: Date? = nil
     ) -> String {
         var gregorian = Calendar(identifier: .gregorian)
         gregorian.timeZone = inputCalendar.timeZone
@@ -3493,16 +3441,21 @@ final class ChatViewModel {
         // instant-specific: it flips mid-day at a daylight-saving transition
         // and would re-prefill every open conversation at 2 a.m. twice a
         // year, in the one block this whole change exists to hold still.
-        // Clock rows omit zone names to avoid priming regional lookups.
-        return """
+        let context = """
         [CURRENT DATE]
         Today is \(dateText) (\(zone.identifier)).
         """
+        guard let conversationStart else { return context }
+        return context + "\nThis conversation started on \(clockStampText(at: conversationStart, calendar: inputCalendar)) (local time)."
+    }
+
+    /// Read the untrimmed request history so trimming cannot move the start.
+    nonisolated static func conversationStart(in messages: [ChatMessage]) -> Date? {
+        messages.first { $0.role == .user }?.createdAt
     }
 
     /// One minute-resolution local timestamp: "<full date> at <h:mm a>".
-    /// Omits zone names. Shared by the local-time annotation and the
-    /// regenerate line so the two can never drift in format. Distinct instants
+    /// Omits zone names for the system row's conversation-start line. Distinct instants
     /// can render identically during the repeated daylight-saving fall-back hour.
     nonisolated static func clockStampText(
         at instant: Date,
@@ -3517,88 +3470,6 @@ final class ChatViewModel {
         formatter.timeZone = zone
         formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
         return formatter.string(from: instant)
-    }
-
-    /// Neutral local-time annotation for a separate user-role row before the user prose, outside the system row
-    /// for the prefix-cache reason documented on ``currentDateContext``.
-    /// The newest row supplies the request's local time (#2330).
-    /// Issue #4859: the earlier "[MESSAGE SENT] ... was sent" wording made a
-    /// small model claim a draft email was already sent and treat the oldest
-    /// timestamp as now. Keep this neutral, never an action or event.
-    nonisolated static func clockContext(
-        at instant: Date,
-        calendar inputCalendar: Calendar = .autoupdatingCurrent
-    ) -> String {
-        "(Local time: \(clockStampText(at: instant, calendar: inputCalendar)))"
-    }
-
-    /// Neutral current-time annotation for regenerate/retry of an older row.
-    /// Returns "" when both instants fall in the same absolute minute bucket,
-    /// keeping ordinary sends and same-minute retries byte-identical. Distinct
-    /// minutes append the line even if their local timestamps match at fall-back.
-    /// Appends rather than rewrites the row's original local-time annotation.
-    ///
-    /// The cache cost is bounded: the line disappears on the next turn, which
-    /// re-stamps from ``ChatMessage/createdAt``. Its shared prefix then ends
-    /// before this row, re-prefilling only the last exchange; the document in
-    /// the first turn stays cached.
-    nonisolated static func answeringNowLine(
-        asked: Date,
-        answeringAt: Date,
-        calendar: Calendar = .autoupdatingCurrent
-    ) -> String {
-        let askedMinute = Int(floor(asked.timeIntervalSince1970 / 60))
-        let answeringMinute = Int(floor(answeringAt.timeIntervalSince1970 / 60))
-        guard askedMinute != answeringMinute else { return "" }
-        let nowText = clockStampText(at: answeringAt, calendar: calendar)
-        return "\n(Current time: \(nowText))"
-    }
-
-    /// Give every user row a separate wire-only user-role clock row before it.
-    /// An in-row clock caused needless tool calls on writing/coding follow-ups.
-    /// Separate rows retain time awareness and append-only request prefixes.
-    /// The full date avoids attaching yesterday's time to today's system date
-    /// across midnight. Neutral wording avoids implying a user action (#4859).
-    /// The newest user row supplies the request time for an ordinary send.
-    ///
-    /// Derived from each row's own ``ChatMessage/createdAt`` — which is
-    /// persisted and immutable — rather than from "now", so the rendering of
-    /// a turn never changes after the fact and each request is a strict
-    /// EXTENSION of the one before it. That is the precise shape the engine's
-    /// prompt cache requires: it reuses a stored entry only when that entry is
-    /// a token-exact prefix of the new request.
-    ///
-    /// System-row clocks and newest-row-only stamps both rewrite cached prefixes;
-    /// in-row localized, ISO, and tagged clocks retained needless tool calls.
-    ///
-    /// New sends and edited sends mint a fresh createdAt and get a live clock.
-    /// Regenerate/retry reuse the original row and ask time; answeringNowLine
-    /// appends the answer time to the newest prelude when the minute differs.
-    /// Same-minute retries add nothing. A late retry only invalidates the tail
-    /// of the cached history, as documented on answeringNowLine.
-    nonisolated static func stampingClockContext(
-        on messages: [ChatMessage],
-        calendar: Calendar = .autoupdatingCurrent,
-        answeringAt: Date? = nil
-    ) -> [ChatMessage] {
-        guard messages.contains(where: { $0.role == .user }) else { return messages }
-        var result = messages
-        let newestUserIndex = result.lastIndex { $0.role == .user }
-        for index in result.indices where result[index].role == .user {
-            var prelude = clockContext(
-                at: result[index].createdAt,
-                calendar: calendar
-            )
-            if index == newestUserIndex, let answeringAt {
-                prelude += answeringNowLine(
-                    asked: result[index].createdAt,
-                    answeringAt: answeringAt,
-                    calendar: calendar
-                )
-            }
-            result[index].wirePrelude = prelude
-        }
-        return result
     }
 
     nonisolated static func normalizedInstruction(_ value: String) -> String? {

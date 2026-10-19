@@ -2,29 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-/// Issue #2330 — Desktop Chat had no authoritative current-date context. A
-/// small model answered "what is the date today" with a training-memory date
-/// ("Friday, May 24, 2024") and then claimed it could not know today's date.
-///
-/// The fix injects the Mac's local date/time/time-zone as a request-time
-/// template variable (the established desktop-chat pattern), so the model
-/// never has to guess the date or infer it must search for it.
-///
-/// 0.14.1 dogfood split that context in two, and these tests pin the split as
-/// much as the original contract. The DATE goes in the leading system row; the
-/// wall CLOCK rides each user turn as a separate wire-only clock row. Putting a
-/// minute-resolution string at the head of the prompt rewrote the first tokens
-/// of every request the moment the clock ticked, which cost the engine's
-/// prompt cache its prefix and re-prefilled the whole conversation — measured
-/// at 7.3 s against 0.6 s on a 2.3k-token prompt, and 15–17 s per follow-up
-/// with an 8-page PDF attached. So the assertions below care about two things
-/// that look pedantic and are not:
-///
-///   * the system row contains NO minute, and is byte-identical across a
-///     minute boundary (`systemRowIsStableAcrossAMinute`);
-///   * the clock prelude is derived from each row's immutable `createdAt`, so
-///     every request is a strict EXTENSION of the previous one rather than a
-///     rewrite of its tail (`stampsEveryUserRowFromItsOwnCreatedAt`).
+/// Date and fixed conversation-start context preserve the prompt prefix.
 @Suite("Current date context")
 struct CurrentDateTimeContextTests {
 
@@ -59,7 +37,21 @@ struct CurrentDateTimeContextTests {
         """)
     }
 
-    @Test("The system row carries no wall clock and survives a minute boundary")
+    @Test("Conversation start adds exactly one fixed local-time line")
+    func pinnedConversationStart() {
+        let calendar = Self.calendar("America/Los_Angeles")
+        let start = Self.instant("2026-08-25T14:37:00Z")
+        let expected = """
+        [CURRENT DATE]
+        Today is Tuesday, August 25, 2026 (America/Los_Angeles).
+        This conversation started on Tuesday, August 25, 2026 at 7:37 AM (local time).
+        """
+        for now in [start, start.addingTimeInterval(600)] {
+            #expect(ChatViewModel.currentDateContext(now: now, calendar: calendar, conversationStart: start) == expected)
+        }
+    }
+
+    @Test("The date-only preview survives a minute boundary")
     func systemRowIsStableAcrossAMinute() {
         let calendar = Self.calendar("America/Los_Angeles")
         // 07:37:59 and 07:38:01 local — a minute boundary crossed mid-chat,
@@ -95,104 +87,9 @@ struct CurrentDateTimeContextTests {
         #expect(!before.contains("PST"))
         #expect(!before.contains("PDT"))
         #expect(before.contains("America/Los_Angeles"))
-        // Trailers still use the correct local wall clock across the transition.
-        #expect(ChatViewModel.clockContext(at: beforeSpringForward, calendar: calendar).hasSuffix("1:30 AM)"))
-        #expect(ChatViewModel.clockContext(at: afterSpringForward, calendar: calendar).hasSuffix("4:30 AM)"))
-    }
-
-    @Test("The clock prelude pins the wall clock of the instant it stamps")
-    func clockContextPinsTheInstant() {
-        let out = ChatViewModel.clockContext(
-            at: Self.instant("2026-08-25T14:37:00Z"),
-            calendar: Self.calendar("America/Los_Angeles")
-        )
-        // Neutral local-time wording, and the DATE as well as the clock, because
-        // every user row in the history wears one of these: "the current
-        // local time" would have the prompt asserting three contradictory
-        // current times, and a bare clock on an old row would attach
-        // yesterday's time to today's [CURRENT DATE] across midnight.
-        #expect(out == """
-        (Local time: Tuesday, August 25, 2026 at 7:37 AM)
-        """)
-    }
-
-    @Test("Every user row is stamped from its own createdAt; other roles are untouched")
-    func stampsEveryUserRowFromItsOwnCreatedAt() {
-        let calendar = Self.calendar("America/Los_Angeles")
-        let first = ChatMessage(
-            role: .user, content: "first question", status: .complete,
-            createdAt: Self.instant("2026-08-25T14:37:00Z")
-        )
-        let answer = ChatMessage(
-            role: .assistant, content: "first answer", status: .complete,
-            createdAt: Self.instant("2026-08-25T14:37:30Z")
-        )
-        let second = ChatMessage(
-            role: .user, content: "follow-up", status: .complete,
-            createdAt: Self.instant("2026-08-25T14:41:00Z")
-        )
-        let system = ChatMessage(
-            role: .system, content: "app context", status: .complete,
-            createdAt: Self.instant("2026-08-25T14:36:00Z")
-        )
-
-        let stamped = ChatViewModel.stampingClockContext(
-            on: [system, first, answer, second], calendar: calendar
-        )
-
-        // The OLDER user row keeps its own 7:37 — not "now". This is what
-        // makes turn two a strict extension of turn one: had the first row
-        // been restamped (or its prelude removed), the stored prefix would no
-        // longer match and the engine would re-prefill from that row onward.
-        #expect(stamped[1].wirePrelude?.hasSuffix("7:37 AM)") == true)
-        #expect(stamped[3].wirePrelude?.hasSuffix("7:41 AM)") == true)
-        #expect(stamped[1].modelContent == "first question")
-        // Non-user rows are never stamped: the assistant transcript has to
-        // stay byte-identical to what the model produced, and the system row
-        // is exactly where the clock must not be.
-        #expect(stamped[0].wirePrelude == nil)
-        #expect(stamped[2].wirePrelude == nil)
-        #expect(stamped[2].modelContent == "first answer")
-    }
-
-    @Test("Re-stamping the same history is idempotent")
-    func stampingIsIdempotent() {
-        let calendar = Self.calendar("America/Los_Angeles")
-        let history = [
-            ChatMessage(
-                role: .user, content: "hello", status: .complete,
-                createdAt: Self.instant("2026-08-25T14:37:00Z")
-            )
-        ]
-        let once = ChatViewModel.stampingClockContext(on: history, calendar: calendar)
-        let twice = ChatViewModel.stampingClockContext(on: once, calendar: calendar)
-        #expect(once == twice,
-                "Stamping twice must not glue on two trailers — the wire text has to be a pure function of the row.")
-    }
-
-    @Test("A history with no user row passes through untouched")
-    func noUserRowPassesThrough() {
-        let history = [
-            ChatMessage(role: .system, content: "app context", status: .complete)
-        ]
-        let stamped = ChatViewModel.stampingClockContext(
-            on: history, calendar: Self.calendar("America/Los_Angeles")
-        )
-        #expect(stamped.first?.wirePrelude == nil)
-        #expect(stamped.first?.modelContent == "app context")
-    }
-
-    @Test("The clock prelude leaves attachment extracts and blank prose unchanged")
-    func preludePreservesDocumentAndProse() throws {
-        let attachment = try ChatFileAttachment(filename: "invoice.pdf", kind: .pdf,
-            extractedText: "TOTAL DUE 1,204.55", sourceByteCount: 18)
-        for prose in ["what is the total?", "   "] {
-            let row = ChatMessage(role: .user, content: prose, fileAttachments: [attachment])
-            let stamped = ChatViewModel.stampingClockContext(on: [row])[0]
-            #expect(stamped.modelContent == row.modelContent)
-            #expect(stamped.wireSuffix == nil)
-            #expect(stamped.wirePrelude == ChatViewModel.clockContext(at: row.createdAt))
-        }
+        // The start-time formatter uses the correct local wall clock.
+        #expect(ChatViewModel.clockStampText(at: beforeSpringForward, calendar: calendar).hasSuffix("1:30 AM"))
+        #expect(ChatViewModel.clockStampText(at: afterSpringForward, calendar: calendar).hasSuffix("4:30 AM"))
     }
 
     @Test("Guidance-only suffix on blank prose has no leading blank line")
@@ -208,17 +105,32 @@ struct CurrentDateTimeContextTests {
         #expect(message.modelContent == "hello")
     }
 
-    @Test("The separate wire-only clock row is not persisted")
-    func trailerIsNotPersisted() throws {
-        var message = ChatMessage(role: .user, content: "hello", status: .complete)
-        message.wirePrelude = "(Local time: Tuesday, August 25, 2026 at 7:37 AM)"
-        let round = try JSONDecoder().decode(
-            ChatMessage.self, from: JSONEncoder().encode(message)
-        )
-        #expect(round.wirePrelude == nil,
-                "The clock belongs to one request, not to the conversation — persisting it would replay a stale time forever and bloat conversations.json.")
-        #expect(round.content == "hello")
-        #expect(round.modelContent == "hello")
+    @Test("A fixed start survives midnight while today's date rolls over")
+    func conversationStartSurvivesMidnight() {
+        let calendar = Self.calendar("America/Los_Angeles")
+        let start = Self.instant("2026-08-25T06:59:59Z")
+        let before = ChatViewModel.currentDateContext(now: start, calendar: calendar, conversationStart: start)
+        let after = ChatViewModel.currentDateContext(now: start.addingTimeInterval(2), calendar: calendar, conversationStart: start)
+        #expect(before.split(separator: "\n").last == after.split(separator: "\n").last)
+        #expect(before.contains("Today is Monday, August 24, 2026"))
+        #expect(after.contains("Today is Tuesday, August 25, 2026"))
+        #expect(after.hasSuffix("This conversation started on Monday, August 24, 2026 at 11:59 PM (local time)."))
+    }
+
+    @Test("Start context is stable across daylight-saving transitions")
+    func fixedStartAcrossDaylightSaving() {
+        let calendar = Self.calendar("America/Los_Angeles")
+        for (beforeText, afterText) in [
+            ("2026-03-08T09:30:00Z", "2026-03-08T11:30:00Z"),
+            ("2026-11-01T08:30:00Z", "2026-11-01T09:30:00Z")
+        ] {
+            let start = Self.instant(beforeText)
+            let before = ChatViewModel.currentDateContext(now: start, calendar: calendar, conversationStart: start)
+            let after = ChatViewModel.currentDateContext(now: Self.instant(afterText), calendar: calendar, conversationStart: start)
+            #expect(before == after)
+            #expect(!before.contains("PST"))
+            #expect(!before.contains("PDT"))
+        }
     }
 
     @Test("The same instant reads a different local date across time zones")
@@ -254,17 +166,6 @@ struct CurrentDateTimeContextTests {
         #expect(before.contains("Monday, August 24, 2026"))
         #expect(after.contains("Tuesday, August 25, 2026"))
         #expect(before != after)
-        // The clock prelude rolls over too, from the same instants.
-        let clockBefore = ChatViewModel.clockContext(
-            at: Self.instant("2026-08-25T06:59:59Z"),
-            calendar: Self.calendar("America/Los_Angeles")
-        )
-        let clockAfter = ChatViewModel.clockContext(
-            at: Self.instant("2026-08-25T07:00:01Z"),
-            calendar: Self.calendar("America/Los_Angeles")
-        )
-        #expect(clockBefore.contains("11:59 PM"))
-        #expect(clockAfter.contains("12:00 AM"))
     }
 
     @Test("Date context merges into a restored conversation's single system row")
@@ -407,162 +308,11 @@ struct CurrentDateContextWireTests {
         let system = try #require(messages.first?["content"] as? String)
         #expect(system.contains("[CURRENT DATE]"))
         #expect(system.contains("Today is "))
-        // The wall clock must NOT be in the system row — it is the first
-        // thing in the prompt and a minute tick there costs a full re-prefill.
-        #expect(!system.contains("(Local time:"))
-        // …and it must still be on the wire in a separate clock row, so #2330's
-        // "the model is told the current time" contract survives the split.
-        let user = try #require(
-            messages.last { $0["role"] as? String == "user" }?["content"] as? String
-        )
-        #expect(user.contains("what is the date today"))
-        #expect(user == "what is the date today")
-        let clock = try #require(messages[1]["content"] as? String)
         let row = try #require(model.messages.first { $0.role == .user })
-        // The row is minted just before the request instant is sampled; across
-        // a minute boundary the send legitimately appends a current-time line.
-        let expected = ChatViewModel.clockContext(at: row.createdAt)
-        #expect(clock.hasPrefix(expected))
-        // The request instant lies between the row's createdAt and now, so the
-        // only valid extra line names one of the minutes in that window.
-        let rest = String(clock.dropFirst(expected.count))
-        let firstMinute = (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let lastMinute = (Date().timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let validLines = stride(from: firstMinute, through: lastMinute, by: 1).map {
-            ChatViewModel.answeringNowLine(
-                asked: row.createdAt,
-                answeringAt: Date(timeIntervalSinceReferenceDate: $0 * 60)
-            )
-        }
-        #expect(validLines.contains(rest))
-    }
-    @MainActor
-    @Test("An edited send gets the live clock; regenerate keeps the original ask time")
-    func reSendPathsReportTheRightClock() throws {
-        // codex asked what happens on retry/regenerate/edit. The answer is
-        // not uniform and is worth pinning, because each path reaches the
-        // stamper with a different row.
-        let calendar = Calendar(identifier: .gregorian)
-        let asked = Date(timeIntervalSince1970: 1_757_000_000)     // the original send
-        let later = asked.addingTimeInterval(13 * 60)              // thirteen minutes on
-
-        // Regenerate / Retry reuse the SAME row, so its prelude keeps the
-        // time the question was asked. Stamping is a pure function of the
-        // row, so re-running it later must not move the clock.
-        let reused = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
-        let firstPass = ChatViewModel.stampingClockContext(on: [reused], calendar: calendar)
-        let secondPass = ChatViewModel.stampingClockContext(on: firstPass, calendar: calendar)
-        #expect(firstPass[0].wirePrelude == secondPass[0].wirePrelude,
-                "Re-answering the same row must not change what that row renders, or every later turn loses the shared prefix.")
-        #expect(try #require(firstPass[0].wirePrelude).contains(
-            ChatViewModel.clockContext(at: asked, calendar: calendar)))
-
-        // An edited send mints a NEW row (editUserMessage rewinds and calls
-        // send, which defaults createdAt to Date()), so it reports the live
-        // clock — and that costs nothing, because the edited text has already
-        // broken the shared prefix at that row.
-        let freshlySent = ChatMessage(role: .user, content: "what time is it now?", createdAt: later)
-        let edited = ChatViewModel.stampingClockContext(on: [reused, freshlySent], calendar: calendar)
-        #expect(try #require(edited[1].wirePrelude).contains(
-            ChatViewModel.clockContext(at: later, calendar: calendar)))
-        #expect(edited[0].wirePrelude != edited[1].wirePrelude,
-                "Two rows sent thirteen minutes apart must not render the same clock.")
-        // And the earlier row is untouched by the new one arriving: that is
-        // the append-only property the prefix cache needs.
-        #expect(edited[0].wirePrelude == firstPass[0].wirePrelude)
-    }
-
-    @Test("A late regenerate appends the answer time without rewriting the ask")
-    func lateRegenerateAppendsTheAnswerTime() throws {
-        // codex round 5, blocking: reusing the row meant re-answering "what
-        // time is it?" 45 minutes later reported the 45-minute-old clock —
-        // worse than the pre-change behaviour, which recomputed per request.
-        let calendar = Calendar(identifier: .gregorian)
-        let asked = Date(timeIntervalSince1970: 1_757_000_000)
-        let muchLater = asked.addingTimeInterval(45 * 60)
-
-        let earlier = ChatMessage(role: .user, content: "hello", createdAt: asked.addingTimeInterval(-3600))
-        let reused = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
-        let regenerated = ChatViewModel.stampingClockContext(
-            on: [earlier, reused],
-            calendar: calendar,
-            answeringAt: muchLater
-        )
-        let trailer = try #require(regenerated[1].wirePrelude)
-
-        // The ask stamp is untouched and still leads: APPEND, not rewrite, so
-        // the row's own rendering never changes retroactively.
-        #expect(trailer.hasPrefix(ChatViewModel.clockContext(at: asked, calendar: calendar)))
-        // And the answer time is actually there, so the model can answer the
-        // question it was asked.
-        #expect(trailer.contains(ChatViewModel.clockStampText(at: muchLater, calendar: calendar)))
-        #expect(trailer.contains("(Current time:"))
-
-        // Only the newest user row. An earlier turn renders exactly as it did
-        // before, which is the append-only property the prefix cache needs.
-        #expect(regenerated[0].wirePrelude
-            == ChatViewModel.clockContext(at: earlier.createdAt, calendar: calendar))
-    }
-
-    @Test("An ordinary send and a same-minute regenerate add nothing at all")
-    func sameMinuteAnswerAddsNothing() throws {
-        let calendar = Calendar(identifier: .gregorian)
-        let asked = Date(timeIntervalSince1970: 1_757_000_000)
-        let row = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
-
-        // The common path: the row was minted by this very request.
-        let fresh = ChatViewModel.stampingClockContext(on: [row], calendar: calendar, answeringAt: asked)
-        let unstamped = ChatViewModel.stampingClockContext(on: [row], calendar: calendar)
-        #expect(fresh[0].wirePrelude == unstamped[0].wirePrelude,
-                "Passing this request's own instant must be byte-identical to passing nothing, or every ordinary send pays for the regenerate feature.")
-
-        // A regenerate twenty seconds on renders the same minute, so it still
-        // says nothing new and still costs no prefix.
-        let prompt = ChatViewModel.stampingClockContext(
-            on: [row], calendar: calendar, answeringAt: asked.addingTimeInterval(20))
-        #expect(prompt[0].wirePrelude == unstamped[0].wirePrelude)
-    }
-
-    @Test("answeringNowLine speaks only when it has something to say")
-    func answeringNowLineContract() {
-        let calendar = Calendar(identifier: .gregorian)
-        let asked = Date(timeIntervalSince1970: 1_757_000_000)
-        #expect(ChatViewModel.answeringNowLine(asked: asked, answeringAt: asked, calendar: calendar) == "")
-        #expect(ChatViewModel.answeringNowLine(
-            asked: asked, answeringAt: asked.addingTimeInterval(30), calendar: calendar) == "",
-                "Sub-minute differences render identically; emitting a line for them would break the prefix for nothing.")
-        #expect(!ChatViewModel.answeringNowLine(
-            asked: asked, answeringAt: asked.addingTimeInterval(90), calendar: calendar).isEmpty)
-    }
-
-    @Test("The system row and the message trailer agree on the date")
-    func oneInstantRendersOneDate() {
-        // codex round 6, blocking: the send site sampled `Date()` twice, once
-        // for the system row and once for the clock prelude, so a request
-        // assembled across local midnight could say "Today is the 11th" and
-        // "(Local time: … the 12th)" in the same prompt. The send site
-        // now threads one `requestInstant` into both. This pins the other half
-        // — that both renderings agree on the calendar day for a shared
-        // instant, including right at the boundary, where a mismatched
-        // calendar or time zone between the two formatters would show up.
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = try! #require(TimeZone(identifier: "America/Los_Angeles"))
-        var components = DateComponents()
-        components.year = 2026; components.month = 9; components.day = 11
-        components.hour = 23; components.minute = 59; components.second = 59
-        let justBefore = calendar.date(from: components)!
-
-        for instant in [justBefore, justBefore.addingTimeInterval(1)] {
-            let systemRow = ChatViewModel.currentDateContext(now: instant, calendar: calendar)
-            let trailer = ChatViewModel.clockContext(at: instant, calendar: calendar)
-            // "Today is <EEEE, MMMM d, yyyy> (zone)." vs "(Local time: <EEEE,
-            // MMMM d, yyyy> at <time> (…)." — the date text is shared.
-            let day = systemRow
-                .replacingOccurrences(of: "[CURRENT DATE]\nToday is ", with: "")
-                .replacingOccurrences(of: " (America/Los_Angeles).", with: "")
-            #expect(trailer.contains(day),
-                    "The system row says \(day) but the trailer is \(trailer).")
-        }
+        #expect(system.hasSuffix("This conversation started on \(ChatViewModel.clockStampText(at: row.createdAt)) (local time)."))
+        #expect(messages.map { $0["role"] as? String } == ["system", "user"])
+        #expect(messages[1]["content"] as? String == "what is the date today")
+        #expect(!String(decoding: body, as: UTF8.self).contains("(Local time:"))
     }
 
 }

@@ -580,14 +580,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// array into a degenerate tree (each row parented to the one before it),
     /// so old transcripts render exactly as they always did.
     var parentID: UUID?
+    /// Persisted, immutable timestamp; the first user row supplies the system
+    /// instruction’s conversation-start time for stable prompt-prefix reuse.
     let createdAt: Date
-
-    /// Wire-only clock context emitted as a separate user-role message immediately
-    /// before this row. Keeping it outside the prose avoids needless tool calls;
-    /// deriving it from createdAt keeps follow-up requests append-only.
-    /// Absent from CodingKeys and reset to nil on decode, just like wireSuffix:
-    /// only throwaway request copies carry it, never the persisted transcript.
-    var wirePrelude: String?
 
     /// Wire-only guidance appended after this row's prose and attachment extracts
     /// by ChatViewModel.stampingToolGuidance. Absent from CodingKeys and reset
@@ -615,8 +610,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         wireVisibility: WireVisibility = .model,
         parentID: UUID? = nil,
         createdAt: Date = Date(),
-        wireSuffix: String? = nil,
-        wirePrelude: String? = nil
+        wireSuffix: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -639,7 +633,6 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.parentID = parentID
         self.createdAt = createdAt
         self.wireSuffix = wireSuffix
-        self.wirePrelude = wirePrelude
     }
 
     /// Codex r1 MAJOR-1: keep ``reasoningTruncated`` decodable from
@@ -765,7 +758,6 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // Transient by construction — a persisted turn carries no wire
         // trailer, and the next request mints a fresh one.
         self.wireSuffix = nil
-        self.wirePrelude = nil
     }
 
     /// Text sent to the model. Document extracts stay out of the visible

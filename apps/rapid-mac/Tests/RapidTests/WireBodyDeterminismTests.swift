@@ -140,26 +140,30 @@ struct WireBodyDeterminismTests {
         // The property the prefix cache actually needs: turn two's prompt
         // region must START with turn one's. Tool order and key order are part
         // of that prefix, which is why they have to be stable.
-        let turnOne = ChatStreamClient.Request(
-            alias: "test-model",
-            messages: [
-                ChatMessage(role: .system, content: "[CURRENT DATE]\nToday is Friday."),
-                ChatMessage(role: .user, content: "Name three colors."),
-            ],
-            tools: [Self.tool("web_search"), Self.tool("browse")],
-            supportsImageInput: false
-        )
-        let turnTwo = ChatStreamClient.Request(
-            alias: "test-model",
-            messages: [
-                ChatMessage(role: .system, content: "[CURRENT DATE]\nToday is Friday."),
-                ChatMessage(role: .user, content: "Name three colors."),
-                ChatMessage(role: .assistant, content: "Red, blue, and green."),
-                ChatMessage(role: .user, content: "Now name three animals."),
-            ],
-            tools: [Self.tool("web_search"), Self.tool("browse")],
-            supportsImageInput: false
-        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let start = ISO8601DateFormatter().date(from: "2026-10-18T21:14:00Z")!
+        let first = ChatMessage(role: .user, content: "Name three colors.", createdAt: start)
+        let second = ChatMessage(role: .user, content: "Now name three animals.", createdAt: start.addingTimeInterval(600))
+        func request(_ history: [ChatMessage], at now: Date) -> ChatStreamClient.Request {
+            ChatStreamClient.Request(
+                alias: "test-model",
+                messages: ChatViewModel.addingInstructionLayers(
+                    to: history,
+                    dateContext: ChatViewModel.currentDateContext(
+                        now: now, calendar: calendar,
+                        conversationStart: ChatViewModel.conversationStart(in: history)
+                    ),
+                    global: "", conversation: ""
+                ),
+                tools: [Self.tool("web_search"), Self.tool("browse")],
+                supportsImageInput: false
+            )
+        }
+        let turnOne = request([first], at: start)
+        let turnTwo = request([
+            first, ChatMessage(role: .assistant, content: "Red, blue, and green."), second
+        ], at: second.createdAt)
         let oneData = try #require(await WireBodyCaptureProtocol.capture(turnOne))
         let twoData = try #require(await WireBodyCaptureProtocol.capture(turnTwo))
         let one = try #require(String(data: oneData, encoding: .utf8))

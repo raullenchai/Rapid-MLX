@@ -158,7 +158,8 @@ struct ConversationInstructionsPopover: View {
 }
 
 /// Progressive disclosure for the exact Desktop-authored base prompt. The
-/// server or request path may append tool and attachment context at send time,
+/// preview omits the conversation start, which is added after the date on send.
+/// The request path may append tool and attachment context at send time,
 /// which the explanatory copy states instead of pretending the preview owns
 /// those dynamic layers.
 struct EffectiveSystemPromptDisclosure: View {
@@ -190,11 +191,8 @@ struct EffectiveSystemPromptDisclosure: View {
     var body: some View {
         DisclosureGroup("Effective System Prompt", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-                // The clock is deliberately absent from the system row (see
-                // ``ChatViewModel.currentDateContext``), so say where it went
-                // — otherwise this preview reads as "the model doesn't know
-                // what time it is".
-                Text("Preview includes current automatic context. Each of your messages is preceded by its local time. Tool and attachment context may be added when you send.")
+                // Sending adds the conversation's fixed start after the date.
+                Text("Preview includes current automatic context. When you send, the time the conversation started is added after the date. Tool and attachment context may be added when you send.")
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textSecondary)
                 TimelineView(.periodic(from: .now, by: 60)) { context in

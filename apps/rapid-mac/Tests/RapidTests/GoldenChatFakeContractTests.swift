@@ -31,25 +31,16 @@ struct GoldenChatFakeContractTests {
         #expect(fake.events() == [.chatFinished(chunks: GoldenChatFake.contentChunks.count)])
     }
 
-    private func clockRow(_ fake: GoldenChatFake) throws -> String {
+    private func systemRow(_ fake: GoldenChatFake) throws -> String {
         let body = try #require(fake.recordedBodies().last)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let messages = try #require(object["messages"] as? [[String: Any]])
-        return try #require(messages[1]["content"] as? String)
+        return try #require(messages[0]["content"] as? String)
     }
 
     private func expectClock(for row: ChatMessage, in fake: GoldenChatFake) throws {
-        let clock = try clockRow(fake)
-        let expected = ChatViewModel.clockContext(at: row.createdAt)
-        #expect(clock.hasPrefix(expected))
-        let rest = String(clock.dropFirst(expected.count))
-        let firstMinute = (row.createdAt.timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let lastMinute = (Date().timeIntervalSinceReferenceDate / 60).rounded(.down)
-        let validLines = stride(from: firstMinute, through: lastMinute, by: 1).map {
-            ChatViewModel.answeringNowLine(asked: row.createdAt,
-                answeringAt: Date(timeIntervalSinceReferenceDate: $0 * 60))
-        }
-        #expect(validLines.contains(rest))
+        let system = try systemRow(fake)
+        #expect(system.hasSuffix("This conversation started on \(ChatViewModel.clockStampText(at: row.createdAt)) (local time)."))
     }
 
     @MainActor
@@ -66,7 +57,7 @@ struct GoldenChatFakeContractTests {
     @MainActor
     @Test("Regenerate reuses the user row; an edited send mints a new one")
     func resendPathsMintOrReuseTheUserRow() async throws {
-        // codex asked for the REAL resend paths, not the stamper in isolation:
+        // codex asked for the REAL resend paths, not the helper in isolation:
         // a test that constructs rows by hand stays green if
         // ``editUserMessage`` or ``regenerateAnswer`` stops minting or reusing
         // rows correctly. This drives both through the mounted surface and
@@ -79,7 +70,7 @@ struct GoldenChatFakeContractTests {
         let firstWire = try #require(surface.fake.recordedPrompts().last)
         try expectClock(for: firstRow, in: surface.fake)
 
-        // Regenerate: the SAME row is re-sent, so the prelude must come back
+        // Regenerate: the SAME row is re-sent, so the system row must come back
         // byte-identical. If it moved, every later turn in this conversation
         // would lose the shared prefix.
         let beforeRegenerate = surface.fake.recordedBodies().count
@@ -93,12 +84,12 @@ struct GoldenChatFakeContractTests {
         #expect(regeneratedRow.createdAt == firstRow.createdAt)
         let regeneratedWire = try #require(surface.fake.recordedPrompts().last)
         #expect(regeneratedWire == firstWire,
-                "Re-answering the same question must re-render it identically, prelude checked separately.")
+                "Re-answering the same question must re-render it identically, system context checked separately.")
         try expectClock(for: firstRow, in: surface.fake)
 
         // An edited send rewinds and calls `send`, which mints a fresh row —
-        // so it reports the live clock. Asserted on `createdAt` rather than on
-        // the rendered text, because the prelude has minute resolution and a
+        // so it sets a new conversation start. Asserted on `createdAt` rather than on
+        // the rendered text, because the start time has minute resolution and a
         // test that edits within the same minute would see the same string.
         #expect(surface.fake.recordedBodies().count == beforeRegenerate + 1,
                 "Sanity check: regenerate really did send a second request.")

@@ -5,6 +5,7 @@
 
 ## Highlights
 
+- **Desktop conversation time context**: Desktop now tells the model the local date and the time the conversation started in its system instructions instead of adding a separate local-time message before each of your messages. With the default starter model, this stops English replies to Chinese weather questions and unneeded web lookups on simple greetings. Refs #4891.
 - **Desktop general assistant identity**: Desktop now sends a short default assistant instruction so the starter model describes itself as a general assistant for writing, translation, explanation, and code rather than only its tools. It appears in the Effective System Prompt preview, and custom instructions still apply after it. Fixes #4873.
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
 - **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
