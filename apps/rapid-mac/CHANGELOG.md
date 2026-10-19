@@ -17,6 +17,30 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.16.5] — 2026-10-19
+
+Rapid-MLX 0.16.5 adds an experimental mixed-precision DeepSeek V4.1 Flash build for Macs with at least 224 GB of memory, makes streamed text match buffered replies when tool-call markup is split across tokens or rides on a tool-call chunk, and checks authentication before image and video uploads are read. Desktop chats in Chinese get Chinese titles and identity, and interrupted replies no longer vanish.
+
+### Models
+
+- **DeepSeek V4.1 Flash 1017 (experimental)**: new alias `deepseek-v41-flash-1017` serves `rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX` at a pinned revision. It needs at least 224 GB of memory and is greedy-only and text-only, with no tool calling; inputs are capped at 8,192 tokens and outputs at 4,096 tokens. Decode runs at about 19 tok/s on M3 Ultra. ([#4953](https://github.com/raullenchai/Rapid-MLX/pull/4953))
+
+### Desktop chat
+
+- **Interrupted replies stay visible**: switching chats while a reply is being written keeps the partial reply, marked as stopped with Retry, instead of letting it vanish. Earlier interrupted replies are restored on launch, and chat titles still arrive after you switch away. ([#4940](https://github.com/raullenchai/Rapid-MLX/pull/4940))
+- **Chinese identity and titles**: the default assistant instruction now includes a Chinese line, so Chinese greetings describe what the assistant can write, translate, and explain, and tool answers to Chinese questions stay in Chinese more often ([#4929](https://github.com/raullenchai/Rapid-MLX/pull/4929)). Chat titles follow the language of your first message, and follow-up suggestions are written in your voice rather than as the assistant offering help ([#4944](https://github.com/raullenchai/Rapid-MLX/pull/4944)).
+- **Calmer date and weather answers**: date and time questions no longer show the "may be a guess" caution, and a weather question about a state or region shows a quiet "needs a more specific place" note instead of a red failure card. Real tool failures still show the red card. ([#4945](https://github.com/raullenchai/Rapid-MLX/pull/4945))
+
+### Server and API
+
+- **Streamed tool-call markup no longer leaks**: streaming `/v1/chat/completions` no longer shows tool-call markup such as `<|tool_call>…<tool_call|>` or `[Calling tool: …]` when it is split across tokens, so streamed text matches the buffered reply. ([#4950](https://github.com/raullenchai/Rapid-MLX/pull/4950))
+- **Streamed logprobs stay with their text**: with `logprobs: true`, text held back and released just before a structured tool call carries only its own tokens' logprobs. ([#4960](https://github.com/raullenchai/Rapid-MLX/pull/4960))
+- **Streaming text parity on Responses and Messages**: streaming `/v1/responses` and `/v1/messages` no longer depend on how text is chunked; text that arrives on the same chunk as a tool call is now streamed, and `/v1/messages` keeps leading whitespace. ([#4963](https://github.com/raullenchai/Rapid-MLX/pull/4963))
+- **Buffered replies keep tool-like text**: buffered `/v1/responses` and `/v1/messages` replies return tool-call-like text unchanged when no tools are offered or `tool_choice` is `none`, matching streaming. ([#4927](https://github.com/raullenchai/Rapid-MLX/pull/4927))
+- **Large tool lists on native-XML models**: with `tool_choice: "auto"`, models whose chat template writes tool calls in native XML (such as Qwen3.5) no longer return HTTP 400 for tool lists over the grammar limits; such requests use normal tool-call parsing, up to 1024 tools, 256 KiB or depth 64. ([#4928](https://github.com/raullenchai/Rapid-MLX/pull/4928))
+- **Authentication before uploads are read**: with `--api-key` set, `/v1/images/edits` answers an unauthenticated request with 401 before size limits or multipart parsing run ([#4924](https://github.com/raullenchai/Rapid-MLX/pull/4924)), and the JSON depth check no longer reads image-edit uploads before authentication; the upload size cap applies to POST only ([#4962](https://github.com/raullenchai/Rapid-MLX/pull/4962)). Video upload endpoints parse API keys like every other route ([#4949](https://github.com/raullenchai/Rapid-MLX/pull/4949)), and `POST /v1/videos/extend` accepts uploads up to the video route's own limit and answers unauthenticated large uploads with 401 instead of 413 ([#4955](https://github.com/raullenchai/Rapid-MLX/pull/4955)).
+- **TensorFold timeouts release the server**: on the default serial TensorFold path, a non-streaming request that times out cancels its generation, and shutdown cancels in-flight jobs, so later requests and process exit no longer hang. ([#4932](https://github.com/raullenchai/Rapid-MLX/pull/4932))
+
 ## [0.16.4] — 2026-10-18
 
 Rapid-MLX 0.16.4 makes Desktop chat simpler and more dependable: Personal Intelligence is replaced by the ordinary Chat path, tool-call replies are no longer empty or full of raw markup, weather and web tools ask less and answer more, and you can attach Word documents. The server gains `/v1/rerank`, a cache-warming API, MiniCPM-V 4.7 and LFM2.5 support, and faster concurrent and multimodal decoding.
@@ -4403,7 +4427,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.4...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.5...HEAD
+[0.16.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.4...rapid-mac-v0.16.5
 [0.16.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.3...rapid-mac-v0.16.4
 [0.16.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.2...rapid-mac-v0.16.3
 [0.16.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.1...rapid-mac-v0.16.2
