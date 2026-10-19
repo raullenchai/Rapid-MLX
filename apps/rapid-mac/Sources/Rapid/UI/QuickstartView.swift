@@ -2277,7 +2277,7 @@ struct QuickstartView: View {
             alias: coordinator.selection.alias,
             cachedModels: cachedModels,
             comparableTradeUps: list.tradeUps,
-            cachedRowCount: list.cachedDecisionCount
+            cachedRowCount: list.cached.count
         )
         step2Scaffold {
             step2Columns(
@@ -2312,7 +2312,6 @@ struct QuickstartView: View {
                                 selected: coordinator.selection.alias == entry.alias,
                                 sizeText: entry.sizeOnDisk ?? "",
                                 isCached: true,
-                                secondaryText: Self.cachedRowSecondaryText(for: choice),
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
                             .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
@@ -2347,7 +2346,6 @@ struct QuickstartView: View {
                                         selected: coordinator.selection.alias == entry.alias,
                                         sizeText: entry.sizeOnDisk ?? "",
                                         isCached: true,
-                                        secondaryText: Self.cachedRowSecondaryText(for: choice),
                                         onActivate: { activatePrimary(in: .shortlist) }
                                     ) { coordinator.select(choice) }
                                     .accessibilityIdentifier(
@@ -2458,8 +2456,6 @@ struct QuickstartView: View {
                             selected: coordinator.selection.alias == pick.alias,
                             sizeText: Self.rowSizeText(for: pick),
                             isCached: pick.cached,
-                            secondaryText: pick.cached
-                                ? Self.cachedRowSecondaryText(for: choice) : nil,
                             onActivate: { activatePrimary(in: .shortlist) }
                         ) { coordinator.select(choice) }
                         .accessibilityIdentifier("Quickstart.YourPick.\(pick.alias)")
@@ -3249,9 +3245,6 @@ struct QuickstartView: View {
     struct Shortlist: Equatable {
         var cached: [ModelEntry] = []
         var cachedAlternates: [ModelEntry] = []
-        /// Distinct cached decisions before compaction, so the headline still
-        /// counts what is on this Mac rather than what is expanded.
-        var cachedDecisionCount: Int = 0
         var starters: [QuickstartModelChoice] = []
         /// The RAM-aware "RECOMMENDED FOR YOUR N GB MAC" row — SSOT picks for
         /// this Mac's RAM, deduplicated against the starter and the authored
@@ -3324,17 +3317,6 @@ struct QuickstartView: View {
             }
             cachedPresentation.primary.append(selectedEntry)
         }
-        let cachedDecisionCount = cachedPresentation.primary.count
-        var pinnedAliases: Set<String> = [selection, starterAlias]
-        if let ram = physicalRAMGB {
-            pinnedAliases.formUnion(
-                RAMBucketedDefault.picks(forPhysicalRAMGB: ram).map(\.alias)
-            )
-        }
-        cachedPresentation = compactCachedPresentation(
-            cachedPresentation,
-            pinnedAliases: pinnedAliases
-        )
         let existing = cachedPresentation.primary
         let existingAliases = Set(existing.map(\.alias))
         // The RAM-aware recommended row: SSOT picks for this Mac, dropped if
@@ -3370,30 +3352,18 @@ struct QuickstartView: View {
             }
             return physicalRAMGB.map { choice.isVisible(onRAMGB: $0) } ?? true
         }
-        let starters = choices.filter {
-            $0.alias == starterAlias && !existingAliases.contains($0.alias)
-        }
-        let lowMemory = choices.filter {
-            $0.isLowMemory
-                && $0.alias != starterAlias
-                && !existingAliases.contains($0.alias)
-        }
-        // A compacted cached row that an authored lane already renders (with
-        // its ON THIS MAC badge) must not also sit in the disclosure: expanding
-        // it would show the same model twice.
-        var laneAliases = Set(starters.map(\.alias))
-        laneAliases.formUnion(recommended.map(\.alias))
-        laneAliases.formUnion(lowMemory.map(\.alias))
-        laneAliases.formUnion(tradeUps.map(\.alias))
         return Shortlist(
             cached: existing,
-            cachedAlternates: cachedPresentation.alternates.filter {
-                !laneAliases.contains($0.alias)
+            cachedAlternates: cachedPresentation.alternates,
+            starters: choices.filter {
+                $0.alias == starterAlias && !existingAliases.contains($0.alias)
             },
-            cachedDecisionCount: cachedDecisionCount,
-            starters: starters,
             recommended: recommended,
-            lowMemory: lowMemory,
+            lowMemory: choices.filter {
+                $0.isLowMemory
+                    && $0.alias != starterAlias
+                    && !existingAliases.contains($0.alias)
+            },
             tradeUps: tradeUps,
             yourPick: native.contains(selection)
                 ? nil
@@ -3605,16 +3575,14 @@ struct QuickstartView: View {
     }
 
     /// The size lane a "Recommended for your N GB Mac" card shows: the SSOT's
-    /// measured footprint plus its capability score, e.g.
-    /// ``"20 GB · 92% capability"`` — labelled exactly as the model picker
-    /// labels the same number.
+    /// measured footprint plus its capability score, e.g. ``"20 GB · 92%"``.
     /// Integral footprints render without a decimal ("20 GB"), non-integral
     /// with one ("8.7 GB").
     static func recommendationSizeText(from pick: RAMBucketedDefault.Pick) -> String {
         let gb = pick.footprintGB.truncatingRemainder(dividingBy: 1) == 0
             ? String(Int(pick.footprintGB))
             : String(format: "%.1f", pick.footprintGB)
-        return "\(gb) GB · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
+        return "\(gb) GB · \(pick.capabilityPct)%"
     }
 
     /// Size lane for a recommended card, looked up from the SSOT by alias so
@@ -3661,7 +3629,7 @@ struct QuickstartView: View {
         }
         if let onDisk = cached?.sizeOnDisk, !onDisk.isEmpty {
             guard let capability else { return onDisk }
-            return "\(onDisk) · \(ModelPickerBar.capabilityText(capability))"
+            return "\(onDisk) · \(capability)%"
         }
         // Cached, but we could not measure what it occupies. Falling through
         // to the download estimate here is what codex caught on this PR: the
@@ -3724,31 +3692,6 @@ struct QuickstartView: View {
         return CachedPresentation(primary: primary, alternates: alternates)
     }
 
-    /// A cache-rich Mac (#4857) listed every cached decision up front, so the
-    /// recommended one sat sixth under unrelated rows. Above `threshold`
-    /// visible cached decisions, keep only the pinned rows (selection, starter,
-    /// RAM-tier picks) visible and move the rest, in order, to the front of the
-    /// existing "Other variants" disclosure. With nothing pinned the first row
-    /// stays visible so the section keeps an anchor. Nothing leaves the
-    /// presentation: every row is still one disclosure away.
-    static func compactCachedPresentation(
-        _ presentation: CachedPresentation,
-        pinnedAliases: Set<String>,
-        threshold: Int = 3
-    ) -> CachedPresentation {
-        guard presentation.primary.count > threshold else { return presentation }
-        var visible = presentation.primary.filter { pinnedAliases.contains($0.alias) }
-        if visible.isEmpty, let first = presentation.primary.first {
-            visible = [first]
-        }
-        let visibleAliases = Set(visible.map(\.alias))
-        let demoted = presentation.primary.filter { !visibleAliases.contains($0.alias) }
-        return CachedPresentation(
-            primary: visible,
-            alternates: demoted + presentation.alternates
-        )
-    }
-
     private static func cachedVariantGroupKey(for entry: ModelEntry) -> String {
         let family = ModelInfoCatalog.familyAndContext(for: entry.alias).family
         guard family != "Unknown",
@@ -3776,14 +3719,10 @@ struct QuickstartView: View {
         return lhs.alias.localizedStandardCompare(rhs.alias) == .orderedAscending
     }
 
-    /// A wizard choice for a model already on disk. The alias stays the
-    /// identity; the name shown is the catalogue's authored one when it has
-    /// one, so the same model reads the same in every lane (#4857).
     static func choice(forCachedModel entry: ModelEntry) -> QuickstartModelChoice {
         QuickstartModelChoice(
             alias: entry.alias,
-            displayName: QuickstartCoordinator.onboardingChoices
-                .first { $0.alias == entry.alias }?.displayName ?? entry.alias,
+            displayName: entry.alias,
             hfRepo: entry.hfRepo,
             blurb: entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
             tier: .tradeUp
@@ -3806,12 +3745,6 @@ struct QuickstartView: View {
             blurb: "",
             tier: .tradeUp
         )
-    }
-
-    /// The canonical alias, shown under a cached row only when the row's name
-    /// is a friendlier catalogue name — never the same string twice.
-    static func cachedRowSecondaryText(for choice: QuickstartModelChoice) -> String? {
-        choice.displayName == choice.alias ? nil : choice.alias
     }
 
     /// The size a catalogue row shows: what it occupies if it is here, what it

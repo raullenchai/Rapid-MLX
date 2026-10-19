@@ -1003,12 +1003,6 @@ struct ModelPickerBar: View {
     /// and (where a local measurement exists) decode tok/s. A pick with a
     /// ``caveat`` (e.g. a chat specialist) shows that word in place of the
     /// capability %. Pure so tests can pin the copy without a SwiftUI host.
-    /// The one spelling of a recommendation's capability score, shared with
-    /// first-run setup so the same number never appears unlabelled there.
-    static func capabilityText(_ pct: Int) -> String {
-        String(localized: "\(pct)% capability")
-    }
-
     static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> String {
         let lead = isPrimary ? String(localized: "Best pick for your Mac") : String(localized: "Faster, lighter alternative")
         var parts = [lead]
@@ -1018,7 +1012,7 @@ struct ModelPickerBar: View {
             }
             parts.append(caveat)
         } else {
-            parts.append(capabilityText(pick.capabilityPct))
+            parts.append(String(localized: "\(pick.capabilityPct)% capability"))
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
             }

@@ -518,11 +518,7 @@ struct Step2ModelSelectionBehaviorTests {
     func overflowCachedSelectionStaysVisible() {
         let catalog = (0..<9).map { Self.entry("cached-\($0)", cached: true) }
         let list = QuickstartView.shortlist(catalog: catalog, selection: "cached-8")
-        #expect(list.cachedDecisionCount == 6, "the presentation bound is unchanged")
-        // #4857: nothing is pinned here, so the first row anchors the section
-        // and the other bounded rows collapse behind "Other variants".
-        #expect(list.cached.map(\.alias) == ["cached-0"])
-        #expect(list.cachedAlternates.count == 5)
+        #expect(list.cached.count == 6, "the presentation bound is unchanged")
         #expect(list.yourPick?.alias == "cached-8",
                 "a pick outside the bound must not silently become unactionable")
         #expect(list.visibleAliases.contains("cached-8"))

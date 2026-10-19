@@ -129,13 +129,8 @@ struct QuickstartCachedModelTests {
             physicalRAMGB: 16
         )
 
-        // #4857: past the compaction threshold only the pinned selection
-        // stays in the visible cached rows; the rest sit one disclosure away.
-        #expect(shortlist.cached.map(\.alias) == ["qwen3.5-4b-4bit"])
-        #expect(shortlist.cachedDecisionCount == 6)
-        // The five unpinned bounded rows plus the one the selection displaced.
-        #expect(shortlist.cachedAlternates.map(\.alias)
-                == (0..<6).map { "cached-\($0)" })
+        #expect(shortlist.cached.count == 6)
+        #expect(shortlist.cached.last?.alias == "qwen3.5-4b-4bit")
         #expect(shortlist.visibleAliases.contains("qwen3.5-4b-4bit"))
         #expect(QuickstartView.cachedModel(
             alias: "qwen3.5-4b-4bit",
@@ -145,117 +140,5 @@ struct QuickstartCachedModelTests {
             alias: "qwen3.5-4b-4bit",
             cachedModels: rows
         ))
-    }
-
-    // MARK: - #4857 clearer cached rows
-
-    @Test("a cached authored alias reads with its catalogue name, alias kept as identity")
-    func cachedRowUsesCatalogueName() {
-        let authored = QuickstartCoordinator.defaultChoice
-        let choice = QuickstartView.choice(forCachedModel: entry(authored.alias))
-        #expect(choice.alias == authored.alias)
-        #expect(choice.displayName == authored.displayName)
-        #expect(choice.displayName != authored.alias)
-        #expect(QuickstartView.cachedRowSecondaryText(for: choice) == authored.alias)
-    }
-
-    @Test("an uncatalogued cached alias keeps the alias and no duplicate caption")
-    func uncataloguedCachedRowKeepsAlias() {
-        let choice = QuickstartView.choice(forCachedModel: entry("bonsai-8b-2bit"))
-        #expect(choice.displayName == "bonsai-8b-2bit")
-        #expect(QuickstartView.cachedRowSecondaryText(for: choice) == nil)
-    }
-
-    @Test("compaction leaves a short cached list untouched")
-    func compactionBelowThresholdIsIdentity() {
-        let presentation = QuickstartView.CachedPresentation(
-            primary: (0..<3).map { entry("chat-\($0)") },
-            alternates: [entry("chat-0-8bit")]
-        )
-        #expect(QuickstartView.compactCachedPresentation(
-            presentation, pinnedAliases: []
-        ) == presentation)
-    }
-
-    @Test("compaction keeps pinned rows in order and demotes the rest ahead of siblings")
-    func compactionKeepsPinnedRows() {
-        let presentation = QuickstartView.CachedPresentation(
-            primary: (0..<5).map { entry("chat-\($0)") },
-            alternates: [entry("chat-0-8bit")]
-        )
-        let compact = QuickstartView.compactCachedPresentation(
-            presentation, pinnedAliases: ["chat-3", "chat-1", "not-cached"]
-        )
-        #expect(compact.primary.map(\.alias) == ["chat-1", "chat-3"])
-        #expect(compact.alternates.map(\.alias) == [
-            "chat-0", "chat-2", "chat-4", "chat-0-8bit",
-        ])
-    }
-
-    @Test("compaction with nothing pinned keeps the first row as the anchor")
-    func compactionFallsBackToFirstRow() {
-        let presentation = QuickstartView.CachedPresentation(
-            primary: (0..<4).map { entry("chat-\($0)") },
-            alternates: []
-        )
-        let compact = QuickstartView.compactCachedPresentation(
-            presentation, pinnedAliases: ["elsewhere"]
-        )
-        #expect(compact.primary.map(\.alias) == ["chat-0"])
-        #expect(compact.alternates.map(\.alias) == ["chat-1", "chat-2", "chat-3"])
-    }
-
-    @Test("a cache-rich shortlist keeps the selected cached model visible")
-    func cacheRichShortlistKeepsSelectionVisible() {
-        let rows = (0..<5).map { entry("chat-\($0)") } + [
-            entry("qwen3.5-4b-4bit")
-        ]
-        let shortlist = QuickstartView.shortlist(
-            catalog: rows,
-            selection: "qwen3.5-4b-4bit",
-            physicalRAMGB: 16
-        )
-        #expect(shortlist.cached.map(\.alias) == ["qwen3.5-4b-4bit"])
-        #expect(shortlist.cachedAlternates.map(\.alias)
-                == rows.prefix(5).map(\.alias))
-        #expect(shortlist.cachedDecisionCount == 6)
-        #expect(shortlist.visibleAliases.contains("qwen3.5-4b-4bit"))
-        #expect(shortlist.yourPick == nil)
-        // The headline still counts every cached decision, not the compact row.
-        #expect(QuickstartView.selectionNarrative(
-            alias: "qwen3.5-4b-4bit",
-            cachedModels: rows,
-            comparableTradeUps: shortlist.tradeUps,
-            cachedRowCount: shortlist.cachedDecisionCount
-        ) == .alreadyHere(cachedCount: 6))
-    }
-
-    @Test("a compacted authored model renders once, in its own lane")
-    func compactedAuthoredRowIsNotDuplicated() {
-        let rows = [entry("chat-a"), entry("chat-b"), entry("qwen3.5-9b-4bit"),
-                    entry("qwen3.5-4b-4bit")]
-        let shortlist = QuickstartView.shortlist(
-            catalog: rows,
-            selection: "qwen3.5-4b-4bit",
-            physicalRAMGB: 16
-        )
-        #expect(shortlist.cached.map(\.alias) == ["qwen3.5-4b-4bit"])
-        #expect(shortlist.tradeUps.map(\.alias).contains("qwen3.5-9b-4bit"))
-        #expect(!shortlist.cachedAlternates.map(\.alias).contains("qwen3.5-9b-4bit"))
-        #expect(shortlist.cachedAlternates.map(\.alias) == ["chat-a", "chat-b"])
-        let all = shortlist.visibleAliases(includeCachedAlternates: true)
-        #expect(all.filter { $0 == "qwen3.5-9b-4bit" }.count == 1)
-    }
-
-    @Test("a short cached list is not compacted")
-    func shortCachedListStaysExpanded() {
-        let rows = [entry("chat-a"), entry("chat-b"), entry("qwen3.5-4b-4bit")]
-        let shortlist = QuickstartView.shortlist(
-            catalog: rows,
-            selection: "qwen3.5-4b-4bit",
-            physicalRAMGB: 16
-        )
-        #expect(shortlist.cached.map(\.alias) == rows.map(\.alias))
-        #expect(shortlist.cachedAlternates.isEmpty)
     }
 }
