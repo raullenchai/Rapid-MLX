@@ -100,7 +100,10 @@ struct CustomInstructionsTests {
             conversation: "Use bullet points."
         )
 
-        #expect(preview.hasPrefix("[CURRENT DATE]"))
+        #expect(preview.hasPrefix(
+            ChatViewModel.baseAssistantInstruction
+                + "\n\n[CURRENT DATE]\nToday is Tuesday, August 25, 2026."
+        ))
         #expect(preview.contains("[GLOBAL USER INSTRUCTIONS]"))
         #expect(preview.contains("Reply in plain language."))
         #expect(preview.contains("[CONVERSATION INSTRUCTIONS - HIGHEST USER PRIORITY]"))
@@ -238,6 +241,7 @@ struct CustomInstructionsTests {
         let messages = try #require(json["messages"] as? [[String: Any]])
         #expect(messages.filter { $0["role"] as? String == "system" }.count == 1)
         let system = try #require(messages.first?["content"] as? String)
+        #expect(system.hasPrefix(ChatViewModel.baseAssistantInstruction + "\n\n[CURRENT DATE]"))
         #expect(system.contains("Reply only in Simplified Chinese."))
         #expect(system.contains("Reply only in English."))
         #expect(

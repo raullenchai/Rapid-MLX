@@ -2698,6 +2698,7 @@ final class ChatViewModel {
             // the window.
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
+                baseInstruction: ChatViewModel.baseAssistantInstruction,
                 dateContext: ChatViewModel.currentDateContext(now: requestInstant),
                 memoryContext: memoryContext,
                 global: globalInstruction,
@@ -3368,9 +3369,9 @@ final class ChatViewModel {
         return remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : remaining
     }
 
-    /// Merge current-date context, pre-existing, global, and conversation
-    /// layers into one leading system row. Local chat templates often reject
-    /// a second system message, so every caller must go through this
+    /// Merge base identity, current-date context, pre-existing system, memory,
+    /// global, and conversation layers into one leading system row. Local chat
+    /// templates often reject a second system message, so every caller must go through this
     /// transformation. Nothing request-scoped belongs here: the row is the
     /// head of every prompt, and any byte that changes between two turns
     /// costs the engine's prefix cache the whole conversation (that is why
@@ -3378,6 +3379,7 @@ final class ChatViewModel {
     /// each turn with its own tool result — ``stampingClockContext``, ``stampingToolGuidance``).
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
+        baseInstruction: String? = nil,
         dateContext: String? = nil,
         memoryContext: String? = nil,
         global: String,
@@ -3385,7 +3387,7 @@ final class ChatViewModel {
     ) -> [ChatMessage] {
         var result = messages
         let existing = result.first?.role == .system ? result.removeFirst().content : nil
-        var parts = [dateContext, existing]
+        var parts = [baseInstruction, dateContext, existing]
             .compactMap { $0.flatMap(normalizedInstruction) }
         if let memoryContext, let memory = normalizedInstruction(memoryContext) {
             parts.append(memory)
@@ -3417,6 +3419,7 @@ final class ChatViewModel {
     /// same assembly function as the wire path so displayed precedence and
     /// automatic context cannot drift from what Rapid sends.
     nonisolated static func effectiveSystemPrompt(
+        baseInstruction: String? = baseAssistantInstruction,
         dateContext: String? = nil,
         memoryContext: String? = nil,
         global: String,
@@ -3424,8 +3427,9 @@ final class ChatViewModel {
     ) -> String {
         addingInstructionLayers(
             to: [],
+            baseInstruction: baseInstruction,
             // The preview shows what actually goes on the wire: the system
-            // row carries the DATE only. A neutral local-time annotation rides
+            // row carries the DATE without the clock. A neutral local-time annotation rides
             // each user turn in a separate wire-only user-role row before its prose (``stampingClockContext``).
             // Quoting it here would show a system row Rapid never sends;
             // the editor's caption tells the reader where the time went.
@@ -3600,6 +3604,14 @@ final class ChatViewModel {
     nonisolated static func normalizedInstruction(_ value: String) -> String? {
         CustomInstructionsConfig.normalized(value)
     }
+
+    /// Default identity for #4873: measured starter-model replies described only
+    /// the tool list and denied content creation. Keep this constant: it is the
+    /// first bytes of every prompt; per-turn text invalidates the engine prefix
+    /// cache for the whole conversation. Global/conversation instructions follow
+    /// and refine it (a user language preference wins over "By default"). Keep it
+    /// short to limit the token cost on small models.
+    nonisolated static let baseAssistantInstruction: String = "You are a helpful general-purpose assistant: you can write, rewrite, summarize, translate, explain, brainstorm and help with code. Tools are optional extras for current or external information; use them only when a request needs it. By default, reply in the user's language."
 
     nonisolated static let toolGuidance: String = """
 You have access to tools that fetch real-time information. When you use one of these tools, follow these rules — they OVERRIDE your training data:
