@@ -2250,11 +2250,23 @@ private struct BrowseApprovalSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Fetch this web page?")
-                .font(.rapid(.headline))
-            Text("The model wants to fetch content from:")
-                .font(.rapid(.callout))
-                .foregroundStyle(.secondary)
+            Group {
+                if request.redirectedFrom == nil {
+                    Text("Fetch this web page?")
+                } else {
+                    Text("Allow the redirected page too?")
+                }
+            }
+            .font(.rapid(.headline))
+            Group {
+                if let fromHost = request.redirectedFrom {
+                    Text("\(BrowseApprovalStore.displaySafe(fromHost)) redirected to:")
+                } else {
+                    Text("The model wants to fetch content from:")
+                }
+            }
+            .font(.rapid(.callout))
+            .foregroundStyle(.secondary)
 
             Text(BrowseApprovalStore.displaySafe(request.host))
                 .font(.rapid(.body, design: .monospaced).weight(.semibold))

@@ -5,6 +5,7 @@
 
 ## Highlights
 
+- **One approval per web page fetch**: when a site redirects between its bare domain and `www.` (or upgrades http to https on the same host), Desktop no longer asks for approval a second time. A redirect to a different site still asks, and the prompt now says which site redirected. Fixes #4911.
 - **Bold and italic in Chinese, Japanese and Korean replies**: Desktop chat now renders emphasis that starts or ends on full-width punctuation, such as `**瑞利散射（Rayleigh scattering）**现象` or `**注意：**请`, instead of showing literal `**`. English emphasis and code are unchanged. Fixes #4912.
 - **Desktop general assistant identity**: Desktop now sends a short default assistant instruction so the starter model describes itself as a general assistant for writing, translation, explanation, and code rather than only its tools. It appears in the Effective System Prompt preview, and custom instructions still apply after it. Fixes #4873.
 - **Titles and follow-ups for starter chats**: default starter conversations now get generated titles and follow-up suggestions; the engine reports `concurrent_text_requests` in the model profile. Fixes #4874.

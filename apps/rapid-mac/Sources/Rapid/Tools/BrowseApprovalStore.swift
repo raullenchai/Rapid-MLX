@@ -42,6 +42,8 @@ final class BrowseApprovalStore {
         /// The host, surfaced prominently so the user judges *where* the request
         /// goes without parsing a long query string.
         let host: String
+        /// The host of the hop that redirected, when this is a redirect prompt.
+        let redirectedFrom: String?
     }
 
     static let modeKey = "rapid.tools.browse.mode.v1"
@@ -66,7 +68,7 @@ final class BrowseApprovalStore {
 
     /// Gate a URL fetch. Returns immediately when auto-approve is on; otherwise
     /// suspends until the UI answers.
-    func requestApproval(url: String, host: String) async -> Decision {
+    func requestApproval(url: String, host: String, redirectedFrom: String? = nil) async -> Decision {
         if mode == .autoApproveAll { return .allowOnce }
         // Re-entrancy guard — tool execution is serial, so a second pending
         // request means something is wrong; refuse rather than hang. NOT a
@@ -87,7 +89,8 @@ final class BrowseApprovalStore {
                 self.pendingRequest = PendingApproval(
                     url: Self.previewLine(url),
                     fullURL: url,
-                    host: host
+                    host: host,
+                    redirectedFrom: redirectedFrom
                 )
                 let waiters = Array(self.pendingRequestWaiters.values)
                 self.pendingRequestWaiters.removeAll()

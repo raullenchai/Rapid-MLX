@@ -3140,6 +3140,16 @@
         }
       }
     },
+    "Allow the redirected page too?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "也允许重定向后的网页吗？"
+          }
+        }
+      }
+    },
     "Always allow" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4876,6 +4886,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "反馈"
+          }
+        }
+      }
+    },
+    "%@ redirected to:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 重定向到了："
           }
         }
       }

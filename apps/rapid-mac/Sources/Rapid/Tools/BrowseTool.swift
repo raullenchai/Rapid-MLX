@@ -54,7 +54,7 @@ enum BrowseTool {
     ///
     /// A distinct type, not a sentence: the decline can surface from deep
     /// inside ``fetchFollowingRedirects`` (a redirect that leaves the approved
-    /// origin re-prompts), and the only honest way for ``run`` to tell it apart
+    /// site re-prompts), and the only honest way for ``run`` to tell it apart
     /// from a real fetch error is for the throw site to SAY which it is.
     /// Matching on the wording instead would misfire the day someone rewords
     /// this string — or the day a fetched page happens to contain it.
@@ -73,7 +73,9 @@ enum BrowseTool {
     static func run(
         arguments: String,
         approval: BrowseApprovalStore,
-        cache: BrowseContentCache = .shared
+        cache: BrowseContentCache = .shared,
+        resolve: @Sendable (URL) async throws -> [ParsedIP] = BrowseSSRFGuard.validatedAddresses,
+        fetch: @escaping @Sendable (URL, ParsedIP, Int) async throws -> (data: Data, response: HTTPURLResponse) = IPPinnedHTTPTransport.fetch
     ) async -> ToolCallResult {
         let tool = "browse"
         guard let data = arguments.data(using: .utf8),
@@ -135,12 +137,12 @@ enum BrowseTool {
         if Task.isCancelled { return err(tool, "browse was cancelled") }
 
         do {
-            // Redirects that leave the approved origin get a fresh approval — the
-            // security model is "the user approved THIS host", and a server must
-            // not be able to silently bounce the fetch to an unseen destination.
-            let fetched = try await fetchFollowingRedirects(startURL: url) { redirectURL in
+            // Redirects outside an approved site still need a fresh approval.
+            let fetched = try await fetchFollowingRedirects(startURL: url, resolve: resolve, fetch: fetch) { redirectURL, fromHost in
                 let rHost = redirectURL.host ?? redirectURL.absoluteString
-                return await approval.requestApproval(url: redirectURL.absoluteString, host: rHost)
+                return await approval.requestApproval(
+                    url: redirectURL.absoluteString, host: rHost, redirectedFrom: fromHost
+                )
             }
             let rendered = await renderMarkdown(from: fetched)
             let entry = BrowseContentCache.Entry(
@@ -219,30 +221,28 @@ enum BrowseTool {
 
     /// Follow redirects by hand so every hop is SSRF-validated before a socket
     /// opens. `startURL` is assumed already user-approved; `approveRedirect` is
-    /// consulted only when a redirect leaves an already-approved origin, and
+    /// consulted only when a redirect leaves an already-approved site, and
     /// anything but ``BrowseApprovalStore/Decision/allowOnce`` aborts the
     /// fetch — see ``redirectGateError`` for which abort is which.
     static func fetchFollowingRedirects(
         startURL: URL,
-        approveRedirect: (URL) async -> BrowseApprovalStore.Decision
+        resolve: (URL) async throws -> [ParsedIP] = BrowseSSRFGuard.validatedAddresses,
+        fetch: @escaping @Sendable (URL, ParsedIP, Int) async throws -> (data: Data, response: HTTPURLResponse) = IPPinnedHTTPTransport.fetch,
+        approveRedirect: (URL, String) async -> BrowseApprovalStore.Decision
     ) async throws -> Fetched {
         var current = startURL
-        var approvedOrigins: Set<String> = [origin(of: startURL)]
+        var approvedURLs = [startURL]
         var hop = 0
         while true {
             // Validate (incl. DNS) BEFORE connecting to this hop's host, then
             // pin the socket to the exact validated address.
-            let validatedAddresses = try await BrowseSSRFGuard.validatedAddresses(current)
+            let validatedAddresses = try await resolve(current)
             let hopURL = current
 
             // Hard wall-clock ceiling per hop — see ``requestTimeout``.
             let raw = try await withDeadline(requestTimeout) {
                 try await firstSuccessful(addresses: validatedAddresses) { address in
-                    try await IPPinnedHTTPTransport.fetch(
-                        url: hopURL,
-                        address: address,
-                        byteLimit: maxResponseBytes
-                    )
+                    try await fetch(hopURL, address, maxResponseBytes)
                 }
             }
             let http = raw.response
@@ -252,14 +252,11 @@ enum BrowseTool {
                 guard let next = URL(string: loc, relativeTo: current)?.absoluteURL else {
                     throw simpleError("redirect to an invalid URL")
                 }
-                // A redirect that crosses the approved origin needs a fresh OK —
-                // otherwise a trusted host could bounce the fetch to an unseen one.
-                let nextOrigin = origin(of: next)
-                if !approvedOrigins.contains(nextOrigin) {
-                    let decision = await approveRedirect(next)
+                if redirectNeedsApproval(next, approved: approvedURLs) {
+                    let decision = await approveRedirect(next, current.host ?? current.absoluteString)
                     if let refusal = redirectGateError(decision, destination: next) { throw refusal }
                     if Task.isCancelled { throw simpleError("browse was cancelled") }
-                    approvedOrigins.insert(nextOrigin)
+                    approvedURLs.append(next)
                 }
                 current = next
                 continue
@@ -272,15 +269,39 @@ enum BrowseTool {
         }
     }
 
-    /// Normalised scheme://host:port so a redirect that only changes the path is
-    /// treated as same-origin (no re-prompt) while a host/scheme/port change is
-    /// cross-origin (re-prompt). Default ports are made explicit so
-    /// `http://h` and `http://h:80` compare equal.
-    static func origin(of url: URL) -> String {
+    /// Parse origin components once for all redirect comparisons. Only one
+    /// trailing DNS dot is ignored; ports are explicit even when omitted.
+    static func origin(of url: URL) -> (scheme: String, host: String, port: Int) {
         let scheme = url.scheme?.lowercased() ?? ""
-        let host = url.host?.lowercased() ?? ""
-        let port = url.port ?? (scheme == "https" ? 443 : 80)
-        return "\(scheme)://\(host):\(port)"
+        var host = url.host?.lowercased() ?? ""
+        if host.hasSuffix(".") { host.removeLast() }
+        return (scheme, host, url.port ?? (scheme == "https" ? 443 : 80))
+    }
+
+    /// Approval covers an apex/www sibling and a default-port HTTP upgrade,
+    /// never arbitrary subdomains, port changes, or HTTPS downgrades.
+    static func isSameSiteRedirect(from approved: URL, to next: URL) -> Bool {
+        let source = origin(of: approved)
+        let destination = origin(of: next)
+        let sameTransport = source.scheme == destination.scheme && source.port == destination.port
+        let upgrade = source.scheme == "http" && source.port == 80
+            && destination.scheme == "https" && destination.port == 443
+        guard sameTransport || upgrade else { return false }
+        // The exact host the user approved is always covered (path-only hops).
+        if source.host == destination.host { return true }
+
+        // IP literals must match exactly, without treating www as an alias.
+        let brackets = CharacterSet(charactersIn: "[]")
+        let sourceIP = ParsedIP(source.host.trimmingCharacters(in: brackets))
+        let destinationIP = ParsedIP(destination.host.trimmingCharacters(in: brackets))
+        if sourceIP != nil || destinationIP != nil { return false }
+        let sourceHost = source.host.hasPrefix("www.") ? String(source.host.dropFirst(4)) : source.host
+        let destinationHost = destination.host.hasPrefix("www.") ? String(destination.host.dropFirst(4)) : destination.host
+        return sourceHost.contains(".") && destinationHost.contains(".") && sourceHost == destinationHost
+    }
+
+    static func redirectNeedsApproval(_ next: URL, approved: [URL]) -> Bool {
+        !approved.contains { isSameSiteRedirect(from: $0, to: next) }
     }
 
     /// Run `op` with a hard wall-clock ceiling: if it hasn't finished within
