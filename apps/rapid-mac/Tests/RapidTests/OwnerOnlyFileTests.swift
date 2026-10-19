@@ -30,6 +30,49 @@ final class OwnerOnlyFileTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [url.lastPathComponent])
     }
 
+    func testTemporaryFileIsOwnerOnlyBeforeWritingUnderPermissiveUmask() throws {
+        let dir = try directory()
+        let url = dir.appendingPathComponent("private.json")
+        let previous = umask(0o022)
+        defer { umask(previous) }
+        let data = Data("private contents".utf8)
+        var observedTemporaryFile = false
+
+        try OwnerOnlyFile.writeAtomically(data, to: url) { temporaryPath in
+            observedTemporaryFile = true
+            let temporaryURL = URL(fileURLWithPath: temporaryPath)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryPath))
+            XCTAssertEqual(temporaryURL.deletingLastPathComponent().path, dir.path)
+            XCTAssertEqual(try mode(temporaryURL), 0o600)
+            let attributes = try FileManager.default.attributesOfItem(atPath: temporaryPath)
+            XCTAssertEqual((attributes[.size] as? NSNumber)?.intValue, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        }
+
+        XCTAssertTrue(observedTemporaryFile)
+        XCTAssertEqual(try mode(url), 0o600)
+        XCTAssertEqual(try Data(contentsOf: url), data)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [url.lastPathComponent])
+    }
+
+    func testThrowingBeforeWritePropagatesErrorAndRemovesTemporaryFile() throws {
+        enum TestError: Error, Equatable { case beforeWrite }
+        let dir = try directory()
+        let url = dir.appendingPathComponent("private.json")
+        var observedTemporaryFile = false
+
+        XCTAssertThrowsError(try OwnerOnlyFile.writeAtomically(Data("private".utf8), to: url) { temporaryPath in
+            observedTemporaryFile = true
+            XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryPath))
+            throw TestError.beforeWrite
+        }) {
+            XCTAssertEqual($0 as? TestError, .beforeWrite)
+        }
+
+        XCTAssertTrue(observedTemporaryFile)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [])
+    }
+
     func testOverwriteReplacesContentsAndTightensPermissions() throws {
         let dir = try directory()
         let url = dir.appendingPathComponent("private.json")

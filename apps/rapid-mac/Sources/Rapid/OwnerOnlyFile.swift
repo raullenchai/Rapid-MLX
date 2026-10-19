@@ -3,7 +3,11 @@ import Foundation
 
 /// Atomic replacement whose temporary and published bytes are owner-only.
 enum OwnerOnlyFile {
-    static func writeAtomically(_ data: Data, to url: URL) throws {
+    static func writeAtomically(
+        _ data: Data,
+        to url: URL,
+        beforeWrite: (String) throws -> Void = { _ in }
+    ) throws {
         let directory = url.deletingLastPathComponent()
         let prefix = directory.appendingPathComponent(".\(url.lastPathComponent).tmp.XXXXXX")
         var template = Array(prefix.path.utf8CString)
@@ -19,6 +23,8 @@ enum OwnerOnlyFile {
             if descriptorIsOpen { Darwin.close(descriptor) }
             if shouldRemoveTemporary { _ = unlink(temporaryPath) }
         }
+
+        try beforeWrite(temporaryPath)
 
         try data.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
