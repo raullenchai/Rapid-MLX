@@ -453,6 +453,7 @@ struct BackgroundAssistLanguageTests {
         ("漢かな", true, false), ("漢字かな", true, false),
         ("日本語の文法を説明して", true, false),
         ("请解释 Python list comprehension", false, true),
+        ("What does 你好 mean?", false, false), ("用 Python 写一个 hello world", false, true),
     ])
     func scriptSignal(_ text: String, _ cjk: Bool, _ chinese: Bool) {
         #expect(ReplyScript.usesCJK(text) == cjk)
@@ -523,7 +524,8 @@ struct BackgroundAssistLanguageTests {
         ("Python 列表反转方法", "Python 里怎么反转一个列表？", true),
         ("Python list 反转", "How do I reverse a Python list?", true),
         ("Meaning of 你好", "What does 你好 mean?", true),
-        ("Meaning of hello", "What does 你好 mean?", false),
+        ("你好的含义", "What does 你好 mean?", false),
+        ("日本語の文法", "日本語の文法を説明して", true),
         ("列表推导式解释", "请解释 Python list comprehension", true),
         ("List comprehension", "请解释 Python list comprehension", false),
         ("列表反转方法", "How do I reverse a Python list?", false),
