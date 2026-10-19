@@ -196,6 +196,14 @@ struct WeatherRegionTests {
         #expect(result.content.contains("state or region (\(label))"))
     }
 
+    @Test("A subdivision named like a country needs a country hint")
+    func georgiaNeedsCountryHint() async throws {
+        let bare = try await Self.result(location: "Georgia", fixtures: [:])
+        #expect(!bare.content.contains("state or region"))
+        let us = try await Self.result(location: "Georgia, US", fixtures: [:])
+        #expect(us.content.contains("state or region (Georgia, United States)"))
+    }
+
     @Test("A contradicting explicit admin1 is a qualifier mismatch, not a region")
     func texasWithCaliforniaAdmin1() async throws {
         let result = try await Self.result(

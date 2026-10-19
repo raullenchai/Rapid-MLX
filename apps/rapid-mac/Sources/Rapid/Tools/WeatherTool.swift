@@ -582,21 +582,31 @@ enum WeatherTool {
         commaQualifiers: [String]
     ) -> Set<String> {
         // A comma qualifier that restates the requested subdivision
-        // ("California, CA", "Georgia, GA") is not a country hint, even when
-        // the abbreviation is also an ISO code.
+        // ("California, CA", "Georgia, GA") hints that subdivision's country,
+        // even when the abbreviation is also another ISO code.
         let requestedKey = matchKey(requestedName)
-        let sameRegionKeys = Set(subdivisionNames.values.flatMap { subdivisions in
-            subdivisions.flatMap { abbreviation, name -> [String] in
+        var restatedCountries: [String: String] = [:]
+        for (countryCode, subdivisions) in subdivisionNames {
+            for (abbreviation, name) in subdivisions {
                 let keys = [matchKey(abbreviation), matchKey(name)]
-                return keys.contains(requestedKey) ? keys : []
+                guard keys.contains(requestedKey) else { continue }
+                for key in keys { restatedCountries[key] = countryCode }
             }
-        })
-        let qualifiers = commaQualifiers.filter { !sameRegionKeys.contains(matchKey($0)) }
+        }
+        var hints = Set<String>()
+        var qualifiers: [String] = []
+        for qualifier in commaQualifiers {
+            if let countryCode = restatedCountries[matchKey(qualifier)] {
+                hints.insert(countryCode)
+            } else {
+                qualifiers.append(qualifier)
+            }
+        }
         // Two-letter qualifiers such as "TX" are passed through as codes by
         // countryCodes(for:); keep only real ISO regions so a state code is
         // never mistaken for a country hint.
         let isoRegions = Set(Locale.Region.isoRegions.map { $0.identifier.uppercased() })
-        return Set(([country].compactMap(cleaned) + qualifiers)
+        return hints.union(([country].compactMap(cleaned) + qualifiers)
             .flatMap(countryCodes(for:))
             .map { $0.uppercased() }
             .filter(isoRegions.contains))
@@ -636,8 +646,15 @@ enum WeatherTool {
             guard let countryCode else { return false }
             return countryCodes(for: explicitAdmin1).contains { $0.uppercased() == countryCode.uppercased() }
         }
+        // A subdivision that shares its name with a country (Georgia) needs a
+        // country hint before it is taken as the subdivision.
+        let english = Locale(identifier: "en_US")
+        let namesCountry = !isAbbreviation && Locale.Region.isoRegions.contains { region in
+            english.localizedString(forRegionCode: region.identifier).map(matchKey) == requestedKey
+        }
         if hintedTableMatches.count == 1,
            !isAbbreviation || !countryHints.isEmpty || tableMatches.count == 1,
+           !namesCountry || !countryHints.isEmpty,
            let subdivision = hintedTableMatches.first,
            admin1Agrees(
                [matchKey(subdivision.name), matchKey(subdivision.abbreviation)],
