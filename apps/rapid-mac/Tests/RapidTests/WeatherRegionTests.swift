@@ -139,6 +139,8 @@ struct WeatherRegionTests {
     func westernAustraliaAbbreviation() async throws {
         let bare = try await Self.result(location: "WA", fixtures: [:])
         #expect(!bare.content.contains("state or region"))
+        let restated = try await Self.result(location: "WA, WA", fixtures: [:])
+        #expect(!restated.content.contains("state or region"))
 
         let qualified = try await Self.result(location: "WA, Australia", fixtures: [:])
         #expect(qualified.content.contains("Western Australia, Australia"))

@@ -587,19 +587,21 @@ enum WeatherTool {
         // ("California, CA", "Georgia, GA") hints that subdivision's country,
         // even when the abbreviation is also another ISO code.
         let requestedKey = matchKey(requestedName)
-        var restatedCountries: [String: String] = [:]
+        var restatedCountries: [String: Set<String>] = [:]
         for (countryCode, subdivisions) in subdivisionNames {
             for (abbreviation, name) in subdivisions {
                 let keys = [matchKey(abbreviation), matchKey(name)]
                 guard keys.contains(requestedKey) else { continue }
-                for key in keys { restatedCountries[key] = countryCode }
+                for key in keys { restatedCountries[key, default: []].insert(countryCode) }
             }
         }
         var hints = Set<String>()
         var qualifiers: [String] = []
         for qualifier in commaQualifiers {
-            if let countryCode = restatedCountries[matchKey(qualifier)] {
-                hints.insert(countryCode)
+            // Only a restatement that names one country is a hint ("WA, WA"
+            // could be Washington or Western Australia).
+            if let countries = restatedCountries[matchKey(qualifier)] {
+                if countries.count == 1 { hints.formUnion(countries) }
             } else {
                 qualifiers.append(qualifier)
             }
