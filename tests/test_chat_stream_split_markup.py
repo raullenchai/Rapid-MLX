@@ -285,3 +285,38 @@ def test_logprobs_reported_once_for_multi_content_output(monkeypatch):
         for entry in (choice.get("logprobs") or {}).get("content", [])
     ]
     assert tokens == ["ab", ""]
+
+
+@pytest.mark.parametrize("last", ["x<", "x [Calli", "x <|tool_call>abc"])
+def test_logprobs_finish_chunk_carry_their_held_text(monkeypatch, last):
+    """A finish-bearing delta's held text and its logprob share the last chunk."""
+    from rapid_mlx.api.models import TokenLogProb
+    from rapid_mlx.routes import chat
+
+    monkeypatch.setattr(
+        chat,
+        "_extract_streaming_token_logprobs",
+        lambda output, *a, **k: [
+            TokenLogProb(token=output.new_text, logprob=-0.5, top_logprobs=[])
+        ],
+    )
+
+    class FinishWithTextEngine(ReplayEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(text="a ", new_text="a ", finished=False)
+            yield GenerationOutput(
+                text="a " + last, new_text=last, finished=True, finish_reason="stop"
+            )
+
+    client = client_for(FinishWithTextEngine([], "stop"))
+    response = client.post(
+        "/v1/chat/completions",
+        json={**_payload("missing"), "stream": True, "logprobs": True},
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    final = next(choice for choice in choices if choice.get("finish_reason"))
+    assert final["delta"].get("content") == sanitize_content_for_stream(last)
+    assert [e["token"] for e in final["logprobs"]["content"]] == [last]
