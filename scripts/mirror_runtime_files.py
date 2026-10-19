@@ -1,14 +1,9 @@
 """Pinned runtime file lists for repositories whose loader fetches a fixed set.
 
 Most catalog repositories are fetched whole at the default branch. Vendored
-image backends are the exception: ``rapid_mlx._download_gate`` pins each to an
-exact commit (``IMAGE_MODEL_REVISIONS``) and lists the exact files a download
-requests (``IMAGE_MODEL_DATA_FILES``). SDXL's repository also carries fp32,
-ONNX, Flax and OpenVINO copies (about 70 GB) that are never requested. The
-drift audit judges the mirror for such a repository against exactly that list
-at exactly that commit. Other image checkpoints are pinned to a commit without
-a file list; a pull fetches the whole repository at that commit, so the audit
-lists Hugging Face at the same commit rather than at the moving default branch.
+image checkpoints pin an exact commit, sometimes with a fixed file list; Wan
+backends pin an exact commit and fetch the whole repository. The drift audit
+uses those same revisions and, where declared, the same limited file lists.
 """
 
 from __future__ import annotations
@@ -25,9 +20,13 @@ if sys.path[:1] != [str(ROOT)]:
     sys.path.insert(0, str(ROOT))
 
 
-def pinned_runtime_files(repo_id: str) -> tuple[str, frozenset[str]] | None:
-    """``(revision, files)`` a pull of ``repo_id`` fetches, or ``None``."""
+def pinned_runtime_files(repo_id: str) -> tuple[str, frozenset[str] | None] | None:
+    """``(revision, files)`` a pull fetches; ``files=None`` means the whole repo."""
     from rapid_mlx._download_gate import IMAGE_MODEL_DATA_FILES, IMAGE_MODEL_REVISIONS
+    from rapid_mlx.video.wan import WAN_REVISIONS
+
+    if repo_id in WAN_REVISIONS:
+        return WAN_REVISIONS[repo_id], None
 
     files = IMAGE_MODEL_DATA_FILES.get(repo_id)
     revision = IMAGE_MODEL_REVISIONS.get(repo_id)
