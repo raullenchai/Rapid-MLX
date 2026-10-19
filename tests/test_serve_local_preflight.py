@@ -6,6 +6,9 @@ from __future__ import annotations
 import errno
 import json
 import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -299,11 +302,39 @@ def test_invalid_nontext_manifest_has_specific_remedy(tmp_path):
     root = tmp_path / "image"
     root.mkdir()
     (root / "model_index.json").write_text("{}")
-    with pytest.raises(FileNotFoundError) as failure:
+    with pytest.raises(InvalidModelConfig) as failure:
         validate_local_model_for_serve(str(root))
+    assert serve_error_class(failure.value, model_ref=str(root)) == "invalid_config"
+    result = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", str(root)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert "Local model_index.json is invalid" in result.stderr
+    assert "Restore model_index.json" in result.stderr
+
+
+def test_manifest_read_io_error_keeps_filesystem_cause(tmp_path, monkeypatch):
+    root = tmp_path / "image"
+    root.mkdir()
+    manifest = root / "model_index.json"
+    manifest.write_text('{"_class_name":"Pipeline"}')
+    read_text = Path.read_text
+
+    def fail_manifest_read(path, *args, **kwargs):
+        if path == manifest:
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_manifest_read)
+    with pytest.raises(OSError, match="Input/output error") as failure:
+        validate_local_model_for_serve(str(root))
+    assert serve_error_class(failure.value, model_ref=str(root)) != "local_path_missing"
     cause, step = local_serve_preflight_lines(str(root), failure.value)
-    assert "model_index.json" in cause
-    assert "Restore model_index.json" in step
+    assert "Input/output error" in cause
+    assert "Check the disk" in step
 
 
 def test_auxiliary_params_does_not_hide_incomplete_text_model(tmp_path):

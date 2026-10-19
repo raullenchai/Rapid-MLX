@@ -15096,10 +15096,28 @@ def main():
                 if isinstance(exc, InvalidModelConfig):
                     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
-                    cause, step = startup_error_lines(exc, resolved) or (
-                        "Local config.json is invalid.",
-                        "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
+                    manifest_name = next(
+                        (
+                            name
+                            for name in (
+                                "model_index.json",
+                                "split_model.json",
+                                "params.json",
+                            )
+                            if f"Invalid model manifest: {name}" in str(exc)
+                        ),
+                        None,
                     )
+                    if manifest_name is not None:
+                        cause, step = (
+                            f"Local {manifest_name} is invalid.",
+                            f"Restore {manifest_name} from the complete checkpoint, then retry `rapid-mlx serve {shlex.quote(resolved)}`.",
+                        )
+                    else:
+                        cause, step = startup_error_lines(exc, resolved) or (
+                            "Local config.json is invalid.",
+                            "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
+                        )
                 else:
                     cause, step = local_serve_preflight_lines(resolved, exc)
                 print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)

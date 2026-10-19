@@ -292,18 +292,16 @@ def validate_local_model_for_serve(model_ref: object) -> None:
             raise PermissionError(
                 errno.EACCES, "Cannot read model manifest", str(manifest_path)
             )
+        from .model_load_errors import InvalidModelConfig
+
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            manifest = None
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InvalidModelConfig(f"Invalid model manifest: {name}") from exc
         if not isinstance(manifest, dict) or not manifest:
-            raise FileNotFoundError(
-                errno.ENOENT, "Invalid model manifest", str(manifest_path)
-            )
+            raise InvalidModelConfig(f"Invalid model manifest: {name}")
         if name == "model_index.json" and "_class_name" not in manifest:
-            raise FileNotFoundError(
-                errno.ENOENT, "Invalid model manifest", str(manifest_path)
-            )
+            raise InvalidModelConfig(f"Invalid model manifest: {name}")
         if name == "split_model.json":
             components = manifest.get("components")
             if not isinstance(components, list) or not components:
