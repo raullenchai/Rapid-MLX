@@ -1,0 +1,39 @@
+name: Manzanita Linux ARM64 production canary
+on:
+  push:
+    branches: [codex/manzanita-linux-production-canary-20261019]
+    paths: [.github/workflows/manzanita-linux-production-canary.yml]
+permissions:
+  contents: read
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2]
+    runs-on: [self-hosted, Linux, ARM64, manzanita-linux-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8c973925498f7bb15194982e6c4d86b848375903
+      - name: Verify isolated ARM64 Linux environment
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = aarch64
+          test ! -e "$HOME/manzanita-canary-prior-job"
+          touch "$HOME/manzanita-canary-prior-job"
+          if timeout 3 bash -c 'echo >/dev/tcp/192.168.1.148/6120' 2>/dev/null; then
+            echo 'Runner unexpectedly reached the private controller' >&2
+            exit 1
+          fi
+          docker run --rm alpine:3.22 uname -m
+          python3 -m venv "$RUNNER_TEMP/test-env"
+          "$RUNNER_TEMP/test-env/bin/pip" install pytest PyYAML
+          "$RUNNER_TEMP/test-env/bin/python" -m pytest -q \
+            tests/test_rapid_mac_ax_identifiers.py \
+            tests/test_ax_baseline_os_variance.py \
+            tests/test_gui_preflight_contract.py \
+            tests/test_fake_sidecar_image_catalog.py
+          sleep 30
