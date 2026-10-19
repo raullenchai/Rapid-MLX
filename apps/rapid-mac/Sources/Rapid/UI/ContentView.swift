@@ -1449,6 +1449,7 @@ struct ContentView: View {
                 imageInputUnavailableMessage: imageAvailability.unavailableMessage,
                 onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction,
+                onOpenAgentSetup: { section = .launch },
                 composerFocusRequest: composerFocusRequest
             )
         case .missing:

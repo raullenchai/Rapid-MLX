@@ -175,6 +175,12 @@ def test_tip_marker_claimed_once_only(monkeypatch, tmp_path):
     assert fr.claim_chat_agent_tip() is False
 
 
+def test_serve_tip_marker_claimed_once_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
+    assert fr.claim_serve_next_tip() is True
+    assert fr.claim_serve_next_tip() is False
+
+
 def test_tip_claim_failsafe_on_unwritable_state_dir(monkeypatch, tmp_path):
     # State dir sits under an existing FILE → the marker's parent mkdir raises
     # → claim returns False (never nag, never crash), not True.
@@ -193,10 +199,10 @@ def test_state_dir_env_override(monkeypatch, tmp_path):
 def test_tip_text_with_and_without_agent(monkeypatch):
     monkeypatch.setattr(fr, "preferred_agent", lambda: "claude-code")
     assert "separate stable server for claude-code" in fr.chat_agent_tip_text()
-    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
+    assert "rapid-mlx agents" in fr.chat_agent_tip_text()
     monkeypatch.setattr(fr, "preferred_agent", lambda: None)
-    assert "separate stable agent server" in fr.chat_agent_tip_text()
-    assert "rapid-mlx launch --help" in fr.chat_agent_tip_text()
+    assert "start a stable server" in fr.chat_agent_tip_text()
+    assert "rapid-mlx agents" in fr.chat_agent_tip_text()
 
 
 # ======================================================================

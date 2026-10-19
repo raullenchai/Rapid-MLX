@@ -1207,12 +1207,15 @@ def print_ready_banner() -> None:
             and not is_audio_name(_cfg.model_alias or _cfg.model_name)
         )
         if interactive and _ep.listen_fd is None and _ep.model:
+            from rapid_mlx.first_run import claim_serve_next_tip
+
             note = _text_lane_image_note(_cfg)
             next_step = render_serve_next(_ep, api_key=_cfg.api_key)
             print(f"  Ready: {_ep.base_url}")
             if note:
                 print(f"  Images: off. {note}")
-            print(next_step, end="", flush=True)
+            if claim_serve_next_tip():
+                print(next_step, end="", flush=True)
         else:
             print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
 

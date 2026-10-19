@@ -499,7 +499,7 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
     ep = connect.ServerEndpoints("::1", 9123, model="my served model")
     out = connect.render_serve_next(ep, api_key="key with ' quote")
     assert out.count("Next:") == 1
-    assert len(out.splitlines()) == 6
+    assert len(out.splitlines()) == 10
     assert "curl -i -sS " in out
     assert "http://[::1]:9123/v1/chat/completions" in out
     assert "my served model" in out
@@ -517,14 +517,18 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
         "--setup",
         "--base-url",
         "http://[::1]:9123/v1",
+        "--model",
+        "my served model",
     ]
-    assert out.endswith("OpenAI SDK base_url: http://[::1]:9123/v1\n")
+    assert "OpenAI SDK base_url: http://[::1]:9123/v1; model: my served model" in out
+    assert "from openai import OpenAI" in out
+    assert 'environ["RAPID_MLX_API_KEY"]' in out
 
 
 def test_serve_next_has_no_auth_header_without_key():
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
     assert "Authorization" not in out
-    assert len(out.splitlines()) == 5
+    assert len(out.splitlines()) == 9
     assert (
         connect.render_serve_next(connect.ServerEndpoints("", 0, "m", listen_fd=3))
         == ""

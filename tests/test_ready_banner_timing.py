@@ -28,9 +28,10 @@ from rapid_mlx.config import get_config
 
 
 @pytest.fixture(autouse=True)
-def _isolate_server_state():
+def _isolate_server_state(monkeypatch, tmp_path):
     """Snapshot+restore the engine handle and bind fields each test."""
     cfg = get_config()
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
     saved = (
         server._engine,
         cfg.bind_host,
@@ -146,7 +147,28 @@ def test_interactive_ready_banner_ends_with_copyable_next(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.index("Ready: http://localhost:8766") < out.index("Next:")
     assert "studio-assistant" in out
-    assert out.rstrip().endswith("OpenAI SDK base_url: http://localhost:8766/v1")
+    assert (
+        "OpenAI SDK base_url: http://localhost:8766/v1; model: studio-assistant" in out
+    )
+    assert "from openai import OpenAI" in out
+
+
+def test_interactive_next_step_only_once_per_install(monkeypatch, capsys):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    server.print_ready_banner()
+    assert "Next:" in capsys.readouterr().out
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Ready:" in out
+    assert "Next:" not in out
 
 
 def test_interactive_ready_banner_keeps_image_guidance_before_next(monkeypatch, capsys):

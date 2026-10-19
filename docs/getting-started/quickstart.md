@@ -24,6 +24,18 @@ Start the server:
 rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
+The first interactive server start prints its base URL, model ID, and a short
+agent and SDK setup guide. To connect an editor later, keep the server running
+and use `rapid-mlx agents` to list supported tools. For example:
+
+```bash
+rapid-mlx agents claude-code --setup --base-url http://localhost:8000/v1 --model qwen3.5-4b-4bit
+rapid-mlx agents opencode --setup --base-url http://localhost:8000/v1 --model qwen3.5-4b-4bit
+```
+
+On Desktop, the first completed chat reply also offers the **Agent setup**
+page, which shows the live address and connection details.
+
 Use with the OpenAI Python SDK:
 
 ```python
@@ -164,6 +176,7 @@ rapid-mlx serve devstral-24b-4bit \
 
 ## Next Steps
 
+- [Agent setup](../agents/matrix.md) - Connect Claude Code, OpenCode, Codex, and more
 - [Server Guide](../guides/server.md) - Full server configuration
 - [Python API](../guides/python-api.md) - Direct API usage
 - [Multimodal Guide](../guides/multimodal.md) - Images and video

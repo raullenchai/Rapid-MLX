@@ -244,6 +244,8 @@ struct ChatView: View {
     /// & start, retry). Owned by ``ContentView`` because starting a model
     /// is a window-level concern, not a chat-surface one.
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
+    /// Opens the existing Launch page with agent setup and the live server key.
+    var onOpenAgentSetup: () -> Void = {}
     /// Monotonic counter the parent bumps when something outside this view
     /// wants the composer to take keyboard focus — today, the onboarding
     /// completion transaction dropping the user into their first chat.
@@ -285,6 +287,8 @@ struct ChatView: View {
     @State private var blockedSendAttempts: Int = 0
     @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
+    @AppStorage("chatAgentTipEligible") private var chatAgentTipEligible = false
+    @AppStorage("chatAgentTipDismissed") private var chatAgentTipDismissed = false
     /// Keeps the new composer action visibly busy during the fresh residency
     /// check, before ``ServerManager`` enters its own operating state.
     @State private var isUnloadingResidentModels = false
@@ -363,6 +367,9 @@ struct ChatView: View {
                     )
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
+                if chatAgentTipEligible && !chatAgentTipDismissed {
+                    agentTip
+                }
                 transcript
                 Divider()
                 composeBar
@@ -378,6 +385,11 @@ struct ChatView: View {
         .onChange(of: readiness, initial: true) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.startAndSendIntent) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.isStreaming) { _, _ in resolveStartAndSend() }
+        .onChange(of: messages.map { $0.status.rawValue }, initial: true) { _, _ in
+            if Self.hasSuccessfulReply(messages) {
+                chatAgentTipEligible = true
+            }
+        }
         .onChange(of: attachmentDraft.isImportingFiles) { _, _ in resolveStartAndSend() }
         .onDisappear {
             // Normal startup keeps ChatView mounted: idle/starting/ready all map to .chat.
@@ -411,6 +423,53 @@ struct ChatView: View {
             photoCapabilityNotice.reconcile(with: availability)
         }
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
+    }
+
+    static func hasSuccessfulReply(_ messages: [ChatMessage]) -> Bool {
+        messages.contains {
+            $0.role == .assistant && $0.status == .complete
+                && $0.wireVisibility == .model && !$0.content.isEmpty
+        }
+    }
+
+    private var agentTip: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack(spacing: RapidTheme.Space.md) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .accessibilityHidden(true)
+                Text("Use this model in your editor/agent")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Button {
+                    chatAgentTipDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Dismiss agent tip")
+            }
+            HStack(spacing: RapidTheme.Space.md) {
+                Text("Connect a coding agent or SDK to your local server.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button("Copy URL + model") {
+                    let model = ModelDisplayName.configValue(alias: alias) ?? alias
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        "http://127.0.0.1:\(server.activePort)/v1\n\(model)", forType: .string
+                    )
+                }
+                .disabled(!readiness.sendAllowed)
+                Button("Agent setup") {
+                    chatAgentTipDismissed = true
+                    onOpenAgentSetup()
+                }
+            }
+        }
+        .padding(.horizontal, RapidTheme.Space.xl)
+        .padding(.vertical, RapidTheme.Space.sm)
+        .background(RapidTheme.surfaceCanvas)
     }
 
     // MARK: - Transcript

@@ -230,19 +230,28 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
         name for name in ("opencode", "claude-code", "codex") if get_profile(name)
     ]
     agent = agents[0] if agents else None
+    python_key = (
+        '__import__("os").environ["RAPID_MLX_API_KEY"]'
+        if api_key
+        else repr("not-needed")
+    )
     lines = ["  Next:"]
     if api_key:
         lines.append("    Set RAPID_MLX_API_KEY to the server key first.")
     lines.extend(
         [
             f"    {curl}",
-            f"    Connect a coding agent: rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)}"
+            f"    Connect a coding agent: rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)} --model {shlex.quote(ep.model)}"
             if agent
             else "    Connect a coding agent: rapid-mlx agents",
             f"    More agents: {', '.join(agents[1:])}; full list: rapid-mlx agents"
             if agent
             else "    List agents: rapid-mlx agents",
-            f"    OpenAI SDK base_url: {ep.openai_url}",
+            f"    OpenAI SDK base_url: {ep.openai_url}; model: {ep.model}",
+            "    Python (pip install openai):",
+            "      from openai import OpenAI",
+            f"      client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key})",
+            f"      print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)",
         ]
     )
     return "\n".join(lines) + "\n"

@@ -211,6 +211,18 @@ def _chat_tip_marker() -> Path:
     return _state_dir() / "chat_agent_tip_shown"
 
 
+def claim_serve_next_tip() -> bool:
+    """Claim the interactive server's install-wide connection guide."""
+    try:
+        marker = _state_dir() / "serve_next_tip_shown"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        with open(marker, "x"):
+            pass
+        return True
+    except (FileExistsError, OSError):
+        return False
+
+
 def claim_chat_agent_tip() -> bool:
     """Atomically claim the one-time chat→agent tip.
 
@@ -251,6 +263,8 @@ def chat_agent_tip_text() -> str:
     if agent is not None:
         return (
             f"Tip: set up a separate stable server for {agent} → "
-            "rapid-mlx launch --help"
+            "rapid-mlx serve <model>; then rapid-mlx agents"
         )
-    return "Tip: set up a separate stable agent server → rapid-mlx launch --help"
+    return (
+        "Tip: start a stable server with rapid-mlx serve <model>; then rapid-mlx agents"
+    )
