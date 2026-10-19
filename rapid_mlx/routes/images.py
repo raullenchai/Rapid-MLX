@@ -23,7 +23,7 @@ from fastapi import (
 from starlette.responses import JSONResponse
 
 from ..api.models import ImageGenerationRequest, parse_image_size
-from ..middleware.auth import _verify_api_key_values, verify_api_key
+from ..middleware.auth import verify_api_key, verify_api_key_for_scope
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
@@ -71,20 +71,15 @@ class ImageBodyLimitMiddleware:
         ):
             return await self.app(scope, receive, send)
 
-        headers = {name.lower(): value for name, value in scope.get("headers", ())}
-        authorization = headers.get(b"authorization", b"").decode(
-            "latin-1", errors="ignore"
-        )
-        scheme, _, token = authorization.partition(" ")
-        bearer = token if scheme.lower() == "bearer" and token else None
         try:
-            _verify_api_key_values(bearer)
+            await verify_api_key_for_scope(scope)
         except HTTPException as exc:
             response = JSONResponse(
                 status_code=exc.status_code, content={"detail": exc.detail}
             )
             return await response(scope, receive, send)
 
+        headers = {name.lower(): value for name, value in scope.get("headers", ())}
         advertised = headers.get(b"content-length")
         if advertised is not None:
             try:

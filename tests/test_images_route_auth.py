@@ -110,6 +110,51 @@ def test_image_edit_auth_precedes_advertised_body_limit(
         assert response.json()["detail"] == detail
 
 
+@pytest.mark.parametrize(
+    ("headers", "status", "detail"),
+    [
+        (
+            [
+                ("Authorization", "Bearer wrong-key"),
+                ("Authorization", "Bearer test-image-secret"),
+            ],
+            401,
+            "Invalid API key",
+        ),
+        (
+            [
+                ("Authorization", "Bearer test-image-secret"),
+                ("Authorization", "Bearer wrong-key"),
+            ],
+            413,
+            None,
+        ),
+        (
+            [("Authorization", "Bearer  test-image-secret ")],
+            413,
+            None,
+        ),
+        ([("Authorization", "Basic xyz")], 401, "API key required"),
+    ],
+    ids=[
+        "duplicate-first-wrong",
+        "duplicate-first-valid",
+        "whitespace-padded-valid",
+        "non-bearer",
+    ],
+)
+def test_image_edit_scope_auth_matches_router_parsing(
+    image_client, headers, status, detail
+):
+    headers.append(("Content-Length", str(_IMAGE_EDIT_REQUEST_BYTES + 1)))
+
+    response = image_client.post("/v1/images/edits", headers=headers)
+
+    assert response.status_code == status, response.text
+    if detail is not None:
+        assert response.json()["detail"] == detail
+
+
 @pytest.mark.parametrize("authenticated", [False, True])
 def test_image_edit_auth_precedes_multipart_parsing(image_client, authenticated):
     headers = {"Content-Type": "multipart/form-data"}

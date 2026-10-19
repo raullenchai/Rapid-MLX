@@ -301,6 +301,13 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(sec
     return _verify_api_key_values(bearer_key)
 
 
+async def verify_api_key_for_scope(scope) -> bool:
+    """Run the bearer check against a raw ASGI scope without reading its body."""
+    credentials = await security(Request(scope))
+    bearer_key = credentials.credentials if credentials is not None else None
+    return _verify_api_key_values(bearer_key)
+
+
 async def verify_api_key_or_x_api_key(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
