@@ -42,11 +42,23 @@ def test_local_model_preflight(tmp_path, case):
     assert "rapid-mlx" in step
 
 
-def test_local_model_preflight_allows_nested_weights(tmp_path):
+def test_local_model_preflight_ignores_unselected_nested_weights(tmp_path):
     root = tmp_path / "model"
     (root / "weights").mkdir(parents=True)
     (root / "config.json").write_text('{"model_type":"qwen3"}')
     (root / "weights" / "model.safetensors").write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
+    root = tmp_path / "model"
+    (root / "variant").mkdir(parents=True)
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors").write_bytes(b"data")
+    (root / "variant" / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"x": "missing.safetensors"}})
+    )
     validate_local_model_for_serve(str(root))
 
 

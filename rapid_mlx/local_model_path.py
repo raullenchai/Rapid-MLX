@@ -105,10 +105,14 @@ def _safe_relative_name(value: object) -> str | None:
     return path.as_posix()
 
 
-def _missing_index_shards(root: Path) -> list[str]:
+def _missing_index_shards(root: Path, *, recursive: bool = True) -> list[str]:
     missing: set[str] = set()
     try:
-        indexes = sorted(root.rglob("*.safetensors.index.json"))
+        indexes = sorted(
+            root.rglob("*.safetensors.index.json")
+            if recursive
+            else root.glob("*.safetensors.index.json")
+        )
     except OSError:
         return []
     for index_path in indexes:
@@ -270,7 +274,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         raise FileNotFoundError(errno.ENOENT, "Missing model config", str(config))
     if not os.access(config, os.R_OK):
         raise PermissionError(errno.EACCES, "Cannot read model config", str(config))
-    missing_shards = _missing_index_shards(root)
+    missing_shards = _missing_index_shards(root, recursive=False)
     if missing_shards:
         raise FileNotFoundError(
             errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
@@ -279,7 +283,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     weights = [
         path
         for pattern in ("*.safetensors", "*.bin", "weights.npz")
-        for path in root.rglob(pattern)
+        for path in root.glob(pattern)
     ]
     for path in weights:
         if path.is_file() and not os.access(path, os.R_OK):

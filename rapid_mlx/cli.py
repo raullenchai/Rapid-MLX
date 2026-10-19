@@ -15070,7 +15070,7 @@ def main():
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
                 emit_model_serve_failed(
-                    exc, alias_or_path=args.model, failure_stage="resolve"
+                    exc, alias_or_path=resolved, failure_stage="resolve"
                 )
             if getattr(args, "command", None) == "serve":
                 cause, step = local_serve_preflight_lines(resolved, exc)
