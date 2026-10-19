@@ -209,12 +209,22 @@ struct WeatherRegionTests {
         #expect(admin1Code.content.contains("state or region (Georgia, United States)"))
     }
 
-    @Test("A conflicting comma subdivision is not a region", arguments: [
-        "Texas, California", "California, NY",
+    @Test("A conflicting comma subdivision is a qualifier mismatch, not a region", arguments: [
+        ("Texas, California", "Texas", "California"),
+        ("California, NY", "California", "NY"),
     ])
-    func conflictingCommaSubdivision(location: String) async throws {
-        let result = try await Self.result(location: location, fixtures: [:])
+    func conflictingCommaSubdivision(location: String, name: String, qualifier: String) async throws {
+        let california = Data(#"""
+        {"results":[
+          {"name":"California","latitude":38.4,"longitude":-76.5,"country":"United States","country_code":"US","admin1":"Maryland","population":11857},
+          {"name":"California","latitude":40.07,"longitude":-79.89,"country":"United States","country_code":"US","admin1":"Pennsylvania","population":6608}
+        ]}
+        """#.utf8)
+        let result = try await Self.result(
+            location: location, fixtures: ["Texas": Self.texas, "California": california]
+        )
         #expect(!result.content.contains("state or region"))
+        #expect(result.content.contains("found places named \"\(name)\", but none matching \"\(qualifier)\""))
     }
 
     @Test("Contradictory country qualifiers are not a region")
