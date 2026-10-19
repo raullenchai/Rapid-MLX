@@ -56,15 +56,21 @@ struct BrowseRedirectSameSiteTests {
         let nasa = try #require(URL(string: "https://nasa.gov"))
         let example = try #require(URL(string: "https://example.com"))
         let sibling = try #require(URL(string: "https://www.example.com/page"))
-        #expect(BrowseTool.redirectNeedsApproval(nasa, approved: []))
-        #expect(!BrowseTool.redirectNeedsApproval(nasa, approved: [nasa]))
-        #expect(BrowseTool.redirectNeedsApproval(example, approved: [nasa]))
-        #expect(BrowseTool.redirectNeedsApproval(sibling, approved: [nasa]))
-        #expect(!BrowseTool.redirectNeedsApproval(sibling, approved: [nasa, example]))
-        #expect(!BrowseTool.redirectNeedsApproval(nasa, approved: [nasa, example]))
+        #expect(BrowseTool.redirectNeedsApproval(nasa, from: nasa, approved: []))
+        #expect(!BrowseTool.redirectNeedsApproval(nasa, from: nasa, approved: [nasa]))
+        #expect(BrowseTool.redirectNeedsApproval(example, from: nasa, approved: [nasa]))
+        #expect(BrowseTool.redirectNeedsApproval(sibling, from: nasa, approved: [nasa]))
+        #expect(!BrowseTool.redirectNeedsApproval(sibling, from: nasa, approved: [nasa, example]))
+        #expect(!BrowseTool.redirectNeedsApproval(nasa, from: nasa, approved: [nasa, example]))
         #expect(BrowseTool.redirectNeedsApproval(
-            try #require(URL(string: "http://www.example.com")), approved: [nasa, example]
+            try #require(URL(string: "http://www.example.com")), from: example, approved: [nasa, example]
         ))
+        // https -> http always asks, even back to the approved http start URL.
+        let httpStart = try #require(URL(string: "http://nasa.gov/a"))
+        let upgraded = try #require(URL(string: "https://www.nasa.gov/a"))
+        #expect(!BrowseTool.redirectNeedsApproval(upgraded, from: httpStart, approved: [httpStart]))
+        #expect(BrowseTool.redirectNeedsApproval(httpStart, from: upgraded, approved: [httpStart]))
+        #expect(!BrowseTool.redirectNeedsApproval(httpStart, from: httpStart, approved: [httpStart]))
     }
 
     @MainActor
@@ -180,7 +186,14 @@ struct BrowseRedirectSameSiteTests {
             )
             Issue.record("Unapproved redirect must stop the fetch")
         } catch {
-            #expect((error is BrowseTool.ApprovalDeclined) == (decision == .deny))
+            if decision == .deny {
+                let declined = try #require(error as? BrowseTool.ApprovalDeclined)
+                #expect(declined.message == "the user did not approve the redirect to example.com")
+            } else {
+                #expect(!(error is BrowseTool.ApprovalDeclined))
+                #expect(error.localizedDescription
+                    == BrowseTool.approvalUnavailableMessage(host: "example.com"))
+            }
         }
     }
 

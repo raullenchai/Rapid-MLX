@@ -252,7 +252,7 @@ enum BrowseTool {
                 guard let next = URL(string: loc, relativeTo: current)?.absoluteURL else {
                     throw simpleError("redirect to an invalid URL")
                 }
-                if redirectNeedsApproval(next, approved: approvedURLs) {
+                if redirectNeedsApproval(next, from: current, approved: approvedURLs) {
                     let decision = await approveRedirect(next, current.host ?? current.absoluteString)
                     if let refusal = redirectGateError(decision, destination: next) { throw refusal }
                     if Task.isCancelled { throw simpleError("browse was cancelled") }
@@ -300,8 +300,11 @@ enum BrowseTool {
         return sourceHost.contains(".") && destinationHost.contains(".") && sourceHost == destinationHost
     }
 
-    static func redirectNeedsApproval(_ next: URL, approved: [URL]) -> Bool {
-        !approved.contains { isSameSiteRedirect(from: $0, to: next) }
+    /// A hop that drops from https to http always asks, even back to an
+    /// approved http origin: the user should see any loss of transport security.
+    static func redirectNeedsApproval(_ next: URL, from current: URL, approved: [URL]) -> Bool {
+        if origin(of: current).scheme == "https", origin(of: next).scheme != "https" { return true }
+        return !approved.contains { isSameSiteRedirect(from: $0, to: next) }
     }
 
     /// Run `op` with a hard wall-clock ceiling: if it hasn't finished within
