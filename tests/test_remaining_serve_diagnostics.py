@@ -46,8 +46,13 @@ def test_local_startup_remedies_without_reclassifying(
         (model / "model.safetensors").write_bytes(b"bad")
     if case == "weights":
         failure = FileNotFoundError(f"No safetensors found in {model}")
-    assert serve_error_class(failure, model_ref=str(model)) == (
-        "local_path_missing" if case == "weights" else "other"
+    assert (
+        serve_error_class(failure, model_ref=str(model))
+        == {
+            "weights": "local_path_missing",
+            "truncated": "corrupt_weights",
+            "disk": "other",
+        }[case]
     )
     lines = startup_error_lines(failure, str(model))
     assert lines is not None

@@ -42,6 +42,36 @@ def _same_local_path(value: object, expected: Path) -> bool:
     ) == expected.resolve(strict=False)
 
 
+def truncated_local_weights(model_ref: object) -> bool:
+    """A read failure belongs to a checkpoint only with local weight evidence."""
+    local = _local_config(model_ref)
+    return local is not None and any(local[0].glob("model*.safetensors"))
+
+
+def malformed_numeric_config(exc: BaseException, model_ref: object) -> str | None:
+    """Find a known numeric config field with a nonnumeric value."""
+    local = _local_config(model_ref)
+    if local is None or not any(
+        isinstance(error, (TypeError, ValueError)) for error in _chain(exc)
+    ):
+        return None
+    for key in (
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "vocab_size",
+    ):
+        value = local[1].get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
+            return key
+    return None
+
+
 def local_serve_diagnostic(
     exc: BaseException, model_ref: object
 ) -> tuple[str, str, str] | None:
@@ -61,6 +91,12 @@ def local_serve_diagnostic(
         return None
 
     model_type = config.get("model_type")
+    if field := malformed_numeric_config(exc, model_ref):
+        return (
+            "invalid_config",
+            f"config.json has a nonnumeric {field} value.",
+            f"Correct {field} in config.json, then retry `rapid-mlx serve /path/to/model`.",
+        )
     if (
         isinstance(model_type, str)
         and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", model_type)
@@ -181,7 +217,12 @@ def startup_error_lines(
     if error_class == "insufficient_memory":
         return (
             "The model ran out of memory while loading weights.",
-            "Free memory or serve a smaller or more quantized model.",
+            "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        )
+    if error_class == "backend_load_failed":
+        return (
+            "The MLX or Metal backend could not start.",
+            "Run `rapid-mlx doctor`, then retry the model after resolving the reported runtime issue.",
         )
     return None
 
@@ -192,6 +233,22 @@ def _startup_only_diagnostic(
     """Diagnose observed loader shapes for display without changing event classes."""
     try:
         errors = list(_chain(exc))
+        if (
+            error_class == "corrupt_weights"
+            and truncated_local_weights(model_ref)
+            and any(
+                isinstance(error, RuntimeError)
+                and re.fullmatch(
+                    r"\[read\] Unable to read \d+ bytes from file\.", str(error)
+                )
+                for error in errors
+            )
+        ):
+            return (
+                "incomplete_weights",
+                "A model safetensors file is incomplete or unreadable.",
+                "Re-download or re-export the matching model weights, then retry.",
+            )
         incomplete = _incomplete_checkpoint_diagnostic(errors, model_ref, error_class)
         if incomplete is not None:
             return incomplete
@@ -282,9 +339,8 @@ def _startup_only_diagnostic(
                 "Complete the model download or export its MLX safetensors weights into this directory.",
             )
         if (
-            error_class == "other"
-            and config_path.is_file()
-            and any(root.glob("model*.safetensors"))
+            error_class in ("other", "corrupt_weights")
+            and truncated_local_weights(model_ref)
             and any(
                 isinstance(error, RuntimeError)
                 and re.fullmatch(

@@ -15046,8 +15046,10 @@ def main():
     ):
         from rapid_mlx.local_model_path import (
             local_model_failure_message,
+            local_serve_preflight_lines,
             raise_if_missing_local_model,
             resolved_model_ref,
+            validate_local_model_for_serve,
         )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from rapid_mlx.user_aliases import UserAliasError
@@ -15056,19 +15058,26 @@ def main():
             supplied_model = args.model
             if getattr(args, "command", None) == "serve":
                 args.model = resolved_model_ref(args.model)
-            raise_if_missing_local_model(args.model)
+            if getattr(args, "command", None) == "serve":
+                validate_local_model_for_serve(args.model)
+            else:
+                raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, NotADirectoryError) as exc:
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
                 emit_model_serve_failed(
                     exc, alias_or_path=args.model, failure_stage="resolve"
                 )
-            message = local_model_failure_message(
-                supplied_model, exc, include_supplied_path=True
-            )
-            print(f"\n  Error: {message}", file=sys.stderr)
+            if getattr(args, "command", None) == "serve":
+                cause, step = local_serve_preflight_lines(args.model, exc)
+                print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+            else:
+                message = local_model_failure_message(
+                    supplied_model, exc, include_supplied_path=True
+                )
+                print(f"\n  Error: {message}", file=sys.stderr)
             raise SystemExit(1) from None
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)

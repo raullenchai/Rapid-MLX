@@ -245,3 +245,57 @@ def raise_if_missing_local_model(model_ref: object) -> None:
             "Local model path does not exist",
             model_ref,
         )
+
+
+def validate_local_model_for_serve(model_ref: object) -> None:
+    """Reject an incomplete explicit model directory before engine startup."""
+    raise_if_missing_local_model(model_ref)
+    if not is_local_model_ref(model_ref) or not isinstance(model_ref, str):
+        return
+    root = Path(model_ref).expanduser().absolute()
+    if not root.is_dir():
+        raise NotADirectoryError(errno.ENOTDIR, "Expected a model directory", str(root))
+    config = root / "config.json"
+    if not config.is_file():
+        raise FileNotFoundError(errno.ENOENT, "Missing model config", str(config))
+    # Some supported lanes keep weights in subdirectories or use other formats.
+    # The text loader's conventional safetensors absence is diagnosed here only
+    # when there is no alternate checkpoint file to let a lane inspect.
+    if not any(root.rglob("*.safetensors")) and not any(root.rglob("*.bin")):
+        raise FileNotFoundError(
+            errno.ENOENT, "Missing model weights", str(root / "model.safetensors")
+        )
+
+
+def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]:
+    """Give a local serve error a concrete repair command."""
+    root = Path(model_ref).expanduser().absolute()
+    filename = Path(exc.filename) if isinstance(exc.filename, str) else None
+    if not root.exists():
+        cause = f"Local model path {root} does not exist."
+    elif not root.is_dir():
+        cause = f"{root} is a file, not a model directory."
+    elif filename == root / "config.json":
+        cause = f"{root} is missing config.json."
+    else:
+        cause = f"{root} is missing model weights."
+    for part in root.parts:
+        if not part.startswith("models--"):
+            continue
+        repo = part.removeprefix("models--").replace("--", "/", 1)
+        from .model_aliases import catalog_alias_for
+
+        alias = catalog_alias_for(repo)
+        if alias:
+            return cause, f"Try the catalog model: `rapid-mlx serve {alias}`."
+    if not root.exists():
+        return cause, "Check the path, then run `rapid-mlx serve /path/to/model`."
+    if not root.is_dir():
+        return (
+            cause,
+            "Serve its containing model directory with `rapid-mlx serve /path/to/model`.",
+        )
+    return (
+        cause,
+        "Complete the checkpoint with `rapid-mlx pull owner/model`, then serve its model directory.",
+    )

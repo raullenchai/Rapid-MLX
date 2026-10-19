@@ -111,7 +111,7 @@ def test_memory_failure_uses_existing_class_and_remedy(tmp_path):
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory or serve a smaller or more quantized model.",
+        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
     )
 
 
