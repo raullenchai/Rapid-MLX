@@ -114,9 +114,11 @@ def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolu
 
 
 @pytest.mark.parametrize("external", [False, True])
-def test_uncataloged_serve_and_read_only_store(
+def test_uncataloged_default_and_store_untouched_by_selection(
     cache, tmp_path, monkeypatch, capsys, stub_serve_port_resolution, external
 ):
+    # Covers discovery, resolution and CLI selection (serve_command is stubbed);
+    # loading from an external folder in place is exercised end to end.
     repo = "mlx-community/Uncataloged-chat-4bit"
     root = tmp_path / "external"
     if external:
@@ -615,4 +617,20 @@ def test_external_checkpoint_without_vocabulary_is_not_offered(
     root = tmp_path / "external"
     (write_model(root / "acme" / "chat") / "tokenizer.json").unlink()
     monkeypatch.setattr(ma, "DEFAULT_EXTERNAL_MODEL_ROOTS", (str(root),))
+    assert lm.discover_runnable_chat_models() == []
+
+
+@pytest.mark.parametrize(
+    "config_update",
+    [
+        {"quantization_config": {"quant_method": "awq", "bits": 4}},
+        {"model_type": "unsupported", "architectures": ["NovelForCausalLM"]},
+    ],
+)
+def test_cataloged_checkpoint_must_be_loadable(cache, config_update):
+    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
+    directory = snapshot(cache, repo)
+    config = json.loads((directory / "config.json").read_text())
+    config.update(config_update)
+    (directory / "config.json").write_text(json.dumps(config))
     assert lm.discover_runnable_chat_models() == []

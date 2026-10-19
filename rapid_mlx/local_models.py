@@ -82,10 +82,21 @@ def _has_tokenizer(files: tuple[str, ...]) -> bool:
     )
 
 
-def _uncataloged_chat(repo: str, inspection: Inspection) -> bool | None:
+def _packed_quantization(config: dict) -> bool:
+    """AWQ/GPTQ/other packed formats declare a ``quant_method``; the MLX
+    loader cannot run them, so they are never auto-selected."""
+    return any(
+        isinstance(config.get(key), dict) and "quant_method" in config[key]
+        for key in ("quantization", "quantization_config")
+    )
+
+
+def _uncataloged_chat(
+    repo: str, inspection: Inspection, supported: frozenset[str] | None
+) -> bool | None:
     """``None`` when not a runnable chat model, else whether it is MLX-native."""
     from rapid_mlx.byom.alternatives import _mlx_bits
-    from rapid_mlx.byom.preflight import evaluate, supported_model_types
+    from rapid_mlx.byom.preflight import evaluate
 
     lowered = repo.lower()
     if any(token in lowered for token in _NON_CHAT_TOKENS):
@@ -102,16 +113,10 @@ def _uncataloged_chat(repo: str, inspection: Inspection) -> bool | None:
         for name in architectures
     ):
         return None
-    # AWQ/GPTQ/other packed formats declare a ``quant_method``; the MLX loader
-    # cannot run them, so they are never auto-selected.
-    for key in ("quantization", "quantization_config"):
-        block = config.get(key)
-        if isinstance(block, dict) and "quant_method" in block:
-            return None
     verdict = evaluate(
         inspection,
         refuse_oversize=True,
-        supported=supported_model_types(),
+        supported=supported,
         ram_bytes=None,
     )
     if verdict.failure is not None or verdict.architecture_supported is not True:
@@ -122,7 +127,12 @@ def _uncataloged_chat(repo: str, inspection: Inspection) -> bool | None:
 def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalModel]:
     """Read local metadata only; broken caches never interrupt the CLI."""
     try:
-        from rapid_mlx.byom.preflight import evaluate, inspect_local, physical_ram_bytes
+        from rapid_mlx.byom.preflight import (
+            evaluate,
+            inspect_local,
+            physical_ram_bytes,
+            supported_model_types,
+        )
         from rapid_mlx.cli import (
             _cache_entry_is_runnable,
             _scan_external_model_dirs,
@@ -133,6 +143,7 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
 
         if ram_bytes is None:
             ram_bytes = physical_ram_bytes()
+        supported = supported_model_types()
         aliases: dict[str, str] = {}
         for name, profile in list_profiles().items():
             aliases.setdefault(profile.hf_path, name)
@@ -162,23 +173,26 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
                     or not inspection.config
                     or inspection.weight_bytes <= 0
                     or not _has_tokenizer(inspection.files)
+                    or _packed_quantization(inspection.config)
                 ):
                     continue
                 mlx_native = True
                 if alias is None:
-                    native = _uncataloged_chat(repo, inspection)
+                    native = _uncataloged_chat(repo, inspection, supported)
                     if native is None:
                         continue
                     mlx_native = native
                 # Memory fit uses the preflight rule on this checkpoint's own
                 # weights, not the whole repo directory (old revisions etc.).
+                # A failure (proven-unsupported architecture or oversize)
+                # excludes cataloged checkpoints too.
                 verdict = evaluate(
                     inspection,
                     refuse_oversize=True,
-                    supported=None,
+                    supported=supported,
                     ram_bytes=ram_bytes,
                 )
-                if verdict.fit == "no":
+                if verdict.failure is not None or verdict.fit == "no":
                     continue
                 found.append(
                     LocalModel(
