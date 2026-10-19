@@ -103,8 +103,6 @@ def _uncataloged_chat(
         return None
     if lowered.endswith(("-draft", "-drafter", "_draft", "_drafter")):
         return None
-    if inspection.has_chat_template is not True:
-        return None
     config = inspection.config
     architectures = config.get("architectures")
     if not isinstance(architectures, (list, tuple)) or not any(
@@ -124,22 +122,101 @@ def _uncataloged_chat(
     return "mlx" in lowered or _mlx_bits(config) is not None
 
 
+def _judge_checkpoint(
+    repo: str,
+    alias: str | None,
+    *,
+    external: bool,
+    mtime: float,
+    supported: frozenset[str] | None,
+    ram_bytes: int | None,
+) -> LocalModel | None:
+    """The checkpoint as a runnable local chat model, or ``None``."""
+    from rapid_mlx.byom.preflight import evaluate, inspect_local
+    from rapid_mlx.first_run import _is_chat_alias
+    from rapid_mlx.model_aliases import raise_if_draft_only_model
+
+    raise_if_draft_only_model(alias or repo)
+    if alias is not None and not _is_chat_alias(alias):
+        return None
+    # Judge the exact checkpoint serve would load: a config, a chat template,
+    # a tokenizer vocabulary and runtime weights must all be on disk.
+    directory = _checkpoint_dir(repo, external)
+    inspection = inspect_local(directory) if directory else None
+    if (
+        inspection is None
+        or not inspection.config
+        or inspection.weight_bytes <= 0
+        or inspection.has_chat_template is not True
+        or not _has_tokenizer(inspection.files)
+        or _packed_quantization(inspection.config)
+    ):
+        return None
+    mlx_native = True
+    if alias is None:
+        native = _uncataloged_chat(repo, inspection, supported)
+        if native is None:
+            return None
+        mlx_native = native
+    # Memory fit uses the preflight rule on this checkpoint's own weights, not
+    # the whole repo directory (old revisions etc.). A failure (proven
+    # unsupported architecture or oversize) excludes cataloged checkpoints too.
+    verdict = evaluate(
+        inspection,
+        refuse_oversize=True,
+        supported=supported,
+        ram_bytes=ram_bytes,
+    )
+    if verdict.failure is not None or verdict.fit == "no":
+        return None
+    return LocalModel(
+        alias or repo,
+        repo,
+        alias,
+        external,
+        inspection.weight_bytes,
+        mtime,
+        verdict.fit,
+        mlx_native,
+    )
+
+
+def catalog_model_ready(alias: str) -> bool:
+    """Whether a cataloged chat alias's cached Hub checkpoint passes the same
+    checks as discovery. Fail-silent: any probe error means not ready."""
+    try:
+        from rapid_mlx.byom.preflight import physical_ram_bytes, supported_model_types
+        from rapid_mlx.model_aliases import list_profiles
+
+        profile = list_profiles().get(alias)
+        if profile is None:
+            return False
+        return (
+            _judge_checkpoint(
+                profile.hf_path,
+                alias,
+                external=False,
+                mtime=0.0,
+                supported=supported_model_types(),
+                ram_bytes=physical_ram_bytes(),
+            )
+            is not None
+        )
+    except Exception:
+        log.debug("Could not check local model %s", alias, exc_info=True)
+        return False
+
+
 def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalModel]:
     """Read local metadata only; broken caches never interrupt the CLI."""
     try:
-        from rapid_mlx.byom.preflight import (
-            evaluate,
-            inspect_local,
-            physical_ram_bytes,
-            supported_model_types,
-        )
+        from rapid_mlx.byom.preflight import physical_ram_bytes, supported_model_types
         from rapid_mlx.cli import (
             _cache_entry_is_runnable,
             _scan_external_model_dirs,
             _scan_hf_cache_models,
         )
-        from rapid_mlx.first_run import _is_chat_alias
-        from rapid_mlx.model_aliases import list_profiles, raise_if_draft_only_model
+        from rapid_mlx.model_aliases import list_profiles
 
         if ram_bytes is None:
             ram_bytes = physical_ram_bytes()
@@ -160,54 +237,19 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
         found = []
         for (repo, _size, mtime), external in rows:
             try:
-                alias = aliases.get(repo)
-                raise_if_draft_only_model(alias or repo)
-                if alias is not None and not _is_chat_alias(alias):
-                    continue
-                # Judge the exact checkpoint serve would load: a config, a
-                # tokenizer and runtime weights must all be on disk.
-                directory = _checkpoint_dir(repo, external)
-                inspection = inspect_local(directory) if directory else None
-                if (
-                    inspection is None
-                    or not inspection.config
-                    or inspection.weight_bytes <= 0
-                    or not _has_tokenizer(inspection.files)
-                    or _packed_quantization(inspection.config)
-                ):
-                    continue
-                mlx_native = True
-                if alias is None:
-                    native = _uncataloged_chat(repo, inspection, supported)
-                    if native is None:
-                        continue
-                    mlx_native = native
-                # Memory fit uses the preflight rule on this checkpoint's own
-                # weights, not the whole repo directory (old revisions etc.).
-                # A failure (proven-unsupported architecture or oversize)
-                # excludes cataloged checkpoints too.
-                verdict = evaluate(
-                    inspection,
-                    refuse_oversize=True,
+                model = _judge_checkpoint(
+                    repo,
+                    aliases.get(repo),
+                    external=external,
+                    mtime=mtime,
                     supported=supported,
                     ram_bytes=ram_bytes,
                 )
-                if verdict.failure is not None or verdict.fit == "no":
-                    continue
-                found.append(
-                    LocalModel(
-                        alias or repo,
-                        repo,
-                        alias,
-                        external,
-                        inspection.weight_bytes,
-                        mtime,
-                        verdict.fit,
-                        mlx_native,
-                    )
-                )
             except Exception:
                 log.debug("Could not inspect local model %s", repo, exc_info=True)
+                continue
+            if model is not None:
+                found.append(model)
         return found
     except Exception:
         log.debug("Could not discover local models", exc_info=True)

@@ -634,3 +634,25 @@ def test_cataloged_checkpoint_must_be_loadable(cache, config_update):
     config.update(config_update)
     (directory / "config.json").write_text(json.dumps(config))
     assert lm.discover_runnable_chat_models() == []
+
+
+def test_incomplete_cached_starter_does_not_block_other_local_model(cache):
+    starter = snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    (starter / "tokenizer.json").unlink()
+    snapshot(cache, "org/chat")
+    assert lm.catalog_model_ready(first_run.FIRST_RUN_MODEL) is False
+    assert first_run.select_chat_default() == ("org/chat", True)
+
+
+def test_catalog_model_ready_edges(cache, monkeypatch):
+    assert lm.catalog_model_ready("no-such-alias") is False
+    monkeypatch.setattr(
+        lm, "_judge_checkpoint", lambda *a, **kw: (_ for _ in ()).throw(OSError())
+    )
+    assert lm.catalog_model_ready(first_run.FIRST_RUN_MODEL) is False
+
+
+def test_catalog_checkpoint_without_chat_template_is_not_offered(cache):
+    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
+    snapshot(cache, repo, template=False)
+    assert lm.discover_runnable_chat_models() == []

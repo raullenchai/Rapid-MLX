@@ -57,6 +57,9 @@ def test_select_chat_default_reports_starter_cached(monkeypatch):
         "cached_known_aliases",
         lambda: [(fr.FIRST_RUN_MODEL, 100.0), ("gpt-oss-20b-mxfp4-q8", 200.0)],
     )
+    monkeypatch.setattr(
+        "rapid_mlx.local_models.catalog_model_ready", lambda alias: True
+    )
     alias, already_cached = fr.select_chat_default()
     assert alias == fr.FIRST_RUN_MODEL
     assert already_cached is True

@@ -108,10 +108,11 @@ def select_chat_default() -> tuple[str, bool]:
     Return ``(model, already_cached)``; a cold cache retains the starter download.
     Discovery only admits chat-capable models and never accesses the network.
     """
+    from rapid_mlx.local_models import catalog_model_ready, select_default_local_model
+
     cached_aliases = {alias for alias, _ in cached_known_aliases()}
-    if FIRST_RUN_MODEL in cached_aliases:
+    if FIRST_RUN_MODEL in cached_aliases and catalog_model_ready(FIRST_RUN_MODEL):
         return FIRST_RUN_MODEL, True
-    from rapid_mlx.local_models import select_default_local_model
 
     chosen = select_default_local_model()
     return (chosen.model, True) if chosen is not None else (FIRST_RUN_MODEL, False)
