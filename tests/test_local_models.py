@@ -560,3 +560,33 @@ def test_catalog_external_serves_without_note(
     assert args.model == str(directory)
     assert args._original_alias == first_run.FIRST_RUN_MODEL
     assert "catalog-tested" not in capsys.readouterr().err
+
+
+def test_catalog_checkpoint_without_config_or_tokenizer_is_not_offered(cache):
+    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
+    directory = snapshot(cache, repo)
+    (directory / "tokenizer_config.json").unlink()
+    assert lm.discover_runnable_chat_models() == []
+    (directory / "tokenizer_config.json").write_text("{}")
+    (directory / "config.json").unlink()
+    assert lm.discover_runnable_chat_models() == []
+
+
+@pytest.mark.parametrize("method", ["awq", "gptq"])
+def test_packed_quantization_is_not_offered(cache, method):
+    directory = snapshot(cache, "org/chat-packed")
+    config = json.loads((directory / "config.json").read_text())
+    config["quantization_config"] = {"quant_method": method, "bits": 4}
+    (directory / "config.json").write_text(json.dumps(config))
+    assert lm.discover_runnable_chat_models() == []
+
+
+def test_fit_uses_selected_checkpoint_not_whole_repo(cache):
+    directory = snapshot(cache, "org/chat")
+    # An old revision of the same repo makes the repo directory much larger
+    # than the checkpoint that would actually load.
+    old = directory.parent / ("b" * 40)
+    old.mkdir()
+    (old / "model.safetensors").write_bytes(b"x" * (64 << 10))
+    (found,) = lm.discover_runnable_chat_models(ram_bytes=1024)
+    assert found.size_bytes == 4

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rapid_mlx.byom.preflight import Inspection
 
 log = logging.getLogger(__name__)
 
@@ -26,69 +30,79 @@ class LocalModel:
         return self.alias is not None
 
 
-def _uncataloged_chat(repo: str, external: bool, ram_bytes: int | None) -> bool | None:
-    """``None`` when not a runnable chat model, else whether it is MLX-native."""
+_NON_CHAT_TOKENS = (
+    "embed",
+    "rerank",
+    "whisper",
+    "tts",
+    "vad",
+    "tokenizer",
+    "asr",
+    "stt",
+)
+
+
+def _checkpoint_dir(repo: str, external: bool) -> str | None:
+    """The exact local checkpoint directory serve would load, or ``None``."""
     from rapid_mlx import model_aliases
-    from rapid_mlx.byom.preflight import evaluate, inspect_local, supported_model_types
     from rapid_mlx.model_metadata import read_cached_model_metadata
 
-    if any(
-        token in repo.lower()
-        for token in (
-            "embed",
-            "rerank",
-            "whisper",
-            "tts",
-            "vad",
-            "tokenizer",
-            "asr",
-            "stt",
-        )
-    ):
-        return None
-    if repo.lower().endswith(("-draft", "-drafter", "_draft", "_drafter")):
-        return None
     if external:
-        directory = model_aliases._resolve_external_model_path(repo)
-    else:
-        metadata = read_cached_model_metadata(repo)
-        directory = (
-            str(metadata.snapshot_dir)
-            if metadata is not None and metadata.snapshot_dir is not None
-            else None
-        )
-    if directory is None:
+        return model_aliases._resolve_external_model_path(repo)
+    metadata = read_cached_model_metadata(repo)
+    if metadata is None or metadata.snapshot_dir is None:
         return None
-    inspection = inspect_local(directory)
-    if inspection is None or inspection.has_chat_template is not True:
+    return str(metadata.snapshot_dir)
+
+
+def _has_tokenizer(files: tuple[str, ...]) -> bool:
+    return any(
+        name.startswith(("tokenizer", "vocab")) or name.endswith(".tiktoken")
+        for name in files
+    )
+
+
+def _uncataloged_chat(repo: str, inspection: Inspection) -> bool | None:
+    """``None`` when not a runnable chat model, else whether it is MLX-native."""
+    from rapid_mlx.byom.alternatives import _mlx_bits
+    from rapid_mlx.byom.preflight import evaluate, supported_model_types
+
+    lowered = repo.lower()
+    if any(token in lowered for token in _NON_CHAT_TOKENS):
         return None
-    architectures = inspection.config.get("architectures")
+    if lowered.endswith(("-draft", "-drafter", "_draft", "_drafter")):
+        return None
+    if inspection.has_chat_template is not True:
+        return None
+    config = inspection.config
+    architectures = config.get("architectures")
     if not isinstance(architectures, (list, tuple)) or not any(
         isinstance(name, str)
         and name.endswith(("ForCausalLM", "LMHeadModel", "ForConditionalGeneration"))
         for name in architectures
     ):
         return None
+    # AWQ/GPTQ/other packed formats declare a ``quant_method``; the MLX loader
+    # cannot run them, so they are never auto-selected.
+    for key in ("quantization", "quantization_config"):
+        block = config.get(key)
+        if isinstance(block, dict) and "quant_method" in block:
+            return None
     verdict = evaluate(
         inspection,
         refuse_oversize=True,
         supported=supported_model_types(),
-        ram_bytes=ram_bytes,
+        ram_bytes=None,
     )
     if verdict.failure is not None or verdict.architecture_supported is not True:
         return None
-    config = inspection.config
-    return (
-        "mlx" in repo.lower()
-        or "quantization" in config
-        or "quantization_config" in config
-    )
+    return "mlx" in lowered or _mlx_bits(config) is not None
 
 
 def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalModel]:
     """Read local metadata only; broken caches never interrupt the CLI."""
     try:
-        from rapid_mlx.byom.preflight import Inspection, evaluate, physical_ram_bytes
+        from rapid_mlx.byom.preflight import evaluate, inspect_local, physical_ram_bytes
         from rapid_mlx.cli import (
             _cache_entry_is_runnable,
             _scan_external_model_dirs,
@@ -113,22 +127,33 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
             if row[0] not in hub_repos
         )
         found = []
-        for (repo, size, mtime), external in rows:
+        for (repo, _size, mtime), external in rows:
             try:
                 alias = aliases.get(repo)
                 raise_if_draft_only_model(alias or repo)
+                if alias is not None and not _is_chat_alias(alias):
+                    continue
+                # Judge the exact checkpoint serve would load: a config, a
+                # tokenizer and runtime weights must all be on disk.
+                directory = _checkpoint_dir(repo, external)
+                inspection = inspect_local(directory) if directory else None
+                if (
+                    inspection is None
+                    or not inspection.config
+                    or inspection.weight_bytes <= 0
+                    or not _has_tokenizer(inspection.files)
+                ):
+                    continue
                 mlx_native = True
-                if alias is not None:
-                    if not _is_chat_alias(alias):
-                        continue
-                else:
-                    native = _uncataloged_chat(repo, external, ram_bytes)
+                if alias is None:
+                    native = _uncataloged_chat(repo, inspection)
                     if native is None:
                         continue
                     mlx_native = native
-                # Use preflight's weight rule without a second memory formula.
+                # Memory fit uses the preflight rule on this checkpoint's own
+                # weights, not the whole repo directory (old revisions etc.).
                 verdict = evaluate(
-                    Inspection(repo, True, ("model.safetensors",), weight_bytes=size),
+                    inspection,
                     refuse_oversize=True,
                     supported=None,
                     ram_bytes=ram_bytes,
@@ -141,7 +166,7 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
                         repo,
                         alias,
                         external,
-                        size,
+                        inspection.weight_bytes,
                         mtime,
                         verdict.fit,
                         mlx_native,
