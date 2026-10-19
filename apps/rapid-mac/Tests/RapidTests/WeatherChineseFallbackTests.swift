@@ -333,4 +333,17 @@ struct WeatherChineseFallbackTests {
             }
         }
     }
+
+    @Test("URL-loading cancellation during the romanized retry still propagates")
+    func romanizedRetryURLCancellationPropagates() async throws {
+        await #expect(throws: URLError.self) {
+            _ = try await WeatherTool.resolvePlace(location: "德州", country: nil, admin1: nil) { request in
+                let url = try #require(request.url)
+                let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "name" }?.value
+                if name == "dezhou" { throw URLError(.cancelled) }
+                return (Self.villages, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+            }
+        }
+    }
 }

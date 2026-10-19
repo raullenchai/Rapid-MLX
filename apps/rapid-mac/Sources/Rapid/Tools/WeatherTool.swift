@@ -279,9 +279,12 @@ enum WeatherTool {
             ) {
                 return .place(hit)
             }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {}
+        } catch {
+            if error is CancellationError || Task.isCancelled
+                || (error as? URLError)?.code == .cancelled {
+                throw error
+            }
+        }
 
         let allCandidates = originalCandidates + alternateCandidates
         let countryHints = regionCountryHints(
