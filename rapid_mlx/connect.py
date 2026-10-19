@@ -241,7 +241,7 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
     lines.extend(
         [
             f"    {curl}",
-            f"    Connect a coding agent: rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)} --model {shlex.quote(ep.model)}"
+            f"    Connect a coding agent: rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)}"
             if agent
             else "    Connect a coding agent: rapid-mlx agents",
             f"    More agents: {', '.join(agents[1:])}; full list: rapid-mlx agents"

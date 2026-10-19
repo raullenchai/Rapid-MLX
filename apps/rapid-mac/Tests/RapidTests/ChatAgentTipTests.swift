@@ -3,7 +3,7 @@ import Testing
 
 @Suite("Chat agent tip")
 struct ChatAgentTipTests {
-    @Test func onlyCompletedModelRepliesQualify() {
+    @Test @MainActor func onlyCompletedModelRepliesQualify() {
         #expect(!ChatView.hasSuccessfulReply([]))
         #expect(!ChatView.hasSuccessfulReply([
             ChatMessage(role: .assistant, content: "Hello", status: .streaming)

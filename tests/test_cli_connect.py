@@ -517,8 +517,6 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
         "--setup",
         "--base-url",
         "http://[::1]:9123/v1",
-        "--model",
-        "my served model",
     ]
     assert "OpenAI SDK base_url: http://[::1]:9123/v1; model: my served model" in out
     assert "from openai import OpenAI" in out
