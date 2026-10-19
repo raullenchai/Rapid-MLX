@@ -365,7 +365,7 @@ enum FailureDiagnoser {
             message = "A tool step didn't go through. The model can usually recover if you ask again."
             action = .retry
         case .needsClarification:
-            message = "Needs a more specific place. The reply asks which one you mean."
+            message = "Needs a more specific place. The reply asks which one you mean or names the city it used."
             action = nil
         case .userDeclined:
             // Nothing went wrong, so the copy states the outcome and stops.

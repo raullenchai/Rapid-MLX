@@ -2200,6 +2200,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// "current" does not fire on "concurrent".
     static func promptAsksForLiveData(_ prompt: String) -> Bool {
         let lowered = prompt.lowercased().replacingOccurrences(of: "’", with: "'")
+        // Bare "current" is deliberately not a live cue (only "current price"/"current weather"), so "the current time/date" uses injected context.
         let liveKeywords: [String] = [
             "google for",
             "latest news", "latest version", "news about",

@@ -371,7 +371,7 @@ final class DeclinedToolDiagnosisTests {
     func clarificationCopyIsNeutral() {
         let diagnosis = FailureDiagnoser.diagnosis(for: .needsClarification)
         #expect(diagnosis.severity == .notice)
-        #expect(diagnosis.message == "Needs a more specific place. The reply asks which one you mean.")
+        #expect(diagnosis.message == "Needs a more specific place. The reply asks which one you mean or names the city it used.")
         #expect(!diagnosis.message.lowercased().contains("ask again"))
         #expect(!diagnosis.message.contains("didn't go through"))
         #expect(diagnosis.action == nil)

@@ -464,6 +464,7 @@ struct ToolNotCalledCaptionTests {
     @Test("Injected date and time questions are not live-data requests")
     func dateAndTimeUseInjectedContext() {
         for prompt in [
+            "What is the current time?", "What is the current date?",
             "What's today's date?", "what is today's date and day?",
             "What time is it right now?", "what day is it right now",
             "today's date please", "Please tell me today's weekday.",
