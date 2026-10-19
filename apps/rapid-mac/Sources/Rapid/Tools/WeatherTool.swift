@@ -153,7 +153,7 @@ enum WeatherTool {
         let parenthetical = label.isEmpty ? "" : " (\(label))"
         return ToolCallResult(
             toolCallID: "",
-            content: "weather: \"\(location)\" is a state or region\(parenthetical), not a single place, so it has no single forecast. Do not retry weather with this region name or with more qualifiers. Ask the user which city they mean, or call weather once with one major city in that region and say in your answer which city the forecast is for.",
+            content: "weather: \"\(location)\" is a state or region\(parenthetical), not a single place, so it has no single forecast. Do not retry weather with this region name or with more qualifiers, and do not search the web for it. Ask the user which city they mean, or call weather once with one major city in that region and say in your answer which city the forecast is for.",
             isError: true
         )
     }
@@ -269,7 +269,20 @@ enum WeatherTool {
 
         let allCandidates = originalCandidates + alternateCandidates
         let countryHints = regionCountryHints(country: country, commaQualifiers: query.commaQualifiers)
-        if let label = regionLabel(
+        // A major city sharing the region's name (Victoria, Canada; Ontario,
+        // California) keeps the ordinary ambiguity advice: a country or
+        // state qualifier resolves it, so refusing it as a region would mislead.
+        let hasMajorNamesake = [
+            (query.name, originalCandidates),
+            (traditionalGeocodingName(query.name), alternateCandidates),
+        ].contains { name, candidates in
+            guard let name else { return false }
+            return matchingGeocodingCandidates(
+                location: name, qualifiers: query.qualifiers,
+                candidates: candidates, country: country, admin1: admin1
+            ).contains { ($0.population ?? 0) >= 100_000 }
+        }
+        if !hasMajorNamesake, let label = regionLabel(
             requestedName: query.name,
             countryHints: countryHints,
             candidates: allCandidates

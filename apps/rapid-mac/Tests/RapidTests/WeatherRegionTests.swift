@@ -165,6 +165,24 @@ struct WeatherRegionTests {
         #expect(result.content.contains("could not uniquely identify"))
     }
 
+    @Test("A region name shared by major cities stays ambiguous")
+    func victoriaStaysAmbiguous() async throws {
+        let victoria = Data(#"""
+        {"results":[
+          {"name":"Victoria","latitude":48.43,"longitude":-123.37,"country":"Canada","country_code":"CA","admin1":"British Columbia","population":289625},
+          {"name":"Victoria","latitude":22.28,"longitude":114.16,"country":"Hong Kong","country_code":"HK","admin1":"Central and Western","population":956800},
+          {"name":"Victoria","latitude":28.8,"longitude":-97.0,"country":"United States","country_code":"US","admin1":"Texas","population":67574}
+        ]}
+        """#.utf8)
+        let bare = try await Self.result(location: "Victoria", fixtures: ["Victoria": victoria])
+        #expect(bare.content.contains("could not uniquely identify"))
+        let australia = try await Self.result(
+            location: "Victoria, Australia", fixtures: ["Victoria": victoria]
+        )
+        #expect(australia.content.contains("Victoria, Australia"))
+        #expect(australia.content.contains("state or region"))
+    }
+
     @Test("A known city excluded by its qualifiers asks for one corrected retry")
     func chicagoWrongState() async throws {
         let result = try await Self.result(
