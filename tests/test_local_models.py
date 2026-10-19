@@ -591,12 +591,22 @@ def test_fit_uses_selected_checkpoint_not_whole_repo(cache):
     assert found.size_bytes == 4
 
 
-@pytest.mark.parametrize("vocab", ["tokenizer.model", "vocab.json", "qwen.tiktoken"])
-def test_tokenizer_vocabulary_formats(cache, vocab):
+@pytest.mark.parametrize(
+    ("vocab", "offered"),
+    [
+        (("tokenizer.model",), True),
+        (("qwen.tiktoken",), True),
+        (("vocab.json", "merges.txt"), True),
+        (("vocab.json",), False),
+    ],
+)
+def test_tokenizer_vocabulary_formats(cache, vocab, offered):
     directory = snapshot(cache, "org/chat")
     (directory / "tokenizer.json").unlink()
-    (directory / vocab).write_text("x")
-    assert [m.repo for m in lm.discover_runnable_chat_models()] == ["org/chat"]
+    for name in vocab:
+        (directory / name).write_text("x")
+    expected = ["org/chat"] if offered else []
+    assert [m.repo for m in lm.discover_runnable_chat_models()] == expected
 
 
 def test_external_checkpoint_without_vocabulary_is_not_offered(

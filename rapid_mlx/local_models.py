@@ -59,7 +59,6 @@ _TOKENIZER_VOCAB_FILES = frozenset(
     {
         "tokenizer.json",
         "tokenizer.model",
-        "vocab.json",
         "vocab.txt",
         "spiece.model",
         "tiktoken.model",
@@ -68,9 +67,18 @@ _TOKENIZER_VOCAB_FILES = frozenset(
 
 
 def _has_tokenizer(files: tuple[str, ...]) -> bool:
-    """A tokenizer vocabulary, not just ``tokenizer_config.json`` metadata."""
-    return any(
-        name in _TOKENIZER_VOCAB_FILES or name.endswith(".tiktoken") for name in files
+    """A tokenizer vocabulary, not just ``tokenizer_config.json`` metadata.
+
+    A byte-level BPE ``vocab.json`` is only usable together with its
+    ``merges.txt``.
+    """
+    names = set(files)
+    return (
+        any(
+            name in _TOKENIZER_VOCAB_FILES or name.endswith(".tiktoken")
+            for name in names
+        )
+        or {"vocab.json", "merges.txt"} <= names
     )
 
 
