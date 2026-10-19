@@ -138,10 +138,15 @@ enum ConversationTitleSuggestion {
         // for it.
         guard !isMultiSentence(title) else { return nil }
 
-        // A script mismatch keeps the derived title in the user's language.
-        if let reference, reference.contains(where: \.isLetter),
-           ReplyScript.usesCJK(title) != ReplyScript.usesCJK(reference) {
-            return nil
+        // A script mismatch keeps the derived title in the user's language
+        // (#4937). For a CJK conversation any CJK letter is enough: a title
+        // such as "Python 列表反转方法" is half Latin by count and is still
+        // the right name for a Chinese question about Python.
+        if let reference, reference.contains(where: \.isLetter) {
+            let matches = ReplyScript.usesCJK(reference)
+                ? ReplyScript.containsCJK(title)
+                : !ReplyScript.usesCJK(title)
+            guard matches else { return nil }
         }
 
         return ConversationStore.capped(title)

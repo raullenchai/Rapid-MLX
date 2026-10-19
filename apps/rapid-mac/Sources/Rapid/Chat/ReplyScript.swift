@@ -3,6 +3,16 @@ import Foundation
 /// Shared CJK-majority signal for background titles and questions.
 enum ReplyScript {
     nonisolated static func usesCJK(_ text: String) -> Bool {
+        let (cjkLetters, otherLetters) = letterCounts(text)
+        return cjkLetters > otherLetters
+    }
+
+    /// At least one CJK letter, whatever the Latin around it.
+    nonisolated static func containsCJK(_ text: String) -> Bool {
+        letterCounts(text).cjk > 0
+    }
+
+    private nonisolated static func letterCounts(_ text: String) -> (cjk: Int, other: Int) {
         var cjkLetters = 0
         var otherLetters = 0
         for scalar in text.unicodeScalars where CharacterSet.letters.contains(scalar) {
@@ -15,7 +25,7 @@ enum ReplyScript {
                 otherLetters += 1
             }
         }
-        return cjkLetters > otherLetters
+        return (cjkLetters, otherLetters)
     }
 
     /// CJK-majority text with Han and no kana or hangul. Ordinary Japanese is
