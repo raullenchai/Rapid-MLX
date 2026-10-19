@@ -648,11 +648,14 @@ enum WeatherTool {
             guard let countryCode else { return false }
             return countryCodes(for: explicitAdmin1).contains { $0.uppercased() == countryCode.uppercased() }
         }
-        // A subdivision that shares its name with a country (Georgia) needs a
-        // country hint before it is taken as the subdivision.
+        // A subdivision that shares its name or abbreviation with a country
+        // (Georgia; CA, IN, GA) needs a country hint before it is taken as
+        // the subdivision.
         let english = Locale(identifier: "en_US")
-        let namesCountry = !isAbbreviation && Locale.Region.isoRegions.contains { region in
-            english.localizedString(forRegionCode: region.identifier).map(matchKey) == requestedKey
+        let namesCountry = Locale.Region.isoRegions.contains { region in
+            isAbbreviation
+                ? region.identifier.lowercased() == requestedKey
+                : english.localizedString(forRegionCode: region.identifier).map(matchKey) == requestedKey
         }
         if hintedTableMatches.count == 1,
            !isAbbreviation || !countryHints.isEmpty || tableMatches.count == 1,
