@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import stat
 import subprocess
 import sys
@@ -271,6 +272,120 @@ async def test_video_multipart_gate_authenticates_before_reading_body(
 
     assert receive_calls == 0
     assert sent[0]["status"] == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/videos", "/v1/videos/extend"])
+@pytest.mark.parametrize("api_key", ["secret", None], ids=["auth", "dev"])
+@pytest.mark.parametrize(
+    ("auth_headers", "status", "detail"),
+    [
+        (
+            [(b"authorization", b"Bearer wrong"), (b"authorization", b"Bearer secret")],
+            401,
+            "Invalid API key",
+        ),
+        (
+            [(b"authorization", b"Bearer secret"), (b"authorization", b"Bearer wrong")],
+            413,
+            None,
+        ),
+        ([(b"authorization", b"Bearer  secret ")], 413, None),
+        ([(b"authorization", b"Basic xyz")], 401, "API key required"),
+    ],
+    ids=["duplicate-wrong-first", "duplicate-valid-first", "padded", "non-bearer"],
+)
+async def test_video_multipart_gate_scope_auth_parity(
+    path: str,
+    api_key: str | None,
+    auth_headers: list[tuple[bytes, bytes]],
+    status: int,
+    detail: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rapid_mlx.config import get_config
+
+    monkeypatch.setattr(get_config(), "api_key", api_key)
+    receive_calls = 0
+    sent = []
+
+    async def downstream(scope, receive, send) -> None:
+        raise AssertionError("rejected request reached FastAPI")
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return {"type": "http.request", "body": b"x", "more_body": False}
+
+    async def send(message) -> None:
+        sent.append(message)
+
+    middleware = video.VideoBodyLimitMiddleware(downstream)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [
+                *auth_headers,
+                (b"content-length", str(video._VIDEO_REQUEST_BYTES + 1).encode()),
+            ],
+        },
+        receive,
+        send,
+    )
+
+    assert receive_calls == 0
+    expected_status = status if api_key is not None else 413
+    assert sent[0]["status"] == expected_status
+    if expected_status == 401:
+        body = next(msg["body"] for msg in sent if msg["type"] == "http.response.body")
+        assert json.loads(body)["detail"] == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/videos", "/v1/videos/extend"])
+async def test_video_multipart_gate_duplicate_wrong_first_before_body_read(
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rapid_mlx.config import get_config
+
+    monkeypatch.setattr(get_config(), "api_key", "secret")
+    receive_calls = 0
+    sent = []
+
+    async def downstream(scope, receive, send) -> None:
+        raise AssertionError("unauthenticated request reached FastAPI")
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return {"type": "http.request", "body": b"x", "more_body": False}
+
+    async def send(message) -> None:
+        sent.append(message)
+
+    middleware = video.VideoBodyLimitMiddleware(downstream)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [
+                (b"authorization", b"Bearer wrong"),
+                (b"authorization", b"Bearer secret"),
+                (b"content-length", b"1"),
+            ],
+        },
+        receive,
+        send,
+    )
+
+    assert receive_calls == 0
+    assert sent[0]["status"] == 401
+    body = next(msg["body"] for msg in sent if msg["type"] == "http.response.body")
+    assert json.loads(body)["detail"] == "Invalid API key"
 
 
 @pytest.mark.asyncio
