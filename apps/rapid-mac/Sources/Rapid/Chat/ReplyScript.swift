@@ -28,13 +28,14 @@ enum ReplyScript {
         return (cjkLetters, otherLetters)
     }
 
-    /// CJK-majority text with Han and no kana or hangul: the text that gets
-    /// the Han-script title and chip cues. Ordinary Japanese always carries
-    /// kana, so it is excluded. Short Han-only Japanese ("東京天気") cannot be
-    /// told apart, which is why those cues are written in Han script but ask
-    /// for "the user's language", never for Chinese by name.
+    /// Han text with no kana or hangul: the text that gets the Han-script
+    /// title and chip cues. Presence, not majority: a Chinese question about
+    /// code ("请解释 Python list comprehension") has more Latin letters than
+    /// Han and is still written by a Chinese reader. Ordinary Japanese always
+    /// carries kana, so it is excluded. Short Han-only Japanese ("東京天気")
+    /// cannot be told apart, which is why those cues are written in Han
+    /// script but ask for "the user's language", never for Chinese by name.
     nonisolated static func isChinese(_ text: String) -> Bool {
-        guard usesCJK(text) else { return false }
         var han = 0
         var kanaAndHangul = 0
         for scalar in text.unicodeScalars where CharacterSet.letters.contains(scalar) {
