@@ -112,5 +112,7 @@ def test_tool_call_channel_summary_stays_hidden(route):
     # On the tool_call channel the chunk text is an argument summary.
     engine = ToolChunkEngine(["Hello", '{"city":"Paris"}'], "tool_call")
     _, streamed, _, streamed_calls = _run(engine, route, "auto")
-    assert "Paris" not in streamed
+    # Responses never shows tool_call-channel text; Messages renders the
+    # channel's plain deltas as text but not the summary on the call chunk.
+    assert streamed == ("Hello" if route == "messages" else "")
     assert [c["name"] for c in streamed_calls] == ["get_weather"]

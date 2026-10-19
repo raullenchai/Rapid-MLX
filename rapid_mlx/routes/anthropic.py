@@ -2423,7 +2423,7 @@ async def _stream_anthropic_messages(
             accumulated_structured_tool_calls.extend(engine_tool_calls)
             # Only tool_call / reasoning channel text is an argument
             # summary; plain or content text is visible, as in buffered.
-            if getattr(output, "channel", None) not in (None, "content"):
+            if getattr(output, "channel", None) in ("tool_call", "reasoning"):
                 continue
 
         if delta_text:
