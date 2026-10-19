@@ -81,13 +81,29 @@ def test_forced_grammar_deliberately_uses_parser_json_wire(monkeypatch, caplog, 
 
     monkeypatch.setattr(tool_grammar, "get_lltokenizer", lambda tokenizer: object())
     monkeypatch.setattr(tool_grammar, "resolve_reasoning_sentinels", lambda *args: ())
-    build = Mock(return_value=None)
+    monkeypatch.setattr(tool_grammar, "model_stop_token_ids", lambda tokenizer: ())
+    # Run the REAL builder through the route helper; only the llguidance-backed
+    # processor is replaced by a recorder, so the installed grammar is asserted.
+    build = Mock(wraps=tool_grammar.build_tool_grammar)
     monkeypatch.setattr(tool_grammar, "build_tool_grammar", build)
+
+    class RecordingProcessor:
+        def __init__(self, lltok, grammar, **kwargs):
+            self.grammar = grammar
+            self.reasoning_gate_id = kwargs.get("reasoning_end_id")
+
+        def is_broken(self):
+            return False
+
+    monkeypatch.setattr(tool_grammar, "GrammarLogitsProcessor", RecordingProcessor)
     with caplog.at_level("DEBUG", logger=chat.__name__):
-        assert chat._maybe_build_tool_grammar_processor(engine(), CFG, req) is None
+        processor = chat._maybe_build_tool_grammar_processor(engine(), CFG, req)
     build.assert_called_once()
     assert build.call_args.args[1] == "required"
     assert "Skipping auto tool grammar" not in caplog.text
+    assert isinstance(processor, RecordingProcessor)
+    assert r"{\"name\": \"search\"" in processor.grammar
+    assert "<function=search>" not in processor.grammar
 
 
 def test_forced_json_wire_is_consumable_by_hermes():
