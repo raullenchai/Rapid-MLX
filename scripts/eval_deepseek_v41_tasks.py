@@ -205,23 +205,31 @@ def prefetch(path, seed):
 
 class Client:
     def __init__(
-        self, url, model, mode="non-thinking", seed=1017, timeout=900, api_key=None
+        self,
+        url,
+        model,
+        mode="non-thinking",
+        seed=1017,
+        timeout=900,
+        api_key=None,
+        send_seed=True,
     ):
         self.url, self.model = url.rstrip("/"), model
         self.mode, self.seed, self.timeout = mode, seed, timeout
-        self.api_key = api_key
+        self.api_key, self.send_seed = api_key, send_seed
 
     def chat(self, messages, max_tokens=128, stream=False, **extra):
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": 0,
-            "seed": self.seed,
             "max_tokens": max_tokens,
             "stream": stream,
             "enable_thinking": self.mode == "thinking",
             "chat_template_kwargs": {"enable_thinking": self.mode == "thinking"},
         }
+        if self.send_seed:
+            payload["seed"] = self.seed
         payload.update(extra)
         if stream:
             payload["stream_options"] = {"include_usage": True}
@@ -493,7 +501,8 @@ def execute_code(code, tests, entry, timeout, scratch):
         profile = (
             "(version 1)(deny default)(allow process-exec)(allow signal)"
             "(allow sysctl-read)(allow mach-lookup)"
-            "(allow file-read* "
+            # dyld/Python startup stat the root directory entry itself.
+            '(allow file-read* (literal "/") '
             + " ".join(f"(subpath {json.dumps(p)})" for p in sorted(roots))
             + ")(allow file-write-data "
             + " ".join(
@@ -812,6 +821,11 @@ def main(argv=None):
         "--mode", choices=["non-thinking", "thinking"], default="non-thinking"
     )
     parser.add_argument("--seed", type=int, default=1017)
+    parser.add_argument(
+        "--omit-seed",
+        action="store_true",
+        help="Do not send seed (greedy lanes that reject it); recorded",
+    )
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--code-timeout", type=int, default=10)
     parser.add_argument("--runs", type=int, default=3)
@@ -875,6 +889,7 @@ def main(argv=None):
         args.seed,
         args.timeout,
         os.getenv("OPENAI_API_KEY"),
+        send_seed=not args.omit_seed,
     )
     started = time.monotonic()
     if args.command == "bench":

@@ -388,7 +388,8 @@ def test_humaneval_sandbox_execution_and_no_network(tmp_path):
         )
     assert probe["passed"], probe
     denied = bench.execute_code(
-        "import socket\ndef f():\n return socket.socket()",
+        "import socket\ndef f():\n"
+        " return socket.create_connection(('1.1.1.1', 80), timeout=1)",
         "def check(f): f()",
         "f",
         1,
