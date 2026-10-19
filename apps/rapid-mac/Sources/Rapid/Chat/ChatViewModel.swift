@@ -1061,10 +1061,10 @@ final class ChatViewModel {
         finaliseInterruptedLiveTurn()
         persistActive(touching: false)
         conversationEpoch &+= 1
-        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
-        // Defensive even though init repairs the loaded store: no live task can
-        // belong to a conversation that is only now being adopted.
-        let conv = Self.repairInterruptedStreams([conversations[index]]).conversations[0]
+        // No stored conversation can hold a `.streaming` row here: init repairs
+        // the loaded history, and every switch finalises the live turn above
+        // before archiving it.
+        guard let conv = conversations.first(where: { $0.id == id }) else { return }
         // Seed BEFORE adopting — the stored map is what tells ``adoptTree``
         // where the user was inside each branch of the incoming conversation.
         branchChoices = conv.branchChoices
