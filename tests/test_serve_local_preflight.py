@@ -181,8 +181,25 @@ def test_incomplete_nontext_manifest_is_rejected(tmp_path, layout):
         if layout == "image"
         else '{"components":["transformer"]}'
     )
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError) as failure:
         validate_local_model_for_serve(str(root))
+    cause, step = local_serve_preflight_lines(str(root), failure.value)
+    if layout == "video":
+        assert "component" in cause
+    else:
+        assert "model weights" in cause
+    assert "rapid-mlx serve" in step
+
+
+def test_invalid_nontext_manifest_has_specific_remedy(tmp_path):
+    root = tmp_path / "image"
+    root.mkdir()
+    (root / "model_index.json").write_text("{}")
+    with pytest.raises(FileNotFoundError) as failure:
+        validate_local_model_for_serve(str(root))
+    cause, step = local_serve_preflight_lines(str(root), failure.value)
+    assert "model_index.json" in cause
+    assert "Restore model_index.json" in step
 
 
 def test_empty_local_alias_directory_keeps_catalog_fallback(tmp_path, monkeypatch):
@@ -254,6 +271,15 @@ def test_truncated_read_needs_local_weight_evidence(tmp_path):
     error = RuntimeError("[read] Unable to read 5 bytes from file.")
     assert serve_error_class(error, model_ref=str(root)) == "other"
     (root / "model.safetensors").write_bytes(b"bad")
+    assert serve_error_class(error, model_ref=str(root)) == "corrupt_weights"
+
+
+def test_truncated_native_weight_is_corrupt_weights(tmp_path):
+    root = tmp_path / "gemma"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"gemma4"}')
+    (root / "weights.safetensors").write_bytes(b"bad")
+    error = RuntimeError("[read] Unable to read 5 bytes from file.")
     assert serve_error_class(error, model_ref=str(root)) == "corrupt_weights"
 
 

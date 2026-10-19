@@ -316,6 +316,9 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     from .model_load_errors import validate_model_config_file
 
     validate_model_config_file(root)
+    # tokenizer.load_model_checked calls incomplete_checkpoint_reason() before
+    # mlx-lm; that boundary rejects stale indexes even if mlx-lm's own glob
+    # would otherwise load a consolidated model.safetensors.
     missing_shards = _missing_index_shards(root, recursive=False)
     if missing_shards:
         raise FileNotFoundError(
@@ -389,6 +392,14 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
         cause = f"{root} is a file, not a model directory."
     elif filename == root / "config.json":
         cause = f"{root} is missing config.json."
+    elif filename is not None and filename.name in (
+        "split_model.json",
+        "model_index.json",
+        "params.json",
+    ):
+        cause = f"{filename.name} in {root} is invalid or missing model components."
+    elif exc.strerror == "Missing model component" and filename is not None:
+        cause = f"{root} is missing required component {filename.name}."
     else:
         cause = f"{root} is missing model weights."
     for part in root.parts:
@@ -411,6 +422,15 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
         return (
             cause,
             f"Restore config.json from the matching checkpoint, then run `rapid-mlx serve {shlex.quote(str(root))}`.",
+        )
+    if filename is not None and filename.name in (
+        "split_model.json",
+        "model_index.json",
+        "params.json",
+    ):
+        return (
+            cause,
+            f"Restore {filename.name} and its components from the matching checkpoint, then run `rapid-mlx serve {shlex.quote(str(root))}`.",
         )
     return (
         cause,

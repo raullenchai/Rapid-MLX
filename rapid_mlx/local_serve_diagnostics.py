@@ -44,10 +44,21 @@ def _same_local_path(value: object, expected: Path) -> bool:
 
 def truncated_local_weights(model_ref: object) -> bool:
     """A read failure belongs to a checkpoint only with local weight evidence."""
-    local = _local_config(model_ref)
-    return local is not None and any(
+    if not isinstance(model_ref, str):
+        return False
+    root = Path(model_ref).expanduser()
+    if not root.is_dir():
+        return False
+    from .local_model_path import validate_local_model_for_serve
+    from .model_load_errors import InvalidModelConfig
+
+    try:
+        validate_local_model_for_serve(str(root))
+    except (OSError, InvalidModelConfig):
+        return False
+    return any(
         path.is_file() and os.access(path, os.R_OK)
-        for path in local[0].glob("model*.safetensors")
+        for path in root.rglob("*.safetensors")
     )
 
 
