@@ -8,6 +8,7 @@
 - **Desktop general assistant identity**: Desktop now sends a short default assistant instruction so the starter model describes itself as a general assistant for writing, translation, explanation, and code rather than only its tools. It appears in the Effective System Prompt preview, and custom instructions still apply after it. Fixes #4873.
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
 - **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
+- **Weather for states and regions**: asking for the weather in a US state or other region now tells the model to pick or ask for a city instead of retrying, and unknown places no longer suggest adding a country. Fixes #4910.
 
 - **Word documents in Desktop chat**: attach, drop, or paste a `.docx` file and ask about it. Rapid reads only the document text with strict size and time limits; files it cannot read safely get a clear message suggesting PDF or TXT. Fixes #4869.
 

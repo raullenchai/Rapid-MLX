@@ -79,13 +79,18 @@ enum WeatherTool {
         }
         let imperial = (args.units?.lowercased() == "imperial")
         do {
-            let geo = try await geocode(
+            let resolution = try await resolvePlace(
                 location: location,
                 country: cleaned(args.country),
                 admin1: cleaned(args.admin1)
             )
-            guard let hit = geo else {
-                return unresolvedPlaceResult(location: location)
+            let hit: GeoHit
+            switch unresolvedResult(
+                for: resolution, location: location,
+                country: cleaned(args.country), admin1: cleaned(args.admin1)
+            ) {
+            case .success(let place): hit = place
+            case .failure(let unresolved): return unresolved.result
             }
             let forecast = try await fetchForecast(
                 lat: hit.latitude, lon: hit.longitude, imperial: imperial, days: args.days
@@ -103,10 +108,64 @@ enum WeatherTool {
         }
     }
 
-    static func unresolvedPlaceResult(location: String) -> ToolCallResult {
+    /// Map a resolution to the place to forecast, or to the model-facing
+    /// error that matches why no single place was selected.
+    static func unresolvedResult(
+        for resolution: PlaceResolution,
+        location: String,
+        country: String?,
+        admin1: String?
+    ) -> Result<GeoHit, UnresolvedPlace> {
+        switch resolution {
+        case .place(let place):
+            return .success(place)
+        case .region(let label):
+            return .failure(UnresolvedPlace(result: regionResult(
+                location: geocodingQuery(location: location, country: nil, admin1: nil).name,
+                label: label
+            )))
+        case .ambiguous:
+            return .failure(UnresolvedPlace(result: ambiguousPlaceResult(location: location)))
+        case .notFound:
+            return .failure(UnresolvedPlace(result: notFoundPlaceResult(
+                location: location, country: country, admin1: admin1
+            )))
+        }
+    }
+
+    struct UnresolvedPlace: Error {
+        let result: ToolCallResult
+    }
+
+    static func ambiguousPlaceResult(location: String) -> ToolCallResult {
         ToolCallResult(
             toolCallID: "",
             content: "weather: could not uniquely identify \"\(location)\". Add a country or state/province and try again.",
+            isError: true
+        )
+    }
+
+    static func regionResult(location: String, label: String) -> ToolCallResult {
+        let parenthetical = label.isEmpty ? "" : " (\(label))"
+        return ToolCallResult(
+            toolCallID: "",
+            content: "weather: \"\(location)\" is a state or region\(parenthetical), not a single place, so it has no single forecast. Do not retry weather with this region name or with more qualifiers. Ask the user which city they mean, or call weather once with one major city in that region and say in your answer which city the forecast is for.",
+            isError: true
+        )
+    }
+
+    static func notFoundPlaceResult(
+        location: String,
+        country: String? = nil,
+        admin1: String? = nil
+    ) -> ToolCallResult {
+        let query = geocodingQuery(location: location, country: country, admin1: admin1)
+        let qualifierText = query.qualifiers.isEmpty
+            ? ""
+            : " matching \"\(query.qualifiers.joined(separator: ", "))\""
+        return ToolCallResult(
+            toolCallID: "",
+            content: "weather: no well-known city or town named \"\(query.name)\" was found\(qualifierText). Adding more country or state/province qualifiers will not help. Use a specific city or town name, or ask the user which place they mean.",
             isError: true
         )
     }
@@ -135,39 +194,85 @@ enum WeatherTool {
 
     typealias GeocodingLoader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
+    enum PlaceResolution {
+        case place(GeoHit)
+        case region(label: String)
+        case ambiguous
+        case notFound
+    }
+
     static func geocode(
         location: String,
         country: String?,
         admin1: String?,
         load: @escaping GeocodingLoader = { try await cappedData(for: $0) }
     ) async throws -> GeoHit? {
+        guard case .place(let hit) = try await resolvePlace(
+            location: location, country: country, admin1: admin1, load: load
+        ) else { return nil }
+        return hit
+    }
+
+    static func resolvePlace(
+        location: String,
+        country: String?,
+        admin1: String?,
+        load: @escaping GeocodingLoader = { try await cappedData(for: $0) }
+    ) async throws -> PlaceResolution {
         let query = geocodingQuery(location: location, country: country, admin1: admin1)
         guard !query.name.isEmpty else {
             throw NSError(domain: "WeatherTool", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not build geocoding URL"])
         }
-        if let hit = try await geocodingHit(
-            name: query.name, qualifiers: query.qualifiers,
-            country: country, admin1: admin1, load: load
+        let originalCandidates = try await geocodingCandidates(name: query.name, load: load)
+        if let hit = selectGeocodingHit(
+            location: query.name, qualifiers: query.qualifiers,
+            candidates: originalCandidates, country: country, admin1: admin1
         ) {
-            return hit
+            return .place(hit)
         }
         // The provider indexes some Chinese place names only under their
         // traditional spelling. Retry that spelling only after the original
         // name was unresolved, keeping explicit country/state qualifiers.
-        guard let alternate = traditionalGeocodingName(query.name) else { return nil }
-        return try await geocodingHit(
-            name: alternate, qualifiers: query.qualifiers,
-            country: country, admin1: admin1, load: load
-        )
+        var alternateCandidates: [GeoHit] = []
+        if let alternate = traditionalGeocodingName(query.name) {
+            alternateCandidates = try await geocodingCandidates(name: alternate, load: load)
+            if let hit = selectGeocodingHit(
+                location: alternate, qualifiers: query.qualifiers,
+                candidates: alternateCandidates, country: country, admin1: admin1
+            ) {
+                return .place(hit)
+            }
+        }
+
+        let allCandidates = originalCandidates + alternateCandidates
+        let countryHints = regionCountryHints(country: country, commaQualifiers: query.commaQualifiers)
+        if let label = regionLabel(
+            requestedName: query.name,
+            explicitAdmin1: admin1,
+            commaQualifiers: query.commaQualifiers,
+            countryHints: countryHints,
+            candidates: allCandidates
+        ) {
+            return .region(label: label)
+        }
+
+        let hasPlausibleMatch = [
+            (query.name, originalCandidates),
+            (traditionalGeocodingName(query.name), alternateCandidates),
+        ].contains { name, candidates in
+            guard let name else { return false }
+            return matchingGeocodingCandidates(
+                location: name, qualifiers: query.qualifiers,
+                candidates: candidates, country: country, admin1: admin1
+            ).contains { $0.population != nil || literalKey($0.name) != literalKey(name) }
+        }
+        return hasPlausibleMatch ? .ambiguous : .notFound
     }
 
-    private static func geocodingHit(
+    private static func geocodingCandidates(
         name: String,
-        qualifiers: [String],
-        country: String?,
-        admin1: String?,
         load: GeocodingLoader
-    ) async throws -> GeoHit? {
+    ) async throws -> [GeoHit] {
         guard let url = geocodingURL(location: name) else {
             throw NSError(domain: "WeatherTool", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not build geocoding URL"])
         }
@@ -177,13 +282,7 @@ enum WeatherTool {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "WeatherTool", code: 2, userInfo: [NSLocalizedDescriptionKey: "geocoding HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)"])
         }
-        return parseGeocodingResponse(
-            data,
-            location: name,
-            qualifiers: qualifiers,
-            country: country,
-            admin1: admin1
-        )
+        return decodeGeocodingCandidates(data)
     }
 
     static func traditionalGeocodingName(_ name: String) -> String? {
@@ -213,14 +312,17 @@ enum WeatherTool {
         country: String? = nil,
         admin1: String? = nil
     ) -> GeoHit? {
+        return selectGeocodingHit(
+            location: location, qualifiers: qualifiers,
+            candidates: decodeGeocodingCandidates(data), country: country, admin1: admin1
+        )
+    }
+
+    private static func decodeGeocodingCandidates(_ data: Data) -> [GeoHit] {
         struct Response: Decodable {
             let results: [GeoHit]?
         }
-        let candidates = (try? JSONDecoder().decode(Response.self, from: data))?.results ?? []
-        return selectGeocodingHit(
-            location: location, qualifiers: qualifiers,
-            candidates: candidates, country: country, admin1: admin1
-        )
+        return (try? JSONDecoder().decode(Response.self, from: data))?.results ?? []
     }
 
     static func selectGeocodingHit(
@@ -230,8 +332,11 @@ enum WeatherTool {
         country: String? = nil,
         admin1: String? = nil
     ) -> GeoHit? {
-        let requestedName = matchKey(location)
-        guard !requestedName.isEmpty else { return nil }
+        let matches = matchingGeocodingCandidates(
+            location: location, qualifiers: qualifiers,
+            candidates: candidates, country: country, admin1: admin1
+        )
+        guard !matches.isEmpty else { return nil }
 
         let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, accepted: Set<String>)? in
             let key = matchKey(qualifier)
@@ -240,38 +345,6 @@ enum WeatherTool {
             let alternate = traditionalGeocodingName(qualifier).map(matchKey)
             return (key, Set([key] + countryCodes + [alternate].compactMap { $0 }))
         }
-        let matches = candidates.filter { candidate in
-            guard matchKey(candidate.name) == requestedName else { return false }
-            let fields = Set([candidate.admin1, candidate.country, candidate.countryCode]
-                .compactMap { $0 }
-                .map(matchKey))
-            guard requestedQualifiers.allSatisfy({
-                !$0.accepted.isDisjoint(with: fields)
-                    || matchesSubdivision($0.key, candidate: candidate)
-            }) else {
-                return false
-            }
-            // Explicit country/state arguments must match their own fields.
-            // A namesake province cannot satisfy a requested country.
-            if let country = cleaned(country) {
-                let accepted = Set([matchKey(country)]
-                    + countryCodes(for: country).map(matchKey)
-                    + [traditionalGeocodingName(country).map(matchKey)].compactMap { $0 })
-                let actual = Set([candidate.country, candidate.countryCode]
-                    .compactMap { $0 }.map(matchKey))
-                guard !accepted.isDisjoint(with: actual) else { return false }
-            }
-            if let admin1 = cleaned(admin1) {
-                let accepted = Set([matchKey(admin1)]
-                    + [traditionalGeocodingName(admin1).map(matchKey)].compactMap { $0 })
-                guard let actual = candidate.admin1.map(matchKey),
-                      accepted.contains(actual)
-                        || matchesSubdivision(matchKey(admin1), candidate: candidate) else { return false }
-            }
-            return true
-        }
-        guard !matches.isEmpty else { return nil }
-
         // Rank same-named candidates by population so a well-known city
         // dominates its tiny homonyms (Tokyo over the villages).
         let ranked = matches.sorted { ($0.population ?? 0) > ($1.population ?? 0) }
@@ -305,9 +378,58 @@ enum WeatherTool {
         return firstPopulation >= 100_000 ? first : nil
     }
 
+    private static func matchingGeocodingCandidates(
+        location: String,
+        qualifiers: [String],
+        candidates: [GeoHit],
+        country: String?,
+        admin1: String?
+    ) -> [GeoHit] {
+        let requestedName = matchKey(location)
+        guard !requestedName.isEmpty else { return [] }
+        let requestedQualifiers = qualifiers.compactMap { qualifier -> (key: String, accepted: Set<String>)? in
+            let key = matchKey(qualifier)
+            guard !key.isEmpty else { return nil }
+            let countryCodes = countryCodes(for: qualifier).map(matchKey)
+            let alternate = traditionalGeocodingName(qualifier).map(matchKey)
+            return (key, Set([key] + countryCodes + [alternate].compactMap { $0 }))
+        }
+        return candidates.filter { candidate in
+            guard matchKey(candidate.name) == requestedName else { return false }
+            let fields = Set([candidate.admin1, candidate.country, candidate.countryCode]
+                .compactMap { $0 }
+                .map(matchKey))
+            guard requestedQualifiers.allSatisfy({
+                !$0.accepted.isDisjoint(with: fields)
+                    || matchesSubdivision($0.key, candidate: candidate)
+            }) else {
+                return false
+            }
+            // Explicit country/state arguments must match their own fields.
+            // A namesake province cannot satisfy a requested country.
+            if let country = cleaned(country) {
+                let accepted = Set([matchKey(country)]
+                    + countryCodes(for: country).map(matchKey)
+                    + [traditionalGeocodingName(country).map(matchKey)].compactMap { $0 })
+                let actual = Set([candidate.country, candidate.countryCode]
+                    .compactMap { $0 }.map(matchKey))
+                guard !accepted.isDisjoint(with: actual) else { return false }
+            }
+            if let admin1 = cleaned(admin1) {
+                let accepted = Set([matchKey(admin1)]
+                    + [traditionalGeocodingName(admin1).map(matchKey)].compactMap { $0 })
+                guard let actual = candidate.admin1.map(matchKey),
+                      accepted.contains(actual)
+                        || matchesSubdivision(matchKey(admin1), candidate: candidate) else { return false }
+            }
+            return true
+        }
+    }
+
     private struct GeocodingQuery {
         let name: String
         let qualifiers: [String]
+        let commaQualifiers: [String]
     }
 
     private static func geocodingQuery(
@@ -319,8 +441,11 @@ enum WeatherTool {
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let name = parts.first ?? location.trimmingCharacters(in: .whitespacesAndNewlines)
-        let qualifiers = Array(parts.dropFirst()) + [admin1, country].compactMap(cleaned)
-        return GeocodingQuery(name: name, qualifiers: qualifiers)
+        let commaQualifiers = Array(parts.dropFirst())
+        let qualifiers = commaQualifiers + [admin1, country].compactMap(cleaned)
+        return GeocodingQuery(
+            name: name, qualifiers: qualifiers, commaQualifiers: commaQualifiers
+        )
     }
 
     private static func geocodingLanguage(for location: String) -> String? {
@@ -379,6 +504,91 @@ enum WeatherTool {
             "tas": "Tasmania", "vic": "Victoria", "wa": "Western Australia",
         ],
     ]
+
+    private struct SubdivisionMatch {
+        let countryCode: String
+        let name: String
+        let abbreviation: String
+    }
+
+    private static func regionCountryHints(
+        country: String?,
+        commaQualifiers: [String]
+    ) -> Set<String> {
+        Set(([country].compactMap(cleaned) + commaQualifiers)
+            .flatMap(countryCodes(for:))
+            .map { $0.uppercased() })
+    }
+
+    private static func regionLabel(
+        requestedName: String,
+        explicitAdmin1: String?,
+        commaQualifiers: [String],
+        countryHints: Set<String>,
+        candidates: [GeoHit]
+    ) -> String? {
+        let requestedKey = matchKey(requestedName)
+        guard !requestedKey.isEmpty else { return nil }
+
+        let tableMatches = subdivisionNames.flatMap { countryCode, subdivisions in
+            subdivisions.compactMap { abbreviation, name -> SubdivisionMatch? in
+                guard matchKey(abbreviation) == requestedKey || matchKey(name) == requestedKey else {
+                    return nil
+                }
+                return SubdivisionMatch(
+                    countryCode: countryCode, name: name, abbreviation: abbreviation
+                )
+            }
+        }
+        let hintedTableMatches = countryHints.isEmpty
+            ? tableMatches
+            : tableMatches.filter { countryHints.contains($0.countryCode) }
+        let isAbbreviation = tableMatches.contains { matchKey($0.abbreviation) == requestedKey }
+        if hintedTableMatches.count == 1,
+           !isAbbreviation || !countryHints.isEmpty || tableMatches.count == 1,
+           let subdivision = hintedTableMatches.first {
+            return placeLabel(
+                subdivision.name,
+                englishCountryName(for: subdivision.countryCode),
+                fallback: subdivision.name
+            )
+        }
+
+        let explicitRegionNames = [explicitAdmin1].compactMap(cleaned) + commaQualifiers
+        if explicitRegionNames.contains(where: { matchKey($0) == requestedKey }) {
+            let countryName = countryHints.count == 1
+                ? countryHints.first.flatMap(englishCountryName(for:))
+                : nil
+            return placeLabel(requestedName, countryName, fallback: requestedName)
+        }
+
+        let requestedAdminKeys = Set([
+            requestedKey,
+            traditionalGeocodingName(requestedName).map(matchKey),
+        ].compactMap { $0 })
+        if let candidate = candidates.first(where: { candidate in
+            guard let admin1 = candidate.admin1 else { return false }
+            let candidateKeys = Set([
+                matchKey(admin1),
+                traditionalGeocodingName(admin1).map(matchKey),
+            ].compactMap { $0 })
+            guard !requestedAdminKeys.isDisjoint(with: candidateKeys) else { return false }
+            guard !countryHints.isEmpty else { return true }
+            let candidateCodes = Set(
+                ([candidate.countryCode].compactMap { $0 } + [candidate.country].compactMap { $0 })
+                    .flatMap(countryCodes(for:))
+                    .map { $0.uppercased() }
+            )
+            return !countryHints.isDisjoint(with: candidateCodes)
+        }) {
+            return placeLabel(candidate.admin1, candidate.country, fallback: requestedName)
+        }
+        return nil
+    }
+
+    private static func englishCountryName(for countryCode: String) -> String? {
+        Locale(identifier: "en_US").localizedString(forRegionCode: countryCode.uppercased())
+    }
 
     private static func matchesSubdivision(_ key: String, candidate: GeoHit) -> Bool {
         // Abbreviations overlap across countries (WA, NT), so expand per candidate country.

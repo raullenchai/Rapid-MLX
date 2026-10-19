@@ -286,7 +286,7 @@ struct WebToolsHardeningTests {
         )
         #expect(hit?.name == "東京")
         #expect(hit?.country == "日本")
-        let unresolved = WeatherTool.unresolvedPlaceResult(location: "unknown place")
+        let unresolved = WeatherTool.ambiguousPlaceResult(location: "unknown place")
         #expect(unresolved.isError)
         #expect(unresolved.content.contains("could not uniquely identify"))
 
