@@ -45,7 +45,10 @@ def _same_local_path(value: object, expected: Path) -> bool:
 def truncated_local_weights(model_ref: object) -> bool:
     """A read failure belongs to a checkpoint only with local weight evidence."""
     local = _local_config(model_ref)
-    return local is not None and any(local[0].glob("model*.safetensors"))
+    return local is not None and any(
+        path.is_file() and os.access(path, os.R_OK)
+        for path in local[0].glob("model*.safetensors")
+    )
 
 
 def malformed_numeric_config(exc: BaseException, model_ref: object) -> str | None:

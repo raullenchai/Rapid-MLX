@@ -262,12 +262,51 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         raise NotADirectoryError(errno.ENOTDIR, "Expected a model directory", str(root))
     if not os.access(root, os.R_OK | os.X_OK):
         raise PermissionError(errno.EACCES, "Cannot read model directory", str(root))
-    # Non-text lanes use their own manifests and validate their component
-    # layouts in their loaders; a root config.json is not universal.
-    if any(
-        (root / name).is_file()
-        for name in ("model_index.json", "split_model.json", "params.json")
-    ):
+    # Non-text lanes use manifests instead of a universal root config.json.
+    # Check the manifest and at least one component before their loaders run.
+    for name in ("split_model.json", "model_index.json", "params.json"):
+        manifest_path = root / name
+        if not manifest_path.is_file():
+            continue
+        if not os.access(manifest_path, os.R_OK):
+            raise PermissionError(
+                errno.EACCES, "Cannot read model manifest", str(manifest_path)
+            )
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            manifest = None
+        if not isinstance(manifest, dict) or not manifest:
+            raise FileNotFoundError(
+                errno.ENOENT, "Invalid model manifest", str(manifest_path)
+            )
+        if name == "split_model.json":
+            components = manifest.get("components")
+            if not isinstance(components, list) or not components:
+                raise FileNotFoundError(
+                    errno.ENOENT, "Missing model components", str(manifest_path)
+                )
+            for component in components:
+                if not isinstance(component, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_-]+", component
+                ):
+                    raise FileNotFoundError(
+                        errno.ENOENT, "Invalid model component", str(manifest_path)
+                    )
+                weight = root / f"{component}.safetensors"
+                if not weight.is_file() or weight.stat().st_size == 0:
+                    raise FileNotFoundError(
+                        errno.ENOENT, "Missing model component", str(weight)
+                    )
+            return
+        if not any(
+            path.is_file() and path.stat().st_size > 0
+            for pattern in ("*.safetensors", "*.npz")
+            for path in root.rglob(pattern)
+        ):
+            raise FileNotFoundError(
+                errno.ENOENT, "Missing model weights", str(root / "model.safetensors")
+            )
         return
     config = root / "config.json"
     if not config.is_file():
@@ -286,12 +325,16 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     # EmbeddingGemma 2 loaders accept any root safetensors filename.
     # PyTorch .bin files do not make any of these checkpoints serveable.
     try:
-        model_type = json.loads(config.read_text(encoding="utf-8")).get("model_type")
+        config_data = json.loads(config.read_text(encoding="utf-8"))
+        model_type = config_data.get("model_type")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        config_data = {}
         model_type = None  # Leave malformed configs to the loader's typed error.
     if not isinstance(model_type, str):
         model_type = None
-    native_any_safetensors = model_type in {
+    from .model_metadata import config_indicates_multimodal
+
+    native_any_safetensors = config_indicates_multimodal(config_data) or model_type in {
         "gemma4",
         "gemma4_assistant",
         "gemma4_unified",
@@ -300,6 +343,24 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     weights = list(
         root.glob("*.safetensors" if native_any_safetensors else "model*.safetensors")
     )
+    if model_type == "embedding_gemma2":
+        index = root / "model.safetensors.index.json"
+        if index.is_file():
+            try:
+                weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+                weights = [
+                    root.joinpath(*PurePosixPath(name).parts)
+                    for raw in weight_map.values()
+                    if (name := _safe_relative_name(raw)) is not None
+                ]
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                KeyError,
+                AttributeError,
+            ):
+                weights = []
     if model_type == "whisper":
         weights.extend((root / "weights.npz", root / "weights.safetensors"))
     elif model_type == "kokoro":

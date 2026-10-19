@@ -383,7 +383,7 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
                 if truncated_local_weights(model_ref):
                     return "corrupt_weights"
             if isinstance(current, RuntimeError) and re.search(
-                r"\bMetal (?:device|command buffer|library|allocation)\b|\bmlx\.core\b",
+                r"\bMetal (?:device|command buffer|library|allocation)\b",
                 text,
                 re.IGNORECASE,
             ):

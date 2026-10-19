@@ -87,6 +87,25 @@ def test_indexed_native_embedding_accepts_arbitrary_shard_name(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_indexed_native_embedding_accepts_nested_shard(tmp_path):
+    root = tmp_path / "embedding"
+    (root / "shards").mkdir(parents=True)
+    (root / "config.json").write_text('{"model_type":"embedding_gemma2"}')
+    (root / "shards" / "weights.safetensors").write_bytes(b"data")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"weight": "shards/weights.safetensors"}})
+    )
+    validate_local_model_for_serve(str(root))
+
+
+def test_vlm_accepts_nonmodel_safetensors_name(tmp_path):
+    root = tmp_path / "vision"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen2_vl","vision_config":{}}')
+    (root / "weights.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
 def test_indexed_text_model_rejects_unloaded_shard_name(tmp_path):
     root = tmp_path / "text"
     root.mkdir()
@@ -144,10 +163,26 @@ def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
         (root / "config.json").write_text('{"model_type":"kokoro"}')
         (root / "kokoro-v1_0.safetensors").write_bytes(b"data")
     else:
-        (
-            root / ("model_index.json" if layout == "image" else "split_model.json")
-        ).write_text("{}")
+        if layout == "image":
+            (root / "model_index.json").write_text('{"_class_name":"Pipeline"}')
+        else:
+            (root / "split_model.json").write_text('{"components":["transformer"]}')
+        (root / "transformer.safetensors").write_bytes(b"data")
     validate_local_model_for_serve(str(root))
+
+
+@pytest.mark.parametrize("layout", ["image", "video"])
+def test_incomplete_nontext_manifest_is_rejected(tmp_path, layout):
+    root = tmp_path / layout
+    root.mkdir()
+    name = "model_index.json" if layout == "image" else "split_model.json"
+    (root / name).write_text(
+        '{"_class_name":"Pipeline"}'
+        if layout == "image"
+        else '{"components":["transformer"]}'
+    )
+    with pytest.raises(FileNotFoundError):
+        validate_local_model_for_serve(str(root))
 
 
 def test_empty_local_alias_directory_keeps_catalog_fallback(tmp_path, monkeypatch):
@@ -243,6 +278,10 @@ def test_unrelated_type_error_does_not_claim_bad_numeric_config(tmp_path):
     (root / "model.safetensors").write_bytes(b"weights")
     error = TypeError("unrelated loader failure")
     assert serve_error_class(error, model_ref=str(root)) != "invalid_config"
+
+
+def test_unrelated_mlx_core_error_does_not_claim_metal_failure():
+    assert serve_error_class(RuntimeError("mlx.core shape mismatch")) == "other"
 
 
 def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
