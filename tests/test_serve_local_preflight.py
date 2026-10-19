@@ -232,7 +232,10 @@ def test_custom_image_component_and_indexed_shards(tmp_path):
 def test_bonsai_manifest_uses_packed_component_layout(tmp_path):
     root = tmp_path / "bonsai"
     root.mkdir()
-    (root / "model_index.json").write_text('{"_class_name":"Flux2KleinPipeline"}')
+    (root / "model_index.json").write_text(
+        '{"_class_name":"Flux2KleinPipeline",'
+        '"transformer-packed-mflux":[],"text_encoder-mlx-4bit":[],"vae":[]}'
+    )
     weights = (
         "transformer-packed-mflux/diffusion_pytorch_model.safetensors",
         "text_encoder-mlx-4bit/model.safetensors",
@@ -246,6 +249,32 @@ def test_bonsai_manifest_uses_packed_component_layout(tmp_path):
     (root / weights[0]).unlink()
     with pytest.raises(FileNotFoundError, match="Missing model component"):
         validate_local_model_for_serve(str(root))
+
+
+def test_standard_flux2_klein_manifest_uses_declared_components(tmp_path):
+    root = tmp_path / "flux2-klein"
+    (root / "transformer").mkdir(parents=True)
+    (root / "text_encoder").mkdir()
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"data")
+    (root / "text_encoder" / "model.safetensors").write_bytes(b"data")
+    (root / "model_index.json").write_text(
+        '{"_class_name":"Flux2KleinPipeline",'
+        '"transformer":["mflux","Flux2Transformer"],'
+        '"text_encoder":["transformers","Qwen3Model"]}'
+    )
+    validate_local_model_for_serve(str(root))
+
+
+def test_image_manifest_settings_are_not_components(tmp_path):
+    root = tmp_path / "sdxl"
+    (root / "unet").mkdir(parents=True)
+    (root / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"data")
+    (root / "model_index.json").write_text(
+        '{"_class_name":"StableDiffusionXLPipeline",'
+        '"force_zeros_for_empty_prompt":true,'
+        '"unet":["diffusers","UNet2DConditionModel"]}'
+    )
+    validate_local_model_for_serve(str(root))
 
 
 @pytest.mark.parametrize("layout", ["image", "video"])

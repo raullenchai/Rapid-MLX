@@ -324,18 +324,6 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                     )
             return
         if name == "model_index.json":
-            if manifest.get("_class_name") == "Flux2KleinPipeline":
-                for relative in (
-                    "transformer-packed-mflux/diffusion_pytorch_model.safetensors",
-                    "text_encoder-mlx-4bit/model.safetensors",
-                    "vae/diffusion_pytorch_model.safetensors",
-                ):
-                    weight = root / relative
-                    if not weight.is_file() or weight.stat().st_size == 0:
-                        raise FileNotFoundError(
-                            errno.ENOENT, "Missing model component", str(weight)
-                        )
-                return
             metadata_components = {
                 "scheduler",
                 "processor",
@@ -348,7 +336,7 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                 if not component.startswith("_")
                 and component not in metadata_components
                 and not component.startswith("tokenizer")
-                and declaration is not None
+                and isinstance(declaration, list)
             ]
             if not required:
                 raise FileNotFoundError(
