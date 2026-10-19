@@ -181,6 +181,13 @@ def test_serve_tip_marker_claimed_once_only(monkeypatch, tmp_path):
     assert fr.claim_serve_next_tip() is False
 
 
+def test_serve_tip_marker_fails_silently_without_writable_state(monkeypatch, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(blocker / "state"))
+    assert fr.claim_serve_next_tip() is False
+
+
 def test_tip_claim_failsafe_on_unwritable_state_dir(monkeypatch, tmp_path):
     # State dir sits under an existing FILE → the marker's parent mkdir raises
     # → claim returns False (never nag, never crash), not True.
