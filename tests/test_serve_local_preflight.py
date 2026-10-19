@@ -202,6 +202,27 @@ def test_invalid_nontext_manifest_has_specific_remedy(tmp_path):
     assert "Restore model_index.json" in step
 
 
+def test_auxiliary_params_does_not_hide_incomplete_text_model(tmp_path):
+    root = tmp_path / "text"
+    root.mkdir()
+    (root / "params.json").write_text('{"layers":1}')
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "sidecar" / "weights.safetensors").parent.mkdir()
+    (root / "sidecar" / "weights.safetensors").write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_unreadable_filesystem_has_recovery_command(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    cause, step = local_serve_preflight_lines(
+        str(root), OSError(errno.EIO, "Input/output error", str(root))
+    )
+    assert "Input/output error" in cause
+    assert "Check the disk" in step
+
+
 def test_empty_local_alias_directory_keeps_catalog_fallback(tmp_path, monkeypatch):
     from rapid_mlx.model_aliases import resolve_model
 

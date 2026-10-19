@@ -268,6 +268,9 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         manifest_path = root / name
         if not manifest_path.is_file():
             continue
+        # params.json is also used as auxiliary metadata by some text models.
+        if name == "params.json" and (root / "config.json").is_file():
+            continue
         if not os.access(manifest_path, os.R_OK):
             raise PermissionError(
                 errno.EACCES, "Cannot read model manifest", str(manifest_path)
@@ -277,6 +280,10 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             manifest = None
         if not isinstance(manifest, dict) or not manifest:
+            raise FileNotFoundError(
+                errno.ENOENT, "Invalid model manifest", str(manifest_path)
+            )
+        if name == "model_index.json" and "_class_name" not in manifest:
             raise FileNotFoundError(
                 errno.ENOENT, "Invalid model manifest", str(manifest_path)
             )
@@ -380,6 +387,11 @@ def validate_local_model_for_serve(model_ref: object) -> None:
 def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]:
     """Give a local serve error a concrete repair command."""
     root = Path(model_ref).expanduser().absolute()
+    if not isinstance(exc, (FileNotFoundError, NotADirectoryError, PermissionError)):
+        return (
+            f"The filesystem could not read the local checkpoint at {root}: {exc.strerror or type(exc).__name__}.",
+            f"Check the disk and file access, then retry `rapid-mlx serve {shlex.quote(str(root))}`.",
+        )
     filename = Path(exc.filename) if isinstance(exc.filename, str) else None
     if isinstance(exc, PermissionError):
         return (
