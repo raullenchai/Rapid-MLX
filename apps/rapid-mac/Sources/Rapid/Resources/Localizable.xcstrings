@@ -8190,6 +8190,16 @@
         }
       }
     },
+    "Type a message, then Start & Send to start %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入消息后，即可启动 %@ 并发送。"
+          }
+        }
+      }
+    },
     "Type a model name or a Hugging Face path. New models download when you press Start." : {
       "localizations" : {
         "zh-Hans" : {

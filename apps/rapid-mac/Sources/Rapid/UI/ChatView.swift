@@ -1191,15 +1191,14 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
-            .help(readiness.composerSendTooltip)
+            .help(readiness.composerSendTooltip(hasDraft: hasDraft))
             .accessibilityLabel(readiness.startAndSendAlias == nil
-                ? String(localized: "Send message") : readiness.composerSendTooltip)
+                ? String(localized: "Send message") : String(localized: "Start & Send"))
             .accessibilityIdentifier("ChatView.SendOrStopButton")
             // The tooltip alone is mouse-only. VoiceOver users get the
             // same sentence as the control's hint, so "why is this
             // dimmed" is answerable without a pointer.
-            .accessibilityHint(readiness.sendAllowed || readiness.startAndSendAlias != nil
-                ? "" : readiness.sendTooltip)
+            .accessibilityHint(readiness.composerSendHint(hasDraft: hasDraft))
         }
     }
 

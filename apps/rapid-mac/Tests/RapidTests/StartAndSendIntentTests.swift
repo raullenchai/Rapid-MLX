@@ -220,12 +220,19 @@ struct StartAndSendIntentTests {
         ]
         for state in states {
             #expect(state.startAndSendAlias == nil)
-            #expect(state.composerSendTooltip == state.sendTooltip)
+            for hasDraft in [false, true] {
+                #expect(state.composerSendTooltip(hasDraft: hasDraft) == state.sendTooltip)
+                #expect(state.composerSendHint(hasDraft: hasDraft) == (state.sendAllowed ? "" : state.sendTooltip))
+            }
         }
         let stopped = ModelReadiness.needsStart(alias: alias)
         #expect(stopped.startAndSendAlias == alias)
         #expect(!stopped.sendAllowed)
-        #expect(stopped.composerSendTooltip == String(localized: "Start & Send"))
+        let emptyDraftHelp = String(localized: "Type a message, then Start & Send to start \(alias).")
+        #expect(stopped.composerSendTooltip(hasDraft: false) == emptyDraftHelp)
+        #expect(stopped.composerSendHint(hasDraft: false) == emptyDraftHelp)
+        #expect(stopped.composerSendTooltip(hasDraft: true) == String(localized: "Start & Send"))
+        #expect(stopped.composerSendHint(hasDraft: true).isEmpty)
     }
 
     @Test("Composer uses the banner Start path and normal send; Retry/Edit stay ready-only")
@@ -244,8 +251,11 @@ struct StartAndSendIntentTests {
         #expect(view.contains("selectedAlias:alias,isStreaming:viewModel.isStreaming,isImportingFiles:attachmentDraft.isImportingFiles"))
         #expect(view.contains(".onChange(of:attachmentDraft.isImportingFiles){_,_inresolveStartAndSend()}"))
         #expect(view.contains(".onDisappear{viewModel.startAndSendIntent=StartAndSendIntent()}"))
-        #expect(view.contains(".help(readiness.composerSendTooltip)"))
-        #expect(view.contains("?String(localized:\"Sendmessage\"):readiness.composerSendTooltip)"))
+        #expect(view.contains(".help(readiness.composerSendTooltip(hasDraft:hasDraft))"))
+        #expect(view.contains(".accessibilityHint(readiness.composerSendHint(hasDraft:hasDraft))"))
+        #expect(view.contains("?String(localized:\"Sendmessage\"):String(localized:\"Start&Send\"))"))
+        #expect(view.contains("hasDraft&&(readiness.sendAllowed||readiness.startAndSendAlias!=nil)"))
+        #expect(view.contains("!draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty||attachmentDraft.hasAttachments"))
         #expect(view.contains("retryEnabled:readiness.sendAllowed"))
         let content = try source("Sources/Rapid/UI/ContentView.swift")
         #expect(content.contains("case.start(lettarget):startModel(target)"))

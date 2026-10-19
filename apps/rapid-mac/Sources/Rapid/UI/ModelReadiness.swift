@@ -542,8 +542,20 @@ enum ModelReadiness: Equatable {
         return nil
     }
 
-    var composerSendTooltip: String {
-        startAndSendAlias == nil ? sendTooltip : String(localized: "Start & Send")
+    /// Explain the empty draft before offering to start and send.
+    func composerSendTooltip(hasDraft: Bool) -> String {
+        if case .needsStart(let a) = self, !hasDraft {
+            return String(localized: "Type a message, then Start & Send to start \(a).")
+        }
+        return startAndSendAlias == nil ? sendTooltip : String(localized: "Start & Send")
+    }
+
+    /// Keep ready sends silent; announce why a gated or empty send is disabled.
+    func composerSendHint(hasDraft: Bool) -> String {
+        if startAndSendAlias != nil {
+            return hasDraft ? "" : composerSendTooltip(hasDraft: hasDraft)
+        }
+        return sendAllowed ? "" : sendTooltip
     }
 
     /// Send-button tooltip. Doubles as the VoiceOver announcement when a

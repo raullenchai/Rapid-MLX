@@ -23,7 +23,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Start & Send" enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Start & Send" help="Type a message, then Start & Send to start <model>." enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

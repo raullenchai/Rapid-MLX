@@ -9,6 +9,7 @@
 - **Desktop general assistant identity**: Desktop now sends a short default assistant instruction so the starter model describes itself as a general assistant for writing, translation, explanation, and code rather than only its tools. It appears in the Effective System Prompt preview, and custom instructions still apply after it. Fixes #4873.
 - **Titles and follow-ups for starter chats**: default starter conversations now get generated titles and follow-up suggestions; the engine reports `concurrent_text_requests` in the model profile. Fixes #4874.
 - **Cleaner first chat in Desktop**: finishing setup no longer drops a setup message into your new conversation, and the empty chat no longer shows a Star on GitHub button; the occasional star prompt after Rapid has helped you is unchanged. Refs #4855.
+- **Clearer Start & Send**: with an empty composer, the disabled Start & Send button now explains, in its tooltip and to VoiceOver, that you type a message first. Fixes #4889.
 - **Desktop daily weather forecasts**: tomorrow, next-few-days, and this-weekend questions now use the weather data source with local dates and weekdays instead of fetching web pages. Fixes #4892.
 - **Weather location qualifiers**: weather lookups now recognize US, Canadian, and Australian state/province abbreviations and common country aliases such as USA and UK. Fixes #4896.
 
