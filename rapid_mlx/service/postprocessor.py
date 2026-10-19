@@ -9,6 +9,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import inspect
 import json
 import logging
@@ -2609,6 +2610,26 @@ class StreamingPostProcessor:
 
         Returns a list of StreamEvents (may be empty if content is suppressed).
         """
+        events = self._process_chunk_events(output)
+        if any(event.type == "tool_call" for event in events):
+            tail = self._content_sanitizer.flush()
+            if self._content_sanitizer_accumulates:
+                self.accumulated_text += tail
+            self._insert_content_before_tool_call(events, tail)
+        return events
+
+    @staticmethod
+    def _insert_content_before_tool_call(events: list[StreamEvent], content: str):
+        """Keep resolved content ahead of the next structured call, or at EOF."""
+        if content:
+            index = next(
+                (i for i, event in enumerate(events) if event.type == "tool_call"),
+                len(events),
+            )
+            events.insert(index, StreamEvent(type="content", content=content))
+
+    def _process_chunk_events(self, output: GenerationOutput) -> list[StreamEvent]:
+        """Build events before resolving content held across a tool boundary."""
         delta_text = output.new_text
         if not delta_text and not getattr(output, "tool_calls", None):
             # Handle finish-only chunks
@@ -3810,14 +3831,13 @@ class StreamingPostProcessor:
         """
         events = []
 
-        # These bytes already passed the tool parser; its flush_held_content
-        # below owns only bytes it has not released yet. Drain our earlier tail
-        # first so the two hold-backs cannot replay or reorder each other's bytes.
-        content_tail = self._content_sanitizer.flush()
-        if content_tail:
-            if self._content_sanitizer_accumulates:
-                self.accumulated_text += content_tail
-            events.append(StreamEvent(type="content", content=content_tail))
+        # Preserve accumulation only for bytes already held by our sanitizer.
+        # The parser's later EOF release has never belonged to this accumulator.
+        accumulated_tail = (
+            copy.copy(self._content_sanitizer).flush()
+            if self._content_sanitizer_accumulates
+            else ""
+        )
 
         finalize_raw = getattr(self.tool_parser, "finalize_legacy_raw_stream", None)
         if callable(finalize_raw):
@@ -4192,6 +4212,33 @@ class StreamingPostProcessor:
             # downstream.
             if isinstance(held, str) and held:
                 events.append(StreamEvent(type="content", content=held))
+
+        # Every EOF content release (reasoning-parser tails, parser-held
+        # bytes) is later in the same content stream than the sanitizer's
+        # held tail. Feed them through it in order, then drain it once, so
+        # split markup resolves exactly as in the buffered reply (#4925).
+        resolved_events = []
+        for event in events:
+            if event.type == "content" and event.content:
+                resolved = self._content_sanitizer.process(event.content)
+                if not resolved:
+                    continue
+                event = dataclasses.replace(event, content=resolved)
+            resolved_events.append(event)
+        events = resolved_events
+        resolved_content = self._content_sanitizer.flush()
+        self.accumulated_text += accumulated_tail
+        last_content = next(
+            (i for i in range(len(events) - 1, -1, -1) if events[i].type == "content"),
+            None,
+        )
+        if last_content is not None and resolved_content:
+            events.insert(
+                last_content + 1,
+                StreamEvent(type="content", content=resolved_content),
+            )
+        else:
+            self._insert_content_before_tool_call(events, resolved_content)
 
         # H-07: ```json fence-strip on the finalize event list AND
         # drain any held tail in the SAME pass. The route's

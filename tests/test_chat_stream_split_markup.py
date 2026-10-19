@@ -212,3 +212,42 @@ def test_held_prefix_precedes_tool_call(inline_finish, monkeypatch):
     )
     assert choices[call_index - 1]["delta"]["content"] == "<"
     assert not any(choice.get("finish_reason") for choice in choices[:call_index])
+
+
+@pytest.mark.parametrize("inline_finish", [False, True])
+def test_sanitizer_held_prefix_precedes_structured_tool_call(inline_finish):
+    class OrderedEngine(ReplayEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text="before [", new_text="before [", channel="content", finished=False
+            )
+            yield GenerationOutput(
+                text="",
+                new_text="",
+                channel="tool_call",
+                tool_calls=[{"name": "get_weather", "arguments": '{"city":"Paris"}'}],
+                finished=inline_finish,
+                finish_reason="stop" if inline_finish else None,
+            )
+            if not inline_finish:
+                yield GenerationOutput(
+                    text="", new_text="", finished=True, finish_reason="stop"
+                )
+
+    client = client_for(OrderedEngine([], "stop"))
+    get_config().tool_call_parser = "hermes"
+    response = client.post(
+        "/v1/chat/completions", json={**_payload("auto"), "stream": True}
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    call_index = next(
+        i for i, choice in enumerate(choices) if choice["delta"].get("tool_calls")
+    )
+    assert (
+        "".join(choice["delta"].get("content") or "" for choice in choices[:call_index])
+        == "before ["
+    )
+    assert not any(choice["delta"].get("content") for choice in choices[call_index:])

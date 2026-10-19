@@ -3273,6 +3273,63 @@ def test_content_sanitizer_tail_precedes_parser_held_content():
     pp.tool_parser.flush_held_content.return_value = " after"
     pp.tool_accumulated_text = "raw"
     events = pp.finalize()
-    assert [event.content for event in events if event.content] == ["<", " after"]
+    assert [event.content for event in events if event.content] == ["< after"]
     assert pp.accumulated_text == "before <"
     pp.tool_parser.flush_held_content.assert_called_once_with("raw")
+
+
+def test_auto_parser_sanitizes_character_stream_with_held_content():
+    from rapid_mlx.api.utils import sanitize_content_for_stream
+
+    text = "[Calling tool: not a call]"
+    pp = StreamingPostProcessor(
+        _make_cfg(enable_auto_tool_choice=True, tool_call_parser="auto"),
+        tools_requested=True,
+    )
+    assert pp.tool_parser is not None
+    events = []
+    for char in text:
+        events.extend(pp.process_chunk(_make_output(char)))
+    events.extend(pp.finalize())
+    assert (
+        "".join(event.content or "" for event in events)
+        == (sanitize_content_for_stream(text))
+        == ""
+    )
+
+
+@pytest.mark.parametrize("accumulate", [False, True])
+def test_finalize_sanitizer_tail_precedes_tool_call(accumulate):
+    from rapid_mlx.domain.events import StreamEvent
+
+    pp = StreamingPostProcessor(_make_cfg())
+    assert pp._sanitize_content("before [", accumulate=accumulate) == "before "
+    pp.tool_parser = MagicMock()
+    pp.tool_parser.finalize_legacy_raw_stream.return_value = {
+        "tool_calls": [{"name": "weather", "arguments": "{}"}]
+    }
+    pp._filter_declared_calls = lambda calls, **kwargs: calls
+    events = pp.finalize()
+    assert [event.type for event in events] == ["content", "tool_call"]
+    assert events[0] == StreamEvent(type="content", content="[")
+    assert pp.accumulated_text == ("before [" if accumulate else "")
+    assert not any(event.content for event in pp.finalize())
+
+
+def test_reasoning_parser_eof_content_follows_sanitizer_tail():
+    """#4925: EOF content released by the reasoning parser stays after held text."""
+    from rapid_mlx.reasoning.cohere_command_parser import (
+        CohereCommand4ReasoningParser,
+    )
+
+    pp = StreamingPostProcessor(
+        _make_cfg(reasoning_parser=CohereCommand4ReasoningParser())
+    )
+    pp.reset()
+    events = pp.process_chunk(_make_output("<|END_THINKING|><|START_TEXT|>[Ca<"))
+    events += pp.process_chunk(_make_output("", finished=True, finish_reason="stop"))
+    events += pp.finalize()
+    content = "".join(
+        e.content or "" for e in events if e.type in ("content", "finish")
+    )
+    assert content == "[Ca<"
