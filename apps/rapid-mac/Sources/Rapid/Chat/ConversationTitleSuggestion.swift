@@ -15,7 +15,7 @@ import Foundation
 /// sidebar's 42 characters reads worse than the opening words of the user's
 /// own question, which is what the row already shows.
 ///
-/// Every rejection returns nil, which ``ChatViewModel/applyGeneratedTitle(_:to:)``
+/// Every rejection returns nil, which ``ChatViewModel/applyGeneratedTitle(_:to:reference:)``
 /// turns into "leave the derived title alone". There is no retry, no error
 /// state, and nothing the reader can see — the same contract
 /// ``ServerProfileFetcher`` states for its own background fetch.
@@ -58,7 +58,36 @@ enum ConversationTitleSuggestion {
     nonisolated static func messages(
         forFirstExchange transcript: [ChatMessage]
     ) -> [ChatMessage]? {
-        var exchange: (user: ChatMessage, assistant: ChatMessage)?
+        guard let exchange = firstExchange(in: transcript) else { return nil }
+        let chinese = ReplyScript.isChinese(exchange.user.content)
+        let cue = chinese
+            ? "用 4 到 10 个字的中文概括这段对话的主题："
+            : "Name it in 2 to 5 words:"
+        let instruction = chinese
+            ? systemPrompt + " The user wrote in Chinese, so the name must be in Chinese."
+            : systemPrompt
+
+        let prompt = """
+            Chat:
+            User: \(excerpt(exchange.user.content))
+            Assistant: \(excerpt(exchange.assistant.content))
+
+            \(cue)
+            """
+        return [
+            ChatMessage(role: .system, content: instruction),
+            ChatMessage(role: .user, content: prompt),
+        ]
+    }
+
+    /// The same user text used to choose the first-exchange prompt.
+    nonisolated static func reference(forFirstExchange transcript: [ChatMessage]) -> String? {
+        firstExchange(in: transcript)?.user.content
+    }
+
+    private nonisolated static func firstExchange(
+        in transcript: [ChatMessage]
+    ) -> (user: ChatMessage, assistant: ChatMessage)? {
         for assistantIndex in transcript.indices {
             let candidate = transcript[assistantIndex]
             guard candidate.role == .assistant,
@@ -68,22 +97,9 @@ enum ConversationTitleSuggestion {
                   candidate.toolCalls?.isEmpty ?? true,
                   let user = transcript[..<assistantIndex].last(where: { $0.role == .user })
             else { continue }
-            exchange = (user, candidate)
-            break
+            return (user, candidate)
         }
-        guard let exchange else { return nil }
-
-        let prompt = """
-            Chat:
-            User: \(excerpt(exchange.user.content))
-            Assistant: \(excerpt(exchange.assistant.content))
-
-            Name it in 2 to 5 words:
-            """
-        return [
-            ChatMessage(role: .system, content: systemPrompt),
-            ChatMessage(role: .user, content: prompt),
-        ]
+        return nil
     }
 
     private nonisolated static func excerpt(_ text: String) -> String {
@@ -96,7 +112,7 @@ enum ConversationTitleSuggestion {
     // MARK: - Parsing
 
     /// The title to show, or nil to keep the derived one.
-    nonisolated static func parse(_ raw: String) -> String? {
+    nonisolated static func parse(_ raw: String, reference: String? = nil) -> String? {
         guard let line = ModelReplyText.firstMeaningfulLine(raw) else { return nil }
         // Measured before stripping: a paragraph that happens to open with a
         // quote is still a paragraph, and stripping first would let it
@@ -122,6 +138,12 @@ enum ConversationTitleSuggestion {
         // for it.
         guard !isMultiSentence(title) else { return nil }
 
+        // A script mismatch keeps the derived title in the user's language.
+        if let reference, reference.contains(where: \.isLetter),
+           ReplyScript.usesCJK(title) != ReplyScript.usesCJK(reference) {
+            return nil
+        }
+
         return ConversationStore.capped(title)
     }
 
@@ -132,7 +154,7 @@ enum ConversationTitleSuggestion {
     /// all: "Chat" in a list of chats says less than the reader's own "hi"
     /// does. Measured on the bundled 1.2B model, a bare greeting returns
     /// `Chat` on every sample, in English, whatever language it was greeted
-    /// in — which is why the list needs no translations.
+    /// in. Chinese cue echoes are rejected for the same reason.
     ///
     /// Note what is *not* here: "Greeting". Naming a greeting as a greeting is
     /// a real answer about a real (if slight) exchange, and a larger model
@@ -142,6 +164,7 @@ enum ConversationTitleSuggestion {
         "chat", "chats", "chat topic", "chat conversations", "conversation",
         "conversations", "topic", "topics", "exchange", "discussion", "dialogue",
         "summary", "title", "untitled", "new chat", "help", "assistance",
+        "主题", "对话主题", "对话", "聊天",
         "user assistant", "message", "messages", "response", "answer",
     ]
 

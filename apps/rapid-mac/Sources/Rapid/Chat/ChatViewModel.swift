@@ -776,19 +776,22 @@ final class ChatViewModel {
               ConversationTitleSuggestion.messages(forFirstExchange: transcript) != nil
         else { return }
 
+        let reference = ConversationTitleSuggestion.reference(forFirstExchange: transcript)
         let token = UUID()
         let task = Task { [weak self] in
             let title = await completer(transcript)
             guard !Task.isCancelled else { return }
-            self?.finishTitleTask(title, for: conversationID, token: token)
+            self?.finishTitleTask(title, for: conversationID, token: token, reference: reference)
         }
         titleTasks[conversationID] = TitleTask(token: token, task: task)
     }
 
-    private func finishTitleTask(_ title: String?, for conversationID: UUID, token: UUID) {
+    private func finishTitleTask(
+        _ title: String?, for conversationID: UUID, token: UUID, reference: String?
+    ) {
         guard titleTasks[conversationID]?.token == token else { return }
         titleTasks.removeValue(forKey: conversationID)
-        if let title { applyGeneratedTitle(title, to: conversationID) }
+        if let title { applyGeneratedTitle(title, to: conversationID, reference: reference) }
     }
 
     func hasPendingTitleTask(for conversationID: UUID) -> Bool {
@@ -882,11 +885,11 @@ final class ChatViewModel {
     /// Deliberately does not touch `updatedAt`: naming a row is not working
     /// on it, so the sidebar must not reshuffle. Same choice
     /// ``renameConversation`` makes, and for the same reason.
-    func applyGeneratedTitle(_ raw: String, to id: UUID) {
+    func applyGeneratedTitle(_ raw: String, to id: UUID, reference: String? = nil) {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         guard !conversations[index].hasCustomTitle else { return }
         guard !conversations[index].hasGeneratedTitle else { return }
-        guard let title = ConversationTitleSuggestion.parse(raw) else { return }
+        guard let title = ConversationTitleSuggestion.parse(raw, reference: reference) else { return }
         conversations[index].title = title
         conversations[index].hasGeneratedTitle = true
         saveConversations()

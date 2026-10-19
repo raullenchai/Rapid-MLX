@@ -621,3 +621,69 @@ struct TitleRetryTests {
         #expect(model.conversations.first { $0.id == id }?.title == "First name")
     }
 }
+
+@MainActor
+@Suite("Background assist title language")
+struct BackgroundAssistTitleLanguageTests {
+    private func seededModel() throws -> (ChatViewModel, URL, [ChatMessage]) {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent(".build")
+            .appendingPathComponent("background-assist-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("conversations.json")
+        let transcript = [
+            ChatMessage(role: .user, content: "为什么天空是蓝色的？"),
+            ChatMessage(role: .assistant, content: "Rayleigh scattering makes it blue."),
+            ChatMessage(role: .user, content: "Explain more in English"),
+            ChatMessage(role: .assistant, content: "Short wavelengths scatter more."),
+        ]
+        let now = Date()
+        let conversation = ChatConversation(
+            id: UUID(), title: "为什么天空是蓝色的？", messages: transcript,
+            createdAt: now, updatedAt: now
+        )
+        ConversationStore.save([conversation], to: file)
+        ConversationStore.flush()
+        return (ChatViewModel(conversationStoreURL: file), root, transcript)
+    }
+
+    @Test("A mismatched title leaves the derived Chinese title available")
+    func applyReference() throws {
+        let (model, root, _) = try seededModel()
+        defer {
+            ConversationStore.flush()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let id = try #require(model.conversations.first?.id)
+        model.applyGeneratedTitle("Sky scattering", to: id, reference: "为什么天空是蓝色的？")
+        #expect(model.conversations.first?.title == "为什么天空是蓝色的？")
+        #expect(model.conversations.first?.hasGeneratedTitle == false)
+        model.applyGeneratedTitle("天空散射", to: id, reference: "为什么天空是蓝色的？")
+        #expect(model.conversations.first?.title == "天空散射")
+        #expect(model.conversations.first?.hasGeneratedTitle == true)
+    }
+
+    @Test("Scheduled titles use the first completed exchange reference", arguments: [
+        "Sky scattering", "天空散射",
+    ])
+    func scheduledReference(_ raw: String) async throws {
+        let (model, root, transcript) = try seededModel()
+        defer {
+            ConversationStore.flush()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let id = try #require(model.conversations.first?.id)
+        model.scheduleTitle(for: id, transcript: transcript) { received in
+            #expect(received == transcript)
+            return raw
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while model.hasPendingTitleTask(for: id), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.hasPendingTitleTask(for: id))
+        #expect(model.conversations.first?.title == (raw == "天空散射" ? raw : "为什么天空是蓝色的？"))
+        #expect(model.conversations.first?.hasGeneratedTitle == (raw == "天空散射"))
+    }
+}

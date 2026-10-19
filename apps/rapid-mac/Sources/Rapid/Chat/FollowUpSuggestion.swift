@@ -43,7 +43,8 @@ enum FollowUpSuggestion {
         You suggest what the user might ask next. Reply with exactly 3 lines. \
         Each line is one short question the user could ask next — 3 to 10 \
         words, ending in a question mark. No numbering, no bullets, no quotes, \
-        no other text. CRITICAL: write in the same language the user wrote in.
+        no other text. Each line is written by the user, addressed to the assistant, \
+        and never offers help. CRITICAL: write in the same language the user wrote in.
         """
 
     /// The last exchange, or nil when there isn't one to follow up on.
@@ -58,11 +59,14 @@ enum FollowUpSuggestion {
               let user = transcript.last(where: { $0.role == .user })
         else { return nil }
 
+        let cue = ReplyScript.isChinese(user.content)
+            ? "用户接下来可能会问的三个问题（用用户的口吻写）："
+            : "Three questions the user could type next, written as the user:"
         let prompt = """
             User: \(excerpt(user.content, limit: userExcerptLimit))
             Assistant: \(excerpt(assistant.content, limit: assistantExcerptLimit))
 
-            Three follow-up questions:
+            \(cue)
             """
         return [
             ChatMessage(role: .system, content: systemPrompt),
@@ -107,6 +111,8 @@ enum FollowUpSuggestion {
             guard question.count <= rejectLongerThan else { continue }
             guard let last = question.last, last == "?" || last == "？" else { continue }
 
+            guard !isAssistantVoice(question) else { continue }
+
             let key = question.lowercased()
             guard key != excluded, seen.insert(key).inserted else { continue }
 
@@ -117,6 +123,30 @@ enum FollowUpSuggestion {
         }
         return []
     }
+
+    /// Obvious offers of help written from the assistant's side (#4938).
+    ///
+    /// A chip is sent as the user's own message, so "Do you need a forecast?"
+    /// or "还需要我进行其他修改吗？" reads as nonsense once clicked. The list is
+    /// deliberately narrow: only phrases a user would not say to an assistant.
+    /// "Should I…", "Can you…", "Can you provide…", "Which do you prefer?",
+    /// "还有其他方法吗？" and "Is there anything else I should know?" are all
+    /// ordinary user questions and must pass. A false rejection only costs the
+    /// chip row, because fewer than three questions already means no chips.
+    nonisolated static func isAssistantVoice(_ question: String) -> Bool {
+        let lowered = question.lowercased()
+        return assistantOffers.contains { lowered.contains($0) }
+    }
+
+    private static let assistantOffers = [
+        "do you need", "do you want", "would you like", "will you like",
+        "can i help", "may i help", "how can i help", "can i assist",
+        "want me to", "like me to", "need me to",
+        "anything else you", "anything else i can",
+        "需要我", "我可以帮", "我能帮", "我来帮", "帮你", "帮您",
+        "你需要", "您需要", "你想要", "您想要", "你想让", "您想让", "你希望",
+        "您希望", "需要帮助",
+    ]
 
     /// Do the suggestions and the conversation use the same writing system?
     ///
@@ -138,28 +168,12 @@ enum FollowUpSuggestion {
     nonisolated static func sharesScript(_ questions: [String], _ conversation: String) -> Bool {
         // An empty reference tells us nothing, so it cannot veto.
         guard conversation.contains(where: \.isLetter) else { return true }
-        let wanted = usesCJK(conversation)
+        let wanted = ReplyScript.usesCJK(conversation)
         // A majority, not "any scalar anywhere". The first version joined the
         // questions and asked whether the result contained a CJK character, so
         // one Chinese word inside one otherwise-English suggestion threw all
         // three away.
-        let matching = questions.filter { usesCJK($0) == wanted }.count
+        let matching = questions.filter { ReplyScript.usesCJK($0) == wanted }.count
         return matching * 2 > questions.count
-    }
-
-    private nonisolated static func usesCJK(_ text: String) -> Bool {
-        var cjkLetters = 0
-        var otherLetters = 0
-        for scalar in text.unicodeScalars where CharacterSet.letters.contains(scalar) {
-            if (0x4E00...0x9FFF).contains(scalar.value)         // unified ideographs
-                || (0x3040...0x30FF).contains(scalar.value)     // kana
-                || (0xAC00...0xD7AF).contains(scalar.value)     // hangul
-            {
-                cjkLetters += 1
-            } else {
-                otherLetters += 1
-            }
-        }
-        return cjkLetters > otherLetters
     }
 }

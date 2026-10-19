@@ -442,3 +442,133 @@ struct SmallModelBehaviourTests {
         #expect(FollowUpSuggestion.parse(english).count == 3)
     }
 }
+
+@Suite("Background assist language and voice")
+struct BackgroundAssistLanguageTests {
+    @Test("Chinese cues require Han majority", arguments: [
+        ("明天会下雨吗", true, true), ("hello world", false, false),
+        ("漢字かなカナかな", true, false), ("漢字한국어한국어", true, false),
+        ("かな", true, false), ("한국어", true, false),
+        ("中a", false, false), ("123?!", false, false), ("中文a", true, true),
+        ("漢かな", true, false), ("漢字かな", true, false),
+    ])
+    func scriptSignal(_ text: String, _ cjk: Bool, _ chinese: Bool) {
+        #expect(ReplyScript.usesCJK(text) == cjk)
+        #expect(ReplyScript.isChinese(text) == chinese)
+    }
+
+    @Test("Prompts preserve English titles and cue Chinese and user voice", arguments: [false, true])
+    func prompts(_ chinese: Bool) throws {
+        let user = chinese ? "为什么天空是蓝色的？" : "Why is the sky blue?"
+        let transcript = [
+            ChatMessage(role: .user, content: user),
+            ChatMessage(role: .assistant, content: "Light scatters."),
+        ]
+        let title = try #require(ConversationTitleSuggestion.messages(forFirstExchange: transcript))
+        let original = "You are a conversation titler. Given a chat, you output a short noun "
+            + "phrase naming what it is about, and nothing else. Use the language of the chat."
+        #expect(title[0].content == original + (chinese
+            ? " The user wrote in Chinese, so the name must be in Chinese." : ""))
+        let cue = chinese ? "用 4 到 10 个字的中文概括这段对话的主题：" : "Name it in 2 to 5 words:"
+        #expect(title[1].content == "Chat:\nUser: \(user)\nAssistant: Light scatters.\n\n\(cue)")
+        #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == user)
+        let followUp = try #require(FollowUpSuggestion.messages(forTurn: transcript))
+        #expect(followUp[0].content.contains(
+            "Each line is written by the user, addressed to the assistant, and never offers help."))
+        #expect(followUp[1].content.hasSuffix(chinese
+            ? "用户接下来可能会问的三个问题（用用户的口吻写）："
+            : "Three questions the user could type next, written as the user:"))
+    }
+
+    @Test("The reference skips unusable attempts and stays on the first completed exchange")
+    func firstReference() {
+        var transcript: [ChatMessage] = []
+        #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == nil)
+        for status in [ChatMessage.Status.failed, .streaming] {
+            transcript += [
+                ChatMessage(role: .user, content: "failed"),
+                ChatMessage(role: .assistant, content: "partial", status: status),
+            ]
+        }
+        transcript += [
+            ChatMessage(role: .user, content: "stopped"),
+            ChatMessage(role: .assistant, content: "partial", errorMessage: "Stopped."),
+            ChatMessage(role: .user, content: "empty"),
+            ChatMessage(role: .assistant, content: " "),
+            ChatMessage(role: .user, content: "tool"),
+            ChatMessage(role: .assistant, content: "tool", toolCalls: [
+                ToolCall(id: "1", name: "search", arguments: "{}"),
+            ]),
+        ]
+        #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == nil)
+        transcript += [
+            ChatMessage(role: .user, content: "为什么天空是蓝色的？"),
+            ChatMessage(role: .assistant, content: "Rayleigh scattering."),
+            ChatMessage(role: .user, content: "English later"),
+            ChatMessage(role: .assistant, content: "Later answer"),
+        ]
+        #expect(ConversationTitleSuggestion.reference(forFirstExchange: transcript) == "为什么天空是蓝色的？")
+        #expect(ConversationTitleSuggestion.messages(forFirstExchange: transcript)?.last?.content
+            .contains("用 4 到 10 个字的中文概括这段对话的主题：") == true)
+    }
+
+    @Test("Title script must match a reference with letters", arguments: [
+        ("Sky scattering", "为什么天空是蓝色的？", false),
+        ("天空散射", "Why is the sky blue?", false),
+        ("天空散射", "为什么天空是蓝色的？", true),
+        ("Sky scattering", "Why is the sky blue?", true),
+        ("天空散射", "123?!", true), ("Sky scattering", "", true),
+    ])
+    func titleScript(_ title: String, _ reference: String, _ accepted: Bool) {
+        #expect(ConversationTitleSuggestion.parse(title, reference: reference) == (accepted ? title : nil))
+        #expect(ConversationTitleSuggestion.parse(title) == title)
+    }
+
+    @Test("Chinese container echoes are rejected", arguments: ["主题", "对话主题", "对话", "聊天"])
+    func chineseEcho(_ raw: String) {
+        #expect(ConversationTitleSuggestion.parse(raw) == nil)
+    }
+
+    @Test("Obvious assistant offers are rejected", arguments: [
+        "Do you need weather forecasts now?", "Would you like…", "Can I help you with anything else?",
+        "还需要我进行其他修改吗？", "我可以帮你设置闹钟吗？", "你想让我回答什么问题？",
+        "你需要翻译什么内容？", "还有其他需要帮助的吗？",
+        "What specific task do you want?", "Which city in Texas do you want?",
+        "What else do you need from these docs?",
+        "DO YOU NEED help?", "Will you like more?",
+        "May I help?", "How can I help?", "Can I assist?",
+        "Want me to continue?", "Like me to continue?", "Need me to continue?",
+        "Is there anything else you need?", "Anything else I can do?",
+        "需要我继续吗？", "我能帮忙吗？", "我来帮忙吗？", "帮你看看吗？",
+        "帮您看看吗？", "您需要什么？", "你想要什么？", "您想要什么？", "您想让我做什么？",
+        "你希望怎样？", "您希望怎样？", "需要帮助吗？",
+    ])
+    func assistantVoice(_ question: String) {
+        #expect(FollowUpSuggestion.isAssistantVoice(question))
+    }
+
+    @Test("User questions remain valid", arguments: [
+        "Should I bring an umbrella?", "Can you explain it more simply?",
+        "能再详细解释一下吗？", "明天会下雨吗？", "Do you have an example?",
+        "我需要带伞吗？", "How do I reverse a dict?", "Shall I continue?",
+        "你能解释一下吗？", "帮我解释一下好吗？",
+        "Can you provide an example?", "Which framework do you prefer?",
+        "Is there anything else I should know?", "还有其他方法吗？",
+        "这会让我的电脑变慢吗？", "是不是要我先安装 Python？",
+    ])
+    func userVoice(_ question: String) {
+        #expect(!FollowUpSuggestion.isAssistantVoice(question))
+    }
+
+    @Test("Offers are skipped before collecting three questions", arguments: [false, true])
+    func skipsOffers(_ chinese: Bool) {
+        let good = chinese
+            ? ["能再详细解释一下吗？", "明天会下雨吗？", "我需要带伞吗？", "后天呢？"]
+            : ["Should I bring an umbrella?", "Can you explain it more simply?",
+               "Do you have an example?", "How do I reverse a dict?"]
+        let offer = chinese ? "还需要我进行其他修改吗？" : "Do you need weather forecasts now?"
+        let raw = ([offer, good[0], offer, good[0]] + Array(good.dropFirst())).joined(separator: "\n")
+        #expect(FollowUpSuggestion.parse(raw) == Array(good.prefix(3)))
+        #expect(FollowUpSuggestion.parse(([offer] + Array(good.prefix(2))).joined(separator: "\n")) == [])
+    }
+}
