@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from .artifacts import (
@@ -44,6 +45,7 @@ def run_server(
     cors_policy: Any | None = None,
     reasoning_parser_name: str | None = "deepseek_v4",
     model_name: str = REAP.alias,
+    resolved_paths: tuple[Path, Path] | None = None,
 ) -> None:
     import uvicorn
 
@@ -63,6 +65,9 @@ def run_server(
         if artifact == REAP:
             target_path = download_target_snapshot()
             mtp_path = download_mtp_snapshot()
+        elif resolved_paths is not None:
+            # The CLI already resolved and verified this exact artifact.
+            target_path, mtp_path = resolved_paths
         else:
             target_path, mtp_path = resolve_product_paths(artifact)
 

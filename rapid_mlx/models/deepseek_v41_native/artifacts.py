@@ -168,7 +168,15 @@ def local_product_path(artifact: ProductArtifact | None) -> Path | None:
         "dspark/model.safetensors.index.json",
         "dspark/model-mtp.safetensors",
     )
-    if not value.strip() or not all((root / name).is_file() for name in required):
+    complete = bool(value.strip()) and all((root / name).is_file() for name in required)
+    for directory in (root, root / "dspark") if complete else ():
+        try:
+            index = json.loads((directory / "model.safetensors.index.json").read_text())
+            shards = set(index.get("weight_map", {}).values())
+        except (ValueError, AttributeError):
+            shards = {"<unreadable index>"}
+        complete = complete and all((directory / s).is_file() for s in shards)
+    if not complete:
         raise ValueError(
             f"{LOCAL_MODEL_DIR_ENV}: incomplete local target/dspark build: {root}"
         )

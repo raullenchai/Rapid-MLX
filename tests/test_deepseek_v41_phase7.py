@@ -181,6 +181,19 @@ def test_bad_local_override_does_not_fall_back(monkeypatch, value):
         a.resolve_product_paths(a.FLASH_1017)
 
 
+@pytest.mark.parametrize("subdir", ["", "dspark"])
+def test_local_override_requires_every_indexed_shard(monkeypatch, tmp_path, subdir):
+    root = _local_build(tmp_path)
+    (root / subdir / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "missing.safetensors"}})
+    )
+    monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, str(root))
+    with pytest.raises(ValueError, match="incomplete local"):
+        a.local_product_path(a.FLASH_1017)
+    (root / subdir / "missing.safetensors").write_bytes(b"x")
+    assert a.local_product_path(a.FLASH_1017) == root
+
+
 @pytest.mark.parametrize("artifact", [None, a.REAP])
 def test_local_override_cannot_select_unrelated_or_original_lane(monkeypatch, artifact):
     monkeypatch.setenv(a.LOCAL_MODEL_DIR_ENV, "/anything")
@@ -307,6 +320,9 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
     monkeypatch.setattr(
         "rapid_mlx._uvicorn.run_uvicorn", lambda *args, **kw: calls.update(listener=kw)
     )
+    monkeypatch.setattr(
+        server, "resolve_product_paths", lambda *_a, **_k: pytest.fail("re-resolved")
+    )
     server.run_server(
         model_name=a.FLASH_1017.alias,
         host="127.0.0.1",
@@ -315,6 +331,7 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
         default_max_tokens=4096,
         cors_origins=[],
         uvicorn_log_level="warning",
+        resolved_paths=(root, root / "dspark"),
     )
     assert calls["memory"] == a.FLASH_1017
     assert calls["load"] == (
