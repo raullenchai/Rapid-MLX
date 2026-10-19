@@ -62,6 +62,15 @@ def test_unrelated_nested_index_does_not_block_root_checkpoint(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_programmatic_server_load_rejects_missing_config_before_engine(tmp_path):
+    from rapid_mlx.server import load_model
+
+    root = tmp_path / "model"
+    root.mkdir()
+    with pytest.raises(FileNotFoundError, match="Missing model config"):
+        load_model(str(root))
+
+
 @pytest.mark.parametrize("layout", ["whisper", "image", "video"])
 def test_supported_nontext_layouts_reach_their_loader(tmp_path, layout):
     root = tmp_path / layout
@@ -108,16 +117,19 @@ def test_missing_index_shard_is_rejected_before_engine(tmp_path):
     assert serve_error_class(raised.value, model_ref=str(root)) == "local_path_missing"
 
 
-def test_unreadable_local_config_reports_permissions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("denied", ["root", "config", "weights"])
+def test_unreadable_local_file_reports_permissions(tmp_path, monkeypatch, denied):
     root = tmp_path / "model"
     root.mkdir()
     config = root / "config.json"
     config.write_text('{"model_type":"qwen3"}')
-    (root / "model.safetensors").write_bytes(b"weights")
+    weight = root / "model.safetensors"
+    weight.write_bytes(b"weights")
+    blocked = {"root": root, "config": config, "weights": weight}[denied]
     access = os.access
     monkeypatch.setattr(
         "rapid_mlx.local_model_path.os.access",
-        lambda path, mode: False if path == config else access(path, mode),
+        lambda path, mode: False if path == blocked else access(path, mode),
     )
     with pytest.raises(PermissionError) as raised:
         validate_local_model_for_serve(str(root))
