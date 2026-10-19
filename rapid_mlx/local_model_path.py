@@ -324,6 +324,18 @@ def validate_local_model_for_serve(model_ref: object) -> None:
                     )
             return
         if name == "model_index.json":
+            if manifest.get("_class_name") == "Flux2KleinPipeline":
+                for relative in (
+                    "transformer-packed-mflux/diffusion_pytorch_model.safetensors",
+                    "text_encoder-mlx-4bit/model.safetensors",
+                    "vae/diffusion_pytorch_model.safetensors",
+                ):
+                    weight = root / relative
+                    if not weight.is_file() or weight.stat().st_size == 0:
+                        raise FileNotFoundError(
+                            errno.ENOENT, "Missing model component", str(weight)
+                        )
+                return
             weight_components = (
                 "transformer",
                 "unet",
@@ -372,14 +384,6 @@ def validate_local_model_for_serve(model_ref: object) -> None:
     from .model_load_errors import validate_model_config_file
 
     validate_model_config_file(root)
-    # tokenizer.load_model_checked calls incomplete_checkpoint_reason() before
-    # mlx-lm; that boundary rejects stale indexes even if mlx-lm's own glob
-    # would otherwise load a consolidated model.safetensors.
-    missing_shards = _missing_index_shards(root, recursive=False, primary_only=True)
-    if missing_shards:
-        raise FileNotFoundError(
-            errno.ENOENT, "Missing indexed model shard", str(root / missing_shards[0])
-        )
     # mlx-lm loads model*.safetensors at the root even with an index. Native Gemma 4 and
     # EmbeddingGemma 2 loaders accept any root safetensors filename.
     # PyTorch .bin files do not make any of these checkpoints serveable.
@@ -391,6 +395,16 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         model_type = None  # Leave malformed configs to the loader's typed error.
     if not isinstance(model_type, str):
         model_type = None
+    # The normal text path checks its primary index in tokenizer.py before
+    # loading. Native Gemma 4 reads root safetensors directly and ignores it.
+    if model_type not in {"gemma4", "gemma4_assistant", "gemma4_unified"}:
+        missing_shards = _missing_index_shards(root, recursive=False, primary_only=True)
+        if missing_shards:
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "Missing indexed model shard",
+                str(root / missing_shards[0]),
+            )
     from .model_metadata import config_indicates_multimodal
 
     native_any_safetensors = config_indicates_multimodal(config_data) or model_type in {

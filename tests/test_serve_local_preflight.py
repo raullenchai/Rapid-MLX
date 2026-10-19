@@ -202,6 +202,25 @@ def test_disabled_optional_image_component_needs_no_weights(tmp_path):
     validate_local_model_for_serve(str(root))
 
 
+def test_bonsai_manifest_uses_packed_component_layout(tmp_path):
+    root = tmp_path / "bonsai"
+    root.mkdir()
+    (root / "model_index.json").write_text('{"_class_name":"Flux2KleinPipeline"}')
+    weights = (
+        "transformer-packed-mflux/diffusion_pytorch_model.safetensors",
+        "text_encoder-mlx-4bit/model.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    )
+    for relative in weights:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+    (root / weights[0]).unlink()
+    with pytest.raises(FileNotFoundError, match="Missing model component"):
+        validate_local_model_for_serve(str(root))
+
+
 @pytest.mark.parametrize("layout", ["image", "video"])
 def test_incomplete_nontext_manifest_is_rejected(tmp_path, layout):
     root = tmp_path / layout
@@ -293,6 +312,17 @@ def test_missing_index_shard_is_rejected_before_engine(tmp_path):
     ) as raised:
         validate_local_model_for_serve(str(root))
     assert serve_error_class(raised.value, model_ref=str(root)) == "local_path_missing"
+
+
+def test_gemma4_ignores_stale_primary_index(tmp_path):
+    root = tmp_path / "gemma"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"gemma4"}')
+    (root / "model.safetensors").write_bytes(b"data")
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"unused": "old-shard.safetensors"}})
+    )
+    validate_local_model_for_serve(str(root))
 
 
 @pytest.mark.parametrize("denied", ["root", "config", "weights"])

@@ -15062,6 +15062,7 @@ def main():
             supplied_model = args.model
             if getattr(args, "command", None) == "serve":
                 args.model = resolved_model_ref(args.model)
+                resolved = args.model
             raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
             if getattr(args, "command", None) == "serve":
