@@ -993,6 +993,8 @@ def test_main_routes_optional_failure_to_single_handler(
 
     model = tmp_path / "model"
     model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    (model / "model.safetensors").write_bytes(b"weights")
     failure = OptionalRuntimeMissing(
         extra="image",
         install_hint="pip install 'rapid-mlx[image]'",
