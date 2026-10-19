@@ -269,6 +269,15 @@ class RequestBodyDepthMiddleware:
         path = scope.get("path")
         if not _path_is_guarded(path):
             return await self.app(scope, receive, send)
+        # Video POST routes accept multipart Form/File data, not JSON. Skip
+        # buffering even for a claimed JSON type: the downstream video gate
+        # must authenticate before reading, then enforce its 21 MiB cap.
+        # Other methods retain both the generic size and depth gates.
+        if scope.get("method") == "POST" and path in {
+            "/v1/videos",
+            "/v1/videos/extend",
+        }:
+            return await self.app(scope, receive, send)
         max_depth = resolve_max_body_depth()
         if max_depth <= 0:
             return await self.app(scope, receive, send)

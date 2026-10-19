@@ -124,10 +124,6 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 _EXCLUDED_PATHS = frozenset(
     {
         "/v1/audio/transcriptions",
-        # Both video creation and extension uploads have a dedicated 20 MiB
-        # file / 21 MiB request cap plus pre-parse authentication in routes.video.
-        "/v1/videos",
-        "/v1/videos/extend",
         # Multipart image-edit uploads have a dedicated 25 MB cap enforced
         # pre-parse by ``routes.images.ImageBodyLimitMiddleware``; the generic
         # 8 MiB JSON cap would otherwise reject a legitimate large init image.
@@ -136,10 +132,19 @@ _EXCLUDED_PATHS = frozenset(
 )
 
 
-def _path_is_guarded(path: str | None) -> bool:
+# Only POST video uploads have a dedicated 20 MiB file / 21 MiB request
+# cap and pre-parse authentication in routes.video. Other methods still need
+# the generic cap because the video middleware does not cover them.
+_POST_ONLY_EXCLUDED_PATHS = frozenset({"/v1/videos", "/v1/videos/extend"})
+
+
+def _path_is_guarded(path: str | None, method: str = "POST") -> bool:
+    """Check size-cap scope; omitted method preserves legacy POST callers."""
     if not path:
         return False
     if path in _EXCLUDED_PATHS:
+        return False
+    if method == "POST" and path in _POST_ONLY_EXCLUDED_PATHS:
         return False
     return any(path.startswith(prefix) for prefix in _GUARDED_PREFIXES)
 
@@ -272,7 +277,7 @@ class RequestBodyLimitMiddleware:
         # path-scoped below.
         receive_timeout = _resolve_body_receive_timeout()
         path = scope.get("path")
-        path_guarded = _path_is_guarded(path)
+        path_guarded = _path_is_guarded(path, scope.get("method"))
         limit = _resolve_limit() if path_guarded else 0
         if limit == 0 and receive_timeout <= 0:
             # Both DoS gates disabled by operator (or path-unguarded
