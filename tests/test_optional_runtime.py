@@ -233,6 +233,7 @@ if lane == "vision-present":
             '{"model_type":"prism_hadamard_qwen35"}',
             encoding="utf-8",
         )
+        (model_dir / "model.safetensors").write_bytes(b"weights")
     if standalone:
         command = [sys.executable, "-m", "rapid_mlx.server"]
     elif install_missing:
