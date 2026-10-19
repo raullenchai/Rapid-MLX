@@ -129,10 +129,27 @@ struct BaseAssistantInstructionTests {
         #expect(blank.isEmpty)
     }
 
+    @Test("Base identity has the exact English and Chinese lines")
+    func baseHasExactBilingualText() {
+        let base = ChatViewModel.baseAssistantInstruction
+        let english = "You are a helpful general-purpose assistant: you can write, rewrite, summarize, translate, explain, brainstorm and help with code. Tools are optional extras for current or external information; use them only when a request needs it. By default, reply in the user's language."
+        let chinese = "你是一个乐于助人的通用助手：可以写作、改写、总结、翻译、解释、头脑风暴，也能帮忙写代码。工具只是获取实时或外部信息的可选补充，仅在请求需要时使用。默认用用户的语言回复。"
+        let lines = base.split(separator: "\n", omittingEmptySubsequences: false)
+
+        #expect(base == english + "\n" + chinese)
+        #expect(lines.count == 2)
+        #expect(lines[0] == english)
+        #expect(lines[1] == chinese)
+        #expect(!base.contains("\n\n"))
+    }
+
     @Test("Base identity stays short and contains no digits or per-turn content")
     func baseStaysShortAndStatic() {
         let base = ChatViewModel.baseAssistantInstruction
         #expect(base.count < 400)
-        #expect(!base.contains(where: { $0.isNumber }))
+        #expect(!base.unicodeScalars.contains {
+            $0.properties.generalCategory == .decimalNumber
+        })
+        #expect(String(base.filter { $0.isNumber }) == "一")
     }
 }

@@ -3578,7 +3578,7 @@ final class ChatViewModel {
     /// cache for the whole conversation. Global/conversation instructions follow
     /// and refine it (a user language preference wins over "By default"). Keep it
     /// short to limit the token cost on small models.
-    nonisolated static let baseAssistantInstruction: String = "You are a helpful general-purpose assistant: you can write, rewrite, summarize, translate, explain, brainstorm and help with code. Tools are optional extras for current or external information; use them only when a request needs it. By default, reply in the user's language."
+    nonisolated static let baseAssistantInstruction: String = "You are a helpful general-purpose assistant: you can write, rewrite, summarize, translate, explain, brainstorm and help with code. Tools are optional extras for current or external information; use them only when a request needs it. By default, reply in the user's language.\n你是一个乐于助人的通用助手：可以写作、改写、总结、翻译、解释、头脑风暴，也能帮忙写代码。工具只是获取实时或外部信息的可选补充，仅在请求需要时使用。默认用用户的语言回复。"
 
     nonisolated static let toolGuidance: String = """
 You have access to tools that fetch real-time information. When you use one of these tools, follow these rules — they OVERRIDE your training data:

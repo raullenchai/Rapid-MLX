@@ -9,3 +9,4 @@
 
 - **Buffered tool-text parity**: buffered `/v1/responses` and `/v1/messages` replies now return tool-call-like text unchanged when no tools are offered or `tool_choice` is `none`, matching streaming replies. Fixes #4901.
 - **Image edit auth first**: with `--api-key` set, `/v1/images/edits` now answers an unauthenticated request with 401 before the upload size limit or multipart parsing runs, so it no longer reveals 413/400/422 for request shape. Fixes #4850.
+- **Chinese Desktop assistant identity**: Desktop's default assistant instruction now includes a Chinese line, so Chinese greetings describe what the assistant can write, translate, and explain instead of listing only its tools, and Chinese questions answered with a tool are more often answered in Chinese. Fixes #4907.
