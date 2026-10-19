@@ -494,6 +494,7 @@ def test_tensorfold_bootstrap_aligns_load_http_capacity_and_capability(
         )
     assert captured["load"].get("lanes", 1) == lanes
     assert captured["max_concurrent_requests"] == lanes
+    assert captured["generate_fn_accepts_cancel_event"] is True
     policy = captured["execution_policy"]
     assert (policy.capacity if policy else 1) == lanes
     if lanes == 1:
@@ -588,9 +589,7 @@ def stalled_provider(monkeypatch, request):
         ThreadPoolExecutor(max_workers=2) if getattr(request, "param", False) else None
     )
     backend = TensorFoldQwen27Backend(app, executor=executor)
-    # Set the forthcoming opt-in explicitly so the same test reproduces the old bug.
     provider = TensorFoldRequestProvider(backend)
-    provider._close_cancellable = True
     yield backend, provider, submitted, stopped, jobs
     for job in jobs:
         job.cancellation.cancel()
@@ -699,18 +698,18 @@ def test_provider_unregisters_after_scheduler_submission_failure(stalled_provide
     backend.close()
 
 
-def test_serial_provider_still_has_existing_unregistered_worker(stalled_provider):
+def test_serial_provider_close_releases_registered_worker(stalled_provider):
     backend, provider, submitted, stopped, jobs = stalled_provider
-    provider._close_cancellable = False
-    future = server._dflash_executor.submit(provider.generate, None, None, "prompt")
-    assert submitted.wait(2)
-    assert not backend._active
-    backend.close()
-    assert stopped.is_set()
-    assert not future.done()  # Existing serial leak, intentionally outside this fix.
-    jobs[0].cancellation.cancel()
-    with pytest.raises(RuntimeError, match="cancelled"):
-        future.result(timeout=1)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(provider.generate, None, None, "prompt")
+        assert submitted.wait(2)
+        assert len(backend._active) == 1
+        backend.close()
+        assert stopped.is_set()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            future.result(timeout=1)
+        assert jobs[0].cancellation.event.is_set()
+        assert not backend._active
 
 
 async def test_close_releases_deferred_stream_reservation(stalled_provider):
@@ -967,3 +966,194 @@ def test_client_stream_close_finalizes_inner_tracked_job(stalled_provider, monke
         assert jobs[0].cancellation.event.is_set()
     finally:
         backend.close()
+
+
+async def test_serial_timeout_then_close_releases_worker(stalled_provider, monkeypatch):
+    from fastapi import HTTPException
+
+    backend, provider, submitted, stopped, jobs = stalled_provider
+    lock = asyncio.Lock()
+    monkeypatch.setattr(server, "_dflash_lock", lock)
+
+    class RecordingExecutor(ThreadPoolExecutor):
+        def __init__(self):
+            super().__init__(max_workers=1)
+            self.futures = []
+
+        def submit(self, fn, /, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            self.futures.append(future)
+            return future
+
+    serial_executor = RecordingExecutor()
+    monkeypatch.setattr(server, "_dflash_executor", serial_executor)
+    admission = server._DFlashAdmission(1)
+    reservation = admission.reserve()
+    reservation.claim()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await server._non_stream_completion(
+                prompt="prompt",
+                request=SimpleNamespace(),
+                served_model_name="pilot",
+                gen_kwargs={},
+                model=None,
+                processor=SimpleNamespace(),
+                timeout=0.05,
+                admission_reservation=reservation,
+                generate_fn=provider.generate,
+            )
+        assert exc.value.status_code == 504
+        assert submitted.is_set()
+        assert len(backend._active) == 1
+        assert len(serial_executor.futures) == 1
+
+        await asyncio.wait_for(asyncio.to_thread(backend.close), 1)
+        assert stopped.is_set()
+        for _ in range(100):
+            if not admission._reservations and not lock.locked():
+                break
+            await asyncio.sleep(0.01)
+        assert not lock.locked(), "serial lock still held after timeout + close"
+        assert admission._reservations == 0, "reservation still deferred"
+        assert serial_executor.futures[0].done()
+        assert not backend._active
+    finally:
+        for job in jobs:
+            job.cancellation.cancel()
+        await asyncio.to_thread(serial_executor.shutdown, wait=True)
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_nonstream_timeout_cancel_event_releases_worker(
+    stalled_provider, monkeypatch, concurrent
+):
+    from fastapi import HTTPException
+
+    backend, provider, submitted, _, jobs = stalled_provider
+    lock = asyncio.Lock()
+    monkeypatch.setattr(server, "_dflash_lock", lock)
+    serial_executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(server, "_dflash_executor", serial_executor)
+    admission = server._DFlashAdmission(1)
+    reservation = admission.reserve()
+    reservation.claim()
+    policy = server.BackendExecutionPolicy(1, backend._executor) if concurrent else None
+    gen_kwargs = {"max_tokens": 8}
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await server._non_stream_completion(
+                prompt="prompt",
+                request=SimpleNamespace(),
+                served_model_name="pilot",
+                gen_kwargs=gen_kwargs,
+                model=None,
+                processor=SimpleNamespace(),
+                timeout=0.05,
+                admission_reservation=reservation,
+                generate_fn=provider.generate,
+                generate_fn_accepts_cancel_event=True,
+                execution_policy=policy,
+            )
+        assert exc.value.status_code == 504
+        assert submitted.is_set()
+        for _ in range(100):
+            if not admission._reservations and not backend._active:
+                break
+            await asyncio.sleep(0.01)
+        assert gen_kwargs == {"max_tokens": 8}
+        assert jobs[0].cancellation.event.is_set()
+        assert not backend._active
+        assert admission._reservations == 0
+        assert not lock.locked()
+        if not concurrent:
+            response = await asyncio.wait_for(
+                server._non_stream_completion(
+                    prompt="follow-up",
+                    request=server.ChatCompletionRequest(
+                        model="pilot",
+                        messages=[{"role": "user", "content": "hi"}],
+                    ),
+                    served_model_name="pilot",
+                    gen_kwargs={},
+                    model=None,
+                    processor=SimpleNamespace(),
+                    timeout=1,
+                    generate_fn=lambda *_args: ProviderResult("ok", [7], 1, 2),
+                ),
+                1,
+            )
+            assert response.choices[0].message.content == "ok"
+    finally:
+        for job in jobs:
+            job.cancellation.cancel()
+        backend.close()
+        await asyncio.to_thread(serial_executor.shutdown, wait=True)
+
+
+async def test_cancelled_nonstream_sets_tensorfold_cancel_event(
+    stalled_provider, monkeypatch
+):
+    backend, provider, submitted, _, jobs = stalled_provider
+    lock = asyncio.Lock()
+    monkeypatch.setattr(server, "_dflash_lock", lock)
+    serial_executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(server, "_dflash_executor", serial_executor)
+    admission = server._DFlashAdmission(1)
+    reservation = admission.reserve()
+    reservation.claim()
+    task = asyncio.create_task(
+        server._non_stream_completion(
+            prompt="prompt",
+            request=SimpleNamespace(),
+            served_model_name="pilot",
+            gen_kwargs={},
+            model=None,
+            processor=SimpleNamespace(),
+            timeout=0,
+            admission_reservation=reservation,
+            generate_fn=provider.generate,
+            generate_fn_accepts_cancel_event=True,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(submitted.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        for _ in range(100):
+            if not admission._reservations and not backend._active:
+                break
+            await asyncio.sleep(0.01)
+        assert jobs[0].cancellation.event.is_set()
+        assert admission._reservations == 0
+        assert not backend._active
+        assert not lock.locked()
+    finally:
+        for job in jobs:
+            job.cancellation.cancel()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        backend.close()
+        await asyncio.to_thread(serial_executor.shutdown, wait=True)
+
+
+async def test_nonstream_default_does_not_pass_cancel_event(monkeypatch):
+    monkeypatch.setattr(server, "_dflash_lock", asyncio.Lock())
+
+    def generate(_model, _processor, _prompt):
+        return ProviderResult("ok", [7], 1, 2)
+
+    response = await server._non_stream_completion(
+        prompt="prompt",
+        request=server.ChatCompletionRequest(
+            model="pilot", messages=[{"role": "user", "content": "hi"}]
+        ),
+        served_model_name="pilot",
+        gen_kwargs={},
+        model=None,
+        processor=SimpleNamespace(),
+        timeout=1,
+        generate_fn=generate,
+    )
+    assert response.choices[0].message.content == "ok"

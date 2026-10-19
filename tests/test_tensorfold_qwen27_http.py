@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -16,6 +17,16 @@ from rapid_mlx.speculative.tensorfold_qwen27_server import (
     render_prompt,
     validate_http_request,
 )
+
+
+def _fake_backend(app):
+    return SimpleNamespace(
+        _app=app,
+        _lock=threading.Lock(),
+        _closed=False,
+        _active={},
+        _provider_iterators=set(),
+    )
 
 
 @pytest.fixture
@@ -355,9 +366,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
         _think_close=lambda: ((99,), 99),
     )
     audit = tmp_path / "tokens.ndjson"
-    provider = TensorFoldRequestProvider(
-        SimpleNamespace(_app=app), audit_path=str(audit)
-    )
+    provider = TensorFoldRequestProvider(_fake_backend(app), audit_path=str(audit))
     app.tokenizer.apply_chat_template = lambda messages, **kwargs: "history"
     app.tokenizer.encode = lambda text: [10] if text == "history" else [10, 11]
     app.system_prefix_len = lambda *args, **kwargs: 0
@@ -411,7 +420,7 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
 
     # Truncation the request omits comes from the model; what it sets wins.
     provider = TensorFoldRequestProvider(
-        SimpleNamespace(_app=app), sampling_defaults={"top_k": 20, "top_p": 0.95}
+        _fake_backend(app), sampling_defaults={"top_k": 20, "top_p": 0.95}
     )
     list(provider.stream_generate(None, None, "prompt", temperature=0.7, seed=1))
     assert scheduler.job.sampling[0] == {
@@ -500,7 +509,7 @@ def test_provider_closed_timeout_error_and_generate(
         for key, value in attrs.items():
             setattr(module, key, value)
         monkeypatch.setitem(sys.modules, name, module)
-    backend = SimpleNamespace(_app=None)
+    backend = _fake_backend(None)
     provider = TensorFoldRequestProvider(backend)
     with pytest.raises(RuntimeError, match="closed"):
         list(provider._outputs("x"))
@@ -517,7 +526,7 @@ def test_provider_closed_timeout_error_and_generate(
         scheduler=SimpleNamespace(submit=lambda _j: None),
         _resolve_sampling=lambda *a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(_fake_backend(app))
     with pytest.raises(RuntimeError, match="worker stopped"):
         list(provider.generate(None, None, "x", max_tokens=1))
 
@@ -588,7 +597,7 @@ def test_provider_timeout_worker_error_and_generate_success(
         scheduler=Scheduler(),
         _resolve_sampling=lambda *_a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(_fake_backend(app))
     result = provider.generate(None, None, "x", max_tokens=1)
     assert result.text == "x"
     assert result.generation_tokens == 1
@@ -598,7 +607,7 @@ def test_provider_timeout_worker_error_and_generate_success(
         list(provider._outputs("x", max_tokens=1))
 
     terminal = RequestOutput(request_id="r", finished=True)
-    provider._outputs = lambda *_a, **_k: iter([terminal])
+    provider._outputs = lambda *_a, **_k: (output for output in [terminal])
     assert list(provider.stream_generate(None, None, "x")) == []
 
 
@@ -687,7 +696,7 @@ def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -
         scheduler=Scheduler(),
         _resolve_sampling=lambda *_a: {},
     )
-    provider = TensorFoldRequestProvider(SimpleNamespace(_app=app))
+    provider = TensorFoldRequestProvider(_fake_backend(app))
     if error:
         with pytest.raises(RuntimeError, match=error):
             list(provider._outputs("prompt", max_tokens=2))

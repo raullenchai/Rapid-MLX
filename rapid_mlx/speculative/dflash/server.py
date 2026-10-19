@@ -720,6 +720,7 @@ def _build_app(
     generate_fn: Any | None = None,
     generation_kwargs_fn: Any | None = None,
     generation_kwargs_with_request: bool = False,
+    generate_fn_accepts_cancel_event: bool = False,
     validate_request_fn: Any | None = None,
     backend_name: str = "DFlash",
     speculative_info: SpeculativeDecodingInfo | None = None,
@@ -1430,6 +1431,7 @@ def _build_app(
                 admission_reservation=reservation,
                 enable_thinking=effective_thinking,
                 generate_fn=generate_fn,
+                generate_fn_accepts_cancel_event=generate_fn_accepts_cancel_event,
                 backend_name=backend_name,
                 execution_policy=execution_policy,
             )
@@ -2262,6 +2264,7 @@ async def _non_stream_completion(
     admission_reservation: _DFlashAdmissionReservation | None = None,
     enable_thinking: bool = False,
     generate_fn: Any | None = None,
+    generate_fn_accepts_cancel_event: bool = False,
     backend_name: str = "DFlash",
     execution_policy: BackendExecutionPolicy | None = None,
 ) -> ChatCompletionResponse:
@@ -2315,6 +2318,12 @@ async def _non_stream_completion(
     executor = execution_policy.executor if execution_policy else _dflash_executor
     lock_acquired = False
     worker_future: asyncio.Future[Any] | None = None
+    cancel_event = threading.Event() if generate_fn_accepts_cancel_event else None
+    generate_kwargs = (
+        gen_kwargs
+        if cancel_event is None
+        else {**gen_kwargs, "cancel_event": cancel_event}
+    )
 
     def _release_after_worker(_future: asyncio.Future[Any]) -> None:
         """Run in the event loop after a timed-out worker exits."""
@@ -2357,7 +2366,7 @@ async def _non_stream_completion(
         # the stream path's error handling.
         def _generate_safely():
             try:
-                return active_generate_fn(model, processor, prompt, **gen_kwargs)
+                return active_generate_fn(model, processor, prompt, **generate_kwargs)
             except Exception as e:  # noqa: BLE001 — surface as HTTPException below
                 return e
 
@@ -2379,6 +2388,8 @@ async def _non_stream_completion(
             )
     except asyncio.TimeoutError as exc:
         if worker_future is not None:
+            if cancel_event is not None:
+                cancel_event.set()
             _defer_worker_cleanup()
         raise HTTPException(
             status_code=504,
@@ -2386,6 +2397,8 @@ async def _non_stream_completion(
         ) from exc
     except asyncio.CancelledError:
         if worker_future is not None:
+            if cancel_event is not None:
+                cancel_event.set()
             _defer_worker_cleanup()
         raise
     finally:

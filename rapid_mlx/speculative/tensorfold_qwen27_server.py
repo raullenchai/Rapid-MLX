@@ -151,11 +151,9 @@ class TensorFoldRequestProvider:
         backend: TensorFoldQwen27Backend,
         *,
         audit_path: str | None = None,
-        close_cancellable: bool = False,
         sampling_defaults: dict[str, float | int] | None = None,
     ) -> None:
         self.backend = backend
-        self._close_cancellable = close_cancellable
         self._sampling_defaults = dict(sampling_defaults or {})
         self._audit_path = audit_path
         self._audit_lock = threading.Lock()
@@ -186,9 +184,6 @@ class TensorFoldRequestProvider:
     def _track_iterator(
         self, iterator: Generator[Any, None, None]
     ) -> Generator[Any, None, None]:
-        if not self._close_cancellable:
-            return iterator
-
         def tracked() -> Generator[Any, None, None]:
             try:
                 yield  # Prime cleanup without pulling the inner iterator.
@@ -218,6 +213,7 @@ class TensorFoldRequestProvider:
         from tensorfold.server.scheduler import ChatJob
         from tensorfold.server.stopping import StopPolicy
 
+        cancel_event = kwargs.pop("cancel_event", None)
         app = self.backend._app
         if app is None:
             raise RuntimeError("TensorFold backend is closed")
@@ -279,18 +275,18 @@ class TensorFoldRequestProvider:
         outputs: list[RequestOutput] = []
         registered = False
         try:
-            if self._close_cancellable:
-                # Registration and closing share one lock: close either sees
-                # this cancellation or submission is refused before it starts.
-                with self.backend._lock:
-                    if self.backend._closed:
-                        raise RuntimeError("TensorFold backend is closed")
-                    self.backend._active[request_id] = cancellation
-                    registered = True
+            # Registration and closing share one lock: close either sees this
+            # cancellation or submission is refused before it starts.
+            with self.backend._lock:
+                if self.backend._closed:
+                    raise RuntimeError("TensorFold backend is closed")
+                self.backend._active[request_id] = cancellation
+                registered = True
             app.scheduler.submit(job)
             while True:
-                if self._close_cancellable:
-                    cancellation.check()
+                if cancel_event is not None and cancel_event.is_set():
+                    cancellation.cancel()
+                cancellation.check()
                 try:
                     chunk = job.chunks.get(timeout=0.05)
                 except queue.Empty:
@@ -413,16 +409,16 @@ class TensorFoldRequestProvider:
                     prompt_tokens=output.prompt_tokens,
                 )
         finally:
-            if self._close_cancellable:
-                iterator.close()
+            iterator.close()
 
     def generate(
         self, _model: Any, _processor: Any, prompt: str, **kwargs: Any
     ) -> ProviderResult:
+        cancel_event = kwargs.pop("cancel_event", None)
         text = ""
         prompt_tokens = 0
         tokens: list[int] = []
-        for output in self._outputs(prompt, **kwargs):
+        for output in self._outputs(prompt, **kwargs, cancel_event=cancel_event):
             text = output.output_text
             prompt_tokens = output.prompt_tokens
             tokens = output.output_token_ids
@@ -619,7 +615,6 @@ def run_tensorfold_qwen27_server(
     provider = TensorFoldRequestProvider(
         backend,
         audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
-        close_cancellable=lanes > 1,
         sampling_defaults=_model_sampling_defaults(main_model_repo),
     )
     from rapid_mlx.api.models import ModelInfo, SpeculativeDecodingInfo
@@ -678,6 +673,7 @@ def run_tensorfold_qwen27_server(
         render_prompt_fn=render_prompt,
         generation_kwargs_fn=generation_kwargs,
         generation_kwargs_with_request=True,
+        generate_fn_accepts_cancel_event=True,
         validate_request_fn=functools.partial(
             validate_http_request,
             supports_reasoning_budget=supports_reasoning_budget,
