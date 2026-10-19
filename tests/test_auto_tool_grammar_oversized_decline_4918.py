@@ -278,6 +278,27 @@ def test_complete_probe_bound_walks_plain_dict_tool_extensions():
     )
 
 
+def test_complete_probe_bound_walks_object_model_extra():
+    tools = [
+        SimpleNamespace(
+            type="function",
+            function=tool("object")["function"],
+            model_extra={
+                "extension": "x" * chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES
+            },
+        )
+    ]
+
+    assert chat._tools_within_grammar_bounds(tools)
+    assert not chat._tools_within_grammar_bounds(
+        tools,
+        max_tools=chat._TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS,
+        max_schema_bytes=chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_BYTES,
+        max_schema_depth=chat._TOOL_NATIVE_WIRE_PROBE_MAX_SCHEMA_DEPTH,
+        whole_tool=True,
+    )
+
+
 def test_helper_name_scan_does_not_read_parameter_schemas(monkeypatch):
     class Function:
         name = "object_tool"
@@ -321,7 +342,9 @@ def test_helper_scans_at_most_tool_count_cap(monkeypatch):
         structure_info=lambda: lambda name: SimpleNamespace(begin="<tool_call>")
     )
     req = request()
-    req.tools = [tool("bad>name") for _ in range(chat._TOOL_GRAMMAR_MAX_TOOLS)]
+    req.tools = [
+        tool("bad>name") for _ in range(chat._TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS)
+    ]
     req.tools.append(tool("search"))
     probe = Mock(return_value=True)
     monkeypatch.setattr(chat, "_template_renders_native_xml_tool_call", probe)
@@ -330,6 +353,15 @@ def test_helper_scans_at_most_tool_count_cap(monkeypatch):
         engine(), cfg(), req, structured
     )
     probe.assert_not_called()
+
+
+def test_oversized_auto_finds_safe_name_after_grammar_tool_cap():
+    tools = [tool("bad>name") for _ in range(400)]
+    tools[300] = tool("search")
+    req = request(tools=tools)
+
+    assert not chat._tools_within_grammar_bounds(req.tools)
+    assert chat._enforce_tool_grammar_bounds_or_400(cfg(), req, engine()) is None
 
 
 def test_helper_returns_false_when_parser_construction_fails(monkeypatch):

@@ -768,14 +768,14 @@ def _tools_within_grammar_bounds(
     try:
         for t in tools:
             if whole_tool:
-                complete_tool = (
-                    t
-                    if isinstance(t, dict)
-                    else {
+                if isinstance(t, dict):
+                    complete_tool = t
+                else:
+                    complete_tool = {
                         "type": getattr(t, "type", None),
                         "function": getattr(t, "function", None),
                     }
-                )
+                    complete_tool.update(getattr(t, "model_extra", None) or {})
                 _walk_size_and_depth(complete_tool, budget, 0, max_schema_depth)
                 continue
             fn = t.function if hasattr(t, "function") else t.get("function", t)
@@ -953,8 +953,9 @@ def _auto_tool_grammar_declined_for_native_wire(
 ) -> bool:
     """Whether auto grammar is declined by the builder's exact native-wire probe.
 
-    Name discovery scans at most the grammar tool-count cap and never reads client
-    parameter schemas. The caller separately bounds oversized render work.
+    Name discovery scans at most the native-wire probe tool-count cap and never
+    reads client parameter schemas. The caller separately bounds oversized render
+    work.
     """
     choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
     if choice is None or choice["mode"] != "auto":
@@ -974,7 +975,7 @@ def _auto_tool_grammar_declined_for_native_wire(
 
     probe_name = None
     for index, tool in enumerate(getattr(request, "tools", None) or ()):
-        if index >= _TOOL_GRAMMAR_MAX_TOOLS:
+        if index >= _TOOL_NATIVE_WIRE_PROBE_MAX_TOOLS:
             break
         function = (
             tool.function if hasattr(tool, "function") else tool.get("function", tool)
