@@ -683,3 +683,20 @@ def test_serve_notes_wait_for_log_file(monkeypatch, capsys, tmp_path):
     lm.flush_serve_startup_notes(logged)
     lm.flush_serve_startup_notes(plain)
     assert capsys.readouterr().err == "first\nsecond\n"
+
+
+def test_external_duplicate_ids_judge_the_copy_serve_loads(
+    cache, tmp_path, monkeypatch
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    (write_model(first / "acme" / "chat") / "tokenizer.json").unlink()
+    write_model(second / "acme" / "chat")
+    monkeypatch.setattr(ma, "DEFAULT_EXTERNAL_MODEL_ROOTS", (str(first), str(second)))
+    # serve resolves the id to the first root's copy, so the id is not offered
+    # while that copy is unusable.
+    assert ma.resolve_model("acme/chat") == str(first / "acme" / "chat")
+    assert lm.discover_runnable_chat_models() == []
+    write_model(first / "acme" / "chat")
+    (found,) = lm.discover_runnable_chat_models()
+    assert found.model == "acme/chat"

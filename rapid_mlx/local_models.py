@@ -49,6 +49,10 @@ def _checkpoint_dir(repo: str, external: bool) -> str | None:
     from rapid_mlx.model_metadata import read_cached_model_metadata
 
     if external:
+        # The external scanner keeps one row per repo id (the first configured
+        # root holding a complete copy), and serve resolves the id to that same
+        # first copy. Judge exactly that directory: a later root's copy of the
+        # same id is never what serve would load.
         return model_aliases._resolve_external_model_path(repo)
     metadata = read_cached_model_metadata(repo)
     if metadata is None or metadata.snapshot_dir is None:
