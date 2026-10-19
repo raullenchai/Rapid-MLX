@@ -30,6 +30,7 @@ def cache(tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(hub))
     monkeypatch.setattr("huggingface_hub.constants.HUGGINGFACE_HUB_CACHE", str(hub))
     monkeypatch.setattr(pf, "supported_model_types", lambda: frozenset({"qwen2"}))
+    monkeypatch.setattr(pf, "chat_model_types", lambda: frozenset({"qwen2"}))
     monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 16 << 30)
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16)
     monkeypatch.delenv("RAPID_MLX_EXTRA_MODEL_ROOTS", raising=False)
@@ -700,3 +701,32 @@ def test_external_duplicate_ids_judge_the_copy_serve_loads(
     write_model(first / "acme" / "chat")
     (found,) = lm.discover_runnable_chat_models()
     assert found.model == "acme/chat"
+
+
+@pytest.mark.parametrize(
+    ("repo", "offered"),
+    [
+        ("org/embedded-chat", True),
+        ("asr-labs/chat", True),
+        ("org/Qwen3-Embedding-4B", False),
+        ("org/chat-reranker", False),
+    ],
+)
+def test_name_segments_not_substrings(cache, repo, offered):
+    snapshot(cache, repo)
+    expected = [repo] if offered else []
+    assert [m.repo for m in lm.discover_runnable_chat_models()] == expected
+
+
+def test_speech_model_type_is_not_chat(cache, monkeypatch):
+    # A speech checkpoint may have a supported loader and a chat-like head.
+    monkeypatch.setattr(
+        pf, "supported_model_types", lambda: frozenset({"qwen2", "speechy"})
+    )
+    snapshot(
+        cache, "org/voice", model_type="speechy", arch="SpeechyForConditionalGeneration"
+    )
+    assert lm.discover_runnable_chat_models() == []
+    monkeypatch.setattr(pf, "chat_model_types", lambda: None)
+    snapshot(cache, "org/chat")
+    assert lm.discover_runnable_chat_models() == []

@@ -259,11 +259,10 @@ def _installed_types(package: str, model_dirs: tuple[str, ...]) -> set[str] | No
     return names
 
 
-def supported_model_types() -> frozenset[str] | None:
-    """Every ``model_type`` some installed (or installable) loader constructs.
+def chat_model_types() -> frozenset[str] | None:
+    """``model_type`` values the text and vision loaders build (no speech).
 
-    ``None`` means the inventory cannot be established (mlx-lm missing or its
-    layout unreadable); callers must then give no architecture verdict.
+    ``None`` when the mlx-lm inventory cannot be established.
     """
     text_types = _installed_types("mlx_lm", ("models",))
     if text_types is None:
@@ -275,6 +274,18 @@ def supported_model_types() -> frozenset[str] | None:
         from rapid_mlx.byom._vlm_model_types import MLX_VLM_MODEL_TYPES
 
         vision_types = set(MLX_VLM_MODEL_TYPES)
+    return frozenset(text_types | vision_types | RAPID_MODEL_TYPES)
+
+
+def supported_model_types() -> frozenset[str] | None:
+    """Every ``model_type`` some installed (or installable) loader constructs.
+
+    ``None`` means the inventory cannot be established (mlx-lm missing or its
+    layout unreadable); callers must then give no architecture verdict.
+    """
+    chat_types = chat_model_types()
+    if chat_types is None:
+        return None
     # Speech runtimes (the optional [audio] extra), when installed. Speech
     # checkpoints are rarely decoder-only, but a TTS built on a causal LM is.
     audio_dirs = (
@@ -287,7 +298,7 @@ def supported_model_types() -> frozenset[str] | None:
     if audio_root is not None:
         for sub in audio_dirs:
             audio_types |= _module_names(audio_root / sub)
-    return frozenset(text_types | vision_types | audio_types | RAPID_MODEL_TYPES)
+    return frozenset(chat_types | audio_types)
 
 
 def _mlx_lm_version() -> str | None:
@@ -824,7 +835,7 @@ def _emit_rejection(args: Any, exc: PreflightRejectedError) -> None:
 
 def _note_uncataloged_serve(args: Any) -> None:
     """Identify local models whose catalog compatibility has not been tested."""
-    ref = getattr(args, "_original_alias", None) or getattr(args, "model", "")
+    ref = str(getattr(args, "_original_alias", None) or getattr(args, "model", ""))
     if (
         args.command == "serve"
         and not getattr(args, "_serve_default_selected", False)

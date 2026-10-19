@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -31,15 +32,21 @@ class LocalModel:
         return self.alias is not None
 
 
-_NON_CHAT_TOKENS = (
-    "embed",
-    "rerank",
-    "whisper",
-    "tts",
-    "vad",
-    "tokenizer",
-    "asr",
-    "stt",
+# Whole name segments that mark a non-chat role (embedding, reranking, speech).
+_NON_CHAT_TOKENS = frozenset(
+    {
+        "embed",
+        "embedding",
+        "embeddings",
+        "rerank",
+        "reranker",
+        "whisper",
+        "tts",
+        "vad",
+        "tokenizer",
+        "asr",
+        "stt",
+    }
 )
 
 
@@ -126,14 +133,28 @@ def _uncataloged_chat(
 ) -> bool | None:
     """``None`` when not a runnable chat model, else whether it is MLX-native."""
     from rapid_mlx.byom.alternatives import _mlx_bits
-    from rapid_mlx.byom.preflight import evaluate
+    from rapid_mlx.byom.preflight import chat_model_types, evaluate
 
     lowered = repo.lower()
-    if any(token in lowered for token in _NON_CHAT_TOKENS):
+    # Name heuristics look at the repository name's own segments only, never
+    # the publisher, so ``org/embedded-chat`` or a publisher named "...asr..."
+    # is not excluded by accident.
+    segments = re.split(r"[^a-z0-9]+", lowered.rsplit("/", 1)[-1])
+    if any(segment in _NON_CHAT_TOKENS for segment in segments):
         return None
-    if lowered.endswith(("-draft", "-drafter", "_draft", "_drafter")):
+    if segments[-1] in ("draft", "drafter"):
         return None
     config = inspection.config
+    # Only text and vision loaders give a chat model; speech checkpoints with a
+    # causal or conditional-generation head are never a chat default.
+    model_type = config.get("model_type")
+    chat_types = chat_model_types()
+    if (
+        not isinstance(model_type, str)
+        or chat_types is None
+        or (model_type not in chat_types and model_type.lower() not in chat_types)
+    ):
+        return None
     architectures = config.get("architectures")
     if not isinstance(architectures, (list, tuple)) or not any(
         isinstance(name, str)
