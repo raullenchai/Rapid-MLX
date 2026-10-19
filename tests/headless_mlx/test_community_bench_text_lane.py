@@ -689,6 +689,77 @@ def test_text_lane_uses_pinned_v41_serial_runtime(
     assert identity_calls[1][1]["snapshot_path"] == str(mtp_path)
 
 
+def test_text_lane_resolves_pinned_mixed_precision_product(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from rapid_mlx.community_bench import runner, workspace
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    product = artifacts.FLASH_1017
+    target_path = tmp_path / "target"
+    target_path.mkdir()
+    calls: dict[str, object] = {}
+    tokenizer = object()
+    model = SimpleNamespace(args=SimpleNamespace(max_position_embeddings=1_048_576))
+
+    monkeypatch.setattr(
+        workspace, "benchmark_runtime_readiness", lambda *_args: {"status": "ready"}
+    )
+    monkeypatch.setattr(
+        artifacts, "require_product_memory", lambda a: calls.setdefault("memory", a)
+    )
+
+    def resolve(artifact, *, allow_local=True):
+        calls["resolve"] = (artifact, allow_local)
+        return target_path, target_path / "dspark"
+
+    monkeypatch.setattr(artifacts, "resolve_product_paths", resolve)
+
+    def load(target, mtp, **kwargs):
+        calls["load"] = (target, mtp, kwargs)
+        return model, tokenizer, object()
+
+    async def standardized(engine, active_tokenizer, **kwargs):
+        return _bench_result()
+
+    monkeypatch.setattr(local_runner, "_deepseek_v41_load_product_runtime", load)
+    monkeypatch.setattr(local_runner, "_deepseek_v41_input_limit", lambda: 8192)
+    monkeypatch.setattr(runner, "run_standardized_bench", standardized)
+    monkeypatch.setattr(
+        local_runner,
+        "unresolved_model_identity",
+        lambda *args, **kwargs: {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": {"kind": "huggingface", "repo_id": args[0]},
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": {"kind": "unknown", "base_dtype": "unknown"},
+                }
+            ],
+        },
+    )
+
+    asyncio.run(local_runner._text_measurements(product.alias, product.target_repo))
+
+    assert calls["memory"] == product
+    assert calls["resolve"] == (product, False)
+    assert calls["load"] == (
+        str(target_path),
+        str(target_path / "dspark"),
+        {
+            "target_revision": product.target_revision,
+            "mtp_revision": product.mtp_revision,
+            "mtp_identity": product.mtp_repo,
+            "mixed_target_precision": True,
+        },
+    )
+
+
 def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

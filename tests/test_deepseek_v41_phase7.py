@@ -500,3 +500,123 @@ def test_resolution_is_taken_once(monkeypatch, tmp_path):
     a.resolve_product_paths(a.FLASH_1017)
     assert a.take_resolved_product_paths(a.FLASH_1017) == (root, root / "dspark", True)
     assert a.take_resolved_product_paths(a.FLASH_1017) is None
+
+
+def test_pull_uses_pinned_product_resolution(monkeypatch):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
+    disk, resolved = [], []
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *args, **kw: disk.append(kw))
+    monkeypatch.setattr(
+        a, "resolve_product_paths", lambda *args, **kw: resolved.append((args, kw))
+    )
+    cli.pull_command(
+        SimpleNamespace(
+            model=a.FLASH_1017.target_repo,
+            _original_alias=a.FLASH_1017.alias,
+            bits=None,
+            format=None,
+        )
+    )
+    assert disk == [{"revision_override": a.FLASH_1017.target_revision}]
+    assert resolved == [((a.FLASH_1017,), {"allow_local": False})]
+
+
+def test_pinned_cli_checks_disk_before_resolution(monkeypatch):
+    from rapid_mlx import _version_check, cli
+    from rapid_mlx import server as generic_server
+    from rapid_mlx.models.deepseek_v41_native import server
+    from tests.test_deepseek_v41_artifacts import _product_serve_args
+
+    args = _product_serve_args("--served-model-name", "dsv41-t256")
+    args.model = a.FLASH_1017.target_repo
+    args._original_alias = a.FLASH_1017.alias
+    monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(
+        _version_check, "print_staleness_warning_if_any", lambda **_: None
+    )
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *args, **kw: None)
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
+    order = []
+    monkeypatch.setattr(
+        cli, "_check_disk_space", lambda repo, **kw: order.append(("disk", repo, kw))
+    )
+    monkeypatch.setattr(
+        a, "resolve_product_paths", lambda artifact: order.append(("resolve", artifact))
+    )
+    monkeypatch.setattr(generic_server, "configure_logging", lambda _: "warning")
+    monkeypatch.setattr(server, "run_server", lambda **kw: None)
+    cli.serve_command(args)
+    assert order == [
+        (
+            "disk",
+            a.FLASH_1017.target_repo,
+            {"force": False, "revision_override": a.FLASH_1017.target_revision},
+        ),
+        ("resolve", a.FLASH_1017),
+    ]
+
+
+def test_original_lane_resolution_uses_its_own_snapshots(monkeypatch, tmp_path):
+    monkeypatch.setattr(a, "download_target_snapshot", lambda: tmp_path / "t")
+    monkeypatch.setattr(a, "download_mtp_snapshot", lambda: tmp_path / "m")
+    assert a.resolve_product_paths(a.REAP, allow_local=False) == (
+        tmp_path / "t",
+        tmp_path / "m",
+    )
+
+
+def test_server_rejects_unknown_product():
+    pytest.importorskip("mlx")
+    from rapid_mlx.models.deepseek_v41_native import server
+
+    with pytest.raises(ValueError, match="unknown V4.1 product artifact"):
+        server.run_server(
+            host="127.0.0.1",
+            port=0,
+            served_model_name="x",
+            default_max_tokens=1,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+            model_name="not-a-product",
+        )
+
+
+@pytest.mark.parametrize("experts", [(4,), (4, 1), (4, 9)])
+def test_per_layer_expert_counts_must_cover_layers_and_top_k(experts):
+    from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
+
+    with pytest.raises(ValueError, match="experts_per_layer"):
+        ModelArgs(
+            n_layers=2,
+            n_routed_experts=8,
+            n_activated_experts=2,
+            experts_per_layer=experts,
+        )
+
+
+@pytest.mark.requires_mlx
+def test_block_sizes_routed_experts_per_layer():
+    pytest.importorskip("mlx")
+    from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
+    from rapid_mlx.models.deepseek_v41_native.model import Block
+
+    args = ModelArgs(
+        dim=16,
+        n_heads=8,
+        head_dim=8,
+        rope_head_dim=2,
+        q_lora_rank=8,
+        o_lora_rank=3,
+        o_groups=2,
+        moe_inter_dim=8,
+        n_layers=2,
+        compress_ratios=(0, 0),
+        n_routed_experts=8,
+        n_activated_experts=2,
+        experts_per_layer=(4, 8),
+    )
+    assert [Block(i, args).ffn.gate.weight.shape[0] for i in range(2)] == [4, 8]
