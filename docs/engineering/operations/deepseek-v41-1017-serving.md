@@ -67,7 +67,7 @@ Metal interpreter. These are owner commands; they were not executed in phase 7.
 Tests used the separate CPU-only `.venv/bin/python` interpreter.
 
 ```sh
-RAPID_MLX_V41_MODEL_DIR=/Volumes/NVMe-4T/models-cold/local/deepseek-v41-1017-rd/T256 \
+RAPID_MLX_V41_MODEL_DIR=$RD_BUILDS/T256 \
   .venv-metal/bin/python -m rapid_mlx.cli serve deepseek-v41-flash-1017 \
   --host 127.0.0.1 --port 8000 --served-model-name dsv41-t256 --max-tokens 4096
 ```

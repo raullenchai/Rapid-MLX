@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "purpose": "Calibration and held-out RD screening only; never execute dataset scripts",
-  "destination": "/Volumes/RTL-2T/datasets/deepseek-v41-1017-rd",
+  "destination": "$RD_DATA",
   "fetch_status": "Complete: 36 calibration and 38 held-out slices; source pins, rows, licenses and hashes in destination/provenance.json",
   "max_total_download_bytes": 20000000000,
   "max_export_bytes_per_slice": 2000000,

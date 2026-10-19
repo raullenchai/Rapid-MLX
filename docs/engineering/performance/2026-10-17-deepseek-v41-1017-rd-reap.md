@@ -259,13 +259,13 @@ Set an existing native reference path; generated score/logit files stay in the
 allowed scratch root. These commands perform no dataset/model downloads.
 
 ```sh
-cd /Users/raullenstudio/orca/workspaces/rapid-mlx/dsv41-reap
+cd <rapid-mlx checkout>
 PY=.venv/bin/python
 OUT=/private/tmp/rapid-mlx-dsv41-1017
 REV=1bae0e1088993b9b82de08f59de5be5a34e42170
 SRC="$HOME/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/$REV"
-CAL=/Volumes/RTL-2T/datasets/deepseek-v41-1017-rd/calibration.json
-HELD=/Volumes/RTL-2T/datasets/deepseek-v41-1017-rd/heldout.json
+CAL=$RD_DATA/calibration.json
+HELD=$RD_DATA/heldout.json
 : "${DSV41_NATIVE_REFERENCE:?Set an existing unpruned native reference with SSD affine Engram}"
 REF="$DSV41_NATIVE_REFERENCE"
 

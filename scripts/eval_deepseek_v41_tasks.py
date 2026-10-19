@@ -54,7 +54,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 VERSION = 1
-CAPS = {"gsm8k": 128, "mmlu_pro": 16, "humaneval": 512, "tools": 192}
+CAPS = {"gsm8k": 512, "mmlu_pro": 512, "humaneval": 512, "tools": 192}
 DEFAULT_ROOT = Path("/private/tmp/rapid-mlx-dsv41-1017/phase6")
 DATASETS = {
     "gsm8k": ("openai/gsm8k", "main/test-00000-of-00001.parquet"),
