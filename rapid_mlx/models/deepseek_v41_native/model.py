@@ -29,6 +29,7 @@ from .attention import Attention
 from .cache import ModelCache
 from .config import ModelArgs
 from .engram import Engram, EngramHasher
+from .head_gemv import head_logits
 from .hyper_connections import (
     hc_mixes,
     hc_post,
@@ -219,7 +220,8 @@ class Model(nn.Module):
         )  # collapse with the last ffn_pre
         if last_logit_only:
             h = h[:, -1:]
-        logits = self.head(h.astype(mx.float32))  # fp32 logits, as the reference
+        # fp32 logits, as the reference
+        logits = head_logits(self.head, h.astype(mx.float32))
         cache.offset = start_pos + n
         if return_dspark_hidden:
             missing = [
