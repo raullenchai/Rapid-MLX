@@ -236,23 +236,27 @@ def test_load_alias_names_caches_by_mtime(
     assert refreshed == ["alpha", "beta"]
 
 
-def test_cli_lazy_imports_argcomplete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cli_lazy_imports_argcomplete() -> None:
     """``rapid_mlx.cli`` must NOT import ``argcomplete`` at module load
     — the minimal-deps CI lane runs without it. Regression guard for
     the lazy-import fix in the round-2 of this PR."""
-    import importlib
+    import subprocess
     import sys
 
-    # Force-reload cli with argcomplete blocked at import time.
-    monkeypatch.setitem(sys.modules, "argcomplete", None)
-    sys.modules.pop("rapid_mlx.cli", None)
-    cli = importlib.import_module("rapid_mlx.cli")
-
-    # The module imported successfully (no ModuleNotFoundError) and
-    # exports the expected entry point.
-    assert hasattr(cli, "main"), "cli module missing main() entry point"
+    # A fresh process proves the import does not require argcomplete and avoids
+    # replacing the shared cli module that other tests have already imported.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.modules['argcomplete'] = None; "
+            "from rapid_mlx import cli; assert hasattr(cli, 'main')",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
