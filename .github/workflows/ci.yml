@@ -635,6 +635,7 @@ jobs:
             tests/test_deepseek_v4_vendored.py \
             tests/test_deepseek_v41_artifacts.py \
             tests/test_deepseek_v41_affine_route_qmv.py \
+            tests/test_deepseek_v41_head_gemv.py \
             tests/test_deepseek_v41_dspark.py \
             tests/test_deepseek_v41_engram_offload.py \
             tests/test_deepseek_v41_hyper_connections.py \
