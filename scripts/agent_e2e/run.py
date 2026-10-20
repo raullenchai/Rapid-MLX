@@ -163,6 +163,12 @@ def handle_first_run_menus(
     agent: str, output: str, master: int, proc: subprocess.Popen, sink
 ) -> str:
     """Answer only known local onboarding prompts, never a cloud login."""
+    if agent == "hermes":
+        if "Choice [default 3]:" in _ANSI.sub("", output):
+            os.write(master, b"\r")  # Decline optional telemetry.
+            more, _ = read_until(master, proc, 8, sink)
+            return output + more
+        return output
     if agent != "claude-code":
         return output
     answered = set()
