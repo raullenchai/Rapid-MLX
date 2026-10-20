@@ -140,11 +140,11 @@ def session(
         target.unlink()
     first_prompt = (
         f"Create hello.txt containing exactly hi-{marker}, then read it "
-        "back using a tool and report what you read.\n"
+        "back using a tool and report what you read.\r"
     )
     second_prompt = (
         "Use a tool to append -second to hello.txt, then read the "
-        "file back and report its exact contents.\n"
+        "file back and report its exact contents.\r"
     )
     master, slave = open_terminal()
     started = time.monotonic()
