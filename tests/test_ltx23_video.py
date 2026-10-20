@@ -287,11 +287,11 @@ async def test_video_multipart_gate_authenticates_before_reading_body(
         ),
         (
             [(b"authorization", b"Bearer secret"), (b"authorization", b"Bearer wrong")],
-            413,
-            None,
+            401,
+            "Invalid API key",
         ),
         ([(b"authorization", b"Bearer  secret ")], 413, None),
-        ([(b"authorization", b"Basic xyz")], 401, "API key required"),
+        ([(b"authorization", b"Basic xyz")], 401, "Invalid API key"),
     ],
     ids=["duplicate-wrong-first", "duplicate-valid-first", "padded", "non-bearer"],
 )
