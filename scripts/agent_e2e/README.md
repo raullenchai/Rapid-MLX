@@ -30,8 +30,8 @@ python3 scripts/agent_e2e/run.py \
 ```
 
 The runner drives `rapid-mlx launch <agent>` through a pseudo-terminal. It
-answers known local first-run theme, dummy-key confirmation, and optional
-telemetry menus;
+answers known local first-run theme, dummy-key confirmation, optional
+telemetry, and empty-project Git menus;
 unexpected login or permission prompts remain visible in the transcript. It
 asks for a file write and readback of an unprompted challenge value, then a
 second edit and fresh challenge readback, repeats
