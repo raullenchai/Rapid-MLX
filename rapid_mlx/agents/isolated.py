@@ -32,6 +32,8 @@ SUPPORTED = frozenset(
     }
 )
 _API_KEY_ENV = "RAPID_MLX_API_KEY"
+_HERMES_MIN_CONTEXT = 64_000
+_HERMES_MAX_CONTEXT = 131_072
 
 
 def connection_dir() -> Path:
@@ -148,6 +150,72 @@ def connection_status(port: int, key: str, model: str) -> str:
     return "ready" if model in advertised else "model-mismatch"
 
 
+def hermes_context_length(
+    port: int, key: str, model: str, *, require_live: bool = False
+) -> int:
+    """Use the served KV budget for Hermes, bounded by the native window.
+
+    A stopped server can be configured provisionally from cached model metadata.
+    The launch path calls this again after readiness, before starting Hermes.
+    """
+    context = None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.loads(response.read())
+        models = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(models, list):
+            entry = next(
+                (
+                    item
+                    for item in models
+                    if isinstance(item, dict) and item.get("id") == model
+                ),
+                None,
+            )
+            if entry is None and len(models) == 1 and isinstance(models[0], dict):
+                entry = models[0]
+            if entry is not None:
+                from rapid_mlx.agents.adapter import _valid_context_window
+
+                native = _valid_context_window(entry.get("context_window"))
+                served = _valid_context_window(entry.get("max_model_len"))
+                if served is not None or native is not None:
+                    context = min(
+                        *(
+                            value
+                            for value in (served, native, _HERMES_MAX_CONTEXT)
+                            if value is not None
+                        )
+                    )
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError):
+        pass
+    if context is None and not require_live:
+        from rapid_mlx.run.cli import _cached_context_window
+
+        context = _cached_context_window(model)
+        if context is not None:
+            context = min(context, _HERMES_MAX_CONTEXT)
+    if context is None:
+        if require_live:
+            raise ValueError(
+                f"Hermes needs a context limit from the ready local server for {model}; "
+                "check /v1/models and retry."
+            )
+        # A server started by launch is probed again before the agent opens.
+        return _HERMES_MIN_CONTEXT
+    if context < _HERMES_MIN_CONTEXT:
+        raise ValueError(
+            f"Hermes needs at least {_HERMES_MIN_CONTEXT:,} context tokens, "
+            f"but {model} can serve only {context:,}. Choose a 64K-capable model "
+            "such as qwen3.5-9b-4bit or raise the server context limit."
+        )
+    return context
+
+
 def _cli_invocation() -> str:
     current = Path(sys.argv[0])
     if current.name == "rapid-mlx" and current.is_file():
@@ -186,7 +254,9 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     raise ValueError(f"unsupported isolated agent: {name}")
 
 
-def configure(name: str, model: str, *, port: int | None = None) -> str:
+def configure(
+    name: str, model: str, *, port: int | None = None, context_length: int | None = None
+) -> str:
     """Render an existing registry profile under Rapid's private directory."""
     profile = get_profile(name)
     if profile is None or profile.name not in SUPPORTED:
@@ -208,7 +278,11 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
             from rapid_mlx.agents.opencode_version import installed_version
 
             version = installed_version()
-        rendered = profile.render_config(base, model, version)
+        if name == "hermes":
+            context_length = context_length or hermes_context_length(port, key, model)
+        rendered = profile.render_config(
+            base, model, version, context_length=context_length
+        )
     finally:
         if previous is None:
             os.environ.pop("RAPID_MLX_API_KEY", None)
@@ -233,7 +307,14 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     elif name == "opencode":
         _private_write(root / "opencode.json", str(rendered))
     elif name == "hermes":
-        rendered = str(rendered).replace(
+        import yaml
+
+        # The private local profile needs only the two coding toolsets. Keep
+        # the user's normal Hermes installation and the shared setup template
+        # untouched; both can retain their broader capabilities.
+        hermes_config = yaml.safe_load(str(rendered))
+        hermes_config["platform_toolsets"] = {"cli": ["terminal", "file"]}
+        rendered = yaml.safe_dump(hermes_config, sort_keys=False).replace(
             "  base_url: ", f'  api_key: "{key}"\n  base_url: ', 1
         )
         _private_write(root / "profiles" / "rapid" / "config.yaml", str(rendered))

@@ -353,6 +353,7 @@ def launch_command(args: argparse.Namespace) -> None:
         if getattr(args, "run", False):
             key = stable_key(create=False)
             assert key is not None  # configure() created or reused it above.
+            server_pid = None
             status = connection_status(port, key, model)
             if status == "stopped":
                 if not (args.start_server or resume_saved):
@@ -399,6 +400,17 @@ def launch_command(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
+            if args.client == "hermes":
+                from rapid_mlx.agents.isolated import hermes_context_length
+
+                try:
+                    context = hermes_context_length(port, key, model, require_live=True)
+                    configure(args.client, model, port=port, context_length=context)
+                except (OSError, ValueError) as exc:
+                    if server_pid is not None:
+                        _stop_failed_start(server_pid)
+                    print(f"launch: {exc}", file=sys.stderr)
+                    raise SystemExit(1) from exc
             print(
                 "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
                 flush=True,

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 try:
     import tomllib
@@ -126,8 +127,105 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
         / "config.yaml"
     ).read_text()
     assert f'api_key: "{isolated.stable_key()}"' in hermes
+    assert yaml.safe_load(hermes)["platform_toolsets"]["cli"] == ["terminal", "file"]
+    assert not (isolated.connection_dir() / "agents" / "hermes" / "auth.json").exists()
     goose = isolated.configure("goose", "qwen3.5-9b-4bit")
     assert "goose session --provider" in Path(goose).read_text()
+
+
+def test_hermes_uses_served_context_ceiling_before_opening(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "qwen3.5-9b-4bit",
+                            "context_window": 262144,
+                            "max_model_len": 154524,
+                        }
+                    ]
+                }
+            ).encode()
+
+    with (
+        patch("urllib.request.urlopen", return_value=Response()),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as opened,
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(_launch_args("hermes", "--model", "qwen3.5-9b-4bit"))
+    config = (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / "config.yaml"
+    ).read_text()
+    assert yaml.safe_load(config)["model"]["context_length"] == 131072
+    opened.assert_called_once()
+
+
+def test_hermes_rejects_served_window_below_minimum(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"small","context_window":32768,"max_model_len":32768}]}'
+
+    with (
+        patch("urllib.request.urlopen", return_value=Response()),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.launch.cli.subprocess.call") as opened,
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("hermes", "--model", "small"))
+    assert "at least 64,000" in capsys.readouterr().err
+    opened.assert_not_called()
+
+
+def test_hermes_requires_live_limit_at_launch(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.hermes_context_length",
+            side_effect=[64_000, ValueError("model card has no context limit")],
+        ),
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.launch.cli.subprocess.call") as opened,
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("hermes", "--model", "qwen3.5-9b-4bit"))
+    assert "model card has no context limit" in capsys.readouterr().err
+    opened.assert_not_called()
+
+
+def test_hermes_uses_cached_window_only_while_server_is_stopped(private_home):
+    with (
+        patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()),
+        patch("rapid_mlx.run.cli._cached_context_window", return_value=262144),
+    ):
+        assert isolated.hermes_context_length(7660, "a" * 64, "model") == 131072
+        with pytest.raises(ValueError, match="ready local server"):
+            isolated.hermes_context_length(7660, "a" * 64, "model", require_live=True)
 
 
 def test_isolated_dry_run_preserves_saved_profile(private_home, capsys):
