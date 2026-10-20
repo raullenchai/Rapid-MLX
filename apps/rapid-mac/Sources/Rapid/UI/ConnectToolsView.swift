@@ -434,10 +434,11 @@ struct ConnectToolsView: View {
                 CopyableRow(label: "Gateway API key", value: bearer, masked: true,
                             placeholder: "Created when the server starts")
                 rowDivider
-                Text("1. Copy the setup command below and run it to enable tier mapping in Rapid.")
-                Text("2. In Claude Desktop: Help → Troubleshooting → Enable Developer Mode.")
-                Text("3. Developer → Configure Third-Party Inference → Gateway. Paste the URL and API key above, then Test.")
-                Text("4. Apply Changes in Claude Desktop.")
+                Text("Run the setup command below to enable Rapid's tier mapping, then in Claude Desktop:")
+                Text("1. Help → Troubleshooting → Enable Developer Mode.")
+                Text("2. Developer → Configure Third-Party Inference.")
+                Text("3. Choose Gateway, paste the URL and API key above, then Test.")
+                Text("4. Apply Changes.")
             }
             .font(RapidFont.caption)
             .padding(RapidTheme.Space.md)
