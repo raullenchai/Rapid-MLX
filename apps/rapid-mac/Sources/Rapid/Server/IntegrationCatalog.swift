@@ -39,7 +39,7 @@ enum IntegrationCatalog {
         "claude-code", "codex", "pi", "opencode", "hermes", "goose", "qwen-code", "crush", "aider"
     ]
     static let leadingIntegrations = [
-        "claude-code", "codex", "pi", "opencode", "hermes", "goose", "qwen-code", "crush", "aider"
+        "claude-desktop", "claude-code", "codex", "pi", "opencode", "hermes", "goose", "qwen-code", "crush", "aider"
     ]
 
     /// Applies ``leadingIntegrations`` and disturbs nothing else.

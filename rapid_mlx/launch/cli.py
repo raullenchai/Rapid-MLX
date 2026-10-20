@@ -66,6 +66,7 @@ def _print_list(*, as_json: bool = False) -> int:
     for name, adapter in ADAPTERS.items():
         status = "detected" if adapter.detect() else "not detected"
         print(f"  {name.ljust(width)}{status}")
+    print("  claude-desktop  in-app gateway setup")
     print("\nNote: cursor requires an explicit public HTTPS --server-url.")
     return 0
 
@@ -183,6 +184,44 @@ def launch_command(args: argparse.Namespace) -> None:
 
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
+
+    if args.client == "claude-desktop":
+        from rapid_mlx.agents import get_profile
+        from rapid_mlx.launch import claude_desktop
+        from rapid_mlx.run.cli import _select_model
+
+        if args.dry_run:
+            print(
+                "[dry-run] Would save Rapid's Claude Desktop tier mapping; Claude Desktop is untouched."
+            )
+            return
+        if args.remove:
+            claude_desktop.mapping_path().unlink(missing_ok=True)
+            print("Claude Desktop tier mapping disabled in Rapid-MLX.")
+            return
+        model = getattr(args, "_original_alias", None) or _select_model(
+            explicit=args.model, profile=get_profile("claude-code"), no_download=False
+        )
+        if model is None:
+            print(
+                "launch: no tool-capable model fits this Mac; choose --model",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        url, key = claude_desktop.configure(
+            model,
+            opus=args.opus_model,
+            sonnet=args.sonnet_model,
+            haiku=args.haiku_model,
+            port=args.port,
+        )
+        print("Claude Desktop gateway (configure inside Claude Desktop):")
+        print(f"  Gateway URL: {url}\n  API key: {key}")
+        print("  1. Help → Troubleshooting → Enable Developer Mode")
+        print("  2. Developer → Configure Third-Party Inference → Gateway")
+        print("  3. Paste the URL and API key; Test connection")
+        print("  4. Apply Changes")
+        return
 
     from rapid_mlx.agents.isolated import SUPPORTED, saved_model
 
@@ -604,6 +643,10 @@ def register(subparsers) -> None:
             "(default: $RAPID_MLX_DEFAULT_MODEL or qwen3.5-4b-4bit)."
         ),
     )
+    for tier in ("opus", "sonnet", "haiku"):
+        p.add_argument(
+            f"--{tier}-model", help=f"Local model assigned to the {tier} tier"
+        )
     p.add_argument(
         "--server-url",
         type=str,

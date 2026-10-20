@@ -663,6 +663,12 @@ async def create_anthropic_message(
 
     _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(request)
     body = await request.json()
+    from rapid_mlx.launch.claude_desktop import resolve_model
+
+    if isinstance(body, dict):
+        requested = body.get("model")
+        if isinstance(requested, str):
+            body = {**body, "model": resolve_model(requested)}
     # ``AnthropicRequest`` is constructed manually (not as a FastAPI body
     # parameter). The raw :class:`pydantic.ValidationError` it can raise
     # is now caught by the global ``_pydantic_validation_handler`` in

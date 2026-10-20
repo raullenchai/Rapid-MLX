@@ -18,6 +18,7 @@ class IntegrationTarget:
 
 
 _LAUNCH_NAMES = {
+    "claude-desktop": "Claude Desktop",
     "cline": "Cline",
     "claude-code": "Claude Code",
     "continue-dev": "Continue.dev",
@@ -39,8 +40,11 @@ def list_integration_targets() -> list[IntegrationTarget]:
     adapter profile.  The launch registry supplies display order; remaining
     profiles retain the agents registry's order.
     """
-    targets: list[IntegrationTarget] = []
+    targets: list[IntegrationTarget] = [
+        IntegrationTarget("claude-desktop", "Claude Desktop", "adapter_profile", None)
+    ]
     seen: set[str] = set()
+    seen.add("claude-desktop")
     for target_id, _adapter in ADAPTERS.items():
         targets.append(
             IntegrationTarget(
