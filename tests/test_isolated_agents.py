@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import urllib.error
@@ -483,6 +484,28 @@ def test_short_launch_requires_download_consent_before_spawning(private_home):
         launch_command(_launch_args("codex", "--model", "qwen3.5-9b-4bit"))
     consent.assert_called_once_with("qwen3.5-9b-4bit", no_download=False, yes=False)
     start.assert_not_called()
+
+
+def test_cancelled_model_start_terminates_only_spawned_server(
+    private_home, monkeypatch
+):
+    from rapid_mlx.launch import cli as launch_cli
+
+    pid_file = private_home / "launch.pid"
+    pid_file.write_text("12345\n")
+    monkeypatch.setattr(launch_cli, "PID_FILE", pid_file)
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="stopped"),
+        patch("rapid_mlx.run.cli._confirm_download", return_value=True),
+        patch("rapid_mlx.launch.cli._start_server_background", return_value=12345),
+        patch("rapid_mlx.launch.cli.os.kill") as kill,
+        patch("time.sleep", side_effect=KeyboardInterrupt),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        launch_cli.launch_command(_launch_args("codex", "--model", "qwen3.5-9b-4bit"))
+    kill.assert_called_once_with(12345, signal.SIGTERM)
+    assert not pid_file.exists()
 
 
 def test_isolated_cli_reports_no_suitable_model(private_home, capsys):

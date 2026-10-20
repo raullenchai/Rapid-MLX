@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -124,6 +125,21 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     proc = subprocess.Popen(cmd, **popen_kwargs)
     PID_FILE.write_text(str(proc.pid) + "\n", encoding="utf-8")
     return proc.pid
+
+
+def _stop_failed_start(pid: int | None) -> None:
+    """Stop a detached model load when launch is cancelled or fails."""
+    if not isinstance(pid, int):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        if PID_FILE.read_text(encoding="utf-8").strip() == str(pid):
+            PID_FILE.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _print_preview(
@@ -301,23 +317,29 @@ def launch_command(args: argparse.Namespace) -> None:
                 server_pid = _start_server_background(model, port, api_key=key)
                 import time
 
-                for second in range(600):
-                    status = connection_status(port, key, model)
-                    if status not in {"stopped", "server-error"}:
-                        break
-                    if second and second % 10 == 0:
-                        print(f"  Preparing local model… {second}s", flush=True)
-                    time.sleep(1)
-                if status in {"stopped", "server-error"}:
-                    if isinstance(server_pid, int):
-                        import signal
-
-                        try:
-                            os.kill(server_pid, signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-                    print(f"  Local server did not become ready. Retry: {start_hint}")
-                    raise SystemExit(1)
+                try:
+                    for second in range(600):
+                        status = connection_status(port, key, model)
+                        if status not in {"stopped", "server-error"}:
+                            break
+                        if second and second % 10 == 0:
+                            print(f"  Preparing local model… {second}s", flush=True)
+                        time.sleep(1)
+                    if status in {"stopped", "server-error"}:
+                        print(
+                            f"  Local server did not become ready. Retry: {start_hint}"
+                        )
+                        raise SystemExit(1)
+                    if status != "ready":
+                        print(
+                            "  Local server key or model does not match this profile. "
+                            f"Start the matching model with: {start_hint}",
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(1)
+                except BaseException:
+                    _stop_failed_start(server_pid)
+                    raise
             if status != "ready":
                 print(
                     "  Local server key or model does not match this profile. "
