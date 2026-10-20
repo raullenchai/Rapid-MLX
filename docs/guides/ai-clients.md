@@ -95,12 +95,19 @@ connects on loopback and switches the embedded key to **Until I rotate** when
 you save a persistent agent connection. Rotating the key requires restarting
 the model before agents can use the new key.
 
-The generated files remain separate from your existing tool settings. The
-agent's own command can also use those files when you pass its private config
-location, for example `CODEX_HOME=~/.rapid-mlx/connect/agents/codex codex
---profile rapid` or `PI_CODING_AGENT_DIR=~/.rapid-mlx/connect/agents/pi pi
---provider rapid-mlx`. The short `rapid-mlx launch <agent>` command handles
-the key, server readiness, and current port for you. For the original
+The generated files remain separate from your existing tool settings. If the
+server is already running, you can use the agent's native command with its
+private config directory:
+
+```bash
+RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" CODEX_HOME="$HOME/.rapid-mlx/connect/agents/codex" codex --profile rapid
+RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" PI_CODING_AGENT_DIR="$HOME/.rapid-mlx/connect/agents/pi" pi --provider rapid-mlx --model "$(cat ~/.rapid-mlx/connect/agents/pi/model)"
+RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" HERMES_HOME="$HOME/.rapid-mlx/connect/agents/hermes" hermes -p rapid chat --provider custom --model "$(cat ~/.rapid-mlx/connect/agents/hermes/model)"
+claude --settings "$HOME/.rapid-mlx/connect/agents/claude-code/settings.json"
+```
+
+The short `rapid-mlx launch <agent>` command also checks the key and model,
+starts a stopped server, and keeps track of a changed port. For the original
 config-writing CLI behavior, pass `--legacy-config`.
 
 Tier-1 coding agents have dedicated copy-paste setup pages with per-family
