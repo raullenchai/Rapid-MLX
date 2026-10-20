@@ -1,74 +1,38 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract pins for the ``qwen-image`` image-gen alias.
+"""Contract pins for the ``qwen-image`` alias and the Qwen-Image (20B) family.
 
-The mflux backend already understands the ``qwen-image`` family
-(``rapid_mlx/image/engine.py``); this alias is what makes
-``rapid-mlx serve qwen-image`` resolve to it without the caller having
-to type the raw Hugging Face path.
+``qwen-image`` is the short spelling of ``qwen-image-2.1``: it resolves to
+the same pinned Qwen Image 2.1 full-q4 checkpoint, so users of the bare
+name get the latest Qwen image model, and an install that already has
+``qwen-image-2.1`` cached downloads nothing. The alias is listed after
+``qwen-image-2.1`` in ``aliases.json`` so the reverse (repository -> alias)
+lookup keeps naming the checkpoint ``qwen-image-2.1``.
 
-Repo choice, and why it is NOT ``filipstrand/Qwen-Image-mflux-6bit``
-(the community's most-downloaded Qwen-Image mflux conversion): that repo
-quantizes the text encoder to 6-bit (packed ``embed_tokens.weight`` shape
-``[152064, 672]`` instead of the full-precision ``[152064, 3584]``), but
-the mflux version this project pins (0.18.1) hardcodes
-``skip_quantization=True`` for the Qwen text encoder ("quantization causes
-significant semantic degradation" per mflux's own weight definition) and
-never dequantizes it on load. The result is silent runtime corruption, not
-a load-time error: the model builds, ``generate()`` runs, and crashes deep
-in the text encoder's RMSNorm with a shape mismatch
-(``[broadcast_shapes] Shapes (3584) and (1,50,672)``) — reproduced live
-against this project's pinned mflux before this alias was pointed
-elsewhere. ``mflux-community/qwen-image-mflux-q6`` (first uploaded
-2026-08-16; upstream re-created the repository on 2026-10-11, so it is now
-pinned at ``f57c43e57ecc0eef7b08092d660eda8afe7fc6cc``) keeps the text encoder full-precision (verified: zero
-``scale``/``bias`` keys, correct ``[152064, 3584]`` embed shape) and was
-confirmed end-to-end: both a plain text-to-image prompt and a
-text-rendering prompt ("RAPID MLX" on a sign) produced correct images
-with this project's pinned mflux.
+The rest of this module covers the mflux ``qwen-image`` family (the 20B
+Qwen-Image transformer), which the engine still serves for a caller that
+names such a repository directly. ``mflux-community/qwen-image-mflux-q6``
+(pinned in ``_download_gate.IMAGE_MODEL_REVISIONS`` at
+``f57c43e57ecc0eef7b08092d660eda8afe7fc6cc``) is the fixture: it keeps the
+text encoder full-precision (zero ``scale``/``bias`` keys, correct
+``[152064, 3584]`` embed shape).
 
-Revision pinning: ``aliases.json`` has no revision-pin field (adding one
-across every alias/modality would be a system-wide schema change out of
-scope here), so the commit above is enforced separately — a code-only
-pin table, ``_download_gate.IMAGE_MODEL_REVISIONS``, mirroring
-``video/wan.py``'s ``WAN_REVISIONS``. Without it, this alias would only
-ever resolve whatever ``refs/main`` currently points to (see
-``_resolved_snapshot_sha``), so an upstream force-push or account
-compromise on ``mflux-community``'s repo — plausible given the
-provenance caveat below — would silently change the weights a fresh
-pull fetches next. A cached snapshot that resolves to any other commit
-is treated as unvouched-for, exactly like an incomplete download; a cold
-pull fetches the pinned commit explicitly rather than whatever ``main``
-is at pull time.
-
-Provenance: the ``mflux-community`` HF account has published ~50 repos
-as a systematic multi-family, multi-bitwidth conversion pipeline (krea-2,
-z-image-turbo, flux2-klein-9b, each at q3-q8/bf16) — a pattern, not a
-one-off upload — though it carries no README/license file and is not a
-Hugging Face-verified org; this is a real supply-chain tradeoff against
-filipstrand (the mflux maintainer personally) that a future maintainer
-should weigh if a more authoritative source appears.
-
-Guarded going forward, not just for this one repo:
+Why the family is guarded against ``filipstrand/Qwen-Image-mflux-6bit``:
+that repo quantizes the text encoder to 6-bit (packed
+``embed_tokens.weight`` shape ``[152064, 672]``), but the pinned mflux
+(0.20.x) hardcodes ``skip_quantization=True`` for the Qwen text encoder
+("quantization causes significant semantic degradation" per mflux's own
+weight definition) and never dequantizes it on load. The model builds,
+``generate()`` runs, and then crashes deep in the text encoder's RMSNorm
+with ``[broadcast_shapes] Shapes (3584) and (1,50,672)``.
 ``ImageGenerationEngine._verify_text_encoder_not_quantized`` is a
-structural preflight that reads ONLY the text encoder's safetensors
-header (no tensor data, no network beyond what is already cached) and
-refuses to build the model if ``embed_tokens`` is packed/quantized — so a
-FUTURE re-pin to a different repo with this same defect fails loudly
-before generation starts, not three prompts later.
+structural preflight that reads ONLY the text encoder's safetensors header
+and refuses such a checkpoint before generation starts.
 
-These tests guard the things a data-only alias can still get wrong:
-
-  1. It routes to the mflux image lane (``modality == "image-gen"``),
-     not the default text lane.
-  2. The pinned repo is a *pre-quantized* mflux checkpoint, so the
-     loader takes the ``model_path`` branch instead of pulling the
-     ~57 GB canonical ``Qwen/Qwen-Image`` weights and quantizing on
-     load (which would also error against an already-quantized repo).
-  3. The pinned repo is specifically NOT one with a quantized text
-     encoder — see above. A future re-pin (e.g. chasing a smaller
-     download) must not silently reintroduce the corruption, whether by
-     shape (structurally guarded now) or by name (guarded by the
-     regression pin below).
+Revision pinning: ``aliases.json`` has no revision-pin field, so commits are
+enforced by the code-only pin table ``_download_gate.IMAGE_MODEL_REVISIONS``
+(mirroring ``video/wan.py``'s ``WAN_REVISIONS``). A cached snapshot that
+resolves to any other commit is treated as unvouched-for, and a cold pull
+fetches the pinned commit explicitly rather than whatever ``main`` is.
 """
 
 from __future__ import annotations
@@ -95,12 +59,45 @@ _GIB = 1024**3
 # download and silently reintroduces broken generation".
 _KNOWN_INCOMPATIBLE_REPO = "filipstrand/Qwen-Image-mflux-6bit"
 
+# The 20B Qwen-Image family fixture (see module docstring).
+_ORIGINAL_QWEN_IMAGE_REPO = "mflux-community/qwen-image-mflux-q6"
 
-def test_qwen_image_alias_routes_to_image_lane() -> None:
+
+def test_qwen_image_alias_is_the_qwen_image_21_checkpoint() -> None:
+    # Same repository, same pin, same profile: the bare name serves the latest
+    # Qwen image model and shares its cache with ``qwen-image-2.1``.
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
     profile = resolve_profile("qwen-image")
     assert profile is not None
     assert profile.modality == "image-gen"
-    assert profile.hf_path == "mflux-community/qwen-image-mflux-q6"
+    assert profile.hf_path == "mlx-community/Qwen-Image-2.1-mflux-q4"
+    assert profile == resolve_profile("qwen-image-2.1")
+    assert IMAGE_MODEL_REVISIONS[profile.hf_path] == (
+        "746a58556820933a2df5c75887a2570f1ad200c0"
+    )
+    assert getattr(profile, "min_memory_gb", None) == 8
+    assert _detect_family(profile.hf_path) == "qwen-image-2.1"
+
+
+def test_qwen_image_21_stays_the_canonical_alias_for_the_checkpoint() -> None:
+    from rapid_mlx.model_aliases import _alias_for_hf_path
+
+    assert (
+        _alias_for_hf_path("mlx-community/Qwen-Image-2.1-mflux-q4") == "qwen-image-2.1"
+    )
+
+
+def test_qwen_image_alias_is_hidden_from_the_desktop_picker() -> None:
+    # One Desktop row per checkpoint; the CLI and server still resolve both.
+    from rapid_mlx.catalog.legacy import build_legacy_catalog_snapshot
+
+    desktop = {
+        row["alias"]: row["availability"]["desktop"]
+        for row in build_legacy_catalog_snapshot()["aliases"]
+    }
+    assert desktop["qwen-image"] is False
+    assert desktop["qwen-image-2.1"] is True
 
 
 def test_qwen_image_alias_does_not_point_at_the_known_broken_repo() -> None:
@@ -108,32 +105,18 @@ def test_qwen_image_alias_does_not_point_at_the_known_broken_repo() -> None:
     assert profile.hf_path != _KNOWN_INCOMPATIBLE_REPO
 
 
-def test_qwen_image_alias_declares_a_memory_floor() -> None:
-    # Full-precision text encoder + 6-bit transformer measured ~55.7 GiB
-    # peak RSS during a real generation (`/usr/bin/time -l`) at 1024x1024 —
-    # the API/GUI default resolution, not the smaller size this was first
-    # measured at. The floor gates it off Macs that cannot hold that
-    # resident.
-    profile = resolve_profile("qwen-image")
-    assert getattr(profile, "min_memory_gb", None) == 64
+def test_original_qwen_image_repo_is_detected_as_qwen_image_family() -> None:
+    assert _detect_family(_ORIGINAL_QWEN_IMAGE_REPO) == "qwen-image"
+    assert _looks_like_prequantized(_ORIGINAL_QWEN_IMAGE_REPO) is True
 
 
-def test_qwen_image_repo_is_detected_as_qwen_image_family() -> None:
-    hf_path = resolve_profile("qwen-image").hf_path
-    assert _detect_family(hf_path) == "qwen-image"
-
-
-def test_qwen_image_repo_is_prequantized_so_no_full_weight_pull() -> None:
-    hf_path = resolve_profile("qwen-image").hf_path
-    assert _looks_like_prequantized(hf_path) is True
-
-
-def test_qwen_image_resident_estimate_is_not_the_bare_default() -> None:
-    # The alias carries no digit params, so without a known-image entry the
-    # fallback would charge the 4 GB default and mis-admit a ~29 GB model.
-    # Both the alias and the pinned repo id must resolve to the real charge.
-    for name in ("qwen-image", resolve_profile("qwen-image").hf_path):
-        assert estimate_model_bytes(name) == int(55.7 * _GIB)
+def test_qwen_image_resident_estimates() -> None:
+    # The bare alias charges the 2.1 full-q4 checkpoint; a raw 20B repository
+    # id (no digit params in its name) must not fall through to the 4 GB
+    # default and mis-admit a ~29 GB model.
+    assert estimate_model_bytes("qwen-image") == int(6.0 * _GIB)
+    assert estimate_model_bytes("qwen-image") == estimate_model_bytes("qwen-image-2.1")
+    assert estimate_model_bytes(_ORIGINAL_QWEN_IMAGE_REPO) == int(55.7 * _GIB)
 
 
 # MARK: - Revision pinning for a cold (not-yet-cached) pull
@@ -151,7 +134,7 @@ def test_model_path_for_mflux_forces_pinned_revision_on_cold_pull(
 ) -> None:
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
-    repo = "mflux-community/qwen-image-mflux-q6"
+    repo = _ORIGINAL_QWEN_IMAGE_REPO
     pinned_sha = IMAGE_MODEL_REVISIONS[repo]
     engine = ImageGenerationEngine(repo)
     monkeypatch.setattr(
@@ -214,7 +197,9 @@ def test_model_path_for_mflux_verifies_a_freshly_pinned_download(
     # download must resolve normally, verification included.
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
-    repo = "mflux-community/qwen-image-mflux-q6"
+    # Completeness verdicts apply to registered image-gen aliases only, so
+    # this uses the alias-backed, whole-repo-pinned FLUX.2 Klein checkpoint.
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     pinned_sha = IMAGE_MODEL_REVISIONS[repo]
     cache_root = tmp_path / "hf-cache"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -237,7 +222,9 @@ def test_model_path_for_mflux_rejects_a_freshly_pinned_incomplete_download(
     # The failing half: a download that lands incomplete (interrupted,
     # disk full, whatever) must be refused before it reaches mflux, exactly
     # like an incomplete WARM cache already is via `_verify_weights_complete`.
-    repo = "mflux-community/qwen-image-mflux-q6"
+    # Completeness verdicts apply to registered image-gen aliases only, so
+    # this uses the alias-backed, whole-repo-pinned FLUX.2 Klein checkpoint.
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     cache_root = tmp_path / "hf-cache"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
     monkeypatch.setattr(
@@ -326,7 +313,7 @@ def _engine_for_family_check(monkeypatch, snapshot) -> ImageGenerationEngine:
     # ``ImageGenerationEngine.__init__`` does real work (family detection,
     # prequantized sniffing) that only needs a plausible qwen-image repo
     # name — no engine method under test touches the network or mflux itself.
-    engine = ImageGenerationEngine("mflux-community/qwen-image-mflux-q6")
+    engine = ImageGenerationEngine(_ORIGINAL_QWEN_IMAGE_REPO)
     # ``_verify_text_encoder_not_quantized`` imports ``mflux_local_snapshot``
     # from ``_download_gate`` inside the method body, so patching the
     # source module's attribute is what the late-bound import picks up.
@@ -569,7 +556,7 @@ def test_no_verdict_completeness_skips_the_text_encoder_check(
     # standing to inspect internals yet. A quantized-shaped text encoder
     # sitting behind a ``None`` verdict must NOT raise.
     snapshot = _make_snapshot(tmp_path, {"shape": [152064, 672], "dtype": "U32"})
-    engine = ImageGenerationEngine("mflux-community/qwen-image-mflux-q6")
+    engine = ImageGenerationEngine(_ORIGINAL_QWEN_IMAGE_REPO)
     monkeypatch.setattr(
         "rapid_mlx._download_gate.mflux_missing_weights", lambda _repo: None
     )

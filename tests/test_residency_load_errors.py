@@ -190,7 +190,7 @@ def test_cyclic_cause_and_unrelated_context_stay_safe(control_plane):
 @pytest.mark.parametrize(
     ("model", "mode", "message"),
     [
-        ("qwen-image", "editing", "qwen-image does not support image editing."),
+        ("flux-schnell", "editing", "flux-schnell does not support image editing."),
         (
             "qwen-image-edit",
             "generation",
@@ -246,7 +246,7 @@ def test_supported_image_mode_reaches_dynamic_resident_load(monkeypatch):
 @pytest.mark.parametrize(
     ("model", "mode", "message"),
     [
-        ("qwen-image", "editing", "qwen-image does not support image editing."),
+        ("flux-schnell", "editing", "flux-schnell does not support image editing."),
         (
             "qwen-image-edit",
             "generation",
@@ -268,7 +268,7 @@ def test_unsupported_image_mode_rejected_before_manager_admission(
 
 @pytest.mark.parametrize(
     ("model", "mode"),
-    [("qwen-image", "editing"), ("qwen-image-edit", "generation")],
+    [("flux-schnell", "editing"), ("qwen-image-edit", "generation")],
 )
 def test_unsupported_image_mode_rejected_for_resident_reuse(model, mode):
     from rapid_mlx.image.engine import ImageRequestError

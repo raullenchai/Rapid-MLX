@@ -155,7 +155,19 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
     from rapid_mlx.model_sizes import size_bytes
 
     profiles = list_profiles()
-    builtin = set(list_builtin_aliases())
+    builtin_paths = list_builtin_aliases()
+    builtin = set(builtin_paths)
+    # Two built-in image aliases may name one checkpoint (``qwen-image`` is
+    # the short spelling of ``qwen-image-2.1``). Both keep resolving in the
+    # CLI and server, but Desktop's picker shows one row per checkpoint: the
+    # alias listed first in aliases.json.
+    image_artifact_owner: dict[tuple[str, str | None], str] = {}
+    for alias in builtin_paths:
+        profile = profiles[alias]
+        if (getattr(profile, "modality", None) or "text") == "image-gen":
+            image_artifact_owner.setdefault(
+                (profile.hf_path.casefold(), profile.subfolder), alias
+            )
     models: dict[str, dict[str, Any]] = {}
     aliases: list[dict[str, Any]] = []
 
@@ -185,6 +197,11 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
                 model_id,
                 _main_capabilities(profile),
                 origin="builtin" if alias in builtin else "user",
+                desktop=image_artifact_owner.get(
+                    (profile.hf_path.casefold(), profile.subfolder), alias
+                )
+                == alias
+                or alias not in builtin,
             )
         )
 

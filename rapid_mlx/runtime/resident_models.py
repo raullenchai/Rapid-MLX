@@ -543,6 +543,11 @@ def estimate_model_bytes(model_name: str) -> int:
     """
 
     folded = model_name.casefold()
+    if folded == "qwen-image":
+        # The bare alias serves the same full-q4 Qwen Image 2.1 checkpoint as
+        # ``qwen-image-2.1``; the 20B original-weights charge below applies
+        # only to raw repository ids such as ``*/qwen-image-mflux-q6``.
+        return int(6.0 * _GIB)
     if re.search(r"qwen[-_]image[-_]v?2(?:[._-]1|1)(?=$|[-_./])", folded):
         if folded == "qwen-image-2.1" or "mflux-q4" in folded:
             # Full-q4 transformer + encoder peaks at 5.14 GiB in the 1024²
@@ -597,14 +602,14 @@ def estimate_model_bytes(model_name: str) -> int:
         "qwen-image-edit": 68.0,
         "qwen_image_edit": 68.0,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
-        # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
+        # real generation at 1024x1024 (a 6-bit mflux Qwen-Image build,
         # the API/GUI default resolution; `/usr/bin/time -l`): ~55.7 GiB.
         # (512x512 measured lower, ~40.2 GiB — the API/GUI default is what
         # this charge must cover.) The text encoder in this repo is full
         # precision (quantizing it "causes significant semantic degradation"
         # per mflux's own weight definition), so it dominates the footprint
-        # over the quantized transformer. Without this entry the digit-free
-        # alias falls through to the 4 GB default and mis-admits.
+        # over the quantized transformer. Without this entry a digit-free
+        # raw repository id falls through to the 4 GB default and mis-admits.
         "qwen-image": 55.7,
     }
     for token, gib in known_image_gib.items():

@@ -3075,10 +3075,10 @@ def test_mflux_local_snapshot_rejects_unpinned_repo_revision(tmp_path, monkeypat
     pre-pin cache or a compromised upstream would leave it — must not be
     mistaken for the pinned one.
     """
-    repo = "mflux-community/qwen-image-mflux-q6"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     assert repo in gate.IMAGE_MODEL_REVISIONS
     cache_root = tmp_path / "hf-cache"
-    repo_root = cache_root / "models--mflux-community--qwen-image-mflux-q6"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
     _seed_mflux_snapshot(repo_root, "1" * 40)  # NOT the pinned sha
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -3089,10 +3089,10 @@ def test_mflux_local_snapshot_rejects_unpinned_repo_revision(tmp_path, monkeypat
 
 def test_mflux_local_snapshot_accepts_the_pinned_revision(tmp_path, monkeypatch):
     """The exact pinned commit resolves normally — pinning isn't a fail-closed trap."""
-    repo = "mflux-community/qwen-image-mflux-q6"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     pinned_sha = gate.IMAGE_MODEL_REVISIONS[repo]
     cache_root = tmp_path / "hf-cache"
-    repo_root = cache_root / "models--mflux-community--qwen-image-mflux-q6"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
     _seed_mflux_snapshot(repo_root, pinned_sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -3116,10 +3116,10 @@ def test_mflux_local_snapshot_accepts_pinned_revision_without_refs_main(
     through ``refs/main`` would then never recognize its own freshly
     downloaded snapshot and re-download on every subsequent warm start.
     """
-    repo = "mflux-community/qwen-image-mflux-q6"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     pinned_sha = gate.IMAGE_MODEL_REVISIONS[repo]
     cache_root = tmp_path / "hf-cache"
-    repo_root = cache_root / "models--mflux-community--qwen-image-mflux-q6"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
     _seed_mflux_snapshot(repo_root, pinned_sha)
     (repo_root / "refs" / "main").unlink()
 

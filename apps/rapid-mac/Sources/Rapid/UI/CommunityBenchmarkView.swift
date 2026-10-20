@@ -118,7 +118,7 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
 
     static let focusAliases: Set<String> = [
         "qwen3.8-27b-4bit", "qwen3.5-9b-4bit", "gemma-4-e4b-4bit",
-        "flux2-klein-4b", "z-image-turbo", "qwen-image",
+        "flux2-klein-4b", "z-image-turbo", "qwen-image-2.1",
         "wan2.2-ti2v-5b-q8"
     ]
     /// Mirrors `_TASK_PROTOCOL` in `rapid_mlx/community_bench/workspace.py`.

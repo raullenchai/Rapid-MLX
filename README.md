@@ -275,8 +275,8 @@ family default shown below.
 | `flux2-klein-4b-bf16` | Explicit full-precision Klein path | Generate + edit | 14.9 GiB | 32 GB | 4 |
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
-| `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
 | `qwen-image-2.1` | Text-rich images on low-memory Macs | Generate + edit | 8.9 GiB | 8 GB | 40 |
+| `qwen-image` | Same model as `qwen-image-2.1` | Generate + edit | 8.9 GiB | 8 GB | 40 |
 | `qwen-image-2.1-bf16` | Higher-precision Qwen Image 2.1 path | Generate + edit | 30.9 GiB | 32 GB | 40 |
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->

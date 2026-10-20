@@ -1695,10 +1695,13 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
 # keep the same weight files, tensor names, shapes, dtypes and quantization,
 # except that the FLUX.1 schnell transformer adds the 12 KiB
 # ``norm_out.linear.bias`` tensor the earlier build omitted (mflux maps it).
-# The safetensors metadata now records mflux 0.22.0. The qwen-image transformer
-# now matches the original Qwen/Qwen-Image weights; the earlier build had
-# carried the Qwen-Image-2512 transformer. A snapshot cached at an old pin is
-# not vouched for, so an upgraded install downloads the new pin once.
+# The safetensors metadata now records mflux 0.22.0. The re-created
+# ``qwen-image-mflux-q6`` now carries the original Qwen/Qwen-Image weights
+# (the earlier build had carried the Qwen-Image-2512 transformer). No alias
+# serves it any more -- ``qwen-image`` resolves to the same pinned Qwen Image
+# 2.1 checkpoint as ``qwen-image-2.1`` -- but the pin stays so a caller that
+# names the repository directly still gets a vouched-for commit. A snapshot
+# cached at an old pin is not vouched for, so it downloads the new pin once.
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/flux-1-schnell-mflux-q4": "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce",

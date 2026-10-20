@@ -36,7 +36,7 @@ _FOCUS_ALIASES = frozenset(
         "gemma-4-e4b-4bit",
         "flux2-klein-4b",
         "z-image-turbo",
-        "qwen-image",
+        "qwen-image-2.1",
         "wan2.2-ti2v-5b-q8",
     }
 )

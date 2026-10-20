@@ -153,9 +153,11 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen3.8-27b-4bit"]["protocol_version"] == 2
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
-    assert by_alias["qwen-image"]["estimated_memory_gib"] == 64
-    assert by_alias["qwen-image"]["memory_fit"] == "does_not_fit"
-    assert by_alias["qwen-image"]["memory_estimate_source"] == "profile_minimum"
+    assert by_alias["qwen-image-2.1"]["focus"] is True
+    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 32
+    assert (
+        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "profile_minimum"
+    )
     assert all("modality" not in model for model in catalog["models"])
 
 
@@ -329,10 +331,10 @@ def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
     assert by_alias["qwen3.5-4b-4bit"]["memory_fit"] == "fits"
     assert by_alias["qwen3.5-9b-4bit"]["memory_fit"] == "fits"
     assert by_alias["gemma-4-31b-assistant"]["memory_fit"] == "fits"
-    assert by_alias["qwen-image"]["memory_fit"] == "does_not_fit"
+    assert by_alias["qwen-image-2.1-bf16"]["memory_fit"] == "does_not_fit"
     assert benchmark_catalog(memory_gib=64)["models"]
     big = {m["alias"]: m for m in benchmark_catalog(memory_gib=64)["models"]}
-    assert big["qwen-image"]["memory_fit"] == "fits"
+    assert big["qwen-image-2.1-bf16"]["memory_fit"] == "fits"
 
 
 def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
