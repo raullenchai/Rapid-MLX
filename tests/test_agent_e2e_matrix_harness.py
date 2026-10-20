@@ -9,6 +9,7 @@ from scripts.agent_e2e.run import (
     handle_first_run_menus,
     output_issues,
     preserved,
+    reply_finished,
     request_evidence,
     snapshot,
     stop_terminal_process,
@@ -185,6 +186,12 @@ def test_goose_telemetry_choice_is_answered_before_task(monkeypatch):
     opening = "Share anonymous usage data to help improve goose?"
     assert "goose is ready" in handle_first_run_menus("goose", opening, 1, None, None)
     assert writes == [b"\r"]
+
+
+def test_goose_waits_for_turn_completion_after_tool_output():
+    assert not reply_finished("goose", "tool result: verify-123")
+    assert reply_finished("goose", "tool result: verify-123\n⏱ 3.2s")
+    assert reply_finished("pi", "tool result: verify-123")
 
 
 def test_pty_cleanup_falls_back_when_process_group_is_inaccessible(monkeypatch):

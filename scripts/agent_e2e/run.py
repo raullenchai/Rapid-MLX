@@ -228,6 +228,13 @@ def handle_first_run_menus(
     return output
 
 
+def reply_finished(agent: str, output: str) -> bool:
+    """Some TUIs expose tool output before the agent completes the turn."""
+    if agent == "goose":
+        return "⏱" in output
+    return True
+
+
 def session(
     command: list[str],
     env: dict[str, str],
@@ -308,12 +315,14 @@ def session(
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}"
                     and challenge1 in output
+                    and reply_finished(command[2], output)
                 ),
             )
             answer["tool_ok"] = (
                 target.is_file()
                 and target.read_text().strip() == f"hi-{marker}"
                 and challenge1 in output
+                and reply_finished(command[2], output)
             )
             if answer["tool_ok"]:
                 # The terminal first echoes our input. Completion is the first
@@ -335,12 +344,14 @@ def session(
                         target.is_file()
                         and target.read_text().strip() == f"hi-{marker}-second"
                         and challenge2 in output
+                        and reply_finished(command[2], output)
                     ),
                 )
                 answer["second_ok"] = (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}-second"
                     and challenge2 in output2
+                    and reply_finished(command[2], output2)
                 )
                 if answer["second_ok"]:
                     answer["second_reply_s"] = round(time.monotonic() - sent, 2)
