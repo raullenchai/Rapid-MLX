@@ -253,7 +253,7 @@ def session(
             os.write(master, first_prompt.encode())
             time.sleep(0.5)
             os.write(master, b"\r")
-            output, first_byte = read_until(
+            output, _ = read_until(
                 master,
                 proc,
                 min(120, timeout),
@@ -262,18 +262,20 @@ def session(
                     target.is_file() and target.read_text().strip() == f"hi-{marker}"
                 ),
             )
-            if first_byte:
-                answer["first_reply_s"] = round(time.monotonic() - sent, 2)
             answer["tool_ok"] = (
                 target.is_file() and target.read_text().strip() == f"hi-{marker}"
             )
+            if answer["tool_ok"]:
+                # The terminal first echoes our input. Completion is the first
+                # reliable upper bound for a reply that used a tool.
+                answer["first_reply_s"] = round(time.monotonic() - sent, 2)
             if proc.poll() is None:
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
                 os.write(master, second_prompt.encode())
                 time.sleep(0.5)
                 os.write(master, b"\r")
-                output2, first_byte = read_until(
+                output2, _ = read_until(
                     master,
                     proc,
                     min(90, timeout),
@@ -283,13 +285,13 @@ def session(
                         and target.read_text().strip() == f"hi-{marker}-second"
                     ),
                 )
-                if first_byte:
-                    answer["second_reply_s"] = round(time.monotonic() - sent, 2)
                 answer["second_ok"] = (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}-second"
                     and f"hi-{marker}-second" in output2
                 )
+                if answer["second_ok"]:
+                    answer["second_reply_s"] = round(time.monotonic() - sent, 2)
             if not answer["tool_ok"] or not answer["second_ok"]:
                 answer["error"] = (
                     output + output2 if "output2" in locals() else output
