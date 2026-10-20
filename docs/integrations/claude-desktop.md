@@ -14,6 +14,8 @@ launch the app.
 4. Select Apply Changes.
 
 The command only creates Rapid's private tier mapping and stable local API key.
+If an already-running server uses an older key, restart it before testing the
+new connection; the command prints this condition.
 The integration is off until the command runs. `rapid-mlx launch claude-desktop
 --remove` disables tier discovery and alias resolution in Rapid. The standard
 `/v1/models` entries retain their existing JSON fields; extra discoverable

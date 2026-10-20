@@ -35,6 +35,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import ADAPTERS, CLIENT_ALIASES, canonical_client, cursor
 
@@ -187,6 +188,7 @@ def launch_command(args: argparse.Namespace) -> None:
 
     if args.client == "claude-desktop":
         from rapid_mlx.agents import get_profile
+        from rapid_mlx.agents.isolated import connection_status
         from rapid_mlx.launch import claude_desktop
         from rapid_mlx.run.cli import _select_model
 
@@ -217,6 +219,17 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")
         print(f"  Gateway URL: {url}\n  API key: {gateway_key}")
+        gateway_port = urlsplit(url).port
+        assert gateway_port is not None
+        status = connection_status(gateway_port, gateway_key, model)
+        if status == "key-mismatch":
+            print(
+                "  Restart the local server to activate this saved API key before Test."
+            )
+        elif status == "model-mismatch":
+            print(f"  Start {model} on this port before Test.")
+        elif status != "ready":
+            print("  Start the local server before Test.")
         print("  1. Help → Troubleshooting → Enable Developer Mode")
         print("  2. Developer → Configure Third-Party Inference → Gateway")
         print("  3. Paste the URL and API key; Test connection")

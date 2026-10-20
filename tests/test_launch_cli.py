@@ -970,6 +970,7 @@ class TestLaunchCommand:
     def test_claude_desktop_prints_in_app_values_without_touching_client(
         self, fake_home, monkeypatch, capsys
     ):
+        from rapid_mlx.agents import isolated
         from rapid_mlx.launch import claude_desktop
 
         calls = []
@@ -980,6 +981,7 @@ class TestLaunchCommand:
                 calls.append((model, options)) or ("http://127.0.0.1:7796", "test-key")
             ),
         )
+        monkeypatch.setattr(isolated, "connection_status", lambda *_: "key-mismatch")
         launch_cli.launch_command(
             _make_args(client="claude-desktop", model="local-model", port=7796)
         )
@@ -992,6 +994,7 @@ class TestLaunchCommand:
         output = capsys.readouterr().out
         assert "Gateway URL: http://127.0.0.1:7796" in output
         assert "API key: test-key" in output
+        assert "Restart the local server" in output
         assert "Apply Changes" in output
         assert not (
             fake_home / "Library" / "Application Support" / "Claude-3p"
