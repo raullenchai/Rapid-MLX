@@ -509,7 +509,7 @@ def execute_code(code, tests, entry, timeout, scratch):
             "/private/var/db/dyld",
         }
         profile = (
-            "(version 1)(deny default)(allow process-exec)(allow signal)"
+            "(version 1)(deny default)(allow process-exec)(allow signal (target self))"
             "(allow sysctl-read)(allow mach-lookup)"
             # dyld/Python startup stat the root directory entry itself.
             '(allow file-read* (literal "/") '

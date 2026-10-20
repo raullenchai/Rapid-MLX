@@ -537,6 +537,8 @@ def test_sandbox_profile_and_timeout_contract(tmp_path, monkeypatch, expire):
     assert result["passed"] is not expire
     profile = captured["command"][2]
     assert "(deny default)" in profile
+    assert "(allow signal (target self))" in profile
+    assert "(allow signal)" not in profile
     assert (
         "network" not in profile
     )  # no allow-rule: deny-default covers all network operations
