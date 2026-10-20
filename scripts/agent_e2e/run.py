@@ -278,6 +278,28 @@ def reply_finished(agent: str, output: str) -> bool:
 
 def approval_handler(agent: str, master: int):
     """Accept an explicit local tool approval, as a user at the terminal would."""
+    if agent == "crush":
+        waiting = False
+        last_answered = 0.0
+
+        def answer_crush(output: str) -> None:
+            nonlocal waiting, last_answered
+            raw_tail = output[-3000:]
+            tail = _ANSI.sub("", raw_tail)
+            menu = "Allow for Session" in tail and "Deny" in tail
+            if menu and not waiting:
+                os.write(master, b"\r")  # Highlighted Allow, for this action only.
+                waiting = True
+                last_answered = time.monotonic()
+            elif (
+                waiting
+                and not menu
+                and "state=working:app=crush" in raw_tail
+                and time.monotonic() - last_answered > 1
+            ):
+                waiting = False
+
+        return answer_crush
     if agent != "qwen-code":
         return None
     count = 0

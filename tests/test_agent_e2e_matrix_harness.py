@@ -38,6 +38,16 @@ def test_crush_prompt_uses_bracketed_paste(monkeypatch):
     assert sent == [b"\x1b[200~hello\x1b[201~", b"\r"]
 
 
+def test_crush_tool_approval_is_answered_once_per_modal(monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    monkeypatch.setattr("time.monotonic", lambda: 10.0)
+    approve = approval_handler("crush", 10)
+    approve("Allow      Allow for Session      Deny")
+    approve("Allow      Allow for Session      Deny")
+    assert sent == [b"\r"]
+
+
 def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
     path = tmp_path / ".codex/config.toml"
     path.parent.mkdir()
