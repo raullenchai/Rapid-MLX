@@ -254,3 +254,99 @@ def test_fp8_scale_and_value_midpoints(function, maximum, block):
         rows[:, 0] = maxima
         rows[:, 1] = -maxima * 0.3
         compare(function, mx.array(rows), block)
+
+
+needs_metal = pytest.mark.skipif(
+    not mx.metal.is_available(), reason="rope kernel requires a GPU"
+)
+
+
+@needs_metal
+@pytest.mark.parametrize("inverse", [False, True])
+@pytest.mark.parametrize(
+    "shape,dtype",
+    [
+        ((1, 1, 64, 512), mx.bfloat16),  # decode queries / attention output
+        ((1, 1, 512), mx.bfloat16),  # window KV
+        ((1, 3, 512), mx.float32),  # compressed latents
+        ((2, 7, 32, 128), mx.bfloat16),  # indexer queries, two rows
+        ((1, 4, 2, 64), mx.float16),  # all channels rotated
+    ],
+)
+def test_rope_kernel_matches_eager_at_real_shapes(inverse, shape, dtype):
+    fusion.ENABLED = True
+    cos, sin = layers.precompute_freqs_cis(64, 4096, 65536, 160000.0, 16.0, 32, 1)
+    assert mx.default_device() == mx.gpu
+    for start, scale in ((0, 1.0), (1000, 1e-3), (4089, 1e3)):
+        x = (mx.random.normal(shape) * scale).astype(dtype)
+        c, s = cos[start : start + shape[1]], sin[start : start + shape[1]]
+        assert layers._rope_kernel_supports(x, 64, c, s)
+        compare(layers.rope_tail, x, 64, c, s, inverse)
+
+
+def test_rope_kernel_declines_unsupported_inputs(monkeypatch):
+    monkeypatch.setattr(fusion, "ENABLED", True)
+    cos, sin = layers.precompute_freqs_cis(8, 4, 0, 10000.0, 1.0, 32, 1)
+    x = mx.random.normal((1, 4, 32))
+    supports = layers._rope_kernel_supports
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        assert not supports(x, 8, cos, sin)
+    finally:
+        mx.set_default_device(previous)
+    if mx.default_device() != mx.gpu:
+        return
+    assert supports(x, 8, cos, sin)
+    assert not supports(x, 8, cos[:1], sin[:1])  # rows must match the sequence
+    assert not supports(x, 7, cos, sin)
+    assert not supports(x.astype(mx.int32), 8, cos, sin)
+    assert not supports(x.reshape(4, 32), 8, cos, sin)
+    assert not supports(x, 8, cos.astype(mx.bfloat16), sin)
+    monkeypatch.setattr(fusion, "ENABLED", False)
+    assert not supports(x, 8, cos, sin)
+
+
+def test_rope_kernel_dispatch_geometry(monkeypatch):
+    """Exercise the kernel factory and launch wrapper with a stand-in on any host."""
+    built, seen = {}, {}
+
+    def fake_kernel(**kwargs):
+        seen.update(kwargs)
+        x, cos, sin = kwargs["inputs"]
+        inverse = dict(kwargs["template"])["INVERSE"]
+        return [
+            mx.concatenate(
+                [x[..., :-8], layers.apply_rotary_emb(x[..., -8:], cos, sin, inverse)],
+                axis=-1,
+            )
+        ]
+
+    def fake_metal_kernel(**kwargs):
+        built.update(kwargs)
+        return fake_kernel
+
+    layers._rope_kernel.cache_clear()
+    monkeypatch.setattr(mx.fast, "metal_kernel", fake_metal_kernel)
+    monkeypatch.setattr(layers, "_rope_kernel_supports", lambda *_args: True)
+    cos, sin = layers.precompute_freqs_cis(8, 3, 0, 10000.0, 1.0, 32, 1)
+    x = mx.random.normal((2, 3, 5, 32))
+    out = layers.rope_tail(x, 8, cos, sin, inverse=True)
+    assert out.shape == x.shape
+    assert dict(seen["template"]) == {
+        "T": mx.float32,
+        "D": 32,
+        "RD": 8,
+        "HEADS": 5,
+        "SEQ": 3,
+        "ROWS": 30,
+        "INVERSE": True,
+    }
+    assert seen["grid"] == (480, 1, 1)
+    assert seen["threadgroup"] == (256, 1, 1)
+    assert built["name"] == "rapid_v41_rope_tail"
+    assert built["ensure_row_contiguous"] is True
+    layers.rope_tail(mx.random.normal((1, 3, 16)), 8, cos, sin)
+    assert dict(seen["template"])["HEADS"] == 1
+    assert seen["threadgroup"] == (24, 1, 1)
+    layers._rope_kernel.cache_clear()
