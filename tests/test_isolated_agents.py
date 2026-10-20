@@ -157,8 +157,8 @@ def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outc
     root = isolated.connection_dir() / "agents" / "hermes"
     skills = root / "profiles" / "rapid" / "skills"
     skills.mkdir(parents=True)
-    if cleanup_outcome == "leftover":
-        (skills / "SKILL.md").write_text("still installed")
+    bundled_skill = skills / "SKILL.md"
+    bundled_skill.write_text("bundled skill")
     with (
         patch("rapid_mlx.agents.isolated.shutil.which", return_value="hermes"),
         patch("rapid_mlx.agents.isolated.subprocess.run") as cleanup,
@@ -167,6 +167,10 @@ def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outc
             cleanup.side_effect = subprocess.TimeoutExpired("hermes", 120)
         else:
             cleanup.return_value.returncode = 0
+            if cleanup_outcome == "clean":
+                cleanup.side_effect = lambda *_args, **_kwargs: (
+                    bundled_skill.unlink() or cleanup.return_value
+                )
         isolated.configure("hermes", "qwen3.5-9b-4bit")
         isolated.configure("hermes", "qwen3.5-9b-4bit")
     assert cleanup.call_count == (1 if cleanup_outcome == "clean" else 2)
