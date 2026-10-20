@@ -956,3 +956,101 @@ def test_qwen_runner_reads_current_port_after_saved_port_moves(
     runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     assert capture.read_text() == "http://127.0.0.1:7661/v1"
+
+
+def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
+    private_home, monkeypatch
+):
+    settings = private_home / ".qwen/settings.json"
+    settings.parent.mkdir()
+    original = (
+        b'{"security":{"auth":{"selectedType":"qwen-oauth"}},'
+        b'"model":{"name":"cloud"},'
+        b'"modelProviders":{"openai":[{"id":"qwen3.5-9b-4bit",'
+        b'"baseUrl":"https://cloud.example/v1","envKey":"CLOUD_KEY"}]}}\n'
+    )
+    settings.write_bytes(original)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    qwen = commands / "qwen"
+    qwen.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_CAPTURE"\n'
+        'printf "%s" "$QWEN_HOME" > "$TEST_QWEN_HOME_CAPTURE"\n'
+    )
+    qwen.chmod(0o700)
+    monkeypatch.setenv("HOME", str(private_home))
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    capture = private_home / "qwen-args"
+    home_capture = private_home / "qwen-home"
+    monkeypatch.setenv("TEST_CAPTURE", str(capture))
+    monkeypatch.setenv("TEST_QWEN_HOME_CAPTURE", str(home_capture))
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("qwen-code", "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
+    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    args = capture.read_text().splitlines()
+    assert "--bare" in args
+    assert args[args.index("--auth-type") + 1] == "openai"
+    assert args[args.index("--model") + 1] == "qwen3.5-9b-4bit"
+    assert args[args.index("--openai-base-url") + 1] == "http://127.0.0.1:7660/v1"
+    assert home_capture.read_text() == str(
+        isolated.connection_dir() / "agents" / "qwen-code"
+    )
+    assert settings.read_bytes() == original
+
+
+def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
+    user_config = private_home / ".config/crush/crush.json"
+    user_config.parent.mkdir(parents=True)
+    original = b'{"models":{"large":{"provider":"cloud","model":"cloud"}}}\n'
+    user_config.write_bytes(original)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    crush = commands / "crush"
+    crush.write_text(
+        '#!/bin/sh\ntest -f "$CRUSH_GLOBAL_CONFIG/crush.json" || exit 8\n'
+        'printf "%s" "$CRUSH_GLOBAL_CONFIG" > "$TEST_CAPTURE"\n'
+        'printf "%s" "$CRUSH_GLOBAL_DATA" > "$TEST_DATA_CAPTURE"\n'
+        'printf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
+    )
+    crush.chmod(0o700)
+    monkeypatch.setenv("HOME", str(private_home))
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    capture = private_home / "crush-config-dir"
+    args_capture = private_home / "crush-args"
+    data_capture = private_home / "crush-global-data"
+    monkeypatch.setenv("TEST_CAPTURE", str(capture))
+    monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
+    monkeypatch.setenv("TEST_DATA_CAPTURE", str(data_capture))
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents" / "crush" / "run"
+    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    assert capture.read_text() == str(isolated.connection_dir() / "agents/crush")
+    assert data_capture.read_text() == str(
+        isolated.connection_dir() / "agents/crush/global-data"
+    )
+    args = args_capture.read_text().splitlines()
+    assert args[args.index("--data-dir") + 1] == str(
+        isolated.connection_dir() / "agents/crush/data"
+    )
+    assert user_config.read_bytes() == original
+
+
+def test_crush_isolated_launch_rejects_project_config_override(
+    private_home, monkeypatch
+):
+    project = private_home / "project" / "nested"
+    project.mkdir(parents=True)
+    cloud_config = project.parent / ".crush.json"
+    cloud_config.write_text('{"models":{"large":{"provider":"cloud","model":"cloud"}}}')
+    monkeypatch.chdir(project)
+    with pytest.raises(ValueError, match="project configuration"):
+        isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    assert cloud_config.read_text().startswith('{"models"')

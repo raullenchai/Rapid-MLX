@@ -241,13 +241,20 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         return f"{credential} XDG_CONFIG_HOME={quote(str(root))} GOOSE_MODEL={quote(model)} goose session --provider custom_rapid_mlx"
     if name == "crush":
         return (
-            f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root / 'crush.json'))} crush"
+            f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root))} "
+            f"CRUSH_GLOBAL_DATA={quote(str(root / 'global-data'))} "
+            f"crush --data-dir {quote(str(root / 'data'))}"
         )
     if name == "aider":
         return f'OPENAI_API_KEY="$(cat {key})" aider --env-file {quote(str(root / "aider.env"))} --model openai/{quote(model)}'
     if name == "qwen-code":
         saved_port = quote(str(port_path()))
-        return f'OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL="http://127.0.0.1:$(cat {saved_port})/v1" OPENAI_MODEL={quote(model)} qwen'
+        base = f'"http://127.0.0.1:$(cat {saved_port})/v1"'
+        return (
+            f'QWEN_HOME={quote(str(root))} OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL={base} '
+            f"OPENAI_MODEL={quote(model)} qwen --bare --auth-type openai "
+            f"--model {quote(model)} --openai-base-url {base}"
+        )
     if name == "claude-code":
         return f"claude --settings {quote(str(root / 'settings.json'))}"
     raise ValueError(f"unsupported isolated agent: {name}")
@@ -265,6 +272,17 @@ def configure(
     if profile is None or profile.name not in SUPPORTED:
         raise ValueError(f"unsupported isolated agent: {name}")
     name = profile.name
+    if name == "crush":
+        # Project config outranks CRUSH_GLOBAL_CONFIG and may select a cloud
+        # endpoint. Refuse before creating any private launch state.
+        for directory in (Path.cwd(), *Path.cwd().parents):
+            if any(
+                (directory / filename).exists() or (directory / filename).is_symlink()
+                for filename in (".crushrc", "crushrc", ".crush.json", "crush.json")
+            ):
+                raise ValueError(
+                    "isolated crush launch cannot override project configuration"
+                )
     port = port or stable_port()
     save_port(port)
     key = stable_key()
