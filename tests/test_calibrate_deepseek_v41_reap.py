@@ -71,3 +71,40 @@ def test_main_refuses_checkpoint_code_without_explicit_trust(
 
     with pytest.raises(SystemExit, match="refusing to execute"):
         calibrate.main()
+
+
+def test_moe_probe_applies_routing_weight_once() -> None:
+    import mlx.core as mx
+
+    module = _load_module()
+    gate = mx.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]])
+    tensors = {"layers.0.ffn.gate.weight": gate, "layers.0.ffn.gate.bias": mx.zeros(3)}
+
+    class Runtime:
+        c = {
+            "num_experts_per_tok": 2,
+            "norm_topk_prob": True,
+            "routed_scaling_factor": 2.0,
+        }
+        w = type("W", (), {"read": staticmethod(tensors.__getitem__)})()
+
+        def expert(self, name, x, weight=1.0):
+            if name.endswith("shared_experts"):
+                return mx.zeros_like(x)
+            return x * (int(name.rsplit(".", 1)[-1]) + 1) * weight
+
+    runtime = Runtime()
+    seen = []
+    module.install_moe_probe(runtime, observer=lambda *args: seen.append(args))
+    x = mx.array([[1.0, 2.0]])
+    out = runtime.moe("layers.0.ffn", x)
+
+    scores = np.sqrt(np.logaddexp(np.array(x @ gate.T), 0))[0]
+    picks = np.argsort(scores)[-2:]
+    weights = scores[picks] / scores[picks].sum() * 2.0
+    expected = sum(np.array(x)[0] * (pick + 1) * w for pick, w in zip(picks, weights))
+    assert np.allclose(np.array(out)[0], expected, atol=1e-5)
+    # Observer norms are gate-free (unit weight), not routing-weighted.
+    for (_layer, expert, _gate, norm), pick in zip(seen, picks):
+        assert expert == pick
+        assert np.isclose(norm, np.linalg.norm(np.array(x)[0] * (pick + 1)), atol=1e-5)
