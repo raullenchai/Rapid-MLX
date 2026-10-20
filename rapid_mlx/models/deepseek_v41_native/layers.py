@@ -16,6 +16,8 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
+from .fusion import fuse
+
 
 class RMSNorm(nn.Module):
     """RMSNorm computed in fp32, returning the input dtype (matches reference)."""
@@ -26,6 +28,7 @@ class RMSNorm(nn.Module):
         self.weight = mx.ones((dim,), dtype=mx.float32)
 
     def __call__(self, x: mx.array) -> mx.array:
+        # Keep rsqrt eager: compiled CPU reciprocal approximations change fp32.
         dtype = x.dtype
         xf = x.astype(mx.float32)
         var = mx.mean(mx.square(xf), axis=-1, keepdims=True)
@@ -70,6 +73,7 @@ def precompute_freqs_cis(
     return mx.cos(ang), mx.sin(ang)
 
 
+@fuse
 def apply_rotary_emb(
     x: mx.array, cos: mx.array, sin: mx.array, inverse: bool = False
 ) -> mx.array:
@@ -102,5 +106,3 @@ def rope_tail(
     return mx.concatenate(
         [x[..., :-rd], apply_rotary_emb(x[..., -rd:], cos, sin, inverse)], axis=-1
     )
-
-

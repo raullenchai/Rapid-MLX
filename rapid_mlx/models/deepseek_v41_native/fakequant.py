@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from .fusion import fuse
+
 FP8_MAX = 448.0  # e4m3fn
 FP4_MAX = 6.0  # e2m1
 
@@ -57,6 +59,7 @@ def _pow2(e: mx.array) -> mx.array:
     return ((e + 127) << 23).astype(mx.uint32).view(mx.float32)
 
 
+@fuse
 def _ue8m0_scale(amax: mx.array, max_inv: mx.array) -> mx.array:
     """The kernel's fast_round_scale: 2**ceil(log2(amax * (1/max)))."""
     return _pow2(_log2_ceil_bits(amax * max_inv))
@@ -64,13 +67,17 @@ def _ue8m0_scale(amax: mx.array, max_inv: mx.array) -> mx.array:
 
 def _e2m1_round(v: mx.array) -> mx.array:
     """Round |v| <= 6 to the nearest e2m1 value, ties to even, keeping the sign."""
+    return _e2m1_codes(v, _E2M1_LUT)
+
+
+def _e2m1_codes(v: mx.array, lut: mx.array) -> mx.array:
     mag = mx.abs(v)
     idx = mx.zeros(mag.shape, dtype=mx.int32)
     for t in [0.25, 1.25, 2.5, 5.0]:
         idx = idx + (mag > t).astype(mx.int32)
     for t in [0.75, 1.75, 3.5]:
         idx = idx + (mag >= t).astype(mx.int32)
-    return mx.sign(v) * _E2M1_LUT[idx]
+    return mx.sign(v) * lut[idx]
 
 
 def _blockify(x: mx.array, block: int):
@@ -87,9 +94,9 @@ def fake_quant_fp8_ue8m0(x: mx.array, block: int = 32) -> mx.array:
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)
-    amax = mx.maximum(mx.max(mx.abs(xb), axis=-1, keepdims=True), 1e-4)
+    amax = _amax(xb, 1e-4)
     s = _ue8m0_scale(amax, FP8_MAX_INV)
-    q = mx.from_fp8(mx.to_fp8(mx.clip(xb / s, -FP8_MAX, FP8_MAX)), mx.float32) * s
+    q = _fp8_restore(xb / s, s)
     return q.reshape(shape).astype(dtype)
 
 
@@ -100,9 +107,9 @@ def fake_quant_fp4_ue8m0(x: mx.array, block: int = 32) -> mx.array:
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)
-    amax = mx.maximum(mx.max(mx.abs(xb), axis=-1, keepdims=True), 6.0 * 2.0**-126)
+    amax = _amax(xb, 6.0 * 2.0**-126)
     s = _ue8m0_scale(amax, FP4_MAX_INV)
-    q = _e2m1_round(mx.clip(xb / s, -FP4_MAX, FP4_MAX)) * s
+    q = _fp4_restore(xb / s, s, _E2M1_LUT)
     return q.reshape(shape).astype(dtype)
 
 
@@ -113,7 +120,27 @@ def fake_quant_fp4_e4m3(x: mx.array, block: int = 16) -> mx.array:
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)
-    amax = mx.maximum(mx.max(mx.abs(xb), axis=-1, keepdims=True), 6.0 * 2.0**-9)
+    amax = _amax(xb, 6.0 * 2.0**-9)
     s = mx.from_fp8(mx.to_fp8(amax / FP4_MAX), mx.float32)
-    q = _e2m1_round(mx.clip(xb / s, -FP4_MAX, FP4_MAX)) * s
+    q = _fp4_restore(xb / s, s, _E2M1_LUT)
     return q.reshape(shape).astype(dtype)
+
+
+@fuse
+def _amax(x: mx.array, floor: float) -> mx.array:
+    return mx.maximum(mx.max(mx.abs(x), axis=-1, keepdims=True), floor)
+
+
+@fuse
+def _fp8_restore(normalized: mx.array, scale: mx.array) -> mx.array:
+    # Division stays outside this trace: approximate reciprocals can cross ties.
+    return (
+        mx.from_fp8(mx.to_fp8(mx.clip(normalized, -FP8_MAX, FP8_MAX)), mx.float32)
+        * scale
+    )
+
+
+@fuse
+def _fp4_restore(normalized: mx.array, scale: mx.array, lut: mx.array) -> mx.array:
+    v = mx.clip(normalized, -FP4_MAX, FP4_MAX)
+    return _e2m1_codes(v, lut) * scale

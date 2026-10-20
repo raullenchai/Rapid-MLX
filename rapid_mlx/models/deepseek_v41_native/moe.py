@@ -30,6 +30,7 @@ _mlx_compat.install()
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
 from .config import ModelArgs
+from .fusion import fuse
 
 
 class ClampedSwiGLU(nn.Module):
@@ -40,12 +41,17 @@ class ClampedSwiGLU(nn.Module):
         self.limit = limit
 
     def __call__(self, x, gate):
-        x = x.astype(mx.float32)
-        gate = gate.astype(mx.float32)
-        if self.limit > 0:
-            x = mx.clip(x, -self.limit, self.limit)
-            gate = mx.minimum(gate, self.limit)
-        return nn.silu(gate) * x
+        return _swiglu(x, gate, self.limit)
+
+
+@fuse
+def _swiglu(x: mx.array, gate: mx.array, limit: float) -> mx.array:
+    x = x.astype(mx.float32)
+    gate = gate.astype(mx.float32)
+    if limit > 0:
+        x = mx.clip(x, -limit, limit)
+        gate = mx.minimum(gate, limit)
+    return nn.silu(gate) * x
 
 
 class Gate(nn.Module):
@@ -64,21 +70,40 @@ class Gate(nn.Module):
         scores = (
             x.astype(mx.float32) @ self.weight.astype(mx.float32).T
         ) / self.gate_temp
-        if self.score_func == "softmax":
-            scores = mx.softmax(scores, axis=-1)
-        elif self.score_func == "sigmoid":
-            scores = mx.sigmoid(scores)
-        else:  # sqrtsoftplus
-            scores = mx.sqrt(nn.softplus(scores))
+        return _route(
+            scores,
+            self.bias,
+            self.score_func,
+            self.topk,
+            self.norm_topk_prob,
+            self.route_scale,
+        )
 
-        # the bias picks experts but does not scale them
-        biased = scores + self.bias
-        indices = mx.argpartition(-biased, self.topk - 1, axis=-1)[..., : self.topk]
-        weights = mx.take_along_axis(scores, indices, axis=-1)
-        if self.norm_topk_prob and self.topk > 1:
-            weights = weights / (mx.sum(weights, axis=-1, keepdims=True) + 1e-20)
-        weights = weights * self.route_scale
-        return weights, indices
+
+@fuse
+def _route(
+    scores: mx.array,
+    bias: mx.array,
+    score_func: str,
+    topk: int,
+    norm_topk_prob: bool,
+    route_scale: float,
+):
+    if score_func == "softmax":
+        scores = mx.softmax(scores, axis=-1)
+    elif score_func == "sigmoid":
+        scores = mx.sigmoid(scores)
+    else:  # sqrtsoftplus
+        scores = mx.sqrt(nn.softplus(scores))
+
+    # the bias picks experts but does not scale them
+    biased = scores + bias
+    indices = mx.argpartition(-biased, topk - 1, axis=-1)[..., :topk]
+    weights = mx.take_along_axis(scores, indices, axis=-1)
+    if norm_topk_prob and topk > 1:
+        weights = weights / (mx.sum(weights, axis=-1, keepdims=True) + 1e-20)
+    weights = weights * route_scale
+    return weights, indices
 
 
 class SharedExpert(nn.Module):
@@ -93,10 +118,7 @@ class SharedExpert(nn.Module):
         dtype = x.dtype
         gate = self.w1(x).astype(mx.float32)
         up = self.w3(x).astype(mx.float32)
-        if self.limit > 0:
-            up = mx.clip(up, -self.limit, self.limit)
-            gate = mx.minimum(gate, self.limit)
-        h = nn.silu(gate) * up
+        h = _swiglu(up, gate, self.limit)
         return self.w2(h.astype(dtype))
 
 
@@ -121,6 +143,12 @@ class MoE(nn.Module):
         xf = x.reshape(-1, self.dim)
         weights, indices = self.gate(xf)
         y = self.experts(xf, indices)  # [tokens, topk, dim]
-        y = mx.sum(y.astype(mx.float32) * weights[..., None], axis=-2)
-        y = y + self.shared_experts(xf).astype(mx.float32)
+        y = _combine(y, weights, self.shared_experts(xf))
         return y.reshape(shape).astype(x.dtype)
+
+
+@fuse
+def _combine(y: mx.array, weights: mx.array, shared: mx.array) -> mx.array:
+    return mx.sum(y.astype(mx.float32) * weights[..., None], axis=-2) + shared.astype(
+        mx.float32
+    )
