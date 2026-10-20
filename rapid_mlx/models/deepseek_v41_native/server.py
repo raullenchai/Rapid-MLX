@@ -1,4 +1,4 @@
-"""Dedicated serial OpenAI-compatible server for qualified DSpark K4."""
+"""OpenAI-compatible server with an opt-in draft-off batching lane."""
 
 from __future__ import annotations
 
@@ -51,6 +51,11 @@ def run_server(
 
     from rapid_mlx.telemetry.server_start import failure_stage
 
+    from .batch_scheduler import BatchBackend, request_lanes
+
+    lanes = request_lanes()
+    backend = None
+    batch_options = {}
     artifact = product_artifact(model_name)
     if artifact is None:
         raise ValueError(f"unknown V4.1 product artifact: {model_name}")
@@ -89,48 +94,103 @@ def run_server(
 
     # Product runtime construction materializes both downloaded checkpoints.
     with failure_stage("prepare"):
-        model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
-    app = _build_app(
-        model=model,
-        processor=tokenizer,
-        runtime=runtime,
-        served_model_name=served_model_name,
-        default_max_tokens=default_max_tokens,
-        cors_origins=cors_origins,
-        no_thinking=no_thinking,
-        default_reasoning_effort=default_reasoning_effort,
-        api_key=api_key,
-        rate_limit=rate_limit,
-        max_request_bytes=max_request_bytes,
-        body_receive_timeout_seconds=body_receive_timeout_seconds,
-        default_timeout=default_timeout,
-        max_concurrent_requests=max_concurrent_requests,
-        cors_policy=cors_policy,
-        tool_call_parser=None,
-        reasoning_parser_name=reasoning_parser_name,
-        render_prompt_fn=render_prompt,
-        stream_generate_fn=partial(stream_generate, runtime=runtime),
-        generate_fn=partial(generate, runtime=runtime),
-        generation_kwargs_fn=generation_kwargs,
-        validate_request_fn=validate_request,
-        backend_name="DeepSeek V4.1 DSpark K4",
-    )
+        if lanes == 1:
+            model, tokenizer, runtime = _dflash_executor.submit(_load_all).result()
+        else:
+            from types import SimpleNamespace
+
+            from rapid_mlx.api.models import SpeculativeDecodingInfo
+            from rapid_mlx.speculative.dflash.server import BackendExecutionPolicy
+
+            def _load_batch():
+                model, tokenizer, draft_runtime = _load_all()
+                return (
+                    model,
+                    tokenizer,
+                    SimpleNamespace(target_revision=draft_runtime.target_revision),
+                )
+
+            backend = BatchBackend(lanes=lanes, load_fn=_load_batch)
+            model, tokenizer = backend.model, backend.tokenizer
+            runtime = SimpleNamespace(
+                algorithm="greedy-batched",
+                drafter_repo=None,
+                target_revision=backend.runtime.target_revision,
+                drafter_revision=None,
+            )
+            # Construction loads the paired checkpoint once, but this lane
+            # performs target-only decoding and retains no draft runtime.
+            del backend.runtime
+            batch_options = {
+                "execution_policy": BackendExecutionPolicy(lanes, backend.executor),
+                "generate_fn_accepts_cancel_event": True,
+                "speculative_info": SpeculativeDecodingInfo(
+                    configured=False,
+                    method=None,
+                    runtime_state="unavailable",
+                ),
+                "runtime_status_extra": {"mode": "batched", "lanes": lanes},
+            }
+    try:
+        app = _build_app(
+            model=model,
+            processor=tokenizer,
+            runtime=runtime,
+            served_model_name=served_model_name,
+            default_max_tokens=default_max_tokens,
+            cors_origins=cors_origins,
+            no_thinking=no_thinking,
+            default_reasoning_effort=default_reasoning_effort,
+            api_key=api_key,
+            rate_limit=rate_limit,
+            max_request_bytes=max_request_bytes,
+            body_receive_timeout_seconds=body_receive_timeout_seconds,
+            default_timeout=default_timeout,
+            max_concurrent_requests=lanes if backend else max_concurrent_requests,
+            cors_policy=cors_policy,
+            tool_call_parser=None,
+            reasoning_parser_name=reasoning_parser_name,
+            render_prompt_fn=render_prompt,
+            stream_generate_fn=backend.stream_generate
+            if backend
+            else partial(stream_generate, runtime=runtime),
+            generate_fn=backend.generate
+            if backend
+            else partial(generate, runtime=runtime),
+            generation_kwargs_fn=generation_kwargs,
+            validate_request_fn=validate_request,
+            backend_name="DeepSeek V4.1 batched"
+            if backend
+            else "DeepSeek V4.1 DSpark K4",
+            **batch_options,
+        )
+        if backend is not None:
+            app.router.on_shutdown.append(backend.close)
+    except BaseException:
+        if backend is not None:
+            backend.close()
+        raise
     print()
     host_display = "localhost" if host == "0.0.0.0" else host
 
     def _print_ready() -> None:
-        print(f"  Ready: http://{host_display}:{port}/v1  (DSpark K4 serial mode)")
+        mode = f"batched mode, {lanes} lanes" if backend else "DSpark K4 serial mode"
+        print(f"  Ready: http://{host_display}:{port}/v1  ({mode})")
         print(f"  Docs:  http://{host_display}:{port}/docs")
         print()
 
     from rapid_mlx._uvicorn import run_uvicorn
 
-    run_uvicorn(
-        app,
-        host=host,
-        port=port,
-        log_level=uvicorn_log_level,
-        timeout_keep_alive=30,
-        on_server_accepting=_print_ready,
-        port_explicit=port_explicit,
-    )
+    try:
+        run_uvicorn(
+            app,
+            host=host,
+            port=port,
+            log_level=uvicorn_log_level,
+            timeout_keep_alive=30,
+            on_server_accepting=_print_ready,
+            port_explicit=port_explicit,
+        )
+    finally:
+        if backend is not None:
+            backend.close()

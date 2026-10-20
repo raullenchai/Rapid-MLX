@@ -74,8 +74,9 @@ This is a deliberately narrow product lane:
 
 - 256 GB Apple Silicon is the supported hardware; startup fails closed below
   the measured 224 GiB unified-memory floor.
-- Requests serialize behind one model worker. Continuous batching and prefix
-  caching are not claimed for this architecture-specific cache.
+- By default requests serialize behind one model worker. An experimental
+  draft-off continuous-batching mode is available through the environment
+  setting below. Prefix caching remains unsupported.
 - Greedy generation is supported, with at most 8,192 input tokens and 4,096
   output tokens. Sampling, images, tools, MCP, and structured output are not
   yet qualified.
@@ -93,6 +94,25 @@ Troubleshooting: decode uses custom Metal kernels that are qualified on the
 supported hardware. If requests fail inside a kernel on another chip or macOS
 version, restart the server with `RAPID_MLX_DSV41_FUSED=0` to run every kernel
 on its stock MLX path (same output, slower decode).
+
+Set `RAPID_MLX_DSV41_LANES` to `2`, `4`, or `8` to opt into continuous
+batching; unset or `1` preserves the serial DSpark K4 path. Other values fail
+startup with a configuration error. For example:
+
+```bash
+RAPID_MLX_DSV41_LANES=2 rapid-mlx serve deepseek-v41-flash-reap-2bit
+```
+
+Batched mode disables drafting and reports that state through `/v1/models`
+and `/healthz`. One model thread alternates 512-token single-request prefill
+chunks with one decode step across active rows. HTTP admission capacity equals
+the configured lanes; requests beyond backend capacity wait in FIFO order.
+Disconnects and cancellation release rows between steps. Greedy-only sampling
+and the same input/output limits apply. Startup still loads the pinned pair
+once; the draft runtime is released before serving. The serial qualification
+numbers above do not describe this mode. Batched mode has CPU synthetic coverage;
+real-checkpoint correctness, memory headroom and Metal throughput need separate
+qualification before production use.
 
 ### MiniCPM5 2B
 

@@ -160,6 +160,12 @@ class Attention(nn.Module):
 
     def __call__(self, x: mx.array, start_pos: int, cache, shared) -> mx.array:
         """x [b, n, dim] (post attn_norm), absolute positions [start_pos, start_pos+n)."""
+        from .cache import BatchModelCache
+
+        if isinstance(cache, BatchModelCache):
+            from .batched_decode import attention_decode
+
+            return attention_decode(self, x, cache, shared)
         bsz, n, _ = x.shape
         rd = self.rope_head_dim
         end_pos = start_pos + n
