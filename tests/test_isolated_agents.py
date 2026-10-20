@@ -495,11 +495,13 @@ def test_cancelled_model_start_terminates_only_spawned_server(
     pid_file.write_text("12345\n")
     monkeypatch.setattr(launch_cli, "PID_FILE", pid_file)
     with (
-        patch("rapid_mlx.agents.isolated.connection_status", return_value="stopped"),
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", KeyboardInterrupt],
+        ),
         patch("rapid_mlx.run.cli._confirm_download", return_value=True),
         patch("rapid_mlx.launch.cli._start_server_background", return_value=12345),
         patch("rapid_mlx.launch.cli.os.kill") as kill,
-        patch("time.sleep", side_effect=KeyboardInterrupt),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
         pytest.raises(KeyboardInterrupt),
     ):
