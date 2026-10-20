@@ -1100,6 +1100,10 @@ def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
     runner = isolated.connection_dir() / "agents/crush/run"
+    marker = private_home / "imported-project-module"
+    (projects[1] / "hashlib.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n"
+    )
     captured = []
     for project in projects:
         args_capture = private_home / f"{project.name}-args"
@@ -1110,6 +1114,7 @@ def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
         args = args_capture.read_text().splitlines()
         captured.append(args[args.index("--data-dir") + 1])
     assert captured[0] != captured[1]
+    assert not marker.exists()
     for project, data_dir in zip(projects, captured):
         project_id = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:24]
         assert data_dir == str(

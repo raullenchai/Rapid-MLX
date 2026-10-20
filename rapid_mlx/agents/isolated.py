@@ -244,18 +244,20 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         # The saved runner may be executed from a different project later.
         # Resolve its data path after refresh, in the execution shell.
         data_path = (
-            f"$({quote(sys.executable)} -c "
+            f'RAPID_MLX_CRUSH_DATA_PATH="$({quote(sys.executable)} -I -c '
             + quote(
                 "import hashlib,pathlib,sys; "
                 "print(pathlib.Path(sys.argv[1]) / "
                 "hashlib.sha256(str(pathlib.Path.cwd().resolve()).encode()).hexdigest()[:24])"
             )
-            + f" {quote(str(root / 'data'))})"
+            + f' {quote(str(root / "data"))})" || exit 1\n'
         )
         return (
-            f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root))} "
+            data_path
+            + '[[ -n "$RAPID_MLX_CRUSH_DATA_PATH" ]] || exit 1\n'
+            + f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root))} "
             f"CRUSH_GLOBAL_DATA={quote(str(root / 'global-data'))} "
-            f'crush --data-dir "{data_path}"'
+            'crush --data-dir "$RAPID_MLX_CRUSH_DATA_PATH"'
         )
     if name == "aider":
         return f'OPENAI_API_KEY="$(cat {key})" aider --env-file {quote(str(root / "aider.env"))} --model openai/{quote(model)}'
