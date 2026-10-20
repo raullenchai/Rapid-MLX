@@ -739,15 +739,18 @@ def test_chat_exit_agent_tip_fires_once_after_response(monkeypatch, tmp_path, ca
         inputs = iter(["hello", "exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
         cli.chat_command(_ns_for_chat(port))
-    # Tip text is "... → rapid-mlx launch <agent|--all>" regardless of what
-    # agent (if any) is detected on the runner.
-    assert "rapid-mlx launch" in capsys.readouterr().out
+    # Both detected-agent and generic tips point to a persistent server and
+    # the agent setup commands; neither depends on runner-installed agents.
+    first_output = capsys.readouterr().out
+    assert "rapid-mlx serve <model>; then rapid-mlx agents" in first_output
 
     with _fake_server(canned) as (port2, _payloads2):
         inputs2 = iter(["hey", "exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs2))
         cli.chat_command(_ns_for_chat(port2))
-    assert "rapid-mlx launch" not in capsys.readouterr().out
+    assert (
+        "rapid-mlx serve <model>; then rapid-mlx agents" not in capsys.readouterr().out
+    )
 
 
 def test_chat_exit_agent_tip_skipped_when_no_response(monkeypatch, tmp_path, capsys):
@@ -762,7 +765,9 @@ def test_chat_exit_agent_tip_skipped_when_no_response(monkeypatch, tmp_path, cap
         inputs = iter(["exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
         cli.chat_command(_ns_for_chat(port))
-    assert "rapid-mlx launch" not in capsys.readouterr().out
+    assert (
+        "rapid-mlx serve <model>; then rapid-mlx agents" not in capsys.readouterr().out
+    )
     # Marker never created → the one-time chance is intact.
     assert not (tmp_path / "state" / "chat_agent_tip_shown").exists()
 
