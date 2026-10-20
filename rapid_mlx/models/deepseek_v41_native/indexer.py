@@ -28,8 +28,8 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import ModelArgs
-from .fakequant import fake_quant_fp4_ue8m0
-from .layers import RMSNorm, rope_tail
+from .layers import RMSNorm
+from .rope_quant import rope_fake_quant
 
 NEG_INF = float("-inf")
 POS_INF = float("inf")
@@ -106,8 +106,7 @@ class Indexer(nn.Module):
         g = latents.shape[1]
         pos = (g0 + mx.arange(g)) * self.ratio
         k = self.k_norm(self.wk(latents))
-        k = rope_tail(k, rd, cos[pos], sin[pos])
-        k = fake_quant_fp4_ue8m0(k, 32)
+        k = rope_fake_quant(k, rd, cos[pos], sin[pos], "fp4_ue8m0")
         cache.index_k[: k.shape[0], g0 : g0 + g] = k
 
     def __call__(
@@ -133,10 +132,13 @@ class Indexer(nn.Module):
         nb = index_k.shape[1]
 
         q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
-        q = rope_tail(
-            q, rd, cos[start_pos : start_pos + n], sin[start_pos : start_pos + n]
+        q = rope_fake_quant(
+            q,
+            rd,
+            cos[start_pos : start_pos + n],
+            sin[start_pos : start_pos + n],
+            "fp4_ue8m0",
         )
-        q = fake_quant_fp4_ue8m0(q, 32)
 
         w = self.weights_proj(x) * (self.softmax_scale * self.n_heads**-0.5)
         scores = mx.einsum(
