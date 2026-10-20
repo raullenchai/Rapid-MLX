@@ -338,7 +338,11 @@ def configure(
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
-                if result is not None and result.returncode == 0:
+                if (
+                    result is not None
+                    and result.returncode == 0
+                    and not any(skills_dir.rglob("SKILL.md"))
+                ):
                     _private_write(
                         cleaned, "Bundled skills cleaned from private profile.\n"
                     )

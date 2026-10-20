@@ -152,26 +152,29 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     assert "goose session --provider" in Path(goose).read_text()
 
 
-@pytest.mark.parametrize("cleanup_timeout", [False, True])
-def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_timeout):
+@pytest.mark.parametrize("cleanup_outcome", ["clean", "timeout", "leftover"])
+def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outcome):
     root = isolated.connection_dir() / "agents" / "hermes"
-    (root / "profiles" / "rapid" / "skills").mkdir(parents=True)
+    skills = root / "profiles" / "rapid" / "skills"
+    skills.mkdir(parents=True)
+    if cleanup_outcome == "leftover":
+        (skills / "SKILL.md").write_text("still installed")
     with (
         patch("rapid_mlx.agents.isolated.shutil.which", return_value="hermes"),
         patch("rapid_mlx.agents.isolated.subprocess.run") as cleanup,
     ):
-        if cleanup_timeout:
+        if cleanup_outcome == "timeout":
             cleanup.side_effect = subprocess.TimeoutExpired("hermes", 120)
         else:
             cleanup.return_value.returncode = 0
         isolated.configure("hermes", "qwen3.5-9b-4bit")
         isolated.configure("hermes", "qwen3.5-9b-4bit")
-    assert cleanup.call_count == (2 if cleanup_timeout else 1)
+    assert cleanup.call_count == (1 if cleanup_outcome == "clean" else 2)
     assert cleanup.call_args.kwargs["env"]["HERMES_HOME"] == str(root)
     assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file()
     assert (
         root / "profiles" / "rapid" / ".rapid-bundled-skills-cleaned"
-    ).is_file() != cleanup_timeout
+    ).is_file() == (cleanup_outcome == "clean")
 
 
 def test_hermes_uses_served_context_ceiling_before_opening(private_home):
