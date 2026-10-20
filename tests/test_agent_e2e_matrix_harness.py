@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
-from scripts.agent_e2e.run import request_evidence, snapshot
+from scripts.agent_e2e.run import preserved, request_evidence, snapshot
 from scripts.agent_e2e.seed_home import FILES
 
 
@@ -16,8 +16,9 @@ def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
     (path.parent / "session.json").write_text("{}")
     (tmp_path / ".rapid-mlx").mkdir()
     assert snapshot(tmp_path, "codex") == before
+    assert preserved(before, dict(before, **{".codex/session.json": "new"}))
     path.write_text(path.read_text() + "# changed\n")
-    assert snapshot(tmp_path, "codex") != before
+    assert not preserved(before, snapshot(tmp_path, "codex"))
 
 
 def test_request_evidence_never_substitutes_config_model(tmp_path):

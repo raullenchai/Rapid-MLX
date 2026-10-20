@@ -28,6 +28,8 @@ python3 scripts/agent_e2e/run.py \
 ```
 
 The runner drives `rapid-mlx launch <agent>` through a pseudo-terminal. It
+answers the known local first-run theme and dummy-key confirmation menus;
+unexpected login or permission prompts remain visible in the transcript. It
 asks for a file write and readback, then a second edit and readback, repeats
 the launch in a new process, starts the native agent after `--remove`, and
 compares byte hashes and modes of pre-existing user configuration. It leaves

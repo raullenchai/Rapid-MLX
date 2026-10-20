@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -74,6 +75,13 @@ def snapshot(home: Path, agent: str) -> dict[str, str]:
     return result
 
 
+def preserved(before: dict[str, str], after: dict[str, str]) -> bool:
+    """New session files are allowed; every pre-existing config byte must stay."""
+    return bool(before) and all(
+        after.get(path) == digest for path, digest in before.items()
+    )
+
+
 def version(binary: str, env: dict[str, str]) -> str:
     if not shutil.which(binary, path=env["PATH"]):
         return "NOT INSTALLED"
@@ -124,6 +132,40 @@ def open_terminal() -> tuple[int, int]:
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     return master, slave
+
+
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def _compact_screen(output: str) -> str:
+    return "".join(_ANSI.sub("", output).lower().split())
+
+
+def handle_first_run_menus(
+    agent: str, output: str, master: int, proc: subprocess.Popen, sink
+) -> str:
+    """Answer only known local onboarding prompts, never a cloud login."""
+    if agent != "claude-code":
+        return output
+    answered = set()
+    for _ in range(4):
+        screen = _compact_screen(output)
+        if "choosethetextstyle" in screen and "theme" not in answered:
+            answered.add("theme")
+            os.write(master, b"\r")
+        elif "detectedacustomapikey" in screen and "local-key" not in answered:
+            answered.add("local-key")
+            os.write(master, b"\x1b[A")  # default is No; select Yes
+            time.sleep(0.3)
+            os.write(master, b"\r")
+        elif "trustthefilesinthisfolder" in screen and "trust" not in answered:
+            answered.add("trust")
+            os.write(master, b"\r")
+        else:
+            break
+        more, _ = read_until(master, proc, 8, sink)
+        output += more
+    return output
 
 
 def session(
@@ -180,6 +222,7 @@ def session(
                 sink,
                 stop_when=lambda output: "Agent ready." in output,
             )
+            opening = handle_first_run_menus(command[2], opening, master, proc, sink)
             # Startup text is not proof that the agent opened. The launch
             # readiness line is a lower bound; a failed launch stays blank.
             if "Agent ready." in opening:
@@ -459,7 +502,7 @@ def main() -> int:
             )
         except OSError:
             row["normal_mode_opens"] = False
-        row["config_untouched"] = before == snapshot(args.home, agent)
+        row["config_untouched"] = preserved(before, snapshot(args.home, agent))
         row["works"] = bool(
             row["config_seeded"]
             and row["config_untouched"]
