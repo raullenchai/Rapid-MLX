@@ -9,6 +9,11 @@ def test_tier_mapping_is_opt_in_and_resolves_documented_aliases(tmp_path, monkey
     from rapid_mlx.launch import claude_desktop
 
     monkeypatch.setattr(claude_desktop, "connection_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        claude_desktop,
+        "_private_write",
+        lambda path, content: path.write_text(content, encoding="utf-8"),
+    )
     assert claude_desktop.mappings() == {}
     assert claude_desktop.resolve_model("sonnet") == "sonnet"
     monkeypatch.setattr(claude_desktop, "stable_key", lambda: "a" * 64)
@@ -48,10 +53,13 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
         )
         enabled = client.get("/v1/models")
         assert enabled.status_code == 200
-        assert (
-            enabled.json()["data"][: len(original.json()["data"])]
-            == original.json()["data"]
-        )
+        original_cards = original.json()["data"]
+        enabled_cards = enabled.json()["data"][: len(original_cards)]
+        for before, after in zip(original_cards, enabled_cards, strict=True):
+            # `created` is generated for every discovery call.
+            assert {k: v for k, v in after.items() if k != "created"} == {
+                k: v for k, v in before.items() if k != "created"
+            }
         tiers = enabled.json()["data"][len(original.json()["data"]) :]
         assert {entry["anthropic_family_tier"] for entry in tiers} == set(
             claude_desktop.TIERS
