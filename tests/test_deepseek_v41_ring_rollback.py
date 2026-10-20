@@ -47,8 +47,9 @@ class _OracleDrafter:
         return proposals, None
 
 
+@pytest.mark.parametrize("window_size", [8, 3])
 @pytest.mark.parametrize("wrong_index", [None, 1, 2, 3, 4])
-def test_wrapped_window_speculation_matches_plain_greedy(wrong_index):
+def test_wrapped_window_speculation_matches_plain_greedy(wrong_index, window_size):
     mx.random.seed(0)
     args = ModelArgs(
         vocab_size=32,
@@ -60,7 +61,7 @@ def test_wrapped_window_speculation_matches_plain_greedy(wrong_index):
         q_lora_rank=16,
         o_lora_rank=16,
         o_groups=1,
-        window_size=8,
+        window_size=window_size,
         moe_inter_dim=32,
         n_routed_experts=2,
         n_activated_experts=1,

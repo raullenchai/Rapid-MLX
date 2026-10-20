@@ -444,6 +444,16 @@ def stream_generate(
     emitted_text = ""
     generated = 0
     seed_already_emitted = False
+    # A verify chunk longer than a ring would overwrite its own accepted rows,
+    # which a rejection could not restore; keep every chunk within each ring.
+    ring_limit = min(
+        [
+            layer.window
+            for layer in getattr(cache, "layers", ())
+            if getattr(layer, "window", 0)
+        ],
+        default=5,
+    )
     while generated < max_tokens:
         seed = int(mx.argmax(logits))
         if not ignore_eos and not seed_already_emitted and seed == eos_id:
@@ -452,7 +462,7 @@ def stream_generate(
         else:
             proposals, _confidence = runtime.drafter.propose(seed)
             candidate = proposals[
-                : min(5, max_tokens - generated + int(seed_already_emitted))
+                : min(5, ring_limit, max_tokens - generated + int(seed_already_emitted))
             ]
             base_offset = cache.offset
             # Offset rollback cannot recover older KV overwritten by rejected rows.
