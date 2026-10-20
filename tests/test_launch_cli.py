@@ -1285,7 +1285,12 @@ class TestLaunchCommand:
         fake_proc.pid = 99997
         with patch.object(subprocess, "Popen", return_value=fake_proc):
             launch_cli.launch_command(
-                _make_args(client="claude-code", model="local-model", start_server=True)
+                _make_args(
+                    client="claude-code",
+                    model="local-model",
+                    start_server=True,
+                    legacy_config=True,
+                )
             )
 
         data = json.loads(claude_code.current_config_path().read_text())
