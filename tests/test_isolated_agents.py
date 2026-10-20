@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import urllib.error
@@ -539,5 +540,5 @@ def test_qwen_runner_reads_current_port_after_saved_port_moves(
         isolated.configure("qwen-code", "qwen3.5-9b-4bit", port=7660)
     isolated.save_port(7661)
     runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
-    subprocess.run([str(runner)], check=True)
+    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     assert capture.read_text() == "http://127.0.0.1:7661/v1"
