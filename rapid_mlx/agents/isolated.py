@@ -320,14 +320,14 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         # project config, which would otherwise replace our selected model.
         config = quote(str(root / "opencode.json"))
         return (
-            f"{credential} env -u OPENCODE_CONFIG_DIR "
+            f'{credential} OPENCODE_CONFIG_CONTENT="$(cat {config})" '
+            "env -u OPENCODE_CONFIG_DIR "
             f"HOME={quote(str(root / 'home'))} "
             f"XDG_CONFIG_HOME={quote(str(root / 'xdg-config'))} "
             f"XDG_DATA_HOME={quote(str(root / 'xdg-data'))} "
             f"XDG_CACHE_HOME={quote(str(root / 'xdg-cache'))} "
             f"XDG_STATE_HOME={quote(str(root / 'xdg-state'))} "
-            f"OPENCODE_CONFIG={config} "
-            f'OPENCODE_CONFIG_CONTENT="$(cat {config})" opencode'
+            f"OPENCODE_CONFIG={config} opencode"
         )
     if name == "hermes":
         return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"

@@ -183,6 +183,7 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     assert "XDG_DATA_HOME=" in runner
     assert "env -u OPENCODE_CONFIG_DIR" in runner
     assert "OPENCODE_CONFIG_CONTENT=" in runner
+    assert runner.index("OPENCODE_CONFIG_CONTENT=") < runner.index("env -u")
     assert "opencode --model" not in runner
     isolated.configure("hermes", "qwen3.5-9b-4bit")
     hermes = (
