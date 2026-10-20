@@ -3148,6 +3148,51 @@
        "completer": null,
        "const": null,
        "default": null,
+       "dest": "opus_model",
+       "help": "Local model assigned to the opus tier",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--opus-model"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "sonnet_model",
+       "help": "Local model assigned to the sonnet tier",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--sonnet-model"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "haiku_model",
+       "help": "Local model assigned to the haiku tier",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--haiku-model"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
        "dest": "server_url",
        "help": "rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
        "metavar": null,
@@ -3244,6 +3289,9 @@
         "check",
         "remove",
         "model",
+        "opus_model",
+        "sonnet_model",
+        "haiku_model",
         "server_url",
         "port",
         "start_server",
