@@ -254,7 +254,11 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
 
 
 def configure(
-    name: str, model: str, *, port: int | None = None, context_length: int | None = None
+    name: str,
+    model: str,
+    *,
+    port: int | None = None,
+    require_live_context: bool = False,
 ) -> str:
     """Render an existing registry profile under Rapid's private directory."""
     profile = get_profile(name)
@@ -273,18 +277,15 @@ def configure(
     os.environ["RAPID_MLX_API_KEY"] = key
     try:
         version = None
+        context_length = None
         if name == "opencode":
             from rapid_mlx.agents.opencode_version import installed_version
 
             version = installed_version()
         if name == "hermes":
-            if context_length is None:
-                context_length = hermes_context_length(port, key, model)
-            else:
-                live_limit = hermes_context_length(port, key, model, require_live=True)
-                if context_length < _HERMES_MIN_CONTEXT:
-                    raise ValueError("Hermes context override is below 64,000 tokens")
-                context_length = min(context_length, live_limit)
+            context_length = hermes_context_length(
+                port, key, model, require_live=require_live_context
+            )
         rendered = profile.render_config(
             base, model, version, context_length=context_length
         )
@@ -344,13 +345,15 @@ def configure(
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
-                if (
-                    result is not None
-                    and result.returncode == 0
-                    and not any(skills_dir.rglob("SKILL.md"))
-                ):
+                if result is not None and result.returncode == 0:
                     _private_write(
-                        cleaned, "Bundled skills cleaned from private profile.\n"
+                        cleaned,
+                        "Bundled skills opt-out completed for private profile.\n",
+                    )
+                else:
+                    print(
+                        "Hermes private skill cleanup did not complete; retry launch to try again.",
+                        file=sys.stderr,
                     )
             elif not skills_dir.is_dir():
                 _private_write(

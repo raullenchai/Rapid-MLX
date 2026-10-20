@@ -173,12 +173,12 @@ def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outc
                 )
         isolated.configure("hermes", "qwen3.5-9b-4bit")
         isolated.configure("hermes", "qwen3.5-9b-4bit")
-    assert cleanup.call_count == (1 if cleanup_outcome == "clean" else 2)
+    assert cleanup.call_count == (2 if cleanup_outcome == "timeout" else 1)
     assert cleanup.call_args.kwargs["env"]["HERMES_HOME"] == str(root)
     assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file()
     assert (
         root / "profiles" / "rapid" / ".rapid-bundled-skills-cleaned"
-    ).is_file() == (cleanup_outcome == "clean")
+    ).is_file() == (cleanup_outcome != "timeout")
 
 
 def test_hermes_uses_served_context_ceiling_before_opening(private_home):
@@ -358,13 +358,12 @@ def test_hermes_check_refreshes_only_from_live_served_limit(private_home):
     assert yaml.safe_load(config)["model"]["context_length"] == 98304
 
 
-def test_hermes_supplied_context_is_checked_against_live_limit(private_home):
+def test_hermes_live_configuration_probes_once(private_home):
     with patch(
         "rapid_mlx.agents.isolated.hermes_context_length", return_value=98304
     ) as probe:
-        with pytest.raises(ValueError, match="below 64,000"):
-            isolated.configure("hermes", "model", port=7660, context_length=1)
-        isolated.configure("hermes", "model", port=7660, context_length=262144)
+        isolated.configure("hermes", "model", port=7660, require_live_context=True)
+    probe.assert_called_once()
     assert probe.call_args.kwargs["require_live"] is True
     config = (
         isolated.connection_dir()

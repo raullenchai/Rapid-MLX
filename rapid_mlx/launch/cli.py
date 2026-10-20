@@ -293,13 +293,10 @@ def launch_command(args: argparse.Namespace) -> None:
             status = connection_status(port, key, model)
             if status == "ready":
                 if args.client == "hermes":
-                    from rapid_mlx.agents.isolated import hermes_context_length
-
                     try:
-                        context = hermes_context_length(
-                            port, key, model, require_live=True
+                        configure(
+                            args.client, model, port=port, require_live_context=True
                         )
-                        configure(args.client, model, port=port, context_length=context)
                     except (OSError, ValueError) as exc:
                         print(f"launch: {exc}", file=sys.stderr)
                         raise SystemExit(1) from exc
@@ -412,11 +409,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 )
                 raise SystemExit(1)
             if args.client == "hermes":
-                from rapid_mlx.agents.isolated import hermes_context_length
-
                 try:
-                    context = hermes_context_length(port, key, model, require_live=True)
-                    configure(args.client, model, port=port, context_length=context)
+                    configure(args.client, model, port=port, require_live_context=True)
                 except (OSError, ValueError) as exc:
                     if server_pid is not None:
                         _stop_failed_start(server_pid)
