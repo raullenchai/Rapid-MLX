@@ -18,9 +18,10 @@ a load-time error: the model builds, ``generate()`` runs, and crashes deep
 in the text encoder's RMSNorm with a shape mismatch
 (``[broadcast_shapes] Shapes (3584) and (1,50,672)``) — reproduced live
 against this project's pinned mflux before this alias was pointed
-elsewhere. ``mflux-community/qwen-image-mflux-q6`` (uploaded 2026-08-16,
-commit ``c628fe4392d963557c3013c2709e6d3b67bca79d`` at the time of
-pinning) keeps the text encoder full-precision (verified: zero
+elsewhere. ``mflux-community/qwen-image-mflux-q6`` (first pinned at
+``c628fe4392d963557c3013c2709e6d3b67bca79d``, uploaded 2026-08-16; upstream
+re-created the repository on 2026-10-11, so it is now pinned at
+``f57c43e57ecc0eef7b08092d660eda8afe7fc6cc``) keeps the text encoder full-precision (verified: zero
 ``scale``/``bias`` keys, correct ``[152064, 3584]`` embed shape) and was
 confirmed end-to-end: both a plain text-to-image prompt and a
 text-rendering prompt ("RAPID MLX" on a sign) produced correct images

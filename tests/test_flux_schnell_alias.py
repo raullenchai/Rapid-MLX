@@ -8,7 +8,7 @@ from rapid_mlx.model_sizes import size_bytes
 from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 REPO = "mflux-community/flux-1-schnell-mflux-q4"
-REVISION = "bcdbe817ad51175959b2e691e64eca626db30558"
+REVISION = "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce"
 
 
 def test_flux_schnell_alias_is_generation_only_mflux_model():
@@ -31,5 +31,5 @@ def test_flux_schnell_alias_is_generation_only_mflux_model():
 def test_flux_schnell_weights_are_revision_pinned():
     assert list_profiles()["flux-schnell"].hf_path == REPO
     assert IMAGE_MODEL_REVISIONS[REPO] == REVISION
-    assert size_bytes(REPO) == 9_613_040_056
+    assert size_bytes(REPO) == 9_613_052_559
     assert estimate_model_bytes("flux-schnell") == int(9.5 * 1024**3)

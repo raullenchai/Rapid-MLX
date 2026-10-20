@@ -1689,11 +1689,17 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
     SD35_REPO: SD35_DATA_FILES,
 }
 
+# The two mflux-community pins below were re-pinned on 2026-10-20: upstream
+# deleted and re-created both repositories on 2026-10-11, so the previous
+# commits return 404 and every cold pull failed with RevisionNotFoundError.
+# The re-converted shards keep identical tensor names, shapes, dtypes and
+# offsets; only the ``mflux_version`` string in the safetensors metadata
+# changed. Re-check that structure before moving either pin again.
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
-    "mflux-community/flux-1-schnell-mflux-q4": "bcdbe817ad51175959b2e691e64eca626db30558",
+    "mflux-community/flux-1-schnell-mflux-q4": "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce",
     "mflux-community/flux2-klein-4b-mflux-bf16": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
-    "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
+    "mflux-community/qwen-image-mflux-q6": "f57c43e57ecc0eef7b08092d660eda8afe7fc6cc",
     "mlx-community/Qwen-Image-2.1-mflux-q4": "746a58556820933a2df5c75887a2570f1ad200c0",
     "Qwen/Qwen-Image-2.1": "790c92633540aa0cb11d9abf19eb46d861714758",
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": "a458969f2a612433cf036bfc3d8d818ceba29fab",
