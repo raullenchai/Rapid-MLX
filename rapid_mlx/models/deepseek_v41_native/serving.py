@@ -455,6 +455,14 @@ def stream_generate(
                 : min(5, max_tokens - generated + int(seed_already_emitted))
             ]
             base_offset = cache.offset
+            # Offset rollback cannot recover older KV overwritten by rejected rows.
+            # Keep the touched ring slots on device until verification commits.
+            window_snapshots = []
+            for layer in getattr(cache, "layers", ()):
+                if not getattr(layer, "window", 0):
+                    continue
+                slots = (base_offset + mx.arange(len(candidate))) % layer.window
+                window_snapshots.append((layer, slots, layer.win_kv[:, slots]))
             target_logits, target_hidden = model(
                 mx.array([candidate]),
                 cache,
@@ -478,6 +486,8 @@ def stream_generate(
                 seed_already_emitted = False
             else:
                 cache.rollback(base_offset + mismatch)
+                for layer, slots, previous in window_snapshots:
+                    layer.win_kv[:, slots[mismatch:]] = previous[:, mismatch:]
                 for index in range(mismatch):
                     runtime.drafter.observe(
                         target_hidden[:, index], base_offset + index
