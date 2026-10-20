@@ -16,6 +16,7 @@ from pathlib import Path
 
 from rapid_mlx.agents import get_profile
 from rapid_mlx.agents.codex_catalog import build_codex_model_info
+from rapid_mlx.agents.server_hint import is_connection_refused
 
 SUPPORTED = frozenset(
     {
@@ -126,8 +127,8 @@ def connection_status(port: int, key: str, model: str) -> str:
             payload = json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return "key-mismatch" if exc.code in {401, 403} else "server-error"
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return "stopped"
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return "stopped" if is_connection_refused(exc) else "server-error"
     except (ValueError, TypeError):
         return "server-error"
     models = payload.get("data") if isinstance(payload, dict) else None

@@ -176,6 +176,13 @@ def test_malformed_model_list_returns_one_server_error(private_home):
         assert isolated.connection_status(7659, "a" * 64, "model") == "server-error"
 
 
+def test_connection_status_shares_local_refusal_classification(private_home):
+    with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
+        assert isolated.connection_status(7659, "a" * 64, "model") == "stopped"
+    with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+        assert isolated.connection_status(7659, "a" * 64, "model") == "server-error"
+
+
 def test_launch_waits_through_startup_http_error(private_home):
     from rapid_mlx.launch.cli import launch_command, register
 
@@ -282,7 +289,7 @@ def test_key_creation_race_reuses_winner(private_home):
     [
         (urllib.error.HTTPError("url", 401, "no", {}, None), "key-mismatch"),
         (urllib.error.HTTPError("url", 503, "loading", {}, None), "server-error"),
-        (urllib.error.URLError("refused"), "stopped"),
+        (urllib.error.URLError(ConnectionRefusedError()), "stopped"),
         (ValueError("bad JSON"), "server-error"),
     ],
 )
