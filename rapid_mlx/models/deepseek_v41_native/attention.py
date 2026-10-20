@@ -152,12 +152,7 @@ class Attention(nn.Module):
 
         lc = cache.layers[self.layer_id]
         fused = not self._break_rope_inverse and decode_attention.supports(
-            x,
-            lc.win_kv,
-            self.n_heads,
-            self.head_dim,
-            rd,
-            self.window_size + (self.index_topk if self.ratio else 0),
+            x, lc.win_kv, self.n_heads, self.head_dim, rd
         )
         if fused:
             # one decode token: q_norm, kv_norm, the KV rope tail and its FP8
