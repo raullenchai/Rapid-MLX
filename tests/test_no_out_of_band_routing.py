@@ -152,8 +152,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # eligibility checks as the modules' ENABLED constants. It selects no
         # model, parser, engine, checkpoint or serving lane.
         "RAPID_MLX_DSV41_FUSED",
-        # Native V4.1 request concurrency (1/2/4/8) within its already-selected
-        # product backend; larger counts use target-only batched decoding.
+        # Opt-in request concurrency (1/2/4/8) for the already-selected native
+        # V4.1 product backend, mirroring RAPID_MLX_TENSORFOLD_LANES. It never
+        # selects a model, parser, engine, or checkpoint. Counts above 1 serve
+        # the same target weights without the paired draft, and report that
+        # truthfully via /v1/models speculative info and the ready banner.
         "RAPID_MLX_DSV41_LANES",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
