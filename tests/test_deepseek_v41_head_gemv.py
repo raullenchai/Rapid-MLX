@@ -60,6 +60,18 @@ def test_each_row_matches_its_single_row_stock_result(gpu, rows: int) -> None:
     assert mx.array_equal(actual, expected).item()
 
 
+@needs_metal
+def test_strided_last_token_rows_match_single_row_stock(gpu) -> None:
+    head = _head(outputs=4096, inputs=1024)
+    hidden = mx.random.normal((2, 3, 1024))
+    last = hidden[:, -1:]
+    actual = head_logits(head, last)
+    expected = mx.concatenate([head(hidden[b : b + 1, -1:]) for b in range(2)])
+    mx.eval(actual, expected)
+    assert actual.shape == (2, 1, 4096)
+    assert mx.array_equal(actual, expected).item()
+
+
 def _tiny_model() -> Model:
     args = ModelArgs(
         dim=128,
