@@ -112,7 +112,23 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
         assert all(entry["is_family_default"] is True for entry in tiers)
         assert all(entry["id"].startswith("claude-") for entry in tiers)
         monkeypatch.setattr(claude_desktop, "mappings", lambda: {"sonnet": "absent"})
-        assert client.get("/v1/models").json()["data"] == original_cards
+        assert [entry["id"] for entry in client.get("/v1/models").json()["data"]] == [
+            entry["id"] for entry in original_cards
+        ]
+        build_info = models._build_model_info
+        monkeypatch.setattr(
+            models,
+            "_build_model_info",
+            lambda model_id: build_info(model_id).model_copy(
+                update={"capabilities": ["text"]}
+            ),
+        )
+        monkeypatch.setattr(
+            claude_desktop, "mappings", lambda: {"sonnet": cfg.model_name}
+        )
+        assert [entry["id"] for entry in client.get("/v1/models").json()["data"]] == [
+            entry["id"] for entry in original_cards
+        ]
     finally:
         (
             cfg.model_name,
