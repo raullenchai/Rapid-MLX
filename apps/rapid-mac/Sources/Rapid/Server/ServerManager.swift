@@ -1281,9 +1281,24 @@ final class ServerManager {
         self.sharesAgentConnection = true
         self.bearerCredentialStore = EmbeddedBearerCredentialStore(
             defaults: .standard,
-            keychain: SystemKeychain()
+            keychain: Self.usesEphemeralKeychainFixture()
+                ? InMemoryKeychain()
+                : SystemKeychain()
         )
         self.embeddedBearerLifetime = Self.loadBearerLifetime(from: .standard)
+    }
+
+    /// GUI golden-flow personas run under an isolated `CFFIXED_USER_HOME`
+    /// that has no login Keychain, so saving a durable agent connection
+    /// there can never succeed and every persistent integration row would
+    /// refuse to copy. The harness opts into a process-local Keychain for
+    /// that journey only. Requiring both variables keeps every normal launch
+    /// on the system Keychain.
+    nonisolated static func usesEphemeralKeychainFixture(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["RAPID_GUI_GOLDEN_MODE"] == "1"
+            && environment["RAPID_GUI_EPHEMERAL_KEYCHAIN_FIXTURE"] == "1"
     }
 
     /// Wire the app's ``DownloadManager`` so ``start(alias:)`` can

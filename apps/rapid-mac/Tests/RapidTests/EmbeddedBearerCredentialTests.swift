@@ -241,6 +241,21 @@ private final class FixedResultKeychain: KeychainStoring, @unchecked Sendable {
 @MainActor
 @Suite("ServerManager embedded bearer policy (issue #2599)")
 struct ServerManagerEmbeddedBearerTests {
+    @Test("Process-local Keychain fixture requires both golden-flow variables")
+    func ephemeralKeychainFixtureIsHarnessOnly() {
+        #expect(!ServerManager.usesEphemeralKeychainFixture(environment: [:]))
+        #expect(!ServerManager.usesEphemeralKeychainFixture(environment: [
+            "RAPID_GUI_GOLDEN_MODE": "1",
+        ]))
+        #expect(!ServerManager.usesEphemeralKeychainFixture(environment: [
+            "RAPID_GUI_EPHEMERAL_KEYCHAIN_FIXTURE": "1",
+        ]))
+        #expect(ServerManager.usesEphemeralKeychainFixture(environment: [
+            "RAPID_GUI_GOLDEN_MODE": "1",
+            "RAPID_GUI_EPHEMERAL_KEYCHAIN_FIXTURE": "1",
+        ]))
+    }
+
     @Test("Saving an agent after rotation keeps the pending key")
     func pendingAgentConnectionSecret() {
         let pending = EmbeddedBearerCredential(

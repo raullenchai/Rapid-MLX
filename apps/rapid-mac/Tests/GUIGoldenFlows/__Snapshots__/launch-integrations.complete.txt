@@ -34,20 +34,77 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="ConnectTools.Copy.Model" desc="Copy Model" help="Copy Model" enabled=true
-            AXHeading desc="Popular integrations" enabled=true
+            AXHeading desc="Claude Desktop, Use its official in-app Gateway setup." enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.Gateway URL" desc="Copy Gateway URL" help="Copy Gateway URL" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.Gateway API key" desc="Copy Gateway API key" help="Start a model to generate a valid key and configuration." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXHeading desc="Coding agents" enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.claude-code" desc="Launch" enabled=false
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Command.claude-code" desc="Show command" enabled=true
             AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.claude-code" desc="Copy" enabled=true
+            AXLink id="Launch.Integration.SessionCopy.claude-code" desc="Copy one-session command" enabled=false
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.codex" desc="Launch" enabled=false
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Command.codex" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.codex" desc="Copy" enabled=true
+            AXLink id="Launch.Integration.SessionCopy.codex" desc="Copy one-session command" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.opencode" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.opencode" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.opencode" desc="Copy" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.hermes" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.hermes" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.hermes" desc="Copy" enabled=true
+            AXLink id="Launch.Integration.SessionCopy.hermes" desc="Copy one-session command" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.qwen-code" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.qwen-code" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.qwen-code" desc="Copy" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.aider" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.aider" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.aider" desc="Copy" enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline setup command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Command.cline" desc="Show command" enabled=true
-            AXButton id="ConnectTools.MoreIntegrations" desc="More integrations (11)" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev setup command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.continue-dev" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor setup command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.cursor" desc="Show command" enabled=true
+            AXButton id="ConnectTools.MoreIntegrations" desc="Editors and more (5)" enabled=true
             AXButton id="ConnectTools.ServerSettings" desc="Server settings" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true

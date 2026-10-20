@@ -5048,7 +5048,12 @@ flow_resident_load_rejected() {
 
 flow_launch_integrations() {
     log "flow: launch-integrations"
-    start_persona launch-integrations
+    # Persistent coding-agent rows save the local connection before copying
+    # (#4979). The isolated persona HOME has no login Keychain, so the journey
+    # opts into the app's process-local Keychain fixture instead of touching
+    # the runner's real Keychain.
+    start_persona launch-integrations \
+        RAPID_GUI_GOLDEN_MODE=1 RAPID_GUI_EPHEMERAL_KEYCHAIN_FIXTURE=1
     dismiss_first_run
     see_main "$OUT/main.json"
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
@@ -5230,8 +5235,10 @@ flow_launch_integrations() {
             "$OUT/launch-copy-${integration_id##*.}.json" \
             || die "$integration_id is not pressable"
         copied_command="$(pbpaste)"
-        [[ -n "$copied_command" ]] \
-            || die "$integration_id pressed but copied no command"
+        if [[ -z "$copied_command" ]]; then
+            see_main "$OUT/launch-copy-failed-${integration_id##*.}.json" || true
+            die "$integration_id pressed but copied no command"
+        fi
     done < <(jq -r '[.data.ui_elements[]?
                       | select(((.identifier // "")
                                 | startswith("Launch.Integration.Copy."))
