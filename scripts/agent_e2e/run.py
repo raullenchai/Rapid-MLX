@@ -152,6 +152,27 @@ def open_terminal() -> tuple[int, int]:
     return master, slave
 
 
+def stop_terminal_process(proc: subprocess.Popen) -> None:
+    """Stop only this pty child; it may exit between poll and signalling."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.terminate()
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=3)
+
+
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
@@ -309,13 +330,7 @@ def session(
                 os.write(master, b"\x04")
                 read_until(master, proc, 2, sink)
         finally:
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=3)
+            stop_terminal_process(proc)
             answer["exit"] = proc.returncode
             answer["ended_at"] = time.time()
             os.close(master)
@@ -381,13 +396,7 @@ def normal_mode(
                 and not any(word in output.lower() for word in fatal)
             )
         finally:
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=3)
+            stop_terminal_process(proc)
             os.close(master)
 
 

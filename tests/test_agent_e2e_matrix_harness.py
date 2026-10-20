@@ -4,7 +4,13 @@ import asyncio
 import json
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
-from scripts.agent_e2e.run import output_issues, preserved, request_evidence, snapshot
+from scripts.agent_e2e.run import (
+    output_issues,
+    preserved,
+    request_evidence,
+    snapshot,
+    stop_terminal_process,
+)
 from scripts.agent_e2e.seed_home import FILES
 
 
@@ -156,3 +162,26 @@ def test_output_issue_summary_uses_private_transcript(tmp_path):
     transcript = tmp_path / "agent.pty"
     transcript.write_bytes(b"\x1b[31mWarning: retrying\x1b[0m\n")
     assert output_issues(transcript) == ["warning"]
+
+
+def test_pty_cleanup_falls_back_when_process_group_is_inaccessible(monkeypatch):
+    class Process:
+        pid = 123
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            return 0
+
+    def denied(*args):
+        raise PermissionError("process group changed during shutdown")
+
+    monkeypatch.setattr("scripts.agent_e2e.run.os.killpg", denied)
+    proc = Process()
+    stop_terminal_process(proc)
+    assert proc.terminated
