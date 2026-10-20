@@ -49,7 +49,7 @@ struct IntegrationOrderingTests {
     func unpinnedRowsAreUndisturbed() {
         let ordered = IntegrationCatalog.displayOrdered(registryOrder).map(\.id)
         let rest = ordered.filter { !IntegrationCatalog.leadingIntegrations.contains($0) }
-        #expect(rest == ["cline", "continue-dev", "cursor", "langchain", "hermes"])
+        #expect(rest == ["cline", "continue-dev", "cursor", "langchain"])
     }
 
     @Test("A missing pinned row is skipped, not faked")
@@ -81,7 +81,7 @@ struct AgentConnectionInformationArchitectureTests {
         let marker = try #require(full.range(of: "var cardContent: some View"))
         let page = full[marker.lowerBound...]
         let endpoint = try #require(page.range(of: "endpointSection"))
-        let integrations = try #require(page.range(of: "toolsSection(Array(tools.prefix(3))"))
+        let integrations = try #require(page.range(of: "toolsSection(Array(tools.prefix(9))"))
         let settings = try #require(page.range(of: "\"Server settings\""))
 
         #expect(endpoint.lowerBound < integrations.lowerBound)

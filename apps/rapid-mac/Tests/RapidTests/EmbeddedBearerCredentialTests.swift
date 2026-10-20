@@ -368,6 +368,7 @@ struct ServerManagerEmbeddedBearerTests {
             sessionDefaults: UserDefaults(suiteName: "server-bearer-per-launch")!,
             bearerCredentialStore: perLaunchCredentialStore
         )
+        perLaunchServer.setEmbeddedBearerLifetime(.perLaunch)
         let perLaunchRotated = perLaunchServer.rotateEmbeddedBearerNow(now: Date(timeIntervalSince1970: 20))
 
         #expect(!perLaunchRotated)
