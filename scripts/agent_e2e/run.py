@@ -140,11 +140,11 @@ def session(
         target.unlink()
     first_prompt = (
         f"Create hello.txt containing exactly hi-{marker}, then read it "
-        "back using a tool and report what you read.\r"
+        "back using a tool and report what you read."
     )
     second_prompt = (
         "Use a tool to append -second to hello.txt, then read the "
-        "file back and report its exact contents.\r"
+        "file back and report its exact contents."
     )
     master, slave = open_terminal()
     started = time.monotonic()
@@ -190,6 +190,8 @@ def session(
             sent = time.monotonic()
             answer["prompt1_at"] = time.time()
             os.write(master, first_prompt.encode())
+            time.sleep(0.5)
+            os.write(master, b"\r")
             output, first_byte = read_until(
                 master,
                 proc,
@@ -206,6 +208,8 @@ def session(
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
                 os.write(master, second_prompt.encode())
+                time.sleep(0.5)
+                os.write(master, b"\r")
                 output2, first_byte = read_until(
                     master,
                     proc,
