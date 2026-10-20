@@ -1085,11 +1085,33 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
 
 def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
     projects = [private_home / "a", private_home / "b"]
-    paths = []
     for project in projects:
         project.mkdir()
-        monkeypatch.chdir(project)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    crush = commands / "crush"
+    crush.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n')
+    crush.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    monkeypatch.chdir(projects[0])
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
-        runner = (isolated.connection_dir() / "agents/crush/run").read_text()
-        paths.append(runner.split("--data-dir ", 1)[1].split()[0])
-    assert paths[0] != paths[1]
+    runner = isolated.connection_dir() / "agents/crush/run"
+    captured = []
+    for project in projects:
+        args_capture = private_home / f"{project.name}-args"
+        monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
+        subprocess.run(
+            [shutil.which("zsh") or "/bin/bash", str(runner)], cwd=project, check=True
+        )
+        args = args_capture.read_text().splitlines()
+        captured.append(args[args.index("--data-dir") + 1])
+    assert captured[0] != captured[1]
+    for project, data_dir in zip(projects, captured):
+        project_id = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:24]
+        assert data_dir == str(
+            isolated.connection_dir() / "agents/crush/data" / project_id
+        )
