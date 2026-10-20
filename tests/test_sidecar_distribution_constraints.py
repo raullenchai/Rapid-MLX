@@ -108,3 +108,28 @@ def test_find_errors_rejects_empty_distribution_directory(
     assert constraints.find_errors(tmp_path) == [
         f"no installed distributions found in {tmp_path}"
     ]
+
+
+def test_tensorfold_repair_matches_sidecar_and_running_python(monkeypatch):
+    import runpy
+    import shlex
+
+    from rapid_mlx.speculative import tensorfold_runtime as policy
+
+    pins = (SCRIPT.parent / "sidecar-constraints.txt").read_text().splitlines()
+    assert f"mlx=={policy.SUPPORTED_MLX_VERSION}" in pins
+    assert f"mlx-audio=={policy.SUPPORTED_MLX_AUDIO_VERSION}" in pins
+    # A launcher path containing shell syntax must remain a single argument.
+    interpreter = "/tmp/Rapid user's $venv/bin/python"
+    monkeypatch.setattr(sys, "executable", interpreter)
+    loaded = runpy.run_path(policy.__file__)
+    command = shlex.split(loaded["INSTALL_HINT"].splitlines()[1])
+    assert command == [
+        interpreter,
+        "-m",
+        "pip",
+        "install",
+        f"mlx=={policy.SUPPORTED_MLX_VERSION}",
+        f"mlx-audio=={policy.SUPPORTED_MLX_AUDIO_VERSION}",
+        f"tensorfold @ git+{policy.SUPPORTED_RUNTIME_URL}@{policy.SUPPORTED_REVISION}",
+    ]

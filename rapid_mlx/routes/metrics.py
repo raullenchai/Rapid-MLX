@@ -54,6 +54,7 @@ from ..config import get_config
 from ..runtime.model_performance import get_model_performance_snapshots
 
 router = APIRouter()
+model_performance_router = APIRouter()
 
 # Prometheus text exposition format 0.0.4.
 _CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
@@ -2188,4 +2189,16 @@ async def metrics() -> PlainTextResponse:
     """
     cfg = get_config()
     body = _render_prometheus(cfg)
+    return PlainTextResponse(content=body, media_type=_CONTENT_TYPE)
+
+
+@model_performance_router.get("/metrics")
+async def model_performance_metrics() -> PlainTextResponse:
+    """Expose process-owned request counters for apps without BatchedEngine.
+
+    Match the main unauthenticated probe and text format, reusing its renderer.
+    Engine residency/cache gauges are omitted because these apps do not own
+    the main server's config or engine lifecycle.
+    """
+    body = "\n".join(_render_retained_model_performance()) + "\n"
     return PlainTextResponse(content=body, media_type=_CONTENT_TYPE)

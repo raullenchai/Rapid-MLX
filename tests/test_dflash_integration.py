@@ -4014,3 +4014,144 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     assert body["choices"][0]["message"]["role"] == "assistant"
     assert body["choices"][0]["message"]["content"]
     assert body["usage"]["completion_tokens"] > 0
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("tokens", [0, 1, 3])
+@pytest.mark.parametrize("fail", [False, True])
+def test_serial_lane_metrics_and_share_scrape(monkeypatch, stream, tokens, fail):
+    """TensorFold's shared app exposes real counters without loading a model."""
+    import io
+    import time
+
+    from fastapi.testclient import TestClient
+    from prometheus_client.parser import text_string_to_metric_families
+
+    from rapid_mlx.share import quicksilver as qs
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    def generate(*args, **kwargs):
+        if fail:
+            raise RuntimeError("fake generation failed")
+        return SimpleNamespace(text="hello", prompt_tokens=7, generation_tokens=tokens)
+
+    def stream_generate(*args, **kwargs):
+        for index in range(1, tokens + 1):
+            time.sleep(0.001)
+            yield SimpleNamespace(
+                text="hi", token=index, prompt_tokens=7, generation_tokens=index
+            )
+        if fail:
+            raise RuntimeError("fake generation failed")
+
+    app = _build_app(
+        model=SimpleNamespace(config={}),
+        processor=SimpleNamespace(eos_token_id=99),
+        runtime=SimpleNamespace(drafter=None),
+        served_model_name="qwen3.8-27b-tensorfold",
+        default_max_tokens=16,
+        cors_origins=[],
+        api_key="test-secret",
+        backend_name="TensorFold",
+        render_prompt_fn=lambda *args, **kwargs: "prompt",
+        generation_kwargs_fn=lambda **kwargs: kwargs,
+        generate_fn=generate,
+        stream_generate_fn=stream_generate,
+        strict_openai_streaming=True,
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    response = client.get("/metrics")
+    assert response.status_code == 200  # Same unauthenticated probe as main serve.
+    assert qs._PoolStatus._parse(response.text) == (0, 0, 0, 0)
+    body = {
+        "model": "qwen3.8-27b-tensorfold",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": stream,
+    }
+    assert client.post("/v1/chat/completions", json=body).status_code == 401
+    result = client.post(
+        "/v1/chat/completions",
+        json=body,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert result.status_code == (500 if fail and not stream else 200), result.text
+    response = client.get("/metrics")
+    assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
+    assert "rapid_mlx_model_loaded" not in response.text
+    families = list(text_string_to_metric_families(response.text))
+    outcomes = {
+        sample.labels["outcome"]: sample.value
+        for family in families
+        for sample in family.samples
+        if sample.name == "rapid_mlx_model_requests_total"
+    }
+    assert outcomes == {"succeeded": int(not fail), "failed": int(fail), "cancelled": 0}
+    values = qs._PoolStatus._parse(response.text)
+    assert values is not None
+    assert values[:2] == (int(not fail), tokens if stream or not fail else 0)
+    assert values[3] == int(stream and tokens >= 2)
+    assert (values[2] > 0) == (stream and tokens >= 2)
+    assert qs._PoolStatus._parse(client.get("/metrics").text) == values
+
+    # Exercise the actual scraper's URL, auth, bounded read and parser using
+    # an in-process HTTP transport so this test needs no listening socket.
+    def open_metrics(request, timeout):
+        assert request.full_url == "http://127.0.0.1:12345/metrics"
+        assert request.get_header("Authorization") == "Bearer test-secret"
+        scraped = client.get("/metrics", headers=dict(request.header_items()))
+        payload = io.BytesIO(scraped.content)
+        payload.status = scraped.status_code
+        payload.headers = scraped.headers
+        return payload
+
+    monkeypatch.setattr(qs, "_open", open_metrics)
+    status = qs._PoolStatus(12345, lambda: True, api_key="test-secret")
+    assert status.baseline == values
+    assert status._scrape() == values
+
+
+async def test_serial_lane_nonstream_cancellation_metrics(monkeypatch):
+    import asyncio
+    import threading
+
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
+    from rapid_mlx.speculative.dflash import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(srv, "_dflash_lock", asyncio.Lock())
+
+    def generate(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(text="done", prompt_tokens=7, generation_tokens=3)
+
+    task = asyncio.create_task(
+        srv._non_stream_completion(
+            prompt="prompt",
+            request=ChatCompletionRequest(
+                model="cancelled-test", messages=[{"role": "user", "content": "hi"}]
+            ),
+            served_model_name="cancelled-test",
+            gen_kwargs={},
+            model=None,
+            processor=None,
+            timeout=0,
+            generate_fn=generate,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        snapshot = get_model_performance_ledger("cancelled-test").snapshot()
+        assert snapshot.requests_cancelled == 1
+        assert snapshot.requests_succeeded == 0
+        assert snapshot.completion_tokens == 0
+    finally:
+        release.set()
+        # Drain deferred cleanup while this event loop is still alive.
+        await asyncio.wait_for(srv._dflash_lock.acquire(), 2)
+        srv._dflash_lock.release()

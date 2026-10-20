@@ -63,13 +63,19 @@ is not required for ordinary offline/online use. The recommended CLI flow uses t
 argv and shell history. GUI Keychain settings are not imported into CLI.
 The Qwen3.8 27B pool defaults to the qualified TensorFold runtime (48 GB+ unified memory) in both CLI
 and Desktop, including in-memory message-boundary prefix reuse. Desktop bundles
-that runtime. For a standalone Python install, install its qualified revision
-once in the same environment as Rapid:
+that runtime. For the curl installer (`curl -fsSL https://rapidmlx.com/install.sh | bash`),
+install its qualified revision once into Rapid’s environment:
 
 ```bash
-~/.rapid-mlx/bin/python -m pip install 'mlx==0.32.3' \
+~/.rapid-mlx/bin/python -m pip install 'mlx==0.32.3' 'mlx-audio==0.5.3' \
   'tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248'
 ```
+
+For other Python installs (including pip and uv tool), use the same Python that
+runs `rapid-mlx`; the runtime error prints the exact install command. The audio
+pin keeps the base audio stack compatible with the qualified MLX version.
+Homebrew does not bundle TensorFold and manages its own MLX dependency; use the
+curl or Python install for this lane rather than modifying the Homebrew environment.
 
 An unavailable or incompatible runtime prevents joining. The local TensorFold
 backend serves text; requests requiring unsupported tools, media, grammar, or

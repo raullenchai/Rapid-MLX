@@ -58,3 +58,18 @@ The following aliases are available for qualified hardware and their matching dr
 - `qwen3.8-flash-next-tensorfold`
 - `gemma-4-26b-tensorfold`
 - `deepseek-v4-flash-tensorfold`
+
+The experimental `qwen3.8-27b-tensorfold` profile requires a separately
+installed source runtime. Install the exact qualified revision before selecting
+the profile. The commands below use the curl installer’s Python; for pip or
+uv tool installs, use the Python that runs `rapid-mlx` (the runtime error prints
+the exact command). Homebrew manages its own MLX environment and does not bundle
+TensorFold; use a curl or Python install for these profiles. See the
+[Share Compute runtime setup](../guides/share-compute.md) for details:
+
+```bash
+~/.rapid-mlx/bin/python -m pip install "mlx==0.32.3" "mlx-audio==0.5.3" "tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248"
+```
+
+This dependency remains an explicit opt-in because it is not available as an
+indexed wheel. The normal `rapid-mlx` package and its extras do not install it.

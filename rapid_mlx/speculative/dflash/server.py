@@ -61,6 +61,8 @@ from rapid_mlx.api.models import (
 )
 from rapid_mlx.config import get_config
 from rapid_mlx.engine import GenerationOutput
+from rapid_mlx.routes.metrics import model_performance_router
+from rapid_mlx.runtime.model_performance import get_model_performance_ledger
 from rapid_mlx.service.helpers import (
     _parse_tool_calls_with_parser,
     _validate_tool_call_params,
@@ -764,6 +766,7 @@ def _build_app(
     # ``verify_api_key`` and ``RequestBodyLimitMiddleware`` read this
     # singleton at request time.
     cfg = get_config()
+    get_model_performance_ledger(served_model_name)
     cfg.api_key = api_key
     cfg.max_request_bytes = max(0, int(max_request_bytes))
     cfg.body_receive_timeout_seconds = max(0.0, float(body_receive_timeout_seconds))
@@ -814,6 +817,7 @@ def _build_app(
             raise
 
     app = FastAPI(title=f"Rapid-MLX ({backend_name})")
+    app.include_router(model_performance_router)
     if model_info is not None:
         if model_info.id != served_model_name:
             raise ValueError("model_info.id must match served_model_name")
@@ -1701,6 +1705,12 @@ async def _stream_completion(
     # owns the socket and will deliver these to any client still reading.
     pending_terminal: list[bytes] = []
 
+    total_completion_tokens = 0
+    prompt_tokens = 0
+    first_token_at = None
+    last_token_at = None
+    error_message = None
+
     async def _produce() -> None:
         """Own the lease, generate, and push SSE chunks onto the queue.
 
@@ -1710,15 +1720,14 @@ async def _stream_completion(
         released (or deferred until a timed-out/cancelled worker exits)
         the moment generation finishes, regardless of consumer speed.
         """
+        nonlocal total_completion_tokens, prompt_tokens, first_token_at, last_token_at
+        nonlocal error_message
         finish_reason = "stop"
-        total_completion_tokens = 0
-        prompt_tokens = 0
         # Track the last token id to disambiguate "hit max_tokens but the
         # final token was actually EOS" — without this we'd falsely flag a
         # natural-stop response as truncated when it lands on exactly the
         # budget. None means "no token observed yet".
         last_token_id: int | None = None
-        error_message: str | None = None
         generation_error: BaseException | None = None
         postprocess_spilled = False
 
@@ -1967,6 +1976,10 @@ async def _stream_completion(
                 # chunks carrying the final token counters but no
                 # incremental text). Skipping the update would leave the
                 # final usage block with stale numbers.
+                if chunk.generation_tokens > total_completion_tokens:
+                    last_token_at = time.monotonic()
+                    if first_token_at is None:
+                        first_token_at = last_token_at
                 total_completion_tokens = chunk.generation_tokens
                 prompt_tokens = chunk.prompt_tokens
                 _ct = getattr(chunk, "token", None)
@@ -2171,8 +2184,13 @@ async def _stream_completion(
         best-effort sentinel to wake a consumer that is blocked in
         ``queue.get()`` right now, but correctness no longer depends on it.
         """
+        outcome = "failed"
         try:
             await _produce()
+            outcome = "succeeded"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         except _DFlashClientGoneError:
             # codex round-2 #1/#3: the client stopped reading (bounded queue
             # stayed full past the backpressure / deadline bound). ``_produce``
@@ -2183,6 +2201,26 @@ async def _stream_completion(
                 "backpressure/deadline bound"
             )
         finally:
+            ledger = get_model_performance_ledger(served_model_name)
+            record = (
+                ledger.record_cancelled
+                if outcome == "cancelled"
+                else ledger.record_failure
+                if outcome == "failed" or error_message is not None
+                else ledger.record_success
+            )
+            decode_seconds = (last_token_at or 0) - (first_token_at or 0)
+            record(
+                completion_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                ttft_seconds=None,
+                decode_tokens_per_second=(
+                    (total_completion_tokens - 1) / decode_seconds
+                    if total_completion_tokens >= 2 and decode_seconds > 0
+                    else None
+                ),
+            )
             # Best-effort wake for a consumer currently blocked on
             # ``queue.get()``. If the queue is full the sentinel is dropped,
             # but the consumer's producer-completion check still terminates
@@ -2387,6 +2425,7 @@ async def _non_stream_completion(
                 asyncio.shield(worker_future), timeout=remaining
             )
     except asyncio.TimeoutError as exc:
+        get_model_performance_ledger(served_model_name).record_failure(completion_id)
         if worker_future is not None:
             if cancel_event is not None:
                 cancel_event.set()
@@ -2396,6 +2435,13 @@ async def _non_stream_completion(
             detail=f"{backend_name} request timed out after {_format_timeout_seconds(timeout_label)}.",
         ) from exc
     except asyncio.CancelledError:
+        get_model_performance_ledger(served_model_name).record_cancelled(
+            completion_id,
+            prompt_tokens=0,
+            completion_tokens=0,
+            ttft_seconds=None,
+            decode_tokens_per_second=None,
+        )
         if worker_future is not None:
             if cancel_event is not None:
                 cancel_event.set()
@@ -2406,6 +2452,7 @@ async def _non_stream_completion(
             serial_lock.release()
 
     if isinstance(result, Exception):
+        get_model_performance_ledger(served_model_name).record_failure(completion_id)
         logger.exception(
             "DFlash non-stream generate raised: %s", result, exc_info=result
         )
@@ -2488,6 +2535,15 @@ async def _non_stream_completion(
             _validate_tool_call_params(tool_calls, request.tools)
             finish_reason = "tool_calls"
 
+    # Non-stream runtimes expose aggregate counts, without first/last token
+    # timestamps. Do not invent an inverse-TPOT decode observation.
+    get_model_performance_ledger(served_model_name).record_success(
+        completion_id,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.generation_tokens,
+        ttft_seconds=None,
+        decode_tokens_per_second=None,
+    )
     return ChatCompletionResponse(
         id=completion_id,
         object="chat.completion",
