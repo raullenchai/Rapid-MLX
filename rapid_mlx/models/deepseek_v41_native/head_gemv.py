@@ -10,6 +10,13 @@ output, shuffle-down tree reduction), so a single row is bit-exact with the
 stock path.  Up to ``MAX_ROWS`` rows (batched lanes, speculative verify) run
 the same per-row arithmetic, i.e. each row equals its own single-row result.
 Larger batches (prefill) stay on the stock path.
+
+Exactness preconditions mirror the stock dispatch (mlx 0.32 ``gemv_axbpy``):
+the weight is the row-major ``[N, K]`` array the loader produces (the stock
+path then runs the non-transposed GEMV), ``K > 64`` and ``K < 16 * N`` (other
+sizes select a different lane split), and ``K % 128 == 0`` (no tail block).
+MLX exposes no stride query, so a transposed view assigned to ``head.weight``
+is outside this contract; V4.1 only ever assigns checkpoint arrays.
 """
 
 from __future__ import annotations
@@ -95,6 +102,7 @@ def supports(head, x: mx.array) -> bool:
         or x.ndim < 1
         or x.shape[-1] != weight.shape[1]
         or weight.shape[1] % _BLOCK_K
+        or weight.shape[1] >= 16 * weight.shape[0]
     ):
         return False
     rows = x.size // x.shape[-1] if x.shape[-1] else 0
