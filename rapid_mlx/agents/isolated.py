@@ -262,6 +262,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "aider":
         base = f'"http://127.0.0.1:$(cat {quote(str(port_path()))})/v1"'
         return (
+            f"HOME={quote(str(root / 'home'))} "
             f'AIDER_OPENAI_API_KEY="$(cat {key})" OPENAI_API_KEY="$(cat {key})" '
             f"AIDER_OPENAI_API_BASE={base} aider "
             f"--config {quote(str(root / 'aider.conf.yml'))} "
@@ -295,6 +296,31 @@ def configure(
     if profile is None or profile.name not in SUPPORTED:
         raise ValueError(f"unsupported isolated agent: {name}")
     name = profile.name
+    if name == "aider":
+        cwd = Path.cwd()
+        git = shutil.which("git")
+        git_root = (
+            subprocess.run(
+                [git, "rev-parse", "--show-toplevel"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if git
+            else None
+        )
+        dirs = {cwd}
+        if git_root and git_root.returncode == 0:
+            dirs.add(Path(git_root.stdout.strip()).resolve())
+        if any(
+            (directory / filename).exists() or (directory / filename).is_symlink()
+            for directory in dirs
+            for filename in (".aider.conf.yml", ".aider.model.settings.yml")
+        ):
+            raise ValueError(
+                "isolated aider launch cannot override project configuration"
+            )
     if name == "crush":
         # Project config outranks CRUSH_GLOBAL_CONFIG and may select a cloud
         # endpoint. Crush stops discovery at the Git root (or cwd outside Git).
@@ -335,6 +361,8 @@ def configure(
     _private_dir(root)
     if name == "qwen-code":
         _private_dir(root / "runtime")
+    if name == "aider":
+        _private_dir(root / "home")
     if name == "crush":
         # UI model selections in either higher-precedence layer must not
         # override the model just selected in Rapid. Keep session databases.
@@ -462,7 +490,11 @@ def configure(
         }
         _private_write(root / "settings.json", json.dumps(settings, indent=2) + "\n")
     elif name == "aider":
-        _private_write(root / "aider.env", f"OPENAI_API_BASE={base}\n")
+        _private_write(
+            root / "aider.env",
+            f"AIDER_OPENAI_API_KEY={key}\nOPENAI_API_KEY={key}\n"
+            f"AIDER_OPENAI_API_BASE={base}\nOPENAI_API_BASE={base}\n",
+        )
         _private_write(root / "aider.conf.yml", "{}\n")
     elif name == "qwen-code":
         _private_write(

@@ -1149,7 +1149,7 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     aider = commands / "aider"
     aider.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
-        'printf "%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" > "$TEST_ENV_CAPTURE"\n'
+        'printf "%s\\n%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" "$HOME" > "$TEST_ENV_CAPTURE"\n'
     )
     aider.chmod(0o700)
     monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
@@ -1173,8 +1173,27 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     assert env_capture.read_text().splitlines() == [
         isolated.key_path().read_text().strip(),
         "http://127.0.0.1:7660/v1",
+        str(isolated.connection_dir() / "agents/aider/home"),
     ]
     assert (
         isolated.connection_dir() / "agents/aider/aider.conf.yml"
     ).read_text() == "{}\n"
+    private_env = (isolated.connection_dir() / "agents/aider/aider.env").read_text()
+    assert (
+        f"AIDER_OPENAI_API_KEY={isolated.key_path().read_text().strip()}" in private_env
+    )
+    assert "AIDER_OPENAI_API_BASE=http://127.0.0.1:7660/v1" in private_env
     assert user_config.read_bytes() == original
+
+
+def test_aider_rejects_project_configuration_before_writing_state(
+    private_home, monkeypatch
+):
+    project = private_home / "project"
+    project.mkdir()
+    config = project / ".aider.conf.yml"
+    config.write_text("yes-always: true\n")
+    monkeypatch.chdir(project)
+    with pytest.raises(ValueError, match="project configuration"):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    assert config.read_text() == "yes-always: true\n"
