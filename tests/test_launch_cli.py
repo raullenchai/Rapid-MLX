@@ -1191,6 +1191,18 @@ class TestLaunchCommand:
         # No file was created or modified.
         assert list(ext_dir.iterdir()) == before
 
+    def test_session_launch_keeps_default_port_when_unspecified(
+        self, fake_home, capsys
+    ):
+        """The existing one-session launch still targets port 8000 by default."""
+        _install_cline(fake_home)
+        args = _make_args(client="cline", port=None, dry_run=True)
+
+        launch_cli.launch_command(args)
+
+        assert args.port == 8000
+        assert "[dry-run]" in capsys.readouterr().out
+
     def test_real_patch_writes_file(self, fake_home, capsys):
         ext_dir = _install_cline(fake_home)
         launch_cli.launch_command(_make_args(client="cline", model="qwen3.5-4b-4bit"))
