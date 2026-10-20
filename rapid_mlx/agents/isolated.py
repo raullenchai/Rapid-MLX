@@ -597,6 +597,7 @@ def configure(
     elif name == "crush":
         _private_write(root / "crush.json", str(rendered))
     elif name == "claude-code":
+        _private_dir(root / "config")
         settings = {
             "env": {
                 "ANTHROPIC_BASE_URL": base.removesuffix("/v1"),

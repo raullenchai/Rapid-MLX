@@ -107,6 +107,19 @@ def test_claude_launch_overrides_stored_subscription_without_touching_it(private
     assert not (private_home / ".claude").exists()
 
 
+def test_claude_launch_rejects_symlinked_private_config(private_home):
+    target = private_home / ".claude"
+    target.mkdir()
+    root = isolated.connection_dir() / "agents/claude-code"
+    root.mkdir(parents=True)
+    (root / "config").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="refusing symlinked config path"):
+        isolated.configure("claude-code", "local-model", port=7660)
+
+    assert not list(target.iterdir())
+
+
 def test_saved_port_is_reused_by_later_profiles(private_home):
     isolated.configure("codex", "qwen3.5-9b-4bit", port=7660)
     assert isolated.stable_port() == 7660
