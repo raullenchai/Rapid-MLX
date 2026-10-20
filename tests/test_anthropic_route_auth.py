@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -812,6 +812,38 @@ def test_shared_auth_accepts_x_api_key_for_standard_routes(
             headers={"Authorization": authorization, "x-api-key": "test-secret"},
         )
         assert mixed.status_code == 401
+    duplicate = client.get(
+        "/test",
+        headers=[
+            ("Authorization", "Bearer test-secret"),
+            ("Authorization", "Bearer wrong"),
+            ("x-api-key", "test-secret"),
+        ],
+    )
+    assert duplicate.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_scope_auth_accepts_x_api_key_and_rejects_duplicate_bearer(
+    anthropic_client,
+):
+    from rapid_mlx.middleware.auth import verify_api_key_for_scope
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/models",
+        "headers": [(b"x-api-key", b"test-secret")],
+    }
+    assert await verify_api_key_for_scope(scope)
+    scope["headers"] = [
+        (b"authorization", b"Bearer test-secret"),
+        (b"authorization", b"Bearer wrong"),
+        (b"x-api-key", b"test-secret"),
+    ]
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_api_key_for_scope(scope)
+    assert exc_info.value.status_code == 401
 
 
 def test_configure_rate_limiter_updates_shared_anthropic_dependency(

@@ -305,14 +305,14 @@ async def verify_api_key(
 ):
     """Verify Bearer or Anthropic-style API key if authentication is enabled."""
     bearer_key = credentials.credentials if credentials is not None else None
-    if (
-        request is not None
-        and request.headers.getlist("authorization")
-        and bearer_key is None
-    ):
-        # HTTPBearer(auto_error=False) returns None for an empty or unsupported
-        # Authorization header. A supplied companion must still be valid.
-        bearer_key = ""
+    if request is not None:
+        authorization_headers = request.headers.getlist("authorization")
+        if len(authorization_headers) > 1 or (
+            authorization_headers and bearer_key is None
+        ):
+            # HTTPBearer reads only the first value and maps malformed values
+            # to None. Reject every ambiguous or invalid companion header.
+            bearer_key = ""
     x_api_keys = request.headers.getlist("x-api-key") if request is not None else []
     return _verify_api_key_values(bearer_key, *x_api_keys)
 
@@ -322,7 +322,8 @@ async def verify_api_key_for_scope(scope) -> bool:
     credentials = await security(Request(scope))
     bearer_key = credentials.credentials if credentials is not None else None
     request = Request(scope)
-    if request.headers.getlist("authorization") and bearer_key is None:
+    authorization_headers = request.headers.getlist("authorization")
+    if len(authorization_headers) > 1 or (authorization_headers and bearer_key is None):
         bearer_key = ""
     return _verify_api_key_values(bearer_key, *request.headers.getlist("x-api-key"))
 
