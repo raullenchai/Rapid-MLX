@@ -1048,9 +1048,28 @@ def test_crush_isolated_launch_rejects_project_config_override(
 ):
     project = private_home / "project" / "nested"
     project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(project.parent)], check=True)
     cloud_config = project.parent / ".crush.json"
     cloud_config.write_text('{"models":{"large":{"provider":"cloud","model":"cloud"}}}')
     monkeypatch.chdir(project)
     with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
     assert cloud_config.read_text().startswith('{"models"')
+
+
+def test_crush_ignores_config_above_project_and_resets_saved_model(
+    private_home, monkeypatch
+):
+    project = private_home / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    (private_home / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
+    monkeypatch.chdir(project)
+    isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    data = isolated.connection_dir() / "agents" / "crush" / "data"
+    data.mkdir()
+    (data / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
+    (data / "crush.db").write_text("history")
+    isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    assert not (data / "crush.json").exists()
+    assert (data / "crush.db").read_text() == "history"

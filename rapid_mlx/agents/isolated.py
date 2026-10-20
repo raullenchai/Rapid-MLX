@@ -274,8 +274,27 @@ def configure(
     name = profile.name
     if name == "crush":
         # Project config outranks CRUSH_GLOBAL_CONFIG and may select a cloud
-        # endpoint. Refuse before creating any private launch state.
-        for directory in (Path.cwd(), *Path.cwd().parents):
+        # endpoint. Crush stops discovery at the Git root (or cwd outside Git).
+        # Refuse before creating any private launch state.
+        cwd = Path.cwd()
+        git = shutil.which("git")
+        git_root = (
+            subprocess.run(
+                [git, "rev-parse", "--show-toplevel"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if git
+            else None
+        )
+        boundary = (
+            Path(git_root.stdout.strip()).resolve()
+            if git_root and git_root.returncode == 0
+            else cwd
+        )
+        for directory in (cwd, *cwd.parents):
             if any(
                 (directory / filename).exists() or (directory / filename).is_symlink()
                 for filename in (".crushrc", "crushrc", ".crush.json", "crush.json")
@@ -283,12 +302,21 @@ def configure(
                 raise ValueError(
                     "isolated crush launch cannot override project configuration"
                 )
+            if directory == boundary:
+                break
     port = port or stable_port()
     save_port(port)
     key = stable_key()
     assert key is not None
     root = connection_dir() / "agents" / name
     _private_dir(root)
+    if name == "crush":
+        # The agent stores UI model selections in this higher-precedence file.
+        # A fresh launch must use the model just selected in Rapid.
+        workspace_config = root / "data" / "crush.json"
+        _reject_symlinked_ancestors(workspace_config.parent)
+        if workspace_config.is_file() or workspace_config.is_symlink():
+            workspace_config.unlink()
     _private_write(root / "model", model + "\n")
     base = f"http://127.0.0.1:{port}/v1"
     previous = os.environ.get("RAPID_MLX_API_KEY")
