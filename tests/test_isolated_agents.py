@@ -90,6 +90,14 @@ def test_saved_port_is_reused_by_later_profiles(private_home):
     ).is_file()
 
 
+def test_every_runner_refreshes_private_endpoint_after_port_change(private_home):
+    for name in sorted(isolated.SUPPORTED):
+        isolated.configure(name, "qwen3.5-9b-4bit", port=7660)
+        runner = (isolated.connection_dir() / "agents" / name / "run").read_text()
+        assert f"launch {name} --isolated --check" in runner
+        assert f"launch {name} --isolated --model qwen3.5-9b-4bit" in runner
+
+
 def test_old_opencode_shape_and_hermes_auth(private_home):
     with patch(
         "rapid_mlx.agents.opencode_version.installed_version", return_value="1.0.0"

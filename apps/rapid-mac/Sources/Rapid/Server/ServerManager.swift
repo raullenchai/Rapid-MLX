@@ -1352,13 +1352,27 @@ final class ServerManager {
     }
 
     /// A saved agent profile opts into a reusable local connection.
+    static func agentConnectionSecret(
+        active: String, stored: EmbeddedBearerStorageResult
+    ) -> String {
+        if case .found(let pending) = stored, pending.secret != active {
+            return pending.secret
+        }
+        return active
+    }
+
     @discardableResult
     func preserveAgentConnection() -> Bool {
         guard sharesAgentConnection, let activeBearer, activePort > 0 else { return false }
-        let credential = EmbeddedBearerCredential(
-            secret: activeBearer, rotatedAt: Date(), lifetime: .explicit
+        // Rotation while the child is running persists a replacement for its
+        // next start. Never overwrite that pending secret with the old live one.
+        let savedSecret = Self.agentConnectionSecret(
+            active: activeBearer, stored: bearerCredentialStore.loadCredential()
         )
-        guard AgentConnectionStore.save(key: activeBearer, port: activePort) else { return false }
+        let credential = EmbeddedBearerCredential(
+            secret: savedSecret, rotatedAt: Date(), lifetime: .explicit
+        )
+        guard AgentConnectionStore.save(key: savedSecret, port: activePort) else { return false }
         guard bearerCredentialStore.save(credential) else {
             AgentConnectionStore.clearKey()
             return false

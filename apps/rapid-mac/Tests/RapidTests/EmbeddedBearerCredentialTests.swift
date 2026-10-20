@@ -241,6 +241,18 @@ private final class FixedResultKeychain: KeychainStoring, @unchecked Sendable {
 @MainActor
 @Suite("ServerManager embedded bearer policy (issue #2599)")
 struct ServerManagerEmbeddedBearerTests {
+    @Test("Saving an agent after rotation keeps the pending key")
+    func pendingAgentConnectionSecret() {
+        let pending = EmbeddedBearerCredential(
+            secret: String(repeating: "a", count: 64),
+            rotatedAt: Date(),
+            lifetime: .explicit
+        )
+        let active = String(repeating: "b", count: 64)
+        #expect(ServerManager.agentConnectionSecret(active: active, stored: .found(pending)) == pending.secret)
+        #expect(ServerManager.agentConnectionSecret(active: active, stored: .missing) == active)
+    }
+
     @Test("Lifetime selection persists separately from the secret")
     func lifetimeSelectionPersists() {
         let suiteName = "server-bearer-lifetime"

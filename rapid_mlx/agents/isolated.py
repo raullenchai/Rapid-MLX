@@ -240,12 +240,12 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     command = _command(name, root, model, port)
     cli = _cli_invocation()
     runner = root / "run"
-    refresh = ""
-    if name in {"claude-code", "hermes"}:
-        refresh = (
-            f"{cli} launch {shlex.quote(name)} --isolated "
-            f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
-        )
+    # A different Desktop session may have chosen a new free port or rotated
+    # the key. Refresh the private config only after the shared route validates.
+    refresh = (
+        f"{cli} launch {shlex.quote(name)} --isolated "
+        f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
+    )
     _private_write(
         runner,
         "#!/bin/zsh\n"
