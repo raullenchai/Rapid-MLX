@@ -742,6 +742,28 @@ def test_shared_rate_limit_uses_x_api_key_for_standard_routes(
     assert second.status_code == 200
 
 
+def test_shared_rate_limit_uses_x_api_key_before_unsupported_auth(anthropic_client):
+    from rapid_mlx.middleware.auth import check_rate_limit
+
+    anthropic_client.rate_limiter.enabled = True
+    anthropic_client.rate_limiter.requests_per_minute = 1
+    app = FastAPI()
+
+    @app.get("/test", dependencies=[Depends(check_rate_limit)])
+    async def test_endpoint():
+        return {"ok": True}
+
+    client = TestClient(app)
+    first = client.get(
+        "/test", headers={"x-api-key": "test-secret", "Authorization": "Basic one"}
+    )
+    second = client.get(
+        "/test", headers={"x-api-key": "test-secret", "Authorization": "Basic two"}
+    )
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
 def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_routes(
     anthropic_client,
 ):

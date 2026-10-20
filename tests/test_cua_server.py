@@ -191,6 +191,13 @@ def test_requires_auth(client):
     )
 
 
+def test_cua_accepts_x_api_key(client):
+    assert (
+        client.get("/v1/cua/runs", headers={"x-api-key": "secret"}).status_code == 200
+    )
+    assert client.get("/v1/cua/runs", headers={"x-api-key": "wrong"}).status_code == 401
+
+
 @pytest.mark.parametrize("api_key", [None, ""])
 def test_cua_routes_fail_closed_without_server_api_key(client, api_key):
     cfg = get_config()
