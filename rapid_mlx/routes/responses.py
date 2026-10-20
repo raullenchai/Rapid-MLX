@@ -1018,6 +1018,13 @@ async def create_response(request: Request):
     # ``gpt-*`` model names pass through to the loaded engine instead of
     # 404'ing on _validate_model_name. Codex sends ``gpt-5``,
     # ``gpt-5-codex``, etc. — none of which match a local alias.
+    from rapid_mlx.launch.claude_desktop import resolve_model
+
+    resolved_model = resolve_model(responses_request.model)
+    if resolved_model != responses_request.model:
+        responses_request = responses_request.model_copy(
+            update={"model": resolved_model}
+        )
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)

@@ -852,6 +852,35 @@ def test_anthropic_count_tokens_accepts_valid_bearer_api_key(anthropic_client):
     assert response.json() == {"input_tokens": 5}
 
 
+def test_anthropic_count_tokens_routes_desktop_tier_to_assigned_engine(
+    anthropic_client, monkeypatch
+):
+    from rapid_mlx.launch import claude_desktop
+    from rapid_mlx.routes import anthropic
+
+    monkeypatch.setattr(
+        claude_desktop,
+        "mappings",
+        lambda: {"sonnet": "test-model"},
+    )
+    selected = []
+    original_get_engine = anthropic.get_engine
+
+    def tracked_get_engine(model):
+        selected.append(model)
+        return original_get_engine(model)
+
+    monkeypatch.setattr(anthropic, "get_engine", tracked_get_engine)
+    response = anthropic_client.client.post(
+        "/v1/messages/count_tokens",
+        json={"model": "sonnet", "messages": [{"role": "user", "content": "hello"}]},
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    assert selected == ["test-model"]
+
+
 def test_anthropic_count_tokens_accepts_valid_x_api_key(anthropic_client):
     client = anthropic_client.client
 

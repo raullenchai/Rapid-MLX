@@ -3992,6 +3992,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
+    from rapid_mlx.launch.claude_desktop import resolve_model
+
+    resolved_model = resolve_model(request.model)
+    if resolved_model != request.model:
+        request = request.model_copy(update={"model": resolved_model})
     _validate_model_name(request.model)
     engine = get_engine(request.model)
     from rapid_mlx.telemetry.model_id import engine_telemetry_id

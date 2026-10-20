@@ -1465,6 +1465,12 @@ async def count_anthropic_tokens(request: Request):
             },
         )
 
+    from rapid_mlx.launch.claude_desktop import resolve_model
+
+    requested = body.get("model")
+    if isinstance(requested, str):
+        body = {**body, "model": resolve_model(requested)}
+
     # Validate model name — mirror ``/v1/chat/completions`` and
     # ``/v1/responses``. Claude/Codex aliases pass through to the
     # loaded engine just like in ``create_anthropic_message`` above
@@ -1506,7 +1512,7 @@ async def count_anthropic_tokens(request: Request):
         ):
             _validate_model_name(requested_model)
 
-    engine = get_engine()
+    engine = get_engine(body.get("model"))
     await ensure_engine_ready(engine)
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
