@@ -96,9 +96,11 @@ def test_claude_launch_overrides_stored_subscription_without_touching_it(private
     )
     assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == isolated.stable_key()
     assert settings["env"]["ANTHROPIC_API_KEY"] == ""
+    runner = (isolated.connection_dir() / "agents/claude-code/run").read_text()
+    assert "--settings" in runner
     assert (
-        "--settings"
-        in (isolated.connection_dir() / "agents/claude-code/run").read_text()
+        f"CLAUDE_CONFIG_DIR={isolated.connection_dir() / 'agents/claude-code/config'}"
+        in runner
     )
     assert command.endswith("/claude-code/run")
     assert state.read_text() == saved

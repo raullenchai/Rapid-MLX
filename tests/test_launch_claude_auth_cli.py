@@ -16,9 +16,11 @@ from rapid_mlx.agents import isolated
 @pytest.mark.skipif(shutil.which("claude") is None, reason="Claude Code CLI absent")
 def test_subscription_profile_sends_local_bearer(tmp_path, monkeypatch):
     monkeypatch.setattr(isolated.Path, "home", lambda: tmp_path)
-    (tmp_path / ".claude.json").write_text(
-        json.dumps({"oauthAccount": {"accountUuid": "simulated-login"}})
-    )
+    account_file = tmp_path / ".claude.json"
+    account_bytes = json.dumps(
+        {"oauthAccount": {"accountUuid": "simulated-login"}}
+    ).encode()
+    account_file.write_bytes(account_bytes)
     received = []
     expected = isolated.stable_key()
 
@@ -61,6 +63,7 @@ def test_subscription_profile_sends_local_bearer(tmp_path, monkeypatch):
         thread.start()
         env = dict(os.environ)
         env["HOME"] = str(tmp_path)
+        env["CLAUDE_CONFIG_DIR"] = str(settings.parent / "config")
         env["CLAUDE_CODE_OAUTH_TOKEN"] = "simulated-invalid-oauth-token"
         env["DISABLE_TELEMETRY"] = "1"
         env["DISABLE_ERROR_REPORTING"] = "1"
@@ -83,6 +86,5 @@ def test_subscription_profile_sends_local_bearer(tmp_path, monkeypatch):
         path.startswith("/v1/messages") and authorization == f"Bearer {expected}"
         for path, authorization in received
     )
-    assert json.loads((tmp_path / ".claude.json").read_text())["oauthAccount"] == {
-        "accountUuid": "simulated-login"
-    }
+    assert account_file.read_bytes() == account_bytes
+    assert not (tmp_path / ".claude").exists()

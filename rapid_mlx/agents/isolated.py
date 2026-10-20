@@ -336,7 +336,12 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
             f"--model {quote(model)} --openai-base-url {base}"
         )
     if name == "claude-code":
-        return f"claude --settings {quote(str(root / 'settings.json'))}"
+        # The CLI can rewrite ~/.claude.json even with --settings. Its
+        # documented config-dir override keeps that state under our profile.
+        return (
+            f"CLAUDE_CONFIG_DIR={quote(str(root / 'config'))} "
+            f"claude --settings {quote(str(root / 'settings.json'))}"
+        )
     raise ValueError(f"unsupported isolated agent: {name}")
 
 
