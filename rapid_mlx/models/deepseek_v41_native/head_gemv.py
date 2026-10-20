@@ -27,6 +27,7 @@ on the stock path. A replaced weight is validated again.
 
 from __future__ import annotations
 
+import weakref
 from functools import lru_cache
 
 import mlx.core as mx
@@ -89,7 +90,7 @@ def _kernel():
     )
 
 
-# Per-head attribute holding (validated weight array, kernel matches stock).
+# Per-head attribute holding (weakref to the validated weight, kernel matches stock).
 _CHECK_ATTR = "_rapid_exact_head_check"
 
 
@@ -140,17 +141,17 @@ def _launch(weight: mx.array, x: mx.array) -> mx.array:
 def _matches_stock(head) -> bool:
     weight = head.weight
     cached = getattr(head, _CHECK_ATTR, None)
-    if cached is None or cached[0] is not weight:
+    if cached is None or cached[0]() is not weight:
         try:
             probe = mx.random.normal((1, int(weight.shape[1])), key=mx.random.key(0x41))
             actual = _launch(weight, probe)
             ok = bool(mx.array_equal(actual, head(probe)).item())
         except Exception:  # compile/launch failure on this runtime: stay stock
             ok = False
-        # Plain attribute (not a parameter): keeps the weight reference so a
-        # replaced weight is re-validated, without adding module state.
-        object.__setattr__(head, _CHECK_ATTR, (weight, ok))
-        cached = (weight, ok)
+        # Plain attribute (not a parameter); the weak reference re-validates a
+        # replaced weight without keeping the old 1.3 GB array alive.
+        cached = (weakref.ref(weight), ok)
+        object.__setattr__(head, _CHECK_ATTR, cached)
     return bool(cached[1])
 
 
