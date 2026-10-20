@@ -817,6 +817,7 @@ def test_dflash_nonstream_timeout_keeps_gpu_slot_until_worker_finishes(
 
     from fastapi import HTTPException
 
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
     from rapid_mlx.speculative.dflash import server as srv
 
     fake_mlx_vlm = types.ModuleType("mlx_vlm")
@@ -850,6 +851,9 @@ def test_dflash_nonstream_timeout_keeps_gpu_slot_until_worker_finishes(
         await asyncio.sleep(0.1)
         assert admission._reservations == 0
         assert not srv._dflash_lock.locked()
+        snapshot = get_model_performance_ledger("qwen3.5-27b-8bit").snapshot()
+        assert snapshot.total_requests == snapshot.requests_failed == 1
+        assert snapshot.prompt_tokens == snapshot.completion_tokens == 0
 
     asyncio.run(exercise_timeout())
 
@@ -4110,6 +4114,119 @@ def test_serial_lane_metrics_and_share_scrape(monkeypatch, stream, tokens, fail)
     assert status._scrape() == values
 
 
+@pytest.mark.parametrize("city", ['"Paris"', "123"])
+def test_serial_lane_nonstream_tool_validation_metrics(monkeypatch, city):
+    """Post-generation tool errors retain the engine's succeeded outcome."""
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
+    from rapid_mlx.speculative.dflash import server as srv
+
+    model_name = "tool-validation-test"
+    ledger = get_model_performance_ledger(model_name)
+    success = MagicMock(wraps=ledger.record_success)
+    failure = MagicMock(wraps=ledger.record_failure)
+    cancelled = MagicMock(wraps=ledger.record_cancelled)
+    monkeypatch.setattr(ledger, "record_success", success)
+    monkeypatch.setattr(ledger, "record_failure", failure)
+    monkeypatch.setattr(ledger, "record_cancelled", cancelled)
+    monkeypatch.setattr(srv.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
+    app = srv._build_app(
+        model=SimpleNamespace(config={}),
+        processor=SimpleNamespace(eos_token_id=99),
+        runtime=SimpleNamespace(drafter=None),
+        served_model_name=model_name,
+        default_max_tokens=64,
+        cors_origins=[],
+        tool_call_parser="hermes",
+        render_prompt_fn=lambda *args, **kwargs: "prompt",
+        generation_kwargs_fn=lambda **kwargs: kwargs,
+        generate_fn=lambda *args, **kwargs: SimpleNamespace(
+            text=(
+                '<tool_call>{"name":"get_weather","arguments":{"city":'
+                + city
+                + "}}</tool_call>"
+            ),
+            prompt_tokens=7,
+            generation_tokens=3,
+        ),
+    )
+    response = TestClient(app, base_url="http://127.0.0.1").post(
+        "/v1/chat/completions",
+        json={
+            "model": model_name,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    if city == "123":
+        assert response.status_code == 400, response.text
+        assert "violates declared schema" in response.json()["error"]["message"]
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] == "chatcmpl-" + "a" * 24
+        assert response.json()["choices"][0]["finish_reason"] == "tool_calls"
+    success.assert_called_once_with(
+        "chatcmpl-" + "a" * 24,
+        prompt_tokens=7,
+        completion_tokens=3,
+        ttft_seconds=None,
+        decode_tokens_per_second=None,
+    )
+    failure.assert_not_called()
+    cancelled.assert_not_called()
+    snapshot = ledger.snapshot()
+    assert snapshot.total_requests == snapshot.requests_succeeded == 1
+    assert snapshot.prompt_tokens == 7
+    assert snapshot.completion_tokens == 3
+    assert snapshot.ttft_seconds_count == snapshot.decode_observations == 0
+
+
+async def test_serial_lane_nonstream_reasoning_only_metrics(monkeypatch):
+    """A reasoning-only generation still records one engine success."""
+    import asyncio
+
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.config import get_config
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
+    from rapid_mlx.speculative.dflash import server as srv
+
+    monkeypatch.setattr(srv, "_dflash_lock", asyncio.Lock())
+    monkeypatch.setattr(get_config(), "reasoning_parser_name", "qwen3")
+    response = await srv._non_stream_completion(
+        prompt="prompt",
+        request=ChatCompletionRequest(
+            model="reasoning-only-test", messages=[{"role": "user", "content": "hi"}]
+        ),
+        served_model_name="reasoning-only-test",
+        gen_kwargs={},
+        model=None,
+        processor=None,
+        timeout=0,
+        enable_thinking=True,
+        generate_fn=lambda *args, **kwargs: SimpleNamespace(
+            text="<think>Still thinking", prompt_tokens=7, generation_tokens=3
+        ),
+    )
+    assert response.choices[0].message.content is None
+    assert response.choices[0].message.reasoning_content == "Still thinking"
+    snapshot = get_model_performance_ledger("reasoning-only-test").snapshot()
+    assert snapshot.total_requests == snapshot.requests_succeeded == 1
+    assert snapshot.prompt_tokens == 7
+    assert snapshot.completion_tokens == 3
+
+
 async def test_serial_lane_nonstream_cancellation_metrics(monkeypatch):
     import asyncio
     import threading
@@ -4147,9 +4264,8 @@ async def test_serial_lane_nonstream_cancellation_metrics(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await task
         snapshot = get_model_performance_ledger("cancelled-test").snapshot()
-        assert snapshot.requests_cancelled == 1
-        assert snapshot.requests_succeeded == 0
-        assert snapshot.completion_tokens == 0
+        assert snapshot.total_requests == snapshot.requests_cancelled == 1
+        assert snapshot.prompt_tokens == snapshot.completion_tokens == 0
     finally:
         release.set()
         # Drain deferred cleanup while this event loop is still alive.

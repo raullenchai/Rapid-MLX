@@ -2466,6 +2466,18 @@ async def _non_stream_completion(
             detail=f"{backend_name} runtime error: {type(result).__name__}: {result}",
         )
 
+    # Match the main server: scheduler.py records generation success before
+    # chat.py validates tool calls, so a later HTTP 400 is still succeeded.
+    # Non-stream runtimes expose aggregate counts, without first/last token
+    # timestamps. Do not invent an inverse-TPOT decode observation.
+    get_model_performance_ledger(served_model_name).record_success(
+        completion_id,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.generation_tokens,
+        ttft_seconds=None,
+        decode_tokens_per_second=None,
+    )
+
     # OpenAI distinguishes "stop" (natural end / stop sequence) from
     # "length" (token-budget hit). mlx-vlm doesn't surface that on
     # GenerationResult, so infer from token-count vs requested budget.
@@ -2535,15 +2547,6 @@ async def _non_stream_completion(
             _validate_tool_call_params(tool_calls, request.tools)
             finish_reason = "tool_calls"
 
-    # Non-stream runtimes expose aggregate counts, without first/last token
-    # timestamps. Do not invent an inverse-TPOT decode observation.
-    get_model_performance_ledger(served_model_name).record_success(
-        completion_id,
-        prompt_tokens=result.prompt_tokens,
-        completion_tokens=result.generation_tokens,
-        ttft_seconds=None,
-        decode_tokens_per_second=None,
-    )
     return ChatCompletionResponse(
         id=completion_id,
         object="chat.completion",
