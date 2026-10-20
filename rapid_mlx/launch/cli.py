@@ -208,7 +208,7 @@ def launch_command(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        url, key = claude_desktop.configure(
+        url, gateway_key = claude_desktop.configure(
             model,
             opus=getattr(args, "opus_model", None),
             sonnet=getattr(args, "sonnet_model", None),
@@ -216,7 +216,7 @@ def launch_command(args: argparse.Namespace) -> None:
             port=args.port,
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")
-        print(f"  Gateway URL: {url}\n  API key: {key}")
+        print(f"  Gateway URL: {url}\n  API key: {gateway_key}")
         print("  1. Help → Troubleshooting → Enable Developer Mode")
         print("  2. Developer → Configure Third-Party Inference → Gateway")
         print("  3. Paste the URL and API key; Test connection")

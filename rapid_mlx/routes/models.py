@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from ..agents.codex_catalog import build_codex_model_info
 from ..api.models import ModelInfo, ModelsResponse, SpeculativeDecodingInfo
@@ -1264,8 +1265,10 @@ def _build_codex_model_info(info: ModelInfo) -> dict:
     return build_codex_model_info(info.id, info.context_window)
 
 
-@router.get("/v1/models", dependencies=[Depends(verify_api_key)])
-async def list_models() -> ModelsResponse:
+@router.get(
+    "/v1/models", dependencies=[Depends(verify_api_key)], response_model=ModelsResponse
+)
+async def list_models() -> ModelsResponse | JSONResponse:
     """List available models (supports multi-model).
 
     Each entry carries the Rapid-MLX vendor extension fields when
@@ -1316,8 +1319,6 @@ async def list_models() -> ModelsResponse:
     assigned = mappings()
     if not assigned:
         return response
-    from fastapi.responses import JSONResponse
-
     payload = response.model_dump(mode="json")
     by_id = {info.id: info for info in models}
     for tier, model_id in assigned.items():
