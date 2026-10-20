@@ -9,6 +9,7 @@ import secrets
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -309,9 +310,36 @@ def configure(
     elif name == "hermes":
         import yaml
 
-        # The private local profile needs only the two coding toolsets. Keep
-        # the user's normal Hermes installation and the shared setup template
-        # untouched; both can retain their broader capabilities.
+        # Keep this private profile lean without changing the user's Hermes home.
+        profile_root = root / "profiles" / "rapid"
+        marker = profile_root / ".no-bundled-skills"
+        _reject_symlinked_ancestors(marker)
+        if not marker.exists():
+            skills_dir = profile_root / "skills"
+            _reject_symlinked_ancestors(skills_dir)
+            if skills_dir.is_dir() and shutil.which("hermes"):
+                # Hermes removes only its own unmodified bundled skills.
+                try:
+                    subprocess.run(
+                        [
+                            "hermes",
+                            "-p",
+                            "rapid",
+                            "skills",
+                            "opt-out",
+                            "--remove",
+                            "--yes",
+                        ],
+                        env={**os.environ, "HERMES_HOME": str(root)},
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=120,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if not marker.is_file():
+                _private_write(marker, "Private local profile: no bundled skills.\n")
         hermes_config = yaml.safe_load(str(rendered))
         hermes_config["platform_toolsets"] = {"cli": ["terminal", "file"]}
         rendered = yaml.safe_dump(hermes_config, sort_keys=False).replace(

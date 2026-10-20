@@ -131,9 +131,33 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     ).read_text()
     assert f'api_key: "{isolated.stable_key()}"' in hermes
     assert yaml.safe_load(hermes)["platform_toolsets"]["cli"] == ["terminal", "file"]
+    assert (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / ".no-bundled-skills"
+    ).is_file()
     assert not (isolated.connection_dir() / "agents" / "hermes" / "auth.json").exists()
     goose = isolated.configure("goose", "qwen3.5-9b-4bit")
     assert "goose session --provider" in Path(goose).read_text()
+
+
+@pytest.mark.parametrize("cleanup_timeout", [False, True])
+def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_timeout):
+    root = isolated.connection_dir() / "agents" / "hermes"
+    (root / "profiles" / "rapid" / "skills").mkdir(parents=True)
+    with (
+        patch("rapid_mlx.agents.isolated.shutil.which", return_value="hermes"),
+        patch("rapid_mlx.agents.isolated.subprocess.run") as cleanup,
+    ):
+        if cleanup_timeout:
+            cleanup.side_effect = subprocess.TimeoutExpired("hermes", 120)
+        isolated.configure("hermes", "qwen3.5-9b-4bit")
+    assert cleanup.call_count == 1
+    assert cleanup.call_args.kwargs["env"]["HERMES_HOME"] == str(root)
+    assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file()
 
 
 def test_hermes_uses_served_context_ceiling_before_opening(private_home):
