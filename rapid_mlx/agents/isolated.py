@@ -262,6 +262,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "aider":
         base = f'"http://127.0.0.1:$(cat {quote(str(port_path()))})/v1"'
         return (
+            f'env -i PATH="$PATH" TERM="${{TERM:-xterm-256color}}" '
             f"HOME={quote(str(root / 'home'))} "
             f'AIDER_OPENAI_API_KEY="$(cat {key})" OPENAI_API_KEY="$(cat {key})" '
             f"AIDER_OPENAI_API_BASE={base} aider "
@@ -316,7 +317,7 @@ def configure(
         if any(
             (directory / filename).exists() or (directory / filename).is_symlink()
             for directory in dirs
-            for filename in (".aider.conf.yml", ".aider.model.settings.yml")
+            for filename in (".aider.conf.yml", ".aider.model.settings.yml", ".env")
         ):
             raise ValueError(
                 "isolated aider launch cannot override project configuration"
@@ -363,6 +364,18 @@ def configure(
         _private_dir(root / "runtime")
     if name == "aider":
         _private_dir(root / "home")
+        git_configs = (
+            Path.home() / ".gitconfig",
+            Path.home() / ".config" / "git" / "config",
+        )
+        includes = "".join(
+            f"[include]\n    path = {json.dumps(str(path))}\n"
+            for path in git_configs
+            if path.is_file()
+        )
+        _private_write(
+            root / "home" / ".gitconfig", includes or "# No global Git config\n"
+        )
     if name == "crush":
         # UI model selections in either higher-precedence layer must not
         # override the model just selected in Rapid. Keep session databases.

@@ -1141,24 +1141,24 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     user_config = private_home / ".aider.conf.yml"
     original = b"model: openai/cloud\nopenai-api-key: fake-cloud-key\n"
     user_config.write_bytes(original)
+    (private_home / ".gitconfig").write_text("[user]\n  name = Real Developer\n")
     commands = private_home / "commands"
     commands.mkdir()
     rapid = commands / "rapid-mlx"
     rapid.write_text("#!/bin/sh\nexit 0\n")
     rapid.chmod(0o700)
+    args_capture = private_home / "aider-args"
+    env_capture = private_home / "aider-env"
     aider = commands / "aider"
     aider.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
-        'printf "%s\\n%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" "$HOME" > "$TEST_ENV_CAPTURE"\n'
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{args_capture}"\n'
+        f'printf "%s\\n%s\\n%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" "$HOME" "$AIDER_MODEL_SETTINGS_FILE" > "{env_capture}"\n'
     )
     aider.chmod(0o700)
     monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
-    args_capture = private_home / "aider-args"
-    env_capture = private_home / "aider-env"
-    monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
-    monkeypatch.setenv("TEST_ENV_CAPTURE", str(env_capture))
     monkeypatch.setenv("AIDER_OPENAI_API_KEY", "fake-cloud-key")
     monkeypatch.setenv("AIDER_OPENAI_API_BASE", "https://cloud.invalid/v1")
+    monkeypatch.setenv("AIDER_MODEL_SETTINGS_FILE", "cloud-models.yml")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
     runner = isolated.connection_dir() / "agents/aider/run"
@@ -1174,7 +1174,15 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
         isolated.key_path().read_text().strip(),
         "http://127.0.0.1:7660/v1",
         str(isolated.connection_dir() / "agents/aider/home"),
+        "",
     ]
+    git_env = dict(
+        os.environ, HOME=str(isolated.connection_dir() / "agents/aider/home")
+    )
+    git_name = subprocess.check_output(
+        ["git", "config", "user.name"], env=git_env, text=True
+    ).strip()
+    assert git_name == "Real Developer"
     assert (
         isolated.connection_dir() / "agents/aider/aider.conf.yml"
     ).read_text() == "{}\n"
@@ -1197,3 +1205,7 @@ def test_aider_rejects_project_configuration_before_writing_state(
     with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
     assert config.read_text() == "yes-always: true\n"
+    config.unlink()
+    (project / ".env").write_text("AIDER_MODEL_SETTINGS_FILE=cloud-models.yml\n")
+    with pytest.raises(ValueError, match="project configuration"):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
