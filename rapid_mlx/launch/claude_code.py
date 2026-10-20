@@ -111,9 +111,9 @@ def write_or_patch_config(
       Anthropic SDK joins paths itself; ``http://127.0.0.1:8000`` is
       correct, ``http://127.0.0.1:8000/v1`` produces 404 on
       ``/v1/v1/messages``).
-    * ``env.ANTHROPIC_API_KEY`` → ``<api_key>``
-    * ``env.ANTHROPIC_AUTH_TOKEN`` → ``""`` so a token inherited from a
-      proxy/switcher cannot conflict with the API key above.
+    * ``env.ANTHROPIC_API_KEY`` → ``""`` to clear an inherited API key.
+    * ``env.ANTHROPIC_AUTH_TOKEN`` → ``<api_key>``; Claude Code sends this
+      as a Bearer credential even when a subscription login is stored.
     * ``env.ANTHROPIC_MODEL`` → ``<model>`` (Claude Code reads this as
       the default model id; the rapid-mlx server accepts any
       ``claude-*`` model name and routes to the actually-loaded engine,
@@ -160,8 +160,8 @@ def patched_config(
 
     env = dict(existing.get("env", {}))
     env["ANTHROPIC_BASE_URL"] = base_url
-    env["ANTHROPIC_API_KEY"] = api_key
-    env["ANTHROPIC_AUTH_TOKEN"] = ""
+    env["ANTHROPIC_API_KEY"] = ""
+    env["ANTHROPIC_AUTH_TOKEN"] = api_key
     env["ANTHROPIC_MODEL"] = model
     # Claude Code cannot look up arbitrary local model ids in its bundled
     # catalog. Supplying the server-reported limit prevents its first-run

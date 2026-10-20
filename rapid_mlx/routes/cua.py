@@ -46,6 +46,7 @@ from ..middleware.auth import check_rate_limit, security, verify_api_key
 
 
 async def require_cua_auth(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> bool:
     """Computer control requires an explicitly configured server bearer."""
@@ -54,12 +55,7 @@ async def require_cua_auth(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Computer use API requires a server API key",
         )
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API key required",
-        )
-    return bool(await verify_api_key(credentials))
+    return bool(await verify_api_key(credentials, request))
 
 
 router = APIRouter(

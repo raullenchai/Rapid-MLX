@@ -359,7 +359,8 @@ class TestClaudeCode:
         data = json.loads(path.read_text())
         assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
         assert data["env"]["ANTHROPIC_MODEL"] == "qwen3.5-9b-4bit"
-        assert data["env"]["ANTHROPIC_API_KEY"] == "sk-noop"
+        assert data["env"]["ANTHROPIC_API_KEY"] == ""
+        assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-noop"
 
     def test_launch_writes_live_claude_context(self, fake_home, monkeypatch):
         from rapid_mlx.agents import adapter
@@ -417,7 +418,7 @@ class TestClaudeCode:
         assert data["env"]["OTHER_VAR"] == "preserved"
         # Overwritten.
         assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
-        assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == ""
+        assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-noop"
 
     def test_backup_created(self, fake_home):
         cfg = claude_code.current_config_path()

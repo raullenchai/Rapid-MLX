@@ -720,7 +720,7 @@ def test_anthropic_count_tokens_rate_limit_treats_header_forms_as_same_key(
     assert second.json()["detail"].startswith("Rate limit exceeded.")
 
 
-def test_shared_rate_limit_ignores_x_api_key_for_non_anthropic_routes(
+def test_shared_rate_limit_uses_x_api_key_for_standard_routes(
     anthropic_client,
 ):
     from rapid_mlx.middleware.auth import check_rate_limit
@@ -739,8 +739,7 @@ def test_shared_rate_limit_ignores_x_api_key_for_non_anthropic_routes(
     second = client.get("/test", headers={"x-api-key": "two"})
 
     assert first.status_code == 200
-    assert second.status_code == 429
-    assert second.json()["detail"].startswith("Rate limit exceeded.")
+    assert second.status_code == 200
 
 
 def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_routes(
@@ -785,7 +784,7 @@ def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_
     assert second.json()["detail"].startswith("Rate limit exceeded.")
 
 
-def test_shared_auth_rejects_x_api_key_for_non_anthropic_routes(
+def test_shared_auth_accepts_x_api_key_for_standard_routes(
     anthropic_client,
 ):
     from rapid_mlx.middleware.auth import verify_api_key
@@ -800,9 +799,13 @@ def test_shared_auth_rejects_x_api_key_for_non_anthropic_routes(
     x_api_key_only = client.get("/test", headers={"x-api-key": "test-secret"})
     bearer = client.get("/test", headers={"Authorization": "Bearer test-secret"})
 
-    assert x_api_key_only.status_code == 401
-    assert x_api_key_only.json()["detail"] == "API key required"
+    assert x_api_key_only.status_code == 200
     assert bearer.status_code == 200
+    mixed = client.get(
+        "/test",
+        headers={"Authorization": "Bearer wrong", "x-api-key": "test-secret"},
+    )
+    assert mixed.status_code == 401
 
 
 def test_configure_rate_limiter_updates_shared_anthropic_dependency(

@@ -882,7 +882,8 @@ def test_verify_server_reports_malformed_url_as_setup_failure():
 def test_claude_plan_uses_keyed_server_credential(setup_paths, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_API_KEY", "test-agent-key")
     plan = build_setup_plan("claude-code", "http://localhost:8000/v1", "local-model")
-    assert plan.after["env"]["ANTHROPIC_API_KEY"] == "test-agent-key"
+    assert plan.after["env"]["ANTHROPIC_API_KEY"] == ""
+    assert plan.after["env"]["ANTHROPIC_AUTH_TOKEN"] == "test-agent-key"
     assert "test-agent-key" not in plan.diff()
     assert "values hidden" in plan.diff()
 

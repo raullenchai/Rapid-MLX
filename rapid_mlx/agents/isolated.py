@@ -595,8 +595,8 @@ def configure(
         settings = {
             "env": {
                 "ANTHROPIC_BASE_URL": base.removesuffix("/v1"),
-                "ANTHROPIC_API_KEY": key,
-                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_AUTH_TOKEN": key,
                 "ANTHROPIC_MODEL": model,
             }
         }

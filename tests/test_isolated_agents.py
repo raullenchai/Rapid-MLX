@@ -79,8 +79,30 @@ def test_codex_profile_and_claude_settings(private_home):
     )
     isolated.configure("claude-code", "qwen3.5-9b-4bit", port=7660)
     claude = json.loads((root / "claude-code" / "settings.json").read_text())
-    assert claude["env"]["ANTHROPIC_API_KEY"] == isolated.stable_key()
+    assert claude["env"]["ANTHROPIC_API_KEY"] == ""
+    assert claude["env"]["ANTHROPIC_AUTH_TOKEN"] == isolated.stable_key()
     assert claude["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7660"
+
+
+def test_claude_launch_overrides_stored_subscription_without_touching_it(private_home):
+    # A saved login must not be read or rewritten by launch. The private
+    # settings give the CLI a Bearer credential that takes precedence.
+    state = private_home / ".claude.json"
+    saved = '{"oauthAccount":{"accountUuid":"simulated-login"}}\n'
+    state.write_text(saved)
+    command = isolated.configure("claude-code", "local-model", port=7660)
+    settings = json.loads(
+        (isolated.connection_dir() / "agents/claude-code/settings.json").read_text()
+    )
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == isolated.stable_key()
+    assert settings["env"]["ANTHROPIC_API_KEY"] == ""
+    assert (
+        "--settings"
+        in (isolated.connection_dir() / "agents/claude-code/run").read_text()
+    )
+    assert command.endswith("/claude-code/run")
+    assert state.read_text() == saved
+    assert not (private_home / ".claude").exists()
 
 
 def test_saved_port_is_reused_by_later_profiles(private_home):

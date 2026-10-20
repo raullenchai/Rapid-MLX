@@ -207,6 +207,10 @@ def _rate_limit_client_id(request: Request) -> str:
         if scheme != "bearer":
             return _bucket_id(authorization)
 
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return _bucket_id(x_api_key)
+
     if request.client and request.client.host:
         return _subnet_bucket(request.client.host)
     return "unknown"
@@ -295,29 +299,28 @@ def _verify_api_key_values(*api_keys: str | None) -> bool:
     return True
 
 
-async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify API key if authentication is enabled."""
+async def verify_api_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request = None,
+):
+    """Verify Bearer or Anthropic-style API key if authentication is enabled."""
     bearer_key = credentials.credentials if credentials is not None else None
-    return _verify_api_key_values(bearer_key)
+    x_api_keys = request.headers.getlist("x-api-key") if request is not None else []
+    return _verify_api_key_values(bearer_key, *x_api_keys)
 
 
 async def verify_api_key_for_scope(scope) -> bool:
     """Run the bearer check against a raw ASGI scope without reading its body."""
     credentials = await security(Request(scope))
     bearer_key = credentials.credentials if credentials is not None else None
-    return _verify_api_key_values(bearer_key)
+    return _verify_api_key_values(
+        bearer_key, *Request(scope).headers.getlist("x-api-key")
+    )
 
 
 async def verify_api_key_or_x_api_key(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    """Verify OpenAI Bearer auth or Anthropic x-api-key auth."""
-    bearer_key = credentials.credentials if credentials is not None else None
-    # ``getlist`` so a duplicated ``x-api-key`` header can't smuggle an invalid
-    # value past the gate alongside a valid twin — every present value is
-    # verified, extending the "both must match" rule to multi-valued headers
-    # (#337). An absent header yields ``[]`` (nothing added), while a present
-    # empty header yields ``[""]`` and is checked as a supplied credential.
-    x_api_keys = request.headers.getlist("x-api-key")
-    return _verify_api_key_values(bearer_key, *x_api_keys)
+    """Compatibility alias for routes already using the dual-header gate."""
+    return await verify_api_key(credentials, request)
