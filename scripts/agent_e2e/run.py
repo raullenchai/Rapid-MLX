@@ -82,6 +82,24 @@ def preserved(before: dict[str, str], after: dict[str, str]) -> bool:
     )
 
 
+def compact_summary(value: str, limit: int = 120) -> str:
+    plain = " ".join(_ANSI.sub("", value).split()).replace("|", "/")
+    return plain[-limit:]
+
+
+def output_issues(*transcripts: Path) -> list[str]:
+    patterns = ("traceback", "fatal error", "warning", "deprecated", "login required")
+    found = []
+    for path in transcripts:
+        if not path.exists():
+            continue
+        screen = _ANSI.sub("", path.read_bytes().decode(errors="replace")).lower()
+        for pattern in patterns:
+            if pattern in screen and pattern not in found:
+                found.append(pattern)
+    return found
+
+
 def version(binary: str, env: dict[str, str]) -> str:
     if not shutil.which(binary, path=env["PATH"]):
         return "NOT INSTALLED"
@@ -503,6 +521,11 @@ def main() -> int:
         except OSError:
             row["normal_mode_opens"] = False
         row["config_untouched"] = preserved(before, snapshot(args.home, agent))
+        row["ugly_output"] = output_issues(
+            args.output / agent / "day-one.pty",
+            args.output / agent / "day-two.pty",
+            args.output / agent / "normal-mode.pty",
+        )
         row["works"] = bool(
             row["config_seeded"]
             and row["config_untouched"]
@@ -520,8 +543,8 @@ def main() -> int:
         )
         rows.append(row)
         (args.output / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
-    header = "| Agent | Version | Works | Open s | Reply 1/2 s | Requested model | Auth | Prompt tokens | Tools | Config | Normal | Remove |\n"
-    divider = "|---|---|---|---:|---:|---|---|---:|---|---|---|---|\n"
+    header = "| Agent | Version | Works | Open s | Reply 1/2 s | Requested model | Auth | Prompt tokens | Tools | Config | Normal | Remove | Error | Ugly output |\n"
+    divider = "|---|---|---|---:|---:|---|---|---:|---|---|---|---|---|---|\n"
     lines = ["# Terminal agent real-user acceptance\n\n", header, divider]
     for row in rows:
         one = row["day_one"]
@@ -533,7 +556,9 @@ def main() -> int:
             f"{fmt(row['first_prompt_tokens'])} | {one['tool_ok']}/{one['second_ok']} | "
             f"{'Y' if row['config_untouched'] else 'N'} | "
             f"{'Y' if row['normal_mode_opens'] else 'N'} | "
-            f"{'Y' if row['remove_ok'] else 'N'} |\n"
+            f"{'Y' if row['remove_ok'] else 'N'} | "
+            f"{compact_summary(one['error'] or row['day_two']['error']) or '—'} | "
+            f"{', '.join(row['ugly_output']) or '—'} |\n"
         )
     (args.output / "matrix.md").write_text("".join(lines))
     print(args.output / "matrix.md")
