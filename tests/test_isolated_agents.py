@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import subprocess
 import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
@@ -72,10 +73,8 @@ def test_saved_port_is_reused_by_later_profiles(private_home):
     assert isolated.stable_port() == 7660
     command = isolated.configure("qwen-code", "qwen3.5-9b-4bit")
     assert command.endswith("/qwen-code/run")
-    assert (
-        "127.0.0.1:7660/v1"
-        in (isolated.connection_dir() / "agents" / "qwen-code" / "run").read_text()
-    )
+    qwen_run = (isolated.connection_dir() / "agents" / "qwen-code" / "run").read_text()
+    assert f"$(cat {isolated.port_path()})" in qwen_run
     hermes = isolated.configure("hermes", "qwen3.5-9b-4bit")
     assert hermes.endswith("/hermes/run")
     assert (
@@ -216,7 +215,7 @@ def test_private_storage_rejects_links_and_unsafe_files(private_home):
     directory = isolated.connection_dir()
     directory.parent.mkdir()
     directory.symlink_to(target)
-    with pytest.raises(ValueError, match="symlinked config directory"):
+    with pytest.raises(ValueError, match="symlinked config path"):
         isolated._private_dir(directory)
     with pytest.raises(ValueError, match="symlink"):
         isolated.stable_key()
@@ -299,7 +298,7 @@ def test_configure_and_remove_refuse_unowned_paths(private_home, monkeypatch):
     root = isolated.connection_dir() / "agents" / "codex"
     root.parent.mkdir(parents=True)
     root.symlink_to(private_home)
-    with pytest.raises(ValueError, match="symlinked config directory"):
+    with pytest.raises(ValueError, match="symlinked config path"):
         isolated.remove("codex")
     root.unlink()
     root.mkdir()
@@ -498,3 +497,47 @@ def test_no_setup_server_reuses_saved_key_without_overriding_explicit_env(
         args.no_setup = False
         _spawn_foreground_serve("qwen3.5-9b-4bit", args)
     assert captured == [key, "explicit", None]
+
+
+@pytest.mark.parametrize("ancestor", ["connect", "agents"])
+def test_profile_operations_reject_symlinked_ancestor(private_home, ancestor):
+    external = private_home / "external"
+    external.mkdir()
+    marker = external / "do-not-delete"
+    marker.write_text("keep")
+    connect = isolated.connection_dir()
+    agents = connect / "agents"
+    if ancestor == "connect":
+        connect.parent.mkdir()
+        connect.symlink_to(external)
+    else:
+        connect.mkdir(parents=True)
+        agents.symlink_to(external)
+    with pytest.raises(ValueError, match="symlinked config path"):
+        isolated.configure("codex", "qwen3.5-9b-4bit")
+    with pytest.raises(ValueError, match="symlinked config path"):
+        isolated.remove("codex")
+    assert marker.read_text() == "keep"
+    assert not (external / "codex").exists()
+
+
+def test_qwen_runner_reads_current_port_after_saved_port_moves(
+    private_home, monkeypatch
+):
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    qwen = commands / "qwen"
+    qwen.write_text('#!/bin/sh\nprintf "%s" "$OPENAI_BASE_URL" > "$TEST_CAPTURE"\n')
+    qwen.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    capture = private_home / "qwen-endpoint"
+    monkeypatch.setenv("TEST_CAPTURE", str(capture))
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("qwen-code", "qwen3.5-9b-4bit", port=7660)
+    isolated.save_port(7661)
+    runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
+    subprocess.run([str(runner)], check=True)
+    assert capture.read_text() == "http://127.0.0.1:7661/v1"

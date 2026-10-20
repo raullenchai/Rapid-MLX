@@ -44,10 +44,17 @@ def port_path() -> Path:
     return connection_dir() / "port"
 
 
+def _reject_symlinked_ancestors(path: Path) -> None:
+    current = path
+    while current != Path.home():
+        if current.is_symlink():
+            raise ValueError(f"refusing symlinked config path: {current}")
+        current = current.parent
+
+
 def _private_dir(path: Path) -> None:
+    _reject_symlinked_ancestors(path)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise ValueError(f"refusing symlinked config directory: {path}")
     path.chmod(0o700)
 
 
@@ -69,8 +76,7 @@ def _private_write(path: Path, content: str) -> None:
 
 def stable_key(*, create: bool = True) -> str | None:
     path = key_path()
-    if connection_dir().is_symlink() or path.is_symlink():
-        raise ValueError("local connection path must not be a symlink")
+    _reject_symlinked_ancestors(path)
     if path.exists():
         if stat.S_IMODE(path.stat().st_mode) & 0o077:
             raise ValueError("local API key must be a regular 0600 file")
@@ -93,8 +99,7 @@ def stable_key(*, create: bool = True) -> str | None:
 
 def stable_port() -> int:
     path = port_path()
-    if connection_dir().is_symlink() or path.is_symlink():
-        raise ValueError("local connection path must not be a symlink")
+    _reject_symlinked_ancestors(path)
     if path.exists():
         port = int(path.read_text(encoding="ascii").strip())
         if not 1 <= port <= 65535:
@@ -162,7 +167,8 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "aider":
         return f'OPENAI_API_KEY="$(cat {key})" aider --env-file {quote(str(root / "aider.env"))} --model openai/{quote(model)}'
     if name == "qwen-code":
-        return f'OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL=http://127.0.0.1:{port}/v1 OPENAI_MODEL={quote(model)} qwen'
+        saved_port = quote(str(port_path()))
+        return f'OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL="http://127.0.0.1:$(cat {saved_port})/v1" OPENAI_MODEL={quote(model)} qwen'
     if name == "claude-code":
         return f"claude --settings {quote(str(root / 'settings.json'))}"
     raise ValueError(f"unsupported isolated agent: {name}")
@@ -266,9 +272,8 @@ def remove(name: str) -> bool:
     if profile is None or profile.name not in SUPPORTED:
         raise ValueError(f"unsupported isolated agent: {name}")
     root = connection_dir() / "agents" / profile.name
+    _reject_symlinked_ancestors(root)
     if not root.exists():
         return False
-    if root.is_symlink():
-        raise ValueError(f"refusing symlinked config directory: {root}")
     shutil.rmtree(root)
     return True
