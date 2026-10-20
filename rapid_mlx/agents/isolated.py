@@ -177,8 +177,6 @@ def hermes_context_length(
                 ),
                 None,
             )
-            if entry is None and len(models) == 1 and isinstance(models[0], dict):
-                entry = models[0]
             if entry is not None:
                 from rapid_mlx.agents.adapter import _valid_context_window
 
@@ -313,14 +311,16 @@ def configure(
         # Keep this private profile lean without changing the user's Hermes home.
         profile_root = root / "profiles" / "rapid"
         marker = profile_root / ".no-bundled-skills"
+        cleaned = profile_root / ".rapid-bundled-skills-cleaned"
         _reject_symlinked_ancestors(marker)
-        if not marker.exists():
+        _reject_symlinked_ancestors(cleaned)
+        if not cleaned.is_file():
             skills_dir = profile_root / "skills"
             _reject_symlinked_ancestors(skills_dir)
             if skills_dir.is_dir() and shutil.which("hermes"):
                 # Hermes removes only its own unmodified bundled skills.
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         [
                             "hermes",
                             "-p",
@@ -337,9 +337,17 @@ def configure(
                         check=False,
                     )
                 except (OSError, subprocess.TimeoutExpired):
-                    pass
-            if not marker.is_file():
-                _private_write(marker, "Private local profile: no bundled skills.\n")
+                    result = None
+                if result is not None and result.returncode == 0:
+                    _private_write(
+                        cleaned, "Bundled skills cleaned from private profile.\n"
+                    )
+            elif not skills_dir.is_dir():
+                _private_write(
+                    cleaned, "Private profile started without bundled skills.\n"
+                )
+        if not marker.is_file():
+            _private_write(marker, "Private local profile: no bundled skills.\n")
         hermes_config = yaml.safe_load(str(rendered))
         hermes_config["platform_toolsets"] = {"cli": ["terminal", "file"]}
         rendered = yaml.safe_dump(hermes_config, sort_keys=False).replace(

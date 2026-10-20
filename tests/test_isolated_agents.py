@@ -96,6 +96,14 @@ def test_saved_port_is_reused_by_later_profiles(private_home):
         / "rapid"
         / "config.yaml"
     ).is_file()
+    assert (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / ".rapid-bundled-skills-cleaned"
+    ).is_file()
 
 
 def test_every_runner_refreshes_private_endpoint_after_port_change(private_home):
@@ -154,10 +162,16 @@ def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_time
     ):
         if cleanup_timeout:
             cleanup.side_effect = subprocess.TimeoutExpired("hermes", 120)
+        else:
+            cleanup.return_value.returncode = 0
         isolated.configure("hermes", "qwen3.5-9b-4bit")
-    assert cleanup.call_count == 1
+        isolated.configure("hermes", "qwen3.5-9b-4bit")
+    assert cleanup.call_count == (2 if cleanup_timeout else 1)
     assert cleanup.call_args.kwargs["env"]["HERMES_HOME"] == str(root)
     assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file()
+    assert (
+        root / "profiles" / "rapid" / ".rapid-bundled-skills-cleaned"
+    ).is_file() != cleanup_timeout
 
 
 def test_hermes_uses_served_context_ceiling_before_opening(private_home):
@@ -255,7 +269,7 @@ def test_hermes_uses_cached_window_only_while_server_is_stopped(private_home):
             isolated.hermes_context_length(7660, "a" * 64, "model", require_live=True)
 
 
-def test_hermes_single_model_listing_uses_its_limit(private_home):
+def test_hermes_ignores_unrelated_single_model_listing(private_home):
     class Response:
         def __enter__(self):
             return self
@@ -264,15 +278,17 @@ def test_hermes_single_model_listing_uses_its_limit(private_home):
             return None
 
         def read(self):
-            return b'{"data":[{"id":"full/repo","context_window":262144,"max_model_len":98304}]}'
+            return b'{"data":[{"id":"another-model","context_window":32768,"max_model_len":32768}]}'
 
-    with patch("urllib.request.urlopen", return_value=Response()):
-        assert (
+    with (
+        patch("urllib.request.urlopen", return_value=Response()),
+        patch("rapid_mlx.run.cli._cached_context_window", return_value=262144),
+    ):
+        assert isolated.hermes_context_length(7660, "a" * 64, "wanted-model") == 131072
+        with pytest.raises(ValueError, match="ready local server"):
             isolated.hermes_context_length(
-                7660, "a" * 64, "short-alias", require_live=True
+                7660, "a" * 64, "wanted-model", require_live=True
             )
-            == 98304
-        )
 
 
 def test_hermes_failed_preflight_stops_only_new_server(private_home):
