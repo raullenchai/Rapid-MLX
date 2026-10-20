@@ -158,18 +158,28 @@ def session(
         "exit": None,
         "error": "",
         "day_two": day_two,
+        "prompt1_at": None,
+        "prompt2_at": None,
+        "ended_at": None,
     }
     with transcript.open("wb") as sink:
         try:
-            opening, first_byte = read_until(master, proc, min(8, timeout), sink)
+            opening, _ = read_until(
+                master,
+                proc,
+                timeout,
+                sink,
+                stop_when=lambda output: "Agent ready." in output,
+            )
             # Startup text is not proof that the agent opened. The launch
             # readiness line is a lower bound; a failed launch stays blank.
-            if "Agent ready." in opening and first_byte:
-                answer["open_s"] = round(first_byte - started, 2)
-            if proc.poll() is not None:
+            if "Agent ready." in opening:
+                answer["open_s"] = round(time.monotonic() - started, 2)
+            if proc.poll() is not None or answer["open_s"] is None:
                 answer["error"] = opening[-500:]
                 return answer
             sent = time.monotonic()
+            answer["prompt1_at"] = time.time()
             os.write(master, first_prompt.encode())
             output, first_byte = read_until(
                 master,
@@ -185,6 +195,7 @@ def session(
             )
             if proc.poll() is None:
                 sent = time.monotonic()
+                answer["prompt2_at"] = time.time()
                 os.write(master, second_prompt.encode())
                 output2, first_byte = read_until(
                     master,
@@ -222,6 +233,7 @@ def session(
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=3)
             answer["exit"] = proc.returncode
+            answer["ended_at"] = time.time()
             os.close(master)
     return answer
 
@@ -246,7 +258,9 @@ def request_evidence(path: Path | None, agent: str, start: float, end: float) ->
         (
             r
             for r in requests
-            if r.get("path", "").endswith(("/chat/completions", "/messages"))
+            if r.get("path", "").endswith(
+                ("/chat/completions", "/messages", "/responses")
+            )
         ),
         None,
     )
@@ -275,7 +289,12 @@ def normal_mode(
     with transcript.open("wb") as sink:
         try:
             output, _ = read_until(master, proc, 8, sink)
-            return bool(output.strip()) and proc.poll() is None
+            fatal = ("traceback", "fatal error", "invalid config", "command not found")
+            return (
+                bool(output.strip())
+                and proc.poll() is None
+                and not any(word in output.lower() for word in fatal)
+            )
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -285,6 +304,16 @@ def normal_mode(
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=3)
             os.close(master)
+
+
+def live_server_pid(home: Path) -> int | None:
+    path = home / ".rapid-mlx/launch.pid"
+    try:
+        pid = int(path.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
 
 
 def main() -> int:
@@ -306,6 +335,9 @@ def main() -> int:
     parser.add_argument("--agents", nargs="+", choices=AGENTS, default=list(AGENTS))
     parser.add_argument("--timeout", type=float, default=240)
     args = parser.parse_args()
+    args.home = args.home.resolve()
+    args.rapid = args.rapid.resolve()
+    args.output = args.output.resolve()
     if not args.home.is_dir() or not args.rapid.is_file() or args.port == 7659:
         parser.error(
             "use an existing dedicated HOME, installed binary, and a non-owner port"
@@ -317,8 +349,15 @@ def main() -> int:
                 "reserved port already has a listener; cold start requires a stopped server"
             )
     args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    env = os.environ.copy()
-    env["HOME"] = str(args.home.resolve())
+    env = {
+        key: os.environ[key]
+        for key in ("PATH", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR")
+        if key in os.environ
+    }
+    env["HOME"] = str(args.home)
+    env["XDG_CONFIG_HOME"] = str(args.home / ".config")
+    env["XDG_DATA_HOME"] = str(args.home / ".local/share")
+    env["XDG_CACHE_HOME"] = str(args.home / ".cache")
     env["PATH"] = str(args.rapid.parent) + os.pathsep + env.get("PATH", "")
     log_path = args.output / "requests.jsonl"
     current_agent = args.output / "current-agent"
@@ -330,6 +369,7 @@ def main() -> int:
         + env.get("PYTHONPATH", "")
     )
     rows = []
+    original_server_pid = None
     for agent in args.agents:
         current_agent.write_text(agent + "\n")
         work = args.output / agent / "project"
@@ -342,7 +382,6 @@ def main() -> int:
             "config_untouched": None,
         }
         row["cold_server"] = agent == args.agents[0]
-        start = time.time()
         cmd = [
             str(args.rapid),
             "launch",
@@ -355,6 +394,12 @@ def main() -> int:
         row["day_one"] = session(
             cmd, env, work, args.output / agent / "day-one.pty", args.timeout, False
         )
+        server_pid = live_server_pid(args.home)
+        if original_server_pid is None:
+            original_server_pid = server_pid
+        row["server_reused"] = bool(
+            server_pid is not None and server_pid == original_server_pid
+        )
         # This subprocess has a new shell environment and no live TTY state.
         row["day_two"] = session(
             [str(args.rapid), "launch", agent],
@@ -364,8 +409,22 @@ def main() -> int:
             args.timeout,
             True,
         )
-        end = time.time()
-        row.update(request_evidence(log_path, agent, start, end))
+        row["server_reused"] &= live_server_pid(args.home) == original_server_pid
+        one = row["day_one"]
+        two = row["day_two"]
+        windows = (
+            (one["prompt1_at"], one["prompt2_at"]),
+            (one["prompt2_at"], one["ended_at"]),
+            (two["prompt1_at"], two["prompt2_at"]),
+            (two["prompt2_at"], two["ended_at"]),
+        )
+        row["requests"] = [
+            request_evidence(log_path, agent, start, end)
+            if start is not None and end is not None
+            else request_evidence(None, agent, 0, 0)
+            for start, end in windows
+        ]
+        row.update(row["requests"][0])
         removed = subprocess.run(
             [str(args.rapid), "launch", agent, "--remove"],
             env=env,
@@ -394,8 +453,11 @@ def main() -> int:
             and row["day_two"]["second_ok"]
             and row["remove_ok"]
             and row["normal_mode_opens"]
-            and row["model_requested"]
-            and row["auth_accepted"]
+            and row["server_reused"]
+            and all(
+                r["model_requested"] == args.model and r["auth_accepted"]
+                for r in row["requests"]
+            )
         )
         rows.append(row)
         (args.output / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
