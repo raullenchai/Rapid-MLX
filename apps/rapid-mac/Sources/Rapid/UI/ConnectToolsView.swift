@@ -915,6 +915,7 @@ private struct ConnectToolRow: View {
                     .buttonStyle(.link)
                     .disabled(!isReady)
                     .padding(.top, RapidTheme.Space.sm)
+                    .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
                 }
             }
             .padding(.leading, Self.textInset)
@@ -926,6 +927,7 @@ private struct ConnectToolRow: View {
             set: { if !$0 { launchError = nil } }
         )) {
             Button("OK") { launchError = nil }
+                .accessibilityIdentifier("Launch.Integration.ErrorDismiss.\(tool.id)")
         } message: {
             Text(launchError ?? "Try copying the command instead.")
         }
