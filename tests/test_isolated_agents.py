@@ -1036,8 +1036,16 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
     monkeypatch.setenv("TEST_CAPTURE", str(capture))
     monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
     monkeypatch.setenv("TEST_DATA_CAPTURE", str(data_capture))
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-cloud-key")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    config = json.loads(
+        (isolated.connection_dir() / "agents/crush/crush.json").read_text()
+    )
+    assert config["models"]["large"]["provider"] == "rapid-mlx"
+    assert config["models"]["small"]["provider"] == "rapid-mlx"
+    assert config["models"]["small"]["model"] == "qwen3.5-9b-4bit"
+    assert config["options"]["disable_default_providers"] is True
     runner = isolated.connection_dir() / "agents" / "crush" / "run"
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     assert capture.read_text() == str(isolated.connection_dir() / "agents/crush")
