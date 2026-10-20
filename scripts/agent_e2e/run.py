@@ -8,6 +8,7 @@ private output directory; only a redacted matrix is suitable for sharing.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -16,7 +17,9 @@ import select
 import shutil
 import signal
 import socket
+import struct
 import subprocess
+import termios
 import time
 import uuid
 from pathlib import Path
@@ -117,6 +120,12 @@ def read_until(
     return "".join(pieces), first
 
 
+def open_terminal() -> tuple[int, int]:
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    return master, slave
+
+
 def session(
     command: list[str],
     env: dict[str, str],
@@ -137,7 +146,7 @@ def session(
         "Use a tool to append -second to hello.txt, then read the "
         "file back and report its exact contents.\n"
     )
-    master, slave = pty.openpty()
+    master, slave = open_terminal()
     started = time.monotonic()
     proc = subprocess.Popen(
         command,
@@ -275,7 +284,7 @@ def normal_mode(
     binary: str, env: dict[str, str], workspace: Path, transcript: Path
 ) -> bool:
     """Start the unwrapped CLI from the same HOME after Rapid profile removal."""
-    master, slave = pty.openpty()
+    master, slave = open_terminal()
     proc = subprocess.Popen(
         [binary],
         stdin=slave,
