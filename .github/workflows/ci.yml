@@ -654,6 +654,23 @@ jobs:
             tests/test_deepseek_v41_ring_rollback.py \
             tests/test_deepseek_v41_rope_quant.py \
             tests/test_deepseek_v41_prefill.py \
+            tests/test_calibrate_deepseek_v41_reap.py \
+            tests/test_deepseek_v41_gptq.py \
+            tests/test_deepseek_v41_gptq_amend.py \
+            tests/test_deepseek_v41_gptq_assemble_stage.py \
+            tests/test_deepseek_v41_gptq_batched_next.py \
+            tests/test_deepseek_v41_gptq_fullrun.py \
+            tests/test_deepseek_v41_gptq_quality.py \
+            tests/test_deepseek_v41_gptq_scan.py \
+            tests/test_deepseek_v41_merge_calibration.py \
+            tests/test_deepseek_v41_phase2.py \
+            tests/test_deepseek_v41_phase4.py \
+            tests/test_deepseek_v41_phase5.py \
+            tests/test_deepseek_v41_public_ruler.py \
+            tests/test_deepseek_v41_quant_error.py \
+            tests/test_deepseek_v41_rd.py \
+            tests/test_deepseek_v41_streaming_teacher.py \
+            tests/test_eval_deepseek_v41_tasks.py \
             tests/test_model_load_entrypoint_boundaries.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
