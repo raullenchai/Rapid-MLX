@@ -1692,8 +1692,10 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
 # Upstream deleted and re-created both mflux-community repositories below on
 # 2026-10-11, so their previously pinned commits return 404 and every cold
 # pull failed with RevisionNotFoundError (issue #4992). The re-created builds
-# keep the same weight files, tensor names, shapes, dtypes and quantization; the
-# safetensors metadata now records mflux 0.22.0. The qwen-image transformer
+# keep the same weight files, tensor names, shapes, dtypes and quantization;
+# the safetensors metadata now records mflux 0.22.0, and the FLUX.1 schnell
+# transformer adds the ``norm_out.linear.bias`` tensor that the earlier build
+# omitted (mflux maps it; it is 12 KiB). The qwen-image transformer
 # now matches the original Qwen/Qwen-Image weights; the earlier build had
 # carried the Qwen-Image-2512 transformer. A snapshot cached at an old pin is
 # not vouched for, so an upgraded install downloads the new pin once.
