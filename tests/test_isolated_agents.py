@@ -1059,7 +1059,7 @@ def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     start.assert_called_once_with(
         "qwen3.5-9b-4bit", 7660, api_key=isolated.stable_key()
     )
-    download.assert_called_once_with("qwen3.5-9b-4bit")
+    download.assert_called_once_with("mlx-community/Qwen3.5-9B-4bit")
     assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
     output = capsys.readouterr().out
     assert "launch codex" in output

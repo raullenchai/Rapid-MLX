@@ -437,8 +437,9 @@ def launch_command(args: argparse.Namespace) -> None:
                     raise SystemExit(1)
                 print(f"  Downloading {model}…", flush=True)
                 from rapid_mlx.cli import _ensure_model_downloaded
+                from rapid_mlx.model_aliases import resolve_model
 
-                _ensure_model_downloaded(model)
+                _ensure_model_downloaded(resolve_model(model))
                 print(f"  Loading {model}; waiting for readiness…", flush=True)
                 server_pid = _start_server_background(model, port, api_key=key)
                 import time
