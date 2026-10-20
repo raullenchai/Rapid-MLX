@@ -24,6 +24,7 @@ from .dspark import DSpark, DSparkWeights, draft_attention, quantize_cache
 from .load import load, supports_engram_ssd_offload
 
 MAX_INPUT_TOKENS = 8192
+TARGET_EVAL_INTERVAL = 2
 
 
 @dataclass(frozen=True)
@@ -260,7 +261,8 @@ def load_product_runtime(
         lazy=False,
         engram_ssd_offload=supports_engram_ssd_offload(target_path),
     )
-    model.eval_interval = 40
+    # Asynchronous two-layer spans overlap host graph building with GPU work.
+    model.eval_interval = TARGET_EVAL_INTERVAL
     installed = install_target_qmv(model)
     if not mixed_target_precision and installed != len(model.layers):
         raise RuntimeError("qualified REAP target QMV must be installed on every layer")

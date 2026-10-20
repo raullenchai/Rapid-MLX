@@ -34,7 +34,7 @@ from mlx.utils import tree_flatten
 from ...model_load_errors import typed_mlx_load_boundaries
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
-from .model import Model
+from .model import Block, Model
 
 
 def resolve_indexed_shard(model_path: str, filename: str) -> str:
@@ -160,6 +160,22 @@ def load_token_map(path: str, args: ModelArgs, cache_dir: str | None = None):
         )
     json.dump(token_map, open(cache_file, "w"))
     return token_map
+
+
+def promote_hc_projections(model) -> None:
+    """Keep hyper-connection projections resident in FP32.
+
+    ``hc_mixes`` multiplies them in FP32, so a BF16 checkpoint array was
+    promoted on every call (twice per layer per step). Promotion is exact, so
+    storing the FP32 copy once changes no value; it adds ~2 MB per layer.
+    """
+    for layer in model.layers:
+        if not isinstance(layer, Block):
+            continue
+        for name in ("hc_attn_fn", "hc_ffn_fn"):
+            weight = getattr(layer, name)
+            if weight.dtype != mx.float32:
+                setattr(layer, name, weight.astype(mx.float32))
 
 
 def load(
@@ -330,6 +346,7 @@ def load(
             f"e.g. {sorted(unexpected)[:4]}"
         )
     model.eval()
+    promote_hc_projections(model)
     model._vision_passthrough = sorted(vision_skipped)
     if fuse_moe_gate_up:
         # Reuse Rapid's qualified SwitchGLU fusion instead of maintaining a

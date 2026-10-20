@@ -134,9 +134,15 @@ class Attention(nn.Module):
 
     def _freqs(self, upto: int):
         if self._cos is None or self._cos.shape[0] < upto:
+            # Grow geometrically: an exact-length table would be rebuilt on
+            # every decode step. Each row depends only on its own position,
+            # so a longer table holds identical values.
+            size = 64
+            while size < upto:
+                size *= 2
             rd, orig_len, theta, factor, bf, bs = self._rope
             self._cos, self._sin = precompute_freqs_cis(
-                rd, max(upto, 64), orig_len, theta, factor, bf, bs
+                rd, size, orig_len, theta, factor, bf, bs
             )
         return self._cos, self._sin
 
