@@ -265,7 +265,8 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         saved_port = quote(str(port_path()))
         base = f'"http://127.0.0.1:$(cat {saved_port})/v1"'
         return (
-            f'QWEN_HOME={quote(str(root))} OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL={base} '
+            f"QWEN_HOME={quote(str(root))} QWEN_RUNTIME_DIR={quote(str(root / 'runtime'))} "
+            f'OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL={base} '
             f"OPENAI_MODEL={quote(model)} qwen --bare --auth-type openai "
             f"--model {quote(model)} --openai-base-url {base}"
         )
@@ -324,6 +325,8 @@ def configure(
     assert key is not None
     root = connection_dir() / "agents" / name
     _private_dir(root)
+    if name == "qwen-code":
+        _private_dir(root / "runtime")
     if name == "crush":
         # UI model selections in either higher-precedence layer must not
         # override the model just selected in Rapid. Keep session databases.

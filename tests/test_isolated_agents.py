@@ -980,14 +980,18 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
     qwen.write_text(
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_CAPTURE"\n'
         'printf "%s" "$QWEN_HOME" > "$TEST_QWEN_HOME_CAPTURE"\n'
+        'printf "%s" "$QWEN_RUNTIME_DIR" > "$TEST_QWEN_RUNTIME_CAPTURE"\n'
     )
     qwen.chmod(0o700)
     monkeypatch.setenv("HOME", str(private_home))
     monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
     capture = private_home / "qwen-args"
     home_capture = private_home / "qwen-home"
+    runtime_capture = private_home / "qwen-runtime"
+    monkeypatch.setenv("QWEN_RUNTIME_DIR", str(private_home / "existing-runtime"))
     monkeypatch.setenv("TEST_CAPTURE", str(capture))
     monkeypatch.setenv("TEST_QWEN_HOME_CAPTURE", str(home_capture))
+    monkeypatch.setenv("TEST_QWEN_RUNTIME_CAPTURE", str(runtime_capture))
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("qwen-code", "qwen3.5-9b-4bit", port=7660)
     runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
@@ -999,6 +1003,9 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
     assert args[args.index("--openai-base-url") + 1] == "http://127.0.0.1:7660/v1"
     assert home_capture.read_text() == str(
         isolated.connection_dir() / "agents" / "qwen-code"
+    )
+    assert runtime_capture.read_text() == str(
+        isolated.connection_dir() / "agents" / "qwen-code" / "runtime"
     )
     assert settings.read_bytes() == original
 
