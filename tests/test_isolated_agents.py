@@ -12,7 +12,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from rapid_mlx.agents import isolated
 
