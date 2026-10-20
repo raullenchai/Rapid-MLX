@@ -1135,3 +1135,29 @@ def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
         assert data_dir == str(
             isolated.connection_dir() / "agents/crush/data" / project_id
         )
+
+
+def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
+    user_config = private_home / ".aider.conf.yml"
+    original = b"model: openai/cloud\nopenai-api-key: fake-cloud-key\n"
+    user_config.write_bytes(original)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    aider = commands / "aider"
+    aider.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n')
+    aider.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    args_capture = private_home / "aider-args"
+    monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents/aider/run"
+    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    args = args_capture.read_text().splitlines()
+    assert args[args.index("--config") + 1] == str(
+        isolated.connection_dir() / "agents/aider/aider.conf.yml"
+    )
+    assert user_config.read_bytes() == original
