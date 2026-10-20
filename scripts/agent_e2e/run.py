@@ -82,9 +82,18 @@ def preserved(before: dict[str, str], after: dict[str, str]) -> bool:
     )
 
 
-def compact_summary(value: str, limit: int = 120) -> str:
-    plain = " ".join(_ANSI.sub("", value).split()).replace("|", "/")
-    return plain[-limit:]
+def classified_error(value: str) -> str:
+    """Use only fixed labels in the shareable matrix; raw errors stay private."""
+    if not value:
+        return "—"
+    screen = _ANSI.sub("", value).lower()
+    if "unrecognized flag: --model" in screen:
+        return "unsupported --model flag"
+    if "select login method" in screen or "paste code here" in screen:
+        return "login required"
+    if "choice [default" in screen:
+        return "first-run menu"
+    return "see private transcript"
 
 
 def output_issues(*transcripts: Path) -> list[str]:
@@ -223,15 +232,19 @@ def session(
 ) -> dict:
     marker = uuid.uuid4().hex[:12]
     target = workspace / "hello.txt"
+    challenge1 = f"verify-{uuid.uuid4().hex}"
+    challenge2 = f"verify-{uuid.uuid4().hex}"
+    (workspace / "challenge.txt").write_text(challenge1 + "\n")
     if target.exists():
         target.unlink()
     first_prompt = (
-        f"Create hello.txt containing exactly hi-{marker}, then read it "
-        "back using a tool and report what you read."
+        f"Create hello.txt containing exactly hi-{marker}. Use a tool to read "
+        "both hello.txt and challenge.txt, then report their contents."
     )
     second_prompt = (
         f"Use a tool to replace hello.txt with exactly hi-{marker}-second "
-        "(one trailing newline is okay), then read it back and report its contents."
+        "(one trailing newline is okay). Read both hello.txt and challenge.txt "
+        "again with a tool and report their contents."
     )
     master, slave = open_terminal()
     started = time.monotonic()
@@ -286,17 +299,22 @@ def session(
                 min(120, timeout),
                 sink,
                 stop_when=lambda output: (
-                    target.is_file() and target.read_text().strip() == f"hi-{marker}"
+                    target.is_file()
+                    and target.read_text().strip() == f"hi-{marker}"
+                    and challenge1 in output
                 ),
             )
             answer["tool_ok"] = (
-                target.is_file() and target.read_text().strip() == f"hi-{marker}"
+                target.is_file()
+                and target.read_text().strip() == f"hi-{marker}"
+                and challenge1 in output
             )
             if answer["tool_ok"]:
                 # The terminal first echoes our input. Completion is the first
                 # reliable upper bound for a reply that used a tool.
                 answer["first_reply_s"] = round(time.monotonic() - sent, 2)
             if proc.poll() is None:
+                (workspace / "challenge.txt").write_text(challenge2 + "\n")
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
                 os.write(master, second_prompt.encode())
@@ -310,12 +328,13 @@ def session(
                     stop_when=lambda output: (
                         target.is_file()
                         and target.read_text().strip() == f"hi-{marker}-second"
+                        and challenge2 in output
                     ),
                 )
                 answer["second_ok"] = (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}-second"
-                    and f"hi-{marker}-second" in output2
+                    and challenge2 in output2
                 )
                 if answer["second_ok"]:
                     answer["second_reply_s"] = round(time.monotonic() - sent, 2)
@@ -452,7 +471,15 @@ def main() -> int:
     env["XDG_CONFIG_HOME"] = str(args.home / ".config")
     env["XDG_DATA_HOME"] = str(args.home / ".local/share")
     env["XDG_CACHE_HOME"] = str(args.home / ".cache")
-    env["PATH"] = str(args.rapid.parent) + os.pathsep + env.get("PATH", "")
+    env["PATH"] = os.pathsep.join(
+        (
+            str(args.home / ".local/bin"),
+            str(args.home / ".rapid-mlx/bin"),
+            str(args.rapid.parent),
+            env.get("PATH", ""),
+        )
+    )
+    env["RAPID_MLX_AUTO_PULL"] = "1"
     log_path = args.output / "requests.jsonl"
     current_agent = args.output / "current-agent"
     env["AGENT_E2E_REQUEST_LOG"] = str(log_path)
@@ -574,7 +601,7 @@ def main() -> int:
             f"{'Y' if row['config_untouched'] else 'N'} | "
             f"{'Y' if row['normal_mode_opens'] else 'N'} | "
             f"{'Y' if row['remove_ok'] else 'N'} | "
-            f"{compact_summary(one['error'] or row['day_two']['error']) or '—'} | "
+            f"{classified_error(one['error'] or row['day_two']['error'])} | "
             f"{', '.join(row['ugly_output']) or '—'} |\n"
         )
     (args.output / "matrix.md").write_text("".join(lines))

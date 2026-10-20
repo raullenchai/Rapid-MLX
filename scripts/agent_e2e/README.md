@@ -16,6 +16,8 @@ the test HOME. Then install the current main branch with
 `uv tool install --force 'git+https://github.com/raullenchai/Rapid-MLX.git@main'`
 using that same HOME. Point `--rapid` at the resulting tool binary. Preserve
 the two install logs; the script itself records installed agent versions.
+`provision_macos.sh` also pulls the 9B model before the timed run. If you
+provision manually, run `rapid-mlx pull qwen3.5-9b-4bit` in the test HOME.
 
 From this directory, one command creates `matrix.md` and `results.json`:
 
@@ -30,12 +32,14 @@ python3 scripts/agent_e2e/run.py \
 The runner drives `rapid-mlx launch <agent>` through a pseudo-terminal. It
 answers the known local first-run theme and dummy-key confirmation menus;
 unexpected login or permission prompts remain visible in the transcript. It
-asks for a file write and readback, then a second edit and readback, repeats
+asks for a file write and readback of an unprompted challenge value, then a
+second edit and fresh challenge readback, repeats
 the launch in a new process, starts the native agent after `--remove`, and
 compares byte hashes and modes of pre-existing user configuration. It leaves
 raw terminal transcripts and a metadata-only request log in the private run
 directory. Inspect `day-one.pty`, `day-two.pty`, and `normal-mode.pty` for
-errors and ugly output; do not publish raw transcripts. A server-side ASGI tap
+errors and ugly output; do not publish raw transcripts or `results.json`, which
+contains raw error tails. The markdown matrix uses fixed error labels. A server-side ASGI tap
 records only time, agent, route, requested model, HTTP status, and prompt
 tokens if the response supplies usage. It never stores prompts or keys.
 

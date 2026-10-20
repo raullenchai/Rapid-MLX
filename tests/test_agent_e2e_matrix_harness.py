@@ -5,6 +5,7 @@ import json
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
+    classified_error,
     output_issues,
     preserved,
     request_evidence,
@@ -162,6 +163,13 @@ def test_output_issue_summary_uses_private_transcript(tmp_path):
     transcript = tmp_path / "agent.pty"
     transcript.write_bytes(b"\x1b[31mWarning: retrying\x1b[0m\n")
     assert output_issues(transcript) == ["warning"]
+
+
+def test_shareable_error_does_not_copy_credentials():
+    assert classified_error("sk-test-secret denied") == "see private transcript"
+    assert classified_error("Unrecognized flag: --model") == (
+        "unsupported --model flag"
+    )
 
 
 def test_pty_cleanup_falls_back_when_process_group_is_inaccessible(monkeypatch):

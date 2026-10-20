@@ -36,6 +36,7 @@ if [ -x "$HOME/.local/bin/rapid-mlx" ]; then
   "$HOME/.local/bin/rapid-mlx" --version >"$run_dir/rapid-release-version.txt" 2>&1
 fi
 install rapid-main uv tool install --force 'git+https://github.com/raullenchai/Rapid-MLX.git@main'
+install model "$HOME/.local/bin/rapid-mlx" pull qwen3.5-9b-4bit
 
 # npm's global prefix is inside the dedicated HOME. Each install is logged
 # separately so one failed upstream package does not hide eight results.
