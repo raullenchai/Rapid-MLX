@@ -48,6 +48,15 @@ def test_crush_tool_approval_is_answered_once_per_modal(monkeypatch):
     assert sent == [b"\r"]
 
 
+def test_aider_file_creation_is_confirmed_once(monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("aider", 10)
+    approve("Create new file? (Y)es/(N)o [Yes]:")
+    approve("Create new file? (Y)es/(N)o [Yes]:")
+    assert sent == [b"y\r"]
+
+
 def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
     path = tmp_path / ".codex/config.toml"
     path.parent.mkdir()

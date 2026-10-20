@@ -278,6 +278,18 @@ def reply_finished(agent: str, output: str) -> bool:
 
 def approval_handler(agent: str, master: int):
     """Accept an explicit local tool approval, as a user at the terminal would."""
+    if agent == "aider":
+        answered = False
+
+        def answer_aider(output: str) -> None:
+            nonlocal answered
+            if not answered and "Create new file? (Y)es/(N)o" in _ANSI.sub(
+                "", output[-1200:]
+            ):
+                os.write(master, b"y\r")
+                answered = True
+
+        return answer_aider
     if agent == "crush":
         waiting = False
         last_answered = 0.0
