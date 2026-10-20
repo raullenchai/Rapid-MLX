@@ -575,6 +575,40 @@ class DSpark:
         mx.eval(*values)
         self.position = position
 
+    def observe_many(self, main_hidden, start_position: int):
+        """Observe a single-stream prefill chunk with one materialization boundary.
+
+        Observations only append independent KV rows. Rows evicted within this
+        chunk cannot affect subsequent proposals, so project just the live tail.
+        """
+        count = main_hidden.shape[1]
+        if main_hidden.shape[0] != 1 or count == 0:
+            raise ValueError("DSpark prefill requires one nonempty stream")
+        if start_position != self.position + 1:
+            raise ValueError("DSpark observations must be contiguous target positions")
+        first = max(0, count - self.c["sliding_window"])
+        values = []
+        for index in range(first, count):
+            position = start_position + index
+            main = self.adapter.norm(
+                "mtp.0.main_norm",
+                self.w.linear("mtp.0.main_proj", main_hidden[:, index]),
+            )
+            for layer in self.layers:
+                base = f"mtp.{layer}.attn"
+                key_value = self.adapter.norm(
+                    base + ".kv_norm", self.w.linear(base + ".wkv", main)
+                )
+                key_value = quantize_cache(
+                    self.adapter.rotate(key_value, position, 0), 8, 32
+                )
+                self.windows[layer] = (self.windows[layer] + [key_value])[
+                    -self.c["sliding_window"] :
+                ]
+                values.append(key_value)
+        mx.eval(*values)
+        self.position = start_position + count - 1
+
     def attention(self, base, x, stage: int):
         count = x.shape[0]
         query = self.adapter.norm(base + ".q_norm", self.w.linear(base + ".wq_a", x))

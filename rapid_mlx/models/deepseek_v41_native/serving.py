@@ -407,6 +407,7 @@ def stream_generate(
     runtime: DSparkRuntime,
     max_tokens: int,
     ignore_eos: bool = False,
+    optimize_prefill: bool = True,
     **_kwargs,
 ):
     """Generate from a rendered prompt or an exact token-id workload.
@@ -434,9 +435,36 @@ def stream_generate(
             last_logit_only=False,
             return_dspark_hidden=True,
         )
-        mx.eval(logits, hidden)
-        for index in range(hidden.shape[1]):
-            runtime.drafter.observe(hidden[:, index], start + index)
+        if optimize_prefill and hasattr(runtime.drafter, "observe_many"):
+            # Flush every cache write, including layers after hidden capture.
+            # Unconsumed intermediate logits stay lazy and are never projected.
+            state: list[Any] = []
+            for layer_cache in cache.layers:
+                state.extend(
+                    value
+                    for value in (
+                        layer_cache.win_kv,
+                        layer_cache.comp_kv,
+                        layer_cache.index_k,
+                    )
+                    if value is not None
+                )
+                if layer_cache.comp_state is not None:
+                    state.extend(
+                        (
+                            layer_cache.comp_state.kv_state,
+                            layer_cache.comp_state.score_state,
+                        )
+                    )
+            if start + 512 >= len(input_ids):
+                mx.eval(logits, hidden, state)
+            else:
+                mx.eval(hidden, state)
+            runtime.drafter.observe_many(hidden, start)
+        else:
+            mx.eval(logits, hidden)
+            for index in range(hidden.shape[1]):
+                runtime.drafter.observe(hidden[:, index], start + index)
     assert logits is not None
     logits = logits[:, -1]
     eos_id = processor.eos_token_id
