@@ -110,6 +110,7 @@ class BatchBackend:
         self._model_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="dsv41-model"
         )
+        self.executor = self._executor = None
         try:
             if load_fn is not None:
                 model, tokenizer, self.runtime = self._model_executor.submit(
@@ -122,6 +123,8 @@ class BatchBackend:
             self._loop = self._model_executor.submit(self._run)
         except BaseException:
             self._model_executor.shutdown(wait=True, cancel_futures=True)
+            if self.executor is not None:
+                self.executor.shutdown(wait=True, cancel_futures=True)
             raise
 
     def _wake(self):
@@ -297,7 +300,13 @@ class BatchBackend:
                         tokens = mx.argmax(logits, axis=-1)
                         mx.eval(tokens)
                         for request, token in zip(rows, tokens.tolist()):
-                            self._emit(request, int(token))
+                            # Detokenizer failures end only their own request;
+                            # the next _filter compacts it out of the batch.
+                            try:
+                                self._emit(request, int(token))
+                            except Exception as error:
+                                logger.exception("DeepSeek V4.1 token emission failed")
+                                request.finish(error)
                 except Exception as error:
                     logger.exception("DeepSeek V4.1 batch step failed")
                     for request in rows:

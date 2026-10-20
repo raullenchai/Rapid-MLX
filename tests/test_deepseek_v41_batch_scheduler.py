@@ -238,6 +238,62 @@ def test_step_error_is_delivered_and_backend_recovers(prefill_failure, caplog):
         backend.close()
 
 
+def test_emission_error_fails_only_its_own_row():
+    model = CountingModel()
+    backend = BatchBackend(model, Tokenizer(), lanes=2)
+    prepare = backend._prepare
+
+    def poisoned_prepare(request):
+        prepare(request)
+        if request.ids[0] == 3:
+            add_token = request.detokenizer.add_token
+
+            def add(token):
+                if request.generated == 3:
+                    raise RuntimeError("injected detokenizer failure")
+                add_token(token)
+
+            request.detokenizer.add_token = add
+
+    backend._prepare = poisoned_prepare
+    try:
+        streams = [
+            backend.submit([1, 2], max_tokens=20),
+            backend.submit([3, 4], max_tokens=20),
+        ]
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(collect, stream) for stream in streams]
+            with pytest.raises(RuntimeError, match="injected detokenizer"):
+                futures[1].result(timeout=10)
+            assert len(futures[0].result(timeout=10)) == 20
+    finally:
+        backend.close()
+
+
+def test_failed_construction_releases_both_executors(monkeypatch):
+    created = []
+    real = ThreadPoolExecutor
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+        def submit(self, fn, *args, **kwargs):
+            if getattr(fn, "__name__", "") == "_run":
+                raise RuntimeError("injected start failure")
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "rapid_mlx.models.deepseek_v41_native.batch_scheduler.ThreadPoolExecutor",
+        Recording,
+    )
+    with pytest.raises(RuntimeError, match="injected start"):
+        BatchBackend(CountingModel(), Tokenizer(), lanes=2)
+    assert len(created) == 2
+    assert all(executor._shutdown for executor in created)
+
+
 def test_chunked_prefill_and_load_share_model_thread():
     threads = []
     model = CountingModel()
