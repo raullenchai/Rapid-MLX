@@ -265,10 +265,10 @@ def launch_command(args: argparse.Namespace) -> None:
 
                 for _ in range(600):
                     status = connection_status(port, stable_key(), model)
-                    if status != "stopped":
+                    if status not in {"stopped", "server-error"}:
                         break
                     time.sleep(1)
-                if status == "stopped":
+                if status in {"stopped", "server-error"}:
                     print(f"  Local server did not become ready. Retry: {start_hint}")
                     raise SystemExit(1)
             if status != "ready":

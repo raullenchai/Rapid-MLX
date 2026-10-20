@@ -2,7 +2,7 @@
 
 import json
 import stat
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,3 +157,37 @@ def test_connection_requires_exact_advertised_model(private_home):
             request.call_args.args[0].get_header("Authorization")
             == "Bearer " + "a" * 64
         )
+
+
+def test_launch_waits_through_startup_http_error(private_home):
+    from rapid_mlx.launch.cli import launch_command, register
+
+    parser = ArgumentParser()
+    subparsers = parser.add_subparsers()
+    register(subparsers)
+    args = parser.parse_args(
+        [
+            "launch",
+            "codex",
+            "--isolated",
+            "--model",
+            "qwen3.5-9b-4bit",
+            "--run",
+            "--start-server",
+        ]
+    )
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", "server-error", "ready"],
+        ),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as agent,
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        launch_command(args)
+    assert exit_info.value.code == 0
+    start.assert_called_once()
+    agent.assert_called_once()
