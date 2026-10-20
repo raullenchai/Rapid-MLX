@@ -1,5 +1,6 @@
 """Agent setup must observe a ready model before touching an agent config."""
 
+import json
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -118,3 +119,27 @@ def test_model_that_appears_during_wait_is_written(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "wait_for_server", lambda *_a, **_k: "now-ready")
     cli.agents_command(_args("codex", model=None))
     assert 'model = "now-ready"' in (tmp_path / "config.toml").read_text()
+
+
+def test_explicit_model_context_is_fetched_after_readiness(monkeypatch, tmp_path):
+    from rapid_mlx.agents import adapter
+
+    config = tmp_path / "settings.json"
+    monkeypatch.setattr(setup.claude_code, "current_config_path", lambda: config)
+    ready = False
+
+    def wait(*_args, **_kwargs):
+        nonlocal ready
+        ready = True
+        return "wanted"
+
+    def context(*_args):
+        return 16384 if ready else None
+
+    monkeypatch.setattr(setup, "wait_for_server", wait)
+    monkeypatch.setattr(adapter, "fetch_context_window", context)
+    cli.agents_command(_args("claude-code"))
+    assert (
+        json.loads(config.read_text())["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]
+        == "16384"
+    )

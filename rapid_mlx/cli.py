@@ -13895,8 +13895,8 @@ def agents_command(args):
                 model_id = detected_model
             if needs_ctx:
                 context_length = detected_ctx
-        elif needs_ctx:
-            # User specified model — look up *that* model's context window
+        elif needs_ctx and (args.dry_run or args.no_check):
+            # Offline preview still uses the best available metadata.
             context_length = fetch_context_window(base_url, model_id)
 
         from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
@@ -13919,8 +13919,8 @@ def agents_command(args):
                 sys.exit(1)
             if model_id == "default":
                 model_id = advertised
-                if needs_ctx:
-                    context_length = fetch_context_window(base_url, model_id)
+            if needs_ctx:
+                context_length = fetch_context_window(base_url, model_id)
 
         # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
         # flows. They verify server readiness, preview an exact diff, require
