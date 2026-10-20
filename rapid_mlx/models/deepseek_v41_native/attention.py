@@ -42,6 +42,9 @@ from .indexer import Indexer
 from .layers import RMSNorm, precompute_freqs_cis, rope_tail
 from .sparse_attention import sparse_attn
 
+# Decode gathers only the selected compressed rows (False: concatenate all).
+GATHER_DECODE_ROWS = True
+
 
 class GroupedOutputLinear(MultiLinear):
     """Grouped projection accepting logical and release-flat float weights."""
@@ -204,9 +207,21 @@ class Attention(nn.Module):
                 lc.comp_kv[:bsz, g0 : g0 + g] = latents.astype(lc.dtype)
 
             if compress_len:
-                comp = src.comp_kv[:bsz, :compress_len].astype(kv.dtype)
+                k = cidx.shape[-1]
+                if GATHER_DECODE_ROWS and n == 1 and k < compress_len:
+                    # Decode reads only the k selected rows: gather them from
+                    # the cache instead of converting and concatenating all
+                    # compress_len rows on every step. Same rows, same casts.
+                    rows = mx.maximum(cidx[:, 0] - offset, 0)
+                    batch = mx.arange(bsz, dtype=mx.int32)[:, None]
+                    comp = src.comp_kv[batch, rows].astype(kv.dtype)
+                    local = offset + mx.arange(k, dtype=mx.int32)
+                    local = mx.where(cidx >= 0, local, mx.array(-1, mx.int32))
+                else:
+                    comp = src.comp_kv[:bsz, :compress_len].astype(kv.dtype)
+                    local = cidx
                 kv_all = mx.concatenate([kv_all, comp], axis=1)
-                idxs = mx.concatenate([idxs, cidx], axis=-1)
+                idxs = mx.concatenate([idxs, local], axis=-1)
 
         sink = mx.zeros_like(self.attn_sink) if self._break_sink else self.attn_sink
         o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
