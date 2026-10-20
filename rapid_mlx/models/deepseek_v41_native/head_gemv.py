@@ -19,10 +19,10 @@ MLX exposes no stride query, so a transposed view assigned to ``head.weight``
 is outside this contract; V4.1 only ever assigns checkpoint arrays.
 
 The stock operation order is an implementation detail of the installed MLX
-and GPU, so the first call for each weight shape runs a one-time self-check:
-the kernel and the stock projection evaluate the same seeded row against the
-real weight, and any bit difference permanently routes that shape back to the
-stock path in this process.
+and GPU, so the first call for each head weight runs a one-time self-check:
+the kernel and the stock projection evaluate the same seeded row against that
+weight, and any bit difference (or a compile/launch failure) keeps that head
+on the stock path. A replaced weight is validated again.
 """
 
 from __future__ import annotations
@@ -89,8 +89,8 @@ def _kernel():
     )
 
 
-# (outputs, inputs) -> whether this runtime reproduces the stock result exactly
-_VALIDATED: dict[tuple[int, int], bool] = {}
+# Per-head attribute holding (validated weight array, kernel matches stock).
+_CHECK_ATTR = "_rapid_exact_head_check"
 
 
 def _gpu_default() -> bool:
@@ -138,13 +138,20 @@ def _launch(weight: mx.array, x: mx.array) -> mx.array:
 
 
 def _matches_stock(head) -> bool:
-    shape = (int(head.weight.shape[0]), int(head.weight.shape[1]))
-    if shape not in _VALIDATED:
-        probe = mx.random.normal((1, shape[1]), key=mx.random.key(0x41))
-        expected = head(probe)
-        actual = _launch(head.weight, probe)
-        _VALIDATED[shape] = bool(mx.array_equal(actual, expected).item())
-    return _VALIDATED[shape]
+    weight = head.weight
+    cached = getattr(head, _CHECK_ATTR, None)
+    if cached is None or cached[0] is not weight:
+        try:
+            probe = mx.random.normal((1, int(weight.shape[1])), key=mx.random.key(0x41))
+            actual = _launch(weight, probe)
+            ok = bool(mx.array_equal(actual, head(probe)).item())
+        except Exception:  # compile/launch failure on this runtime: stay stock
+            ok = False
+        # Plain attribute (not a parameter): keeps the weight reference so a
+        # replaced weight is re-validated, without adding module state.
+        object.__setattr__(head, _CHECK_ATTR, (weight, ok))
+        cached = (weight, ok)
+    return bool(cached[1])
 
 
 def head_logits(head, x: mx.array) -> mx.array:
