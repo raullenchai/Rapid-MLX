@@ -82,8 +82,11 @@ def client():
     app = FastAPI()
     for router in (chat_router, messages_router, responses_router):
         app.include_router(router)
-    yield TestClient(app), cfg
-    reset_config()
+    try:
+        with TestClient(app) as http:
+            yield http, cfg
+    finally:
+        reset_config()
 
 
 def _reply(
