@@ -388,6 +388,7 @@ jobs:
             --ignore=tests/integrations \
             --ignore=tests/headless_mlx \
             -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
+            -o faulthandler_timeout=180 \
             -v --tb=short \
             --cov=rapid_mlx \
             --cov=scripts.sidecar_macho_inventory \
