@@ -92,7 +92,7 @@
     "help": "Show help for a subcommand",
     "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
-    "launch": "One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
+    "launch": "Launch coding agents with private local profiles or configure editors",
     "ls": "List models in the local HuggingFace cache (alias for `models --cached`)",
     "models": "List available model aliases",
     "ps": "List running rapid-mlx servers",
@@ -3032,7 +3032,7 @@
        "const": null,
        "default": null,
        "dest": "client",
-       "help": "Client to configure (or \"list\" to print the detection matrix). Supported: cline, claude-code, continue-dev, cursor. Aliases: continue (for continue-dev).",
+       "help": "Agent to launch or client to configure (or \"list\" to print the detection matrix). Supported: cline, claude-code, continue-dev, cursor. Aliases: continue (for continue-dev).",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -3064,6 +3064,21 @@
        "nargs": 0,
        "option_strings": [
         "--isolated"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "legacy_config",
+       "help": "Use the original client config writer instead of isolated agent launch",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--legacy-config"
        ],
        "required": false,
        "type": null
@@ -3207,7 +3222,7 @@
      "allow_abbrev": true,
      "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
-     "description": "Detect an IDE client (Cline, Claude Code, Continue, Cursor) and write/patch its config to route at the rapid-mlx server. Use `rapid-mlx launch list` to see what's supported. Cursor requires a public HTTPS --server-url.",
+     "description": "Launch a coding agent with a private local profile and start the server if needed, or configure an editor. Use `rapid-mlx launch list` to see what's supported. Cursor requires a public HTTPS --server-url.",
      "epilog": null,
      "formatter_class": "argparse.HelpFormatter",
      "groups": [

@@ -9,8 +9,8 @@ import SwiftUI
 /// "read the docs and assemble a config" into one click per tool.
 ///
 /// The endpoint + key are passed in from the live ``ServerManager`` so
-/// every copied snippet is correct for the current run (the port floats
-/// 8000–8009 and the bearer rotates each start).
+/// every copied snippet is correct for the current run. Saved agent
+/// connections reuse their private key and preferred port across restarts.
 struct ConnectToolsView: View {
     let host: String
     let port: Int
@@ -515,11 +515,12 @@ struct ConnectToolsView: View {
                     id: target.id,
                     name: target.name,
                     symbol: "terminal",
-                    blurb: "Save a private Rapid profile and launch. Your existing agent settings stay untouched; the saved profile works after a restart.",
+                    blurb: "Save a private Rapid profile and launch. Existing settings stay untouched. The first reply may take longer while the local prompt loads.",
                     snippet: command,
                     displaySnippet: command,
                     action: .launch,
                     persistent: true,
+                    dayTwoSnippet: "\(cliCommand) launch \(IntegrationLaunchCommand.shellQuote(target.id))",
                     sessionSnippet: sessionLaunchCommand(id: target.id, key: snippetKey)
                 )
             }
@@ -772,6 +773,7 @@ private struct ConnectTool: Identifiable {
 
     var action: Action = .launch
     var persistent: Bool = false
+    var dayTwoSnippet: String? = nil
     var sessionSnippet: String? = nil
 }
 
@@ -906,6 +908,20 @@ private struct ConnectToolRow: View {
                         )
                         .padding(.top, RapidTheme.Space.sm)
                         .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
+                }
+                if let dayTwoSnippet = tool.dayTwoSnippet {
+                    HStack(spacing: RapidTheme.Space.sm) {
+                        Text("Next time: \(dayTwoSnippet)")
+                            .font(RapidFont.code)
+                            .textSelection(.enabled)
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(dayTwoSnippet, forType: .string)
+                        }
+                        .buttonStyle(.link)
+                        .accessibilityIdentifier("Launch.Integration.DayTwoCopy.\(tool.id)")
+                    }
+                    .padding(.top, RapidTheme.Space.sm)
                 }
                 if let sessionSnippet = tool.sessionSnippet {
                     Button("Copy one-session command") {

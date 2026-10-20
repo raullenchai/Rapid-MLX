@@ -46,6 +46,16 @@ def port_path() -> Path:
     return connection_dir() / "port"
 
 
+def saved_model(name: str) -> str | None:
+    """Read the model selected when this private agent profile was saved."""
+    path = connection_dir() / "agents" / name / "model"
+    _reject_symlinked_ancestors(path)
+    if not path.is_file():
+        return None
+    model = path.read_text(encoding="utf-8").strip()
+    return model or None
+
+
 def _reject_symlinked_ancestors(path: Path) -> None:
     current = path
     while current != Path.home():
@@ -188,6 +198,7 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     assert key is not None
     root = connection_dir() / "agents" / name
     _private_dir(root)
+    _private_write(root / "model", model + "\n")
     base = f"http://127.0.0.1:{port}/v1"
     previous = os.environ.get("RAPID_MLX_API_KEY")
     os.environ["RAPID_MLX_API_KEY"] = key

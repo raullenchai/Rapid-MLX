@@ -101,7 +101,13 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     so a closing terminal doesn't SIGHUP the serve.
     """
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["rapid-mlx", "serve", model, "--port", str(port)]
+    current = Path(sys.argv[0])
+    executable = (
+        str(current.resolve())
+        if current.name == "rapid-mlx" and current.is_file()
+        else "rapid-mlx"
+    )
+    cmd = [executable, "serve", model, "--port", str(port)]
     # ``start_new_session=True`` is the POSIX-portable replacement for
     # setsid() — detaches the child from the parent's controlling
     # terminal so a Ctrl-C on the parent doesn't propagate.
@@ -162,6 +168,21 @@ def launch_command(args: argparse.Namespace) -> None:
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
+    from rapid_mlx.agents.isolated import SUPPORTED, saved_model
+
+    # The short command is the day-one and day-two entry point for coding
+    # agents. An explicit --isolated without --run still only saves a profile.
+    resume_saved = (
+        args.client in SUPPORTED
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "remove", False)
+        and not getattr(args, "all", False)
+        and not getattr(args, "legacy_config", False)
+    )
+    if resume_saved:
+        args.isolated = True
+        args.run = True
+
     if (getattr(args, "run", False) or getattr(args, "check", False)) and not getattr(
         args, "isolated", False
     ):
@@ -175,6 +196,7 @@ def launch_command(args: argparse.Namespace) -> None:
             configure,
             connection_status,
             remove,
+            saved_model,
             stable_key,
             stable_port,
         )
@@ -227,7 +249,9 @@ def launch_command(args: argparse.Namespace) -> None:
 
             port = args.port if args.port is not None else stable_port()
             model = getattr(args, "_original_alias", None) or _select_model(
-                explicit=args.model, profile=profile, no_download=False
+                explicit=args.model or saved_model(args.client),
+                profile=profile,
+                no_download=False,
             )
             if model is None:
                 raise ValueError("no model fits this Mac; choose one with --model")
@@ -251,7 +275,8 @@ def launch_command(args: argparse.Namespace) -> None:
         except (OSError, ValueError) as exc:
             print(f"launch: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(f"  Saved an isolated {args.client} profile. Run:\n  {command}")
+        day_two = f"{_cli_invocation()} launch {shlex.quote(args.client)}"
+        print(f"  Saved an isolated {args.client} profile. Next time: {day_two}")
         start_hint = (
             f"{_cli_invocation()} start {shlex.quote(args.client)} --model {shlex.quote(model)} "
             f"--no-setup --port {port}"
@@ -261,16 +286,22 @@ def launch_command(args: argparse.Namespace) -> None:
             assert key is not None  # configure() created or reused it above.
             status = connection_status(port, key, model)
             if status == "stopped":
-                if not args.start_server:
+                if not (args.start_server or resume_saved):
                     print(f"  Local server is stopped. Start it with: {start_hint}")
                     raise SystemExit(1)
+                print(
+                    f"  Starting local model {model}; waiting for readiness…",
+                    flush=True,
+                )
                 _start_server_background(model, port, api_key=key)
                 import time
 
-                for _ in range(600):
+                for second in range(600):
                     status = connection_status(port, key, model)
                     if status not in {"stopped", "server-error"}:
                         break
+                    if second and second % 10 == 0:
+                        print(f"  Loading model… {second}s", flush=True)
                     time.sleep(1)
                 if status in {"stopped", "server-error"}:
                     print(f"  Local server did not become ready. Retry: {start_hint}")
@@ -282,6 +313,10 @@ def launch_command(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
+            print(
+                "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
+                flush=True,
+            )
             raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
         print(f"  If the local server is stopped: {start_hint}")
         return
@@ -473,12 +508,12 @@ def register(subparsers) -> None:
 
     p = subparsers.add_parser(
         "launch",
-        help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
+        help="Launch coding agents with private local profiles or configure editors",
         description=(
-            "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
-            "and write/patch its config to route at the "
-            "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
-            "supported. Cursor requires a public HTTPS --server-url."
+            "Launch a coding agent with a private local profile and start the "
+            "server if needed, or configure an editor. Use `rapid-mlx launch "
+            "list` to see what's supported. Cursor requires a public HTTPS "
+            "--server-url."
         ),
     )
     p.add_argument(
@@ -486,7 +521,7 @@ def register(subparsers) -> None:
         nargs="?",
         default=None,
         help=(
-            'Client to configure (or "list" to print the detection matrix). '
+            'Agent to launch or client to configure (or "list" to print the detection matrix). '
             "Supported: "
             + ", ".join(ADAPTERS.keys())
             + ". Aliases: "
@@ -505,6 +540,11 @@ def register(subparsers) -> None:
         "--isolated",
         action="store_true",
         help="Save a private, removable Rapid profile without editing the client's existing configuration",
+    )
+    p.add_argument(
+        "--legacy-config",
+        action="store_true",
+        help="Use the original client config writer instead of isolated agent launch",
     )
     p.add_argument(
         "--run",

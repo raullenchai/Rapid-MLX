@@ -72,16 +72,17 @@ These clients have been verified through automated integration tests
 
 For a connection that still works after restarting Rapid, use **Launch → Coding
 agents → Launch** in Desktop. The app saves a private profile for the selected
-agent and opens it in Terminal. On later days, run the private `run` command
-printed in Terminal. It checks the saved key, port, and model before starting
-the agent; if the server is stopped, it prints one matching start command.
+agent and opens it in Terminal. On later days, use the short command shown
+beside that agent, such as `rapid-mlx launch codex`. It reuses the saved model,
+starts the local server if needed, waits for it, and opens the agent.
 
 The CLI offers the same isolated profiles without changing your existing agent
 settings:
 
 ```bash
-rapid-mlx launch codex --isolated --run --start-server
-# Later: run the ~/.rapid-mlx/connect/agents/codex/run path printed above.
+rapid-mlx launch codex
+# Later, even after quitting Rapid and opening a new terminal:
+rapid-mlx launch codex
 # Remove only Rapid's private Codex profile:
 rapid-mlx launch codex --remove
 ```
@@ -93,6 +94,14 @@ pass `--port PORT` when saving the profile. The key and port stay under
 connects on loopback and switches the embedded key to **Until I rotate** when
 you save a persistent agent connection. Rotating the key requires restarting
 the model before agents can use the new key.
+
+The generated files remain separate from your existing tool settings. The
+agent's own command can also use those files when you pass its private config
+location, for example `CODEX_HOME=~/.rapid-mlx/connect/agents/codex codex
+--profile rapid` or `PI_CODING_AGENT_DIR=~/.rapid-mlx/connect/agents/pi pi
+--provider rapid-mlx`. The short `rapid-mlx launch <agent>` command handles
+the key, server readiness, and current port for you. For the original
+config-writing CLI behavior, pass `--legacy-config`.
 
 Tier-1 coding agents have dedicated copy-paste setup pages with per-family
 config, plus an honest test-backed [support matrix](../agents/matrix.md):

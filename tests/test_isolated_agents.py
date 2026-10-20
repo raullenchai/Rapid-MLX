@@ -344,7 +344,7 @@ def _launch_args(*argv):
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["codex", "--run"], "require --isolated"),
+        (["cline", "--run"], "require --isolated"),
         (["--isolated"], "name one agent"),
         (["codex", "--isolated", "--check"], "requires --model"),
         (["codex", "--isolated", "--check", "--model", "m"], "key is missing"),
@@ -444,6 +444,30 @@ def test_isolated_run_executes_when_ready(private_home):
             _launch_args("codex", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
     assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
+
+
+def test_short_launch_reuses_saved_model_and_starts_stopped_server(
+    private_home, capsys
+):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.configure("codex", "qwen3.5-9b-4bit", port=7660)
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", "ready"],
+        ),
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(_launch_args("codex"))
+    start.assert_called_once_with(
+        "qwen3.5-9b-4bit", 7660, api_key=isolated.stable_key()
+    )
+    assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
+    assert "launch codex" in capsys.readouterr().out
 
 
 def test_isolated_cli_reports_no_suitable_model(private_home, capsys):

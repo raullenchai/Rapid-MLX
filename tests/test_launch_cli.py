@@ -370,7 +370,9 @@ class TestClaudeCode:
             "rapid_mlx.run.cli._cached_context_window", lambda _model: None
         )
 
-        launch_cli.launch_command(_make_args(client="claude-code", model="local-model"))
+        launch_cli.launch_command(
+            _make_args(client="claude-code", model="local-model", legacy_config=True)
+        )
 
         data = json.loads(claude_code.current_config_path().read_text())
         assert data["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
