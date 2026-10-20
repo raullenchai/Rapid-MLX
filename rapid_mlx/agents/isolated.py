@@ -120,11 +120,10 @@ def connection_status(port: int, key: str, model: str) -> str:
         return "stopped"
     except (ValueError, TypeError):
         return "server-error"
-    advertised = (
-        {item.get("id") for item in payload.get("data", []) if isinstance(item, dict)}
-        if isinstance(payload, dict)
-        else set()
-    )
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return "server-error"
+    advertised = {item.get("id") for item in models if isinstance(item, dict)}
     return "ready" if model in advertised else "model-mismatch"
 
 

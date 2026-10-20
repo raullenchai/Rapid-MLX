@@ -159,6 +159,21 @@ def test_connection_requires_exact_advertised_model(private_home):
         )
 
 
+def test_malformed_model_list_returns_one_server_error(private_home):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"data":null}'
+
+    with patch("urllib.request.urlopen", return_value=Response()):
+        assert isolated.connection_status(7659, "a" * 64, "model") == "server-error"
+
+
 def test_launch_waits_through_startup_http_error(private_home):
     from rapid_mlx.launch.cli import launch_command, register
 
