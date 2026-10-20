@@ -502,6 +502,9 @@ struct DownloadFailureGuidanceTests {
             raw: "OSError: [Errno 28] No space left on device", source: .huggingFace
         ).contains("disk space"))
         #expect(DownloadManager.pullFailureMessage(
+            raw: "Error: not enough disk space to finish model", source: .mirror
+        ).contains("disk space"))
+        #expect(DownloadManager.pullFailureMessage(
             raw: "GatedRepoError: 403", source: .huggingFace
         ).contains("hf auth login"))
         #expect(DownloadManager.pullFailureMessage(
@@ -509,6 +512,9 @@ struct DownloadFailureGuidanceTests {
         ).contains("Switch to Hugging Face"))
         #expect(DownloadManager.pullFailureMessage(
             raw: "connection reset", source: .huggingFace
+        ).contains("network"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "Error: could not reach Hugging Face", source: .mirror
         ).contains("network"))
     }
 }

@@ -28,6 +28,22 @@ def test_pull_disk_full_has_retry_command(monkeypatch, tmp_path, capsys):
     assert "Retry: rapid-mlx pull owner/repo" in stderr
 
 
+def test_runtime_asset_retry_preserves_parent_pull(monkeypatch):
+    from rapid_mlx._download_gate import SD35_REPO
+
+    seen = []
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
+
+    def pull(args, **_kwargs):
+        seen.append((args.model, args._pull_retry_command))
+
+    monkeypatch.setattr(cli, "_pull_repository", pull)
+    cli.pull_command(argparse.Namespace(model=SD35_REPO, bits=None, format=None))
+    assert len(seen) > 1
+    assert all(command == f"rapid-mlx pull {SD35_REPO}" for _, command in seen)
+
+
 def _hub_error(error_type, status):
     response = httpx.Response(
         status, request=httpx.Request("GET", "https://huggingface.co/x")

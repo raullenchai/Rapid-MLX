@@ -55,6 +55,25 @@ def test_wait_retries_until_model_is_advertised(monkeypatch):
     assert len(attempts) == 3
 
 
+def test_wait_reports_only_final_model_failure(monkeypatch):
+    failures = []
+    monkeypatch.setattr(
+        setup,
+        "verify_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            setup.ModelNotAdvertisedError("server does not advertise model 'wanted'")
+        ),
+    )
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *v: failures.append(v)
+    )
+    with pytest.raises(RuntimeError, match="does not advertise"):
+        setup.wait_for_server(
+            "http://localhost:8000/v1", "wanted", agent="codex", timeout=0
+        )
+    assert failures == [("model_not_advertised", "codex")]
+
+
 def test_first_class_does_not_write_when_server_unready(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     config = tmp_path / "config.yaml"

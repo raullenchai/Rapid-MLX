@@ -945,7 +945,8 @@ final class DownloadManager {
 
     nonisolated static func pullFailureMessage(raw: String, source: DownloadSource) -> String {
         let value = raw.lowercased()
-        if value.contains("no space left on device") || value.contains("insufficient disk") {
+        if value.contains("no space left on device") || value.contains("insufficient disk")
+            || value.contains("not enough disk space") {
             return "There isn't enough disk space for this model. Free space, then retry to resume."
         }
         if value.contains("gated") || value.contains("hf auth login")
@@ -958,7 +959,8 @@ final class DownloadManager {
         ) == .downloadSourceUnavailable {
             return "The mirror could not be reached. Switch to Hugging Face or retry to resume."
         }
-        if Self.isTransientDownloadError(value) {
+        if Self.isTransientDownloadError(value)
+            || value.contains("could not reach hugging face") {
             return "The network connection interrupted the download. Check your connection, then retry to resume."
         }
         return "The model download didn't finish. Retry to resume it."

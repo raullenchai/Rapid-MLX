@@ -40,6 +40,14 @@ FIRST_CLASS_SETUP_AGENTS = frozenset(
 )
 
 
+class ServerNoModelsError(RuntimeError):
+    """The server answered but has not advertised any model yet."""
+
+
+class ModelNotAdvertisedError(RuntimeError):
+    """The server answered but not with the requested model."""
+
+
 @dataclass(frozen=True)
 class SetupPlan:
     agent: str
@@ -685,11 +693,11 @@ def verify_server(
     if not ids:
         if track_failure:
             track_agent_configure_failed("server_no_models", agent)
-        raise RuntimeError(f"server at {root} reported no models")
+        raise ServerNoModelsError(f"server at {root} reported no models")
     if expected_model != "default" and expected_model not in ids:
         if track_failure:
             track_agent_configure_failed("model_not_advertised", agent)
-        raise RuntimeError(
+        raise ModelNotAdvertisedError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )
     return (
@@ -715,7 +723,13 @@ def wait_for_server(
             )
         except RuntimeError as exc:
             if not is_local_base_url(base_url) or time.monotonic() >= deadline:
-                track_agent_configure_failed("server_not_ready", agent)
+                if isinstance(exc, ModelNotAdvertisedError):
+                    error_class = "model_not_advertised"
+                elif isinstance(exc, ServerNoModelsError):
+                    error_class = "server_no_models"
+                else:
+                    error_class = "server_not_ready"
+                track_agent_configure_failed(error_class, agent)
                 raise RuntimeError(f"server did not become ready: {exc}") from exc
             time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 

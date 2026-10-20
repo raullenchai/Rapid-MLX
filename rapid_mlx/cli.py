@@ -10891,6 +10891,16 @@ def _sync_pulled_variant_marker(repo_id: str, variant: str | None) -> None:
         pass
 
 
+def _pull_retry_command(args) -> str:
+    model = getattr(args, "_original_alias", None) or args.model
+    parts = ["rapid-mlx", "pull", shlex.quote(model)]
+    if getattr(args, "bits", None):
+        parts += ["--bits", shlex.quote(str(args.bits))]
+    if getattr(args, "format", None):
+        parts += ["--format", shlex.quote(str(args.format))]
+    return " ".join(parts)
+
+
 def _pull_repository(
     args,
     *,
@@ -11183,13 +11193,10 @@ def _pull_repository(
         rendered = render_hub_error(e, repo_id)
         if rendered is not None and error_class != "not_found":
             print(f"\n{rendered}\n", file=sys.stderr)
-            retry_model = getattr(args, "_original_alias", None) or args.model
-            retry_parts = ["rapid-mlx", "pull", shlex.quote(retry_model)]
-            if getattr(args, "bits", None):
-                retry_parts += ["--bits", shlex.quote(str(args.bits))]
-            if getattr(args, "format", None):
-                retry_parts += ["--format", shlex.quote(str(args.format))]
-            print(f"  Retry: {' '.join(retry_parts)}", file=sys.stderr)
+            retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
+                args
+            )
+            print(f"  Retry: {retry}", file=sys.stderr)
             raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
@@ -11225,6 +11232,10 @@ def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
     import copy
+
+    # Every nested runtime-asset pull retries the user's original request,
+    # preserving its selected variant and pinned dependency set.
+    args._pull_retry_command = _pull_retry_command(args)
 
     from rapid_mlx._download_gate import (
         IMAGE_MODEL_DATA_FILES,
@@ -13912,8 +13923,8 @@ def agents_command(args):
                     context_length = fetch_context_window(base_url, model_id)
 
         # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
-        # flows. They preview an exact diff, require consent, back up existing config,
-        # write atomically, and verify the server afterwards. The generic
+        # flows. They verify server readiness, preview an exact diff, require
+        # consent, back up existing config, and write atomically. The generic
         # profile writer below still lacks the diff/consent/backup half, but
         # it does honour --dry-run, so a preview never writes on either path.
         if profile.name in FIRST_CLASS_SETUP_AGENTS:
