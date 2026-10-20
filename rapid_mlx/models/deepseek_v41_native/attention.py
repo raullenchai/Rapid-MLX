@@ -149,24 +149,44 @@ class Attention(nn.Module):
         cos, sin = self._freqs(end_pos)
         c_q, s_q = cos[start_pos:end_pos], sin[start_pos:end_pos]
 
-        # --- queries ---
-        qr = self.q_norm(self.wq_a(x))
-        q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
-        q = rope_tail(q, rd, c_q, s_q)
-
-        # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
-        kv = self.kv_norm(self.wkv(x))
-        kv = rope_tail(kv, rd, c_q, s_q)
-        kv = fake_quant_fp8_ue8m0(kv, 32)
-
         lc = cache.layers[self.layer_id]
-        prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
-        wp = prev.shape[1]
-        kv_all = mx.concatenate([prev.astype(kv.dtype), kv], axis=1) if wp else kv
-        idxs = mx.broadcast_to(
-            window_idx_matrix(wp, n, self.window_size)[None],
-            (bsz, n, min(self.window_size, wp + n)),
+        fused = not self._break_rope_inverse and decode_attention.supports(
+            x, lc.win_kv, self.n_heads, self.head_dim, rd
         )
+        if fused:
+            # one decode token: q_norm, kv_norm, the KV rope tail and its FP8
+            # fake-quant in one kernel; the query rope runs inside attention
+            qr, kv = decode_attention.norms(
+                self.wq_a(x),
+                self.wkv(x),
+                self.q_norm.weight,
+                self.kv_norm.weight,
+                self.eps,
+                c_q,
+                s_q,
+                rd,
+                lc.dtype,
+            )
+            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
+            wp = min(start_pos, self.window_size)
+        else:
+            # --- queries ---
+            qr = self.q_norm(self.wq_a(x))
+            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
+            q = rope_tail(q, rd, c_q, s_q)
+
+            # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
+            kv = self.kv_norm(self.wkv(x))
+            kv = rope_tail(kv, rd, c_q, s_q)
+            kv = fake_quant_fp8_ue8m0(kv, 32)
+
+            prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
+            wp = prev.shape[1]
+            kv_all = mx.concatenate([prev.astype(kv.dtype), kv], axis=1) if wp else kv
+            idxs = mx.broadcast_to(
+                window_idx_matrix(wp, n, self.window_size)[None],
+                (bsz, n, min(self.window_size, wp + n)),
+            )
         lc.write_window(start_pos, kv)
         offset = wp + n  # compressed entries follow
 
@@ -204,17 +224,14 @@ class Attention(nn.Module):
                 latents = fake_quant_fp4_e4m3(latents, 16)
                 lc.comp_kv[:bsz, g0 : g0 + g] = latents.astype(lc.dtype)
 
-            if compress_len:
+            if compress_len and not fused:
                 comp = src.comp_kv[:bsz, :compress_len].astype(kv.dtype)
                 kv_all = mx.concatenate([kv_all, comp], axis=1)
                 idxs = mx.concatenate([idxs, cidx], axis=-1)
 
         sink = mx.zeros_like(self.attn_sink) if self._break_sink else self.attn_sink
-        if not self._break_rope_inverse and decode_attention.supports(
-            q, lc.win_kv, rd, self.n_heads
-        ):
-            # One decode query: the kernels read the ring and the selected
-            # compressed rows in place, so kv_all / idxs above stay unevaluated.
+        if fused:
+            # the kernels read the ring and the selected compressed rows in place
             selected = (None, None, 0)
             if self.ratio and compress_len:
                 selected = (src.comp_kv, cidx, offset)
