@@ -162,11 +162,13 @@ def launch_command(args: argparse.Namespace) -> None:
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
-    if (args.run or getattr(args, "check", False)) and not args.isolated:
+    if (getattr(args, "run", False) or getattr(args, "check", False)) and not getattr(
+        args, "isolated", False
+    ):
         print("launch: --run and --check require --isolated", file=sys.stderr)
         sys.exit(2)
 
-    if args.isolated or args.remove:
+    if getattr(args, "isolated", False) or getattr(args, "remove", False):
         from rapid_mlx.agents import get_profile
         from rapid_mlx.agents.isolated import (
             _cli_invocation,
@@ -181,7 +183,7 @@ def launch_command(args: argparse.Namespace) -> None:
             print("launch: name one agent for --isolated or --remove", file=sys.stderr)
             sys.exit(2)
         if args.dry_run:
-            action = "remove" if args.remove else "save"
+            action = "remove" if getattr(args, "remove", False) else "save"
             print(f"[dry-run] Would {action} the isolated {args.client} profile.")
             return
         if getattr(args, "check", False):
@@ -212,7 +214,7 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"{reason} Start it with: {start_hint}", file=sys.stderr)
             sys.exit(1)
         try:
-            if args.remove:
+            if getattr(args, "remove", False):
                 removed = remove(args.client)
                 print(
                     f"  {'Removed' if removed else 'No saved profile for'} {args.client}."
@@ -254,7 +256,7 @@ def launch_command(args: argparse.Namespace) -> None:
             f"{_cli_invocation()} start {shlex.quote(args.client)} --model {shlex.quote(model)} "
             f"--no-setup --port {port}"
         )
-        if args.run:
+        if getattr(args, "run", False):
             key = stable_key(create=False)
             assert key is not None  # configure() created or reused it above.
             status = connection_status(port, key, model)
