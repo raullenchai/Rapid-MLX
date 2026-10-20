@@ -292,6 +292,17 @@ def approval_handler(agent: str, master: int):
     return answer
 
 
+def send_prompt(agent: str, master: int, prompt: str) -> None:
+    data = prompt.encode()
+    if agent == "crush":
+        # The TUI enables bracketed paste. Raw bulk input loses its first
+        # characters while the screen is redrawn after onboarding.
+        data = b"\x1b[200~" + data + b"\x1b[201~"
+    os.write(master, data)
+    time.sleep(0.5)
+    os.write(master, b"\r")
+
+
 def session(
     command: list[str],
     env: dict[str, str],
@@ -361,9 +372,7 @@ def session(
             sent = time.monotonic()
             answer["prompt1_at"] = time.time()
             approve = approval_handler(command[2], master)
-            os.write(master, first_prompt.encode())
-            time.sleep(0.5)
-            os.write(master, b"\r")
+            send_prompt(command[2], master, first_prompt)
             output, _ = read_until(
                 master,
                 proc,
@@ -392,9 +401,7 @@ def session(
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
                 approve = approval_handler(command[2], master)
-                os.write(master, second_prompt.encode())
-                time.sleep(0.5)
-                os.write(master, b"\r")
+                send_prompt(command[2], master, second_prompt)
                 output2, _ = read_until(
                     master,
                     proc,

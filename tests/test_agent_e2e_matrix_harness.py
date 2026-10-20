@@ -12,6 +12,7 @@ from scripts.agent_e2e.run import (
     preserved,
     reply_finished,
     request_evidence,
+    send_prompt,
     snapshot,
     stop_terminal_process,
 )
@@ -27,6 +28,14 @@ def test_qwen_tool_approval_answers_once_per_prompt(monkeypatch):
     approve("Waiting for user confirmation... Waiting for user confirmation")
     assert sent == [b"\r", b"\r"]
     assert approval_handler("pi", 10) is None
+
+
+def test_crush_prompt_uses_bracketed_paste(monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    send_prompt("crush", 10, "hello")
+    assert sent == [b"\x1b[200~hello\x1b[201~", b"\r"]
 
 
 def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
