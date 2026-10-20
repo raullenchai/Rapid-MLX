@@ -29,6 +29,10 @@ and is asserted bit-exact by `tests/test_deepseek_v41_head_gemv.py` on Metal.
   reference, while this kernel stays at ~1e-6).
 - More than 8 rows (prefill), CPU, quantized/biased heads, or a K that is not
   a multiple of 128: stock path unchanged.
+- The stock order is an MLX/GPU implementation detail, so the first call per
+  weight shape runs a one-time self-check (kernel vs stock on a seeded row of
+  the real weight); any bit difference pins that shape to the stock path for
+  the process.
 - `head_gemv.ENABLED = False` restores the stock path everywhere.
 
 ## Measurements

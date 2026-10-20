@@ -17,6 +17,12 @@ path then runs the non-transposed GEMV), ``K > 64`` and ``K < 16 * N`` (other
 sizes select a different lane split), and ``K % 128 == 0`` (no tail block).
 MLX exposes no stride query, so a transposed view assigned to ``head.weight``
 is outside this contract; V4.1 only ever assigns checkpoint arrays.
+
+The stock operation order is an implementation detail of the installed MLX
+and GPU, so the first call for each weight shape runs a one-time self-check:
+the kernel and the stock projection evaluate the same seeded row against the
+real weight, and any bit difference permanently routes that shape back to the
+stock path in this process.
 """
 
 from __future__ import annotations
@@ -83,6 +89,10 @@ def _kernel():
     )
 
 
+# (outputs, inputs) -> whether this runtime reproduces the stock result exactly
+_VALIDATED: dict[tuple[int, int], bool] = {}
+
+
 def _gpu_default() -> bool:
     return bool(mx.default_device() == mx.gpu)
 
@@ -109,11 +119,7 @@ def supports(head, x: mx.array) -> bool:
     return 1 <= rows <= MAX_ROWS
 
 
-def head_logits(head, x: mx.array) -> mx.array:
-    """FP32 logits for ``head(x)``; exact GEMV when supported, stock otherwise."""
-    if not supports(head, x):
-        return head(x)
-    weight = head.weight
+def _launch(weight: mx.array, x: mx.array) -> mx.array:
     outputs, inputs = int(weight.shape[0]), int(weight.shape[1])
     rows = x.size // inputs
     (logits,) = _kernel()(
@@ -129,3 +135,20 @@ def head_logits(head, x: mx.array) -> mx.array:
         output_dtypes=[mx.float32],
     )
     return logits.reshape(*x.shape[:-1], outputs)
+
+
+def _matches_stock(head) -> bool:
+    shape = (int(head.weight.shape[0]), int(head.weight.shape[1]))
+    if shape not in _VALIDATED:
+        probe = mx.random.normal((1, shape[1]), key=mx.random.key(0x41))
+        expected = head(probe)
+        actual = _launch(head.weight, probe)
+        _VALIDATED[shape] = bool(mx.array_equal(actual, expected).item())
+    return _VALIDATED[shape]
+
+
+def head_logits(head, x: mx.array) -> mx.array:
+    """FP32 logits for ``head(x)``; exact GEMV when supported, stock otherwise."""
+    if not supports(head, x) or not _matches_stock(head):
+        return head(x)
+    return _launch(head.weight, x)
