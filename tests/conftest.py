@@ -365,6 +365,23 @@ _NETWORK_OPT_IN_MARKER = "requires_network"
 
 
 @pytest.fixture(autouse=True)
+def _isolate_pr_validate_step_opt_outs(monkeypatch):
+    """Drop pr_validate's operator step opt-outs from every test (#4984).
+
+    ``PR_VALIDATE_NO_STRESS=1`` and friends are documented for the person
+    running the validator, so they are inherited by its ``full_unit`` pytest
+    subprocess. Tests that exercise the runner must see the default pipeline;
+    a test that wants an opt-out sets it explicitly with ``monkeypatch``.
+    """
+    try:
+        from scripts.pr_validate.context import STEP_OPT_OUT_ENV_VARS
+    except ImportError:
+        return
+    for name in STEP_OPT_OUT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_model_performance_registry():
     """Keep process-owned per-model ledgers isolated between unit tests."""
     try:

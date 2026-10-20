@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from .base import Step
-from .context import Context, env_truthy
+from .context import STEP_OPT_OUT_ENV_VARS, Context, env_truthy
 from .scorecard import render_scorecard, verdict
 from .steps.cl_description_quality import CLDescriptionQualityStep
 from .steps.codex_review import CodexReviewStep
@@ -157,15 +157,7 @@ def run_pipeline(
         or base
         or skip_steps
         or steps is not None
-        or any(
-            env_truthy(name)
-            for name in (
-                "PR_VALIDATE_SKIP_DESC",
-                "PR_VALIDATE_NO_STRESS",
-                "PR_VALIDATE_NO_CODEX",
-                "PR_VALIDATE_NO_DEEPSEEK",
-            )
-        )
+        or any(env_truthy(name) for name in STEP_OPT_OUT_ENV_VARS)
     ):
         print(
             "error: --queue-on-success requires the complete default pipeline",

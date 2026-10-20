@@ -187,6 +187,18 @@ class Context:
         print(f"  · {message}", file=sys.stderr)
 
 
+# Operator opt-outs that disable or bypass whole pipeline steps. They are
+# meant for the validator invocation only: tests and child processes must not
+# inherit them as ambient state (#4984), and ``--queue-on-success`` refuses to
+# run when any of them is set.
+STEP_OPT_OUT_ENV_VARS = (
+    "PR_VALIDATE_SKIP_DESC",
+    "PR_VALIDATE_NO_STRESS",
+    "PR_VALIDATE_NO_CODEX",
+    "PR_VALIDATE_NO_DEEPSEEK",
+)
+
+
 def env_truthy(name: str) -> bool:
     """Helper for env-var feature flags (``PR_VALIDATE_NO_CODEX=1``
     style)."""
