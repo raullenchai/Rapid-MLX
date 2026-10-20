@@ -139,6 +139,9 @@ def test_boundary_continue_assemble_and_retained_prefix(tmp_path):
                 guard,
                 token_map=list(range(32)),
                 heldout_reference=reference,
+                separation=dict(
+                    reference=str(tmp_path / "reference"), corpus_hashes=[]
+                ),
             )
             bind_quality(source, parts, tmp_path / "reference", scratch / "heldout")
             for layer in range(2):

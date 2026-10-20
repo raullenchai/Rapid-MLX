@@ -1035,12 +1035,7 @@ def drift(
     return rows
 
 
-def bind_quality(
-    source, parts, reference_root, scratch, baseline=None, *, windows=None, slices=None
-):
-    """Bind held-out content separately from machine-local staging paths."""
-    parts, reference_root, scratch = Path(parts), Path(reference_root), Path(scratch)
-    reference = json.loads((reference_root / "reference.json").read_text())
+def validate_reference(source, reference):
     if reference["source_identity"] != digest(source.manifest):
         raise ValueError("held-out reference/source identity mismatch")
     tokenizer = source.source / "tokenizer.json"
@@ -1049,29 +1044,47 @@ def bind_quality(
         and file_hash(tokenizer) != reference["provenance"]["tokenizer_sha256"]
     ):
         raise ValueError("held-out reference/calibration tokenizer mismatch")
+
+
+def validate_separation(reference_root, reference, windows, corpus_hashes):
+    """Check calibration evidence before committing or resuming a build."""
+    heldout_hashes = {
+        sha
+        for s in reference["provenance"]["slices"].values()
+        for sha in s["corpus_sha256"]
+    }
+    if set(corpus_hashes) & heldout_hashes:
+        raise ValueError("calibration and held-out corpus files overlap")
+    if windows is None:
+        return
+    calibration = [np.asarray(w, np.int32).tobytes() for w in windows]
+    for path in windows_at(
+        Path(reference_root) / "boundary-0", len(reference["names"])
+    ):
+        ids = np.asarray(load_state(path)["ids"], np.int32)
+        if any(ids.tobytes() in raw for raw in calibration):
+            raise ValueError("held-out token window appears in calibration data")
+
+
+def bind_quality(
+    source, parts, reference_root, scratch, baseline=None, *, windows=None, slices=None
+):
+    """Bind held-out content separately from machine-local staging paths."""
+    parts, reference_root, scratch = Path(parts), Path(reference_root), Path(scratch)
+    reference = json.loads((reference_root / "reference.json").read_text())
+    validate_reference(source, reference)
     run = json.loads((parts / "run.json").read_text())
     if (
         run.get("heldout_reference_identity", reference["identity"])
         != reference["identity"]
     ):
         raise ValueError("held-out reference changed; start a new run")
-    if slices is not None:
-        calibration_hashes = {
-            file_hash(p) for files in read_slices(slices, []).values() for p in files
-        }
-        heldout_hashes = {
-            sha
-            for s in reference["provenance"]["slices"].values()
-            for sha in s["corpus_sha256"]
-        }
-        if calibration_hashes & heldout_hashes:
-            raise ValueError("calibration and held-out corpus files overlap")
-    if windows is not None:
-        calibration = [np.asarray(w, np.int32).tobytes() for w in windows]
-        for path in windows_at(reference_root / "boundary-0", len(reference["names"])):
-            ids = np.asarray(load_state(path)["ids"], np.int32)
-            if any(ids.tobytes() in raw for raw in calibration):
-                raise ValueError("held-out token window appears in calibration data")
+    calibration_hashes = (
+        {file_hash(p) for files in read_slices(slices, []).values() for p in files}
+        if slices is not None
+        else set()
+    )
+    validate_separation(reference_root, reference, windows, calibration_hashes)
     config = dict(
         reference=str(reference_root.resolve()),
         scratch=str(scratch.resolve()),

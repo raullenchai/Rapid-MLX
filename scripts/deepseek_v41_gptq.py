@@ -1269,6 +1269,7 @@ def initialize(
     token_map=None,
     calibration_manifest_sha256=None,
     heldout_reference=None,
+    separation=None,
 ):
     from rapid_mlx.models.deepseek_v41_native.engram import EngramHasher
     from rapid_mlx.models.deepseek_v41_native.hyper_connections import (
@@ -1277,6 +1278,19 @@ def initialize(
     from rapid_mlx.models.deepseek_v41_native.load import load_token_map
     from rapid_mlx.models.deepseek_v41_native.model import SharedState
 
+    if separation is not None:
+        from scripts.deepseek_v41_gptq_quality import (
+            validate_reference,
+            validate_separation,
+        )
+
+        validate_reference(source, heldout_reference)
+        validate_separation(
+            separation["reference"],
+            heldout_reference,
+            windows,
+            separation["corpus_hashes"],
+        )
     lengths = [len(w) for w in windows]
     if not lengths or any(n < 1 or n > source.args.max_seq_len for n in lengths):
         raise ValueError("invalid calibration windows")
@@ -1307,6 +1321,11 @@ def initialize(
         lengths=lengths,
         estimate=estimate,
     )
+    if separation is not None:
+        run["calibration_corpus_hashes"] = separation["corpus_hashes"]
+        run["calibration_token_windows"] = [
+            np.asarray(w, np.int32).tolist() for w in windows
+        ]
     if heldout_reference is not None:
         run["heldout_reference_identity"] = heldout_reference["identity"]
         run["heldout_token_hashes"] = heldout_reference["token_hashes"]
@@ -1988,6 +2007,16 @@ def main():
                 guard,
                 calibration_manifest_sha256=file_hash(a.slices),
                 heldout_reference=reference,
+                separation=dict(
+                    reference=str(a.reference),
+                    corpus_hashes=sorted(
+                        {
+                            file_hash(p)
+                            for files in read_slices(a.slices, []).values()
+                            for p in files
+                        }
+                    ),
+                ),
             )
             from scripts.deepseek_v41_gptq_quality import bind_quality
 
@@ -2015,6 +2044,29 @@ def main():
                 raise ValueError(
                     "run needs --reference held-out cache; calibration-only errors are insufficient"
                 )
+            from scripts.deepseek_v41_gptq_quality import (
+                validate_reference,
+                validate_separation,
+            )
+
+            run = json.loads((a.parts / "run.json").read_text())
+            config = json.loads((a.parts / "quality-config.json").read_text())
+            if (
+                "calibration_corpus_hashes" not in run
+                or "calibration_token_windows" not in run
+            ):
+                raise ValueError(
+                    "missing calibration separation evidence; start a new run"
+                )
+            reference_root = Path(config["reference"])
+            reference = json.loads((reference_root / "reference.json").read_text())
+            validate_reference(source, reference)
+            validate_separation(
+                reference_root,
+                reference,
+                run["calibration_token_windows"],
+                run["calibration_corpus_hashes"],
+            )
             layer = a.layer
             if layer is None:
                 layer = json.loads((a.scratch / "checkpoint.json").read_text())[

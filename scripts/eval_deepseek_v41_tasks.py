@@ -40,6 +40,7 @@ import json
 import os
 import random
 import re
+import secrets
 import shutil
 import signal
 import statistics
@@ -485,15 +486,16 @@ def execute_code(code, tests, entry, timeout, scratch):
     with tempfile.TemporaryDirectory(dir=scratch, prefix="humaneval-") as directory:
         directory = Path(directory).resolve()
         program = directory / "runner.py"
+        nonce = secrets.token_bytes(32)
         # Keep candidate globals separate from the test module.
         program.write_text(
-            "import resource\n"
+            "import os, resource\n"
             f"resource.setrlimit(resource.RLIMIT_CPU, ({timeout}, {timeout}))\n"
             "resource.setrlimit(resource.RLIMIT_FSIZE, (1048576, 1048576))\n"
             "resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))\n"
             "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
             f'ns = {{}}\nexec(compile({code!r}, "candidate", "exec"), ns)\n'
-            f'exec({tests!r})\ncheck(ns[{entry!r}])\nprint("HUMANEVAL_OK")\n'
+            f'exec({tests!r})\ncheck(ns[{entry!r}])\nos.write(int(os.environ["RESULT_FD"]), {nonce!r})\n'
         )
         # Read-only runtime paths only; workspace/model/cache and home are hidden.
         roots = {
@@ -523,15 +525,16 @@ def execute_code(code, tests, entry, timeout, scratch):
             + ")(allow file-write-data "
             + " ".join(
                 f"(literal {json.dumps(str(directory / name))})"
-                for name in ("stdout", "stderr")
+                for name in ("stdout", "stderr", "completion")
             )
             + ")"
         )
-        # Permit only these two existing output files. RLIMIT_FSIZE bounds each
+        # Permit only these existing output files. RLIMIT_FSIZE bounds each
         # file; pipes would allow unbounded parent memory growth.
         with (
             (directory / "stdout").open("wb") as out,
             (directory / "stderr").open("wb") as err,
+            (directory / "completion").open("wb") as completion,
         ):
             process = subprocess.Popen(
                 [
@@ -546,7 +549,12 @@ def execute_code(code, tests, entry, timeout, scratch):
                 cwd=directory,
                 stdout=out,
                 stderr=err,
-                env={"PATH": "/usr/bin:/bin", "TMPDIR": str(directory)},
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "TMPDIR": str(directory),
+                    "RESULT_FD": str(completion.fileno()),
+                },
+                pass_fds=(completion.fileno(),),
                 start_new_session=True,
             )
             try:
@@ -560,7 +568,8 @@ def execute_code(code, tests, entry, timeout, scratch):
         if b"sandbox-exec:" in stderr:
             return {"passed": False, "error": stderr.decode(errors="replace")[-4000:]}
         return {
-            "passed": process.returncode == 0 and stdout.strip() == b"HUMANEVAL_OK",
+            "passed": process.returncode == 0
+            and (directory / "completion").read_bytes() == nonce,
             "returncode": process.returncode,
             "stdout": stdout.decode(errors="replace")[-4000:],
             "stderr": stderr.decode(errors="replace")[-4000:],

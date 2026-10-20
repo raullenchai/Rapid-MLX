@@ -515,7 +515,14 @@ def test_sandbox_profile_and_timeout_contract(tmp_path, monkeypatch, expire):
         def __init__(self, command, **kwargs):
             captured.update(command=command, kwargs=kwargs)
             self.waits = 0
-            kwargs["stdout"].write(b"HUMANEVAL_OK\n")
+            import os
+
+            kwargs["stdout"].write(b"candidate output\n")
+            program = Path(command[-1]).read_text()
+            marker = bench.ast.literal_eval(
+                bench.ast.parse(program).body[-1].value.args[-1]
+            )
+            os.write(kwargs["pass_fds"][0], marker)
 
         def wait(self, **kwargs):
             self.waits += 1
@@ -537,7 +544,29 @@ def test_sandbox_profile_and_timeout_contract(tmp_path, monkeypatch, expire):
     assert "(allow file-write-data (literal " in profile
     assert "(allow file-write*" not in profile
     assert captured["kwargs"]["start_new_session"] is True
-    assert set(captured["kwargs"]["env"]) == {"PATH", "TMPDIR"}
+    assert set(captured["kwargs"]["env"]) == {"PATH", "TMPDIR", "RESULT_FD"}
     if expire:
         assert captured["killed"][0] == 1234567
         assert result["detail"] == "execution timeout"
+
+
+@pytest.mark.parametrize(
+    "code, passed",
+    [
+        ("print('candidate noise')\ndef f(): return 1", True),
+        ("import os\nprint('HUMANEVAL_OK', flush=True)\nos._exit(0)", False),
+        ("print('HUMANEVAL_OK')\ndef f(): return 2", False),
+    ],
+)
+def test_humaneval_completion_is_independent_of_stdout(
+    tmp_path, monkeypatch, code, passed
+):
+    popen = bench.subprocess.Popen
+    monkeypatch.setattr(bench.shutil, "which", lambda _: "/usr/bin/sandbox-exec")
+
+    def fixed_fixture_process(command, **kwargs):
+        return popen(command[3:], **kwargs)
+
+    monkeypatch.setattr(bench.subprocess, "Popen", fixed_fixture_process)
+    result = bench.execute_code(code, "def check(f): assert f() == 1", "f", 1, tmp_path)
+    assert result["passed"] is passed, result

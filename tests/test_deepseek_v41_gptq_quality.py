@@ -477,3 +477,109 @@ def test_reference_binding_rejects_tokenizer_and_corpus_leakage(tmp_path):
             source, parts, reference_root, tmp_path / "quality", slices=manifest
         )
     assert not (parts / "quality-config.json").exists()
+
+
+@pytest.mark.parametrize("overlap", ["corpus", "tokens"])
+@pytest.mark.parametrize("has_evidence", [False, True])
+def test_cli_separation_precedes_commit_and_is_rechecked_on_resume(
+    tmp_path, monkeypatch, overlap, has_evidence
+):
+    import sys
+
+    from scripts.deepseek_v41_rd_common import file_hash
+
+    source = SimpleNamespace(source=tmp_path / "source", manifest={"fixture": 1})
+    source.source.mkdir()
+    corpus = tmp_path / "calibration.txt"
+    corpus.write_text("calibration corpus")
+    slices = tmp_path / "slices.json"
+    atomic_json(slices, dict(slices={"calibration": [str(corpus)]}))
+    reference_root = tmp_path / "reference"
+    reference_root.mkdir()
+    reference = dict(
+        identity="ref",
+        source_identity=digest(source.manifest),
+        token_hashes=["heldout"],
+        names=["heldout"],
+        provenance=dict(
+            tokenizer_sha256="unused",
+            slices={
+                "heldout": dict(
+                    corpus_sha256=[
+                        file_hash(corpus) if overlap == "corpus" else "different-corpus"
+                    ]
+                )
+            },
+        ),
+    )
+    atomic_json(reference_root / "reference.json", reference)
+    (reference_root / "boundary-0").mkdir()
+    save_state(reference_root / "boundary-0" / "window-0", dict(ids=mx.array([1, 2])))
+    windows = [np.array([0, 1, 2, 3] if overlap == "tokens" else [4, 5, 6], np.int32)]
+    monkeypatch.setattr(b, "PartialSource", lambda *args: source)
+    monkeypatch.setattr(
+        b, "calibration_windows", lambda *args: (windows, "calibration")
+    )
+    monkeypatch.setattr(b, "run_layer", lambda *args: pytest.fail("layer work started"))
+    manifest = tmp_path / "manifest.json"
+    atomic_json(manifest, source.manifest)
+    parts, scratch = tmp_path / "parts", tmp_path / "state"
+    common = [
+        "--source",
+        str(source.source),
+        "--manifest",
+        str(manifest),
+        "--parts",
+        str(parts),
+        "--scratch",
+        str(scratch),
+        "--cpu",
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gptq",
+            "init",
+            *common,
+            "--slices",
+            str(slices),
+            "--tokens",
+            "4",
+            "--reference",
+            str(reference_root),
+        ],
+    )
+    error = "corpus files overlap" if overlap == "corpus" else "token window appears"
+    with pytest.raises(ValueError, match=error):
+        b.main()
+    assert not parts.exists()
+    assert not scratch.exists()
+
+    # Reproduce state left by the old initializer, including an optional prior binding.
+    parts.mkdir()
+    scratch.mkdir()
+    run = dict(
+        identity="run", lengths=[len(windows[0])], heldout_reference_identity="ref"
+    )
+    if has_evidence:
+        run["calibration_corpus_hashes"] = [file_hash(corpus)]
+        run["calibration_token_windows"] = [windows[0].tolist()]
+    atomic_json(parts / "run.json", run)
+    atomic_json(scratch / "checkpoint.json", dict(identity="run", next_layer=0))
+    atomic_json(
+        parts / "quality-config.json",
+        dict(
+            reference=str(reference_root),
+            scratch=str(tmp_path / "quality"),
+            reference_identity="ref",
+            baseline=None,
+        ),
+    )
+    before = (scratch / "checkpoint.json").read_bytes()
+    monkeypatch.setattr(sys, "argv", ["gptq", "run", *common])
+    with pytest.raises(
+        ValueError, match=error if has_evidence else "missing calibration separation"
+    ):
+        b.main()
+    assert (scratch / "checkpoint.json").read_bytes() == before
