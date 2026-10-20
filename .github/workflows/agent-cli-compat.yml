@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'rapid_mlx/agents/**'
+      - 'rapid_mlx/launch/**'
       - 'scripts/agent_compat/**'
       - '.github/workflows/agent-cli-compat.yml'
   schedule:

@@ -318,8 +318,23 @@ def main() -> None:
                 isolated.configure(agent, MODEL, port=port)
                 root = isolated.connection_dir() / "agents" / agent
                 Handler.key = isolated.stable_key()
-                env = os.environ.copy()
+                # CLIs see only the fixture key, never credentials inherited
+                # from a developer shell or a self-hosted runner.
+                env = {
+                    name: os.environ[name]
+                    for name in (
+                        "PATH",
+                        "LANG",
+                        "LC_ALL",
+                        "TERM",
+                        "TMPDIR",
+                        "USER",
+                        "LOGNAME",
+                    )
+                    if name in os.environ
+                }
                 env["HOME"] = str(home)
+                env["NO_PROXY"] = "127.0.0.1,localhost"
                 env["XDG_CONFIG_HOME"] = str(home / "config")
                 env["XDG_DATA_HOME"] = str(home / "data")
                 env["XDG_CACHE_HOME"] = str(home / "cache")
