@@ -6,6 +6,7 @@ import json
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
     classified_error,
+    handle_first_run_menus,
     output_issues,
     preserved,
     request_evidence,
@@ -170,6 +171,20 @@ def test_shareable_error_does_not_copy_credentials():
     assert classified_error("Unrecognized flag: --model") == (
         "unsupported --model flag"
     )
+
+
+def test_goose_telemetry_choice_is_answered_before_task(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
+    )
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until",
+        lambda *args: ("goose is ready", None),
+    )
+    opening = "Share anonymous usage data to help improve goose?"
+    assert "goose is ready" in handle_first_run_menus("goose", opening, 1, None, None)
+    assert writes == [b"\r"]
 
 
 def test_pty_cleanup_falls_back_when_process_group_is_inaccessible(monkeypatch):

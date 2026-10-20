@@ -193,6 +193,12 @@ def handle_first_run_menus(
     agent: str, output: str, master: int, proc: subprocess.Popen, sink
 ) -> str:
     """Answer only known local onboarding prompts, never a cloud login."""
+    if agent == "goose":
+        if "Share anonymous usage data to help improve goose?" in _ANSI.sub("", output):
+            os.write(master, b"\r")  # Keep the default No choice.
+            more, _ = read_until(master, proc, 8, sink)
+            return output + more
+        return output
     if agent == "hermes":
         if "Choice [default 3]:" in _ANSI.sub("", output):
             os.write(master, b"\r")  # Decline optional telemetry.
