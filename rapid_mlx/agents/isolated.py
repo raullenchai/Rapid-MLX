@@ -69,8 +69,10 @@ def _private_write(path: Path, content: str) -> None:
 
 def stable_key(*, create: bool = True) -> str | None:
     path = key_path()
+    if connection_dir().is_symlink() or path.is_symlink():
+        raise ValueError("local connection path must not be a symlink")
     if path.exists():
-        if path.is_symlink() or stat.S_IMODE(path.stat().st_mode) & 0o077:
+        if stat.S_IMODE(path.stat().st_mode) & 0o077:
             raise ValueError("local API key must be a regular 0600 file")
         key = path.read_text(encoding="ascii").strip()
         if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
@@ -91,6 +93,8 @@ def stable_key(*, create: bool = True) -> str | None:
 
 def stable_port() -> int:
     path = port_path()
+    if connection_dir().is_symlink() or path.is_symlink():
+        raise ValueError("local connection path must not be a symlink")
     if path.exists():
         port = int(path.read_text(encoding="ascii").strip())
         if not 1 <= port <= 65535:

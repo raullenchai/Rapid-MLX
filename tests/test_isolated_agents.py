@@ -1,7 +1,9 @@
 """Day-two configurations stay private and never rewrite existing agent state."""
 
 import json
+import os
 import stat
+import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -206,3 +208,269 @@ def test_launch_waits_through_startup_http_error(private_home):
     assert exit_info.value.code == 0
     start.assert_called_once()
     agent.assert_called_once()
+
+
+def test_private_storage_rejects_links_and_unsafe_files(private_home):
+    target = private_home / "other"
+    target.mkdir()
+    directory = isolated.connection_dir()
+    directory.parent.mkdir()
+    directory.symlink_to(target)
+    with pytest.raises(ValueError, match="symlinked config directory"):
+        isolated._private_dir(directory)
+    with pytest.raises(ValueError, match="symlink"):
+        isolated.stable_key()
+    directory.unlink()
+    directory.mkdir()
+    (directory / "api-key").symlink_to(target / "key")
+    with pytest.raises(ValueError, match="symlink"):
+        isolated.stable_key()
+    (directory / "api-key").unlink()
+    key = directory / "api-key"
+    key.write_text("bad\n")
+    key.chmod(0o600)
+    with pytest.raises(ValueError, match="invalid"):
+        isolated.stable_key()
+    key.write_text("a" * 64)
+    key.chmod(0o644)
+    with pytest.raises(ValueError, match="0600"):
+        isolated.stable_key()
+    key.unlink()
+    assert isolated.stable_key(create=False) is None
+    (directory / "port").write_text("0\n")
+    with pytest.raises(ValueError, match="1..65535"):
+        isolated.stable_port()
+    with pytest.raises(ValueError, match="1..65535"):
+        isolated.save_port(0)
+    (directory / "port").unlink()
+    (directory / "port").symlink_to(target / "missing-port")
+    with pytest.raises(ValueError, match="symlink"):
+        isolated.stable_port()
+
+
+def test_private_write_rejects_file_link_and_closes_on_failure(private_home):
+    destination = isolated.connection_dir() / "test"
+    destination.parent.mkdir(parents=True)
+    destination.symlink_to(private_home / "other")
+    with pytest.raises(ValueError, match="symlinked config file"):
+        isolated._private_write(destination, "secret")
+    destination.unlink()
+    with (
+        patch("rapid_mlx.agents.isolated.os.fchmod", side_effect=OSError("denied")),
+        pytest.raises(OSError, match="denied"),
+    ):
+        isolated._private_write(destination, "secret")
+
+
+def test_key_creation_race_reuses_winner(private_home):
+    original_open = os.open
+
+    def raced_open(path, flags, mode):
+        if path == isolated.key_path():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("a" * 64 + "\n")
+            path.chmod(0o600)
+            raise FileExistsError(path)
+        return original_open(path, flags, mode)
+
+    with patch("rapid_mlx.agents.isolated.os.open", side_effect=raced_open):
+        assert isolated.stable_key() == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (urllib.error.HTTPError("url", 401, "no", {}, None), "key-mismatch"),
+        (urllib.error.HTTPError("url", 503, "loading", {}, None), "server-error"),
+        (urllib.error.URLError("refused"), "stopped"),
+        (ValueError("bad JSON"), "server-error"),
+    ],
+)
+def test_connection_status_categorizes_failures(private_home, error, expected):
+    with patch("urllib.request.urlopen", side_effect=error):
+        assert isolated.connection_status(7659, "a" * 64, "model") == expected
+
+
+def test_configure_and_remove_refuse_unowned_paths(private_home, monkeypatch):
+    with pytest.raises(ValueError, match="unsupported"):
+        isolated.configure("not-an-agent", "model")
+    with pytest.raises(ValueError, match="unsupported"):
+        isolated.remove("not-an-agent")
+    root = isolated.connection_dir() / "agents" / "codex"
+    root.parent.mkdir(parents=True)
+    root.symlink_to(private_home)
+    with pytest.raises(ValueError, match="symlinked config directory"):
+        isolated.remove("codex")
+    root.unlink()
+    root.mkdir()
+    (root / "config.toml").write_text("old")
+    isolated.configure("codex", "qwen3.5-9b-4bit")
+    assert not (root / "config.toml").exists()
+    (root / "config.toml").symlink_to(private_home / "other")
+    with pytest.raises(ValueError, match="symlinked config file"):
+        isolated.configure("codex", "qwen3.5-9b-4bit")
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "original")
+    (root / "config.toml").unlink()
+    isolated.configure("codex", "qwen3.5-9b-4bit")
+    assert os.environ["RAPID_MLX_API_KEY"] == "original"
+
+
+def test_runner_command_rejects_unknown_tool_and_uses_current_binary(
+    private_home, monkeypatch
+):
+    with pytest.raises(ValueError, match="unsupported"):
+        isolated._command("unknown", private_home, "model", 7659)
+    binary = private_home / "rapid-mlx"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr("sys.argv", [str(binary)])
+    assert isolated._cli_invocation() == str(binary)
+
+
+def _launch_args(*argv):
+    from rapid_mlx.launch.cli import register
+
+    parser = ArgumentParser()
+    register(parser.add_subparsers())
+    return parser.parse_args(["launch", *argv])
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["codex", "--run"], "require --isolated"),
+        (["--isolated"], "name one agent"),
+        (["codex", "--isolated", "--check"], "requires --model"),
+        (["codex", "--isolated", "--check", "--model", "m"], "key is missing"),
+        (["unknown", "--isolated", "--model", "m"], "unknown agent"),
+    ],
+)
+def test_isolated_cli_rejects_incomplete_requests(private_home, capsys, argv, message):
+    from rapid_mlx.launch.cli import launch_command
+
+    with pytest.raises(SystemExit):
+        launch_command(_launch_args(*argv))
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("ready", None),
+        ("stopped", "Start it with"),
+        ("model-mismatch", "does not match"),
+    ],
+)
+def test_isolated_cli_checks_saved_endpoint(private_home, capsys, status, expected):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value=status),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+    ):
+        if expected:
+            with pytest.raises(SystemExit, match="1"):
+                launch_command(
+                    _launch_args("codex", "--isolated", "--check", "--model", "m")
+                )
+            assert expected in capsys.readouterr().err
+        else:
+            launch_command(
+                _launch_args("codex", "--isolated", "--check", "--model", "m")
+            )
+
+
+def test_isolated_cli_saves_warns_and_removes(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=18),
+        patch("rapid_mlx.run.cli._fits_host", return_value=False),
+    ):
+        launch_command(
+            _launch_args(
+                "codex", "--isolated", "--model", "gemma-4-12b-it", "--port", "7659"
+            )
+        )
+    output = capsys.readouterr()
+    assert "Saved an isolated codex profile" in output.out
+    assert "not recommended for this Mac's memory" in output.err
+    assert "known to stall" in output.err
+    launch_command(_launch_args("codex", "--remove"))
+    assert "Removed codex" in capsys.readouterr().out
+    launch_command(_launch_args("codex", "--remove"))
+    assert "No saved profile" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        ("stopped", "Local server is stopped"),
+        ("model-mismatch", "does not match"),
+        ("server-error", "does not match"),
+    ],
+)
+def test_isolated_run_reports_unavailable_server(private_home, capsys, status, message):
+    from rapid_mlx.launch.cli import launch_command
+
+    args = ["codex", "--isolated", "--run", "--model", "qwen3.5-9b-4bit"]
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value=status),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args(*args))
+    output = capsys.readouterr()
+    assert message in output.out + output.err
+
+
+def test_isolated_run_executes_when_ready(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(
+            _launch_args("codex", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
+        )
+    assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
+
+
+def test_isolated_cli_reports_no_suitable_model(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch("rapid_mlx.run.cli._select_model", return_value=None),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("codex", "--isolated"))
+    assert "no model fits this Mac" in capsys.readouterr().err
+
+
+def test_isolated_run_times_out_during_startup(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", *["server-error"] * 600],
+        ),
+        patch("rapid_mlx.launch.cli._start_server_background"),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        patch("time.sleep"),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(
+            _launch_args(
+                "codex",
+                "--isolated",
+                "--run",
+                "--start-server",
+                "--model",
+                "qwen3.5-9b-4bit",
+            )
+        )
+    assert "did not become ready" in capsys.readouterr().out

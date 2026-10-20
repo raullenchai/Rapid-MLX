@@ -3054,6 +3054,66 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "isolated",
+       "help": "Save a private, removable Rapid profile without editing the client's existing configuration",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--isolated"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "run",
+       "help": "Run the isolated agent after saving its profile",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--run"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "check",
+       "help": "Check that the saved local key, port, and model are available",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--check"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "remove",
+       "help": "Remove the private Rapid profile for this agent",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--remove"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -3087,9 +3147,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 8000,
+       "default": null,
        "dest": "port",
-       "help": "Port for --start-server (default: 8000). Must be in [1, 65535]. Ignored when --start-server is not set.",
+       "help": "Port for --start-server (default: 8000), or the saved local port with --isolated (default: the port used by Desktop). Must be in [1, 65535].",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -3163,6 +3223,10 @@
        "dests": [
         "help",
         "all",
+        "isolated",
+        "run",
+        "check",
+        "remove",
         "model",
         "server_url",
         "port",
