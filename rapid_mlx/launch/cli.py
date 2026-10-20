@@ -178,7 +178,7 @@ def launch_command(args: argparse.Namespace) -> None:
         and not getattr(args, "remove", False)
         and not getattr(args, "all", False)
         and not getattr(args, "legacy_config", False)
-        and args.server_url == "http://127.0.0.1:8000"
+        and args.server_url is None
     )
     if resume_saved:
         args.isolated = True
@@ -351,7 +351,7 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    server_url = args.server_url
+    server_url = args.server_url or "http://127.0.0.1:8000"
     api_key = os.environ.get("RAPID_MLX_API_KEY")
     cursor_server_url: str | None = None
     cursor_reason: str | None = None
@@ -585,7 +585,7 @@ def register(subparsers) -> None:
     p.add_argument(
         "--server-url",
         type=str,
-        default="http://127.0.0.1:8000",
+        default=None,
         help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
     )
     p.add_argument(

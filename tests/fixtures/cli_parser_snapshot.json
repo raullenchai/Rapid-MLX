@@ -3147,7 +3147,7 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": "http://127.0.0.1:8000",
+       "default": null,
        "dest": "server_url",
        "help": "rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
        "metavar": null,
