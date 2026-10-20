@@ -38,6 +38,8 @@ NEG_INF = -1e30
 _HEADS_PER_GROUP = 8
 _KEYS_PER_BLOCK = 32
 _DIMS_PER_GROUP = 128
+# combine keeps per-key weights, rows and flags in threadgroup memory (9 B/key)
+_MAX_KEYS = 2048
 
 _KEY_ROW = r"""
 // Cache row of key j: the window ring for j < WE (oldest first), else the
@@ -269,8 +271,13 @@ def _scalar(value: float) -> mx.array:
     return a
 
 
-def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) -> bool:
-    """Whether the fused kernels cover this attention call (one decode token)."""
+def supports(
+    x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int, max_keys: int
+) -> bool:
+    """Whether the fused kernels cover this attention call (one decode token).
+
+    ``max_keys`` bounds the attended keys (window plus selected compressed rows).
+    """
     if not (ENABLED and mx.default_device() == mx.gpu):
         return False
     return (
@@ -285,6 +292,7 @@ def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) 
         and head_dim <= 512
         and 0 < rd <= head_dim
         and rd % 2 == 0
+        and max_keys <= _MAX_KEYS
     )
 
 
@@ -306,8 +314,8 @@ def attend(
     q [b, 1, h, d] (rope tail not yet applied); win_kv [>=b, window, d], the ring after this
     step's write; comp_kv [>=b, n_comp, d] with cidx [b, 1, k] concat-position
     indices (``offset`` = first compressed position, -1 = masked), or None.
-    cos/sin: this position's rope row, [1, rd // 2]. Returns [b, 1, h, d] in
-    q's dtype.
+    cos/sin: this position's rope row, [1, rd // 2]. Returns [b, 1, h, d]
+    float32 holding q-dtype values (the graph path's rounding, cast for wo_a).
     """
     bsz, _, heads, dim = q.shape
     window = win_kv.shape[1]

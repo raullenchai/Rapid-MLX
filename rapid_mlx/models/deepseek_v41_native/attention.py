@@ -88,6 +88,7 @@ class Attention(nn.Module):
         self.ratio = args.compress_ratio(layer_id)
         self.eps = args.norm_eps
         self.softmax_scale = args.head_dim**-0.5
+        self.index_topk = args.index_topk
 
         self.attn_sink = mx.zeros((self.n_heads,), dtype=mx.float32)
         self.wq_a = nn.Linear(self.dim, self.q_lora_rank, bias=False)
@@ -151,7 +152,12 @@ class Attention(nn.Module):
 
         lc = cache.layers[self.layer_id]
         fused = not self._break_rope_inverse and decode_attention.supports(
-            x, lc.win_kv, self.n_heads, self.head_dim, rd
+            x,
+            lc.win_kv,
+            self.n_heads,
+            self.head_dim,
+            rd,
+            self.window_size + (self.index_topk if self.ratio else 0),
         )
         if fused:
             # one decode token: q_norm, kv_norm, the KV rope tail and its FP8
