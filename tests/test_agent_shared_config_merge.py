@@ -391,7 +391,7 @@ def test_cli_pi_setup_previews_and_needs_consent(pi_dir, monkeypatch, capsys):
 
     # Non-interactive without --yes: consent is refused, nothing is written.
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: False))
-    _run_pi_cli(monkeypatch)
+    _run_pi_cli(monkeypatch, "--no-check")
     assert "Setup cancelled; nothing was written." in capsys.readouterr().out
     assert models_json.read_text() == original
     assert not list(pi_dir.glob("models.json.bak.*"))
