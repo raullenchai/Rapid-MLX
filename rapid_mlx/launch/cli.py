@@ -195,7 +195,7 @@ def launch_command(args: argparse.Namespace) -> None:
                 "[dry-run] Would save Rapid's Claude Desktop tier mapping; Claude Desktop is untouched."
             )
             return
-        if args.remove:
+        if getattr(args, "remove", False):
             claude_desktop.mapping_path().unlink(missing_ok=True)
             print("Claude Desktop tier mapping disabled in Rapid-MLX.")
             return
@@ -210,9 +210,9 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         url, key = claude_desktop.configure(
             model,
-            opus=args.opus_model,
-            sonnet=args.sonnet_model,
-            haiku=args.haiku_model,
+            opus=getattr(args, "opus_model", None),
+            sonnet=getattr(args, "sonnet_model", None),
+            haiku=getattr(args, "haiku_model", None),
             port=args.port,
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")

@@ -18,6 +18,7 @@ struct IntegrationOrderingTests {
     /// The registry order observed on a real install, trimmed to the head.
     private var registryOrder: [IntegrationTarget] {
         [
+            target("claude-desktop", .adapterProfile),
             target("cline", .configWriter),
             target("claude-code", .configWriter),
             target("continue-dev", .configWriter),
@@ -28,11 +29,10 @@ struct IntegrationOrderingTests {
         ]
     }
 
-    @Test("Claude Code leads, Codex follows")
+    @Test("Claude Desktop leads, then Claude Code and Codex")
     func leadingRowsArePinned() {
         let ordered = IntegrationCatalog.displayOrdered(registryOrder).map(\.id)
-        #expect(ordered.first == "claude-code")
-        #expect(ordered.dropFirst().first == "codex")
+        #expect(ordered.prefix(3).elementsEqual(["claude-desktop", "claude-code", "codex"]))
     }
 
     /// Pinning must not become a reshuffle. Everything the pin does not name
@@ -56,7 +56,7 @@ struct IntegrationOrderingTests {
     func absentPinnedRowIsSkipped() {
         let withoutCodex = registryOrder.filter { $0.id != "codex" }
         let ordered = IntegrationCatalog.displayOrdered(withoutCodex).map(\.id)
-        #expect(ordered.first == "claude-code")
+        #expect(ordered.first == "claude-desktop")
         #expect(!ordered.contains("codex"))
         #expect(ordered.count == withoutCodex.count)
     }
