@@ -15,6 +15,7 @@ import mlx.core as mx
 from fastapi import HTTPException
 
 from .cache import BatchModelCache
+from .lanes import request_lanes  # noqa: F401  (re-export)
 from .serving import (
     MAX_INPUT_TOKENS,
     GenerationChunk,
@@ -25,14 +26,6 @@ from .serving import (
 
 logger = logging.getLogger(__name__)
 _END = object()
-_LANES_ENV = "RAPID_MLX_DSV41_LANES"
-
-
-def request_lanes() -> int:
-    value = os.environ.get(_LANES_ENV, "1")
-    if value not in ("1", "2", "4", "8"):
-        raise ValueError(f"{_LANES_ENV} must be one of 1, 2, 4, 8")
-    return int(value)
 
 
 @dataclass(eq=False)

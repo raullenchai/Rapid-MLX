@@ -641,6 +641,8 @@ jobs:
             tests/test_deepseek_v41_fused_moe.py \
             tests/test_deepseek_v41_fused_kill_switch.py \
             tests/test_deepseek_v41_mixed_precision_fallback.py \
+            tests/test_deepseek_v41_batch_scheduler.py \
+            tests/test_deepseek_v41_batched_decode.py \
             tests/test_deepseek_v41_dspark.py \
             tests/test_deepseek_v41_decode_overhead.py \
             tests/test_deepseek_v41_sparse_gather.py \

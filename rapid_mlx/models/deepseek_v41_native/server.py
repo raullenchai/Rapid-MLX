@@ -51,11 +51,11 @@ def run_server(
 
     from rapid_mlx.telemetry.server_start import failure_stage
 
-    from .batch_scheduler import BatchBackend, request_lanes
+    from .lanes import request_lanes
 
     lanes = request_lanes()
     backend = None
-    batch_options = {}
+    batch_options: dict[str, Any] = {}
     artifact = product_artifact(model_name)
     if artifact is None:
         raise ValueError(f"unknown V4.1 product artifact: {model_name}")
@@ -109,6 +109,8 @@ def run_server(
                     tokenizer,
                     SimpleNamespace(target_revision=draft_runtime.target_revision),
                 )
+
+            from .batch_scheduler import BatchBackend
 
             backend = BatchBackend(lanes=lanes, load_fn=_load_batch)
             model, tokenizer = backend.model, backend.tokenizer

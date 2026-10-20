@@ -17,7 +17,6 @@ hardware/runtime/configuration metadata; synthetic timings are not model claims.
 from __future__ import annotations
 
 import argparse
-import json
 import platform
 import statistics
 import sys
@@ -34,6 +33,7 @@ from rapid_mlx.models.deepseek_v41_native.cache import BatchModelCache
 from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
 from rapid_mlx.models.deepseek_v41_native.engram import build_layout
 from rapid_mlx.models.deepseek_v41_native.model import Model
+from scripts.bench_metadata import format_bench_json
 
 
 def make_tiny_model(seed=18):
@@ -186,7 +186,7 @@ def main(argv=None):
     if args.eval_interval is not None:
         model.eval_interval = args.eval_interval
     print(
-        json.dumps(
+        format_bench_json(
             {
                 "synthetic": args.tiny,
                 "machine": platform.machine(),
@@ -200,7 +200,7 @@ def main(argv=None):
                     for rows in args.rows
                 ],
             },
-            indent=2,
+            __file__,
         )
     )
 

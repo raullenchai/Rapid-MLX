@@ -20,6 +20,7 @@ Engram layers apply their gated n-gram lookup to the hc-expanded stream
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -169,35 +170,43 @@ class Model(nn.Module):
         BatchModelCache accepts only [rows, 1], at independent row positions,
         and returns [rows, vocab] when last_logit_only is set.
         """
-        batched = isinstance(cache, BatchModelCache)
-        if batched:
-            if input_ids.shape != (len(cache), 1) or not len(cache):
+        batch_cache = cache if isinstance(cache, BatchModelCache) else None
+        single_cache = None if isinstance(cache, BatchModelCache) else cache
+        batched = batch_cache is not None
+        start_pos: Any
+        if batch_cache is not None:
+            if input_ids.shape != (len(batch_cache), 1) or not len(batch_cache):
                 raise ValueError("batched decode requires nonempty tokens [rows, 1]")
-            if cache.args != self.args:
+            if batch_cache.args != self.args:
                 raise ValueError("batched cache configuration does not match model")
-            if np.any(cache.offsets >= cache.max_seq_len):
+            if np.any(batch_cache.offsets >= batch_cache.max_seq_len):
                 raise ValueError("batched decode exceeds cache sequence capacity")
-            start_pos = cache.positions
+            if enable_rollback:
+                batch_cache.begin_forward()  # raises: decode rows have no rollback
+            start_pos = batch_cache.positions
         else:
-            start_pos = cache.offset
-        if enable_rollback:
-            cache.begin_forward()
-        elif not batched and cache.rollback_start is not None:
-            cache.disable_rollback()
+            assert single_cache is not None
+            start_pos = single_cache.offset
+            if enable_rollback:
+                single_cache.begin_forward()
+            elif single_cache.rollback_start is not None:
+                single_cache.disable_rollback()
         b, n = input_ids.shape
 
         hashes = None
         if self.engram_hasher is not None:
             ids_np = np.array(input_ids, dtype=np.int64)
-            if batched:
+            if batch_cache is not None:
+                engram_ids = batch_cache.engram_ids
+                assert engram_ids is not None
                 hashes_np = np.concatenate(
                     [
                         self.engram_hasher(
                             ids_np[row : row + 1],
                             int(position),
-                            cache.engram_ids[row : row + 1],
+                            engram_ids[row : row + 1],
                         )
-                        for row, position in enumerate(cache.offsets)
+                        for row, position in enumerate(batch_cache.offsets)
                     ]
                 )
             else:
@@ -252,12 +261,13 @@ class Model(nn.Module):
             h = h[:, -1:]
         # fp32 logits, as the reference
         logits = head_logits(self.head, h.astype(mx.float32))
-        if batched:
-            cache.advance()
+        if batch_cache is not None:
+            batch_cache.advance()
             if last_logit_only:
                 logits = logits[:, 0]
         else:
-            cache.offset = start_pos + n
+            assert single_cache is not None
+            single_cache.offset = start_pos + n
         if return_dspark_hidden:
             missing = [
                 layer_id

@@ -42,9 +42,11 @@ class LayerCache:
 
         self.win_kv = mx.zeros((bsz, self.window, args.head_dim), dtype=dtype)
 
-        self.comp_kv = None
-        self.comp_state = None
-        self.index_k = None
+        self.comp_kv: Any | None = None
+        self.comp_state: CompressorState | None = None
+        self.index_k: Any | None = None
+        # Per-row committed group counts; set only on batched decode caches.
+        self.comp_counts: Any | None = None
         if self.is_kv_source:
             n_comp = max_seq_len // self.ratio
             self.comp_kv = mx.zeros((bsz, n_comp, args.head_dim), dtype=dtype)
@@ -148,6 +150,13 @@ class BatchModelCache:
     ``filter`` and ``extend`` mutate this cache and return it for convenience.
     """
 
+    args: ModelArgs
+    max_seq_len: int
+    offsets: np.ndarray
+    positions: mx.array
+    layers: list[LayerCache]
+    engram_ids: np.ndarray | None
+
     @classmethod
     def from_caches(
         cls, caches: list[ModelCache], max_seq_len: int | None = None
@@ -188,9 +197,12 @@ class BatchModelCache:
             if target.comp_kv is not None:
                 target.comp_counts = result.positions // target.ratio
                 for row, source in enumerate(c.layers[i] for c in caches):
+                    # Equal configurations allocate the same optional buffers.
+                    assert source.comp_kv is not None
                     count = min(source.comp_kv.shape[1], target.comp_kv.shape[1])
                     target.comp_kv[row : row + 1, :count] = source.comp_kv[:, :count]
                     if target.index_k is not None:
+                        assert source.index_k is not None
                         target.index_k[row : row + 1, :count] = source.index_k[
                             :, :count
                         ]
@@ -207,6 +219,7 @@ class BatchModelCache:
         if args.engram_layer_ids:
             result.engram_ids = np.zeros((len(caches), capacity), dtype=np.int64)
             for row, cache in enumerate(caches):
+                assert cache.engram_ids is not None
                 count = min(capacity, cache.max_seq_len)
                 result.engram_ids[row, :count] = cache.engram_ids[0, :count]
         return result
