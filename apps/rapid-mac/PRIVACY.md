@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-19.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -51,6 +51,9 @@ counted as two installs. The current engine reports:
 
 These v2 events contain only registry-approved enums, booleans, UUIDs, version
 strings, and numeric buckets.
+For Desktop-owned engine processes, `app_version` is the running Desktop app
+version and `engine_version` is the bundled engine version. Earlier releases
+used the engine version in `app_version`.
 
 The native desktop client reports these events to rapidmlx.com's telemetry
 service:
@@ -61,7 +64,8 @@ service:
     serial, or hardware identifier. It is shared only between the desktop app
     and embedded engine for anonymous de-duplication.
   * `session_id` — random UUID, regenerated on every launch.
-  * App version, macOS version, CPU architecture, Apple chip family (or the
+  * App version (`app_version`, also present in the legacy
+    `rapid_mlx_version` field), macOS version, CPU architecture, Apple chip family (or the
     coarse label `Intel` on legacy Macs), and memory tier rounded to the nearest
     GiB. No serial number, exact Intel CPU SKU, clock speed, or exact byte count.
 * `error` — when the app crashes or hits an unhandled exception.

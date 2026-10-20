@@ -127,7 +127,38 @@ def test_key_set_equals_the_registry_declaration_when_every_field_is_present():
     comes from events.json, not from the builder's own output."""
     block = _build()
     assert block is not None
-    assert set(block) == set(_common_spec())
+    assert set(block) == set(_common_spec()) - {"engine_version"}
+
+
+def test_desktop_versions_are_separate_and_validated():
+    block = build_common_props(
+        surface="desktop",
+        install_id=INSTALL_ID,
+        session_id=SESSION_ID,
+        app_version="0.16.5",
+        engine_version="0.16.4",
+        channel="stable",
+        nth_model_served=None,
+        days_since_first_run_bucket=None,
+        platform=FACTS,
+    )
+    assert block is not None
+    assert block["app_version"] == "0.16.5"
+    assert block["engine_version"] == "0.16.4"
+    assert (
+        build_common_props(
+            surface="desktop",
+            install_id=INSTALL_ID,
+            session_id=SESSION_ID,
+            app_version="0.16.5",
+            engine_version="private-build",
+            channel="stable",
+            nth_model_served=None,
+            days_since_first_run_bucket=None,
+            platform=FACTS,
+        )
+        is None
+    )
 
 
 def test_key_set_equals_the_declared_required_set_when_python_version_is_none():
@@ -135,7 +166,7 @@ def test_key_set_equals_the_declared_required_set_when_python_version_is_none():
     carries EXACTLY the required keys — none missing, nothing added."""
     block = _build(platform=replace(FACTS, python_version=None))
     assert block is not None
-    assert set(block) == set(_common_spec()) - {"python_version"}
+    assert set(block) == set(_common_spec()) - {"python_version", "engine_version"}
 
 
 @pytest.mark.parametrize(
@@ -164,7 +195,7 @@ def test_every_optional_field_combination(with_python, with_nth, with_days):
         if not present
     }
     assert block is not None
-    assert set(block) == set(_common_spec()) - omitted
+    assert set(block) == set(_common_spec()) - omitted - {"engine_version"}
 
 
 def test_zero_is_sent_as_zero_while_none_omits_the_key():

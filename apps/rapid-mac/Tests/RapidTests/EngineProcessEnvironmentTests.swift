@@ -12,6 +12,7 @@ struct EngineProcessEnvironmentTests {
         ])
         #expect(environment["KEEP"] == "value")
         #expect(environment["RAPID_MLX_PROCESS_ROLE"] == "desktop-sidecar")
+        #expect(environment[EngineProcessEnvironment.appVersionKey] == TelemetryClient.currentVersion())
     }
 
     @Test("ProcessGroupChild injects the sidecar role into the actual envp")

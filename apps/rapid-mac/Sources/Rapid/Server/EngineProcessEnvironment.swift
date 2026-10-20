@@ -8,12 +8,14 @@ import Foundation
 enum EngineProcessEnvironment {
     static let roleKey = "RAPID_MLX_PROCESS_ROLE"
     static let sidecarRole = "desktop-sidecar"
+    static let appVersionKey = "RAPID_DESKTOP_APP_VERSION"
 
     nonisolated static func sidecar(
         _ environment: [String: String]
     ) -> [String: String] {
         var result = environment
         result[roleKey] = sidecarRole
+        result[appVersionKey] = TelemetryClient.currentVersion()
         return result
     }
 }

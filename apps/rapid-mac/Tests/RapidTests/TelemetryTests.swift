@@ -408,6 +408,7 @@ final class TelemetryTests {
         #expect((json["client_id"] as? String)?.isEmpty == false)
         #expect((json["session_id"] as? String)?.isEmpty == false)
         #expect(json["rapid_mlx_version"] as? String == "0.5.12")
+        #expect(json["app_version"] as? String == "0.5.12")
         #expect(json["event"] as? String == "session_start")
         #expect((json["timestamp"] as? String)?.isEmpty == false)
         let platform = try #require(json["platform"] as? [String: Any])
@@ -678,6 +679,7 @@ final class TelemetryTests {
         // And the version comes from the crashed-launch marker,
         // not the current bundle.
         #expect(json["rapid_mlx_version"] as? String == "0.5.12")
+        #expect(json["app_version"] as? String == "0.5.12")
     }
 
     @Test("error event falls back to the current session when no override is supplied")

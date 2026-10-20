@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
+import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -51,6 +53,7 @@ class _ProcessContext:
     install_id: str
     session_id: str
     app_version: str
+    engine_version: str | None
     channel: str
 
 
@@ -162,13 +165,25 @@ def _process_context() -> _ProcessContext | None:
 
         install_id = state.get_or_create_client_id()
         session_id = state.session_id()
-        app_version = rapid_mlx.__version__
+        engine_version = rapid_mlx.__version__
+        app_version = engine_version
+        sidecar_version = (
+            os.environ.get("RAPID_DESKTOP_APP_VERSION")
+            if surface == "desktop"
+            else None
+        )
+        if sidecar_version and re.fullmatch(
+            r"[0-9]{1,3}\.[0-9]{1,4}\.[0-9]{1,4}(?:rc[0-9]{1,3}|\.dev[0-9]{1,6})?",
+            sidecar_version,
+        ):
+            app_version = sidecar_version
         _context = _ProcessContext(
             platform=platform,
             surface=surface,
             install_id=install_id,
             session_id=session_id,
             app_version=app_version,
+            engine_version=engine_version if surface == "desktop" else None,
             channel=stamp.channel,
         )
         _context_resolved = True
@@ -282,6 +297,7 @@ def _enqueue_accepted(accepted: _AcceptedEvent) -> bool:
             install_id=context.install_id,
             session_id=context.session_id,
             app_version=context.app_version,
+            engine_version=context.engine_version,
             channel=context.channel,
             nth_model_served=nth,
             days_since_first_run_bucket=_days_since_first_run_bucket(),

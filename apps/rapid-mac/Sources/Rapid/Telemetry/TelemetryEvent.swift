@@ -26,6 +26,8 @@ struct TelemetryEvent: Codable, Sendable {
     var client_id: String
     var session_id: String
     var rapid_mlx_version: String
+    /// The running Desktop bundle version (also carried in the legacy field above).
+    var app_version: String
     var event: EventKind
     var timestamp: String
     var platform: Platform
@@ -97,6 +99,7 @@ struct TelemetryEvent: Codable, Sendable {
             client_id: TelemetryIdentity.clientID(),
             session_id: TelemetryConfig.sessionID,
             rapid_mlx_version: version,
+            app_version: version,
             event: .sessionStart,
             timestamp: ISO8601DateFormatter().string(from: Date()),
             platform: platform,
@@ -155,6 +158,7 @@ struct TelemetryEvent: Codable, Sendable {
             client_id: TelemetryIdentity.clientID(),
             session_id: sessionID ?? TelemetryConfig.sessionID,
             rapid_mlx_version: version,
+            app_version: version,
             event: .error,
             timestamp: ISO8601DateFormatter().string(from: Date()),
             platform: platform,
@@ -182,6 +186,7 @@ struct TelemetryEvent: Codable, Sendable {
             client_id: TelemetryIdentity.clientID(),
             session_id: TelemetryConfig.sessionID,
             rapid_mlx_version: version,
+            app_version: version,
             event: .activation,
             timestamp: ISO8601DateFormatter().string(from: Date()),
             platform: platform,

@@ -15,6 +15,7 @@ struct DesktopActivationReporterTests {
             client_id: "11111111-2222-3333-4444-555555555555",
             session_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             rapid_mlx_version: "0.13.2",
+            app_version: "0.13.2",
             event: .activation,
             timestamp: "2026-08-26T17:00:00Z",
             platform: .init(
@@ -38,6 +39,7 @@ struct DesktopActivationReporterTests {
             try JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         #expect(json["event"] as? String == "activation")
+        #expect(json["app_version"] as? String == "0.13.2")
         let activation = try #require(json["activation"] as? [String: Any])
         #expect(activation["activation_kind"] as? String == "first_chat_reply")
         #expect(activation["surface"] as? String == "desktop")

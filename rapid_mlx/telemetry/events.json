@@ -511,6 +511,13 @@
       "max_length": 32,
       "required": true
     },
+    "engine_version": {
+      "_about": "Bundled engine version on Desktop sidecar events; app_version is the running Desktop bundle version.",
+      "kind": "version",
+      "pattern": "^[0-9]{1,3}\\.[0-9]{1,4}\\.[0-9]{1,4}(rc[0-9]{1,3}|\\.dev[0-9]{1,6})?$",
+      "max_length": 32,
+      "required": false
+    },
     "surface": {"kind": "enum", "enum": "surface", "required": true},
     "os": {"kind": "enum", "enum": "os", "required": true},
     "os_version": {

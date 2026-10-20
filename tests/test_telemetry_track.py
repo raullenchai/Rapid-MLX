@@ -559,6 +559,26 @@ def test_process_context_falls_back_to_desktop_for_sidecar(monkeypatch):
     assert item["properties"]["surface"] == "desktop"
 
 
+def test_desktop_sidecar_emits_app_and_engine_versions(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    monkeypatch.setenv("RAPID_DESKTOP_APP_VERSION", "0.16.5")
+    assert track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["app_version"] == "0.16.5"
+    assert item["properties"]["engine_version"] == rapid_mlx.__version__
+
+
+def test_malformed_desktop_version_keeps_engine_event(monkeypatch):
+    sender = inject_sender(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    monkeypatch.setenv("RAPID_DESKTOP_APP_VERSION", "private-build")
+    assert track_module.track("active_day", {})
+    [item] = sender.items
+    assert item["properties"]["app_version"] == rapid_mlx.__version__
+    assert item["properties"]["engine_version"] == rapid_mlx.__version__
+
+
 def test_process_context_defaults_to_cli_when_role_detection_fails(monkeypatch):
     sender = inject_sender(monkeypatch)
     monkeypatch.setattr(

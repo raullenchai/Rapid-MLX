@@ -166,6 +166,7 @@ def build_common_props(
     install_id: str,
     session_id: str,
     app_version: str,
+    engine_version: str | None = None,
     channel: str,
     nth_model_served: int | None,
     days_since_first_run_bucket: str | None,
@@ -218,6 +219,8 @@ def build_common_props(
         "session_id": session_id,
         "channel": channel,
     }
+    if engine_version is not None:
+        block["engine_version"] = engine_version
     # Version strings and cohort stamps are omitted when unreadable or
     # unknown — never replaced with a sentinel the registry does not
     # define. python_version is optional ("engine surfaces only"); the
