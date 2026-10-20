@@ -377,6 +377,18 @@ class TestClaudeCode:
         data = json.loads(claude_code.current_config_path().read_text())
         assert data["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
 
+    def test_explicit_server_url_keeps_existing_config_writer(self, fake_home):
+        (fake_home / ".claude").mkdir()
+        launch_cli.launch_command(
+            _make_args(
+                client="claude-code",
+                model="local-model",
+                server_url="https://example.invalid",
+            )
+        )
+        data = json.loads(claude_code.current_config_path().read_text())
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://example.invalid"
+
     def test_write_preserves_existing_env_and_other_keys(self, fake_home):
         cfg = claude_code.current_config_path()
         assert cfg is not None

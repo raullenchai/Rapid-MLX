@@ -470,6 +470,21 @@ def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     assert "launch codex" in capsys.readouterr().out
 
 
+def test_short_launch_requires_download_consent_before_spawning(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="stopped"),
+        patch("rapid_mlx.run.cli._confirm_download", return_value=False) as consent,
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("codex", "--model", "qwen3.5-9b-4bit"))
+    consent.assert_called_once_with("qwen3.5-9b-4bit", no_download=False, yes=False)
+    start.assert_not_called()
+
+
 def test_isolated_cli_reports_no_suitable_model(private_home, capsys):
     from rapid_mlx.launch.cli import launch_command
 

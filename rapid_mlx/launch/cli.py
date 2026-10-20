@@ -178,6 +178,7 @@ def launch_command(args: argparse.Namespace) -> None:
         and not getattr(args, "remove", False)
         and not getattr(args, "all", False)
         and not getattr(args, "legacy_config", False)
+        and args.server_url == "http://127.0.0.1:8000"
     )
     if resume_saved:
         args.isolated = True
@@ -289,11 +290,15 @@ def launch_command(args: argparse.Namespace) -> None:
                 if not (args.start_server or resume_saved):
                     print(f"  Local server is stopped. Start it with: {start_hint}")
                     raise SystemExit(1)
+                from rapid_mlx.run.cli import _confirm_download
+
+                if not _confirm_download(model, no_download=False, yes=False):
+                    raise SystemExit(1)
                 print(
-                    f"  Starting local model {model}; waiting for readiness…",
+                    f"  Downloading or loading {model}; waiting for readiness…",
                     flush=True,
                 )
-                _start_server_background(model, port, api_key=key)
+                server_pid = _start_server_background(model, port, api_key=key)
                 import time
 
                 for second in range(600):
@@ -301,9 +306,16 @@ def launch_command(args: argparse.Namespace) -> None:
                     if status not in {"stopped", "server-error"}:
                         break
                     if second and second % 10 == 0:
-                        print(f"  Loading model… {second}s", flush=True)
+                        print(f"  Preparing local model… {second}s", flush=True)
                     time.sleep(1)
                 if status in {"stopped", "server-error"}:
+                    if isinstance(server_pid, int):
+                        import signal
+
+                        try:
+                            os.kill(server_pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                     print(f"  Local server did not become ready. Retry: {start_hint}")
                     raise SystemExit(1)
             if status != "ready":
