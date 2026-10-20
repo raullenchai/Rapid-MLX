@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Black-box, fail-closed terminal-agent acceptance on a leased Mac.
+
+The caller supplies a dedicated HOME and port. Raw transcripts stay in the
+private output directory; only a redacted matrix is suitable for sharing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pty
+import select
+import shutil
+import signal
+import subprocess
+import time
+import uuid
+from pathlib import Path
+
+AGENTS = (
+    "codex",
+    "claude-code",
+    "pi",
+    "opencode",
+    "hermes",
+    "goose",
+    "qwen-code",
+    "crush",
+    "aider",
+)
+BINARIES = {
+    "codex": "codex",
+    "claude-code": "claude",
+    "pi": "pi",
+    "opencode": "opencode",
+    "hermes": "hermes",
+    "goose": "goose",
+    "qwen-code": "qwen",
+    "crush": "crush",
+    "aider": "aider",
+}
+USER_CONFIG = {
+    "codex": (".codex/config.toml",),
+    "claude-code": (".claude/settings.json", ".claude.json"),
+    "pi": (".pi/agent/models.json", ".pi/agent/auth.json"),
+    "opencode": (".config/opencode/opencode.json",),
+    "hermes": (".hermes/config.yaml",),
+    "goose": (".config/goose/config.yaml",),
+    "qwen-code": (".qwen/settings.json", ".qwen/oauth_creds.json"),
+    "crush": (".config/crush/crush.json",),
+    "aider": (".aider.conf.yml", ".aider.model.settings.yml"),
+}
+
+
+def snapshot(home: Path, agent: str) -> dict[str, str]:
+    """Include file bytes, symlink targets and modes; exclude Rapid's subtree."""
+    result = {}
+    for relative in USER_CONFIG[agent]:
+        path = home / relative
+        if not path.exists() and not path.is_symlink():
+            continue
+        key = str(path.relative_to(home))
+        payload = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+        result[key] = (
+            hashlib.sha256(payload).hexdigest() + f":{path.lstat().st_mode & 0o777:o}"
+        )
+    return result
+
+
+def version(binary: str, env: dict[str, str]) -> str:
+    if not shutil.which(binary, path=env["PATH"]):
+        return "NOT INSTALLED"
+    try:
+        p = subprocess.run(
+            [binary, "--version"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return (p.stdout or p.stderr).strip().splitlines()[0][:160]
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return "UNKNOWN"
+
+
+def read_until(
+    fd: int, process: subprocess.Popen, seconds: float, sink, stop_when=None
+) -> tuple[str, float | None]:
+    end = time.monotonic() + seconds
+    pieces = []
+    first = None
+    last = None
+    while time.monotonic() < end and process.poll() is None:
+        if stop_when is not None and last is not None and time.monotonic() - last > 5:
+            if stop_when("".join(pieces)):
+                break
+        ready, _, _ = select.select([fd], [], [], min(0.25, end - time.monotonic()))
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        if first is None:
+            first = time.monotonic()
+        last = time.monotonic()
+        sink.write(data)
+        sink.flush()
+        pieces.append(data.decode("utf-8", errors="replace"))
+    return "".join(pieces), first
+
+
+def session(
+    command: list[str],
+    env: dict[str, str],
+    workspace: Path,
+    transcript: Path,
+    timeout: float,
+    day_two: bool,
+) -> dict:
+    marker = uuid.uuid4().hex[:12]
+    target = workspace / "hello.txt"
+    if target.exists():
+        target.unlink()
+    first_prompt = (
+        f"Create hello.txt containing exactly hi-{marker}, then read it "
+        "back using a tool and report what you read.\n"
+    )
+    second_prompt = (
+        "Use a tool to append -second to hello.txt, then read the "
+        "file back and report its exact contents.\n"
+    )
+    master, slave = pty.openpty()
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        command,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=workspace,
+        env=env,
+        start_new_session=True,
+    )
+    os.close(slave)
+    answer = {
+        "open_s": None,
+        "first_reply_s": None,
+        "second_reply_s": None,
+        "tool_ok": False,
+        "second_ok": False,
+        "exit": None,
+        "error": "",
+        "day_two": day_two,
+    }
+    with transcript.open("wb") as sink:
+        try:
+            opening, first_byte = read_until(master, proc, min(8, timeout), sink)
+            # Startup text is not proof that the agent opened. The launch
+            # readiness line is a lower bound; a failed launch stays blank.
+            if "Agent ready." in opening and first_byte:
+                answer["open_s"] = round(first_byte - started, 2)
+            if proc.poll() is not None:
+                answer["error"] = opening[-500:]
+                return answer
+            sent = time.monotonic()
+            os.write(master, first_prompt.encode())
+            output, first_byte = read_until(
+                master,
+                proc,
+                min(120, timeout),
+                sink,
+                stop_when=lambda output: target.is_file() and f"hi-{marker}" in output,
+            )
+            if first_byte:
+                answer["first_reply_s"] = round(first_byte - sent, 2)
+            answer["tool_ok"] = (
+                target.is_file() and target.read_bytes() == f"hi-{marker}".encode()
+            )
+            if proc.poll() is None:
+                sent = time.monotonic()
+                os.write(master, second_prompt.encode())
+                output2, first_byte = read_until(
+                    master,
+                    proc,
+                    min(90, timeout),
+                    sink,
+                    stop_when=lambda output: (
+                        target.is_file()
+                        and target.read_bytes() == f"hi-{marker}-second".encode()
+                    ),
+                )
+                if first_byte:
+                    answer["second_reply_s"] = round(first_byte - sent, 2)
+                answer["second_ok"] = (
+                    target.is_file()
+                    and target.read_bytes() == f"hi-{marker}-second".encode()
+                    and f"hi-{marker}-second" in output2
+                )
+            if not answer["tool_ok"] or not answer["second_ok"]:
+                answer["error"] = (
+                    output + output2 if "output2" in locals() else output
+                )[-500:]
+            if proc.poll() is None:
+                os.write(master, b"\x03")
+                time.sleep(0.3)
+                os.write(master, b"\x1b")
+                os.write(master, b"\x04")
+                read_until(master, proc, 2, sink)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=3)
+            answer["exit"] = proc.returncode
+            os.close(master)
+    return answer
+
+
+def request_evidence(path: Path | None, agent: str, start: float, end: float) -> dict:
+    """Only accept server-side JSONL; never infer the requested model from config."""
+    if path is None or not path.exists():
+        return {
+            "model_requested": None,
+            "auth_accepted": None,
+            "first_prompt_tokens": None,
+        }
+    requests = []
+    for line in path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+            if event.get("agent") == agent and start <= event["time"] <= end:
+                requests.append(event)
+        except (ValueError, KeyError, TypeError):
+            continue
+    first = next(
+        (
+            r
+            for r in requests
+            if r.get("path", "").endswith(("/chat/completions", "/messages"))
+        ),
+        None,
+    )
+    return {
+        "model_requested": first.get("model") if first else None,
+        "auth_accepted": first.get("status") in (200, 201) if first else None,
+        "first_prompt_tokens": first.get("prompt_tokens") if first else None,
+    }
+
+
+def normal_mode(
+    binary: str, env: dict[str, str], workspace: Path, transcript: Path
+) -> bool:
+    """Start the unwrapped CLI from the same HOME after Rapid profile removal."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [binary],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=workspace,
+        env=env,
+        start_new_session=True,
+    )
+    os.close(slave)
+    with transcript.open("wb") as sink:
+        try:
+            output, _ = read_until(master, proc, 8, sink)
+            return bool(output.strip()) and proc.poll() is None
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=3)
+            os.close(master)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--home", type=Path, required=True, help="dedicated, pre-seeded macOS user HOME"
+    )
+    parser.add_argument(
+        "--output", type=Path, required=True, help="private evidence directory"
+    )
+    parser.add_argument(
+        "--rapid",
+        type=Path,
+        required=True,
+        help="installed current-main rapid-mlx binary",
+    )
+    parser.add_argument("--model", default="qwen3.5-9b-4bit")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--agents", nargs="+", choices=AGENTS, default=list(AGENTS))
+    parser.add_argument("--timeout", type=float, default=240)
+    args = parser.parse_args()
+    if not args.home.is_dir() or not args.rapid.is_file() or args.port == 7659:
+        parser.error(
+            "use an existing dedicated HOME, installed binary, and a non-owner port"
+        )
+    args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env = os.environ.copy()
+    env["HOME"] = str(args.home.resolve())
+    env["PATH"] = str(args.rapid.parent) + os.pathsep + env.get("PATH", "")
+    log_path = args.output / "requests.jsonl"
+    current_agent = args.output / "current-agent"
+    env["AGENT_E2E_REQUEST_LOG"] = str(log_path)
+    env["AGENT_E2E_CURRENT_AGENT"] = str(current_agent)
+    env["PYTHONPATH"] = (
+        str(Path(__file__).parent / "instrument")
+        + os.pathsep
+        + env.get("PYTHONPATH", "")
+    )
+    rows = []
+    for agent in args.agents:
+        current_agent.write_text(agent + "\n")
+        work = args.output / agent / "project"
+        work.mkdir(parents=True, exist_ok=True)
+        before = snapshot(args.home, agent)
+        row = {
+            "agent": agent,
+            "version": version(BINARIES[agent], env),
+            "config_seeded": bool(before),
+            "config_untouched": None,
+        }
+        row["cold_server"] = not (args.home / ".rapid-mlx/connect/agents").exists()
+        start = time.time()
+        cmd = [
+            str(args.rapid),
+            "launch",
+            agent,
+            "--model",
+            args.model,
+            "--port",
+            str(args.port),
+        ]
+        row["day_one"] = session(
+            cmd, env, work, args.output / agent / "day-one.pty", args.timeout, False
+        )
+        # This subprocess has a new shell environment and no live TTY state.
+        row["day_two"] = session(
+            [str(args.rapid), "launch", agent],
+            env,
+            work,
+            args.output / agent / "day-two.pty",
+            args.timeout,
+            True,
+        )
+        end = time.time()
+        row.update(request_evidence(log_path, agent, start, end))
+        removed = subprocess.run(
+            [str(args.rapid), "launch", agent, "--remove"],
+            env=env,
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        row["remove_ok"] = (
+            removed.returncode == 0
+            and not (args.home / ".rapid-mlx/connect/agents" / agent).exists()
+        )
+        row["config_untouched"] = before == snapshot(args.home, agent)
+        try:
+            row["normal_mode_opens"] = normal_mode(
+                BINARIES[agent], env, work, args.output / agent / "normal-mode.pty"
+            )
+        except OSError:
+            row["normal_mode_opens"] = False
+        row["works"] = bool(
+            row["config_seeded"]
+            and row["config_untouched"]
+            and row["day_one"]["tool_ok"]
+            and row["day_one"]["second_ok"]
+            and row["day_two"]["tool_ok"]
+            and row["day_two"]["second_ok"]
+            and row["remove_ok"]
+            and row["normal_mode_opens"]
+            and row["model_requested"]
+            and row["auth_accepted"]
+        )
+        rows.append(row)
+        (args.output / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
+    header = "| Agent | Version | Works | Open s | Reply 1/2 s | Requested model | Auth | Prompt tokens | Tools | Config | Normal | Remove |\n"
+    divider = "|---|---|---|---:|---:|---|---|---:|---|---|---|---|\n"
+    lines = ["# Terminal agent real-user acceptance\n\n", header, divider]
+    for row in rows:
+        one = row["day_one"]
+        fmt = lambda value: "—" if value is None else str(value)
+        lines.append(
+            f"| {row['agent']} | {row['version']} | {'Y' if row['works'] else 'N'} | "
+            f"{fmt(one['open_s'])} | {fmt(one['first_reply_s'])}/{fmt(one['second_reply_s'])} | "
+            f"{fmt(row['model_requested'])} | {fmt(row['auth_accepted'])} | "
+            f"{fmt(row['first_prompt_tokens'])} | {one['tool_ok']}/{one['second_ok']} | "
+            f"{'Y' if row['config_untouched'] else 'N'} | "
+            f"{'Y' if row['normal_mode_opens'] else 'N'} | "
+            f"{'Y' if row['remove_ok'] else 'N'} |\n"
+        )
+    (args.output / "matrix.md").write_text("".join(lines))
+    print(args.output / "matrix.md")
+    return 0 if all(row["works"] for row in rows) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
