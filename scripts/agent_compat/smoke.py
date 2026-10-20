@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -345,24 +346,25 @@ def main() -> None:
                     user_config = home / "config" / "opencode" / "opencode.json"
                     user_config.parent.mkdir(parents=True, exist_ok=True)
                     user_config.write_text('{"model":"remote/user-model"}\n')
-                    env["HOME"] = str(root / "home")
-                    env["XDG_CONFIG_HOME"] = str(root / "xdg-config")
-                    env["XDG_DATA_HOME"] = str(root / "xdg-data")
-                    env["XDG_CACHE_HOME"] = str(root / "xdg-cache")
-                    env["XDG_STATE_HOME"] = str(root / "xdg-state")
-                    env["OPENCODE_CONFIG"] = str(root / "opencode.json")
+                    project = home / "project"
+                    project.mkdir()
+                    (project / "opencode.json").write_text(
+                        '{"model":"remote/project-model"}\n'
+                    )
                     from rapid_mlx.agents.opencode_version import installed_version
 
-                    cmd = ["opencode", "run"]
-                    if (installed_version() or "").startswith("2."):
-                        cmd.append("--standalone")
-                    cmd.append("Say " + REPLY)
+                    command = isolated._command(agent, root, MODEL, port)
                     if known_bad:
-                        cmd[1:1] = ["--model", f"rapid-mlx/{MODEL}"]
+                        command += f" --model rapid-mlx/{MODEL}"
+                    command += " run"
+                    if (installed_version() or "").startswith("2."):
+                        command += " --standalone"
+                    command += " " + shlex.quote("Say " + REPLY)
+                    cmd = ["sh", "-c", command]
                 before = len(Handler.requests)
                 result = subprocess.run(
                     cmd,
-                    cwd=home,
+                    cwd=project if agent == "opencode" else home,
                     env=env,
                     text=True,
                     capture_output=True,

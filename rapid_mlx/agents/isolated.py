@@ -316,16 +316,18 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         # OpenCode 2.x removed the top-level --model flag. Both supported
         # config shapes already select the model with the top-level `model` key.
         # Its config loader also reads and may rewrite the default XDG file.
-        # Give the process a private home, and discard higher-priority config
-        # overrides inherited from the user's shell.
+        # Give the process a private home. Inline config has precedence over
+        # project config, which would otherwise replace our selected model.
+        config = quote(str(root / "opencode.json"))
         return (
-            f"{credential} env -u OPENCODE_CONFIG_CONTENT -u OPENCODE_CONFIG_DIR "
+            f"{credential} env -u OPENCODE_CONFIG_DIR "
             f"HOME={quote(str(root / 'home'))} "
             f"XDG_CONFIG_HOME={quote(str(root / 'xdg-config'))} "
             f"XDG_DATA_HOME={quote(str(root / 'xdg-data'))} "
             f"XDG_CACHE_HOME={quote(str(root / 'xdg-cache'))} "
             f"XDG_STATE_HOME={quote(str(root / 'xdg-state'))} "
-            f"OPENCODE_CONFIG={quote(str(root / 'opencode.json'))} opencode"
+            f"OPENCODE_CONFIG={config} "
+            f'OPENCODE_CONFIG_CONTENT="$(cat {config})" opencode'
         )
     if name == "hermes":
         return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"

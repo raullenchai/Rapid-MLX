@@ -181,7 +181,8 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     )
     assert "XDG_CONFIG_HOME=" in runner
     assert "XDG_DATA_HOME=" in runner
-    assert "env -u OPENCODE_CONFIG_CONTENT -u OPENCODE_CONFIG_DIR" in runner
+    assert "env -u OPENCODE_CONFIG_DIR" in runner
+    assert "OPENCODE_CONFIG_CONTENT=" in runner
     assert "opencode --model" not in runner
     isolated.configure("hermes", "qwen3.5-9b-4bit")
     hermes = (
@@ -500,6 +501,7 @@ def test_new_opencode_model_comes_from_private_config(private_home):
     assert "rapid-mlx" in config["providers"]
     runner = (root / "run").read_text()
     assert "OPENCODE_CONFIG=" in runner
+    assert "OPENCODE_CONFIG_CONTENT=" in runner
     assert "opencode --model" not in runner
 
 
