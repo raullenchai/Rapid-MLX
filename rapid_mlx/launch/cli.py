@@ -656,10 +656,9 @@ def register(subparsers) -> None:
             "(default: $RAPID_MLX_DEFAULT_MODEL or qwen3.5-4b-4bit)."
         ),
     )
-    for tier in ("opus", "sonnet", "haiku"):
-        p.add_argument(
-            f"--{tier}-model", help=f"Local model assigned to the {tier} tier"
-        )
+    p.add_argument("--opus-model", help="Local model assigned to the opus tier")
+    p.add_argument("--sonnet-model", help="Local model assigned to the sonnet tier")
+    p.add_argument("--haiku-model", help="Local model assigned to the haiku tier")
     p.add_argument(
         "--server-url",
         type=str,
