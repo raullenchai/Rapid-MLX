@@ -35,6 +35,7 @@ _mlx_compat.install()
 
 from mlx_lm.models.mla import MultiLinear  # noqa: E402
 
+from . import decode_attention
 from .compressor import Compressor
 from .config import ModelArgs
 from .fakequant import fake_quant_fp4_e4m3, fake_quant_fp8_ue8m0
@@ -209,11 +210,32 @@ class Attention(nn.Module):
                 idxs = mx.concatenate([idxs, cidx], axis=-1)
 
         sink = mx.zeros_like(self.attn_sink) if self._break_sink else self.attn_sink
-        o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
+        if not self._break_rope_inverse and decode_attention.supports(
+            q, lc.win_kv, rd, self.n_heads
+        ):
+            # One decode query: the kernels read the ring and the selected
+            # compressed rows in place, so kv_all / idxs above stay unevaluated.
+            selected = (None, None, 0)
+            if self.ratio and compress_len:
+                selected = (src.comp_kv, cidx, offset)
+            o = decode_attention.attend(
+                q,
+                lc.win_kv,
+                start_pos,
+                *selected,
+                sink,
+                c_q,
+                s_q,
+                self.softmax_scale,
+                rd,
+            )
+        else:
+            o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
+            # --- inverse rope ---
+            if not self._break_rope_inverse:
+                o = rope_tail(o, rd, c_q, s_q, inverse=True)
 
-        # --- inverse rope, grouped block-diagonal output LoRA ---
-        if not self._break_rope_inverse:
-            o = rope_tail(o, rd, c_q, s_q, inverse=True)
+        # --- grouped block-diagonal output LoRA ---
         o = o.reshape(bsz, n, self.n_groups, -1)
         # QuantizedMultiLinear treats the penultimate axis as matrix rows;
         # retain a singleton row so the group axis broadcasts against the
