@@ -262,7 +262,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "aider":
         base = f'"http://127.0.0.1:$(cat {quote(str(port_path()))})/v1"'
         return (
-            f'env -i PATH="$PATH" TERM="${{TERM:-xterm-256color}}" '
+            f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
             f"HOME={quote(str(root / 'home'))} "
             f'AIDER_OPENAI_API_KEY="$(cat {key})" OPENAI_API_KEY="$(cat {key})" '
             f"AIDER_OPENAI_API_BASE={base} aider "
@@ -364,18 +364,22 @@ def configure(
         _private_dir(root / "runtime")
     if name == "aider":
         _private_dir(root / "home")
-        git_configs = (
-            Path.home() / ".gitconfig",
-            Path.home() / ".config" / "git" / "config",
-        )
-        includes = "".join(
-            f"[include]\n    path = {json.dumps(str(path))}\n"
-            for path in git_configs
-            if path.is_file()
-        )
-        _private_write(
-            root / "home" / ".gitconfig", includes or "# No global Git config\n"
-        )
+        git = shutil.which("git")
+        if git is None:
+            raise ValueError("isolated aider launch requires git")
+        git_env = f"HOME={shlex.quote(str(Path.home()))} "
+        for name_ in (
+            "XDG_CONFIG_HOME",
+            "GIT_CONFIG_GLOBAL",
+            "SSH_AUTH_SOCK",
+            "GPG_TTY",
+        ):
+            value = os.environ.get(name_)
+            if value:
+                git_env += f"{name_}={shlex.quote(value)} "
+        git_shim = root / "bin" / "git"
+        _private_write(git_shim, f'#!/bin/sh\n{git_env}exec {shlex.quote(git)} "$@"\n')
+        git_shim.chmod(0o700)
     if name == "crush":
         # UI model selections in either higher-precedence layer must not
         # override the model just selected in Rapid. Keep session databases.

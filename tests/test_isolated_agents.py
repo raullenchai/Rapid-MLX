@@ -53,7 +53,8 @@ def test_profiles_are_isolated_idempotent_and_removable(private_home):
             p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()
         }
         assert all(
-            stat.S_IMODE(p.stat().st_mode) == (0o700 if p.name == "run" else 0o600)
+            stat.S_IMODE(p.stat().st_mode)
+            == (0o700 if p.name in ("run", "git") else 0o600)
             for p in root.rglob("*")
             if p.is_file()
         )
@@ -1149,10 +1150,12 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     rapid.chmod(0o700)
     args_capture = private_home / "aider-args"
     env_capture = private_home / "aider-env"
+    git_capture = private_home / "aider-git-name"
     aider = commands / "aider"
     aider.write_text(
         f'#!/bin/sh\nprintf "%s\\n" "$@" > "{args_capture}"\n'
         f'printf "%s\\n%s\\n%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" "$HOME" "$AIDER_MODEL_SETTINGS_FILE" > "{env_capture}"\n'
+        f'git config user.name > "{git_capture}"\n'
     )
     aider.chmod(0o700)
     monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
@@ -1176,13 +1179,7 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
         str(isolated.connection_dir() / "agents/aider/home"),
         "",
     ]
-    git_env = dict(
-        os.environ, HOME=str(isolated.connection_dir() / "agents/aider/home")
-    )
-    git_name = subprocess.check_output(
-        ["git", "config", "user.name"], env=git_env, text=True
-    ).strip()
-    assert git_name == "Real Developer"
+    assert git_capture.read_text().strip() == "Real Developer"
     assert (
         isolated.connection_dir() / "agents/aider/aider.conf.yml"
     ).read_text() == "{}\n"
@@ -1208,4 +1205,10 @@ def test_aider_rejects_project_configuration_before_writing_state(
     config.unlink()
     (project / ".env").write_text("AIDER_MODEL_SETTINGS_FILE=cloud-models.yml\n")
     with pytest.raises(ValueError, match="project configuration"):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+
+
+def test_aider_requires_git_for_private_home_shim(private_home, monkeypatch):
+    monkeypatch.setattr("rapid_mlx.agents.isolated.shutil.which", lambda name: None)
+    with pytest.raises(ValueError, match="requires git"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
