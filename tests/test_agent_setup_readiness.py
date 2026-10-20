@@ -75,6 +75,52 @@ def test_wait_reports_only_final_model_failure(monkeypatch):
     assert failures == [("model_not_advertised", "codex")]
 
 
+def test_wait_reports_server_with_no_models_at_timeout(monkeypatch):
+    class Response(BytesIO):
+        status = 200
+
+    def open_url(request, **_kwargs):
+        if isinstance(request, str):
+            return Response(b'{"ready": true}')
+        return Response(b'{"data": []}')
+
+    failures = []
+    monkeypatch.setattr(setup.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *values: failures.append(values)
+    )
+    with pytest.raises(RuntimeError, match="reported no models"):
+        setup.wait_for_server(
+            "http://localhost:8000/v1", "wanted", agent="codex", timeout=0
+        )
+    assert failures == [("server_no_models", "codex")]
+
+
+def test_plan_failure_gives_versioned_retry_without_writing(
+    monkeypatch, tmp_path, capsys
+):
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr(setup.continue_dev, "current_config_path", lambda: config)
+    monkeypatch.setattr(setup, "wait_for_server", lambda *_a, **_k: "wanted")
+
+    def fail_plan(*_args, **_kwargs):
+        raise OSError("read-only config directory")
+
+    monkeypatch.setattr(setup, "build_setup_plan", fail_plan)
+    args = _args("continue")
+    args.agent_version = "1.0 rc"
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args)
+    assert exc.value.code == 1
+    assert not config.exists()
+    output = capsys.readouterr().out
+    assert "setup failed: read-only config directory" in output
+    assert (
+        "Retry: rapid-mlx agents continue --setup --yes --model wanted "
+        "--base-url http://127.0.0.1:8000/v1 --agent-version '1.0 rc'"
+    ) in output
+
+
 def test_first_class_does_not_write_when_server_unready(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     config = tmp_path / "config.yaml"
