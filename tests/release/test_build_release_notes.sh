@@ -56,6 +56,7 @@ if git rev-parse --verify --quiet v0.11.6 >/dev/null && \
   contains "$BODY" "## What's new in v0.11.6" "heading preserved"
   # shellcheck disable=SC2016  # the backticks are literal markdown, not a subshell
   contains "$BODY" 'Install: `brew upgrade rapid-mlx`' "Install: line preserved"
+  contains "$BODY" 'Community: https://discord.gg/nZcXkUjY5R' "community link present"
   lacks "$BODY" "<details>" "no <details> when there are no highlights"
 else
   echo "  SKIP (tags v0.11.5/v0.11.6 not present in this clone)"

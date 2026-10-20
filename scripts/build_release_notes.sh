@@ -318,3 +318,4 @@ if [ "${#CONTRIBUTIONS[@]}" -gt 0 ]; then
 fi
 
 echo "Install: \`brew upgrade rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\` (or just \`rapid-mlx upgrade\`)."
+echo "Community: https://discord.gg/nZcXkUjY5R"

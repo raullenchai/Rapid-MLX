@@ -72,6 +72,7 @@ def test_usage_and_identity(help_text):
     assert "<command>" in help_text.splitlines()[0]
     assert " ".join(CLI_IDENTITY.split()) in " ".join(help_text.split())
     assert "Docs: https://rapidmlx.com/docs/" in help_text
+    assert "Community: https://discord.gg/nZcXkUjY5R" in help_text
 
 
 def test_invalid_command_still_errors_with_exit_2(parser, capsys):
