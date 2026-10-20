@@ -61,7 +61,11 @@ class _Tap:
                         continue
                     if not isinstance(item, dict):
                         continue
-                    usage = item.get("usage") or item.get("message", {}).get("usage")
+                    usage = (
+                        item.get("usage")
+                        or item.get("message", {}).get("usage")
+                        or item.get("response", {}).get("usage")
+                    )
                     if isinstance(usage, dict):
                         prompt_tokens = usage.get(
                             "prompt_tokens", usage.get("input_tokens", prompt_tokens)

@@ -143,8 +143,8 @@ def session(
         "back using a tool and report what you read."
     )
     second_prompt = (
-        "Use a tool to append -second to hello.txt, then read the "
-        "file back and report its exact contents."
+        f"Use a tool to replace hello.txt with exactly hi-{marker}-second "
+        "(one trailing newline is okay), then read it back and report its contents."
     )
     master, slave = open_terminal()
     started = time.monotonic()
@@ -197,12 +197,14 @@ def session(
                 proc,
                 min(120, timeout),
                 sink,
-                stop_when=lambda output: target.is_file() and f"hi-{marker}" in output,
+                stop_when=lambda output: (
+                    target.is_file() and target.read_text().strip() == f"hi-{marker}"
+                ),
             )
             if first_byte:
                 answer["first_reply_s"] = round(first_byte - sent, 2)
             answer["tool_ok"] = (
-                target.is_file() and target.read_bytes() == f"hi-{marker}".encode()
+                target.is_file() and target.read_text().strip() == f"hi-{marker}"
             )
             if proc.poll() is None:
                 sent = time.monotonic()
@@ -217,14 +219,14 @@ def session(
                     sink,
                     stop_when=lambda output: (
                         target.is_file()
-                        and target.read_bytes() == f"hi-{marker}-second".encode()
+                        and target.read_text().strip() == f"hi-{marker}-second"
                     ),
                 )
                 if first_byte:
                     answer["second_reply_s"] = round(first_byte - sent, 2)
                 answer["second_ok"] = (
                     target.is_file()
-                    and target.read_bytes() == f"hi-{marker}-second".encode()
+                    and target.read_text().strip() == f"hi-{marker}-second"
                     and f"hi-{marker}-second" in output2
                 )
             if not answer["tool_ok"] or not answer["second_ok"]:

@@ -91,3 +91,36 @@ def test_metadata_tap_forwards_request_and_response_unchanged(tmp_path, monkeypa
     assert event["model"] == "actual-request"
     assert event["prompt_tokens"] == 456
     assert event["status"] == 200
+
+
+def test_metadata_tap_reads_streamed_responses_usage(tmp_path, monkeypatch):
+    log = tmp_path / "requests.jsonl"
+    current = tmp_path / "agent"
+    current.write_text("codex\n")
+    monkeypatch.setenv("AGENT_E2E_REQUEST_LOG", str(log))
+    monkeypatch.setenv("AGENT_E2E_CURRENT_AGENT", str(current))
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": (
+                    b'data: {"type":"response.completed","response":{"usage":{"input_tokens":789}}}\n\n'
+                ),
+            }
+        )
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": b'{"model":"actual"}',
+            "more_body": False,
+        }
+
+    async def send(message):
+        pass
+
+    asyncio.run(_Tap(app)({"type": "http", "path": "/v1/responses"}, receive, send))
+    assert json.loads(log.read_text())["prompt_tokens"] == 789
