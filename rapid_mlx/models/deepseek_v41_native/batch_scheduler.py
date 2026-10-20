@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor

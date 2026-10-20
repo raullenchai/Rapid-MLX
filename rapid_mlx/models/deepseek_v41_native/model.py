@@ -172,7 +172,6 @@ class Model(nn.Module):
         """
         batch_cache = cache if isinstance(cache, BatchModelCache) else None
         single_cache = None if isinstance(cache, BatchModelCache) else cache
-        batched = batch_cache is not None
         start_pos: Any
         if batch_cache is not None:
             if input_ids.shape != (len(batch_cache), 1) or not len(batch_cache):
