@@ -278,7 +278,13 @@ def configure(
 
             version = installed_version()
         if name == "hermes":
-            context_length = context_length or hermes_context_length(port, key, model)
+            if context_length is None:
+                context_length = hermes_context_length(port, key, model)
+            else:
+                live_limit = hermes_context_length(port, key, model, require_live=True)
+                if context_length < _HERMES_MIN_CONTEXT:
+                    raise ValueError("Hermes context override is below 64,000 tokens")
+                context_length = min(context_length, live_limit)
         rendered = profile.render_config(
             base, model, version, context_length=context_length
         )

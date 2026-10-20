@@ -354,6 +354,25 @@ def test_hermes_check_refreshes_only_from_live_served_limit(private_home):
     assert yaml.safe_load(config)["model"]["context_length"] == 98304
 
 
+def test_hermes_supplied_context_is_checked_against_live_limit(private_home):
+    with patch(
+        "rapid_mlx.agents.isolated.hermes_context_length", return_value=98304
+    ) as probe:
+        with pytest.raises(ValueError, match="below 64,000"):
+            isolated.configure("hermes", "model", port=7660, context_length=1)
+        isolated.configure("hermes", "model", port=7660, context_length=262144)
+    assert probe.call_args.kwargs["require_live"] is True
+    config = (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / "config.yaml"
+    ).read_text()
+    assert yaml.safe_load(config)["model"]["context_length"] == 98304
+
+
 def test_hermes_live_check_rejects_missing_served_ceiling(private_home):
     class Response:
         def __enter__(self):
