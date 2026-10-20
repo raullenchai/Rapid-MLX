@@ -1147,11 +1147,18 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     rapid.write_text("#!/bin/sh\nexit 0\n")
     rapid.chmod(0o700)
     aider = commands / "aider"
-    aider.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n')
+    aider.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
+        'printf "%s\\n%s\\n" "$AIDER_OPENAI_API_KEY" "$AIDER_OPENAI_API_BASE" > "$TEST_ENV_CAPTURE"\n'
+    )
     aider.chmod(0o700)
     monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
     args_capture = private_home / "aider-args"
+    env_capture = private_home / "aider-env"
     monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
+    monkeypatch.setenv("TEST_ENV_CAPTURE", str(env_capture))
+    monkeypatch.setenv("AIDER_OPENAI_API_KEY", "fake-cloud-key")
+    monkeypatch.setenv("AIDER_OPENAI_API_BASE", "https://cloud.invalid/v1")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
     runner = isolated.connection_dir() / "agents/aider/run"
@@ -1160,4 +1167,14 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     assert args[args.index("--config") + 1] == str(
         isolated.connection_dir() / "agents/aider/aider.conf.yml"
     )
+    assert args[args.index("--openai-api-base") + 1] == "http://127.0.0.1:7660/v1"
+    assert args[args.index("--weak-model") + 1] == "openai/qwen3.5-9b-4bit"
+    assert args[args.index("--editor-model") + 1] == "openai/qwen3.5-9b-4bit"
+    assert env_capture.read_text().splitlines() == [
+        isolated.key_path().read_text().strip(),
+        "http://127.0.0.1:7660/v1",
+    ]
+    assert (
+        isolated.connection_dir() / "agents/aider/aider.conf.yml"
+    ).read_text() == "{}\n"
     assert user_config.read_bytes() == original

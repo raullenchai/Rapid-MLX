@@ -260,10 +260,14 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
             'crush --data-dir "$RAPID_MLX_CRUSH_DATA_PATH"'
         )
     if name == "aider":
+        base = f'"http://127.0.0.1:$(cat {quote(str(port_path()))})/v1"'
         return (
-            f'OPENAI_API_KEY="$(cat {key})" aider '
+            f'AIDER_OPENAI_API_KEY="$(cat {key})" OPENAI_API_KEY="$(cat {key})" '
+            f"AIDER_OPENAI_API_BASE={base} aider "
             f"--config {quote(str(root / 'aider.conf.yml'))} "
-            f"--env-file {quote(str(root / 'aider.env'))} --model openai/{quote(model)}"
+            f"--env-file {quote(str(root / 'aider.env'))} "
+            f"--openai-api-base {base} --model openai/{quote(model)} "
+            f"--weak-model openai/{quote(model)} --editor-model openai/{quote(model)}"
         )
     if name == "qwen-code":
         saved_port = quote(str(port_path()))
@@ -459,9 +463,7 @@ def configure(
         _private_write(root / "settings.json", json.dumps(settings, indent=2) + "\n")
     elif name == "aider":
         _private_write(root / "aider.env", f"OPENAI_API_BASE={base}\n")
-        _private_write(
-            root / "aider.conf.yml", "# Private local launch configuration\n"
-        )
+        _private_write(root / "aider.conf.yml", "{}\n")
     elif name == "qwen-code":
         _private_write(
             root / "qwen.env", f"OPENAI_BASE_URL={base}\nOPENAI_MODEL={model}\n"
