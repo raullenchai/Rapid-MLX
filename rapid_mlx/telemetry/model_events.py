@@ -389,11 +389,6 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
 
                 if truncated_local_weights(model_ref):
                     return "corrupt_weights"
-            if isinstance(current, RuntimeError) and any(
-                marker in text.lower()
-                for marker in ("out of memory", "insufficient memory")
-            ):
-                return "insufficient_memory"
             if isinstance(current, RuntimeError) and re.search(
                 r"\bMetal (?:device|command buffer|library|allocation)\b",
                 text,

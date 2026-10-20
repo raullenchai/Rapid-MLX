@@ -551,3 +551,299 @@ def test_runtime_failure_has_class_and_command(error, failure_class, cause, comm
     lines = startup_error_lines(error, None)
     assert cause in lines[0]
     assert command in lines[1]
+
+
+@pytest.mark.parametrize(
+    ("manifest_name", "contents", "error", "remedy"),
+    [
+        (
+            "split_model.json",
+            '{"components":[]}',
+            "Missing model components",
+            "split_model.json",
+        ),
+        (
+            "split_model.json",
+            '{"components":["../escape"]}',
+            "Invalid model component",
+            "split_model.json",
+        ),
+        (
+            "model_index.json",
+            '{"transformer":[]}',
+            "Invalid model manifest",
+            "model_index.json",
+        ),
+        (
+            "model_index.json",
+            '{"_class_name":"Pipeline"}',
+            "Missing model components",
+            "model_index.json",
+        ),
+        (
+            "model_index.json",
+            '{"_class_name":"Pipeline","bad.name":[]}',
+            "Invalid model component",
+            "model_index.json",
+        ),
+        (
+            "model_index.json",
+            '{"_class_name":"Pipeline","transformer":[]}',
+            "Missing model component",
+            "transformer",
+        ),
+        ("params.json", '{"layers":1}', "Missing model weights", "model weights"),
+    ],
+)
+def test_incomplete_layouts_identify_cause_and_repair(
+    tmp_path, manifest_name, contents, error, remedy
+):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / manifest_name).write_text(contents)
+    with pytest.raises(
+        FileNotFoundError if error != "Invalid model manifest" else InvalidModelConfig,
+        match=error,
+    ) as failure:
+        validate_local_model_for_serve(str(root))
+    if isinstance(failure.value, FileNotFoundError):
+        cause, step = local_serve_preflight_lines(str(root), failure.value)
+        assert remedy in cause or remedy in step
+        assert "rapid-mlx serve" in step
+
+
+def test_manifest_permissions_and_invalid_json(tmp_path, monkeypatch):
+    root = tmp_path / "model"
+    root.mkdir()
+    manifest = root / "split_model.json"
+    manifest.write_text("{broken")
+    with pytest.raises(InvalidModelConfig, match="split_model.json"):
+        validate_local_model_for_serve(str(root))
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.os.access", lambda path, mode: path != manifest
+    )
+    with pytest.raises(PermissionError, match="manifest") as failure:
+        validate_local_model_for_serve(str(root))
+    assert "chmod -R u+rX" in local_serve_preflight_lines(str(root), failure.value)[1]
+
+
+def test_pipeline_params_needs_root_weights(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "params.json").write_text('{"layers":1}')
+    (root / "model.safetensors").write_bytes(b"weights")
+    validate_local_model_for_serve(str(root))
+
+
+def test_config_read_race_still_checks_weights(tmp_path, monkeypatch):
+    root = tmp_path / "model"
+    root.mkdir()
+    config = root / "config.json"
+    config.write_text('{"model_type":"qwen3"}')
+    original = Path.read_text
+
+    def read_once(path, *args, **kwargs):
+        if path == config:
+            raise OSError(errno.EIO, "config disappeared")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_once)
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_model_file_config_without_model_type_needs_weights(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_file":"model.py"}')
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_embedding_index_without_weight_map_is_incomplete(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"embedding_gemma2"}')
+    (root / "model.safetensors.index.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="Missing model weights"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_numeric_diagnostic_requires_local_config(tmp_path):
+    from rapid_mlx.local_serve_diagnostics import malformed_numeric_config
+
+    assert (
+        malformed_numeric_config(
+            InvalidModelConfig("hidden_size must be an integer"),
+            str(tmp_path / "absent"),
+        )
+        is None
+    )
+
+
+def test_runtime_insufficient_memory_class():
+    assert (
+        serve_error_class(RuntimeError("insufficient memory to load model"))
+        == "insufficient_memory"
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "cause", "step"),
+    [
+        ({}, "missing config.json", "Restore config.json"),
+        (
+            {"config.json": '{"model_type":"qwen3"}'},
+            "missing model weights",
+            "Restore the checkpoint weights",
+        ),
+        (
+            {"split_model.json": '{"components":[]}'},
+            "split_model.json",
+            "Restore split_model.json",
+        ),
+        (
+            {"model_index.json": '{"_class_name":"Pipeline"}'},
+            "model_index.json",
+            "Restore model_index.json",
+        ),
+        ({"params.json": "{broken"}, "params.json", "Restore params.json"),
+        (
+            {"config.json": '{"model_type":"qwen3","hidden_size":"bad"}'},
+            "nonnumeric hidden_size",
+            "Correct hidden_size",
+        ),
+    ],
+)
+def test_cli_incomplete_local_layout_exits_with_repair(
+    tmp_path, monkeypatch, capsys, files, cause, step
+):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    root = tmp_path / "model"
+    root.mkdir()
+    for name, contents in files.items():
+        (root / name).write_text(contents)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(root)])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    rendered = capsys.readouterr().err
+    assert "Cause: " in rendered and cause in rendered
+    assert "Next step: " in rendered and step in rendered
+
+
+def test_cli_resolution_io_error_exits_with_resolution_error(
+    tmp_path, monkeypatch, capsys
+):
+    from rapid_mlx import cli, model_aliases
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    root = tmp_path / "model"
+    root.mkdir()
+
+    def fail_resolution(_ref):
+        raise OSError(errno.EIO, "Input/output error", str(root))
+
+    monkeypatch.setattr(model_aliases, "resolve_model", fail_resolution)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(root)])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    rendered = capsys.readouterr().err
+    assert "Error: Model resolution failed" in rendered
+    assert "Input/output error" in rendered
+
+
+def test_invalid_config_after_pipeline_manifest_reaches_typed_error(tmp_path):
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "model_index.json").write_text('{"_class_name":"Pipeline"}')
+    (root / "config.json").write_text("{broken")
+    with pytest.raises(InvalidModelConfig, match="Invalid model config"):
+        validate_local_model_for_serve(str(root))
+
+
+def test_cli_invalid_config_has_fallback_repair(tmp_path, monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "config.json").write_text("{broken")
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(root)])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    rendered = capsys.readouterr().err
+    assert "Cause: Local config.json is invalid." in rendered
+    assert "Next step: Correct config.json" in rendered
+
+
+@pytest.mark.parametrize("valid_target", [True, False])
+def test_cli_preflight_log_target_handling(tmp_path, monkeypatch, capsys, valid_target):
+    from rapid_mlx import cli, log_file
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    root = tmp_path / "model"
+    root.mkdir()
+    target = (
+        tmp_path / "serve.log" if valid_target else tmp_path / "missing" / "serve.log"
+    )
+    applied = []
+    monkeypatch.setattr(
+        log_file, "apply", lambda path, source: applied.append((path, source))
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["rapid-mlx", "serve", str(root), "--log-file", str(target)]
+    )
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == (1 if valid_target else 2)
+    if valid_target:
+        assert applied == [(str(target), "--log-file")]
+        assert "Cause: " in capsys.readouterr().err
+    else:
+        assert not applied
+        assert "error: --log-file" in capsys.readouterr().err
+
+
+def test_cli_manifest_io_error_has_disk_repair(tmp_path, monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    root = tmp_path / "model"
+    root.mkdir()
+    manifest = root / "split_model.json"
+    manifest.write_text('{"components":["transformer"]}')
+    read_text = Path.read_text
+
+    def fail_manifest_read(path, *args, **kwargs):
+        if path == manifest:
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_manifest_read)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(root)])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    rendered = capsys.readouterr().err
+    assert "Cause: The filesystem could not read" in rendered
+    assert "Next step: Check the disk" in rendered
+
+
+def test_cli_chat_missing_local_model_keeps_nonserve_error(
+    tmp_path, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    missing = tmp_path / "absent"
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "chat", str(missing)])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    rendered = capsys.readouterr().err
+    assert "Error: " in rendered and str(missing) in rendered
