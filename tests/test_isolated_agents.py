@@ -474,3 +474,27 @@ def test_isolated_run_times_out_during_startup(private_home, capsys):
             )
         )
     assert "did not become ready" in capsys.readouterr().out
+
+
+def test_no_setup_server_reuses_saved_key_without_overriding_explicit_env(
+    private_home, monkeypatch
+):
+    from rapid_mlx.run.cli import _spawn_foreground_serve
+
+    key = isolated.stable_key()
+    captured = []
+    args = Namespace(host="127.0.0.1", port=7659, no_setup=True, no_download=False)
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+
+    def spawn(_command, **kwargs):
+        captured.append(kwargs["env"].get("RAPID_MLX_API_KEY"))
+        return object()
+
+    with patch("rapid_mlx.run.cli.subprocess.Popen", side_effect=spawn):
+        _spawn_foreground_serve("qwen3.5-9b-4bit", args)
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "explicit")
+        _spawn_foreground_serve("qwen3.5-9b-4bit", args)
+        monkeypatch.delenv("RAPID_MLX_API_KEY")
+        args.no_setup = False
+        _spawn_foreground_serve("qwen3.5-9b-4bit", args)
+    assert captured == [key, "explicit", None]
