@@ -1,0 +1,572 @@
+"""Fused decode MoE kernels for V4.1: three dispatches instead of ~40.
+
+A decode step routes a handful of rows. The graph path spends one GPU dispatch
+per elementwise op (score function, bias, top-k, normalization, clamps, SiLU,
+casts, the weighted reduction), so a layer's MoE costs about forty serialized
+launches although its weight traffic is a few megabytes. Here it is three:
+
+* ``route`` — score function, selection bias, top-k, normalization and scale
+  for every row in one threadgroup per row;
+* ``up`` — routed (2-bit) and shared (8-bit) gate/up projections for every
+  route of every row, with the clamped SwiGLU in the epilogue;
+* ``down`` — routed and shared down projections plus the weighted combine.
+
+Numerics replicate the stock path operation by operation: the affine QMV
+kernels keep the stock lane geometry, values per thread, block order and
+``scale * dot + sum * bias`` epilogue; projection outputs are rounded to the
+stock output dtype before activation; top-k ties keep the stable-sort order;
+the routed reduction runs in route order. :func:`moe_forward` qualifies each
+expert layout once against the stock path and falls back if it differs.
+"""
+
+from __future__ import annotations
+
+import logging
+import weakref
+from functools import lru_cache
+
+import mlx.core as mx
+
+logger = logging.getLogger(__name__)
+
+# Module switch for A/B runs and the negative-control tests.
+ENABLED = True
+MAX_ROWS = 8
+_CHECK_ATTR = "_rapid_fused_moe_check"
+
+_HEADER = r"""
+template <typename T, int BITS, int VPT>
+inline float load_x(const device T* x, thread float* xt) {
+  float sum = 0;
+  if (BITS == 2) {
+    for (int i = 0; i < VPT; i += 4) {
+      sum += float(x[i]) + float(x[i + 1]) + float(x[i + 2]) + float(x[i + 3]);
+      xt[i] = x[i];
+      xt[i + 1] = x[i + 1] / 4.0f;
+      xt[i + 2] = x[i + 2] / 16.0f;
+      xt[i + 3] = x[i + 3] / 64.0f;
+    }
+  } else {
+    for (int i = 0; i < VPT; i++) {
+      sum += x[i];
+      xt[i] = x[i];
+    }
+  }
+  return sum;
+}
+
+template <int BITS, int VPT>
+inline float qdot_w(
+    const device uint8_t* w, const thread float* xt, float s, float b, float sum) {
+  float accum = 0;
+  if (BITS == 2) {
+    for (int i = 0; i < VPT / 4; i++) {
+      accum +=
+          (xt[4 * i] * (w[i] & 0x03) + xt[4 * i + 1] * (w[i] & 0x0c) +
+           xt[4 * i + 2] * (w[i] & 0x30) + xt[4 * i + 3] * (w[i] & 0xc0));
+    }
+  } else {
+    for (int i = 0; i < VPT; i++) {
+      accum += xt[i] * w[i];
+    }
+  }
+  return s * accum + sum * b;
+}
+
+// Lane partials of ROWS consecutive output rows of one affine matrix (and of
+// a second matrix sharing the input when DUAL), in stock block order.
+template <typename T, typename Q, int BITS, int VPT, int K, int ROWS, bool DUAL>
+inline void rows_partial(
+    const device T* x,
+    const device uint32_t* w0, const device Q* s0, const device Q* b0,
+    const device uint32_t* w1, const device Q* s1, const device Q* b1,
+    size_t row, uint lane, thread float* acc0, thread float* acc1) {
+  constexpr int BLOCK = VPT * 32;
+  constexpr int ROW_BYTES = K * BITS / 8;
+  constexpr int GROUPS = K / 64;
+  const device uint8_t* wb0 = reinterpret_cast<const device uint8_t*>(w0);
+  const device uint8_t* wb1 = reinterpret_cast<const device uint8_t*>(w1);
+  float xt[VPT];
+  for (int k = 0; k < K; k += BLOCK) {
+    const int pos = k + int(lane) * VPT;
+    if (pos >= K) {
+      break;
+    }
+    const float sum = load_x<T, BITS, VPT>(x + pos, xt);
+    const int byte = pos * BITS / 8;
+    const int group = pos / 64;
+    for (int r = 0; r < ROWS; r++) {
+      const size_t rr = row + r;
+      acc0[r] += qdot_w<BITS, VPT>(
+          wb0 + rr * ROW_BYTES + byte, xt, float(s0[rr * GROUPS + group]),
+          float(b0[rr * GROUPS + group]), sum);
+      if (DUAL) {
+        acc1[r] += qdot_w<BITS, VPT>(
+            wb1 + rr * ROW_BYTES + byte, xt, float(s1[rr * GROUPS + group]),
+            float(b1[rr * GROUPS + group]), sum);
+      }
+    }
+  }
+}
+
+// Shared-expert variant: every row's partials over the same weight rows,
+// block by block, so each weight byte is fetched once for all rows.
+template <typename T, typename Q, int BITS, int VPT, int K, int NROWS, bool DUAL>
+inline void rows_partial_multi(
+    const device T* x,
+    const device uint32_t* w0, const device Q* s0, const device Q* b0,
+    const device uint32_t* w1, const device Q* s1, const device Q* b1,
+    size_t row, uint lane, thread float (*acc0)[4], thread float (*acc1)[4]) {
+  constexpr int BLOCK = VPT * 32;
+  constexpr int ROW_BYTES = K * BITS / 8;
+  constexpr int GROUPS = K / 64;
+  const device uint8_t* wb0 = reinterpret_cast<const device uint8_t*>(w0);
+  const device uint8_t* wb1 = reinterpret_cast<const device uint8_t*>(w1);
+  float xt[VPT];
+  for (int k = 0; k < K; k += BLOCK) {
+    const int pos = k + int(lane) * VPT;
+    if (pos >= K) {
+      break;
+    }
+    const int byte = pos * BITS / 8;
+    const int group = pos / 64;
+    for (int t = 0; t < NROWS; t++) {
+      const float sum = load_x<T, BITS, VPT>(x + t * K + pos, xt);
+      for (int r = 0; r < 4; r++) {
+        const size_t rr = row + r;
+        acc0[t][r] += qdot_w<BITS, VPT>(
+            wb0 + rr * ROW_BYTES + byte, xt, float(s0[rr * GROUPS + group]),
+            float(b0[rr * GROUPS + group]), sum);
+        if (DUAL) {
+          acc1[t][r] += qdot_w<BITS, VPT>(
+              wb1 + rr * ROW_BYTES + byte, xt, float(s1[rr * GROUPS + group]),
+              float(b1[rr * GROUPS + group]), sum);
+        }
+      }
+    }
+  }
+}
+
+inline float sigmoid_ref(float x) {
+  auto y = 1 / (1 + metal::precise::exp(metal::abs(x)));
+  return (x < 0) ? y : 1 - y;
+}
+"""
+
+_ROUTE = r"""
+    // One threadgroup per row, one thread per expert.
+    const uint e = thread_position_in_threadgroup.x;
+    const uint row = threadgroup_position_in_grid.y;
+    threadgroup float biased[E];
+    threadgroup float score[E];
+    float s = scores[row * E + e] / params[0];
+    float sp;
+    if (metal::isnan(s)) {
+      sp = metal::numeric_limits<float>::quiet_NaN();
+    } else {
+      const float hi = metal::max(s, 0.0f);
+      const float lo = metal::min(s, 0.0f);
+      sp = (lo == -INFINITY || hi == INFINITY) ? hi
+          : (hi + log1p(metal::exp(lo - hi)));
+    }
+    const float sc = metal::precise::sqrt(sp);
+    score[e] = sc;
+    biased[e] = sc + bias[e];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Stable descending order: rank by larger value, then lower index.
+    const float mine = -biased[e];
+    int rank = 0;
+    for (uint j = 0; j < E; j++) {
+      const float other = -biased[j];
+      rank += (other < mine || (other == mine && j < e)) ? 1 : 0;
+    }
+    threadgroup uint picked[TOPK];
+    if (rank < TOPK) {
+      picked[rank] = e;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (e == 0) {
+      float w[TOPK];
+      float total = 0.0f;
+      for (int k = 0; k < TOPK; k++) {
+        w[k] = score[picked[k]];
+        total += w[k];
+      }
+      const float denom = total + 1e-20f;
+      for (int k = 0; k < TOPK; k++) {
+        float v = w[k];
+        if (NORMALIZE) {
+          v = v / denom;
+        }
+        weights[row * TOPK + k] = v * params[1];
+        indices[row * TOPK + k] = picked[k];
+      }
+    }
+"""
+
+_UP = r"""
+    // z: routed slots row-major (row, k), then one shared slot holding every
+    // row so the shared weights are fetched once per threadgroup.
+    const uint lane = thread_index_in_simdgroup;
+    const int slot = int(threadgroup_position_in_grid.z);
+    const int col = int(threadgroup_position_in_grid.y) * 8
+        + int(simdgroup_index_in_threadgroup) * 4;
+    const bool shared_slot = slot >= ROWS * TOPK;
+    float g[ROWS][4] = {};
+    float u[ROWS][4] = {};
+    if (shared_slot) {
+      rows_partial_multi<T, Q, SBITS, SVPT, K, ROWS, true>(
+          x, sgw, sgs, sgb, suw, sus, sub, size_t(col), lane, g, u);
+    } else {
+      const size_t base = size_t(indices[slot]) * N + col;
+      rows_partial<T, Q, 2, 16, K, 4, true>(
+          x + (slot / TOPK) * K, gw, gs, gb, uw, us, ub, base, lane, g[0], u[0]);
+    }
+    const int tokens = shared_slot ? ROWS : 1;
+    for (int t = 0; t < tokens; t++) {
+      const int out_slot = shared_slot ? ROWS * TOPK + t : slot;
+      for (int r = 0; r < 4; r++) {
+        const float gate_sum = simd_sum(g[t][r]);
+        const float up_sum = simd_sum(u[t][r]);
+        if (lane == 0) {
+          float gate = float(static_cast<T>(gate_sum));
+          float up = float(static_cast<T>(up_sum));
+          if (LIMIT > 0) {
+            up = metal::min(metal::max(up, -LIMIT), LIMIT);
+            gate = metal::min(gate, LIMIT);
+          }
+          float h = (gate * sigmoid_ref(gate)) * up;
+          if (shared_slot) {
+            h = float(static_cast<T>(h));
+          }
+          act[out_slot * N + col + r] = h;
+        }
+      }
+    }
+"""
+
+_DOWN = r"""
+    // Four output columns of every row per threadgroup: simdgroup k < TOPK
+    // runs route k of each row, simdgroup TOPK the shared expert for all rows
+    // at once; simdgroup 0 then combines each row in route order.
+    const uint lane = thread_index_in_simdgroup;
+    const int sg = int(simdgroup_index_in_threadgroup);
+    const int col = int(threadgroup_position_in_grid.y) * 4;
+    threadgroup float part[TOPK + 1][ROWS][4];
+    float acc[ROWS][4] = {};
+    if (sg < TOPK) {
+      for (int t = 0; t < ROWS; t++) {
+        const int slot = t * TOPK + sg;
+        const size_t base = size_t(indices[slot]) * D + col;
+        rows_partial<float, Q, 2, 16, N, 4, false>(
+            act + slot * N, dw, ds, db, dw, ds, db, base, lane, acc[t], acc[t]);
+      }
+    } else {
+      rows_partial_multi<float, Q, SBITS, SDVPT, N, ROWS, false>(
+          act + ROWS * TOPK * N, sdw, sds, sdb, sdw, sds, sdb,
+          size_t(col), lane, acc, acc);
+    }
+    for (int t = 0; t < ROWS; t++) {
+      // Routed outputs stay FP32 and are weighted here, rounded before the
+      // sum like the stock product; the shared output rounds to the row
+      // dtype. The barrier keeps product and sum from contracting.
+      const float scale = sg < TOPK ? weights[t * TOPK + sg] : 1.0f;
+      for (int r = 0; r < 4; r++) {
+        const float v = simd_sum(acc[t][r]);
+        if (lane == 0) {
+          part[sg][t][r] = sg < TOPK ? v * scale : float(static_cast<T>(v));
+        }
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0 && int(lane) < 4 * ROWS) {
+      const int t = int(lane) / 4;
+      const int r = int(lane) % 4;
+      float total = 0.0f;
+      for (int k = 0; k < TOPK; k++) {
+        total += part[k][t][r];
+      }
+      total = total + part[TOPK][t][r];
+      out[t * D + col + r] = static_cast<T>(total);
+    }
+"""
+
+
+def _float_literal(value: float) -> str:
+    return f"({float(value)!r}f)"
+
+
+@lru_cache(maxsize=None)
+def _route_kernel(normalize: bool):
+    source = _ROUTE.replace("NORMALIZE", "true" if normalize else "false")
+    return mx.fast.metal_kernel(
+        name=f"rapid_v41_moe_route_{int(normalize)}",
+        input_names=["scores", "bias", "params"],
+        output_names=["weights", "indices"],
+        source=source,
+        header=_HEADER,
+        ensure_row_contiguous=True,
+    )
+
+
+@lru_cache(maxsize=None)
+def _up_kernel(limit: float):
+    source = _UP.replace("LIMIT", _float_literal(limit))
+    return mx.fast.metal_kernel(
+        name="rapid_v41_moe_up_"
+        + repr(float(limit)).replace(".", "p").replace("-", "m"),
+        input_names=[
+            "x",
+            "indices",
+            "gw",
+            "gs",
+            "gb",
+            "uw",
+            "us",
+            "ub",
+            "sgw",
+            "sgs",
+            "sgb",
+            "suw",
+            "sus",
+            "sub",
+        ],
+        output_names=["act"],
+        source=source,
+        header=_HEADER,
+        ensure_row_contiguous=True,
+    )
+
+
+@lru_cache(maxsize=None)
+def _down_kernel():
+    return mx.fast.metal_kernel(
+        name="rapid_v41_moe_down",
+        input_names=[
+            "act",
+            "indices",
+            "weights",
+            "dw",
+            "ds",
+            "db",
+            "sdw",
+            "sds",
+            "sdb",
+        ],
+        output_names=["out"],
+        source=_DOWN,
+        header=_HEADER,
+        ensure_row_contiguous=True,
+    )
+
+
+def _qmv_vpt(bits: int, k: int, n: int) -> int:
+    """Values per lane of the stock single-row affine QMV for this shape."""
+    # The fast kernel covers whole blocks and 8-row tiles and loads two packs
+    # per lane above two bits; the general kernel loads one.
+    pack = 32 // bits
+    fast = pack * (2 if bits > 2 else 1)
+    return fast if k % (32 * fast) == 0 and n % 8 == 0 else pack
+
+
+def _affine(module, bits: int, ndim: int) -> bool:
+    scales = getattr(module, "scales", None)
+    biases = getattr(module, "biases", None)
+    return (
+        getattr(module, "bits", None) == bits
+        and getattr(module, "group_size", None) == 64
+        and getattr(module, "mode", "affine") == "affine"
+        and scales is not None
+        and biases is not None
+        and scales.dtype in (mx.bfloat16, mx.float16)
+        and biases.dtype == scales.dtype
+        and module.weight.ndim == scales.ndim == biases.ndim == ndim
+        and tuple(scales.shape) == tuple(biases.shape)
+    )
+
+
+def _layout(moe) -> tuple[int, int, int] | None:
+    """(dim, inter, shared bits) when ``moe`` matches the fused kernels."""
+    experts, shared, gate = moe.experts, moe.shared_experts, moe.gate
+    gp, up, dp = experts.gate_proj, experts.up_proj, experts.down_proj
+    w1, w2, w3 = shared.w1, shared.w2, shared.w3
+    if (
+        "bias" in gp
+        or "bias" in up
+        or "bias" in dp
+        or hasattr(experts, "gate_up_proj")
+        or not all(_affine(m, 2, 3) for m in (gp, up, dp))
+    ):
+        return None
+    sbits = getattr(w1, "bits", None)
+    if sbits not in (2, 8) or not all(_affine(m, sbits, 2) for m in (w1, w2, w3)):
+        return None
+    if any("bias" in m for m in (w1, w2, w3)):
+        return None
+    experts_n, inter = map(int, gp.scales.shape[:2])
+    dim = int(gp.scales.shape[2]) * 64
+    q = gp.scales.dtype
+    if not (
+        all(m.scales.dtype == q for m in (up, dp, w1, w2, w3))
+        and tuple(up.scales.shape) == tuple(gp.scales.shape)
+        and tuple(dp.scales.shape) == (experts_n, dim, inter // 64)
+        and tuple(w1.scales.shape) == tuple(w3.scales.shape) == (inter, dim // 64)
+        and tuple(w2.scales.shape) == (dim, inter // 64)
+        and int(gp.weight.shape[2]) * 16 == dim
+        and int(dp.weight.shape[2]) * 16 == inter
+        and int(w1.weight.shape[1]) * 32 // sbits == dim
+        and int(w2.weight.shape[1]) * 32 // sbits == inter
+        and dim % 512 == 0
+        and inter % 64 == 0
+        and gate.score_func == "sqrtsoftplus"
+        and tuple(gate.bias.shape) == (experts_n,)
+        and gate.bias.dtype == mx.float32
+        and 1 <= gate.topk <= 16
+        and experts_n <= 1024
+    ):
+        return None
+    return dim, inter, sbits
+
+
+def supports(x: mx.array) -> bool:
+    """True when an MoE call on ``x`` is a decode-sized fused candidate."""
+    if not ENABLED or mx.default_device() != mx.gpu or not mx.metal.is_available():
+        return False
+    rows = 1
+    for size in x.shape[:-1]:
+        rows *= int(size)
+    return 1 <= rows <= MAX_ROWS and x.dtype in (mx.bfloat16, mx.float16, mx.float32)
+
+
+def _route(moe, scores: mx.array) -> tuple[mx.array, mx.array]:
+    gate = moe.gate
+    rows, experts_n = map(int, scores.shape)
+    params = mx.array([gate.gate_temp, gate.route_scale], dtype=mx.float32)
+    weights, indices = _route_kernel(bool(gate.norm_topk_prob and gate.topk > 1))(
+        inputs=[scores, gate.bias, params],
+        template=[("E", experts_n), ("TOPK", int(gate.topk))],
+        grid=(experts_n, rows, 1),
+        threadgroup=(experts_n, 1, 1),
+        output_shapes=[(rows, gate.topk), (rows, gate.topk)],
+        output_dtypes=[mx.float32, mx.uint32],
+    )
+    return weights, indices
+
+
+def _experts(
+    moe, layout, xf: mx.array, weights: mx.array, indices: mx.array
+) -> mx.array:
+    dim, inter, sbits = layout
+    rows = int(xf.shape[0])
+    topk = int(moe.gate.topk)
+    experts, shared = moe.experts, moe.shared_experts
+    gp, up, dp = experts.gate_proj, experts.up_proj, experts.down_proj
+    w1, w2, w3 = shared.w1, shared.w2, shared.w3
+    flat = indices.reshape(-1)
+    common = [("T", xf.dtype), ("Q", gp.scales.dtype), ("ROWS", rows), ("TOPK", topk)]
+    (act,) = _up_kernel(float(getattr(experts.activation, "limit", 0.0)))(
+        inputs=[
+            xf,
+            flat,
+            gp.weight,
+            gp.scales,
+            gp.biases,
+            up.weight,
+            up.scales,
+            up.biases,
+            w1.weight,
+            w1.scales,
+            w1.biases,
+            w3.weight,
+            w3.scales,
+            w3.biases,
+        ],
+        template=common
+        + [
+            ("K", dim),
+            ("N", inter),
+            ("SBITS", sbits),
+            ("SVPT", _qmv_vpt(sbits, dim, inter)),
+        ],
+        grid=(32, inter // 4, rows * topk + 1),
+        threadgroup=(32, 2, 1),
+        output_shapes=[(rows * (topk + 1), inter)],
+        output_dtypes=[mx.float32],
+    )
+    (out,) = _down_kernel()(
+        inputs=[
+            act,
+            flat,
+            weights.reshape(-1),
+            dp.weight,
+            dp.scales,
+            dp.biases,
+            w2.weight,
+            w2.scales,
+            w2.biases,
+        ],
+        template=common
+        + [
+            ("N", inter),
+            ("D", dim),
+            ("SBITS", sbits),
+            ("SDVPT", _qmv_vpt(sbits, inter, dim)),
+        ],
+        grid=(32, (topk + 1) * dim // 4, 1),
+        threadgroup=(32, topk + 1, 1),
+        output_shapes=[(rows, dim)],
+        output_dtypes=[xf.dtype],
+    )
+    return out
+
+
+def _fused(moe, layout, x: mx.array) -> mx.array:
+    xf = x.reshape(-1, x.shape[-1])
+    weights, indices = _route(moe, moe.gate.scores(xf))
+    return _experts(moe, layout, xf, weights, indices).reshape(x.shape)
+
+
+def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
+    """This layer's layout once each fused row equals its single-row stock."""
+    weight = moe.experts.gate_proj.weight
+    cached = getattr(moe, _CHECK_ATTR, None)
+    if cached is None or cached[0]() is not weight or dtype not in cached[1]:
+        verdicts: dict = (
+            {} if cached is None or cached[0]() is not weight else cached[1]
+        )
+        layout = _layout(moe)
+        ok = layout is not None
+        if layout is not None:
+            try:
+                key = mx.random.key(41)
+                probe = mx.random.normal((MAX_ROWS, layout[0]), key=key).astype(dtype)
+                # Stock picks a different multi-row QMV, so the contract is
+                # per row: batched decode matches single-stream decode.
+                expected = [stock(probe[r : r + 1]) for r in range(MAX_ROWS)]
+                for rows in (1, 2, MAX_ROWS):
+                    actual = _fused(moe, layout, probe[:rows])
+                    for r in range(rows):
+                        same = mx.array_equal(actual[r : r + 1], expected[r])
+                        ok = ok and bool(same.item())
+            except Exception:  # compile/launch failure on this runtime
+                logger.warning("fused V4.1 MoE unavailable", exc_info=True)
+                ok = False
+            if not ok:
+                logger.warning("fused V4.1 MoE disabled: stock path for this layer")
+        verdicts[dtype] = layout if ok else None
+        # Plain attribute (not a parameter); the weak reference re-qualifies
+        # replaced weights without keeping the old arrays alive.
+        cached = (weakref.ref(weight), verdicts)
+        object.__setattr__(moe, _CHECK_ATTR, cached)
+    verdict: tuple[int, int, int] | None = cached[1][dtype]
+    return verdict
+
+
+def moe_forward(moe, x: mx.array, stock) -> mx.array | None:
+    """Fused decode MoE output, or None when the stock path must run."""
+    if not supports(x):
+        return None
+    layout = _qualified(moe, stock, x.dtype)
+    if layout is None or int(x.shape[-1]) != layout[0]:
+        return None
+    return _fused(moe, layout, x)

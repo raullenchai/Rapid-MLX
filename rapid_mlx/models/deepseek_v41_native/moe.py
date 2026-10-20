@@ -29,6 +29,7 @@ _mlx_compat.install()
 
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
+from . import moe_decode
 from .config import ModelArgs
 from .head_gemv import project
 
@@ -61,10 +62,14 @@ class Gate(nn.Module):
         self.bias = mx.zeros((args.n_routed_experts,), dtype=mx.float32)
         self.bias_vl = mx.zeros((args.n_routed_experts,), dtype=mx.float32)
 
-    def __call__(self, x: mx.array):
+    def scores(self, x: mx.array) -> mx.array:
+        """Raw FP32 router logits, before the temperature."""
         # Exact in-register BF16 GEMV for decode rows instead of promoting
         # the 384 x dim router weight to FP32 on every call.
-        scores = project(self, x.astype(mx.float32)) / self.gate_temp
+        return project(self, x.astype(mx.float32))
+
+    def __call__(self, x: mx.array):
+        scores = self.scores(x) / self.gate_temp
         if self.score_func == "softmax":
             scores = mx.softmax(scores, axis=-1)
         elif self.score_func == "sigmoid":
@@ -118,6 +123,12 @@ class MoE(nn.Module):
         )
 
     def __call__(self, x: mx.array) -> mx.array:
+        # decode rows: router, routed+shared up and down+combine in three
+        # kernels, qualified bit-exact against the stock path below
+        fused = moe_decode.moe_forward(self, x, self._stock)
+        return self._stock(x) if fused is None else fused
+
+    def _stock(self, x: mx.array) -> mx.array:
         shape = x.shape
         xf = x.reshape(-1, self.dim)
         weights, indices = self.gate(xf)
