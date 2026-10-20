@@ -1689,12 +1689,14 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
     SD35_REPO: SD35_DATA_FILES,
 }
 
-# The two mflux-community pins below were re-pinned on 2026-10-20: upstream
-# deleted and re-created both repositories on 2026-10-11, so the previous
-# commits return 404 and every cold pull failed with RevisionNotFoundError.
-# The re-converted shards keep identical tensor names, shapes, dtypes and
-# offsets; only the ``mflux_version`` string in the safetensors metadata
-# changed. Re-check that structure before moving either pin again.
+# Upstream deleted and re-created both mflux-community repositories below on
+# 2026-10-11, so their previously pinned commits return 404 and every cold
+# pull failed with RevisionNotFoundError (issue #4992). The re-created builds
+# keep the same weight files, tensor names, shapes, dtypes and quantization; the
+# safetensors metadata now records mflux 0.22.0. The qwen-image transformer
+# now matches the original Qwen/Qwen-Image weights; the earlier build had
+# carried the Qwen-Image-2512 transformer. A snapshot cached at an old pin is
+# not vouched for, so an upgraded install downloads the new pin once.
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/flux-1-schnell-mflux-q4": "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce",
