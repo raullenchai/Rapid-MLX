@@ -189,7 +189,7 @@ def launch_command(args: argparse.Namespace) -> None:
             if not model:
                 print("launch: --check requires --model", file=sys.stderr)
                 sys.exit(2)
-            port = stable_port()
+            port = args.port if args.port is not None else stable_port()
             key = stable_key(create=False)
             if key is None:
                 print(
@@ -223,7 +223,7 @@ def launch_command(args: argparse.Namespace) -> None:
                 raise ValueError(f"unknown agent: {args.client}")
             from rapid_mlx.run.cli import _select_model
 
-            port = stable_port()
+            port = args.port if args.port is not None else stable_port()
             model = getattr(args, "_original_alias", None) or _select_model(
                 explicit=args.model, profile=profile, no_download=False
             )
@@ -281,6 +281,9 @@ def launch_command(args: argparse.Namespace) -> None:
             raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
         print(f"  If the local server is stopped: {start_hint}")
         return
+
+    if args.port is None:
+        args.port = 8000
 
     if args.all and args.client:
         print(
@@ -532,10 +535,10 @@ def register(subparsers) -> None:
     p.add_argument(
         "--port",
         type=_port_arg,
-        default=8000,
+        default=None,
         help=(
-            "Port for --start-server (default: 8000). Must be in "
-            "[1, 65535]. Ignored when --start-server is not set."
+            "Port for --start-server (default: 8000), or the saved local port "
+            "with --isolated (default: the port used by Desktop). Must be in [1, 65535]."
         ),
     )
     p.add_argument(

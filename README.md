@@ -207,6 +207,8 @@ rapid-mlx launch claude-code
 
 With a server running (step 2), this patches Claude Code's local config (`~/.claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cline` or `continue-dev` for the other IDE clients, or run `rapid-mlx launch list` to see what's detected on this machine.
 
+To keep your existing Claude Code settings untouched and reconnect after a restart, run `rapid-mlx launch claude-code --isolated --port 8000 --run`. It prints a private day-two command and a matching server-start hint. [Agent setup details](docs/guides/ai-clients.md#coding-agents).
+
 > **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, set `RAPID_MLX_API_KEY=your-secret` for both `rapid-mlx serve ...` and `rapid-mlx launch cursor --server-url https://your-public-host`. This is no longer a fully local connection; never expose an unauthenticated server. Rapid-MLX rejects explicit local/private addresses but cannot verify reachability from Cursor's network, whose DNS view may differ from your Mac.
 
 > **Vision / image / video models?** They work out of the box with `pip install rapid-mlx` (and Rapid-MLX Desktop), which include the vision, image-generation and video-generation runtimes (image and video generation need Python 3.11+). Audio (TTS, STT, voice cloning) and embeddings ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)

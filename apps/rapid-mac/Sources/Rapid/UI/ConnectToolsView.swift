@@ -234,6 +234,12 @@ struct ConnectToolsView: View {
             // local server that works with any compatible client.
             endpointSection
 
+            if snippetModel.lowercased().contains("gemma-4-12b-it") {
+                Text("Codex can stall on tool calls with this model. Choose a recommended Qwen model for coding agents.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.statusWarning)
+                    .accessibilityIdentifier("Launch.AgentModelToolWarning")
+            }
             toolsSection(Array(tools.prefix(9)), title: "Coding agents")
             let remaining = Array(tools.dropFirst(9))
             if !remaining.isEmpty {
