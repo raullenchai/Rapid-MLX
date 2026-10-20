@@ -255,16 +255,18 @@ def launch_command(args: argparse.Namespace) -> None:
             f"--no-setup --port {port}"
         )
         if args.run:
-            status = connection_status(port, stable_key(), model)
+            key = stable_key(create=False)
+            assert key is not None  # configure() created or reused it above.
+            status = connection_status(port, key, model)
             if status == "stopped":
                 if not args.start_server:
                     print(f"  Local server is stopped. Start it with: {start_hint}")
                     raise SystemExit(1)
-                _start_server_background(model, port, api_key=stable_key())
+                _start_server_background(model, port, api_key=key)
                 import time
 
                 for _ in range(600):
-                    status = connection_status(port, stable_key(), model)
+                    status = connection_status(port, key, model)
                     if status not in {"stopped", "server-error"}:
                         break
                     time.sleep(1)
