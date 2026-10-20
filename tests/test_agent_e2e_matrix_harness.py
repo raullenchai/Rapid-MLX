@@ -213,6 +213,19 @@ def test_aider_repo_creation_prompt_is_declined(monkeypatch):
     assert writes == [b"n\r"]
 
 
+def test_crush_project_initialization_is_declined(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
+    )
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until", lambda *args: ("Crush ready", None)
+    )
+    opening = "Would you like to initialize now? Yep! Nope"
+    assert "Crush ready" in handle_first_run_menus("crush", opening, 1, None, None)
+    assert writes == [b"\x1b[C\r"]
+
+
 def test_goose_waits_for_turn_completion_after_tool_output():
     assert not reply_finished("goose", "tool result: verify-123")
     assert reply_finished("goose", "tool result: verify-123\n⏱ 3.2s")
