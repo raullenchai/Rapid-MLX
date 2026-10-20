@@ -213,13 +213,28 @@ def test_aider_repo_creation_prompt_is_declined(monkeypatch):
     assert writes == [b"n\r"]
 
 
+def test_aider_documentation_prompt_is_declined(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
+    )
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until",
+        lambda *args: ("Open documentation url for more info?", None),
+    )
+    opening = "No git repo found, create one to track aider's changes?"
+    handle_first_run_menus("aider", opening, 1, None, None)
+    assert writes == [b"n\r", b"n\r"]
+
+
 def test_crush_project_initialization_is_declined(monkeypatch):
     writes = []
     monkeypatch.setattr(
         "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
     )
     monkeypatch.setattr(
-        "scripts.agent_e2e.run.read_until", lambda *args: ("Crush ready", None)
+        "scripts.agent_e2e.run.read_until",
+        lambda *args, **kwargs: ("Crush ready", None),
     )
     opening = "Would you like to initialize now? Yep! Nope"
     assert "Crush ready" in handle_first_run_menus("crush", opening, 1, None, None)

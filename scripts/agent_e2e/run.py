@@ -204,7 +204,18 @@ def handle_first_run_menus(
         if "Would you like to initialize now?" in _ANSI.sub("", output):
             os.write(master, b"\x1b[C\r")  # Select Nope; keep the project untouched.
             more, _ = read_until(master, proc, 8, sink)
-            return output + more
+            output += more
+        if "Ready for instructions" not in _ANSI.sub("", output):
+            more, _ = read_until(
+                master,
+                proc,
+                20,
+                sink,
+                stop_when=lambda screen: (
+                    "Ready for instructions" in _ANSI.sub("", screen)
+                ),
+            )
+            output += more
         return output
     if agent == "goose":
         if "Share anonymous usage data to help improve goose?" in _ANSI.sub("", output):
@@ -213,10 +224,21 @@ def handle_first_run_menus(
             return output + more
         return output
     if agent == "aider":
-        if "No git repo found, create one" in _ANSI.sub("", output):
+        answered = set()
+        for _ in range(3):
+            screen = _ANSI.sub("", output)
+            if "No git repo found, create one" in screen and "git" not in answered:
+                answered.add("git")
+            elif (
+                "Open documentation url for more info?" in screen
+                and "docs" not in answered
+            ):
+                answered.add("docs")
+            else:
+                break
             os.write(master, b"n\r")
             more, _ = read_until(master, proc, 8, sink)
-            return output + more
+            output += more
         return output
     if agent == "hermes":
         if "Choice [default 3]:" in _ANSI.sub("", output):
