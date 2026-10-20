@@ -30,8 +30,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -102,13 +100,7 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     so a closing terminal doesn't SIGHUP the serve.
     """
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    current = Path(sys.argv[0])
-    executable = (
-        str(current.resolve())
-        if current.name == "rapid-mlx" and current.is_file()
-        else "rapid-mlx"
-    )
-    cmd = [executable, "serve", model, "--port", str(port)]
+    cmd = ["rapid-mlx", "serve", model, "--port", str(port)]
     # ``start_new_session=True`` is the POSIX-portable replacement for
     # setsid() — detaches the child from the parent's controlling
     # terminal so a Ctrl-C on the parent doesn't propagate.
@@ -125,21 +117,6 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     proc = subprocess.Popen(cmd, **popen_kwargs)
     PID_FILE.write_text(str(proc.pid) + "\n", encoding="utf-8")
     return proc.pid
-
-
-def _stop_failed_start(pid: int | None) -> None:
-    """Stop a detached model load when launch is cancelled or fails."""
-    if not isinstance(pid, int):
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        if PID_FILE.read_text(encoding="utf-8").strip() == str(pid):
-            PID_FILE.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def _print_preview(
@@ -184,180 +161,6 @@ def launch_command(args: argparse.Namespace) -> None:
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
-    from rapid_mlx.agents.isolated import SUPPORTED, saved_model
-
-    # The short command is the day-one and day-two entry point for coding
-    # agents. An explicit --isolated without --run still only saves a profile.
-    resume_saved = (
-        args.client in SUPPORTED
-        and not getattr(args, "isolated", False)
-        and not getattr(args, "remove", False)
-        and not getattr(args, "all", False)
-        and not getattr(args, "legacy_config", False)
-        and args.server_url is None
-    )
-    if resume_saved:
-        args.isolated = True
-        args.run = True
-
-    if (getattr(args, "run", False) or getattr(args, "check", False)) and not getattr(
-        args, "isolated", False
-    ):
-        print("launch: --run and --check require --isolated", file=sys.stderr)
-        sys.exit(2)
-
-    if getattr(args, "isolated", False) or getattr(args, "remove", False):
-        from rapid_mlx.agents import get_profile
-        from rapid_mlx.agents.isolated import (
-            _cli_invocation,
-            configure,
-            connection_status,
-            remove,
-            saved_model,
-            stable_key,
-            stable_port,
-        )
-
-        if not args.client or args.all:
-            print("launch: name one agent for --isolated or --remove", file=sys.stderr)
-            sys.exit(2)
-        if args.dry_run:
-            action = "remove" if getattr(args, "remove", False) else "save"
-            print(f"[dry-run] Would {action} the isolated {args.client} profile.")
-            return
-        if getattr(args, "check", False):
-            model = getattr(args, "_original_alias", None) or args.model
-            if not model:
-                print("launch: --check requires --model", file=sys.stderr)
-                sys.exit(2)
-            port = args.port if args.port is not None else stable_port()
-            key = stable_key(create=False)
-            if key is None:
-                print(
-                    "Local connection key is missing. Open Rapid Launch and connect this agent again.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            status = connection_status(port, key, model)
-            if status == "ready":
-                return
-            start_hint = (
-                f"{_cli_invocation()} start {shlex.quote(args.client)} "
-                f"--model {shlex.quote(model)} --no-setup --port {port}"
-            )
-            reason = (
-                "Local server is stopped."
-                if status == "stopped"
-                else "Local server key or model does not match this profile."
-            )
-            print(f"{reason} Start it with: {start_hint}", file=sys.stderr)
-            sys.exit(1)
-        try:
-            if getattr(args, "remove", False):
-                removed = remove(args.client)
-                print(
-                    f"  {'Removed' if removed else 'No saved profile for'} {args.client}."
-                )
-                return
-            profile = get_profile(args.client)
-            if profile is None:
-                raise ValueError(f"unknown agent: {args.client}")
-            from rapid_mlx.run.cli import _select_model
-
-            port = args.port if args.port is not None else stable_port()
-            model = getattr(args, "_original_alias", None) or _select_model(
-                explicit=args.model or saved_model(args.client),
-                profile=profile,
-                no_download=False,
-            )
-            if model is None:
-                raise ValueError("no model fits this Mac; choose one with --model")
-            if args.model:
-                from rapid_mlx.recommendations import physical_ram_gb
-                from rapid_mlx.run.cli import _fits_host
-
-                ram_gb = physical_ram_gb()
-                if ram_gb and _fits_host(model, ram_gb) is False:
-                    print(
-                        f"  Warning: {model} is not recommended for this Mac's memory.",
-                        file=sys.stderr,
-                    )
-            if profile.needs_function_calling and "gemma-4-12b-it" in model.lower():
-                print(
-                    "  Warning: this model is known to stall on coding-agent tool calls; "
-                    "choose a recommended model for reliable edits.",
-                    file=sys.stderr,
-                )
-            command = configure(args.client, model, port=port)
-        except (OSError, ValueError) as exc:
-            print(f"launch: {exc}", file=sys.stderr)
-            sys.exit(1)
-        day_two = f"{_cli_invocation()} launch {shlex.quote(args.client)}"
-        print(f"  Saved an isolated {args.client} profile. Next time: {day_two}")
-        start_hint = (
-            f"{_cli_invocation()} start {shlex.quote(args.client)} --model {shlex.quote(model)} "
-            f"--no-setup --port {port}"
-        )
-        if getattr(args, "run", False):
-            key = stable_key(create=False)
-            assert key is not None  # configure() created or reused it above.
-            status = connection_status(port, key, model)
-            if status == "stopped":
-                if not (args.start_server or resume_saved):
-                    print(f"  Local server is stopped. Start it with: {start_hint}")
-                    raise SystemExit(1)
-                from rapid_mlx.run.cli import _confirm_download
-
-                if not _confirm_download(model, no_download=False, yes=False):
-                    raise SystemExit(1)
-                print(
-                    f"  Downloading or loading {model}; waiting for readiness…",
-                    flush=True,
-                )
-                server_pid = _start_server_background(model, port, api_key=key)
-                import time
-
-                try:
-                    for second in range(600):
-                        status = connection_status(port, key, model)
-                        if status not in {"stopped", "server-error"}:
-                            break
-                        if second and second % 10 == 0:
-                            print(f"  Preparing local model… {second}s", flush=True)
-                        time.sleep(1)
-                    if status in {"stopped", "server-error"}:
-                        print(
-                            f"  Local server did not become ready. Retry: {start_hint}"
-                        )
-                        raise SystemExit(1)
-                    if status != "ready":
-                        print(
-                            "  Local server key or model does not match this profile. "
-                            f"Start the matching model with: {start_hint}",
-                            file=sys.stderr,
-                        )
-                        raise SystemExit(1)
-                except BaseException:
-                    _stop_failed_start(server_pid)
-                    raise
-            if status != "ready":
-                print(
-                    "  Local server key or model does not match this profile. "
-                    f"Start the matching model with: {start_hint}",
-                    file=sys.stderr,
-                )
-                raise SystemExit(1)
-            print(
-                "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
-                flush=True,
-            )
-            raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
-        print(f"  If the local server is stopped: {start_hint}")
-        return
-
-    if args.port is None:
-        args.port = 8000
-
     if args.all and args.client:
         print(
             "launch: --all is mutually exclusive with a client name",
@@ -373,7 +176,7 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    server_url = args.server_url or "http://127.0.0.1:8000"
+    server_url = args.server_url
     api_key = os.environ.get("RAPID_MLX_API_KEY")
     cursor_server_url: str | None = None
     cursor_reason: str | None = None
@@ -542,12 +345,12 @@ def register(subparsers) -> None:
 
     p = subparsers.add_parser(
         "launch",
-        help="Launch coding agents with private local profiles or configure editors",
+        help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
         description=(
-            "Launch a coding agent with a private local profile and start the "
-            "server if needed, or configure an editor. Use `rapid-mlx launch "
-            "list` to see what's supported. Cursor requires a public HTTPS "
-            "--server-url."
+            "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
+            "and write/patch its config to route at the "
+            "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
+            "supported. Cursor requires a public HTTPS --server-url."
         ),
     )
     p.add_argument(
@@ -555,7 +358,7 @@ def register(subparsers) -> None:
         nargs="?",
         default=None,
         help=(
-            'Agent to launch or client to configure (or "list" to print the detection matrix). '
+            'Client to configure (or "list" to print the detection matrix). '
             "Supported: "
             + ", ".join(ADAPTERS.keys())
             + ". Aliases: "
@@ -571,31 +374,6 @@ def register(subparsers) -> None:
         help="Patch every detected client. Mutually exclusive with a client name.",
     )
     p.add_argument(
-        "--isolated",
-        action="store_true",
-        help="Save a private, removable Rapid profile without editing the client's existing configuration",
-    )
-    p.add_argument(
-        "--legacy-config",
-        action="store_true",
-        help="Use the original client config writer instead of isolated agent launch",
-    )
-    p.add_argument(
-        "--run",
-        action="store_true",
-        help="Run the isolated agent after saving its profile",
-    )
-    p.add_argument(
-        "--check",
-        action="store_true",
-        help="Check that the saved local key, port, and model are available",
-    )
-    p.add_argument(
-        "--remove",
-        action="store_true",
-        help="Remove the private Rapid profile for this agent",
-    )
-    p.add_argument(
         "--model",
         type=str,
         default=None,
@@ -607,16 +385,16 @@ def register(subparsers) -> None:
     p.add_argument(
         "--server-url",
         type=str,
-        default=None,
+        default="http://127.0.0.1:8000",
         help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
     )
     p.add_argument(
         "--port",
         type=_port_arg,
-        default=None,
+        default=8000,
         help=(
-            "Port for --start-server (default: 8000), or the saved local port "
-            "with --isolated (default: the port used by Desktop). Must be in [1, 65535]."
+            "Port for --start-server (default: 8000). Must be in "
+            "[1, 65535]. Ignored when --start-server is not set."
         ),
     )
     p.add_argument(

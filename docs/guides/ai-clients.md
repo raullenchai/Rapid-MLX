@@ -70,46 +70,6 @@ These clients have been verified through automated integration tests
 
 ### Coding Agents
 
-For a connection that still works after restarting Rapid, use **Launch → Coding
-agents → Launch** in Desktop. The app saves a private profile for the selected
-agent and opens it in Terminal. On later days, use the short command shown
-beside that agent, such as `rapid-mlx launch codex`. It reuses the saved model,
-starts the local server if needed, waits for it, and opens the agent.
-
-The CLI offers the same isolated profiles without changing your existing agent
-settings:
-
-```bash
-rapid-mlx launch codex
-# Later, even after quitting Rapid and opening a new terminal:
-rapid-mlx launch codex
-# Remove only Rapid's private Codex profile:
-rapid-mlx launch codex --remove
-```
-
-Replace `codex` with `claude-code`, `pi`, `opencode`, `hermes`, `goose`,
-`qwen-code`, `crush`, or `aider`. If a server already runs on a chosen port,
-pass `--port PORT` when saving the profile. The key and port stay under
-`~/.rapid-mlx/connect`; config files and the key are owner-only. Desktop
-connects on loopback and switches the embedded key to **Until I rotate** when
-you save a persistent agent connection. Rotating the key requires restarting
-the model before agents can use the new key.
-
-The generated files remain separate from your existing tool settings. If the
-server is already running, you can use the agent's native command with its
-private config directory:
-
-```bash
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" CODEX_HOME="$HOME/.rapid-mlx/connect/agents/codex" codex --profile rapid
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" PI_CODING_AGENT_DIR="$HOME/.rapid-mlx/connect/agents/pi" pi --provider rapid-mlx --model "$(cat ~/.rapid-mlx/connect/agents/pi/model)"
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" HERMES_HOME="$HOME/.rapid-mlx/connect/agents/hermes" hermes -p rapid chat --provider custom --model "$(cat ~/.rapid-mlx/connect/agents/hermes/model)"
-claude --settings "$HOME/.rapid-mlx/connect/agents/claude-code/settings.json"
-```
-
-The short `rapid-mlx launch <agent>` command also checks the key and model,
-starts a stopped server, and keeps track of a changed port. For the original
-config-writing CLI behavior, pass `--legacy-config`.
-
 Tier-1 coding agents have dedicated copy-paste setup pages with per-family
 config, plus an honest test-backed [support matrix](../agents/matrix.md):
 [Codex CLI](../agents/codex-cli.md) ·

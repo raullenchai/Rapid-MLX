@@ -35,12 +35,7 @@ enum IntegrationCatalog {
     /// server, nothing written, nothing left behind. Most of the rest either
     /// only print instructions or leave a config carrying a bearer that stops
     /// working at the next restart — worth showing, not worth leading with.
-    static let isolatedAgentIDs: Set<String> = [
-        "claude-code", "codex", "pi", "opencode", "hermes", "goose", "qwen-code", "crush", "aider"
-    ]
-    static let leadingIntegrations = [
-        "claude-code", "codex", "pi", "opencode", "hermes", "goose", "qwen-code", "crush", "aider"
-    ]
+    static let leadingIntegrations = ["claude-code", "codex"]
 
     /// Applies ``leadingIntegrations`` and disturbs nothing else.
     ///

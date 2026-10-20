@@ -92,7 +92,7 @@
     "help": "Show help for a subcommand",
     "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
-    "launch": "Launch coding agents with private local profiles or configure editors",
+    "launch": "One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
     "ls": "List models in the local HuggingFace cache (alias for `models --cached`)",
     "models": "List available model aliases",
     "ps": "List running rapid-mlx servers",
@@ -3032,7 +3032,7 @@
        "const": null,
        "default": null,
        "dest": "client",
-       "help": "Agent to launch or client to configure (or \"list\" to print the detection matrix). Supported: cline, claude-code, continue-dev, cursor. Aliases: continue (for continue-dev).",
+       "help": "Client to configure (or \"list\" to print the detection matrix). Supported: cline, claude-code, continue-dev, cursor. Aliases: continue (for continue-dev).",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -3049,81 +3049,6 @@
        "nargs": 0,
        "option_strings": [
         "--all"
-       ],
-       "required": false,
-       "type": null
-      },
-      {
-       "class": "argparse._StoreTrueAction",
-       "completer": null,
-       "const": true,
-       "default": false,
-       "dest": "isolated",
-       "help": "Save a private, removable Rapid profile without editing the client's existing configuration",
-       "metavar": null,
-       "nargs": 0,
-       "option_strings": [
-        "--isolated"
-       ],
-       "required": false,
-       "type": null
-      },
-      {
-       "class": "argparse._StoreTrueAction",
-       "completer": null,
-       "const": true,
-       "default": false,
-       "dest": "legacy_config",
-       "help": "Use the original client config writer instead of isolated agent launch",
-       "metavar": null,
-       "nargs": 0,
-       "option_strings": [
-        "--legacy-config"
-       ],
-       "required": false,
-       "type": null
-      },
-      {
-       "class": "argparse._StoreTrueAction",
-       "completer": null,
-       "const": true,
-       "default": false,
-       "dest": "run",
-       "help": "Run the isolated agent after saving its profile",
-       "metavar": null,
-       "nargs": 0,
-       "option_strings": [
-        "--run"
-       ],
-       "required": false,
-       "type": null
-      },
-      {
-       "class": "argparse._StoreTrueAction",
-       "completer": null,
-       "const": true,
-       "default": false,
-       "dest": "check",
-       "help": "Check that the saved local key, port, and model are available",
-       "metavar": null,
-       "nargs": 0,
-       "option_strings": [
-        "--check"
-       ],
-       "required": false,
-       "type": null
-      },
-      {
-       "class": "argparse._StoreTrueAction",
-       "completer": null,
-       "const": true,
-       "default": false,
-       "dest": "remove",
-       "help": "Remove the private Rapid profile for this agent",
-       "metavar": null,
-       "nargs": 0,
-       "option_strings": [
-        "--remove"
        ],
        "required": false,
        "type": null
@@ -3147,7 +3072,7 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": null,
+       "default": "http://127.0.0.1:8000",
        "dest": "server_url",
        "help": "rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
        "metavar": null,
@@ -3162,9 +3087,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": null,
+       "default": 8000,
        "dest": "port",
-       "help": "Port for --start-server (default: 8000), or the saved local port with --isolated (default: the port used by Desktop). Must be in [1, 65535].",
+       "help": "Port for --start-server (default: 8000). Must be in [1, 65535]. Ignored when --start-server is not set.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -3222,7 +3147,7 @@
      "allow_abbrev": true,
      "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
      "defaults": {},
-     "description": "Launch a coding agent with a private local profile and start the server if needed, or configure an editor. Use `rapid-mlx launch list` to see what's supported. Cursor requires a public HTTPS --server-url.",
+     "description": "Detect an IDE client (Cline, Claude Code, Continue, Cursor) and write/patch its config to route at the rapid-mlx server. Use `rapid-mlx launch list` to see what's supported. Cursor requires a public HTTPS --server-url.",
      "epilog": null,
      "formatter_class": "argparse.HelpFormatter",
      "groups": [
@@ -3238,11 +3163,6 @@
        "dests": [
         "help",
         "all",
-        "isolated",
-        "legacy_config",
-        "run",
-        "check",
-        "remove",
         "model",
         "server_url",
         "port",
@@ -9603,7 +9523,7 @@
  "allow_abbrev": true,
  "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
  "defaults": {},
- "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            Launch coding agents with private local profiles or configure editors\n  start             Start an AI agent with a local model in one command\n  connect           Show the server's connection info and wire up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
+ "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            One-shot bootstrap: patch IDE/agent client config to use rapid-mlx\n  start             Start an AI agent with a local model in one command\n  connect           Show the server's connection info and wire up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
  "epilog": "Examples:\n  rapid-mlx                                   # guided start for this Mac\n  rapid-mlx chat qwen3.5-4b-4bit              # chat in the terminal\n  rapid-mlx serve qwen3.5-9b-4bit --port 8000 # OpenAI/Anthropic-compatible server\n  rapid-mlx launch claude-code --model qwen3.5-9b-4bit\n  rapid-mlx recipe                            # best smart + fast models for this Mac\n\nRun `rapid-mlx <command> --help` for a command's options.\nDocs: https://rapidmlx.com/docs/\nCommunity: https://discord.gg/nZcXkUjY5R\n",
  "formatter_class": "argparse.RawDescriptionHelpFormatter",
  "groups": [
