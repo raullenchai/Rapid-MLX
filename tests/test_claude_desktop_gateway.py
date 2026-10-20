@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Claude Desktop tier discovery stays opt-in and preserves local cards."""
 
+import asyncio
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 
 def test_tier_mapping_is_opt_in_and_resolves_documented_aliases(tmp_path, monkeypatch):
@@ -26,6 +30,40 @@ def test_tier_mapping_is_opt_in_and_resolves_documented_aliases(tmp_path, monkey
     assert claude_desktop.resolve_model("sonnet") == "local-model"
     assert claude_desktop.resolve_model("claude-opus-rapid-mlx") == "other-model"
     assert claude_desktop.resolve_model("claude-unrelated") == "claude-unrelated"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{invalid",
+        "[]",
+        '{"opus":"local"}',
+        '{"opus":"local","sonnet":1,"haiku":"local"}',
+    ],
+)
+def test_invalid_tier_mapping_is_disabled(tmp_path, monkeypatch, content):
+    from rapid_mlx.launch import claude_desktop
+
+    monkeypatch.setattr(claude_desktop, "connection_dir", lambda: tmp_path)
+    claude_desktop.mapping_path().write_text(content, encoding="utf-8")
+    assert claude_desktop.mappings() == {}
+
+
+def test_tier_mapping_saves_explicit_gateway_port(tmp_path, monkeypatch):
+    from rapid_mlx.launch import claude_desktop
+
+    saved_ports = []
+    monkeypatch.setattr(claude_desktop, "connection_dir", lambda: tmp_path)
+    monkeypatch.setattr(claude_desktop, "stable_key", lambda: "a" * 64)
+    monkeypatch.setattr(claude_desktop, "save_port", saved_ports.append)
+    monkeypatch.setattr(
+        claude_desktop,
+        "_private_write",
+        lambda path, content: path.write_text(content, encoding="utf-8"),
+    )
+    url, _key = claude_desktop.configure("local-model", port=7659)
+    assert url == "http://127.0.0.1:7659"
+    assert saved_ports == [7659]
 
 
 def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
@@ -73,6 +111,8 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
         )
         assert all(entry["is_family_default"] is True for entry in tiers)
         assert all(entry["id"].startswith("claude-") for entry in tiers)
+        monkeypatch.setattr(claude_desktop, "mappings", lambda: {"sonnet": "absent"})
+        assert client.get("/v1/models").json()["data"] == original_cards
     finally:
         (
             cfg.model_name,
@@ -81,3 +121,45 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
             cfg.api_key,
             cfg.tool_call_parser,
         ) = saved
+
+
+def test_chat_alias_reaches_model_validation_as_local_model(monkeypatch):
+    from rapid_mlx.launch import claude_desktop
+    from rapid_mlx.routes import chat
+
+    monkeypatch.setattr(claude_desktop, "mappings", lambda: {"sonnet": "local-model"})
+    selected = []
+
+    def stop_after_resolution(model):
+        selected.append(model)
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr(chat, "_validate_model_name", stop_after_resolution)
+    request = chat.ChatCompletionRequest(
+        model="sonnet", messages=[{"role": "user", "content": "hello"}]
+    )
+    with pytest.raises(RuntimeError, match="resolved"):
+        asyncio.run(chat.create_chat_completion(request, None))
+    assert selected == ["local-model"]
+
+
+def test_responses_alias_reaches_model_validation_as_local_model(monkeypatch):
+    from rapid_mlx.launch import claude_desktop
+    from rapid_mlx.routes import responses
+
+    monkeypatch.setattr(claude_desktop, "mappings", lambda: {"sonnet": "local-model"})
+    selected = []
+
+    def stop_after_resolution(model):
+        selected.append(model)
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr(responses, "_validate_model_name", stop_after_resolution)
+
+    async def receive():
+        return {"type": "http.request", "body": b'{"model":"sonnet","input":"hello"}'}
+
+    request = Request({"type": "http", "headers": []}, receive)
+    with pytest.raises(RuntimeError, match="resolved"):
+        asyncio.run(responses.create_response(request))
+    assert selected == ["local-model"]
