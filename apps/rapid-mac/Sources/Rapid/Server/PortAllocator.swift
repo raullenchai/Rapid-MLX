@@ -55,7 +55,13 @@ enum PortAllocator {
     /// — it collides with rapid-mlx's own ``--port`` CLI semantics;
     /// ``RAPID_DESKTOP_PORT`` is the disambiguated name.
     static var candidatePorts: [Int] {
-        resolveCandidatePorts(environment: ProcessInfo.processInfo.environment)
+        let environment = ProcessInfo.processInfo.environment
+        if environment["RAPID_DESKTOP_PORT"] == nil,
+           storedPort() == nil,
+           let saved = AgentConnectionStore.readPort() {
+            return [saved]
+        }
+        return resolveCandidatePorts(environment: environment)
     }
 
     /// UserDefaults key for the GUI-persisted port. Nil means

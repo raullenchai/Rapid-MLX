@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -160,6 +161,92 @@ def launch_command(args: argparse.Namespace) -> None:
 
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
+
+    if args.isolated or args.remove:
+        from rapid_mlx.agents import get_profile
+        from rapid_mlx.agents.isolated import configure, remove, stable_key, stable_port
+
+        if not args.client or args.all:
+            print("launch: name one agent for --isolated or --remove", file=sys.stderr)
+            sys.exit(2)
+        try:
+            if args.remove:
+                removed = remove(args.client)
+                print(
+                    f"  {'Removed' if removed else 'No saved profile for'} {args.client}."
+                )
+                return
+            profile = get_profile(args.client)
+            if profile is None:
+                raise ValueError(f"unknown agent: {args.client}")
+            from rapid_mlx.run.cli import _select_model
+
+            port = stable_port()
+            model = getattr(args, "_original_alias", None) or _select_model(
+                explicit=args.model, profile=profile, no_download=False
+            )
+            if model is None:
+                raise ValueError("no model fits this Mac; choose one with --model")
+            if args.model:
+                from rapid_mlx.recommendations import physical_ram_gb
+                from rapid_mlx.run.cli import _fits_host
+
+                ram_gb = physical_ram_gb()
+                if ram_gb and _fits_host(model, ram_gb) is False:
+                    print(
+                        f"  Warning: {model} is not recommended for this Mac's memory.",
+                        file=sys.stderr,
+                    )
+            if profile.needs_function_calling and "gemma-4-12b-it" in model.lower():
+                print(
+                    "  Warning: this model is known to stall on coding-agent tool calls; "
+                    "choose a recommended model for reliable edits.",
+                    file=sys.stderr,
+                )
+            command = configure(args.client, model, port=port)
+        except (OSError, ValueError) as exc:
+            print(f"launch: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"  Saved an isolated {args.client} profile. Run:\n  {command}")
+        start_hint = (
+            f"rapid-mlx start {shlex.quote(args.client)} --model {shlex.quote(model)} "
+            f"--no-setup --port {port}"
+        )
+        if args.run:
+            import urllib.error
+            import urllib.request
+
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/health/ready", timeout=2
+                ) as response:
+                    ready = response.status == 200
+            except (urllib.error.URLError, OSError, TimeoutError):
+                ready = False
+            if not ready:
+                if not args.start_server:
+                    print(f"  Local server is stopped. Start it with: {start_hint}")
+                    raise SystemExit(1)
+                _start_server_background(model, port, api_key=stable_key())
+                import time
+
+                for _ in range(600):
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/health/ready", timeout=2
+                        ) as response:
+                            if response.status == 200:
+                                ready = True
+                                break
+                    except (urllib.error.URLError, OSError, TimeoutError):
+                        pass
+                    time.sleep(1)
+                if not ready:
+                    print(f"  Local server did not become ready. Retry: {start_hint}")
+                    raise SystemExit(1)
+            raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
+        print(f"  If the local server is stopped: {start_hint}")
+        return
 
     if args.all and args.client:
         print(
@@ -372,6 +459,21 @@ def register(subparsers) -> None:
         "--all",
         action="store_true",
         help="Patch every detected client. Mutually exclusive with a client name.",
+    )
+    p.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Save a private, removable Rapid profile without editing the client's existing configuration",
+    )
+    p.add_argument(
+        "--run",
+        action="store_true",
+        help="Run the isolated agent after saving its profile",
+    )
+    p.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the private Rapid profile for this agent",
     )
     p.add_argument(
         "--model",

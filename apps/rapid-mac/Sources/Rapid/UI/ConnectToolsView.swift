@@ -234,14 +234,14 @@ struct ConnectToolsView: View {
             // local server that works with any compatible client.
             endpointSection
 
-            toolsSection(Array(tools.prefix(3)), title: "Popular integrations")
-            let remaining = Array(tools.dropFirst(3))
+            toolsSection(Array(tools.prefix(9)), title: "Coding agents")
+            let remaining = Array(tools.dropFirst(9))
             if !remaining.isEmpty {
                 Button {
                     showsMoreIntegrations.toggle()
                 } label: {
                     disclosureLabel(
-                        "More integrations (\(remaining.count))",
+                        "Editors and more (\(remaining.count))",
                         systemImage: "ellipsis.circle",
                         expanded: showsMoreIntegrations
                     )
@@ -249,7 +249,7 @@ struct ConnectToolsView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("ConnectTools.MoreIntegrations")
                 if showsMoreIntegrations {
-                    toolsSection(remaining, title: "More integrations")
+                    toolsSection(remaining, title: "Editors and other integrations")
                         .padding(.top, RapidTheme.Space.sm)
                 }
             }
@@ -497,6 +497,21 @@ struct ConnectToolsView: View {
     private var tools: [ConnectTool] {
         guard !integrationTargets.isEmpty else { return legacyTools }
         return IntegrationCatalog.displayOrdered(integrationTargets).map { target in
+            if IntegrationCatalog.isolatedAgentIDs.contains(target.id) {
+                let command = IntegrationLaunchCommand.isolated(
+                    id: target.id, model: snippetModel, cli: cliCommand, run: true
+                )
+                return ConnectTool(
+                    id: target.id,
+                    name: target.name,
+                    symbol: "terminal",
+                    blurb: "Save a private Rapid profile and launch. Your existing agent settings stay untouched; the saved profile works after a restart.",
+                    snippet: command,
+                    displaySnippet: command,
+                    action: .launch,
+                    sessionSnippet: sessionLaunchCommand(id: target.id, key: snippetKey)
+                )
+            }
             if let command = sessionLaunchCommand(id: target.id, key: snippetKey) {
                 return ConnectTool(
                     id: target.id,
@@ -680,6 +695,10 @@ enum IntegrationLaunchCommand {
     static func adapterGuide(id: String, baseURL: String, model: String, cli: String) -> String {
         "\(cli) agents \(id) --base-url \(baseURL) --model \(model)"
     }
+
+    static func isolated(id: String, model: String, cli: String, run: Bool) -> String {
+        "\(cli) launch \(shellQuote(id)) --isolated --model \(shellQuote(model))\(run ? " --run" : "")"
+    }
 }
 
 /// Applies the page-vs-sheet frame. A plain `if` around `.frame` would
@@ -741,6 +760,7 @@ private struct ConnectTool: Identifiable {
     }
 
     var action: Action = .launch
+    var sessionSnippet: String? = nil
 }
 
 /// One agent row: icon, name, description, a Copy action, and its launch
@@ -766,6 +786,7 @@ private struct ConnectToolRow: View {
     var isReady: Bool = true
     @State private var copied = false
     @State private var showsCommand = false
+    @State private var launchError: String?
 
     /// Fixed icon column. Everything textual in the row starts at
     /// ``iconColumn`` + ``iconGap`` so title, description, and snippet
@@ -806,6 +827,17 @@ private struct ConnectToolRow: View {
                 .help(copyHelp)
                 .accessibilityLabel(copied ? "Copied \(tool.name) setup" : accessibilityActionLabel)
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
+
+                if tool.action == .launch {
+                    Button("Launch") {
+                        do { try TerminalAgentLauncher.open(command: tool.snippet) }
+                        catch { launchError = error.localizedDescription }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!isReady)
+                    .accessibilityIdentifier("Launch.Integration.Run.\(tool.id)")
+                }
 
             }
 
@@ -856,11 +888,28 @@ private struct ConnectToolRow: View {
                         .padding(.top, RapidTheme.Space.sm)
                         .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
                 }
+                if let sessionSnippet = tool.sessionSnippet {
+                    Button("Copy one-session command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(sessionSnippet, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .disabled(!isReady)
+                    .padding(.top, RapidTheme.Space.sm)
+                }
             }
             .padding(.leading, Self.textInset)
         }
         .padding(.horizontal, RapidTheme.Space.xl - 4)
         .padding(.vertical, RapidTheme.Space.lg + 1)
+        .alert("Couldn’t open Terminal", isPresented: Binding(
+            get: { launchError != nil },
+            set: { if !$0 { launchError = nil } }
+        )) {
+            Button("OK") { launchError = nil }
+        } message: {
+            Text(launchError ?? "Try copying the command instead.")
+        }
     }
 
     private var copyHelp: String {
@@ -900,6 +949,30 @@ private struct ConnectToolRow: View {
         }
     }
 
+}
+
+private enum TerminalAgentLauncher {
+    static func open(command: String) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-agent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let script = directory.appendingPathComponent("Launch.command")
+        try ("#!/bin/zsh\n" + command + "\n").write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-a", "Terminal", script.path]
+        try task.run()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            throw NSError(domain: "Rapid.AgentLaunch", code: Int(task.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "Terminal could not open the agent command."])
+        }
+    }
 }
 
 /// A labelled value with a trailing copy button; masks secrets by default.

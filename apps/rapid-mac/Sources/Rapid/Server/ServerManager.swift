@@ -872,7 +872,7 @@ final class ServerManager {
 
     /// Issue #2599: how the next ``start()`` materializes the embedded
     /// bearer. The default deliberately remains per-launch rotation.
-    private(set) var embeddedBearerLifetime: EmbeddedBearerLifetime = .perLaunch
+    private(set) var embeddedBearerLifetime: EmbeddedBearerLifetime = .explicit
 
     /// Non-secret presentation state for the last materialized credential.
     /// The bearer itself stays in ``activeBearer`` and, when persisted, in
@@ -1268,6 +1268,7 @@ final class ServerManager {
 
     @ObservationIgnored
     private let bearerCredentialStore: any EmbeddedBearerCredentialStoring
+    private let sharesAgentConnection: Bool
 
     // MARK: - Construction
 
@@ -1277,6 +1278,7 @@ final class ServerManager {
         self.binaryPath = resolution?.binary
         self.state = (resolution == nil) ? .missing : .idle
         self.sessionDefaults = .standard
+        self.sharesAgentConnection = true
         self.bearerCredentialStore = EmbeddedBearerCredentialStore(
             defaults: .standard,
             keychain: SystemKeychain()
@@ -1317,6 +1319,7 @@ final class ServerManager {
         self.binaryPath = binaryPath
         self.residency = residency
         self.sessionDefaults = sessionDefaults
+        self.sharesAgentConnection = false
         self.bearerCredentialStore = bearerCredentialStore ?? EmbeddedBearerCredentialStore(
             defaults: UserDefaults(),
             keychain: InMemoryKeychain()
@@ -1334,7 +1337,7 @@ final class ServerManager {
     ) -> EmbeddedBearerLifetime {
         guard let raw = defaults.string(forKey: "rapid.embeddedBearer.lifetime.v1"),
               let lifetime = EmbeddedBearerLifetime(rawValue: raw) else {
-            return .perLaunch
+            return .explicit
         }
         return lifetime
     }
@@ -2924,6 +2927,9 @@ final class ServerManager {
             return
         }
         activePort = resolvedPort
+        if sharesAgentConnection && PortAllocator.storedPort() == nil {
+            sessionDefaults?.set(resolvedPort, forKey: PortAllocator.storedPortKey)
+        }
 
         // Issue #17 desktop-half: generate a per-launch bearer
         // secret, hand it to the child via RAPID_MLX_API_KEY, and
@@ -2935,7 +2941,13 @@ final class ServerManager {
             lifetime: embeddedBearerLifetime,
             store: bearerCredentialStore,
             now: Date(),
-            generateSecret: BearerSecret.generate
+            generateSecret: {
+                if self.sharesAgentConnection && self.embeddedBearerLifetime == .explicit,
+                   let saved = AgentConnectionStore.readKey() {
+                    return saved
+                }
+                return BearerSecret.generate()
+            }
         )
         guard !bearerMaterial.secret.isEmpty else {
             isOperating = false
@@ -2947,6 +2959,12 @@ final class ServerManager {
                 .engineStartFailed,
                 alias: trimmedAlias
             )
+            return
+        }
+        if sharesAgentConnection && embeddedBearerLifetime == .explicit &&
+            !AgentConnectionStore.save(key: bearerMaterial.secret, port: resolvedPort) {
+            isOperating = false
+            state = .crashed(alias: trimmedAlias, message: "Couldn't save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again.")
             return
         }
         embeddedBearerStatus = .materialized(

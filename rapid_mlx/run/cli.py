@@ -424,6 +424,12 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
     if getattr(args, "disable_model_downloads", False):
         cmd.append("--disable-model-downloads")
     child_env = os.environ.copy()
+    if args.no_setup and "RAPID_MLX_API_KEY" not in child_env:
+        from rapid_mlx.agents.isolated import stable_key
+
+        saved_key = stable_key(create=False)
+        if saved_key:
+            child_env["RAPID_MLX_API_KEY"] = saved_key
     log_target = getattr(args, "_log_target", None)
     if log_target is not None:
         from rapid_mlx import log_file
