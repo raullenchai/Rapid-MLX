@@ -654,6 +654,13 @@ def _hf_repo(repo_id: str, revision: str | None = None) -> HfRepo:
     return HfRepo(revision if isinstance(revision, str) else None, files)
 
 
+def _revision_not_found(error: BaseException) -> bool:
+    """Whether Hugging Face rejected the requested revision itself."""
+    from huggingface_hub.errors import RevisionNotFoundError
+
+    return isinstance(error, RevisionNotFoundError)
+
+
 def _hf_files(repo_id: str) -> list[HfFile]:
     """Compatibility helper used by focused callers and tests."""
     return _hf_repo(repo_id).files
@@ -1081,7 +1088,7 @@ def audit(
                 repos[repo_id] = hf_future.result()
             except Exception as error:
                 detail = str(error).splitlines()[0]
-                if repo_id in pinned_revisions:
+                if repo_id in pinned_revisions and _revision_not_found(error):
                     # Clients pull only this commit; if it is gone upstream,
                     # every cold pull fails no matter what the mirror holds.
                     detail = (

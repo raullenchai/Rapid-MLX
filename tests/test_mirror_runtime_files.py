@@ -175,6 +175,29 @@ def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
     assert report.findings == []
 
 
+def _revision_not_found(message: str) -> Exception:
+    import httpx
+    from huggingface_hub.errors import RevisionNotFoundError
+
+    request = httpx.Request("GET", "https://huggingface.co/api/models/org/pinned")
+    return RevisionNotFoundError(message, response=httpx.Response(404, request=request))
+
+
+def test_audit_keeps_other_pinned_listing_errors_generic(monkeypatch, tmp_path):
+    report, _, probed = _audit(
+        monkeypatch,
+        tmp_path,
+        LISTING,
+        set(),
+        runtime_list=None,
+        hf_error=TimeoutError("read timed out"),
+    )
+    assert probed == []
+    assert [(f.kind, f.severity, f.detail) for f in report.findings] == [
+        ("hf_unavailable", "error", "read timed out")
+    ]
+
+
 def test_audit_fails_when_the_pinned_commit_vanishes_upstream(monkeypatch, tmp_path):
     report, listed_at, probed = _audit(
         monkeypatch,
@@ -182,7 +205,7 @@ def test_audit_fails_when_the_pinned_commit_vanishes_upstream(monkeypatch, tmp_p
         LISTING,
         set(),
         runtime_list=None,
-        hf_error=RuntimeError("404 Client Error: Invalid rev id"),
+        hf_error=_revision_not_found("404 Client Error: Invalid rev id"),
     )
     assert listed_at == [(REPO, PIN)]
     assert probed == []
