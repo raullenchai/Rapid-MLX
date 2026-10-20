@@ -162,13 +162,14 @@ def launch_command(args: argparse.Namespace) -> None:
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
-    if args.run and not args.isolated:
-        print("launch: --run requires --isolated", file=sys.stderr)
+    if (args.run or getattr(args, "check", False)) and not args.isolated:
+        print("launch: --run and --check require --isolated", file=sys.stderr)
         sys.exit(2)
 
     if args.isolated or args.remove:
         from rapid_mlx.agents import get_profile
         from rapid_mlx.agents.isolated import (
+            _cli_invocation,
             configure,
             connection_status,
             remove,
@@ -183,6 +184,33 @@ def launch_command(args: argparse.Namespace) -> None:
             action = "remove" if args.remove else "save"
             print(f"[dry-run] Would {action} the isolated {args.client} profile.")
             return
+        if getattr(args, "check", False):
+            model = getattr(args, "_original_alias", None) or args.model
+            if not model:
+                print("launch: --check requires --model", file=sys.stderr)
+                sys.exit(2)
+            port = stable_port()
+            key = stable_key(create=False)
+            if key is None:
+                print(
+                    "Local connection key is missing. Open Rapid Launch and connect this agent again.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            status = connection_status(port, key, model)
+            if status == "ready":
+                return
+            start_hint = (
+                f"{_cli_invocation()} start {shlex.quote(args.client)} "
+                f"--model {shlex.quote(model)} --no-setup --port {port}"
+            )
+            reason = (
+                "Local server is stopped."
+                if status == "stopped"
+                else "Local server key or model does not match this profile."
+            )
+            print(f"{reason} Start it with: {start_hint}", file=sys.stderr)
+            sys.exit(1)
         try:
             if args.remove:
                 removed = remove(args.client)
@@ -223,7 +251,7 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"  Saved an isolated {args.client} profile. Run:\n  {command}")
         start_hint = (
-            f"rapid-mlx start {shlex.quote(args.client)} --model {shlex.quote(model)} "
+            f"{_cli_invocation()} start {shlex.quote(args.client)} --model {shlex.quote(model)} "
             f"--no-setup --port {port}"
         )
         if args.run:
@@ -475,6 +503,11 @@ def register(subparsers) -> None:
         "--run",
         action="store_true",
         help="Run the isolated agent after saving its profile",
+    )
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="Check that the saved local key, port, and model are available",
     )
     p.add_argument(
         "--remove",

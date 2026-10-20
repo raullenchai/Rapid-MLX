@@ -54,8 +54,8 @@ def test_profiles_are_isolated_idempotent_and_removable(private_home):
 def test_codex_profile_and_claude_settings(private_home):
     isolated.configure("codex", "qwen3.5-9b-4bit", port=7660)
     root = isolated.connection_dir() / "agents"
-    codex = tomllib.loads((root / "codex" / "config.toml").read_text())
-    assert codex["profiles"]["rapid"]["model_provider"] == "rapid-mlx"
+    codex = tomllib.loads((root / "codex" / "rapid.config.toml").read_text())
+    assert codex["model_provider"] == "rapid-mlx"
     assert (
         codex["model_providers"]["rapid-mlx"]["base_url"] == "http://127.0.0.1:7660/v1"
     )
@@ -123,5 +123,29 @@ def test_isolated_dry_run_preserves_saved_profile(private_home, capsys):
         client="codex", isolated=False, remove=True, all=False, dry_run=True, run=False
     )
     launch_command(args)
-    assert (isolated.connection_dir() / "agents" / "codex" / "config.toml").exists()
+    assert (
+        isolated.connection_dir() / "agents" / "codex" / "rapid.config.toml"
+    ).exists()
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_connection_requires_exact_advertised_model(private_home):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"qwen3.5-9b-4bit-WRONG"}]}'
+
+    with patch("urllib.request.urlopen", return_value=Response()) as request:
+        assert (
+            isolated.connection_status(7659, "a" * 64, "qwen3.5-9b-4bit")
+            == "model-mismatch"
+        )
+        assert (
+            request.call_args.args[0].get_header("Authorization")
+            == "Bearer " + "a" * 64
+        )

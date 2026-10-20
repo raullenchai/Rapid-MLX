@@ -128,6 +128,14 @@ def connection_status(port: int, key: str, model: str) -> str:
     return "ready" if model in advertised else "model-mismatch"
 
 
+def _cli_invocation() -> str:
+    current = Path(sys.argv[0])
+    if current.name == "rapid-mlx" and current.is_file():
+        return shlex.quote(str(current.resolve()))
+    binary = shutil.which("rapid-mlx")
+    return shlex.quote(binary) if binary else "rapid-mlx"
+
+
 def _command(name: str, root: Path, model: str, port: int) -> str:
     quote = shlex.quote
     key = quote(str(key_path()))
@@ -188,12 +196,12 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
         assert isinstance(rendered, str)
         catalog = root / "rapid-mlx-model-catalog.json"
         rendered = rendered.replace("{model_catalog_path}", str(catalog))
-        rendered += (
-            '\n[profiles.rapid]\nmodel_provider = "rapid-mlx"\nmodel = '
-            + json.dumps(model)
-            + "\n"
-        )
-        _private_write(root / "config.toml", rendered)
+        legacy = root / "config.toml"
+        if legacy.is_symlink():
+            raise ValueError(f"refusing symlinked config file: {legacy}")
+        if legacy.exists():
+            legacy.unlink()
+        _private_write(root / "rapid.config.toml", rendered)
         _private_write(
             catalog,
             json.dumps({"models": [build_codex_model_info(model, None)]}) + "\n",
@@ -230,32 +238,18 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
             root / "qwen.env", f"OPENAI_BASE_URL={base}\nOPENAI_MODEL={model}\n"
         )
     command = _command(name, root, model, port)
-    start = f"rapid-mlx start {shlex.quote(name)} --model {shlex.quote(model)} --no-setup --port {port}"
-    message = f"Local server is stopped. Start it with: {start}"
-    mismatch = f"Local server key or model does not match this profile. Start the matching model with: {start}"
+    cli = _cli_invocation()
     runner = root / "run"
     refresh = ""
     if name in {"claude-code", "hermes"}:
-        cli = (
-            sys.argv[0]
-            if Path(sys.argv[0]).name == "rapid-mlx" and Path(sys.argv[0]).is_file()
-            else shutil.which("rapid-mlx")
-        )
-        cli = cli or "rapid-mlx"
         refresh = (
-            f"{shlex.quote(cli)} launch {shlex.quote(name)} --isolated "
+            f"{cli} launch {shlex.quote(name)} --isolated "
             f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
         )
     _private_write(
         runner,
         "#!/bin/zsh\n"
-        + f"if ! /usr/bin/curl -fsS -o /dev/null http://127.0.0.1:{port}/health/ready 2>/dev/null; then\n"
-        + f"  /bin/echo {shlex.quote(message)} >&2\n"
-        + "  exit 1\nfi\n"
-        + f'rapid_models=$(/usr/bin/curl -fsS --max-time 2 -H "Authorization: Bearer $(/bin/cat {shlex.quote(str(key_path()))})" http://127.0.0.1:{port}/v1/models 2>/dev/null)\n'
-        + f'if [[ -z "$rapid_models" ]] || ! /bin/echo "$rapid_models" | /usr/bin/grep -Fq -- {shlex.quote(model)}; then\n'
-        + f"  /bin/echo {shlex.quote(mismatch)} >&2\n"
-        + "  exit 1\nfi\n"
+        + f"{cli} launch {shlex.quote(name)} --isolated --check --model {shlex.quote(model)} || exit 1\n"
         + refresh
         + command
         + "\n",
