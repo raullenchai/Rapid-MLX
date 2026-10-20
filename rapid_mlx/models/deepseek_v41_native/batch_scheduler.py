@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from collections import deque
@@ -24,6 +25,14 @@ from .serving import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _own_copy(error: Exception) -> Exception:
+    """One instance per consumer, so concurrent re-raises cannot share tracebacks."""
+    try:
+        return copy.copy(error)
+    except Exception:  # exceptions whose constructor cannot be replayed
+        return error
 _END = object()
 
 
@@ -302,9 +311,9 @@ class BatchBackend:
                 except Exception as error:
                     logger.exception("DeepSeek V4.1 batch step failed")
                     for request in rows:
-                        request.finish(error)
+                        request.finish(_own_copy(error))
                     if prefill is not None:
-                        prefill.finish(error)
+                        prefill.finish(_own_copy(error))
                     rows, batch, prefill = [], None, None
         finally:
             with self._condition:

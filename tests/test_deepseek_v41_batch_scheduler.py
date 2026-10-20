@@ -680,3 +680,13 @@ def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch):
             uvicorn_log_level="warning",
         )
     assert len(built) == 1 and built[0]._closed
+
+
+def test_shared_failure_gives_each_request_its_own_exception():
+    from rapid_mlx.models.deepseek_v41_native.batch_scheduler import _own_copy
+
+    error = RuntimeError("shared")
+    copied = _own_copy(error)
+    assert copied is not error and str(copied) == "shared"
+    unreplayable = HTTPException(status_code=400, detail="bad")
+    assert _own_copy(unreplayable) is unreplayable
