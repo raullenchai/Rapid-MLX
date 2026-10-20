@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -240,10 +241,12 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "goose":
         return f"{credential} XDG_CONFIG_HOME={quote(str(root))} GOOSE_MODEL={quote(model)} goose session --provider custom_rapid_mlx"
     if name == "crush":
+        project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]
+        data_dir = root / "data" / project_id
         return (
             f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root))} "
             f"CRUSH_GLOBAL_DATA={quote(str(root / 'global-data'))} "
-            f"crush --data-dir {quote(str(root / 'data'))}"
+            f"crush --data-dir {quote(str(data_dir))}"
         )
     if name == "aider":
         return f'OPENAI_API_KEY="$(cat {key})" aider --env-file {quote(str(root / "aider.env"))} --model openai/{quote(model)}'
@@ -311,12 +314,16 @@ def configure(
     root = connection_dir() / "agents" / name
     _private_dir(root)
     if name == "crush":
-        # The agent stores UI model selections in this higher-precedence file.
-        # A fresh launch must use the model just selected in Rapid.
-        workspace_config = root / "data" / "crush.json"
-        _reject_symlinked_ancestors(workspace_config.parent)
-        if workspace_config.is_file() or workspace_config.is_symlink():
-            workspace_config.unlink()
+        # UI model selections in either higher-precedence layer must not
+        # override the model just selected in Rapid. Keep session databases.
+        project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]
+        for saved_config in (
+            root / "global-data" / "crush.json",
+            root / "data" / project_id / "crush.json",
+        ):
+            _reject_symlinked_ancestors(saved_config.parent)
+            if saved_config.is_file() or saved_config.is_symlink():
+                saved_config.unlink()
     _private_write(root / "model", model + "\n")
     base = f"http://127.0.0.1:{port}/v1"
     previous = os.environ.get("RAPID_MLX_API_KEY")

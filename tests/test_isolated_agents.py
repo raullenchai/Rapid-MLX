@@ -1,5 +1,6 @@
 """Day-two configurations stay private and never rewrite existing agent state."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -1037,8 +1038,9 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
         isolated.connection_dir() / "agents/crush/global-data"
     )
     args = args_capture.read_text().splitlines()
+    project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]
     assert args[args.index("--data-dir") + 1] == str(
-        isolated.connection_dir() / "agents/crush/data"
+        isolated.connection_dir() / "agents/crush/data" / project_id
     )
     assert user_config.read_bytes() == original
 
@@ -1066,10 +1068,28 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
     (private_home / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
     monkeypatch.chdir(project)
     isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
-    data = isolated.connection_dir() / "agents" / "crush" / "data"
-    data.mkdir()
+    root = isolated.connection_dir() / "agents" / "crush"
+    project_id = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:24]
+    data = root / "data" / project_id
+    data.mkdir(parents=True)
     (data / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
     (data / "crush.db").write_text("history")
+    global_data = root / "global-data"
+    global_data.mkdir(exist_ok=True)
+    (global_data / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
     isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
     assert not (data / "crush.json").exists()
+    assert not (global_data / "crush.json").exists()
     assert (data / "crush.db").read_text() == "history"
+
+
+def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
+    projects = [private_home / "a", private_home / "b"]
+    paths = []
+    for project in projects:
+        project.mkdir()
+        monkeypatch.chdir(project)
+        isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+        runner = (isolated.connection_dir() / "agents/crush/run").read_text()
+        paths.append(runner.split("--data-dir ", 1)[1].split()[0])
+    assert paths[0] != paths[1]
