@@ -5058,9 +5058,10 @@ flow_launch_integrations() {
     # first, then replaces it with the sidecar's authoritative integration
     # registry. The heading appears before that asynchronous load completes,
     # so capturing immediately makes the baseline race between two valid UI
-    # states. The page now leads with the connection contract and three common
-    # integrations, with the rest behind one disclosure in both stopped and
-    # ready states. Wait for that disclosure before asserting structure.
+    # states. The page now leads with the connection contract and the first
+    # nine registry rows ("Coding agents", #4979), with the rest behind one
+    # disclosure in both stopped and ready states. Wait for that disclosure
+    # before asserting structure.
     local i count=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch.json"
@@ -5148,10 +5149,10 @@ flow_launch_integrations() {
                       | (.identifier // "")
                       | select(startswith("Launch.Integration.Copy."))]
                      | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 3 ]] && break
+        [[ "$count" == 9 ]] && break
         sleep 0.1
     done
-    [[ "$count" == 3 ]] || die "Cold Agent page did not return to 3 primary integrations"
+    [[ "$count" == 9 ]] || die "Cold Agent page did not return to 9 primary integrations (got $count)"
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -5159,7 +5160,7 @@ flow_launch_integrations() {
     start_model
     see_main "$OUT/launch-model-ready.json"
     press "$OUT/launch-model-ready.json" Sidebar.Launch "$OUT/launch-ready-open.json"
-    # Ready Launch leads with three common choices. The registry remains fully
+    # Ready Launch leads with nine coding-agent rows. The registry remains fully
     # reachable behind one explicit disclosure instead of occupying the page by
     # default.
     wait_identifier ConnectTools.MoreIntegrations "$OUT/launch-ready.json"
@@ -5168,8 +5169,8 @@ flow_launch_integrations() {
                          | select(((.identifier // "")
                                    | startswith("Launch.Integration.Copy."))
                                   and .enabled == true)] | length' "$OUT/launch-ready.json")"
-    [[ "$ready_copies" == 3 ]] \
-        || die "Ready Launch should lead with 3 common integrations, got $ready_copies"
+    [[ "$ready_copies" == 9 ]] \
+        || die "Ready Launch should lead with 9 primary integrations, got $ready_copies"
 
     # Compact cards keep shell syntax out of the first scan, while still
     # letting a user inspect the exact command before copying it.
