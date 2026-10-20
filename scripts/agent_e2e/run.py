@@ -127,7 +127,12 @@ def version(binary: str, env: dict[str, str]) -> str:
 
 
 def read_until(
-    fd: int, process: subprocess.Popen, seconds: float, sink, stop_when=None
+    fd: int,
+    process: subprocess.Popen,
+    seconds: float,
+    sink,
+    stop_when=None,
+    on_output=None,
 ) -> tuple[str, float | None]:
     end = time.monotonic() + seconds
     pieces = []
@@ -152,6 +157,8 @@ def read_until(
         sink.write(data)
         sink.flush()
         pieces.append(data.decode("utf-8", errors="replace"))
+        if on_output is not None:
+            on_output("".join(pieces))
     return "".join(pieces), first
 
 
@@ -241,6 +248,22 @@ def reply_finished(agent: str, output: str) -> bool:
     return True
 
 
+def approval_handler(agent: str, master: int):
+    """Accept an explicit local tool approval, as a user at the terminal would."""
+    if agent != "qwen-code":
+        return None
+    count = 0
+
+    def answer(output: str) -> None:
+        nonlocal count
+        seen = output.count("Waiting for user confirmation")
+        if seen > count:
+            count = seen
+            os.write(master, b"\r")  # The highlighted choice is "allow once".
+
+    return answer
+
+
 def session(
     command: list[str],
     env: dict[str, str],
@@ -309,6 +332,7 @@ def session(
                 return answer
             sent = time.monotonic()
             answer["prompt1_at"] = time.time()
+            approve = approval_handler(command[2], master)
             os.write(master, first_prompt.encode())
             time.sleep(0.5)
             os.write(master, b"\r")
@@ -323,6 +347,7 @@ def session(
                     and challenge1 in output
                     and reply_finished(command[2], output)
                 ),
+                on_output=approve,
             )
             answer["tool_ok"] = (
                 target.is_file()
@@ -338,6 +363,7 @@ def session(
                 (workspace / "challenge.txt").write_text(challenge2 + "\n")
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
+                approve = approval_handler(command[2], master)
                 os.write(master, second_prompt.encode())
                 time.sleep(0.5)
                 os.write(master, b"\r")
@@ -352,6 +378,7 @@ def session(
                         and challenge2 in output
                         and reply_finished(command[2], output)
                     ),
+                    on_output=approve,
                 )
                 answer["second_ok"] = (
                     target.is_file()

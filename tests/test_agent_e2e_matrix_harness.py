@@ -5,6 +5,7 @@ import json
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
+    approval_handler,
     classified_error,
     handle_first_run_menus,
     output_issues,
@@ -15,6 +16,17 @@ from scripts.agent_e2e.run import (
     stop_terminal_process,
 )
 from scripts.agent_e2e.seed_home import FILES
+
+
+def test_qwen_tool_approval_answers_once_per_prompt(monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("qwen-code", 10)
+    approve("Waiting for user confirmation")
+    approve("Waiting for user confirmation")
+    approve("Waiting for user confirmation... Waiting for user confirmation")
+    assert sent == [b"\r", b"\r"]
+    assert approval_handler("pi", 10) is None
 
 
 def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
@@ -186,6 +198,19 @@ def test_goose_telemetry_choice_is_answered_before_task(monkeypatch):
     opening = "Share anonymous usage data to help improve goose?"
     assert "goose is ready" in handle_first_run_menus("goose", opening, 1, None, None)
     assert writes == [b"\r"]
+
+
+def test_aider_repo_creation_prompt_is_declined(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
+    )
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until", lambda *args: ("Aider ready", None)
+    )
+    opening = "No git repo found, create one to track aider's changes?"
+    assert "Aider ready" in handle_first_run_menus("aider", opening, 1, None, None)
+    assert writes == [b"n\r"]
 
 
 def test_goose_waits_for_turn_completion_after_tool_output():
