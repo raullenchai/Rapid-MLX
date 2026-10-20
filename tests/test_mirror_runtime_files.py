@@ -66,7 +66,7 @@ def test_direct_script_execution_resolves_the_checkout(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def _audit(monkeypatch, tmp_path, listing, present):
+def _audit(monkeypatch, tmp_path, listing, present, runtime_list=LIST, hf_error=None):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
     main.write_text(json.dumps({"pinned": {"hf_path": REPO}}))
@@ -76,6 +76,8 @@ def _audit(monkeypatch, tmp_path, listing, present):
 
     def hf_repo(repo, revision=None):
         listed_at.append((repo, revision))
+        if hf_error is not None:
+            raise hf_error
         return drift.HfRepo(revision, listing)
 
     def public_probe(_repo, item):
@@ -95,7 +97,12 @@ def _audit(monkeypatch, tmp_path, listing, present):
     monkeypatch.setattr(
         drift.mirror_runtime_files,
         "pinned_runtime_files",
-        lambda repo: (PIN, LIST) if repo == REPO else None,
+        lambda repo: (PIN, runtime_list) if repo == REPO and runtime_list else None,
+    )
+    monkeypatch.setattr(
+        drift.mirror_runtime_files,
+        "pinned_revision",
+        lambda repo: PIN if repo == REPO else None,
     )
     [report] = drift.audit(main, audio, unmirrored_path=None)
     return report, listed_at, probed
@@ -144,6 +151,49 @@ def test_hf_repo_lists_a_pinned_revision(monkeypatch):
     assert drift._hf_repo(REPO, PIN).revision == PIN
     assert drift._hf_repo(REPO).revision == PIN
     assert seen == [(REPO, PIN), (REPO, None)]
+
+
+def test_pinned_revision_covers_checkpoints_pinned_without_a_file_list():
+    whole_repo_pins = set(IMAGE_MODEL_REVISIONS) - set(IMAGE_MODEL_DATA_FILES)
+    assert "mflux-community/qwen-image-mflux-q6" in whole_repo_pins
+    for repo_id in whole_repo_pins:
+        assert runtime.pinned_runtime_files(repo_id) is None
+        assert runtime.pinned_revision(repo_id) == IMAGE_MODEL_REVISIONS[repo_id]
+    assert runtime.pinned_revision("mlx-community/Qwen3-0.6B-4bit") is None
+
+
+def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
+    # Regression: a checkpoint pinned without a file list was compared with
+    # the moving default branch, so an upstream re-upload looked like 20
+    # mirror size mismatches although clients never pull that branch.
+    paths = {item.path for item in LISTING}
+    report, listed_at, probed = _audit(
+        monkeypatch, tmp_path, LISTING, paths, runtime_list=None
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert sorted(probed) == sorted(paths)
+    assert report.findings == []
+
+
+def test_audit_fails_when_the_pinned_commit_vanishes_upstream(monkeypatch, tmp_path):
+    report, listed_at, probed = _audit(
+        monkeypatch,
+        tmp_path,
+        LISTING,
+        set(),
+        runtime_list=None,
+        hf_error=RuntimeError("404 Client Error: Invalid rev id"),
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert probed == []
+    assert [(f.kind, f.severity, f.detail) for f in report.findings] == [
+        (
+            "hf_unavailable",
+            "error",
+            f"pinned runtime revision {PIN} unavailable upstream: "
+            "404 Client Error: Invalid rev id",
+        )
+    ]
 
 
 # --------------------------------------------------------------------------

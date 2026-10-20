@@ -6,7 +6,9 @@ exact commit (``IMAGE_MODEL_REVISIONS``) and lists the exact files a download
 requests (``IMAGE_MODEL_DATA_FILES``). SDXL's repository also carries fp32,
 ONNX, Flax and OpenVINO copies (about 70 GB) that are never requested. The
 drift audit judges the mirror for such a repository against exactly that list
-at exactly that commit.
+at exactly that commit. Other image checkpoints are pinned to a commit without
+a file list; a pull fetches the whole repository at that commit, so the audit
+lists Hugging Face at the same commit rather than at the moving default branch.
 """
 
 from __future__ import annotations
@@ -32,3 +34,10 @@ def pinned_runtime_files(repo_id: str) -> tuple[str, frozenset[str]] | None:
     if files is None or revision is None:
         return None
     return revision, frozenset(files)
+
+
+def pinned_revision(repo_id: str) -> str | None:
+    """Commit a pull of an image checkpoint is pinned to, or ``None``."""
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    return IMAGE_MODEL_REVISIONS.get(repo_id)

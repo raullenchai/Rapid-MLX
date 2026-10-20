@@ -668,6 +668,18 @@ def test_default_catalogs_select_default_unmirrored_registry(monkeypatch):
     ]
 
 
+def test_shipped_deepseek_1017_build_is_intentionally_unmirrored():
+    # Regression: the catalog withholds this build from the mirror, so an
+    # unregistered alias reported every one of its files as missing.
+    from rapid_mlx.models.deepseek_v41_native.artifacts import product_artifact
+
+    target = product_artifact("deepseek-v41-flash-1017").target_repo
+    entries = drift.load_unmirrored(
+        drift.UNMIRRORED_PATH, drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH
+    )
+    assert target in entries
+
+
 def test_probe_size_fallback_timestamps_and_etags(monkeypatch):
     body = b"{}"
     monkeypatch.setattr(

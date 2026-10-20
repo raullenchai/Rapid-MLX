@@ -52,6 +52,11 @@
       "since": "2026-10-05"
     },
     {
+      "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-10-20"
+    },
+    {
       "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"

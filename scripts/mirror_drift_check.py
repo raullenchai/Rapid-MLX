@@ -1055,6 +1055,13 @@ def audit(
         for repo_id in unique_repos
         if (pin := mirror_runtime_files.pinned_runtime_files(repo_id)) is not None
     }
+    # Other pinned checkpoints are fetched whole, but still at their pin.
+    pinned_revisions = {
+        repo_id: revision
+        for repo_id in unique_repos
+        if (revision := mirror_runtime_files.pinned_revision(repo_id)) is not None
+    }
+    pinned_revisions.update({repo_id: pin[0] for repo_id, pin in runtime_pins.items()})
     if progress is not None:
         progress.repos_total = len(unique_repos)
         progress.emit("catalog-listed")
@@ -1063,8 +1070,8 @@ def audit(
         hf_futures = {
             (
                 hf_pool.submit(_hf_repo, repo_id)
-                if repo_id not in runtime_pins
-                else hf_pool.submit(_hf_repo, repo_id, runtime_pins[repo_id][0])
+                if repo_id not in pinned_revisions
+                else hf_pool.submit(_hf_repo, repo_id, pinned_revisions[repo_id])
             ): repo_id
             for repo_id in unique_repos
         }
@@ -1073,7 +1080,15 @@ def audit(
             try:
                 repos[repo_id] = hf_future.result()
             except Exception as error:
-                repo_errors[repo_id] = str(error).splitlines()[0]
+                detail = str(error).splitlines()[0]
+                if repo_id in pinned_revisions:
+                    # Clients pull only this commit; if it is gone upstream,
+                    # every cold pull fails no matter what the mirror holds.
+                    detail = (
+                        f"pinned runtime revision {pinned_revisions[repo_id]} "
+                        f"unavailable upstream: {detail}"
+                    )
+                repo_errors[repo_id] = detail
             if progress is not None:
                 progress.repos_done += 1
                 if progress.repos_done % PROGRESS_REPO_INTERVAL == 0:

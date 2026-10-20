@@ -7,6 +7,11 @@ with the audit dependencies installed when investigating a failure. A normal
 missing or mismatched mirror object is an error; an unavailable Hugging Face
 source is also an error because fallback downloads cannot work.
 
+Checkpoints that clients pull at a pinned commit are audited at that commit,
+not at the default branch. If the pinned commit no longer exists upstream, the
+audit reports `hf_unavailable` with the pinned revision: every cold pull of that
+alias fails, and the fix is a client re-pin, not a mirror re-sync.
+
 ## Intentionally unmirrored repositories
 
 `scripts/mirror_unmirrored.json` is the single source of truth for aliases that
