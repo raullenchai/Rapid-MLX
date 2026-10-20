@@ -133,27 +133,29 @@ struct DownloadStrip: View {
 
     @ViewBuilder
     private func jobRow(_ job: DownloadManager.Job) -> some View {
-        if case .failed = job.status {
+        if case .failed(let message) = job.status {
             HStack(spacing: 8) {
                 Text(job.alias)
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                FailureDiagnosisView(
-                    diagnosis: FailureDiagnoser.diagnosis(
-                        for: job.failureKind ?? .downloadFailed
-                    ),
-                    onAction: { action in handleFailureAction(action, for: job) }
-                )
-                Button(job.failureKind == .downloadSourceUnavailable ? "Retry" : "Switch source") {
-                    handleFailureAction(
-                        job.failureKind == .downloadSourceUnavailable ? .retry : .switchDownloadSource,
-                        for: job
-                    )
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Retry") {
+                    handleFailureAction(.retry, for: job)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .accessibilityIdentifier("DownloadStrip.SecondaryRecovery.\(job.alias)")
+                if job.failureKind == .downloadSourceUnavailable {
+                    Button("Use Hugging Face") {
+                        handleFailureAction(.switchDownloadSource, for: job)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("DownloadStrip.UseHuggingFace.\(job.alias)")
+                }
                 trailingAffordance(for: job)
             }
         } else {

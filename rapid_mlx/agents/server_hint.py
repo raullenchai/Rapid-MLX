@@ -1,16 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Agent setup when the Rapid-MLX server is not running yet.
-
-Configuring an agent before ``rapid-mlx serve`` is up is the normal order of
-operations for a new user, so a refused connection is not a setup failure:
-the config can be written for the intended model and port, and the user is
-told the one command that starts a matching server.
-
-There is deliberately no "wait for it to come up" poll. ``serve`` binds its
-port only after the model has loaded, so a server that is still starting and
-one that was never started both refuse the connection; polling would only add
-latency to the common never-started case.
-"""
+"""Local server URL and connection-refusal helpers for agent setup."""
 
 from __future__ import annotations
 

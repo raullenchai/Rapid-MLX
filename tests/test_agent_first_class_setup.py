@@ -1026,7 +1026,7 @@ def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
     assert captured["yes"] is False
 
 
-def test_cli_reports_saved_config_when_connection_check_fails(
+def test_cli_does_not_save_config_when_connection_check_fails(
     setup_paths, monkeypatch, capsys
 ):
     import rapid_mlx.cli as cli
@@ -1045,7 +1045,7 @@ def test_cli_reports_saved_config_when_connection_check_fails(
         ],
     )
     monkeypatch.setattr(
-        "rapid_mlx.agents.setup.verify_server",
+        "rapid_mlx.agents.setup.wait_for_server",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("connection refused")
         ),
@@ -1055,9 +1055,13 @@ def test_cli_reports_saved_config_when_connection_check_fails(
         cli.main()
 
     assert exit_info.value.code == 1
-    assert continue_path.exists()
+    assert not continue_path.exists()
     output = capsys.readouterr().out
-    assert "Configuration was saved, but the connection check failed" in output
+    assert "setup failed: connection refused" in output
+    assert (
+        "Retry: rapid-mlx agents continue --setup --yes --model qwen3.5-4b-4bit"
+        in output
+    )
     assert "Setup incomplete" not in output
 
 

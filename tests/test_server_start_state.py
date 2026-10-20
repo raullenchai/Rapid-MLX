@@ -1190,6 +1190,8 @@ def test_cli_main_emits_attempted_before_serve_preflight(monkeypatch, tmp_path):
 
     model = tmp_path / "local-model"
     model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    (model / "model.safetensors").write_bytes(b"weights")
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(consent_runtime, "startup", lambda **_kwargs: None)
     monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda command: None)

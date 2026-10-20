@@ -208,7 +208,7 @@ def test_explicit_bf16_never_rejects():
 def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     """``serve <local-gemma4-dir> --kv-cache-dtype int8/int4`` must exit
     non-zero at the resolver gate — before any weight load or ready
-    report. A config-only local directory keeps this fast and
+    report. A local directory with placeholder weights keeps this fast and
     cache/network-independent (the gate reads ``<dir>/config.json``);
     if the gate did NOT fire, the run would instead die later with a
     weights-loading error that lacks the actionable dtype message.
@@ -219,6 +219,7 @@ def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     model_dir = tmp_path / "gemma4-config-only"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
+    (model_dir / "model.safetensors").write_bytes(b"fixture")
     proc = subprocess.run(
         [
             sys.executable,
@@ -257,6 +258,7 @@ def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
     model_dir = tmp_path / "gemma4-config-only"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
+    (model_dir / "model.safetensors").write_bytes(b"fixture")
     args = cli.build_parser().parse_args(["serve", str(model_dir), "--no-mllm", *flags])
 
     # ``serve_command`` installs middleware before loading the model. Keep this
@@ -816,12 +818,13 @@ def test_serve_exits_before_load_for_explicit_gemma4_legacy_flag(tmp_path, bits)
     """The deprecated ``--kv-cache-quantization [--kv-cache-quantization-bits
     N]`` shape is equally operator-explicit and must reject an unsupported
     family BEFORE the server reports ready, with the same exit code (2) and
-    actionable message as ``--kv-cache-dtype`` (#78). A config-only local
-    directory keeps the run fast and cache/network-independent so the gate is
+    actionable message as ``--kv-cache-dtype`` (#78). A local directory with
+    placeholder weights keeps the run fast and cache/network-independent so the gate is
     reachable without downloading Gemma-4 weights."""
     model_dir = tmp_path / "gemma4-config-only"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
+    (model_dir / "model.safetensors").write_bytes(b"fixture")
     proc = subprocess.run(
         [
             sys.executable,

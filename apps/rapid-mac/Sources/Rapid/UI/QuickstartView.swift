@@ -4291,13 +4291,17 @@ struct QuickstartView: View {
                   alias == coordinator.selection.alias else { return nil }
             return server.startupFailure
         }()
+        let pullMessage: String? = {
+            guard let job, case .failed(let text) = job.status else { return nil }
+            return text
+        }()
 
         OnboardingOutcomeBlock(
             glyph: Self.failureGlyph(for: kind),
             tone: kind.severity == .notice ? .amber : .error,
             kicker: Self.failureKicker(for: kind, origin: coordinator.step),
             title: Self.failureTitle(for: kind),
-            message: startupFailure?.message ?? diagnosis.message
+            message: startupFailure?.message ?? pullMessage ?? diagnosis.message
         ) {
             OnboardingActionLane {
                 if startupFailure != nil {

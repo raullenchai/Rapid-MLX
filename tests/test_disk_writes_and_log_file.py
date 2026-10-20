@@ -449,8 +449,10 @@ def _free_port():
 
 def test_serve_sends_all_output_to_log_file(tmp_path):
     pytest.importorskip("mlx.core")
-    model_dir = tmp_path / "empty-model"
+    model_dir = tmp_path / "invalid-model"
     model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+    (model_dir / "model.safetensors").write_bytes(b"invalid weights")
     target = tmp_path / "serve.log"
     env = {
         k: v
@@ -460,7 +462,7 @@ def test_serve_sends_all_output_to_log_file(tmp_path):
     # The CLI's own telemetry notice is printed before serve redirects its
     # output and depends on this host's saved consent.
     env["RAPID_MLX_TELEMETRY"] = "0"
-    # The empty model directory makes the server stop during startup.
+    # The bad weights stop engine startup after the disk-cache policy is logged.
     result = subprocess.run(
         [
             sys.executable,
@@ -492,6 +494,37 @@ def test_serve_sends_all_output_to_log_file(tmp_path):
         "--kv-disk-checkpoint-interval 64 ignored: disk caches disabled by "
         "--disable-disk-caches" in content
     )
+
+
+def test_serve_preflight_failure_redirects_to_log_file(tmp_path):
+    model_dir = tmp_path / "empty-model"
+    model_dir.mkdir()
+    target = tmp_path / "serve.log"
+    env = {k: v for k, v in os.environ.items() if k != log_file.ENV_VAR}
+    env["RAPID_MLX_TELEMETRY"] = "0"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "rapid_mlx.cli",
+            "--no-banner",
+            "--disable-version-check",
+            "serve",
+            str(model_dir),
+            "--log-file",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert result.stdout == result.stderr == ""
+    content = target.read_text()
+    assert "Cause:" in content
+    assert "missing config.json" in content
+    assert "Next step:" in content
 
 
 def _parse(argv):

@@ -84,6 +84,20 @@ def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
             model_type = config["model_type"]
             if not isinstance(model_type, str) or not model_type:
                 raise ValueError("model_type must be a non-empty string")
+        for field in (
+            "hidden_size",
+            "intermediate_size",
+            "num_hidden_layers",
+            "num_attention_heads",
+            "num_key_value_heads",
+            "head_dim",
+            "vocab_size",
+        ):
+            value = config.get(field)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
+                raise ValueError(f"{field} must be an integer")
     except _TYPED_LOAD_FAILURES:
         raise
     except (KeyError, ValueError) as exc:

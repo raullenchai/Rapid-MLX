@@ -66,7 +66,7 @@ struct FeedbackLinkTests {
         let app = try Self.sourceText("apps/rapid-mac/Sources/Rapid/RapidApp.swift")
         #expect(app.contains("CommandGroup(after: .help)"),
                 "the Help menu group that carries the feedback item is gone")
-        #expect(app.contains("Tell Us What You Want…"),
+        #expect(app.contains("Join Rapid-MLX Discord…"),
                 "the Help menu no longer offers the feedback item")
         #expect(
             app.contains("NSWorkspace.shared.open(CommunityLinks.discordInvite)"),

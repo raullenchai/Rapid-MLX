@@ -1,12 +1,47 @@
 """CLI Hub recovery with a mocked downloader; no model or network required."""
 
 import argparse
+import errno
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from rapid_mlx import cli
+
+
+def test_pull_disk_full_has_retry_command(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_a, **_kw: False)
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: tmp_path)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.ENOSPC, "full")),
+    )
+    with pytest.raises(SystemExit) as raised:
+        cli._pull_repository(
+            argparse.Namespace(model="owner/repo", bits=None, format=None),
+            emit_lifecycle_event=False,
+        )
+    assert raised.value.code == 1
+    stderr = capsys.readouterr().err
+    assert "not enough disk space" in stderr
+    assert "Retry: rapid-mlx pull owner/repo" in stderr
+
+
+def test_runtime_asset_retry_preserves_parent_pull(monkeypatch):
+    from rapid_mlx._download_gate import SD35_REPO
+
+    seen = []
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
+
+    def pull(args, **_kwargs):
+        seen.append((args.model, args._pull_retry_command))
+
+    monkeypatch.setattr(cli, "_pull_repository", pull)
+    cli.pull_command(argparse.Namespace(model=SD35_REPO, bits=None, format=None))
+    assert len(seen) > 1
+    assert all(command == f"rapid-mlx pull {SD35_REPO}" for _, command in seen)
 
 
 def _hub_error(error_type, status):

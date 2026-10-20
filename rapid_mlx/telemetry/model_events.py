@@ -339,9 +339,20 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
             # shard under a user-supplied local model is not a download failure.
             # ModuleNotFoundError is handled separately below because mlx-lm
             # uses it for an unknown architecture module.
-            if isinstance(current, FileNotFoundError) and not isinstance(
-                current, ModuleNotFoundError
+            if (
+                isinstance(current, NotADirectoryError)
+                and isinstance(model_ref, str)
+                and Path(model_ref).suffix == ".safetensors"
+                and isinstance(current.filename, str)
+                and Path(current.filename).expanduser().absolute()
+                == Path(model_ref).expanduser().absolute() / "config.json"
             ):
+                # Preserve the existing single-file loader classification.
+                # The new preflight uses the file itself as filename instead.
+                return "corrupt_weights"
+            if isinstance(
+                current, (FileNotFoundError, NotADirectoryError)
+            ) and not isinstance(current, ModuleNotFoundError):
                 from rapid_mlx.local_model_path import is_local_model_ref
 
                 if is_local_model_ref(model_ref):
@@ -371,6 +382,19 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
                 if "does not recognize this architecture" in text:
                     return "unsupported_architecture"
             name = type(current).__name__.lower()
+            if isinstance(current, RuntimeError) and re.fullmatch(
+                r"\[read\] Unable to read \d+ bytes from file\.", text
+            ):
+                from rapid_mlx.local_serve_diagnostics import truncated_local_weights
+
+                if truncated_local_weights(model_ref):
+                    return "corrupt_weights"
+            if isinstance(current, RuntimeError) and re.search(
+                r"\bMetal (?:device|command buffer|library|allocation)\b",
+                text,
+                re.IGNORECASE,
+            ):
+                return "backend_load_failed"
             if "safetensor" in name or any(
                 marker in text.lower()
                 for marker in ("safetensor", "corrupt", "checksum", "size mismatch")

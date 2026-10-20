@@ -1,5 +1,6 @@
 """Cached-first CLI defaults: real tiny snapshots, no model loads or downloads."""
 
+import importlib
 import json
 import sys
 from contextlib import nullcontext
@@ -412,9 +413,15 @@ def test_unreadable_or_unverified_chat(cache, monkeypatch, failure):
             lambda _: SimpleNamespace(snapshot_dir=None),
         )
     elif failure == "directory":
-        monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
-        monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [(repo, 4, 0)])
-        monkeypatch.setattr(ma, "_resolve_external_model_path", lambda _: None)
+        active_cli = importlib.import_module("rapid_mlx.cli")
+        active_aliases = importlib.import_module("rapid_mlx.model_aliases")
+        monkeypatch.setattr(active_cli, "_scan_hf_cache_models", lambda: [])
+        monkeypatch.setattr(
+            active_cli, "_scan_external_model_dirs", lambda: [(repo, 4, 0)]
+        )
+        monkeypatch.setattr(
+            active_aliases, "_resolve_external_model_path", lambda _: None
+        )
     elif failure == "inspection":
         monkeypatch.setattr(pf, "inspect_local", lambda _: None)
     elif failure == "supported":

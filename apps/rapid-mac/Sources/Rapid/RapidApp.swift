@@ -578,13 +578,13 @@ struct RapidApp: App {
                 Toggle("Show Server Log", isOn: $showLogs)
                     .keyboardShortcut("l", modifiers: [.command, .shift])
             }
-            // Help → Tell Us What You Want…  The voice channel. The menu
+            // Help → Join Rapid-MLX Discord…  The voice channel. The menu
             // bar is where a user looks for "how do I reach these
             // people", and the answer is the same Discord invite the
             // README and `rapid-mlx feedback` open. Opening a link is
             // all it does — nothing is attached, nothing is reported.
             CommandGroup(after: .help) {
-                Button("Tell Us What You Want…") {
+                Button("Join Rapid-MLX Discord…") {
                     NSWorkspace.shared.open(CommunityLinks.discordInvite)
                 }
             }

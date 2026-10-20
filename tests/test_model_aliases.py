@@ -503,7 +503,7 @@ def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
     root = tmp_path / "models"
     model = root / "qwen3.6-35b-mtp-4bit"
     model.mkdir(parents=True)
-    (model / "config.json").write_text("{}")
+    (model / "config.json").write_text('{"model_type": "qwen3"}')
     (model / "model.safetensors").write_bytes(b"weights")
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
     monkeypatch.setattr(

@@ -25,6 +25,16 @@ from rapid_mlx.agents.server_hint import (
 )
 
 
+@pytest.fixture(autouse=True)
+def short_readiness_wait(monkeypatch):
+    real_wait = setup.wait_for_server
+
+    def bounded(*args, **kwargs):
+        return real_wait(*args, timeout=0.01, **kwargs)
+
+    monkeypatch.setattr(setup, "wait_for_server", bounded)
+
+
 @pytest.fixture
 def dead_url():
     """A loopback base URL whose port has nothing listening on it."""
@@ -181,35 +191,36 @@ def continue_config(tmp_path, monkeypatch):
     return path
 
 
-def test_first_class_setup_saves_config_and_explains_start(
+def test_first_class_setup_waits_before_write(
     dead_url, events, continue_config, capsys
 ):
     base_url, port = dead_url
 
-    cli.agents_command(_args("continue", base_url, model="test-model"))
+    with pytest.raises(SystemExit) as raised:
+        cli.agents_command(_args("continue", base_url, model="test-model"))
 
     output = capsys.readouterr().out
-    assert continue_config.exists()
-    assert "test-model" in continue_config.read_text()
-    assert f"Server not running yet at http://127.0.0.1:{port}" in output
-    assert f"Start it with:  rapid-mlx serve test-model --port {port}" in output
-    assert "connection check failed" not in output
-    assert events == [("configured", "continue")]
+    assert raised.value.code == 1
+    assert not continue_config.exists()
+    assert f"no server is running at http://127.0.0.1:{port}" in output
+    assert (
+        f"rapid-mlx agents continue --setup --yes --model test-model --base-url {base_url}"
+        in output
+    )
+    assert events == [("configure_failed", "server_not_ready", "continue")]
 
 
-def test_first_class_unchanged_config_with_no_server_emits_nothing(
+def test_first_class_no_server_does_not_emit_configured(
     dead_url, events, continue_config, capsys
 ):
     base_url, _ = dead_url
-    cli.agents_command(_args("continue", base_url, model="test-model"))
-    events.clear()
-
-    cli.agents_command(_args("continue", base_url, model="test-model"))
+    with pytest.raises(SystemExit):
+        cli.agents_command(_args("continue", base_url, model="test-model"))
 
     output = capsys.readouterr().out
-    assert "Already configured" in output
-    assert "Start it with:" in output
-    assert events == []
+    assert not continue_config.exists()
+    assert "Retry:" in output
+    assert events == [("configure_failed", "server_not_ready", "continue")]
 
 
 def test_first_class_setup_with_live_server_reports_check(
@@ -234,19 +245,22 @@ def codex_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_generic_setup_with_model_writes_and_explains_start(
+def test_generic_setup_with_model_waits_before_write(
     dead_url, events, codex_home, capsys
 ):
     base_url, port = dead_url
 
-    cli.agents_command(_args("codex", base_url, model="local-qwen"))
+    with pytest.raises(SystemExit):
+        cli.agents_command(_args("codex", base_url, model="local-qwen"))
 
     output = capsys.readouterr().out
-    assert 'model = "local-qwen"' in (codex_home / "config.toml").read_text()
-    assert "Codex CLI configured!" in output
-    assert "Connection check passed" not in output
-    assert f"Start it with:  rapid-mlx serve local-qwen --port {port}" in output
-    assert events == [("configured", "codex")]
+    assert not (codex_home / "config.toml").exists()
+    assert f"no server is running at http://127.0.0.1:{port}" in output
+    assert (
+        f"rapid-mlx agents codex --setup --yes --model local-qwen --base-url {base_url}"
+        in output
+    )
+    assert events == [("configure_failed", "server_not_ready", "codex")]
 
 
 def test_generic_setup_without_model_refuses_with_start_command(
@@ -260,14 +274,8 @@ def test_generic_setup_without_model_refuses_with_start_command(
     assert raised.value.code == 1
     output = capsys.readouterr().out
     assert not (codex_home / "config.toml").exists()
-    recommended = get_profile("codex").recommended_models[0]
-    assert (
-        f"Start the server first:  rapid-mlx serve {recommended} --port {port}"
-        in output
-    )
-    assert (
-        f"rapid-mlx agents codex --setup --model <name> --base-url {base_url}" in output
-    )
+    assert f"no server is running at http://127.0.0.1:{port}" in output
+    assert f"rapid-mlx agents codex --setup --yes --base-url {base_url}" in output
     assert "Traceback" not in output
     assert events == [("configure_failed", "server_not_ready", "codex")]
 
@@ -283,5 +291,5 @@ def test_generic_refusal_omits_default_base_url(
     with pytest.raises(SystemExit):
         cli.agents_command(_args("codex", "http://localhost:8000/v1"))
     output = capsys.readouterr().out
-    assert "--setup --model <name>\n" in output
+    assert "--setup --yes\n" in output
     assert "--base-url" not in output

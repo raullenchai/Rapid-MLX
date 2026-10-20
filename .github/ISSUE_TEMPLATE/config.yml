@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Rapid-MLX Discord
+    url: https://discord.gg/nZcXkUjY5R
+    about: Ask for help and discuss Rapid-MLX with the community.
   - name: Question / discussion
     url: https://github.com/raullenchai/Rapid-MLX/discussions
     about: For open-ended questions, share use cases, or general discussion. Bug reports, performance issues, and feature requests should use the forms above.

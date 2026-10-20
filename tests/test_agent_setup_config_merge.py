@@ -989,7 +989,7 @@ class TestIdempotentSetupSummary:
         monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
         monkeypatch.setattr(
             setup,
-            "verify_server",
+            "wait_for_server",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 RuntimeError("server is not ready")
             ),
@@ -1018,7 +1018,7 @@ class TestIdempotentSetupSummary:
         verified = []
         monkeypatch.setattr(
             setup,
-            "verify_server",
+            "wait_for_server",
             lambda base_url, model_id, *, agent: (
                 verified.append((base_url, model_id, agent)) or "served-model"
             ),

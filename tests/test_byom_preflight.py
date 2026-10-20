@@ -1110,6 +1110,8 @@ def test_golden_working_paths_are_unchanged(
 def test_serve_dispatches_typed_local_path_as_absolute(monkeypatch, capsys, tmp_path):
     model = tmp_path / "my model"
     model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    (model / "model.safetensors").write_bytes(b"weights")
     monkeypatch.setattr(pf, "run_cli_preflight", lambda args, **kwargs: None)
     seen, out, err = _run_main_golden(
         monkeypatch, capsys, ["serve", f"'{model}  '"], GOLDEN_PASSING

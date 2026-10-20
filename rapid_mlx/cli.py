@@ -1013,6 +1013,8 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         "other",
         "corrupt_weights",
         "incompatible_weights",
+        "invalid_config",
+        "backend_load_failed",
     ) and (detail := startup_error_lines(exc, model_ref)):
         print(f"\n  Error loading model: {exc}", file=sys.stderr)
         print(f"  Cause: {detail[0]}", file=sys.stderr)
@@ -2639,6 +2641,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     exception text. The latter can contain request URLs, tokens, or upstream
     response bodies and must never become part of telemetry or CLI copy.
     """
+    import errno
     import socket
 
     import httpx
@@ -2658,6 +2661,13 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
         if current is None or id(current) in seen:
             break
         seen.add(id(current))
+
+        if isinstance(current, OSError) and current.errno == errno.ENOSPC:
+            return (
+                f"  Error: not enough disk space to finish '{rendered_model_id}'.\n"
+                "  Free space in the model cache filesystem, then retry; "
+                "completed files are retained."
+            )
 
         if (
             isinstance(current, RepositoryNotFoundError)
@@ -10881,6 +10891,16 @@ def _sync_pulled_variant_marker(repo_id: str, variant: str | None) -> None:
         pass
 
 
+def _pull_retry_command(args) -> str:
+    model = getattr(args, "_original_alias", None) or args.model
+    parts = ["rapid-mlx", "pull", shlex.quote(model)]
+    if getattr(args, "bits", None):
+        parts += ["--bits", shlex.quote(str(args.bits))]
+    if getattr(args, "format", None):
+        parts += ["--format", shlex.quote(str(args.format))]
+    return " ".join(parts)
+
+
 def _pull_repository(
     args,
     *,
@@ -11173,6 +11193,10 @@ def _pull_repository(
         rendered = render_hub_error(e, repo_id)
         if rendered is not None and error_class != "not_found":
             print(f"\n{rendered}\n", file=sys.stderr)
+            retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
+                args
+            )
+            print(f"  Retry: {retry}", file=sys.stderr)
             raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
@@ -11208,6 +11232,10 @@ def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
     import copy
+
+    # Every nested runtime-asset pull retries the user's original request,
+    # preserving its selected variant and pinned dependency set.
+    args._pull_retry_command = _pull_retry_command(args)
 
     from rapid_mlx._download_gate import (
         IMAGE_MODEL_DATA_FILES,
@@ -13711,6 +13739,18 @@ def _print_ddtree_status(alias: str, profile) -> None:
         print()
 
 
+def _agent_setup_retry_command(args, agent_name: str, base_url: str) -> str:
+    parts = ["rapid-mlx", "agents", agent_name, "--setup", "--yes"]
+    model = getattr(args, "_original_alias", None) or args.model
+    if model:
+        parts += ["--model", shlex.quote(model)]
+    if base_url != "http://localhost:8000/v1":
+        parts += ["--base-url", shlex.quote(base_url)]
+    if args.agent_version:
+        parts += ["--agent-version", shlex.quote(args.agent_version)]
+    return " ".join(parts)
+
+
 def agents_command(args):
     """List, configure, and test agent integrations."""
     from rapid_mlx.agents import get_profile, list_profiles
@@ -13855,23 +13895,43 @@ def agents_command(args):
                 model_id = detected_model
             if needs_ctx:
                 context_length = detected_ctx
-        elif needs_ctx:
-            # User specified model — look up *that* model's context window
+        elif needs_ctx and (args.dry_run or args.no_check):
+            # Offline preview still uses the best available metadata.
             context_length = fetch_context_window(base_url, model_id)
 
-        # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
-        # flows. They preview an exact diff, require consent, back up existing config,
-        # write atomically, and verify the server afterwards. The generic
-        # profile writer below still lacks the diff/consent/backup half, but
-        # it does honour --dry-run, so a preview never writes on either path.
         from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
 
+        if (
+            (cfg.type != "env" or profile.name in FIRST_CLASS_SETUP_AGENTS)
+            and not args.dry_run
+            and not args.no_check
+        ):
+            from rapid_mlx.agents.setup import wait_for_server
+
+            print("  Waiting for server health and the selected model (up to 60s)...")
+            try:
+                advertised = wait_for_server(base_url, model_id, agent=profile.name)
+            except RuntimeError as exc:
+                print(f"\n  {profile.display_name} setup failed: {exc}")
+                print(
+                    f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
+                )
+                sys.exit(1)
+            if model_id == "default":
+                model_id = advertised
+            if needs_ctx:
+                context_length = fetch_context_window(base_url, model_id)
+
+        # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
+        # flows. They verify server readiness, preview an exact diff, require
+        # consent, back up existing config, and write atomically. The generic
+        # profile writer below still lacks the diff/consent/backup half, but
+        # it does honour --dry-run, so a preview never writes on either path.
         if profile.name in FIRST_CLASS_SETUP_AGENTS:
             from rapid_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,
                 confirm_plan,
-                verify_server,
             )
             from rapid_mlx.agents.telemetry import track_agent_configured
 
@@ -13898,7 +13958,10 @@ def agents_command(args):
                     agent_version=args.agent_version,
                 )
             except (OSError, ValueError) as exc:
-                print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                print(f"\n  {profile.display_name} setup failed: {exc}")
+                print(
+                    f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
+                )
                 sys.exit(1)
 
             print(f"\n  {profile.display_name} configuration: {plan.path}")
@@ -13917,32 +13980,14 @@ def agents_command(args):
                 try:
                     apply_setup_plan(plan)
                 except (OSError, RuntimeError) as exc:
-                    print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                    print(f"\n  {profile.display_name} setup failed: {exc}")
+                    print(
+                        f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
+                    )
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
             if not args.no_check:
-                from rapid_mlx.agents.server_hint import (
-                    ServerNotRunningError,
-                    not_running_lines,
-                )
-
-                try:
-                    advertised = verify_server(base_url, model_id, agent=profile.name)
-                except ServerNotRunningError:
-                    # Configuring before `serve` is the normal first-run
-                    # order: the saved config is complete, so finish with the
-                    # one command that starts a matching server.
-                    print("\n".join(not_running_lines(profile, base_url, model_id)))
-                except RuntimeError as exc:
-                    status = (
-                        "Configuration was saved"
-                        if plan.changed
-                        else "Configuration is unchanged"
-                    )
-                    print(f"\n  {status}, but the connection check failed: {exc}\n")
-                    sys.exit(1)
-                else:
-                    print(f"  Connection check passed (model: {advertised}).")
+                print(f"  Connection check passed (model: {advertised}).")
             if plan.changed:
                 # A configured event means a config mutation completed and
                 # verification passed, was skipped with --no-check, or was
@@ -13967,45 +14012,6 @@ def agents_command(args):
         # not-yet-started server is the normal first-run order: write it.
         # --no-check remains the explicit offline-config escape hatch, and a
         # dry run remains side-effect-free preview even without a live server.
-        server_not_running = False
-        if cfg.type != "env" and not args.dry_run and not args.no_check:
-            from rapid_mlx.agents.server_hint import (
-                ServerNotRunningError,
-                start_server_command,
-            )
-            from rapid_mlx.agents.setup import verify_server
-
-            try:
-                advertised = verify_server(base_url, model_id, agent=profile.name)
-            except ServerNotRunningError as exc:
-                if model_id == "default":
-                    # Without a live server or --model there is no model id
-                    # to write, and these writers never persist `default`.
-                    from rapid_mlx.agents.telemetry import (
-                        track_agent_configure_failed,
-                    )
-
-                    track_agent_configure_failed("server_not_ready", profile.name)
-                    print(
-                        f"\n  {profile.display_name} setup needs the model name: {exc}."
-                    )
-                    print(
-                        "  Start the server first:  "
-                        f"{start_server_command(profile, base_url, model_id)}"
-                    )
-                    retry = f"rapid-mlx agents {profile.name} --setup --model <name>"
-                    if base_url != "http://localhost:8000/v1":
-                        retry += f" --base-url {shlex.quote(base_url)}"
-                    print(f"  Or configure it now:     {retry}\n")
-                    sys.exit(1)
-                server_not_running = True
-            except RuntimeError as exc:
-                print(f"\n  {profile.display_name} setup failed: {exc}\n")
-                sys.exit(1)
-            else:
-                if model_id == "default":
-                    model_id = advertised
-
         summary = setup_agent_config(
             profile,
             base_url,
@@ -14017,6 +14023,9 @@ def agents_command(args):
         if summary.startswith("Cannot"):
             print(f"\n  {profile.display_name} setup failed.")
             print(f"  {summary}")
+            print(
+                f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}"
+            )
             print()
             sys.exit(1)
         if args.dry_run:
@@ -14033,6 +14042,9 @@ def agents_command(args):
                 print(
                     f"\n  Configuration was saved, but Codex config verification failed: {exc}\n"
                 )
+                print(
+                    f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}"
+                )
                 sys.exit(1)
         if summary.startswith("Already configured"):
             print(f"\n  {profile.display_name} is already configured.")
@@ -14045,12 +14057,8 @@ def agents_command(args):
                 print(
                     "  Connection check skipped (--no-check); no live model was verified."
                 )
-            elif not server_not_running:
+            else:
                 print(f"  Connection check passed (advertised model: {advertised}).")
-        if server_not_running:
-            from rapid_mlx.agents.server_hint import not_running_lines
-
-            print("\n".join(not_running_lines(profile, base_url, model_id)))
         print()
         return
 
@@ -15066,29 +15074,84 @@ def main():
     ):
         from rapid_mlx.local_model_path import (
             local_model_failure_message,
+            local_serve_preflight_lines,
             raise_if_missing_local_model,
             resolved_model_ref,
+            validate_local_model_for_serve,
         )
         from rapid_mlx.model_aliases import RetiredModelAliasError, resolve_model
+        from rapid_mlx.model_load_errors import InvalidModelConfig
         from rapid_mlx.user_aliases import UserAliasError
 
+        resolved = args.model
+        validating_local_model = False
         try:
             supplied_model = args.model
             if getattr(args, "command", None) == "serve":
                 args.model = resolved_model_ref(args.model)
+                resolved = args.model
             raise_if_missing_local_model(args.model)
             resolved = resolve_model(args.model)
-        except FileNotFoundError as exc:
+            if getattr(args, "command", None) == "serve":
+                validating_local_model = True
+                validate_local_model_for_serve(resolved)
+        except (OSError, InvalidModelConfig) as exc:
+            if not validating_local_model and not isinstance(
+                exc, (FileNotFoundError, NotADirectoryError, PermissionError)
+            ):
+                print(f"\n  Error: Model resolution failed: {exc}", file=sys.stderr)
+                raise SystemExit(1) from None
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
                 emit_model_serve_failed(
-                    exc, alias_or_path=args.model, failure_stage="resolve"
+                    exc, alias_or_path=resolved, failure_stage="resolve"
                 )
-            message = local_model_failure_message(
-                supplied_model, exc, include_supplied_path=True
-            )
-            print(f"\n  Error: {message}", file=sys.stderr)
+            if getattr(args, "command", None) == "serve":
+                from rapid_mlx import log_file
+
+                try:
+                    target, source = log_file.resolve_validated(
+                        getattr(args, "log_file", None)
+                    )
+                    if target is not None and source is not None:
+                        log_file.apply(target, source)
+                except log_file.LogFileError as log_exc:
+                    print(f"error: {log_exc}", file=sys.stderr)
+                    raise SystemExit(2) from None
+                if isinstance(exc, InvalidModelConfig):
+                    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+
+                    manifest_name = next(
+                        (
+                            name
+                            for name in (
+                                "model_index.json",
+                                "split_model.json",
+                                "params.json",
+                            )
+                            if f"Invalid model manifest: {name}" in str(exc)
+                        ),
+                        None,
+                    )
+                    if manifest_name is not None:
+                        cause, step = (
+                            f"Local {manifest_name} is invalid.",
+                            f"Restore {manifest_name} from the complete checkpoint, then retry `rapid-mlx serve {shlex.quote(resolved)}`.",
+                        )
+                    else:
+                        cause, step = startup_error_lines(exc, resolved) or (
+                            "Local config.json is invalid.",
+                            "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
+                        )
+                else:
+                    cause, step = local_serve_preflight_lines(resolved, exc)
+                print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+            else:
+                message = local_model_failure_message(
+                    supplied_model, exc, include_supplied_path=True
+                )
+                print(f"\n  Error: {message}", file=sys.stderr)
             raise SystemExit(1) from None
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)

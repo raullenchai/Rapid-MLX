@@ -235,8 +235,8 @@ struct DownloadManagerTests {
         #expect(job.completedCacheGeneration == mgr.cacheGeneration)
     }
 
-    @Test("Exhausted transient exits show a generic failure without raw stderr")
-    func failedExitUsesGenericMessage() {
+    @Test("Exhausted transient exits show the cause without raw stderr")
+    func failedExitUsesSafeCause() {
         let mgr = DownloadManager()
         _ = mgr._testingSeedJob(alias: "qwen3.6-27b", retryAttempt: 3)
         // Raw child stderr (engine name, Python tracebacks, HTTP codes)
@@ -249,7 +249,7 @@ struct DownloadManagerTests {
         if case .failed(let message) = job?.status {
             #expect(!message.contains("ConnectionResetError"))
             #expect(!message.contains("Traceback"))
-            #expect(message.contains("Couldn't download") || message.lowercased().contains("try again"))
+            #expect(message.contains("network"))
         } else {
             Issue.record("Expected .failed, got \(String(describing: job?.status))")
         }
@@ -278,9 +278,31 @@ struct DownloadManagerTests {
         let job = mgr.job(for: "phi-4-14b-4bit")
         if case .failed(let message) = job?.status {
             #expect(!message.contains("127"))
-            #expect(message.contains("Couldn't download") || message.lowercased().contains("try again"))
+            #expect(message.contains("Retry"))
         } else {
             Issue.record("Expected .failed, got \(String(describing: job?.status))")
+        }
+    }
+
+    @Test("CLI disk and network copy survives stderr tail and reaches job status")
+    func cliFailureCopyReachesJobStatus() {
+        for (line, source, expected) in [
+            ("Error: not enough disk space to finish model", DownloadManager.DownloadSource.mirror, "disk space"),
+            ("Error: could not reach Hugging Face", .mirror, "network"),
+        ] {
+            let mgr = DownloadManager()
+            let alias = "qwen3-0.6b-4bit"
+            _ = mgr._testingSeedJob(alias: alias, source: source, retryAttempt: 3)
+            mgr._testingIngestStderr(alias: alias, line: "Traceback (most recent call last):")
+            mgr._testingIngestStderr(alias: alias, line: line)
+            mgr._testingIngestStderr(alias: alias, line: "Retry: rapid-mlx pull qwen3-0.6b-4bit")
+            mgr._testingFinish(alias: alias, status: 1, reason: .exit)
+            if case .failed(let message) = mgr.job(for: alias)?.status {
+                #expect(message.contains(expected))
+                #expect(!message.contains("Traceback"))
+            } else {
+                Issue.record("Expected a failed pull for \(line)")
+            }
         }
     }
 
@@ -492,6 +514,30 @@ struct DownloadManagerTests {
             cacheGeneration: 3,
             refreshEnabled: false
         ))
+    }
+}
+
+@Suite("Download failure guidance")
+struct DownloadFailureGuidanceTests {
+    @Test func specificCauses() {
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "OSError: [Errno 28] No space left on device", source: .huggingFace
+        ).contains("disk space"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "Error: not enough disk space to finish model", source: .mirror
+        ).contains("disk space"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "GatedRepoError: 403", source: .huggingFace
+        ).contains("hf auth login"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "mirror gateway timeout", source: .mirror
+        ).contains("Switch to Hugging Face"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "connection reset", source: .huggingFace
+        ).contains("network"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "Error: could not reach Hugging Face", source: .mirror
+        ).contains("network"))
     }
 }
 

@@ -55,6 +55,7 @@ Examples:
 
 Run `rapid-mlx <command> --help` for a command's options.
 Docs: https://rapidmlx.com/docs/
+Community: https://discord.gg/nZcXkUjY5R
 """
 
 

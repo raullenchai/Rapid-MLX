@@ -2590,12 +2590,15 @@ def load_model(
     # config materialization, lane selection, and the loader consume it. This
     # keeps those three decisions on the same checkpoint source instead of
     # probing the alias spelling as though it were a Hub repository.
-    from .local_model_path import raise_if_missing_local_model
+    from .local_model_path import validate_local_model_for_serve
     from .model_aliases import resolve_model, resolve_profile
 
     requested_model_name = model_name
+    from .local_model_path import raise_if_missing_local_model
+
     raise_if_missing_local_model(requested_model_name)
     model_name = resolve_model(model_name)
+    validate_local_model_for_serve(model_name)
 
     # A direct alias in this request is authoritative. CLI startup reaches
     # here with an already-canonical path, so only in that case may its saved

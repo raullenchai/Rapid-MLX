@@ -935,10 +935,35 @@ final class DownloadManager {
             )
         job.failureKind = kind
         if signal {
-            job.status = .failed(message: "The model download was interrupted. Try again.")
+            job.status = .failed(message: "The model download was interrupted. Retry to resume it.")
         } else {
-            job.status = .failed(message: FailureDiagnoser.diagnosis(for: kind).message)
+            job.status = .failed(message: Self.pullFailureMessage(
+                raw: tail, source: job.source
+            ))
         }
+    }
+
+    nonisolated static func pullFailureMessage(raw: String, source: DownloadSource) -> String {
+        let value = raw.lowercased()
+        if value.contains("no space left on device") || value.contains("insufficient disk")
+            || value.contains("not enough disk space") {
+            return "There isn't enough disk space for this model. Free space, then retry to resume."
+        }
+        if value.contains("gated") || value.contains("hf auth login")
+            || (source == .huggingFace && (value.contains("401") || value.contains("403"))) {
+            return "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry."
+        }
+        if source == .mirror && !value.contains("could not reach hugging face")
+            && FailureDiagnoser.downloadFailureKind(
+            raw: value, usingMirror: true
+        ) == .downloadSourceUnavailable {
+            return "The mirror could not be reached. Switch to Hugging Face or retry to resume."
+        }
+        if Self.isTransientDownloadError(value)
+            || value.contains("could not reach hugging face") {
+            return "The network connection interrupted the download. Check your connection, then retry to resume."
+        }
+        return "The model download didn't finish. Retry to resume it."
     }
 
     private func augmentedEnv(

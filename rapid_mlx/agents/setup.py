@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -37,6 +38,14 @@ from rapid_mlx.launch import claude_code, cline, continue_dev
 FIRST_CLASS_SETUP_AGENTS = frozenset(
     {"claude-code", "cline", "continue", "deepseek-harness", "pi", "qwen-code"}
 )
+
+
+class ServerNoModelsError(RuntimeError):
+    """The server answered but has not advertised any model yet."""
+
+
+class ModelNotAdvertisedError(RuntimeError):
+    """The server answered but not with the requested model."""
 
 
 @dataclass(frozen=True)
@@ -638,6 +647,7 @@ def verify_server(
     timeout: float = 2.0,
     *,
     agent: str,
+    track_failure: bool = True,
 ) -> str:
     """Verify health and model discovery without performing inference.
 
@@ -649,7 +659,8 @@ def verify_server(
     try:
         with urllib.request.urlopen(f"{root}/health", timeout=timeout) as response:
             if response.status != 200:
-                track_agent_configure_failed("server_not_ready", agent)
+                if track_failure:
+                    track_agent_configure_failed("server_not_ready", agent)
                 raise RuntimeError(f"health returned HTTP {response.status}")
         from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
@@ -670,16 +681,23 @@ def verify_server(
             # the caller (a config saved for a not-yet-started server is a
             # normal first-run order), so the caller owns the telemetry.
             raise ServerNotRunningError(f"no server is running at {root}") from exc
-        track_agent_configure_failed("server_not_ready", agent)
+        if track_failure:
+            track_agent_configure_failed("server_not_ready", agent)
         raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []
-    ids = [item.get("id") for item in models if isinstance(item, dict)]
+    ids = [
+        item["id"]
+        for item in models
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
+    ]
     if not ids:
-        track_agent_configure_failed("server_no_models", agent)
-        raise RuntimeError(f"server at {root} reported no models")
-    if expected_model != "default" and expected_model not in ids and len(ids) != 1:
-        track_agent_configure_failed("model_not_advertised", agent)
-        raise RuntimeError(
+        if track_failure:
+            track_agent_configure_failed("server_no_models", agent)
+        raise ServerNoModelsError(f"server at {root} reported no models")
+    if expected_model != "default" and expected_model not in ids:
+        if track_failure:
+            track_agent_configure_failed("model_not_advertised", agent)
+        raise ModelNotAdvertisedError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )
     return (
@@ -687,6 +705,33 @@ def verify_server(
         if expected_model != "default" and expected_model in ids
         else ids[0]
     )
+
+
+def wait_for_server(
+    base_url: str, expected_model: str, *, agent: str, timeout: float = 60.0
+) -> str:
+    """Wait for a local server to advertise the intended model before setup writes."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return verify_server(
+                base_url,
+                expected_model,
+                agent=agent,
+                timeout=min(2.0, max(0.1, deadline - time.monotonic())),
+                track_failure=False,
+            )
+        except RuntimeError as exc:
+            if not is_local_base_url(base_url) or time.monotonic() >= deadline:
+                if isinstance(exc, ModelNotAdvertisedError):
+                    error_class = "model_not_advertised"
+                elif isinstance(exc, ServerNoModelsError):
+                    error_class = "server_no_models"
+                else:
+                    error_class = "server_not_ready"
+                track_agent_configure_failed(error_class, agent)
+                raise RuntimeError(f"server did not become ready: {exc}") from exc
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
 
 def confirm_plan(plan: SetupPlan) -> bool:
