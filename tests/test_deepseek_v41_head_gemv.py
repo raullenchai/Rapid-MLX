@@ -6,10 +6,12 @@ mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 
 from rapid_mlx.models.deepseek_v41_native import head_gemv  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.head_gemv import (  # noqa: E402
     head_logits,
     supports,
 )
+from rapid_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
 needs_metal = pytest.mark.skipif(
     not mx.metal.is_available(), reason="Metal kernel requires a GPU"
@@ -58,20 +60,57 @@ def test_each_row_matches_its_single_row_stock_result(gpu, rows: int) -> None:
     assert mx.array_equal(actual, expected).item()
 
 
+def _tiny_model() -> Model:
+    args = ModelArgs(
+        dim=128,
+        vocab_size=40,
+        n_layers=0,
+        n_heads=1,
+        head_dim=128,
+        rope_head_dim=32,
+        hc_mult=1,
+        compress_ratios=(),
+        dspark_target_layer_ids=(0,),
+    )
+    model = Model(args)
+    model.head.weight = model.head.weight.astype(mx.bfloat16)
+
+    class IdentityBlock:
+        engram = None
+
+        def __call__(self, h, pre_mix, *_args):
+            return h, pre_mix
+
+    model.layers = [IdentityBlock()]
+    return model
+
+
 @needs_metal
-def test_model_forward_uses_exact_head(gpu, monkeypatch) -> None:
+@pytest.mark.parametrize("last_logit_only", [True, False])
+def test_model_forward_uses_exact_head(gpu, monkeypatch, last_logit_only) -> None:
+    model = _tiny_model()
+    tokens = mx.array([[1, 2, 3]])
     calls = []
-    original = head_gemv._kernel
+    original = head_gemv.head_logits
 
-    def counting():
-        calls.append(1)
-        return original()
+    def spy(head, x):
+        calls.append(x.shape)
+        return original(head, x)
 
-    monkeypatch.setattr(head_gemv, "_kernel", counting)
-    head = _head()
-    x = mx.random.normal((1, 1, 512))
-    mx.eval(head_logits(head, x))
-    assert calls
+    monkeypatch.setattr("rapid_mlx.models.deepseek_v41_native.model.head_logits", spy)
+    cache = model.make_cache(max_seq_len=8)
+    logits = model(tokens, cache, last_logit_only=last_logit_only)
+    mx.eval(logits)
+    assert calls and calls[0][-1] == 128
+    rows = 1 if last_logit_only else 3
+    assert logits.shape == (1, rows, 40)
+    monkeypatch.setattr(head_gemv, "ENABLED", False)
+    stock = model(
+        tokens, model.make_cache(max_seq_len=8), last_logit_only=last_logit_only
+    )
+    mx.eval(stock)
+    if rows == 1:
+        assert mx.array_equal(logits, stock).item()
 
 
 def test_unsupported_inputs_fall_back_to_stock(monkeypatch) -> None:
@@ -84,6 +123,8 @@ def test_unsupported_inputs_fall_back_to_stock(monkeypatch) -> None:
     assert not supports(head, mx.zeros((0, 512)))
     assert not supports(head, mx.array(1.0))
     assert not supports(_head(inputs=200), mx.random.normal((1, 200)))
+    # K >= 16 * N selects a split-K stock geometry.
+    assert not supports(_head(outputs=32, inputs=512), mx.random.normal((1, 512)))
     biased = nn.Linear(512, 64)
     biased.weight = biased.weight.astype(mx.bfloat16)
     assert not supports(biased, rows[:1])
@@ -120,15 +161,21 @@ def test_cpu_and_disabled_switch_use_stock(monkeypatch) -> None:
 
 
 def test_dispatch_geometry_without_metal(monkeypatch) -> None:
-    """Exercise the launch wrapper with a stand-in kernel on any host."""
+    """Exercise the kernel factory and launch wrapper with a stand-in on any host."""
     seen = {}
+    built = {}
 
     def fake_kernel(**kwargs):
         seen.update(kwargs)
         rows, outputs = kwargs["output_shapes"][0]
         return [mx.zeros((rows, outputs), dtype=mx.float32)]
 
-    monkeypatch.setattr(head_gemv, "_kernel", lambda: fake_kernel)
+    def fake_metal_kernel(**kwargs):
+        built.update(kwargs)
+        return fake_kernel
+
+    head_gemv._kernel.cache_clear()
+    monkeypatch.setattr(mx.fast, "metal_kernel", fake_metal_kernel)
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head(outputs=1003)
     logits = head_logits(head, mx.zeros((2, 3, 512)))
@@ -137,3 +184,6 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     assert seen["threadgroup"] == (128, 1, 1)
     assert dict(seen["template"]) == {"K": 512, "N": 1003, "OUTPUTS": 4}
     assert seen["inputs"][0].shape == (6, 512)
+    assert built["name"] == "rapid_v41_fp32_bf16_head_gemv"
+    assert built["ensure_row_contiguous"] is True
+    head_gemv._kernel.cache_clear()
