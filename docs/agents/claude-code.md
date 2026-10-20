@@ -39,7 +39,10 @@ rapid-mlx agents claude-code --setup
 ```
 
 Setup shows the exact JSON diff before asking, preserves unrelated settings,
-backs up an existing file, writes atomically, and checks the running server.
+waits for the server to advertise the selected model, backs up an existing
+file, and writes atomically. If the server is still starting, setup waits up
+to 60 seconds. A failed check leaves the config untouched and prints a retry
+command.
 For automation use `--yes`; use `--no-check` only when intentionally preparing
 the config before starting the server.
 

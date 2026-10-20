@@ -495,6 +495,24 @@ struct DownloadManagerTests {
     }
 }
 
+@Suite("Download failure guidance")
+struct DownloadFailureGuidanceTests {
+    @Test func specificCauses() {
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "OSError: [Errno 28] No space left on device", source: .huggingFace
+        ).contains("disk space"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "GatedRepoError: 403", source: .huggingFace
+        ).contains("hf auth login"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "mirror gateway timeout", source: .mirror
+        ).contains("Switch to Hugging Face"))
+        #expect(DownloadManager.pullFailureMessage(
+            raw: "connection reset", source: .huggingFace
+        ).contains("network"))
+    }
+}
+
 /// DownloadStrip's caption-format helper is pure — pin the truth
 /// table so a future refactor can't silently drop the speed suffix
 /// or swap file/percent ordering.
