@@ -34,11 +34,18 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
     from rapid_mlx.routes import models
 
     cfg = get_config()
-    saved = (cfg.model_name, cfg.model_alias, cfg.model_registry, cfg.api_key)
+    saved = (
+        cfg.model_name,
+        cfg.model_alias,
+        cfg.model_registry,
+        cfg.api_key,
+        cfg.tool_call_parser,
+    )
     cfg.model_name = "qwen3.5-4b-4bit"
     cfg.model_alias = None
     cfg.model_registry = None
     cfg.api_key = None
+    cfg.tool_call_parser = "qwen3_xml"
     app = FastAPI()
     app.include_router(models.router)
     client = TestClient(app)
@@ -67,4 +74,10 @@ def test_discovery_adds_tiers_without_changing_standard_cards(monkeypatch):
         assert all(entry["is_family_default"] is True for entry in tiers)
         assert all(entry["id"].startswith("claude-") for entry in tiers)
     finally:
-        cfg.model_name, cfg.model_alias, cfg.model_registry, cfg.api_key = saved
+        (
+            cfg.model_name,
+            cfg.model_alias,
+            cfg.model_registry,
+            cfg.api_key,
+            cfg.tool_call_parser,
+        ) = saved
