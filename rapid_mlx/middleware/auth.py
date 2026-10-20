@@ -300,20 +300,17 @@ def _verify_api_key_values(*api_keys: str | None) -> bool:
 
 
 async def verify_api_key(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    request: Request = None,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Verify Bearer or Anthropic-style API key if authentication is enabled."""
     bearer_key = credentials.credentials if credentials is not None else None
-    if request is not None:
-        authorization_headers = request.headers.getlist("authorization")
-        if len(authorization_headers) > 1 or (
-            authorization_headers and bearer_key is None
-        ):
-            # HTTPBearer reads only the first value and maps malformed values
-            # to None. Reject every ambiguous or invalid companion header.
-            bearer_key = ""
-    x_api_keys = request.headers.getlist("x-api-key") if request is not None else []
+    authorization_headers = request.headers.getlist("authorization")
+    if len(authorization_headers) > 1 or (authorization_headers and bearer_key is None):
+        # HTTPBearer reads only the first value and maps malformed values
+        # to None. Reject every ambiguous or invalid companion header.
+        bearer_key = ""
+    x_api_keys = request.headers.getlist("x-api-key")
     return _verify_api_key_values(bearer_key, *x_api_keys)
 
 
@@ -333,4 +330,4 @@ async def verify_api_key_or_x_api_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     """Compatibility alias for routes already using the dual-header gate."""
-    return await verify_api_key(credentials, request)
+    return await verify_api_key(request, credentials)

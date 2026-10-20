@@ -126,15 +126,15 @@ def test_image_edit_auth_precedes_advertised_body_limit(
                 ("Authorization", "Bearer test-image-secret"),
                 ("Authorization", "Bearer wrong-key"),
             ],
-            413,
-            None,
+            401,
+            "Invalid API key",
         ),
         (
             [("Authorization", "Bearer  test-image-secret ")],
             413,
             None,
         ),
-        ([("Authorization", "Basic xyz")], 401, "API key required"),
+        ([("Authorization", "Basic xyz")], 401, "Invalid API key"),
     ],
     ids=[
         "duplicate-first-wrong",

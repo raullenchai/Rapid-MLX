@@ -55,7 +55,7 @@ async def require_cua_auth(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Computer use API requires a server API key",
         )
-    return bool(await verify_api_key(credentials, request))
+    return bool(await verify_api_key(request, credentials))
 
 
 router = APIRouter(
