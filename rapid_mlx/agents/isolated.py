@@ -183,7 +183,7 @@ def hermes_context_length(
 
                 native = _valid_context_window(entry.get("context_window"))
                 served = _valid_context_window(entry.get("max_model_len"))
-                if served is not None or native is not None:
+                if served is not None or (native is not None and not require_live):
                     context = min(
                         *(
                             value
@@ -346,8 +346,12 @@ def configure(
     # A different Desktop session may have chosen a new free port or rotated
     # the key. Refresh the private config only after the shared route validates.
     refresh = (
-        f"{cli} launch {shlex.quote(name)} --isolated "
-        f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
+        ""
+        if name == "hermes"
+        else (
+            f"{cli} launch {shlex.quote(name)} --isolated "
+            f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
+        )
     )
     _private_write(
         runner,

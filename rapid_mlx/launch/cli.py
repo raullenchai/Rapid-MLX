@@ -292,6 +292,17 @@ def launch_command(args: argparse.Namespace) -> None:
                 sys.exit(1)
             status = connection_status(port, key, model)
             if status == "ready":
+                if args.client == "hermes":
+                    from rapid_mlx.agents.isolated import hermes_context_length
+
+                    try:
+                        context = hermes_context_length(
+                            port, key, model, require_live=True
+                        )
+                        configure(args.client, model, port=port, context_length=context)
+                    except (OSError, ValueError) as exc:
+                        print(f"launch: {exc}", file=sys.stderr)
+                        raise SystemExit(1) from exc
                 return
             start_hint = (
                 f"{_cli_invocation()} start {shlex.quote(args.client)} "
