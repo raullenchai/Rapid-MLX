@@ -30,6 +30,7 @@ SUPPORTED = frozenset(
         "aider",
     }
 )
+_API_KEY_ENV = "RAPID_MLX_API_KEY"
 
 
 def connection_dir() -> Path:
@@ -149,7 +150,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     key = quote(str(key_path()))
     # The secret is read at invocation time, so rotating it does not stale a
     # saved profile. It is never placed in the printed command or process argv.
-    credential = f'RAPID_MLX_API_KEY="$(cat {key})"'
+    credential = f'{_API_KEY_ENV}="$(cat {key})"'
     if name == "codex":
         return f"{credential} CODEX_HOME={quote(str(root))} codex --profile rapid"
     if name == "pi":
