@@ -29,7 +29,9 @@ jobs:
           node-version: '22'
       - name: Install current agent CLIs and profile renderer dependencies
         run: |
-          npm install --global @openai/codex@latest @anthropic-ai/claude-code@latest @opencode/cli@latest
+          npm install --prefix "$RUNNER_TEMP/agent-cli" @openai/codex@latest @anthropic-ai/claude-code@latest @opencode/cli@latest
+          export PATH="$RUNNER_TEMP/agent-cli/node_modules/.bin:$PATH"
+          echo "$RUNNER_TEMP/agent-cli/node_modules/.bin" >> "$GITHUB_PATH"
           python -m pip install pyyaml packaging
           codex --version
           claude --version
