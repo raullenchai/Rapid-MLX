@@ -41,8 +41,19 @@ FILES = {
     ".config/goose/config.yaml": "GOOSE_PROVIDER: openai\nGOOSE_MODEL: gpt-5\nOPENAI_API_KEY: sk-fake-e2e\n",
     ".qwen/settings.json": json.dumps(
         {
+            "$version": 4,
             "security": {"auth": {"selectedType": "qwen-oauth"}},
             "model": {"name": "qwen3-coder-plus"},
+            "modelProviders": {
+                "openai": [
+                    {
+                        "id": "qwen3.5-9b-4bit",
+                        "baseUrl": "https://cloud.invalid/v1",
+                        "envKey": "FAKE_CLOUD_KEY",
+                    }
+                ]
+            },
+            "ui": {"autoModeAcknowledged": True},
         }
     )
     + "\n",
