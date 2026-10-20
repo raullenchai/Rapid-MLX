@@ -301,3 +301,40 @@ def test_batch_without_engram_and_without_compression():
     assert batch.engram_ids is None
     for row, single in enumerate(singles):
         assert_cache_equal(batch.extract(row), single)
+
+
+def test_join_guards_reject_incompatible_rows(model):
+    from dataclasses import replace
+
+    singles, _ = prefill(model, [2, 3])
+    batch = BatchModelCache.from_caches(singles[:1])
+    other = model.make_cache(max_seq_len=128)
+    other.args = replace(other.args, window_size=other.args.window_size + 1)
+    with pytest.raises(ValueError, match="model configurations"):
+        BatchModelCache.from_caches([singles[0], other])
+    histories = model.make_cache(max_seq_len=128)
+    histories.engram_ids = np.zeros((2, 128), dtype=np.int64)
+    with pytest.raises(ValueError, match="single-row histories"):
+        BatchModelCache.from_caches([histories])
+    with pytest.raises(ValueError, match="dtypes"):
+        BatchModelCache.from_caches(
+            [singles[0], model.make_cache(max_seq_len=128, dtype=mx.float16)]
+        )
+    foreign = BatchModelCache.from_caches(singles[1:])
+    foreign.args = other.args
+    with pytest.raises(ValueError, match="model configurations"):
+        batch.extend(foreign)
+    with pytest.raises(ValueError, match="does not match model"):
+        model(mx.zeros((1, 1), dtype=mx.int32), foreign)
+    assert batch.extend(BatchModelCache.from_caches(singles[1:]).filter([])) is batch
+    assert len(batch) == 1
+    with pytest.raises(IndexError, match="outside batch"):
+        batch.extract(1)
+
+
+def test_plain_forward_closes_a_stale_rollback_window(model):
+    cache = model.make_cache(max_seq_len=64)
+    model(mx.array([[1, 2, 3]]), cache, enable_rollback=True)
+    assert cache.rollback_start == 0
+    model(mx.array([[4]]), cache)
+    assert cache.rollback_start is None

@@ -563,3 +563,120 @@ def test_upper_prompt_and_generation_bounds_are_accepted():
         assert result[-1].generation_tokens == 4096
     finally:
         backend.close()
+
+
+@pytest.mark.parametrize("lanes", [3, True])
+def test_backend_rejects_unsupported_lane_counts(lanes):
+    with pytest.raises(ValueError, match="lanes must be one of"):
+        BatchBackend(CountingModel(), Tokenizer(), lanes=lanes)
+
+
+def test_ended_stream_stays_ended():
+    backend = BatchBackend(CountingModel(), Tokenizer(), lanes=2)
+    try:
+        stream = backend.submit([1, 2], max_tokens=2)
+        assert len(collect(stream)) == 2
+        with pytest.raises(StopIteration):
+            next(stream)
+    finally:
+        backend.close()
+
+
+def test_request_cancelled_while_queued_is_never_admitted():
+    model = CountingModel()
+    entered, release = threading.Event(), threading.Event()
+    blocked = False
+
+    def hook(ids, cache):
+        nonlocal blocked
+        if not blocked:
+            blocked = True
+            entered.set()
+            wait(release)
+
+    model.hook = hook
+    backend = BatchBackend(model, Tokenizer(), lanes=1)
+    try:
+        first = backend.submit([1, 2], max_tokens=3)
+        wait(entered)
+        cancel = threading.Event()
+        queued = backend.submit([5, 6, 7], max_tokens=3, cancel_event=cancel)
+        cancel.set()
+        release.set()
+        with ThreadPoolExecutor(2) as pool:
+            assert len(pool.submit(collect, first).result(timeout=10)) == 3
+            assert pool.submit(collect, queued).result(timeout=10) == []
+        assert all(shape != (1, 3) for shape, _ in model.calls)
+    finally:
+        release.set()
+        backend.close()
+
+
+def test_decode_failure_also_fails_the_partial_prefill():
+    model = CountingModel()
+    failed = False
+
+    def hook(ids, cache):
+        nonlocal failed
+        partial = any(
+            shape == (1, 512) and not batch for shape, batch in model.calls[:-1]
+        )
+        if isinstance(cache, BatchModelCache) and partial and not failed:
+            failed = True
+            raise RuntimeError("injected decode failure")
+
+    model.hook = hook
+    backend = BatchBackend(model, Tokenizer(), lanes=2)
+    try:
+        short = backend.submit([1, 2], max_tokens=4096)
+        long = backend.submit([1] * 1100, max_tokens=4)
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(collect, stream) for stream in (short, long)]
+            for future in futures:
+                with pytest.raises(RuntimeError, match="injected decode"):
+                    future.result(timeout=10)
+        after = backend.submit([3, 4], max_tokens=2)
+        assert len(collect(after)) == 2
+    finally:
+        backend.close()
+
+
+def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch):
+    from pathlib import Path
+
+    from rapid_mlx.models.deepseek_v41_native import batch_scheduler, server
+    from rapid_mlx.speculative.dflash import server as serial
+
+    monkeypatch.setenv("RAPID_MLX_DSV41_LANES", "2")
+    monkeypatch.setattr(server, "require_product_memory", lambda: None)
+    monkeypatch.setattr(server, "download_target_snapshot", lambda: Path("target"))
+    monkeypatch.setattr(server, "download_mtp_snapshot", lambda: Path("mtp"))
+    runtime = SimpleNamespace(target_revision="target-revision")
+    monkeypatch.setattr(
+        server,
+        "load_product_runtime",
+        lambda *args, **kwargs: (CountingModel(), Tokenizer(), runtime),
+    )
+    built = []
+    original_backend = batch_scheduler.BatchBackend
+
+    def build_backend(**kwargs):
+        built.append(original_backend(**kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(batch_scheduler, "BatchBackend", build_backend)
+
+    def broken_app(**kwargs):
+        raise RuntimeError("injected app failure")
+
+    monkeypatch.setattr(serial, "_build_app", broken_app)
+    with pytest.raises(RuntimeError, match="injected app failure"):
+        server.run_server(
+            host="127.0.0.1",
+            port=8000,
+            served_model_name="test",
+            default_max_tokens=3,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )
+    assert len(built) == 1 and built[0]._closed
