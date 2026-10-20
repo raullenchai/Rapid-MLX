@@ -187,12 +187,11 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
         return fake_kernel
 
     head_gemv._kernel.cache_clear()
-    monkeypatch.setattr(head_gemv, "_VALIDATED", {})
     monkeypatch.setattr(mx.fast, "metal_kernel", fake_metal_kernel)
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head(outputs=1003)
     logits = head_logits(head, mx.zeros((2, 3, 512)))
-    assert head_gemv._VALIDATED == {(1003, 512): True}
+    assert getattr(head, head_gemv._CHECK_ATTR) == (head.weight, True)
     assert logits.shape == (2, 3, 1003)
     assert seen["grid"] == (251 * 32 * 4, 6, 1)
     assert seen["threadgroup"] == (128, 1, 1)
@@ -203,7 +202,7 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     head_gemv._kernel.cache_clear()
 
 
-def test_self_check_mismatch_routes_shape_to_stock(monkeypatch) -> None:
+def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
     launches = []
 
     def wrong_kernel(**kwargs):
@@ -211,7 +210,6 @@ def test_self_check_mismatch_routes_shape_to_stock(monkeypatch) -> None:
         rows, outputs = kwargs["output_shapes"][0]
         return [mx.zeros((rows, outputs), dtype=mx.float32)]
 
-    monkeypatch.setattr(head_gemv, "_VALIDATED", {})
     monkeypatch.setattr(head_gemv, "_kernel", lambda: wrong_kernel)
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head()
@@ -219,6 +217,24 @@ def test_self_check_mismatch_routes_shape_to_stock(monkeypatch) -> None:
     for _ in range(2):
         actual = head_logits(head, x)
         assert mx.array_equal(actual, head(x)).item()
-    # One probe launch only; the shape is then pinned to the stock path.
+    # One probe launch only; this weight then stays on the stock path.
     assert launches == [(1, 512)]
-    assert head_gemv._VALIDATED == {(1003, 512): False}
+    assert getattr(head, head_gemv._CHECK_ATTR)[1] is False
+    assert "_rapid_exact_head_check" not in head.parameters()
+    # A replaced weight of the same shape is validated again.
+    head.weight = _head().weight
+    head_logits(head, x)
+    assert launches == [(1, 512), (1, 512)]
+    assert getattr(head, head_gemv._CHECK_ATTR)[0] is head.weight
+
+
+def test_self_check_launch_failure_falls_back(monkeypatch) -> None:
+    def broken_kernel():
+        raise RuntimeError("unable to build metal library")
+
+    monkeypatch.setattr(head_gemv, "_kernel", broken_kernel)
+    monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
+    head = _head()
+    x = mx.random.normal((1, 512))
+    assert mx.array_equal(head_logits(head, x), head(x)).item()
+    assert getattr(head, head_gemv._CHECK_ATTR)[1] is False
