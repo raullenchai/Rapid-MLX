@@ -510,6 +510,40 @@ def test_cancelled_model_start_terminates_only_spawned_server(
     assert not pid_file.exists()
 
 
+def test_failed_start_cleanup_tolerates_exited_server_and_missing_pid_file(
+    private_home, monkeypatch
+):
+    from rapid_mlx.launch import cli as launch_cli
+
+    monkeypatch.setattr(launch_cli, "PID_FILE", private_home / "missing.pid")
+    with patch("rapid_mlx.launch.cli.os.kill", side_effect=ProcessLookupError) as kill:
+        launch_cli._stop_failed_start(12345)
+    kill.assert_called_once_with(12345, signal.SIGTERM)
+
+
+def test_started_server_with_wrong_key_is_stopped(private_home, monkeypatch, capsys):
+    from rapid_mlx.launch import cli as launch_cli
+
+    pid_file = private_home / "launch.pid"
+    pid_file.write_text("12345\n")
+    monkeypatch.setattr(launch_cli, "PID_FILE", pid_file)
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", "key-mismatch"],
+        ),
+        patch("rapid_mlx.run.cli._confirm_download", return_value=True),
+        patch("rapid_mlx.launch.cli._start_server_background", return_value=12345),
+        patch("rapid_mlx.launch.cli.os.kill") as kill,
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_cli.launch_command(_launch_args("codex", "--model", "qwen3.5-9b-4bit"))
+    kill.assert_called_once_with(12345, signal.SIGTERM)
+    assert not pid_file.exists()
+    assert "does not match this profile" in capsys.readouterr().err
+
+
 def test_isolated_cli_reports_no_suitable_model(private_home, capsys):
     from rapid_mlx.launch.cli import launch_command
 
