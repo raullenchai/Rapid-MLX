@@ -180,7 +180,8 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     def fake_kernel(**kwargs):
         seen.update(kwargs)
         x, weight = kwargs["inputs"]
-        return [x @ weight.astype(mx.float32).T]
+        rows = [x[i : i + 1] @ weight.astype(mx.float32).T for i in range(x.shape[0])]
+        return [mx.concatenate(rows)]
 
     def fake_metal_kernel(**kwargs):
         built.update(kwargs)
@@ -219,7 +220,7 @@ def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
         actual = head_logits(head, x)
         assert mx.array_equal(actual, head(x)).item()
     # One probe launch only; this weight then stays on the stock path.
-    assert launches == [(1, 512)]
+    assert launches == [(8, 512)]
     assert getattr(head, head_gemv._CHECK_ATTR)[1] is False
     assert "_rapid_exact_head_check" not in head.parameters()
     # A replaced weight of the same shape is validated again, and the old
@@ -228,7 +229,7 @@ def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
     head.weight = _head().weight
     assert old() is None
     head_logits(head, x)
-    assert launches == [(1, 512), (1, 512)]
+    assert launches == [(8, 512), (8, 512)]
     assert getattr(head, head_gemv._CHECK_ATTR)[0]() is head.weight
 
 

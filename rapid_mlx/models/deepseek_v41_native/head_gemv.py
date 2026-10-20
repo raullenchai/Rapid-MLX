@@ -20,18 +20,22 @@ is outside this contract; V4.1 only ever assigns checkpoint arrays.
 
 The stock operation order is an implementation detail of the installed MLX
 and GPU, so the first call for each head weight runs a one-time self-check:
-the kernel and the stock projection evaluate the same seeded row against that
-weight, and any bit difference (or a compile/launch failure) keeps that head
-on the stock path. A replaced weight is validated again.
+the kernel evaluates ``MAX_ROWS`` seeded rows against that weight and each
+row must equal its single-row stock projection; any bit difference (or a
+compile/launch failure) keeps that head on the stock path with a warning. A
+replaced weight is validated again.
 """
 
 from __future__ import annotations
 
+import logging
 import weakref
 from functools import lru_cache
 
 import mlx.core as mx
 import mlx.nn as nn
+
+logger = logging.getLogger(__name__)
 
 # Module switch: False routes every call through the stock projection.
 ENABLED = True
@@ -143,11 +147,23 @@ def _matches_stock(head) -> bool:
     cached = getattr(head, _CHECK_ATTR, None)
     if cached is None or cached[0]() is not weight:
         try:
-            probe = mx.random.normal((1, int(weight.shape[1])), key=mx.random.key(0x41))
+            # Cover the full row grid: each row must equal its stock single-row
+            # projection, which is the contract for every supported row count.
+            probe = mx.random.normal(
+                (MAX_ROWS, int(weight.shape[1])), key=mx.random.key(0x41)
+            )
             actual = _launch(weight, probe)
-            ok = bool(mx.array_equal(actual, head(probe)).item())
+            ok = True
+            for row in range(MAX_ROWS):
+                # One stock row at a time: each call promotes the whole weight
+                # to FP32, so a single graph would hold MAX_ROWS copies.
+                expected = head(probe[row : row + 1])
+                ok = ok and bool(mx.array_equal(actual[row : row + 1], expected).item())
         except Exception:  # compile/launch failure on this runtime: stay stock
+            logger.warning("exact V4.1 head GEMV unavailable", exc_info=True)
             ok = False
+        if not ok:
+            logger.warning("exact V4.1 head GEMV disabled: stock path for this head")
         # Plain attribute (not a parameter); the weak reference re-validates a
         # replaced weight without keeping the old 1.3 GB array alive.
         cached = (weakref.ref(weight), ok)
