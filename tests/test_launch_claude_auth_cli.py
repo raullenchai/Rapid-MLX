@@ -12,7 +12,7 @@ import pytest
 from rapid_mlx.agents import isolated
 
 
-@pytest.mark.integration
+@pytest.mark.slow
 @pytest.mark.skipif(shutil.which("claude") is None, reason="Claude Code CLI absent")
 def test_subscription_profile_sends_local_bearer(tmp_path, monkeypatch):
     monkeypatch.setattr(isolated.Path, "home", lambda: tmp_path)
