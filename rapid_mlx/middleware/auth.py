@@ -192,6 +192,7 @@ def _subnet_bucket(host: str) -> str:
 
 def _rate_limit_client_id(request: Request) -> str:
     """Resolve the default client id for rate limiting."""
+    x_api_key = request.headers.get("x-api-key")
     authorization = request.headers.get("Authorization")
     if authorization:
         bearer_key = _extract_bearer_token(authorization)
@@ -204,10 +205,9 @@ def _rate_limit_client_id(request: Request) -> str:
         # non-Bearer scheme (e.g. ``Basic``) still buckets by the raw header
         # so it keeps a stable per-credential identity.
         scheme = authorization.split(" ", 1)[0].lower()
-        if scheme != "bearer":
+        if scheme != "bearer" and not x_api_key:
             return _bucket_id(authorization)
 
-    x_api_key = request.headers.get("x-api-key")
     if x_api_key:
         return _bucket_id(x_api_key)
 
@@ -305,6 +305,14 @@ async def verify_api_key(
 ):
     """Verify Bearer or Anthropic-style API key if authentication is enabled."""
     bearer_key = credentials.credentials if credentials is not None else None
+    if (
+        request is not None
+        and request.headers.getlist("authorization")
+        and bearer_key is None
+    ):
+        # HTTPBearer(auto_error=False) returns None for an empty or unsupported
+        # Authorization header. A supplied companion must still be valid.
+        bearer_key = ""
     x_api_keys = request.headers.getlist("x-api-key") if request is not None else []
     return _verify_api_key_values(bearer_key, *x_api_keys)
 
@@ -313,9 +321,10 @@ async def verify_api_key_for_scope(scope) -> bool:
     """Run the bearer check against a raw ASGI scope without reading its body."""
     credentials = await security(Request(scope))
     bearer_key = credentials.credentials if credentials is not None else None
-    return _verify_api_key_values(
-        bearer_key, *Request(scope).headers.getlist("x-api-key")
-    )
+    request = Request(scope)
+    if request.headers.getlist("authorization") and bearer_key is None:
+        bearer_key = ""
+    return _verify_api_key_values(bearer_key, *request.headers.getlist("x-api-key"))
 
 
 async def verify_api_key_or_x_api_key(

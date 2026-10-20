@@ -806,6 +806,12 @@ def test_shared_auth_accepts_x_api_key_for_standard_routes(
         headers={"Authorization": "Bearer wrong", "x-api-key": "test-secret"},
     )
     assert mixed.status_code == 401
+    for authorization in ("Bearer", "Basic arbitrary"):
+        mixed = client.get(
+            "/test",
+            headers={"Authorization": authorization, "x-api-key": "test-secret"},
+        )
+        assert mixed.status_code == 401
 
 
 def test_configure_rate_limiter_updates_shared_anthropic_dependency(
