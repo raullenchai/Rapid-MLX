@@ -24,6 +24,14 @@ def _head(outputs: int = 1003, inputs: int = 512) -> nn.Linear:
     return head
 
 
+def _exact_logits(head: nn.Linear, x: mx.array) -> mx.array:
+    # head_logits silently falls back to head(x); pin the kernel path so a
+    # broken kernel cannot pass these comparisons through the fallback.
+    assert supports(head, x)
+    assert head_gemv._matches_stock(head)
+    return head_gemv._launch(head.weight, x)
+
+
 @pytest.fixture
 def gpu():
     if not mx.metal.is_available():
@@ -39,8 +47,7 @@ def gpu():
 def test_single_rows_are_bit_exact_with_stock_projection(gpu, shape) -> None:
     head = _head()
     x = mx.random.normal((*shape, 512))
-    assert supports(head, x)
-    actual = head_logits(head, x)
+    actual = _exact_logits(head, x)
     expected = head(x)
     mx.eval(actual, expected)
     assert actual.shape == expected.shape
@@ -54,7 +61,7 @@ def test_each_row_matches_its_single_row_stock_result(gpu, rows: int) -> None:
     # the exact head instead gives every row its single-row decode result.
     head = _head(outputs=4096, inputs=1024)
     x = mx.random.normal((1, rows, 1024))
-    actual = head_logits(head, x)
+    actual = _exact_logits(head, x)
     expected = mx.concatenate([head(x[:, i : i + 1]) for i in range(rows)], axis=1)
     mx.eval(actual, expected)
     assert mx.array_equal(actual, expected).item()
@@ -65,7 +72,7 @@ def test_strided_last_token_rows_match_single_row_stock(gpu) -> None:
     head = _head(outputs=4096, inputs=1024)
     hidden = mx.random.normal((2, 3, 1024))
     last = hidden[:, -1:]
-    actual = head_logits(head, last)
+    actual = _exact_logits(head, last)
     expected = mx.concatenate([head(hidden[b : b + 1, -1:]) for b in range(2)])
     mx.eval(actual, expected)
     assert actual.shape == (2, 1, 4096)
