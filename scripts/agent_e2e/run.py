@@ -202,7 +202,7 @@ def session(
                 ),
             )
             if first_byte:
-                answer["first_reply_s"] = round(first_byte - sent, 2)
+                answer["first_reply_s"] = round(time.monotonic() - sent, 2)
             answer["tool_ok"] = (
                 target.is_file() and target.read_text().strip() == f"hi-{marker}"
             )
@@ -223,7 +223,7 @@ def session(
                     ),
                 )
                 if first_byte:
-                    answer["second_reply_s"] = round(first_byte - sent, 2)
+                    answer["second_reply_s"] = round(time.monotonic() - sent, 2)
                 answer["second_ok"] = (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}-second"
@@ -269,6 +269,7 @@ def request_evidence(path: Path | None, agent: str, start: float, end: float) ->
                 requests.append(event)
         except (ValueError, KeyError, TypeError):
             continue
+    requests.sort(key=lambda event: event["time"])
     first = next(
         (
             r
@@ -452,13 +453,13 @@ def main() -> int:
             removed.returncode == 0
             and not (args.home / ".rapid-mlx/connect/agents" / agent).exists()
         )
-        row["config_untouched"] = before == snapshot(args.home, agent)
         try:
             row["normal_mode_opens"] = normal_mode(
                 BINARIES[agent], env, work, args.output / agent / "normal-mode.pty"
             )
         except OSError:
             row["normal_mode_opens"] = False
+        row["config_untouched"] = before == snapshot(args.home, agent)
         row["works"] = bool(
             row["config_seeded"]
             and row["config_untouched"]

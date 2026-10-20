@@ -55,6 +55,31 @@ def test_request_evidence_never_substitutes_config_model(tmp_path):
         + "\n"
     )
     assert request_evidence(log, "codex", 0, 100)["model_requested"] == "actual-request"
+    log.write_text(
+        json.dumps(
+            {
+                "agent": "codex",
+                "time": 11,
+                "path": "/v1/responses",
+                "model": "later",
+                "status": 200,
+                "prompt_tokens": 12,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "agent": "codex",
+                "time": 10,
+                "path": "/v1/responses",
+                "model": "first",
+                "status": 200,
+                "prompt_tokens": 34,
+            }
+        )
+        + "\n"
+    )
+    assert request_evidence(log, "codex", 0, 100)["first_prompt_tokens"] == 34
 
 
 def test_metadata_tap_forwards_request_and_response_unchanged(tmp_path, monkeypatch):

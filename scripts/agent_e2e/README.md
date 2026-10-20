@@ -41,10 +41,10 @@ tokens if the response supplies usage. It never stores prompts or keys.
 the requested model observed on the server, accepted auth, untouched user
 configuration, normal mode opening, and successful `--remove`. Missing server
 usage remains `—`; do not replace it with a model name from a config file.
-The first-reply timings are first terminal output after sending the prompt;
-inspect the transcript when startup redraw or input echo makes this an
-underestimate. An exact reply timing requires a parser for that agent's
-terminal protocol. A normal-mode open shows only that the ordinary CLI starts
+The reply timings are the time until the verified edit and readback output
+settle. They include the runner's five-second quiet period, so they are
+upper bounds. An exact visible-answer timing requires a parser for each
+agent's terminal protocol. A normal-mode open shows only that the ordinary CLI starts
 with the fake cloud configuration; it does not prove cloud authentication.
 
 The first agent must start with no listener on the reserved port. Later
