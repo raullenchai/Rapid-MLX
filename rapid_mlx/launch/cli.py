@@ -162,13 +162,27 @@ def launch_command(args: argparse.Namespace) -> None:
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
+    if args.run and not args.isolated:
+        print("launch: --run requires --isolated", file=sys.stderr)
+        sys.exit(2)
+
     if args.isolated or args.remove:
         from rapid_mlx.agents import get_profile
-        from rapid_mlx.agents.isolated import configure, remove, stable_key, stable_port
+        from rapid_mlx.agents.isolated import (
+            configure,
+            connection_status,
+            remove,
+            stable_key,
+            stable_port,
+        )
 
         if not args.client or args.all:
             print("launch: name one agent for --isolated or --remove", file=sys.stderr)
             sys.exit(2)
+        if args.dry_run:
+            action = "remove" if args.remove else "save"
+            print(f"[dry-run] Would {action} the isolated {args.client} profile.")
+            return
         try:
             if args.remove:
                 removed = remove(args.client)
@@ -213,17 +227,8 @@ def launch_command(args: argparse.Namespace) -> None:
             f"--no-setup --port {port}"
         )
         if args.run:
-            import urllib.error
-            import urllib.request
-
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/health/ready", timeout=2
-                ) as response:
-                    ready = response.status == 200
-            except (urllib.error.URLError, OSError, TimeoutError):
-                ready = False
-            if not ready:
+            status = connection_status(port, stable_key(), model)
+            if status == "stopped":
                 if not args.start_server:
                     print(f"  Local server is stopped. Start it with: {start_hint}")
                     raise SystemExit(1)
@@ -231,19 +236,20 @@ def launch_command(args: argparse.Namespace) -> None:
                 import time
 
                 for _ in range(600):
-                    try:
-                        with urllib.request.urlopen(
-                            f"http://127.0.0.1:{port}/health/ready", timeout=2
-                        ) as response:
-                            if response.status == 200:
-                                ready = True
-                                break
-                    except (urllib.error.URLError, OSError, TimeoutError):
-                        pass
+                    status = connection_status(port, stable_key(), model)
+                    if status != "stopped":
+                        break
                     time.sleep(1)
-                if not ready:
+                if status == "stopped":
                     print(f"  Local server did not become ready. Retry: {start_hint}")
                     raise SystemExit(1)
+            if status != "ready":
+                print(
+                    "  Local server key or model does not match this profile. "
+                    f"Start the matching model with: {start_hint}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
             raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
         print(f"  If the local server is stopped: {start_hint}")
         return

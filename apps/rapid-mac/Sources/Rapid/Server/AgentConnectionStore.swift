@@ -54,6 +54,20 @@ enum AgentConnectionStore {
         }
     }
 
+    @discardableResult
+    static func clearKey() -> Bool {
+        let path = directory.appendingPathComponent("api-key")
+        guard !isLink(directory), !isLink(path) else { return false }
+        do {
+            if FileManager.default.fileExists(atPath: path.path) {
+                try FileManager.default.removeItem(at: path)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private static func write(_ content: String, name: String) -> Bool {
         let path = directory.appendingPathComponent(name).path
         let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0o600)

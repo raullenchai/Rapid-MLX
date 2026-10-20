@@ -9,6 +9,9 @@ import secrets
 import shlex
 import shutil
 import stat
+import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from rapid_mlx.agents import get_profile
@@ -102,6 +105,29 @@ def save_port(port: int) -> None:
     _private_write(port_path(), f"{port}\n")
 
 
+def connection_status(port: int, key: str, model: str) -> str:
+    """Return ready, stopped, or a specific local configuration error."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return "key-mismatch" if exc.code in {401, 403} else "server-error"
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return "stopped"
+    except (ValueError, TypeError):
+        return "server-error"
+    advertised = (
+        {item.get("id") for item in payload.get("data", []) if isinstance(item, dict)}
+        if isinstance(payload, dict)
+        else set()
+    )
+    return "ready" if model in advertised else "model-mismatch"
+
+
 def _command(name: str, root: Path, model: str, port: int) -> str:
     quote = shlex.quote
     key = quote(str(key_path()))
@@ -117,7 +143,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "hermes":
         return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"
     if name == "goose":
-        return f"{credential} XDG_CONFIG_HOME={quote(str(root))} GOOSE_MODEL={quote(model)} goose session start --provider custom_rapid_mlx"
+        return f"{credential} XDG_CONFIG_HOME={quote(str(root))} GOOSE_MODEL={quote(model)} goose session --provider custom_rapid_mlx"
     if name == "crush":
         return (
             f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root / 'crush.json'))} crush"
@@ -147,7 +173,12 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     previous = os.environ.get("RAPID_MLX_API_KEY")
     os.environ["RAPID_MLX_API_KEY"] = key
     try:
-        rendered = profile.render_config(base, model)
+        version = None
+        if name == "opencode":
+            from rapid_mlx.agents.opencode_version import installed_version
+
+            version = installed_version()
+        rendered = profile.render_config(base, model, version)
     finally:
         if previous is None:
             os.environ.pop("RAPID_MLX_API_KEY", None)
@@ -172,6 +203,9 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     elif name == "opencode":
         _private_write(root / "opencode.json", str(rendered))
     elif name == "hermes":
+        rendered = str(rendered).replace(
+            "  base_url: ", f'  api_key: "{key}"\n  base_url: ', 1
+        )
         _private_write(root / "profiles" / "rapid" / "config.yaml", str(rendered))
     elif name == "goose":
         _private_write(
@@ -198,13 +232,31 @@ def configure(name: str, model: str, *, port: int | None = None) -> str:
     command = _command(name, root, model, port)
     start = f"rapid-mlx start {shlex.quote(name)} --model {shlex.quote(model)} --no-setup --port {port}"
     message = f"Local server is stopped. Start it with: {start}"
+    mismatch = f"Local server key or model does not match this profile. Start the matching model with: {start}"
     runner = root / "run"
+    refresh = ""
+    if name in {"claude-code", "hermes"}:
+        cli = (
+            sys.argv[0]
+            if Path(sys.argv[0]).name == "rapid-mlx" and Path(sys.argv[0]).is_file()
+            else shutil.which("rapid-mlx")
+        )
+        cli = cli or "rapid-mlx"
+        refresh = (
+            f"{shlex.quote(cli)} launch {shlex.quote(name)} --isolated "
+            f"--model {shlex.quote(model)} >/dev/null || exit 1\n"
+        )
     _private_write(
         runner,
         "#!/bin/zsh\n"
         + f"if ! /usr/bin/curl -fsS -o /dev/null http://127.0.0.1:{port}/health/ready 2>/dev/null; then\n"
         + f"  /bin/echo {shlex.quote(message)} >&2\n"
         + "  exit 1\nfi\n"
+        + f'rapid_models=$(/usr/bin/curl -fsS --max-time 2 -H "Authorization: Bearer $(/bin/cat {shlex.quote(str(key_path()))})" http://127.0.0.1:{port}/v1/models 2>/dev/null)\n'
+        + f'if [[ -z "$rapid_models" ]] || ! /bin/echo "$rapid_models" | /usr/bin/grep -Fq -- {shlex.quote(model)}; then\n'
+        + f"  /bin/echo {shlex.quote(mismatch)} >&2\n"
+        + "  exit 1\nfi\n"
+        + refresh
         + command
         + "\n",
     )

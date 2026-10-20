@@ -2,7 +2,9 @@
 
 import json
 import stat
+from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import tomllib
@@ -86,3 +88,40 @@ def test_saved_port_is_reused_by_later_profiles(private_home):
         / "rapid"
         / "config.yaml"
     ).is_file()
+
+
+def test_old_opencode_shape_and_hermes_auth(private_home):
+    with patch(
+        "rapid_mlx.agents.opencode_version.installed_version", return_value="1.0.0"
+    ):
+        isolated.configure("opencode", "qwen3.5-9b-4bit")
+    config = json.loads(
+        (
+            isolated.connection_dir() / "agents" / "opencode" / "opencode.json"
+        ).read_text()
+    )
+    assert "providers" not in config
+    isolated.configure("hermes", "qwen3.5-9b-4bit")
+    hermes = (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / "config.yaml"
+    ).read_text()
+    assert f'api_key: "{isolated.stable_key()}"' in hermes
+    goose = isolated.configure("goose", "qwen3.5-9b-4bit")
+    assert "goose session --provider" in Path(goose).read_text()
+
+
+def test_isolated_dry_run_preserves_saved_profile(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.configure("codex", "qwen3.5-9b-4bit")
+    args = Namespace(
+        client="codex", isolated=False, remove=True, all=False, dry_run=True, run=False
+    )
+    launch_command(args)
+    assert (isolated.connection_dir() / "agents" / "codex" / "config.toml").exists()
+    assert "[dry-run]" in capsys.readouterr().out

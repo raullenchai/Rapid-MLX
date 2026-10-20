@@ -1347,7 +1347,25 @@ final class ServerManager {
         sessionDefaults?.set(lifetime.rawValue, forKey: "rapid.embeddedBearer.lifetime.v1")
         if lifetime == .perLaunch {
             retryEmbeddedBearerCleanup()
+            if sharesAgentConnection { AgentConnectionStore.clearKey() }
         }
+    }
+
+    /// A saved agent profile opts into a reusable local connection.
+    @discardableResult
+    func preserveAgentConnection() -> Bool {
+        guard sharesAgentConnection, let activeBearer, activePort > 0 else { return false }
+        let credential = EmbeddedBearerCredential(
+            secret: activeBearer, rotatedAt: Date(), lifetime: .explicit
+        )
+        guard AgentConnectionStore.save(key: activeBearer, port: activePort) else { return false }
+        guard bearerCredentialStore.save(credential) else {
+            AgentConnectionStore.clearKey()
+            return false
+        }
+        setEmbeddedBearerLifetime(.explicit)
+        embeddedBearerStatus = .materialized(rotatedAt: credential.rotatedAt, isPersisted: true, issue: nil)
+        return true
     }
 
     /// Make the per-launch storage promise true immediately, without changing
@@ -1358,6 +1376,7 @@ final class ServerManager {
     func retryEmbeddedBearerCleanup() -> Bool {
         guard embeddedBearerLifetime == .perLaunch else { return false }
         let cleared = bearerCredentialStore.clear()
+            && (!sharesAgentConnection || AgentConnectionStore.clearKey())
         let lastRotation: Date?
         switch embeddedBearerStatus {
         case .notMaterialized:
@@ -1397,6 +1416,12 @@ final class ServerManager {
                 isPersisted: false,
                 issue: embeddedBearerLifetime == .perLaunch ? nil : .writeFailed
             )
+            return false
+        }
+        if sharesAgentConnection,
+           !AgentConnectionStore.save(key: secret, port: AgentConnectionStore.readPort() ?? activePort) {
+            AgentConnectionStore.clearKey()
+            embeddedBearerStatus = .materialized(rotatedAt: now, isPersisted: true, issue: .writeFailed)
             return false
         }
         embeddedBearerStatus = .materialized(
@@ -2961,7 +2986,7 @@ final class ServerManager {
             )
             return
         }
-        if sharesAgentConnection && embeddedBearerLifetime == .explicit &&
+        if sharesAgentConnection && embeddedBearerLifetime != .perLaunch &&
             !AgentConnectionStore.save(key: bearerMaterial.secret, port: resolvedPort) {
             isOperating = false
             state = .crashed(alias: trimmedAlias, message: "Couldn't save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again.")

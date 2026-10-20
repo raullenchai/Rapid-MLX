@@ -435,7 +435,11 @@ struct ConnectToolsView: View {
                     // ``isReady`` is false and every integration Copy button is
                     // disabled; a future change that stops threading this gate
                     // into the rows is a change to the tested decision itself.
-                    ConnectToolRow(tool: tool, isReady: configReady)
+                    ConnectToolRow(
+                        tool: tool,
+                        isReady: configReady,
+                        onPersistentLaunch: { server.preserveAgentConnection() }
+                    )
                 }
             }
             .groupedCard()
@@ -509,6 +513,7 @@ struct ConnectToolsView: View {
                     snippet: command,
                     displaySnippet: command,
                     action: .launch,
+                    persistent: true,
                     sessionSnippet: sessionLaunchCommand(id: target.id, key: snippetKey)
                 )
             }
@@ -760,6 +765,7 @@ private struct ConnectTool: Identifiable {
     }
 
     var action: Action = .launch
+    var persistent: Bool = false
     var sessionSnippet: String? = nil
 }
 
@@ -784,6 +790,7 @@ private struct ConnectToolRow: View {
     /// False until the endpoint, key, and model are all real. Copying a
     /// half-filled snippet is worse than not offering it.
     var isReady: Bool = true
+    var onPersistentLaunch: () -> Bool = { true }
     @State private var copied = false
     @State private var showsCommand = false
     @State private var launchError: String?
@@ -830,7 +837,13 @@ private struct ConnectToolRow: View {
 
                 if tool.action == .launch {
                     Button("Launch") {
-                        do { try TerminalAgentLauncher.open(command: tool.snippet) }
+                        do {
+                            guard !tool.persistent || onPersistentLaunch() else {
+                                throw NSError(domain: "Rapid.AgentLaunch", code: 1,
+                                              userInfo: [NSLocalizedDescriptionKey: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."])
+                            }
+                            try TerminalAgentLauncher.open(command: tool.snippet)
+                        }
                         catch { launchError = error.localizedDescription }
                     }
                     .buttonStyle(.borderedProminent)
@@ -940,6 +953,10 @@ private struct ConnectToolRow: View {
     }
 
     private func copy() {
+        guard !tool.persistent || onPersistentLaunch() else {
+            launchError = "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."
+            return
+        }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(tool.snippet, forType: .string)
         withAnimation { copied = true }
