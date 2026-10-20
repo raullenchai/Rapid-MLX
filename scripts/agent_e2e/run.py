@@ -15,6 +15,7 @@ import pty
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import uuid
@@ -309,6 +310,12 @@ def main() -> int:
         parser.error(
             "use an existing dedicated HOME, installed binary, and a non-owner port"
         )
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", args.port)) == 0:
+            parser.error(
+                "reserved port already has a listener; cold start requires a stopped server"
+            )
     args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
     env = os.environ.copy()
     env["HOME"] = str(args.home.resolve())
@@ -334,7 +341,7 @@ def main() -> int:
             "config_seeded": bool(before),
             "config_untouched": None,
         }
-        row["cold_server"] = not (args.home / ".rapid-mlx/connect/agents").exists()
+        row["cold_server"] = agent == args.agents[0]
         start = time.time()
         cmd = [
             str(args.rapid),
