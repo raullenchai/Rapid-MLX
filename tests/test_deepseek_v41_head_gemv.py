@@ -179,18 +179,20 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
 
     def fake_kernel(**kwargs):
         seen.update(kwargs)
-        rows, outputs = kwargs["output_shapes"][0]
-        return [mx.zeros((rows, outputs), dtype=mx.float32)]
+        x, weight = kwargs["inputs"]
+        return [x @ weight.astype(mx.float32).T]
 
     def fake_metal_kernel(**kwargs):
         built.update(kwargs)
         return fake_kernel
 
     head_gemv._kernel.cache_clear()
+    monkeypatch.setattr(head_gemv, "_VALIDATED", {})
     monkeypatch.setattr(mx.fast, "metal_kernel", fake_metal_kernel)
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head(outputs=1003)
     logits = head_logits(head, mx.zeros((2, 3, 512)))
+    assert head_gemv._VALIDATED == {(1003, 512): True}
     assert logits.shape == (2, 3, 1003)
     assert seen["grid"] == (251 * 32 * 4, 6, 1)
     assert seen["threadgroup"] == (128, 1, 1)
@@ -199,3 +201,24 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     assert built["name"] == "rapid_v41_fp32_bf16_head_gemv"
     assert built["ensure_row_contiguous"] is True
     head_gemv._kernel.cache_clear()
+
+
+def test_self_check_mismatch_routes_shape_to_stock(monkeypatch) -> None:
+    launches = []
+
+    def wrong_kernel(**kwargs):
+        launches.append(kwargs["inputs"][0].shape)
+        rows, outputs = kwargs["output_shapes"][0]
+        return [mx.zeros((rows, outputs), dtype=mx.float32)]
+
+    monkeypatch.setattr(head_gemv, "_VALIDATED", {})
+    monkeypatch.setattr(head_gemv, "_kernel", lambda: wrong_kernel)
+    monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
+    head = _head()
+    x = mx.random.normal((1, 512))
+    for _ in range(2):
+        actual = head_logits(head, x)
+        assert mx.array_equal(actual, head(x)).item()
+    # One probe launch only; the shape is then pinned to the stock path.
+    assert launches == [(1, 512)]
+    assert head_gemv._VALIDATED == {(1003, 512): False}
