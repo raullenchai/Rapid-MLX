@@ -1,0 +1,33 @@
+{
+  "measured_code_commit": "f73c037fb",
+  "codex_cli_version": "0.163.0",
+  "rapid_mlx_server_version": "0.16.0",
+  "machine": "Apple M4 Pro, 48 GiB",
+  "weights": "mlx-community/Qwen3.5-9B-4bit",
+  "prompt": "Reply exactly READY.",
+  "runs": [
+    {
+      "name": "previous-profile-with-wrong-model-selection",
+      "codex_argv": ["exec", "--profile", "rapid", "--model", "gpt-6-sol", "--skip-git-repo-check", "--json"],
+      "profile_model": "qwen3.5-9b-4bit",
+      "private_features": "Codex defaults",
+      "session_id": "01a15b41-e34c-7dd2-b1e9-9992c8ba6ba1",
+      "session_turn_model": "gpt-6-sol",
+      "usage": {"input_tokens": 9548, "cached_input_tokens": 0, "output_tokens": 1},
+      "server_response_seconds": 26.48,
+      "command_seconds": 26.9
+    },
+    {
+      "name": "revised-profile-with-local-model-selection",
+      "codex_argv": ["exec", "--profile", "rapid", "--model", "qwen3.5-9b-4bit", "--skip-git-repo-check", "--json"],
+      "profile_model": "qwen3.5-9b-4bit",
+      "private_features": {"apps": false, "plugins": false, "remote_plugin": false, "memories": false},
+      "skills_max_context_tokens": 256,
+      "session_id": "01a15b41-57a2-7b62-9cb9-23e7d847409e",
+      "session_turn_model": "qwen3.5-9b-4bit",
+      "usage": {"input_tokens": 5100, "cached_input_tokens": 0, "output_tokens": 1},
+      "server_response_seconds": 14.01,
+      "command_seconds": 16.3
+    }
+  ]
+}
