@@ -8,7 +8,7 @@ rapid_mlx/_mlx_compat.py 2
 rapid_mlx/_pysample.py 1
 rapid_mlx/_version_check.py 1
 rapid_mlx/agents/adapter.py 7
-rapid_mlx/agents/setup.py 3
+rapid_mlx/agents/setup.py 1
 rapid_mlx/agents/testing.py 4
 rapid_mlx/api/anthropic_models.py 2
 rapid_mlx/api/guided.py 13

@@ -154,6 +154,7 @@ struct DownloadStrip: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .accessibilityIdentifier("DownloadStrip.UseHuggingFace.\(job.alias)")
                 }
                 trailingAffordance(for: job)
             }
