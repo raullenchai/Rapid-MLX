@@ -154,12 +154,42 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     ),
                     (
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": 0,
+                            "item": {
+                                "id": "msg_compat",
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "in_progress",
+                                "content": [],
+                            },
+                        },
+                    ),
+                    (
+                        "response.content_part.added",
+                        {
+                            "type": "response.content_part.added",
+                            "item_id": "msg_compat",
+                            "output_index": 0,
+                            "content_index": 0,
+                            "part": {
+                                "type": "output_text",
+                                "text": "",
+                                "annotations": [],
+                            },
+                        },
+                    ),
+                    (
                         "response.output_text.delta",
                         {
                             "type": "response.output_text.delta",
+                            "item_id": "msg_compat",
                             "output_index": 0,
                             "content_index": 0,
                             "delta": REPLY,
+                            "logprobs": [],
                         },
                     ),
                     (
