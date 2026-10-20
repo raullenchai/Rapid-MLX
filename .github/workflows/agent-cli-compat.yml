@@ -1,0 +1,49 @@
+name: Agent CLI compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'rapid_mlx/agents/**'
+      - 'scripts/agent_compat/**'
+      - '.github/workflows/agent-cli-compat.yml'
+  schedule:
+    - cron: '41 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-agent-cli:
+    # CI_LINUX_LIGHT_RUNNER routes short Linux jobs; forks use GitHub-hosted runners.
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install current agent CLIs and profile renderer dependencies
+        run: |
+          npm install --global @openai/codex@latest @anthropic-ai/claude-code@latest @opencode/cli@latest
+          python -m pip install pyyaml packaging
+          codex --version
+          claude --version
+          opencode --version
+      - name: Prove the removed OpenCode flag fails the smoke
+        env:
+          PYTHONPATH: .
+          RAPID_MLX_TELEMETRY: '0'
+        run: |
+          if python scripts/agent_compat/smoke.py --known-bad-opencode; then
+            echo 'Known-bad OpenCode flag unexpectedly passed' >&2
+            exit 1
+          fi
+      - name: Check current agent CLIs against private launch profiles
+        env:
+          PYTHONPATH: .
+          RAPID_MLX_TELEMETRY: '0'
+        run: python scripts/agent_compat/smoke.py

@@ -313,7 +313,9 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     if name == "pi":
         return f"{credential} PI_CODING_AGENT_DIR={quote(str(root))} pi --provider rapid-mlx --model {quote(model)}"
     if name == "opencode":
-        return f"{credential} OPENCODE_CONFIG={quote(str(root / 'opencode.json'))} opencode --model rapid-mlx/{quote(model)}"
+        # OpenCode 2.x removed the top-level --model flag. Both supported
+        # config shapes already select the model with the top-level `model` key.
+        return f"{credential} OPENCODE_CONFIG={quote(str(root / 'opencode.json'))} opencode"
     if name == "hermes":
         return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"
     if name == "goose":

@@ -173,6 +173,10 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
         ).read_text()
     )
     assert "providers" not in config
+    assert config["model"] == "rapid-mlx/qwen3.5-9b-4bit"
+    runner = (isolated.connection_dir() / "agents" / "opencode" / "run").read_text()
+    assert "OPENCODE_CONFIG=" in runner
+    assert "opencode --model" not in runner
     isolated.configure("hermes", "qwen3.5-9b-4bit")
     hermes = (
         isolated.connection_dir()
