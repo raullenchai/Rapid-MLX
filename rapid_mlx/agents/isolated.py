@@ -302,6 +302,15 @@ def _cli_invocation() -> str:
     return shlex.quote(binary) if binary else "rapid-mlx"
 
 
+def _display_cli_invocation() -> str:
+    """Prefer the command users can type when PATH finds this installation."""
+    invocation = _cli_invocation()
+    found = shutil.which("rapid-mlx")
+    if found and Path(found).resolve() == Path(shlex.split(invocation)[0]).resolve():
+        return "rapid-mlx"
+    return invocation
+
+
 def _command(name: str, root: Path, model: str, port: int) -> str:
     quote = shlex.quote
     key = quote(str(key_path()))
@@ -309,7 +318,10 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
     # saved profile. It is never placed in the printed command or process argv.
     credential = f'{_API_KEY_ENV}="$(cat {key})"'
     if name == "codex":
-        return f"{credential} CODEX_HOME={quote(str(root))} codex --profile rapid"
+        return (
+            f"{credential} CODEX_HOME={quote(str(root))} "
+            f"codex --profile rapid --model {quote(model)}"
+        )
     if name == "pi":
         return f"{credential} PI_CODING_AGENT_DIR={quote(str(root))} pi --provider rapid-mlx --model {quote(model)}"
     if name == "opencode":
@@ -533,6 +545,21 @@ def configure(
         assert isinstance(rendered, str)
         catalog = root / "rapid-mlx-model-catalog.json"
         rendered = rendered.replace("{model_catalog_path}", str(catalog))
+        # Keep the local model's first turn free of account integrations and
+        # memory context. These are Codex config keys, scoped to this private
+        # profile rather than the user's normal CODEX_HOME.
+        rendered += (
+            "\n[features]\n"
+            "apps = false\n"
+            "plugins = false\n"
+            "remote_plugin = false\n"
+            "memories = false\n"
+            "\n[memories]\n"
+            "use_memories = false\n"
+            "generate_memories = false\n"
+            "\n[skills]\n"
+            "max_context_tokens = 256\n"
+        )
         legacy = root / "config.toml"
         if legacy.is_symlink():
             raise ValueError(f"refusing symlinked config file: {legacy}")

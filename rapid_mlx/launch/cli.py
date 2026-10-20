@@ -298,6 +298,7 @@ def launch_command(args: argparse.Namespace) -> None:
         from rapid_mlx.agents import get_profile
         from rapid_mlx.agents.isolated import (
             _cli_invocation,
+            _display_cli_invocation,
             configure,
             connection_status,
             remove,
@@ -413,7 +414,7 @@ def launch_command(args: argparse.Namespace) -> None:
         except (OSError, ValueError) as exc:
             print(f"launch: {exc}", file=sys.stderr)
             sys.exit(1)
-        day_two = f"{_cli_invocation()} launch {shlex.quote(args.client)}"
+        day_two = f"{_display_cli_invocation()} launch {shlex.quote(args.client)}"
         print(f"  Saved an isolated {args.client} profile. Next time: {day_two}")
         start_hint = (
             f"{_cli_invocation()} start {shlex.quote(args.client)} --model {shlex.quote(model)} "
@@ -434,10 +435,11 @@ def launch_command(args: argparse.Namespace) -> None:
 
                 if not _confirm_download(model, no_download=False, yes=False):
                     raise SystemExit(1)
-                print(
-                    f"  Downloading or loading {model}; waiting for readiness…",
-                    flush=True,
-                )
+                print(f"  Downloading {model}…", flush=True)
+                from rapid_mlx.cli import _ensure_model_downloaded
+
+                _ensure_model_downloaded(model)
+                print(f"  Loading {model}; waiting for readiness…", flush=True)
                 server_pid = _start_server_background(model, port, api_key=key)
                 import time
 

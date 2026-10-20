@@ -14956,7 +14956,11 @@ def main():
             stdout_isatty=sys.stdout.isatty(),
             stdin_isatty=sys.stdin.isatty(),
         ):
-            print(render_banner(_version, color="NO_COLOR" not in os.environ))
+            # The launch handoff crosses terminal applications. Keep its logo
+            # free of ANSI redraw sequences so the next app cannot expose
+            # partial color frames above the banner.
+            color = "NO_COLOR" not in os.environ and args.command != "launch"
+            print(render_banner(_version, color=color))
             print()
     except Exception:
         # The banner is decorative; never let a rendering hiccup block the

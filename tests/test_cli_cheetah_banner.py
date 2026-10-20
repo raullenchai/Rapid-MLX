@@ -287,6 +287,13 @@ def test_banner_color_varies_with_no_color_env_through_main():
     assert "\x1b[" not in mono
 
 
+def test_launch_banner_has_no_terminal_escape_fragments():
+    _rc, out = _run_main(["launch", "codex", "--isolated", "--dry-run"])
+    assert "r a p i d - m l x" in out
+    assert "\x1b[" not in out
+    assert not any(line.strip() in {"[", "]", "[]"} for line in out.splitlines())
+
+
 def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     """The banner is decorative: if its renderer throws (a broken glyph, a
     font/ANSI edge case), ``main()`` must swallow it and still run the user's
