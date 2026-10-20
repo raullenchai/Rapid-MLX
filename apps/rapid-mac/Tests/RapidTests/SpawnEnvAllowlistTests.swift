@@ -310,7 +310,8 @@ struct SpawnEnvAllowlistTests {
     func emptyAmbientYieldsOnlyInjected() {
         // No allowlisted var present means the result is the desktop-
         // injected layer — bearer + PYTHONUNBUFFERED + HF pinning + the
-        // Desktop prefix-cache autoload opt-out and process role — plus
+        // Desktop prefix-cache autoload opt-out, process role, and app
+        // version — plus
         // ``PATH``, which is deliberately always set (see
         // ``augmentedToolchainPATH``): a sidecar with no PATH at all
         // cannot resolve any stdio MCP server command. Anything BEYOND
@@ -328,6 +329,7 @@ struct SpawnEnvAllowlistTests {
             "HF_HUB_DOWNLOAD_TIMEOUT",
             "RAPID_MLX_PREFIX_CACHE_AUTOLOAD",
             "RAPID_MLX_PROCESS_ROLE",
+            "RAPID_DESKTOP_APP_VERSION",
             "PATH",
         ]
         #expect(Set(env.keys) == expectedKeys)
@@ -335,6 +337,7 @@ struct SpawnEnvAllowlistTests {
         // no HOME means no ``~/.local/bin`` entry.
         #expect(env["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
         #expect(env["RAPID_MLX_PROCESS_ROLE"] == "desktop-sidecar")
+        #expect(env["RAPID_DESKTOP_APP_VERSION"] == TelemetryClient.currentVersion())
     }
 
     @Test("Desktop sidecar role is always injected and cannot be ambient-spoofed")
