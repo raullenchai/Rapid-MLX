@@ -191,7 +191,8 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head(outputs=1003)
     logits = head_logits(head, mx.zeros((2, 3, 512)))
-    assert getattr(head, head_gemv._CHECK_ATTR) == (head.weight, True)
+    reference, ok = getattr(head, head_gemv._CHECK_ATTR)
+    assert ok is True and reference() is head.weight
     assert logits.shape == (2, 3, 1003)
     assert seen["grid"] == (251 * 32 * 4, 6, 1)
     assert seen["threadgroup"] == (128, 1, 1)
@@ -221,11 +222,14 @@ def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
     assert launches == [(1, 512)]
     assert getattr(head, head_gemv._CHECK_ATTR)[1] is False
     assert "_rapid_exact_head_check" not in head.parameters()
-    # A replaced weight of the same shape is validated again.
+    # A replaced weight of the same shape is validated again, and the old
+    # weight is not kept alive by the check.
+    old = getattr(head, head_gemv._CHECK_ATTR)[0]
     head.weight = _head().weight
+    assert old() is None
     head_logits(head, x)
     assert launches == [(1, 512), (1, 512)]
-    assert getattr(head, head_gemv._CHECK_ATTR)[0] is head.weight
+    assert getattr(head, head_gemv._CHECK_ATTR)[0]() is head.weight
 
 
 def test_self_check_launch_failure_falls_back(monkeypatch) -> None:
