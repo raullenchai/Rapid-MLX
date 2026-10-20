@@ -69,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": {"message": "invalid local key"}}, 401)
         if body.get("model") != MODEL:
             return self.send_json({"error": {"message": "wrong local model"}}, 400)
-        if self.path.endswith("/messages"):
+        if self.path.split("?", 1)[0].endswith("/messages"):
             message = {
                 "id": "msg_compat",
                 "type": "message",
@@ -193,6 +193,39 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     ),
                     (
+                        "response.output_text.done",
+                        {
+                            "type": "response.output_text.done",
+                            "item_id": "msg_compat",
+                            "output_index": 0,
+                            "content_index": 0,
+                            "text": REPLY,
+                            "logprobs": [],
+                        },
+                    ),
+                    (
+                        "response.content_part.done",
+                        {
+                            "type": "response.content_part.done",
+                            "item_id": "msg_compat",
+                            "output_index": 0,
+                            "content_index": 0,
+                            "part": {
+                                "type": "output_text",
+                                "text": REPLY,
+                                "annotations": [],
+                            },
+                        },
+                    ),
+                    (
+                        "response.output_item.done",
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": 0,
+                            "item": response["output"][0],
+                        },
+                    ),
+                    (
                         "response.completed",
                         {"type": "response.completed", "response": response},
                     ),
@@ -312,8 +345,18 @@ def main() -> None:
                     user_config = home / "config" / "opencode" / "opencode.json"
                     user_config.parent.mkdir(parents=True, exist_ok=True)
                     user_config.write_text('{"model":"remote/user-model"}\n')
+                    env["HOME"] = str(root / "home")
+                    env["XDG_CONFIG_HOME"] = str(root / "xdg-config")
+                    env["XDG_DATA_HOME"] = str(root / "xdg-data")
+                    env["XDG_CACHE_HOME"] = str(root / "xdg-cache")
+                    env["XDG_STATE_HOME"] = str(root / "xdg-state")
                     env["OPENCODE_CONFIG"] = str(root / "opencode.json")
-                    cmd = ["opencode", "run", "--standalone", "Say " + REPLY]
+                    from rapid_mlx.agents.opencode_version import installed_version
+
+                    cmd = ["opencode", "run"]
+                    if (installed_version() or "").startswith("2."):
+                        cmd.append("--standalone")
+                    cmd.append("Say " + REPLY)
                     if known_bad:
                         cmd[1:1] = ["--model", f"rapid-mlx/{MODEL}"]
                 before = len(Handler.requests)
@@ -343,7 +386,9 @@ def main() -> None:
                     f"{agent}: reply absent: {result.stdout[-2000:]} {result.stderr[-2000:]}"
                 )
                 if agent == "opencode":
-                    assert user_config.read_text() == '{"model":"remote/user-model"}\n'
+                    assert (
+                        user_config.read_text() == '{"model":"remote/user-model"}\n'
+                    ), user_config.read_text()
         finally:
             server.shutdown()
             server.server_close()
