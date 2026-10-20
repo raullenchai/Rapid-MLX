@@ -39,6 +39,7 @@ _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 # registry edit that invalidates a sample fails HERE, loudly.
 _VERSION_SAMPLES = {
     "app_version": "0.15.0",
+    "engine_version": "0.15.0",
     "os_version": "25.3",
     "python_version": "3.12",
 }
