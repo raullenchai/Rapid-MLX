@@ -266,7 +266,7 @@ print_quick_start_commands() {
     echo ""
     echo "    rapid-mlx launch codex"
     echo "    # Replace codex with claude-code, opencode, pi, hermes, or crush."
-    echo "    # Launch chooses a model suitable for that agent and your Mac."
+    echo "    # Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."
     echo "    # Run the same command tomorrow; add --remove to delete Rapid's profile."
     echo ""
     echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"

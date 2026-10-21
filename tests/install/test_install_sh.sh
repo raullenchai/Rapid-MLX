@@ -247,7 +247,7 @@ case "$BANNER" in
         printf '        banner: %s\n' "$BANNER" ;;
 esac
 case "$BANNER" in
-    *"Launch chooses a model suitable for that agent and your Mac."*"Run the same command tomorrow; add --remove"*)
+    *"Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."*"Run the same command tomorrow; add --remove"*)
         ok "post-install banner explains model choice and repeat launch" ;;
     *)
         bad "post-install banner explains model choice and repeat launch"
