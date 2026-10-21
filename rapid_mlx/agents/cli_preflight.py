@@ -11,10 +11,12 @@ login shell sources ``/etc/zprofile`` and ``~/.zprofile``, which commonly add
 ``whence -p`` in that same login shell and working directory, and the
 shell's own exit status is the answer. ``-p`` accepts only executables found
 on PATH (or an executable path), not profile functions or aliases, which the
-generated runner script would not inherit. If that shell cannot be run or does not answer within the deadline,
-launch refuses as well, because the runner depends on the same shell.
-The probe sources the login profile one extra time per launch, with no
-terminal attached, and stops anything that profile started for it.
+generated runner script would not inherit. If that shell cannot be run or
+does not answer within the deadline, launch refuses as well, because the
+runner depends on the same shell. The probe sources the login profile one
+extra time per launch, with no terminal attached, in its own process group;
+the group is stopped when the probe ends. Processes the profile detaches into
+another session (daemons) are left alone, as they are for the runner.
 """
 
 from __future__ import annotations
@@ -49,11 +51,14 @@ def agent_cli_found(binary: str) -> bool | None:
         with tempfile.TemporaryDirectory(prefix="rapid-mlx-cli-") as private:
             answer = Path(private) / "status"
             # ``builtin`` keeps profile functions from shadowing the probe.
+            # The shell ends by stopping its own process group while it is
+            # still alive, so no signal ever targets a reaped process id.
             script = (
                 f"builtin whence -p -- {target} >/dev/null 2>&1; "
-                f"builtin printf '%s\\n' \"$?\" >| {shlex.quote(str(answer))}"
+                f"builtin printf '%s\\n' \"$?\" >| {shlex.quote(str(answer))}; "
+                "builtin kill -KILL 0"
             )
-            # A new session lets the probe stop everything the profile started.
+            # A new session keeps that group separate from launch's own.
             probe = subprocess.Popen(
                 [_LOGIN_SHELL, "-lc", script],
                 stdin=subprocess.DEVNULL,
@@ -61,17 +66,14 @@ def agent_cli_found(binary: str) -> bool | None:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            timed_out = False
             try:
                 probe.wait(timeout=_PROBE_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                timed_out = True
-            finally:
-                # Nothing the profile started for this probe may outlive it.
+                # The unreaped shell still owns the group id, so this cannot
+                # reach an unrelated process group.
                 with contextlib.suppress(OSError):
                     os.killpg(probe.pid, signal.SIGKILL)
                 probe.wait()
-            if timed_out:
                 return None
             status = answer.read_bytes().strip() if answer.is_file() else b""
     except OSError:

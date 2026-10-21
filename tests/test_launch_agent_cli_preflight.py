@@ -136,7 +136,8 @@ def _reply(status: bytes | None):
             assert kwargs["stderr"] is subprocess.DEVNULL
             assert kwargs["start_new_session"] is True
             if status is not None:
-                answer = shlex.split(argv[2].rsplit(">|", 1)[1])[0]
+                redirect = argv[2].rsplit(">|", 1)[1].split(";", 1)[0]
+                answer = shlex.split(redirect)[0]
                 Path(answer).write_bytes(status)
 
         def wait(self, timeout=None):
@@ -153,6 +154,7 @@ def test_login_shell_exit_status_is_the_answer():
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
     assert "builtin whence -p -- fake-agent" in argv[2]
+    assert argv[2].endswith("; builtin kill -KILL 0")
 
 
 def test_binary_is_passed_to_the_shell_verbatim():
