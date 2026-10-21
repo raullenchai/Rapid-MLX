@@ -72,6 +72,9 @@ _QWEN_IMAGE_2_RE = re.compile(
 # mflux/Metal graphs are not re-entrant — a single process-wide lock serializes
 # every generation exactly like the video lane's ``_PROCESS_GENERATION_LOCK``.
 _PROCESS_GENERATION_LOCK = threading.RLock()
+# Guards temporary patches of mflux's process-global Qwen-Image 2.1 weight
+# definition during model construction (see ``_build_model``).
+_QWEN21_DEFINITION_LOCK = threading.Lock()
 
 # Default quantization for the on-load quantize path. 4-bit is the 32GB sweet
 # spot (FLUX.1-schnell ~9GB, Qwen-Image ~12GB resident at q4).
@@ -537,44 +540,50 @@ class ImageGenerationEngine:
         if self.family == "qwen-image-2.1":
             from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 
-            if self._qwen21_turbo:
-                return self._build_qwen21_turbo(QwenImage21, model_path)
-            if not self._qwen21_full_q4:
-                return QwenImage21(
-                    quantize=self._quantize,
-                    model_path=model_path,
-                    model_config=ModelConfig.qwen_image_21(),
+            # The Turbo and low-memory builds briefly patch mflux's
+            # process-global weight definition. Serialize every Qwen-Image 2.1
+            # construction so a concurrent load never observes another
+            # checkpoint's patched definition (lane preloads run outside the
+            # generation lock).
+            with _QWEN21_DEFINITION_LOCK:
+                if self._qwen21_turbo:
+                    return self._build_qwen21_turbo(QwenImage21, model_path)
+                if not self._qwen21_full_q4:
+                    return QwenImage21(
+                        quantize=self._quantize,
+                        model_path=model_path,
+                        model_config=ModelConfig.qwen_image_21(),
+                    )
+
+                # mflux 0.20.0 deliberately skips Qwen3-VL quantization. Rapid's
+                # reviewed low-memory pack stores that encoder in native MLX q4,
+                # so construct quantized modules before applying its packed
+                # weight/scales/biases tensors. Keep this narrowly scoped to the
+                # pinned pack and restore the process-global definition at once.
+                from mflux.models.qwen21.weights.qwen21_weight_definition import (
+                    Qwen21WeightDefinition,
                 )
 
-            # mflux 0.20.0 deliberately skips Qwen3-VL quantization. Rapid's
-            # reviewed low-memory pack stores that encoder in native MLX q4,
-            # so construct quantized modules before applying its packed
-            # weight/scales/biases tensors. Keep this narrowly scoped to the
-            # pinned pack and restore the process-global definition at once.
-            from mflux.models.qwen21.weights.qwen21_weight_definition import (
-                Qwen21WeightDefinition,
-            )
+                original_components = Qwen21WeightDefinition.get_components
 
-            original_components = Qwen21WeightDefinition.get_components
+                def full_q4_components():
+                    components = original_components()
+                    for component in components:
+                        if component.name == "text_encoder":
+                            component.skip_quantization = False
+                    return components
 
-            def full_q4_components():
-                components = original_components()
-                for component in components:
-                    if component.name == "text_encoder":
-                        component.skip_quantization = False
-                return components
-
-            Qwen21WeightDefinition.get_components = staticmethod(full_q4_components)
-            try:
-                return QwenImage21(
-                    quantize=self._quantize,
-                    model_path=model_path,
-                    model_config=ModelConfig.qwen_image_21(),
-                )
-            finally:
-                Qwen21WeightDefinition.get_components = staticmethod(
-                    original_components
-                )
+                Qwen21WeightDefinition.get_components = staticmethod(full_q4_components)
+                try:
+                    return QwenImage21(
+                        quantize=self._quantize,
+                        model_path=model_path,
+                        model_config=ModelConfig.qwen_image_21(),
+                    )
+                finally:
+                    Qwen21WeightDefinition.get_components = staticmethod(
+                        original_components
+                    )
 
         from mflux.models.flux.variants.txt2img.flux import Flux1
 
@@ -1464,9 +1473,12 @@ class ImageGenerationEngine:
         if negative_prompt is not None and self.supports_negative_prompt:
             kwargs["negative_prompt"] = negative_prompt
         if self._qwen21_turbo:
-            from .qwen21_turbo import SCHEDULER_PATH
+            from .qwen21_turbo import SCHEDULER_PATH, TURBO_GUIDANCE
 
             kwargs["scheduler"] = SCHEDULER_PATH
+            # State the checkpoint's no-CFG contract instead of relying on
+            # the runtime default.
+            kwargs["guidance"] = TURBO_GUIDANCE
         return kwargs
 
     @staticmethod

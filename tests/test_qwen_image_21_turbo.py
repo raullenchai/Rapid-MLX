@@ -13,6 +13,7 @@ import pytest
 from rapid_mlx import _download_gate
 from rapid_mlx.catalog import build_catalog_bundle
 from rapid_mlx.catalog.legacy import _image_operations
+from rapid_mlx.image import engine as engine_module
 from rapid_mlx.image.engine import (
     ImageGenerationEngine,
     ImageRequestError,
@@ -147,7 +148,7 @@ def test_gen_kwargs_select_turbo_scheduler():
     kwargs = engine._gen_kwargs(3, "sign", 8, None, "blurry")  # noqa: SLF001
     assert kwargs["scheduler"] == SCHEDULER_PATH
     assert kwargs["num_inference_steps"] == 8
-    assert "guidance" not in kwargs
+    assert kwargs["guidance"] == 1.0
     base = ImageGenerationEngine(QWEN_IMAGE_21_BF16_REPO)
     assert "scheduler" not in base._gen_kwargs(3, "sign", 40, None, None)  # noqa: SLF001
 
@@ -196,6 +197,8 @@ def test_load_globs_unsharded_text_encoder_and_restores_definition(monkeypatch):
 
     class FakeQwenImage21:
         def __init__(self, **kwargs):
+            # Construction happens while the shared definition lock is held.
+            assert engine_module._QWEN21_DEFINITION_LOCK.locked()  # noqa: SLF001
             modes = {c.name: c.loading_mode for c in FakeDefinition.get_components()}
             assert modes == {"transformer": "multi_glob", "text_encoder": "multi_glob"}
             self.constructor_kwargs = kwargs
@@ -248,6 +251,7 @@ def test_load_globs_unsharded_text_encoder_and_restores_definition(monkeypatch):
     assert FakeDefinition.get_components is original
     restored = {c.name: c.loading_mode for c in FakeDefinition.get_components()}
     assert restored["text_encoder"] == "multi_json"
+    assert not engine_module._QWEN21_DEFINITION_LOCK.locked()  # noqa: SLF001
 
 
 def _write_safetensors(path, tensors):
