@@ -167,27 +167,24 @@ class Attention(nn.Module):
         c_q, s_q = cos[start_pos:end_pos], sin[start_pos:end_pos]
 
         lc = cache.layers[self.layer_id]
-        fused = not self._break_rope_inverse and decode_attention.supports(
-            x, lc.win_kv, self.n_heads, self.head_dim, rd
+        # queries and window KV (rope tail + FP8 fake-quant over the whole
+        # vector); the fused path applies the query rope inside its kernel
+        qr = self.q_norm(self.wq_a(x))
+        q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
+        kv = rope_fake_quant(self.kv_norm(self.wkv(x)), rd, c_q, s_q, "fp8_ue8m0")
+        # The kernel rounds every key/value row to q's dtype, as the graph rounds
+        # them to kv's, and reads this token back through the ring: both are
+        # exact only when q and kv share a dtype the ring stores losslessly.
+        fused = (
+            not self._break_rope_inverse
+            and q.dtype == kv.dtype
+            and lc.win_kv.dtype in (kv.dtype, mx.float32)
+            and decode_attention.supports(x, lc.win_kv, self.n_heads, self.head_dim, rd)
         )
         if fused:
-            # one decode token: stock norms and KV rope + FP8 fake-quant (bit-exact
-            # with the graph path, so the indexer and the cache see stock values);
-            # the query rope and its inverse run inside the attention kernel
-            qr = self.q_norm(self.wq_a(x))
-            kv = rope_fake_quant(self.kv_norm(self.wkv(x)), rd, c_q, s_q, "fp8_ue8m0")
-            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
             wp = min(start_pos, self.window_size)
         else:
-            # --- queries ---
-            qr = self.q_norm(self.wq_a(x))
-            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
             q = rope_tail(q, rd, c_q, s_q)
-
-            # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
-            kv = self.kv_norm(self.wkv(x))
-            kv = rope_fake_quant(kv, rd, c_q, s_q, "fp8_ue8m0")
-
             prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
             wp = prev.shape[1]
             kv_all = mx.concatenate([prev.astype(kv.dtype), kv], axis=1) if wp else kv

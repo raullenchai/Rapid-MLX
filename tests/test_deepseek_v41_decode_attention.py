@@ -349,6 +349,60 @@ def test_fused_decode_keeps_stock_selection_and_cache_rows(dtype, monkeypatch):
 
 
 @needs_metal
+@pytest.mark.parametrize(
+    "model_dtype,kv_dtype,ring_dtype,fused",
+    [
+        (mx.bfloat16, None, mx.float32, True),  # served layout: bf16 q/kv, fp32 ring
+        (mx.float32, None, mx.float32, True),
+        (mx.bfloat16, mx.float32, mx.float32, False),  # q bf16, kv fp32
+        (mx.float32, None, mx.bfloat16, False),  # ring would round this token
+    ],
+)
+@pytest.mark.parametrize("disable_fakequant", [False, True])
+def test_fused_decode_requires_lossless_q_kv_and_ring_dtypes(
+    model_dtype, kv_dtype, ring_dtype, fused, disable_fakequant, monkeypatch
+):
+    """The kernel rounds rows to q's dtype and reads this token from the ring;
+    any other layout takes the graph and gives exactly the graph's output."""
+    from rapid_mlx.models.deepseek_v41_native import fakequant
+
+    monkeypatch.setattr(fakequant, "DISABLE", disable_fakequant)
+    mx.random.seed(9)
+    model = Model(_tiny_args())
+    model.set_dtype(model_dtype)
+    if kv_dtype is not None:
+        for layer in model.layers:
+            layer.attn.wkv.set_dtype(kv_dtype)
+            layer.attn.kv_norm.set_dtype(kv_dtype)
+    prompt = mx.random.randint(0, 64, (1, 9))
+    step = mx.random.randint(0, 64, (1, 1))
+    launches = []
+    attend = decode_attention.attend
+
+    def spy(*a, **kw):
+        launches.append(1)
+        return attend(*a, **kw)
+
+    monkeypatch.setattr(decode_attention, "attend", spy)
+
+    def run(enabled):
+        monkeypatch.setattr(decode_attention, "ENABLED", enabled)
+        cache = model.make_cache(max_seq_len=32, dtype=ring_dtype)
+        model(prompt, cache)
+        out = model(step, cache)
+        mx.eval(out)
+        return np.array(out.astype(mx.float32))
+
+    with_kernel = run(True)
+    assert bool(launches) is fused
+    launches.clear()
+    graph = run(False)
+    assert not launches
+    if not fused:
+        np.testing.assert_array_equal(with_kernel, graph)
+
+
+@needs_metal
 def test_negative_control_hook_still_takes_the_graph_path(monkeypatch):
     model = Model(_tiny_args())
     for layer in model.layers:
