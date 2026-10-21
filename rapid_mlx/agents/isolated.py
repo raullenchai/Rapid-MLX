@@ -271,10 +271,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
             f"--weak-model openai/{quote(model)} --editor-model openai/{quote(model)}"
         )
         return (
-            f'if [[ "$(pwd -P)" == {quote(str(Path.home().resolve()))} ]]; then '
-            f"cd {quote(str(root / 'workspace'))} || exit 1; fi; "
             f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
-            f"GIT_CEILING_DIRECTORIES={quote(str(root))} "
             f"HOME={quote(str(root / 'home'))} "
             f"/bin/zsh -c {quote(inner)}"
         )
@@ -307,6 +304,8 @@ def configure(
     if name == "aider":
         cwd = Path.cwd()
         git = shutil.which("git")
+        if git is None:
+            raise ValueError("isolated aider launch requires git")
         git_root = (
             subprocess.run(
                 [git, "rev-parse", "--show-toplevel"],
@@ -318,16 +317,12 @@ def configure(
             if git
             else None
         )
-        # The actual user HOME is already hidden from Aider by its private
-        # HOME. It may also be Terminal's working directory on Desktop.
-        user_home = Path.home().resolve()
         dirs = {cwd}
         if git_root and git_root.returncode == 0:
             dirs.add(Path(git_root.stdout.strip()).resolve())
         if any(
             (directory / filename).exists() or (directory / filename).is_symlink()
             for directory in dirs
-            if directory != user_home or cwd != user_home
             for filename in (".aider.conf.yml", ".aider.model.settings.yml", ".env")
         ):
             raise ValueError(
@@ -375,9 +370,6 @@ def configure(
         _private_dir(root / "runtime")
     if name == "aider":
         _private_dir(root / "home")
-        git = shutil.which("git")
-        if git is None:
-            raise ValueError("isolated aider launch requires git")
         git_env = f"HOME={shlex.quote(str(Path.home()))} "
         for name_ in (
             "XDG_CONFIG_HOME",
@@ -551,8 +543,6 @@ def configure(
         }
         _private_write(root / "settings.json", json.dumps(settings, indent=2) + "\n")
     elif name == "aider":
-        workspace = root / "workspace"
-        _private_dir(workspace)
         _private_write(
             root / "aider.env",
             f"AIDER_OPENAI_API_KEY={key}\nOPENAI_API_KEY={key}\n"

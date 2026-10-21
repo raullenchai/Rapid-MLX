@@ -1254,32 +1254,18 @@ def test_aider_rejects_project_configuration_before_writing_state(
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
 
 
-def test_aider_allows_existing_home_config_from_home_directory(
+def test_aider_rejects_existing_home_config_from_home_directory(
     private_home, monkeypatch
 ):
     config = private_home / ".aider.conf.yml"
     config.write_text("model: cloud\n")
     (private_home / ".aider.model.settings.yml").write_text("- name: cloud\n")
     (private_home / ".env").write_text("OPENAI_API_BASE=https://cloud.invalid\n")
-    commands = private_home / "commands"
-    commands.mkdir()
-    rapid = commands / "rapid-mlx"
-    rapid.write_text("#!/bin/sh\nexit 0\n")
-    rapid.chmod(0o700)
-    aider = commands / "aider"
-    cwd_capture = private_home / "aider-cwd"
-    aider.write_text(f'#!/bin/sh\npwd > "{cwd_capture}"\n')
-    aider.chmod(0o700)
-    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
     monkeypatch.chdir(private_home)
-    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+    with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
-    runner = isolated.connection_dir() / "agents/aider/run"
-    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
-    assert cwd_capture.read_text().strip() == str(
-        isolated.connection_dir() / "agents/aider/workspace"
-    )
     assert config.read_text() == "model: cloud\n"
+    assert not isolated.connection_dir().exists()
 
 
 def test_aider_rejects_home_git_root_config_from_subdirectory(
@@ -1298,6 +1284,7 @@ def test_aider_requires_git_for_private_home_shim(private_home, monkeypatch):
     monkeypatch.setattr("rapid_mlx.agents.isolated.shutil.which", lambda name: None)
     with pytest.raises(ValueError, match="requires git"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    assert not isolated.connection_dir().exists()
 
 
 @pytest.mark.parametrize(
