@@ -230,6 +230,7 @@ def handle_first_run_menus(
     if agent == "aider":
         # Rapid can print its own ready line before Aider reaches the Git
         # onboarding question. Wait for that question before sending a task.
+        analytics = "allowcollectionofanonymousanalyticstohelpimproveaider"
         if "nogitrepofound,createone" not in _compact_screen(output):
             more, _ = read_until(
                 master,
@@ -242,7 +243,7 @@ def handle_first_run_menus(
             )
             output += more
         answered = set()
-        for _ in range(3):
+        for _ in range(5):
             screen = _ANSI.sub("", output)
             if (
                 "nogitrepofound,createone" in _compact_screen(screen)
@@ -259,7 +260,20 @@ def handle_first_run_menus(
                 and "news" not in answered
             ):
                 answered.add("news")
+            elif analytics in _compact_screen(screen) and "analytics" not in answered:
+                answered.add("analytics")
             else:
+                if "git" in answered and "analytics" not in answered:
+                    more, _ = read_until(
+                        master,
+                        proc,
+                        20,
+                        sink,
+                        stop_when=lambda later: analytics in _compact_screen(later),
+                    )
+                    output += more
+                    if analytics in _compact_screen(more):
+                        continue
                 break
             os.write(master, b"n\r")
             more, _ = read_until(master, proc, 8, sink)

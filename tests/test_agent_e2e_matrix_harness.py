@@ -251,7 +251,8 @@ def test_aider_repo_creation_prompt_is_declined(monkeypatch):
         "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
     )
     monkeypatch.setattr(
-        "scripts.agent_e2e.run.read_until", lambda *args: ("Aider ready", None)
+        "scripts.agent_e2e.run.read_until",
+        lambda *args, **kwargs: ("Aider ready", None),
     )
     opening = "No git repo found, create one to track aider's changes?"
     assert "Aider ready" in handle_first_run_menus("aider", opening, 1, None, None)
@@ -265,7 +266,7 @@ def test_aider_documentation_prompt_is_declined(monkeypatch):
     )
     monkeypatch.setattr(
         "scripts.agent_e2e.run.read_until",
-        lambda *args: ("Open documentation url for more info?", None),
+        lambda *args, **kwargs: ("Open documentation url for more info?", None),
     )
     opening = "No git repo found, create one to track aider's changes?"
     handle_first_run_menus("aider", opening, 1, None, None)
@@ -274,7 +275,34 @@ def test_aider_documentation_prompt_is_declined(monkeypatch):
 
 def test_aider_waits_for_delayed_git_question_before_task(monkeypatch):
     writes = []
-    screens = iter(["No git repo found, create one to track changes?", "Aider ready"])
+    screens = iter(
+        ["No git repo found, create one to track changes?", "Aider ready", ""]
+    )
+
+    def read_screen(*args, **kwargs):
+        screen = next(screens)
+        if stop_when := kwargs.get("stop_when"):
+            if screen:
+                assert stop_when(screen)
+        return screen, None
+
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
+    )
+    monkeypatch.setattr("scripts.agent_e2e.run.read_until", read_screen)
+    opening = "Agent ready."
+    assert "Aider ready" in handle_first_run_menus("aider", opening, 1, None, None)
+    assert writes == [b"n\r"]
+
+
+def test_aider_delayed_analytics_question_is_declined(monkeypatch):
+    writes = []
+    screens = iter(
+        [
+            "Allow collection of anonymous analytics to help improve aider?",
+            "Aider ready",
+        ]
+    )
 
     def read_screen(*args, **kwargs):
         screen = next(screens)
@@ -286,9 +314,9 @@ def test_aider_waits_for_delayed_git_question_before_task(monkeypatch):
         "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
     )
     monkeypatch.setattr("scripts.agent_e2e.run.read_until", read_screen)
-    opening = "Agent ready."
+    opening = "No git repo found, create one to track aider's changes?"
     assert "Aider ready" in handle_first_run_menus("aider", opening, 1, None, None)
-    assert writes == [b"n\r"]
+    assert writes == [b"n\r", b"n\r"]
 
 
 def test_crush_project_initialization_is_declined(monkeypatch):
