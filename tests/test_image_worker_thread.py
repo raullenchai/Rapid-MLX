@@ -238,11 +238,18 @@ def test_forked_child_gets_a_fresh_image_worker(
     monkeypatch.setattr(image_lane, "_image_worker_lock", parent_lock)
     monkeypatch.setattr(image_lane, "_image_executor", parent_executor)
 
+    # Model a fork taken from the worker: the child's only thread carries the
+    # inherited worker marker until the hook clears it.
+    monkeypatch.setattr(image_lane, "_image_worker_state", threading.local())
+    image_lane._mark_image_worker_thread()  # noqa: SLF001
+
     image_lane._reset_image_worker_after_fork()  # noqa: SLF001
 
     assert image_lane._image_executor is None  # noqa: SLF001
     assert image_lane._image_worker_lock is not parent_lock  # noqa: SLF001
-    assert image_lane.run_on_image_worker(lambda: 7) == 7
+    worker = image_lane.run_on_image_worker(threading.current_thread)
+    assert worker is not threading.current_thread()
+    assert worker.name.startswith("mlx-image")
     child_executor = image_lane._image_executor  # noqa: SLF001
     assert child_executor is not parent_executor
     child_executor.shutdown(wait=True)

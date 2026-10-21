@@ -49,9 +49,12 @@ def _mark_image_worker_thread() -> None:
 
 def _reset_image_worker_after_fork() -> None:
     """A forked child inherits neither the worker thread nor a usable lock."""
-    global _image_worker_lock, _image_executor
+    global _image_worker_lock, _image_executor, _image_worker_state
     _image_worker_lock = threading.Lock()
     _image_executor = None
+    # A fork from the worker itself must not leave the child's surviving
+    # thread marked as the worker, or calls would run inline off-worker.
+    _image_worker_state = threading.local()
 
 
 if hasattr(os, "register_at_fork"):
