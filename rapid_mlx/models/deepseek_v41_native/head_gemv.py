@@ -8,7 +8,8 @@ registers instead and reproduces the stock FP32 GEMV lane geometry for this
 shape (32 lanes across K, four contiguous values per lane, one simdgroup per
 output, shuffle-down tree reduction), so a single row is bit-exact with the
 stock path.  Up to ``MAX_ROWS`` rows (batched lanes, speculative verify) run
-the same per-row arithmetic, i.e. each row equals its own single-row result.
+the same per-row arithmetic, i.e. each row equals its own single-row result;
+for the vocabulary head those rows also share one read of the weight.
 Larger batches (prefill) stay on the stock path.
 
 Exactness preconditions mirror the stock dispatch (mlx 0.32 ``gemv_axbpy``):
@@ -41,12 +42,15 @@ logger = logging.getLogger(__name__)
 # Module switch: False routes every call through the stock projection.
 ENABLED = True
 MAX_ROWS = 8
+# Output count from which multi-row calls share one weight read (see
+# ``_shares_weight_read``): the vocabulary head, not the 384-expert routers.
+SHARED_READ_MIN_OUTPUTS = 16384
 _LANES = 32
 _VALUES_PER_LANE = 4
 _BLOCK_K = _LANES * _VALUES_PER_LANE
 _OUTPUTS_PER_THREADGROUP = 4
 
-_SOURCE = r"""
+_ROW_SOURCE = r"""
     // Stock FP32 GEMV order for K % 128 == 0: lane-strided blocks of four,
     // fused multiply-add in element order, then a shuffle-down tree.
     constexpr int BLOCK_K = 128;
@@ -83,16 +87,78 @@ _SOURCE = r"""
     }
 """
 
+_SHARED_SOURCE = r"""
+    // Stock FP32 GEMV order for K % 128 == 0: lane-strided blocks of four,
+    // fused multiply-add in element order, then a shuffle-down tree. Every
+    // row of the call shares one weight read: each weight block is loaded
+    // once and accumulated into each row's own sum in that same order, so a
+    // row's arithmetic is identical to a single-row launch.
+    constexpr int BLOCK_K = 128;
+    const uint lane = thread_index_in_simdgroup;
+    const int out_col = int(threadgroup_position_in_grid.x) * OUTPUTS
+        + int(simdgroup_index_in_threadgroup);
+    const int rows = int(input_shape[0]);
+    if (out_col >= N) {
+        return;
+    }
+    const device bfloat16_t* weight_row = weight + size_t(out_col) * K;
+    float result[MAX_ROWS];
+    for (int row = 0; row < MAX_ROWS; ++row) {
+        result[row] = 0.0f;
+    }
+    int offset = int(lane) * 4;
+    for (int block = 0; block < K / BLOCK_K; ++block) {
+        float weights[4];
+        for (int index = 0; index < 4; ++index) {
+            weights[index] = float(weight_row[offset + index]);
+        }
+        for (int row = 0; row < MAX_ROWS; ++row) {
+            if (row < rows) {
+                const device float* input_row = input + size_t(row) * K + offset;
+                float values[4];
+                for (int index = 0; index < 4; ++index) {
+                    values[index] = input_row[index];
+                }
+                for (int index = 0; index < 4; ++index) {
+                    result[row] += weights[index] * values[index];
+                }
+            }
+        }
+        offset += BLOCK_K;
+    }
+    for (int row = 0; row < MAX_ROWS; ++row) {
+        if (row < rows) {
+            float sum = result[row];
+            for (ushort delta = 16; delta >= 1; delta >>= 1) {
+                sum += simd_shuffle_down(sum, delta);
+            }
+            if (lane == 0) {
+                output[size_t(row) * N + out_col] = sum;
+            }
+        }
+    }
+"""
 
-@lru_cache(maxsize=1)
-def _kernel():
+
+@lru_cache(maxsize=2)
+def _kernel(shared: bool = False):
     return mx.fast.metal_kernel(
-        name="rapid_v41_fp32_bf16_head_gemv",
+        name="rapid_v41_fp32_bf16_head_gemv" + ("_shared" if shared else ""),
         input_names=["input", "weight"],
         output_names=["output"],
-        source=_SOURCE,
+        source=_SHARED_SOURCE if shared else _ROW_SOURCE,
         ensure_row_contiguous=True,
     )
+
+
+def _shares_weight_read(weight: mx.array) -> bool:
+    """Whether multi-row calls on ``weight`` read it once for all rows.
+
+    The vocabulary head (1.3 GB) is bandwidth bound, so re-reading it per row
+    costs a full weight pass each; a router weight (a few MB) stays cached and
+    is latency bound, where one threadgroup per row finishes sooner.
+    """
+    return int(weight.shape[0]) >= SHARED_READ_MIN_OUTPUTS
 
 
 # Per-head attribute holding (weakref to the validated weight, kernel matches stock).
@@ -131,15 +197,22 @@ def _supports_weight(weight, x: mx.array) -> bool:
     return 1 <= rows <= MAX_ROWS
 
 
-def _launch(weight: mx.array, x: mx.array) -> mx.array:
+def _launch(weight: mx.array, x: mx.array, shared: bool | None = None) -> mx.array:
     outputs, inputs = int(weight.shape[0]), int(weight.shape[1])
     rows = x.size // inputs
-    (logits,) = _kernel()(
+    if shared is None:
+        shared = rows > 1 and _shares_weight_read(weight)
+    template = [("K", inputs), ("N", outputs), ("OUTPUTS", _OUTPUTS_PER_THREADGROUP)]
+    if shared:
+        template.append(("MAX_ROWS", MAX_ROWS))
+    (logits,) = _kernel(shared)(
         inputs=[x.reshape(rows, inputs), weight],
-        template=[("K", inputs), ("N", outputs), ("OUTPUTS", _OUTPUTS_PER_THREADGROUP)],
+        template=template,
+        # The shared kernel serves every row from one threadgroup column, so
+        # the weight is read once per call instead of once per row.
         grid=(
             -(-outputs // _OUTPUTS_PER_THREADGROUP) * _LANES * _OUTPUTS_PER_THREADGROUP,
-            rows,
+            1 if shared else rows,
             1,
         ),
         threadgroup=(_LANES * _OUTPUTS_PER_THREADGROUP, 1, 1),
@@ -159,13 +232,18 @@ def _matches_stock(owner) -> bool:
             probe = mx.random.normal(
                 (MAX_ROWS, int(weight.shape[1])), key=mx.random.key(0x41)
             )
-            actual = _launch(weight, probe)
+            # Every kernel variant a later call on this weight can select.
+            variants = [False, True] if _shares_weight_read(weight) else [False]
+            actual = [_launch(weight, probe, shared) for shared in variants]
             ok = True
             for row in range(MAX_ROWS):
                 # One stock row at a time: each call promotes the whole weight
                 # to FP32, so a single graph would hold MAX_ROWS copies.
                 expected = probe[row : row + 1] @ weight.T
-                ok = ok and bool(mx.array_equal(actual[row : row + 1], expected).item())
+                for result in actual:
+                    ok = ok and bool(
+                        mx.array_equal(result[row : row + 1], expected).item()
+                    )
         except Exception:  # compile/launch failure on this runtime: stay stock
             logger.warning("exact V4.1 GEMV unavailable", exc_info=True)
             ok = False
@@ -183,10 +261,11 @@ def head_logits(head, x: mx.array) -> mx.array:
     if not supports(head, x) or not _matches_stock(head):
         return head(x)
     # No runtime fallback past this point: the self-check above already
-    # evaluated this exact kernel specialization (the template is K, N,
-    # OUTPUTS only and the support checks fix the dtypes), so the Metal
-    # pipeline that runs lazily here has compiled and launched once. ENABLED
-    # is the switch back to stock.
+    # evaluated every kernel specialization this weight can select (the
+    # template is K, N, OUTPUTS and the fixed MAX_ROWS, the shared kernel reads
+    # its row count at run time and the support checks fix the dtypes), so the
+    # Metal pipeline that runs lazily here has compiled and launched once.
+    # ENABLED is the switch back to stock.
     return _launch(head.weight, x)
 
 

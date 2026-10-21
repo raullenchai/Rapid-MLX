@@ -24,14 +24,17 @@ and is asserted bit-exact by `tests/test_deepseek_v41_head_gemv.py` on Metal.
 
 - 1 row (decode): bit-exact with the stock projection.
 - 2-8 rows (batched lanes, speculative verify): each row equals its own
-  single-row result. The stock multi-row GEMM may use a different kernel (on
+  single-row result. For the vocabulary head (at least
+  `SHARED_READ_MIN_OUTPUTS` outputs) these rows share one read of the weight;
+  the small router weights keep one threadgroup per row. The stock multi-row GEMM may use a different kernel (on
   M5-class GPUs a reduced-precision one, max abs error ~3e-3 vs a float64
   reference, while this kernel stays at ~1e-6).
 - More than 8 rows (prefill), CPU, quantized/biased heads, or a K that is not
   a multiple of 128: stock path unchanged.
 - The stock order is an MLX/GPU implementation detail, so the first call per
   head weight runs a one-time self-check: an 8-row seeded probe on the real
-  weight, each row compared with its single-row stock projection; a bit
+  weight through every kernel variant that weight can select, each row
+  compared with its single-row stock projection; a bit
   difference or a launch failure keeps that head on the stock path (logged as
   a warning), and a replaced weight is checked again.
 - `head_gemv.ENABLED = False` restores the stock path everywhere.
@@ -58,3 +61,37 @@ The truncated model exaggerates the share of the head; on the full 40-layer
 model the absolute saving per token is the same order (the head cost is
 independent of depth) and must be confirmed on the full checkpoint before
 publishing an end-to-end speedup.
+
+## Shared weight read for multi-row calls (2026-10-21)
+
+The first kernel launched one threadgroup column per row, so a 5-row
+speculative verify read the 1.3 GB head five times. The vocabulary head now
+uses a second kernel for 2-8 rows that loads each weight block once and
+accumulates it into each row's own sum in the unchanged order; each row stays
+bit-identical to its single-row result (asserted on Metal for 2-8 rows and by
+the first-use self-check). One row and the 384-output routers keep the
+per-row kernel: the routers are latency bound, and a shared read measured
+slower there (0.20 -> 0.26 ms at 5 rows).
+
+Isolated head projection, M3 Ultra, 5120 -> 129280:
+
+| Rows | per-row kernel (ms) | shared read (ms) |
+| ---: | ---: | ---: |
+| 1 | 2.14 | (per-row kernel) |
+| 2 | 4.08 | 2.31 |
+| 5 | 9.63 | 2.94 |
+| 8 | 15.43 | 4.35 |
+
+Full V4.1 Flash 1017 checkpoint (revision c95bb8ad), M3 Ultra 256 GB, target
+forward of N rows at a ~60-token rendered chat prompt with rollback after each
+call, median of 12 after 3 warm-up calls, base and change interleaved twice in
+the same GPU window:
+
+| Rows | base (ms) | shared read (ms) |
+| ---: | ---: | ---: |
+| 1 | 51.3-51.8 | 51.2-51.3 |
+| 2 | 67.5-68.1 | 65.3-65.4 |
+| 5 | 97.8-97.9 | 91.7-91.7 |
+| 8 | 130.8-131.1 | 121.1-121.2 |
+
+A 5-row verify (four draft tokens) is 6.2% cheaper; decode is unchanged.

@@ -57,10 +57,15 @@ def test_single_rows_are_bit_exact_with_stock_projection(gpu, shape) -> None:
 
 
 @needs_metal
-@pytest.mark.parametrize("rows", [2, 5, 8])
-def test_each_row_matches_its_single_row_stock_result(gpu, rows: int) -> None:
+@pytest.mark.parametrize("shared_min", [head_gemv.SHARED_READ_MIN_OUTPUTS, 1])
+@pytest.mark.parametrize("rows", [2, 3, 4, 5, 6, 7, 8])
+def test_each_row_matches_its_single_row_stock_result(
+    gpu, monkeypatch, rows: int, shared_min: int
+) -> None:
     # Multi-row stock GEMM may use a different (even reduced-precision) kernel;
-    # the exact head instead gives every row its single-row decode result.
+    # the exact head instead gives every row its single-row decode result,
+    # whether the rows read the weight separately or share one read.
+    monkeypatch.setattr(head_gemv, "SHARED_READ_MIN_OUTPUTS", shared_min)
     head = _head(outputs=4096, inputs=1024)
     x = mx.random.normal((1, rows, 1024))
     actual = _exact_logits(head, x)
@@ -121,9 +126,9 @@ def test_model_forward_uses_exact_head(gpu, monkeypatch, last_logit_only) -> Non
     launched = []
     launch = head_gemv._launch
 
-    def launch_spy(weight, x):
+    def launch_spy(weight, x, shared=None):
         launched.append(x.shape)
-        return launch(weight, x)
+        return launch(weight, x, shared)
 
     monkeypatch.setattr("rapid_mlx.models.deepseek_v41_native.model.head_logits", spy)
     monkeypatch.setattr(head_gemv, "_launch", launch_spy)
@@ -204,7 +209,7 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
         return [mx.concatenate(rows)]
 
     def fake_metal_kernel(**kwargs):
-        built.update(kwargs)
+        built[kwargs["name"]] = kwargs
         return fake_kernel
 
     head_gemv._kernel.cache_clear()
@@ -219,8 +224,23 @@ def test_dispatch_geometry_without_metal(monkeypatch) -> None:
     assert seen["threadgroup"] == (128, 1, 1)
     assert dict(seen["template"]) == {"K": 512, "N": 1003, "OUTPUTS": 4}
     assert seen["inputs"][0].shape == (6, 512)
-    assert built["name"] == "rapid_v41_fp32_bf16_head_gemv"
-    assert built["ensure_row_contiguous"] is True
+    assert list(built) == ["rapid_v41_fp32_bf16_head_gemv"]
+    assert built["rapid_v41_fp32_bf16_head_gemv"]["ensure_row_contiguous"] is True
+
+    # A head at or above the threshold reads its weight once for all rows;
+    # a single row keeps the per-row kernel.
+    monkeypatch.setattr(head_gemv, "SHARED_READ_MIN_OUTPUTS", 1003)
+    head = _head(outputs=1003)
+    logits = head_logits(head, mx.zeros((2, 3, 512)))
+    assert logits.shape == (2, 3, 1003)
+    assert seen["grid"] == (251 * 32 * 4, 1, 1)
+    assert dict(seen["template"]) == {"K": 512, "N": 1003, "OUTPUTS": 4, "MAX_ROWS": 8}
+    shared = built["rapid_v41_fp32_bf16_head_gemv_shared"]
+    assert "input_shape[0]" in shared["source"] and shared["ensure_row_contiguous"]
+    head_logits(head, mx.zeros((1, 512)))
+    assert seen["grid"] == (251 * 32 * 4, 1, 1) and "MAX_ROWS" not in dict(
+        seen["template"]
+    )
     head_gemv._kernel.cache_clear()
 
 
@@ -232,7 +252,7 @@ def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
         rows, outputs = kwargs["output_shapes"][0]
         return [mx.zeros((rows, outputs), dtype=mx.float32)]
 
-    monkeypatch.setattr(head_gemv, "_kernel", lambda: wrong_kernel)
+    monkeypatch.setattr(head_gemv, "_kernel", lambda shared=False: wrong_kernel)
     monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
     head = _head()
     x = mx.random.normal((1, 512))
@@ -254,7 +274,7 @@ def test_self_check_mismatch_routes_head_to_stock(monkeypatch) -> None:
 
 
 def test_self_check_launch_failure_falls_back(monkeypatch) -> None:
-    def broken_kernel():
+    def broken_kernel(shared=False):
         raise RuntimeError("unable to build metal library")
 
     monkeypatch.setattr(head_gemv, "_kernel", broken_kernel)
@@ -269,11 +289,13 @@ def test_self_check_compiles_the_hot_path_specialization(monkeypatch) -> None:
     """The real self-check evaluates the specialization every later launch uses."""
     launches = []
 
-    def recording_kernel():
+    def recording_kernel(shared=False):
         def call(*, inputs, template, **_kwargs):
             x, weight = inputs
             # A Metal pipeline is specialized by its template and input dtypes.
-            launches.append((tuple(template), x.dtype, weight.dtype, x.shape[0]))
+            launches.append(
+                (tuple(template), x.dtype, weight.dtype, shared, x.shape[0])
+            )
             # each row's own stock projection (the kernel's contract), so the
             # self-check passes
             return [mx.concatenate([x[r : r + 1] @ weight.T for r in range(len(x))])]
@@ -287,6 +309,17 @@ def test_self_check_compiles_the_hot_path_specialization(monkeypatch) -> None:
         mx.eval(head_logits(head, mx.random.normal((rows, 512))))
     assert getattr(head, head_gemv._CHECK_ATTR)[1] is True
     probe, *hot = launches
-    assert probe[3] == head_gemv.MAX_ROWS  # the self-check ran first, on the full grid
+    assert probe[4] == head_gemv.MAX_ROWS  # the self-check ran first, on the full grid
     assert [rows for *_, rows in hot] == [1, 3, 8]
-    assert {launch[:3] for launch in launches} == {probe[:3]}
+    assert {launch[:4] for launch in launches} == {probe[:4]}
+
+    # A shared-read head probes both variants, then only uses probed ones.
+    launches.clear()
+    monkeypatch.setattr(head_gemv, "SHARED_READ_MIN_OUTPUTS", 1)
+    head = _head()
+    for rows in (1, 3, 8):
+        mx.eval(head_logits(head, mx.random.normal((rows, 512))))
+    probes, hot = launches[:2], launches[2:]
+    assert [(p[3], p[4]) for p in probes] == [(False, 8), (True, 8)]
+    assert [(h[3], h[4]) for h in hot] == [(False, 1), (True, 3), (True, 8)]
+    assert {h[:4] for h in hot} <= {p[:4] for p in probes}

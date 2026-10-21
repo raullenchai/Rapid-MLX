@@ -127,13 +127,13 @@ def test_replaced_router_weight_is_checked_again(monkeypatch) -> None:
     checks = []
     original = head_gemv._launch
 
-    def counting(weight, x):
+    def counting(weight, x, shared=None):
         checks.append(x.shape)
-        return original(weight, x)
+        return original(weight, x, shared)
 
     monkeypatch.setattr(head_gemv, "_launch", counting)
     gate = _gate(experts=64, dim=256)
-    monkeypatch.setattr(head_gemv, "_kernel", lambda: _zero_kernel)
+    monkeypatch.setattr(head_gemv, "_kernel", lambda shared=False: _zero_kernel)
     x = mx.random.normal((1, 256))
     project(gate, x)
     project(gate, x)
