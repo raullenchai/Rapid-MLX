@@ -186,5 +186,40 @@ Build A, build B, and uniform 2-bit routed / 8-bit shared layouts are now eligib
 on all 40 layers. Eligibility is not a GPU qualification result. Attention,
 cache, scheduling, and draft logic are unchanged.
 
-Measurements on the same hardware and workload: **TODO** (decode throughput,
-verify latency, dispatch counts, and confirmed fused-layer counts).
+Measured on M3 Ultra 256 GB, MLX 0.32.4, Python 3.12, against base `main`
+`0c0f281c5` (after #5042: `a3fe4cbf8`). Checkpoint
+`deepseek-v41-flash-1017` revisions were `c95bb8ad` (v1) and `c521050a`
+(v2, current pin). After the first decode step, both logged
+`fused V4.1 MoE: 40/40 layers; fallback: none`, versus 22/40 for v1 and 0/40
+for v2 by layout before the change.
+
+In-process target decode used a 1k-token context, median of 150 steps after
+10 warm-up steps, with two interleaved repetitions:
+
+| Build | Base ms/step | Change ms/step | Base → change tok/s |
+| --- | ---: | ---: | ---: |
+| v1 | 57.9 / 58.0 | 36.6 / 36.6 | 17.3 → 27.3 |
+| v2 | 81.0 / 82.0 | 34.4 / 34.3 | 12.3 → 29.2 |
+
+The per-layer stock fallback cost about 1.2 ms per decode step per layer,
+consistent with 18 newly fused layers on v1 and 40 on v2.
+
+Server measurements used a compatible streaming client, a 1008-token chat
+prompt and 256 greedy output tokens over two rounds. For v2 target-only with
+8 lanes and one client, per-stream decode throughput rose from 11.1 / 11.1
+to 25.9 / 24.4 tok/s. With 8 concurrent clients and 8 lanes, aggregate
+throughput rose from 22.9 / 19.8 to 26.2 / 23.7 tok/s; per-stream decode
+rose from 4.3 / 4.7 to 5.1 / 5.1 tok/s. TTFT p50 was 21.3 → 20.9 s.
+
+Default single-stream decoding with draft enabled (1 lane), change only,
+produced the following per-stream decode tok/s over two rounds:
+
+| Build | 1008-token chat | qa | code |
+| --- | ---: | ---: | ---: |
+| v1 | 19.8 / 20.9 | 23.8 / 24.6 | 30.0 / 30.0 |
+| v2 | 24.2 / 26.6 | 26.6 / 24.1 | 39.8 / 38.7 |
+
+To reproduce, time `model(next_token)` on a prefetched 1k-token cache under
+`/usr/bin/lockf -k /var/tmp/rapid-mlx-large-model.lock`. Server runs use
+`rapid-mlx serve deepseek-v41-flash-1017`, with `RAPID_MLX_DSV41_LANES=8`
+for target-only and the 8-concurrent run.
