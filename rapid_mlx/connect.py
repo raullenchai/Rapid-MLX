@@ -33,8 +33,22 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
+import sys
 from dataclasses import dataclass
 from typing import Any
+
+
+def package_install_command(package: str, *, no_deps: bool = False) -> str:
+    """Install into this CLI's Python with uv when it is available."""
+    python = shlex.quote(sys.executable)
+    prefix = (
+        f"uv pip install --python {python}"
+        if shutil.which("uv")
+        else f"{python} -m pip install"
+    )
+    option = " --no-deps" if no_deps else ""
+    return f"{prefix}{option} {shlex.quote(package)}"
 
 
 def _authority(host: str) -> str:
@@ -255,7 +269,7 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
     lines.extend(
         [
             f"    OpenAI SDK base_url: {ep.openai_url}; model: {ep.model}",
-            "    Python (pip install openai):",
+            f"    Python ({package_install_command('openai')}):",
             "      from openai import OpenAI",
             f"      client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key})",
             f"      print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)",

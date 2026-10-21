@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from rapid_mlx import cli
+from rapid_mlx import cli, connect
 from rapid_mlx.model_aliases import (
     RetiredModelAliasError,
     list_profiles,
@@ -108,7 +108,7 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     assert cli._run_submit_flow(args) == 2
     out = capsys.readouterr().out
     assert "rapid-mlx==" in out
-    assert "pip install --no-deps 'mlx-vlm==0.7.2'" in out
+    assert connect.package_install_command("mlx-vlm==0.7.2", no_deps=True) in out
 
 
 def test_models_command_lists_all_aliases():

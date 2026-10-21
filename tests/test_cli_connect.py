@@ -18,6 +18,7 @@ import argparse
 import io
 import json
 import shlex
+import sys
 from contextlib import redirect_stdout
 
 import pytest
@@ -87,6 +88,22 @@ def test_render_banner_matches_spec():
     # #2348: every Connect row carries the live endpoint — including the Python
     # snippet, which a standalone `connect` process otherwise can't know.
     assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
+
+
+def test_serve_next_uses_installed_python_for_sdk():
+    out = connect.render_serve_next(_endpoints())
+    assert connect.package_install_command("openai") in out
+
+
+def test_package_install_command_supports_uv_and_pip_less_tools(monkeypatch):
+    monkeypatch.setattr(connect.shutil, "which", lambda _name: "/usr/bin/uv")
+    assert connect.package_install_command("openai") == (
+        f"uv pip install --python {shlex.quote(sys.executable)} openai"
+    )
+    monkeypatch.setattr(connect.shutil, "which", lambda _name: None)
+    assert connect.package_install_command("mlx-vlm==0.7.2", no_deps=True) == (
+        f"{shlex.quote(sys.executable)} -m pip install --no-deps mlx-vlm==0.7.2"
+    )
 
 
 def test_listen_fd_shape():
@@ -228,6 +245,7 @@ def test_connect_openai_python_snippet(monkeypatch):
         lambda **kw: connect.ServerEndpoints("localhost", 8000, model="m1"),
     )
     out = _run_connect(target="openai-python")
+    assert connect.package_install_command("openai") in out
     assert "http://localhost:8000/v1" in out
     assert "OpenAI(" in out
     assert "m1" in out

@@ -69,7 +69,7 @@ def test_gemma4_load_fallback_hint_is_pinned():
     source = pathlib.Path(cli_mod.__file__).read_text()
 
     # The text-only footprint fallback must be pinned...
-    assert "pip install --no-deps 'mlx-vlm==0.7.2'" in source, (
+    assert 'package_install_command("mlx-vlm==0.7.2", no_deps=True)' in source, (
         "Gemma-4 load-fallback hint must pin mlx-vlm==0.7.2 to match "
         "VLM_EXTRA_INSTALL_HINT."
     )

@@ -79,6 +79,7 @@ def test_installer_labels_every_web_ui_mention_with_its_extra():
             "web-UI mention without its [chat]-extra prerequisite on the same "
             f"line: {ln!r}"
         )
+        assert "${INSTALL_DIR}/bin/python -m pip install" in ln
 
 
 # ------------------------------------------------------- gradio_app fallback

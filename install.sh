@@ -269,7 +269,7 @@ print_quick_start_commands() {
     echo "    # Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."
     echo "    # Run the same command tomorrow; add --remove to delete Rapid's profile."
     echo ""
-    echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
+    echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/python -m pip install 'rapid-mlx[chat]')"
     echo ""
     dim "Measured speeds on Macs like this one:"
     echo ""
