@@ -10,8 +10,11 @@ rapid-mlx serve gemma-4-12b-4bit \
   --speculative-config '{"method":"suffix","num_speculative_tokens":8}'
 ```
 
-Choose a model that fits your Mac with `rapid-mlx recipe`. Suffix decoding can
-slow requests when drafts are rarely accepted, so leave it off unless your own
+Before trying another alias, run `rapid-mlx info <alias>` and check that
+**Spec decode** says supported. Hybrid and recurrent architectures can be
+ineligible even if `rapid-mlx recipe` recommends them for your memory tier;
+the server skips suffix decoding for those models. Suffix decoding can slow
+requests when drafts are rarely accepted, so leave it off unless your own
 measurements show a benefit. Run `rapid-mlx serve --help` for the current flag.
 
 ## Measuring a model in the repository
