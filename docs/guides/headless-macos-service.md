@@ -216,7 +216,7 @@ the frozen environment and starts the previous service.
 
 ```bash
 sudo rapid-mlx service upgrade --dry-run
-sudo rapid-mlx service upgrade --version 0.13.5 --extras vision,embeddings
+sudo rapid-mlx service upgrade --extras vision,embeddings
 ```
 
 Declaring extras reasserts the appliance's intended optional features. The

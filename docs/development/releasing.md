@@ -93,20 +93,9 @@ Runs on PRs that modify `pyproject.toml` (so any version-line edit is always che
 - **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` (no leading-zero components) and strictly greater than base.
 - **A PR that does not touch the `version` line** → **PASS** (nothing to guard).
 
-A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. The `version-bump` label authorizes the change but is **not sufficient on its own for an increasing bump**: the title must *also* be a release subject, otherwise the merged squash commit wouldn't match `auto-release.yml`'s regex and the version would advance without ever publishing (the exact incident this guard prevents). (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; PF-1 keeps the bump-PR title canonical and strict, while the post-merge detect step deliberately tolerates the suffix — see "Squash suffix" below.)
+A "bump PR" has the canonical title `chore: bump version to X.Y.Z` or a `version-bump` label. The title's version must match `pyproject.toml`. An increasing release bump also needs the release-subject title so the merged commit starts the publish workflow. Keep the PR title free of a `(#NN)` suffix; only the post-merge detector tolerates that suffix. See "Squash suffix" below.
 
 The `skip-version-bump` escape hatch is validated differently: because it's meant for deliberate corrections (which may be a **rollback**), it only checks that the version is well-formed and actually changed — it does **not** enforce strictly-increasing.
-
-The FAIL message looks like:
-
-```
-❌ pyproject version must only change in a dedicated `chore: bump version to X.Y.Z` PR (guardrail G4).
-This PR changes the version line (0.10.5 -> 0.10.6) but its title is
-not a bump subject and it carries no version-bump label.
-Feature/fix PRs must NOT bump version — batch them and cut the release
-separately. If this really is the release bump, title the PR
-`chore: bump version to X.Y.Z`.
-```
 
 The `skip-version-bump` label allows a maintainer to correct the `version` line outside a titled bump PR, such as a rollback. For a release, title the PR `chore: bump version to X.Y.Z`.
 
