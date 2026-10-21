@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import signal
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from scripts.agent_e2e.run import (
     check_then_open_native,
     classified_error,
     handle_first_run_menus,
+    opencode_reply_seen,
     output_issues,
     preserved,
     rapid_config_untouched,
@@ -24,6 +26,52 @@ from scripts.agent_e2e.run import (
     stop_terminal_process,
 )
 from scripts.agent_e2e.seed_home import FILES
+
+
+def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is None
+    db = tmp_path / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE session_message "
+            "(type TEXT, time_created INTEGER, seq INTEGER, data TEXT)"
+        )
+        parts = [
+            {
+                "type": "tool",
+                "name": "read",
+                "state": {
+                    "status": "completed",
+                    "input": {"path": path},
+                    "content": [{"text": content}],
+                },
+            }
+            for path, content in (
+                ("hello.txt", "1: hi-abc"),
+                ("nonce.txt", "1: nonce-def"),
+            )
+        ]
+        parts.append({"type": "text", "text": "hi-abc and nonce-def"})
+        conn.execute(
+            "INSERT INTO session_message VALUES (?, ?, ?, ?)",
+            (
+                "assistant",
+                11000,
+                1,
+                json.dumps({"time": {"completed": 12}, "content": parts}),
+            ),
+        )
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is True
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-wrong") is False
+    assert opencode_reply_seen(tmp_path, 12, "hi-abc", "nonce-def") is False
+    with sqlite3.connect(db) as conn:
+        parts.pop(1)
+        conn.execute(
+            "UPDATE session_message SET data = ?",
+            (json.dumps({"time": {"completed": 12}, "content": parts}),),
+        )
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is False
 
 
 def test_qwen_tool_approval_answers_once_per_prompt(monkeypatch):

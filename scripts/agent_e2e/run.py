@@ -18,6 +18,7 @@ import select
 import shutil
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import termios
@@ -349,6 +350,50 @@ def reply_finished(agent: str, output: str) -> bool:
     return True
 
 
+def opencode_reply_seen(
+    home: Path, since: float, hello: str, nonce: str
+) -> bool | None:
+    """Read v2's completed conversation instead of fragmented TUI redraws.
+
+    Return None for v1, which has no private v2 session database.
+    """
+    db = home / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2) as conn:
+            rows = conn.execute(
+                "SELECT data FROM session_message WHERE type = 'assistant' "
+                "AND time_created >= ? ORDER BY time_created, seq",
+                (int(since * 1000),),
+            ).fetchall()
+    except sqlite3.Error:
+        return False
+    reads = set()
+    replies = []
+    for (raw,) in rows:
+        message = json.loads(raw)
+        for part in message.get("content", []):
+            if part.get("type") == "tool" and part.get("name") == "read":
+                state = part.get("state", {})
+                if state.get("status") == "completed":
+                    path = Path(state.get("input", {}).get("path", "")).name
+                    contents = " ".join(
+                        item.get("text", "") for item in state.get("content", [])
+                    )
+                    if path == "hello.txt" and hello in contents:
+                        reads.add("hello.txt")
+                    if path == "nonce.txt" and nonce in contents:
+                        reads.add("nonce.txt")
+            elif part.get("type") == "text" and message.get("time", {}).get(
+                "completed"
+            ):
+                replies.append(part.get("text", ""))
+    return reads == {"hello.txt", "nonce.txt"} and any(
+        hello in reply and nonce in reply for reply in replies
+    )
+
+
 def approval_handler(agent: str, master: int):
     """Accept an explicit local tool approval, as a user at the terminal would."""
     if agent == "aider":
@@ -470,6 +515,14 @@ def session(
         "prompt2_at": None,
         "ended_at": None,
     }
+
+    def reply_seen(output: str, hello: str, nonce: str, since: float) -> bool:
+        if command[2] == "opencode":
+            stored = opencode_reply_seen(Path(env["HOME"]), since, hello, nonce)
+            if stored is not None:
+                return stored
+        return nonce in output and reply_finished(command[2], output)
+
     with transcript.open("wb") as sink:
         try:
             opening, _ = read_until(
@@ -501,8 +554,7 @@ def session(
                     and target.read_text().strip() == f"hi-{marker}"
                     and nonce_file.is_file()
                     and nonce_file.read_text().strip() == nonce1
-                    and nonce1 in output
-                    and reply_finished(command[2], output)
+                    and reply_seen(output, f"hi-{marker}", nonce1, answer["prompt1_at"])
                 ),
                 on_output=approve,
             )
@@ -511,8 +563,7 @@ def session(
                 and target.read_text().strip() == f"hi-{marker}"
                 and nonce_file.is_file()
                 and nonce_file.read_text().strip() == nonce1
-                and nonce1 in output
-                and reply_finished(command[2], output)
+                and reply_seen(output, f"hi-{marker}", nonce1, answer["prompt1_at"])
             )
             if answer["tool_ok"]:
                 # The terminal first echoes our input. Completion is the first
@@ -534,8 +585,12 @@ def session(
                         and target.read_text().strip() == f"hi-{marker}-second"
                         and nonce_file.is_file()
                         and nonce_file.read_text().strip() == nonce2
-                        and nonce2 in output
-                        and reply_finished(command[2], output)
+                        and reply_seen(
+                            output,
+                            f"hi-{marker}-second",
+                            nonce2,
+                            answer["prompt2_at"],
+                        )
                     ),
                     on_output=approve,
                 )
@@ -544,8 +599,12 @@ def session(
                     and target.read_text().strip() == f"hi-{marker}-second"
                     and nonce_file.is_file()
                     and nonce_file.read_text().strip() == nonce2
-                    and nonce2 in output2
-                    and reply_finished(command[2], output2)
+                    and reply_seen(
+                        output2,
+                        f"hi-{marker}-second",
+                        nonce2,
+                        answer["prompt2_at"],
+                    )
                 )
                 if answer["second_ok"]:
                     answer["second_reply_s"] = round(time.monotonic() - sent, 2)
