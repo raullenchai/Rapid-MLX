@@ -116,6 +116,50 @@ def test_every_e4m3_value_midpoint_and_neighbor():
 
 
 @needs_metal
+def test_e4m3_scale_midpoints_and_neighbors():
+    # fp4_e4m3 blocks of 16 whose amax / 6 lands on, between and next to every
+    # e4m3 scale code, so the scale rounding itself is exercised
+    codes = np.arange(0x00, 0x7F, dtype=np.uint8)
+    vals = np.array(mx.from_fp8(mx.array(codes), mx.float32))
+    mids = (vals[:-1] + vals[1:]) / 2
+    amax = 6 * np.concatenate(
+        [vals, mids, np.nextafter(mids, 0), np.nextafter(mids, 1e9)]
+    )
+    amax = np.resize(amax, (-(-amax.size // 8)) * 8).astype(np.float32)
+    rs = np.random.RandomState(9)
+    blocks = rs.uniform(-1, 1, (amax.size, 16)).astype(np.float32) * amax[:, None]
+    blocks[:, 0] = amax * np.where(rs.rand(amax.size) < 0.5, -1, 1)
+    x = mx.array(blocks.reshape(1, -1, 128))
+    s = x.shape[1]
+    cos, sin = mx.ones((s, 32)), mx.zeros((s, 32))
+    _assert_same(
+        rope_quant.rope_fake_quant(x, 64, cos, sin, "fp4_e4m3"),
+        _graph(x, 64, cos, sin, "fp4_e4m3"),
+    )
+
+
+@needs_metal
+@pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
+def test_rope_products_are_rounded_separately(fmt):
+    # re*c - im*s with re*c == im*s up to rounding: a fused multiply-add keeps
+    # the product's rounding error and returns a tiny nonzero instead of 0
+    rs = np.random.RandomState(11)
+    re = rs.uniform(0.5, 2, (1, 4, 32)).astype(np.float32)
+    ang = rs.uniform(0.1, 1.4, (4, 32)).astype(np.float32)
+    c, sn = np.cos(ang), np.sin(ang)
+    im = (re * c / sn).astype(np.float32)
+    x = np.zeros((1, 4, 128), dtype=np.float32)
+    x[..., 64::2], x[..., 65::2] = re, im
+    xa, ca, sa = mx.array(x), mx.array(c), mx.array(sn)
+    tail = np.array(rope_tail(xa, 64, ca, sa))[..., 64::2]
+    assert np.any(tail != 0) and np.any(tail == 0)  # cancellation is in play
+    _assert_same(
+        rope_quant.rope_fake_quant(xa, 64, ca, sa, fmt),
+        _graph(xa, 64, ca, sa, fmt),
+    )
+
+
+@needs_metal
 @pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
 def test_strided_inputs_gathered_tables_and_partial_threadgroups(fmt):
     rs = np.random.RandomState(5)
@@ -161,6 +205,12 @@ def test_supports_and_graph_fallback(monkeypatch):
     assert not rope_quant.supports(x, 64, mx.zeros((1, 64)), mx.zeros((1, 64)))
     assert not rope_quant.supports(x, 64, t1, mx.zeros((1, 16)))
     assert not rope_quant.supports(x, 64, mx.zeros((32,)), mx.zeros((32,)))
+    # tables the graph would promote, and empty inputs
+    c64 = mx.zeros((1, 32), dtype=mx.complex64)
+    assert not rope_quant.supports(x, 64, c64, c64)
+    assert not rope_quant.supports(x, 64, t1.astype(mx.bfloat16), t1)
+    assert not rope_quant.supports(mx.zeros((0, 1, 128)), 64, t1, t1)
+    assert not rope_quant.supports(mx.zeros((1, 0, 128)), 64, t1[:0], t1[:0])
     monkeypatch.setattr(fakequant, "DISABLE", True)
     assert not rope_quant.supports(x, 64, t1, t1)
     monkeypatch.setattr(fakequant, "DISABLE", False)

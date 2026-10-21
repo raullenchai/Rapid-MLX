@@ -136,19 +136,21 @@ def _scalar(value: float) -> mx.array:
 def supports(x: mx.array, rd: int, cos: mx.array, sin: mx.array) -> bool:
     """Whether the kernel covers ``x`` [b, s, (h,) d] with an ``rd`` rope tail.
 
-    The kernel reads one ``cos``/``sin`` row per sequence position, so the
-    tables must be exactly [s, rd // 2]; anything the graph would broadcast
-    differently takes the graph.
+    The kernel reads one float32 ``cos``/``sin`` row per sequence position, so
+    the tables must be exactly [s, rd // 2] float32; anything the graph would
+    broadcast or promote differently, and empty inputs, take the graph.
     """
     if not (ENABLED and not fakequant.DISABLE and mx.default_device() == mx.gpu):
         return False
     return (
         x.ndim in (3, 4)
+        and x.size > 0
         and x.dtype in (mx.bfloat16, mx.float16, mx.float32)
         and x.shape[-1] % 32 == 0  # whole simdgroups, whole blocks
         and 0 < rd <= x.shape[-1]
         and rd % 2 == 0
         and tuple(cos.shape) == tuple(sin.shape) == (x.shape[1], rd // 2)
+        and cos.dtype == sin.dtype == mx.float32
     )
 
 
@@ -165,7 +167,7 @@ def rope_fake_quant(
         return graph(rope_tail(x, rd, cos, sin), block).astype(out_dtype)
     max_inv = 1.0 / (FP8_MAX if code == 0 else FP4_MAX)
     return _kernel()(
-        inputs=[x, cos.astype(mx.float32), sin.astype(mx.float32), _scalar(max_inv)],
+        inputs=[x, cos, sin, _scalar(max_inv)],
         template=[
             ("T", x.dtype),
             ("OT", out_dtype),
