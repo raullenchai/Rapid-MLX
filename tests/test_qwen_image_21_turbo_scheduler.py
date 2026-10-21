@@ -7,6 +7,8 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 pytest.importorskip("mlx.core")
 pytest.importorskip("mflux")
 
