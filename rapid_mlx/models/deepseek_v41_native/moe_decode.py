@@ -821,7 +821,7 @@ def log_coverage(model, dtype) -> None:
         ffn = getattr(layer, "ffn", None)
         if ffn is None:
             continue
-        verdict = getattr(ffn, _CHECK_ATTR, (None, None, {}))[2]
+        verdict: dict = getattr(ffn, _CHECK_ATTR, (None, None, {}))[2]
         if dtype not in verdict:
             return
         verdicts.append(verdict)
