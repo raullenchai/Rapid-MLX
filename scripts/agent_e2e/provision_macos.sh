@@ -2,6 +2,7 @@
 # Provision a dedicated test HOME on a leased macOS worker. Capture logs only
 # under the second argument; this never reads or writes the operator's HOME.
 set -u
+umask 077
 
 if [ "$#" -ne 2 ]; then
   echo "usage: $0 EMPTY_TEST_HOME PRIVATE_RUN_DIR" >&2
@@ -11,6 +12,7 @@ test_home="$1"
 run_dir="$2"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$run_dir"
+chmod 700 "$run_dir"
 python3 "$script_dir/seed_home.py" "$test_home" || exit 1
 export HOME="$test_home"
 export UV_TOOL_DIR="$HOME/.local/share/uv/tools"

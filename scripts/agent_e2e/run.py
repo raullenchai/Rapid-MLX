@@ -173,12 +173,12 @@ def open_terminal() -> tuple[int, int]:
 
 
 def stop_terminal_process(proc: subprocess.Popen) -> None:
-    """Stop only this pty child; it may exit between poll and signalling."""
-    if proc.poll() is not None:
-        return
+    """Stop the session created for this terminal, including child CLIs."""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        pass
+    except PermissionError:
         try:
             proc.terminate()
         except (ProcessLookupError, PermissionError):
@@ -187,10 +187,23 @@ def stop_terminal_process(proc: subprocess.Popen) -> None:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
         try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         proc.wait(timeout=3)
+    # A shell launcher can exit while its agent remains in the same session.
+    # Kill that owned group before starting the next row or releasing a lease.
+    try:
+        os.killpg(proc.pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -627,7 +640,9 @@ def main() -> int:
             parser.error(
                 "reserved port already has a listener; cold start requires a stopped server"
             )
+    os.umask(0o077)
     args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    args.output.chmod(0o700)
     env = {
         key: os.environ[key]
         for key in ("PATH", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR")

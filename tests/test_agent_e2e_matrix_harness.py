@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import signal
 from types import SimpleNamespace
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
@@ -360,3 +361,24 @@ def test_pty_cleanup_falls_back_when_process_group_is_inaccessible(monkeypatch):
     proc = Process()
     stop_terminal_process(proc)
     assert proc.terminated
+
+
+def test_pty_cleanup_signals_group_after_launcher_exits(monkeypatch):
+    signals = []
+
+    class Process:
+        pid = 12345
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    stop_terminal_process(Process())
+    assert signals == [
+        (12345, signal.SIGTERM),
+        (12345, 0),
+        (12345, signal.SIGKILL),
+    ]
