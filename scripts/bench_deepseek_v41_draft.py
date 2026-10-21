@@ -388,13 +388,14 @@ def _main(argv=None):
         help="Synchronize draft attention/MoE/head/Markov boundaries (perturbs latency)",
     )
     parser.add_argument("--label", default="new")
-    parser.add_argument(
+    prompts = parser.add_mutually_exclusive_group()
+    prompts.add_argument(
         "--prompt-class",
         action="append",
         choices=sorted(PROMPT_CLASSES),
         help="Built-in chat prompt class; repeatable (default: all classes)",
     )
-    parser.add_argument(
+    prompts.add_argument(
         "--prompt", help="Custom user message, measured as prompt class 'custom'"
     )
     parser.add_argument(
@@ -430,8 +431,6 @@ def _main(argv=None):
         serving._install_packed_mtp_moe(draft)
         tokenizer = TinyTokenizer()
         runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
-    if args.prompt is not None and args.prompt_class:
-        parser.error("--prompt and --prompt-class are mutually exclusive")
     if args.prompt is not None:
         texts = {"custom": args.prompt}
     else:
