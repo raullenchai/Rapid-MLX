@@ -135,6 +135,19 @@ def test_init_mcp_with_missing_file_does_not_raise(client, tmp_path):
     assert client.get("/healthz").status_code == 200
 
 
+def test_init_mcp_missing_sdk_uses_active_python_install_hint(client, monkeypatch):
+    from rapid_mlx.connect import package_install_command
+
+    async def missing_sdk(_path):
+        raise ImportError("mcp")
+
+    monkeypatch.setattr(server_module, "_start_mcp", missing_sdk)
+    asyncio.run(server_module.init_mcp("/tmp/mcp.json"))
+
+    body = client.get("/v1/mcp/servers").json()
+    assert package_install_command("mcp") in body["error"]
+
+
 def test_init_mcp_with_malformed_json_does_not_raise(client, tmp_path):
     path = tmp_path / "mcp.json"
     path.write_text("{ this is not json")

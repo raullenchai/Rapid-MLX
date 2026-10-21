@@ -259,8 +259,11 @@ class MCPClient:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
         except ImportError:
+            from rapid_mlx.connect import package_install_command
+
             raise ImportError(
-                "MCP SDK required for MCP support. Install with: pip install mcp"
+                "MCP SDK required for MCP support. Install with: "
+                f"{package_install_command('mcp')}"
             )
 
         # Security: Log the command being executed for audit trail
@@ -296,8 +299,11 @@ class MCPClient:
             from mcp import ClientSession
             from mcp.client.sse import sse_client
         except ImportError:
+            from rapid_mlx.connect import package_install_command
+
             raise ImportError(
-                "MCP SDK required for MCP support. Install with: pip install mcp"
+                "MCP SDK required for MCP support. Install with: "
+                f"{package_install_command('mcp')}"
             )
 
         # Create SSE client context
