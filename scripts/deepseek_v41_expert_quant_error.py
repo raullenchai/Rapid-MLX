@@ -350,10 +350,10 @@ def main():
                 old["expert_weight_bytes"].copy(),
                 old["completed"].copy(),
             )
-    save_inventory(a.inventory, account)
     stop = np.prod(shape) if a.stop is None else a.stop
-    if not a.start <= stop <= np.prod(shape):
+    if not a.start < stop <= np.prod(shape):
         raise ValueError("invalid expert range")
+    save_inventory(a.inventory, account)
     a.output.parent.mkdir(parents=True, exist_ok=True)
     # Same probes at each expert make bit-width comparisons reproducible.
     probes = mx.array(

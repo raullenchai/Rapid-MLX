@@ -404,34 +404,39 @@ def write_group(path, entries, index, config, row_chunk=65536):
 
     raw = header(entries)
     temporary = path.with_suffix(".partial")
-    with temporary.open("xb") as f:
-        f.write(struct.pack("<Q", len(raw)))
-        f.write(raw)
-        for e in entries:
-            before = f.tell()
-            for source in e.sources:
-                if e.component == "engram_ssd":
-                    rows = index.tensors[source].shape[0]
-                    for start in range(0, rows, row_chunk):
-                        f.write(
-                            transformed(
-                                index,
-                                config,
-                                e,
-                                source,
-                                start,
-                                min(rows, start + row_chunk),
+    output = temporary.open("xb")
+    try:
+        with output as f:
+            f.write(struct.pack("<Q", len(raw)))
+            f.write(raw)
+            for e in entries:
+                before = f.tell()
+                for source in e.sources:
+                    if e.component == "engram_ssd":
+                        rows = index.tensors[source].shape[0]
+                        for start in range(0, rows, row_chunk):
+                            f.write(
+                                transformed(
+                                    index,
+                                    config,
+                                    e,
+                                    source,
+                                    start,
+                                    min(rows, start + row_chunk),
+                                )
                             )
-                        )
+                            mx.clear_cache()
+                    else:
+                        f.write(transformed(index, config, e, source))
                         mx.clear_cache()
-                else:
-                    f.write(transformed(index, config, e, source))
-                    mx.clear_cache()
-            if f.tell() - before != e.nbytes:
-                raise ValueError(f"output size mismatch: {e.name}")
-        f.flush()
-        os.fsync(f.fileno())
-    temporary.replace(path)
+                if f.tell() - before != e.nbytes:
+                    raise ValueError(f"output size mismatch: {e.name}")
+            f.flush()
+            os.fsync(f.fileno())
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def matching_file(path, entries):

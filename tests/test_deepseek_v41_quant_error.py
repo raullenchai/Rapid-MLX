@@ -157,6 +157,80 @@ def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch)
     assert (tmp_path / "costs.json").read_text() == "unchanged\n"
 
 
+def test_empty_expert_range_does_not_write_output_or_inventory(tmp_path, monkeypatch):
+    pytest.importorskip("mlx.core")
+
+    tiny_source(tmp_path / "source")
+    output = tmp_path / "errors.npz"
+    inventory_path = tmp_path / "costs.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "quant-error",
+            "--source",
+            str(tmp_path / "source"),
+            "--output",
+            str(output),
+            "--inventory",
+            str(inventory_path),
+            "--start",
+            "0",
+            "--stop",
+            "0",
+        ],
+    )
+    with pytest.raises(ValueError, match="^invalid expert range$"):
+        main()
+    assert not output.exists()
+    assert not inventory_path.exists()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_write_group_failure_removes_partial_and_retry_succeeds(
+    tmp_path, monkeypatch, error_type
+):
+    mx = pytest.importorskip("mlx.core")
+
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    index = CheckpointIndex(source)
+    path = tmp_path / "group.safetensors"
+    entries = [
+        rd_build.Entry(
+            "norm.weight",
+            (128,),
+            "F32",
+            ("norm.weight", "norm.weight"),
+            "fixed",
+        )
+    ]
+    transformed = rd_build.transformed
+    calls = 0
+
+    def fail_mid_write(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise error_type("injected failure")
+        return transformed(*args, **kwargs)
+
+    with mx.stream(mx.cpu):
+        monkeypatch.setattr(rd_build, "transformed", fail_mid_write)
+        with pytest.raises(error_type, match="injected failure"):
+            rd_build.write_group(path, entries, index, config)
+        assert calls == 2
+        assert not path.with_suffix(".partial").exists()
+        assert not path.exists()
+
+        monkeypatch.setattr(rd_build, "transformed", transformed)
+        rd_build.write_group(path, entries, index, config)
+    assert rd_build.matching_file(path, entries)
+    assert not path.with_suffix(".partial").exists()
+
+
 def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch):
     from scripts import deepseek_v41_rd_build as rd_build
 
