@@ -8,9 +8,10 @@ registry of its own.
 PATH resolution: the isolated runner executes through ``/bin/zsh -lc``. A
 login shell sources ``/etc/zprofile`` and ``~/.zprofile``, which commonly add
 (or replace) PATH entries such as Homebrew. The CLI is therefore checked with
-``command -v`` in that same login shell and working directory, and the
-shell's own exit status is the answer, so it matches what the runner can
-invoke. If that shell cannot be run or does not answer within the deadline,
+``whence -p`` in that same login shell and working directory, and the
+shell's own exit status is the answer. ``-p`` accepts only executables found
+on PATH (or an executable path), not profile functions or aliases, which the
+generated runner script would not inherit. If that shell cannot be run or does not answer within the deadline,
 launch refuses as well, because the runner depends on the same shell.
 """
 
@@ -29,14 +30,14 @@ _PROBE_TIMEOUT_S = 30
 
 
 def agent_cli_found(binary: str) -> bool | None:
-    """Whether the runner's login shell can invoke ``binary``.
+    """Whether the runner's login-shell PATH has an executable ``binary``.
 
     Returns ``None`` when the login shell cannot be run or does not answer.
     """
     # A per-probe marker keeps profile output from posing as the answer.
     marker = f"__rapid_mlx_cli_{secrets.token_hex(8)}__="
     target = shlex.quote(os.path.expanduser(binary))
-    script = f"command -v -- {target} >/dev/null 2>&1; printf '\\n{marker}%s\\n' \"$?\""
+    script = f"whence -p -- {target} >/dev/null 2>&1; printf '\\n{marker}%s\\n' \"$?\""
     try:
         result = subprocess.run(
             [_LOGIN_SHELL, "-lc", script],

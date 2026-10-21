@@ -136,7 +136,7 @@ def test_login_shell_exit_status_is_the_answer(fixed_marker):
         assert cli_preflight.agent_cli_found("fake-agent") is True
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
-    assert "command -v -- fake-agent" in argv[2]
+    assert "whence -p -- fake-agent" in argv[2]
     assert MARK in argv[2]
 
 
@@ -146,7 +146,7 @@ def test_path_style_binary_is_expanded_for_the_shell(fixed_marker):
     ) as run:
         assert cli_preflight.agent_cli_found("~/bin/tool") is True
     assert (
-        f"command -v -- {os.path.expanduser('~/bin/tool')}" in run.call_args.args[0][2]
+        f"whence -p -- {os.path.expanduser('~/bin/tool')}" in run.call_args.args[0][2]
     )
 
 
@@ -264,12 +264,16 @@ def test_real_login_shell_that_drops_path_entry_is_refused(
 
 
 @needs_zsh
-def test_real_login_shell_checks_paths_and_profile_functions(tmp_path, login_profile):
+def test_real_login_shell_checks_paths_and_ignores_profile_functions(
+    tmp_path, login_profile
+):
+    """The runner script does not inherit profile functions or aliases."""
     tool = _executable(tmp_path / "tool")
     plain = tmp_path / "plain"
     plain.write_text("")
-    login_profile("rapid-preflight-fn() { :; }\n")
+    login_profile("rapid-preflight-fn() { :; }\nalias rapid-preflight-alias=ls\n")
     assert cli_preflight.agent_cli_found(str(tool)) is True
     assert cli_preflight.agent_cli_found(str(plain)) is False
     assert cli_preflight.agent_cli_found(str(tmp_path)) is False
-    assert cli_preflight.agent_cli_found("rapid-preflight-fn") is True
+    assert cli_preflight.agent_cli_found("rapid-preflight-fn") is False
+    assert cli_preflight.agent_cli_found("rapid-preflight-alias") is False
