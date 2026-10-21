@@ -680,11 +680,11 @@ Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade wi
 python3.12 -m pip install rapid-mlx
 ```
 
-If `python3.12 -m pip install rapid-mlx` says "no matching distribution", your Python is too old. `brew install python@3.12` first. Upgrade with `python3.12 -m pip install -U rapid-mlx`.
+If `python3.12` is missing, use the official installer above or install Python 3.12 with Homebrew first. Upgrade a Python 3.12 installation with `python3.12 -m pip install -U rapid-mlx`.
 
 Image-input / VLM models (Qwen-VL, Gemma 4, true multimodal) need no extra step — the vision runtime ships with the base install. See [Optional extras](https://rapidmlx.com/docs/extras.html) for audio and embeddings.
 
-For the complete feature set — chat, embeddings, audio, and System One on top of the base install — install the `[all]` extra: `python3.12 -m pip install 'rapid-mlx[all]'`. Audio alone is `~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+For the complete feature set — chat, embeddings, audio, and System One on top of the base install — install the `[all]` extra: `python3.12 -m pip install 'rapid-mlx[all]'`. Audio alone is `python3.12 -m pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
 </details>
 
