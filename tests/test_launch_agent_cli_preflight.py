@@ -132,19 +132,31 @@ def test_current_path_hit_skips_login_shell(tmp_path, monkeypatch):
 def test_login_shell_path_is_used_when_current_path_misses(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
     reply = subprocess.CompletedProcess(
-        [], 0, stdout="welcome banner\n/opt/homebrew/bin/fake-agent\n", stderr=""
+        [],
+        0,
+        stdout=(
+            "welcome banner\n\n__rapid_mlx_cli__=/opt/homebrew/bin/fake-agent\n"
+            "logout banner\n"
+        ),
+        stderr="",
     )
     with patch.object(cli_preflight.subprocess, "run", return_value=reply) as run:
         found = cli_preflight.resolve_agent_binary("fake-agent")
     assert found == "/opt/homebrew/bin/fake-agent"
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
-    assert argv[2] == "command -v -- fake-agent"
+    assert "command -v -- fake-agent" in argv[2]
 
 
 @pytest.mark.parametrize(
     ("returncode", "stdout"),
-    [(1, ""), (0, ""), (0, "alias fake-agent='something'\n"), (0, "fake-agent\n")],
+    [
+        (1, ""),
+        (0, "/opt/homebrew/bin/fake-agent\n"),
+        (0, "\n__rapid_mlx_cli__=\n"),
+        (0, "__rapid_mlx_cli__=alias fake-agent='something'\n"),
+        (0, "__rapid_mlx_cli__=fake-agent\n"),
+    ],
 )
 def test_login_shell_miss_or_non_path_is_not_installed(
     tmp_path, monkeypatch, returncode, stdout
@@ -213,3 +225,22 @@ def test_real_login_shell_sees_profile_path(tmp_path, monkeypatch):
     assert cli_preflight.resolve_agent_binary("rapid-preflight-fake-agent") == str(
         bin_dir / "rapid-preflight-fake-agent"
     )
+
+
+@pytest.mark.skipif(not os.access("/bin/zsh", os.X_OK), reason="needs /bin/zsh")
+def test_real_login_shell_output_around_answer_is_ignored(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "login-bin"
+    bin_dir.mkdir()
+    _executable(bin_dir / "rapid-preflight-chatty-agent")
+    zdot = tmp_path / "zdot"
+    zdot.mkdir()
+    (zdot / ".zprofile").write_text(
+        f'echo "hello from profile"\nexport PATH="{bin_dir}:$PATH"\n'
+    )
+    (zdot / ".zlogout").write_text('echo "bye from logout"\n')
+    monkeypatch.setenv("ZDOTDIR", str(zdot))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert cli_preflight.resolve_agent_binary("rapid-preflight-chatty-agent") == str(
+        bin_dir / "rapid-preflight-chatty-agent"
+    )
+    assert cli_preflight.resolve_agent_binary("rapid-preflight-absent-agent") is None

@@ -11,7 +11,9 @@ Homebrew and other user prefixes that a GUI- or IDE-launched parent process
 may not carry. To avoid refusing a CLI the runner would find, a miss on the
 current PATH is re-checked in that same login shell (``command -v``). If the
 login shell cannot be probed, the common Homebrew prefixes are checked as a
-fallback.
+fallback. A hit on the current PATH is accepted without the probe so a
+normal launch does not pay for an extra login shell; a login profile that
+removes an inherited PATH entry is not detected.
 """
 
 from __future__ import annotations
@@ -26,13 +28,19 @@ from rapid_mlx.agents.base import AgentProfile
 _LOGIN_SHELL = "/bin/zsh"
 _PROBE_TIMEOUT_S = 10
 _HOMEBREW_PREFIXES = ("/opt/homebrew/bin", "/usr/local/bin")
+_MARKER = "__rapid_mlx_cli__="
 
 
 def _login_shell_lookup(binary: str) -> str | None:
     """Resolve ``binary`` with the PATH the runner's login shell will see."""
     try:
         result = subprocess.run(
-            [_LOGIN_SHELL, "-lc", f"command -v -- {shlex.quote(binary)}"],
+            [
+                _LOGIN_SHELL,
+                "-lc",
+                f"printf '\\n{_MARKER}%s\\n' "
+                f'"$(command -v -- {shlex.quote(binary)})"',
+            ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -41,11 +49,14 @@ def _login_shell_lookup(binary: str) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return shutil.which(binary, path=os.pathsep.join(_HOMEBREW_PREFIXES))
-    # Profile scripts may print banners; ``command -v`` prints the path last.
-    # Anything that is not an absolute path (alias, function) is not the CLI.
-    lines = result.stdout.strip().splitlines()
-    found = lines[-1].strip() if result.returncode == 0 and lines else ""
-    return found if found.startswith("/") else None
+    # Login and logout scripts may print around the answer, so read only the
+    # marked line. Anything that is not an absolute path (alias, function,
+    # builtin) is not the CLI.
+    for line in result.stdout.splitlines():
+        if line.startswith(_MARKER):
+            found = line[len(_MARKER) :].strip()
+            return found if found.startswith("/") else None
+    return None
 
 
 def resolve_agent_binary(binary: str) -> str | None:
