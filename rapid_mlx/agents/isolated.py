@@ -377,20 +377,16 @@ def configure(
                 character.isupper() or character.isdigit() or character == "_"
                 for character in name_
             )
-            if (
-                valid_name
-                and value
-                and (
-                    name_.startswith("GIT_")
-                    or name_
-                    in (
-                        "XDG_CONFIG_HOME",
-                        "SSH_AUTH_SOCK",
-                        "SSH_ASKPASS",
-                        "GPG_TTY",
-                        "GNUPGHOME",
-                        "EMAIL",
-                    )
+            if valid_name and (
+                name_.startswith("GIT_")
+                or name_
+                in (
+                    "XDG_CONFIG_HOME",
+                    "SSH_AUTH_SOCK",
+                    "SSH_ASKPASS",
+                    "GPG_TTY",
+                    "GNUPGHOME",
+                    "EMAIL",
                 )
             ):
                 git_env += f"{name_}={shlex.quote(value)} "

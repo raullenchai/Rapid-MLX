@@ -1274,6 +1274,9 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "author@example.invalid")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "Environment Committer")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "committer@example.invalid")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "rapidmlxtest.empty")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "")
     monkeypatch.setenv("GIT_BAD-NAME", "should-not-enter-a-shell-script")
     monkeypatch.chdir(project)
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
@@ -1282,6 +1285,10 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
     assert (
         "should-not-enter-a-shell-script"
         not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+    )
+    assert (
+        "GIT_CONFIG_VALUE_0=''"
+        in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
     )
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     commit = subprocess.check_output(
