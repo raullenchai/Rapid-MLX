@@ -158,6 +158,8 @@ def _usable_running_model(model: str, profile: AgentProfile) -> bool:
         profile.needs_function_calling and not config.tool_call_parser
     ):
         return False
+    if profile.needs_function_calling and "gemma-4-12b-it" in model.lower():
+        return False
     if profile.name == "codex":
         identity = (
             model

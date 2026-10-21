@@ -785,29 +785,55 @@ def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
     ) as get:
         assert isolated.running_model(7660, "secret") == "qwen3.5-9b-4bit"
     assert get.call_args.args[0].get_header("Authorization") == "Bearer secret"
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.urllib.request.urlopen",
+            return_value=Reply(
+                b'{"data":[{"id":"qwen3.5-9b-4bit"},{"id":"qwen3.5-4b-4bit"}]}'
+            ),
+        ),
+        pytest.raises(ValueError, match="multiple text checkpoints"),
+    ):
+        isolated.running_model(7660, "secret")
+    with (
+        patch("rapid_mlx.agents.isolated.urllib.request.urlopen", side_effect=OSError),
+        pytest.raises(ValueError, match="could not verify"),
+    ):
+        isolated.running_model(7660, "secret")
     with patch(
         "rapid_mlx.agents.isolated.urllib.request.urlopen",
-        return_value=Reply(
-            b'{"data":[{"id":"qwen3.5-9b-4bit"},{"id":"qwen3.5-4b-4bit"}]}'
-        ),
+        side_effect=urllib.error.URLError(ConnectionRefusedError()),
     ):
         assert isolated.running_model(7660, "secret") is None
-    with patch("rapid_mlx.agents.isolated.urllib.request.urlopen", side_effect=OSError):
-        assert isolated.running_model(7660, "secret") is None
-    for payload in (b"{}", b'{"data":[]}'):
-        with patch(
+    with (
+        patch(
             "rapid_mlx.agents.isolated.urllib.request.urlopen",
-            return_value=Reply(payload),
+            side_effect=urllib.error.HTTPError("url", 401, "denied", {}, None),
+        ),
+        pytest.raises(ValueError, match="could not verify"),
+    ):
+        isolated.running_model(7660, "secret")
+    for payload, message in (
+        (b"{}", "invalid model list"),
+        (b'{"data":[]}', "text model"),
+    ):
+        with (
+            patch(
+                "rapid_mlx.agents.isolated.urllib.request.urlopen",
+                return_value=Reply(payload),
+            ),
+            pytest.raises(ValueError, match=message),
         ):
-            assert isolated.running_model(7660, "secret") is None
+            isolated.running_model(7660, "secret")
     with (
         patch(
             "rapid_mlx.agents.isolated.urllib.request.urlopen",
             return_value=Reply(b'{"data":[{"id":"custom"}]}'),
         ),
         patch("rapid_mlx.model_aliases.resolve_model", side_effect=ValueError),
+        pytest.raises(ValueError, match="could not resolve"),
     ):
-        assert isolated.running_model(7660, "secret") is None
+        isolated.running_model(7660, "secret")
 
 
 def test_running_model_capability_and_checkpoint_floor():
@@ -834,6 +860,7 @@ def test_running_model_capability_and_checkpoint_floor():
         assert not launch_cli._usable_running_model("model-4b-4bit", codex)
         assert launch_cli._usable_running_model("model-9b-4bit", codex)
         assert launch_cli._usable_running_model("repo/Model-9B", codex)
+        assert not launch_cli._usable_running_model("gemma-4-12b-it-4bit", codex)
     with patch("rapid_mlx.model_aliases.resolve_model", side_effect=ValueError):
         assert launch_cli._same_checkpoint("custom", "custom")
         assert not launch_cli._same_checkpoint("custom", "other")
@@ -871,6 +898,24 @@ def test_short_launch_refuses_explicit_different_running_model(private_home, cap
         launch_command(_launch_args("goose", "--model", "qwen3.5-4b-4bit"))
     assert isolated.saved_model("goose") is None
     assert "stop it before launching" in capsys.readouterr().err
+
+
+def test_short_launch_keeps_profile_untouched_when_server_cannot_be_verified(
+    private_home, capsys
+):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model",
+            side_effect=ValueError("could not verify the running local server"),
+        ),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("goose"))
+    assert isolated.saved_model("goose") is None
+    assert "could not verify" in capsys.readouterr().err
 
 
 def test_short_launch_reuses_saved_model_and_starts_stopped_server(

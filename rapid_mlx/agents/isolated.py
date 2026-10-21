@@ -257,11 +257,15 @@ def running_model(port: int, key: str) -> str | None:
     try:
         with urllib.request.urlopen(request, timeout=2) as response:
             payload = json.loads(response.read())
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError):
-        return None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            return None
+        raise ValueError("could not verify the running local server") from exc
+    except (OSError, TimeoutError, ValueError, TypeError) as exc:
+        raise ValueError("could not verify the running local server") from exc
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
-        return None
+        raise ValueError("local server returned an invalid model list")
     names = [
         entry["id"]
         for entry in models
@@ -275,12 +279,13 @@ def running_model(port: int, key: str) -> str | None:
         )
     ]
     if not names:
-        return None
+        raise ValueError("local server did not advertise a text model")
     try:
-        if len({resolve_model(name) for name in names}) != 1:
-            return None
-    except ValueError:
-        return None
+        checkpoints = {resolve_model(name) for name in names}
+    except ValueError as exc:
+        raise ValueError("could not resolve the running model") from exc
+    if len(checkpoints) != 1:
+        raise ValueError("local server has multiple text checkpoints")
     return min(names, key=lambda name: ("/" in name, len(name)))
 
 
