@@ -198,6 +198,8 @@ def benchmark(model, lengths, repeats, drafter_factory=None, processor=None):
                 if iteration:
                     times.append(elapsed)
                 if draft is not None and processor is not None:
+                    # Reusing the drafter is safe: stream_generate calls
+                    # runtime.reset() (position -1, empty windows) first.
                     runtime = DSparkRuntime(draft, "local", "local", "local")
                     begin = time.perf_counter()
                     stream = stream_generate(
