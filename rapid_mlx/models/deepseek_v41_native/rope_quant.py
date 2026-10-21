@@ -40,23 +40,35 @@ FORMATS = {
 }
 
 _HEADER = r"""
-// E4M3 round-to-nearest-even of a value already clamped to [-448, 448].
+// E4M3 round-to-nearest-even of a value already clamped to [-448, 448]; the
+// sign is kept, including that of zero (to_fp8 maps -0 to -0).
 inline float round_e4m3(float v) {
     const float a = abs(v);
     const int step_e = max(int((as_type<uint>(a) >> 23) & 0xFFu) - 127 - 3, -9);
     const float step = as_type<float>(uint(step_e + 127) << 23);
     const float q = min(rint(a / step) * step, 448.0f);
-    return v < 0.0f ? -q : q;
+    return copysign(q, v);
 }
-// 2^ceil(log2(x)) for positive normal x, from the IEEE bits.
+// to_fp8 saturates: NaN becomes 448 with the NaN's sign, +-inf becomes +-448.
+inline float fp8_round_trip(float v) {
+    return isnan(v) ? copysign(448.0f, v) : round_e4m3(clamp(v, -448.0f, 448.0f));
+}
+// mx.max / mx.maximum propagate NaN; Metal's max returns the other operand.
+inline float nan_max(float a, float b) {
+    return (isnan(a) || isnan(b)) ? NAN : max(a, b);
+}
+// 2^ceil(log2(x)) for positive normal x, from the IEEE bits (sign ignored, so
+// non-finite x builds the same bit pattern as the graph's _ue8m0_scale).
 inline float pow2_ceil(float x) {
     const uint bits = as_type<uint>(x);
     const int e = int((bits >> 23) & 0xFFu) - 127 + int((bits & 0x7FFFFFu) != 0u);
     return as_type<float>(uint(e + 127) << 23);
 }
-// Nearest e2m1 value of |v| <= 6, ties to the even code, sign kept.
+// Nearest e2m1 value of v clipped to [-6, 6], ties to the even code, as
+// sign(v) * lut[idx]: NaN and -0 give +0, a negative value rounding to zero -0.
 inline float round_e2m1(float v) {
-    const float m = abs(v);
+    if (isnan(v)) return 0.0f;
+    const float m = min(abs(v), 6.0f);
     float q;
     if (m < 0.75f) q = m > 0.25f ? 0.5f : 0.0f;
     else if (m < 1.75f) q = m > 1.25f ? 1.5f : 1.0f;
@@ -84,18 +96,20 @@ _SOURCE = r"""
         else { const float a = re * c; const float bb = im * sn; o = a - bb; }
         v = float(T(o));
     }
+    // NaN-propagating block max, like the graph's mx.max then mx.maximum
     float amax = abs(v);
-    for (uint off = BLK / 2; off > 0; off /= 2) amax = max(amax, simd_shuffle_xor(amax, off));
+    for (uint off = BLK / 2; off > 0; off /= 2) amax = nan_max(amax, simd_shuffle_xor(amax, off));
     float q;
     if (FMT == 0) {
-        const float sc = pow2_ceil(max(amax, 1e-4f) * max_inv[0]);
-        q = round_e4m3(clamp(v / sc, -448.0f, 448.0f)) * sc;
+        // a NaN amax gives the graph's bit-built scale (-0) here too
+        const float sc = pow2_ceil(nan_max(amax, 1e-4f) * max_inv[0]);
+        q = fp8_round_trip(v / sc) * sc;
     } else if (FMT == 1) {
-        const float sc = pow2_ceil(max(amax, 6.0f * 1.17549435e-38f) * max_inv[0]);
-        q = round_e2m1(clamp(v / sc, -6.0f, 6.0f)) * sc;
+        const float sc = pow2_ceil(nan_max(amax, 6.0f * 1.17549435e-38f) * max_inv[0]);
+        q = round_e2m1(v / sc) * sc;
     } else {
-        const float sc = round_e4m3(min(max(amax, 6.0f / 512.0f) / 6.0f, 448.0f));
-        q = round_e2m1(clamp(v / sc, -6.0f, 6.0f)) * sc;
+        const float sc = fp8_round_trip(nan_max(amax, 6.0f / 512.0f) / 6.0f);
+        q = round_e2m1(v / sc) * sc;
     }
     out[e] = OT(T(q));
 """
@@ -119,8 +133,13 @@ def _scalar(value: float) -> mx.array:
     return a
 
 
-def supports(x: mx.array, rd: int) -> bool:
-    """Whether the kernel covers ``x`` [b, s, (h,) d] with an ``rd`` rope tail."""
+def supports(x: mx.array, rd: int, cos: mx.array, sin: mx.array) -> bool:
+    """Whether the kernel covers ``x`` [b, s, (h,) d] with an ``rd`` rope tail.
+
+    The kernel reads one ``cos``/``sin`` row per sequence position, so the
+    tables must be exactly [s, rd // 2]; anything the graph would broadcast
+    differently takes the graph.
+    """
     if not (ENABLED and not fakequant.DISABLE and mx.default_device() == mx.gpu):
         return False
     return (
@@ -129,6 +148,7 @@ def supports(x: mx.array, rd: int) -> bool:
         and x.shape[-1] % 32 == 0  # whole simdgroups, whole blocks
         and 0 < rd <= x.shape[-1]
         and rd % 2 == 0
+        and tuple(cos.shape) == tuple(sin.shape) == (x.shape[1], rd // 2)
     )
 
 
@@ -141,7 +161,7 @@ def rope_fake_quant(
     """
     block, code, graph = FORMATS[fmt]
     out_dtype = out_dtype or x.dtype
-    if not supports(x, rd):
+    if not supports(x, rd, cos, sin):
         return graph(rope_tail(x, rd, cos, sin), block).astype(out_dtype)
     max_inv = 1.0 / (FP8_MAX if code == 0 else FP4_MAX)
     return _kernel()(

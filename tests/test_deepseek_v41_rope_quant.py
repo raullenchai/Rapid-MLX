@@ -18,6 +18,14 @@ def _graph(x, rd, cos, sin, fmt, out_dtype=None):
     return quant(rope_tail(x, rd, cos, sin), block).astype(out_dtype or x.dtype)
 
 
+def _assert_same(got, want):
+    """Equal values, NaN in the same places, and the same sign bits (-0, NaN)."""
+    a = np.array(got.astype(mx.float32))
+    b = np.array(want.astype(mx.float32))
+    assert np.array_equal(a, b, equal_nan=True)
+    assert np.array_equal(np.signbit(a), np.signbit(b))
+
+
 def _inputs(shape, dtype, seed):
     mx.random.seed(seed)
     s = shape[1]
@@ -42,15 +50,14 @@ def test_kernel_is_bit_identical_to_the_graph(fmt, dtype, shape):
     want = _graph(x, 64, cos, sin, fmt)
     mx.eval(got, want)
     assert got.dtype == want.dtype == dtype
-    assert np.array_equal(
-        np.array(got.astype(mx.float32)), np.array(want.astype(mx.float32))
-    )
+    _assert_same(got, want)
 
 
 @needs_metal
 @pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
 def test_rounding_ties_and_grid_points(fmt):
-    # every e2m1/e4m3 grid point and midpoint times a range of block scales
+    # e2m1 grid points and midpoints (and the same scaled onto the e4m3 grid)
+    # times a range of block scales
     grid = np.array([0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6])
     grid = np.concatenate([grid, grid * 7.5, grid * 74.6667])
     vals = np.concatenate([grid, -grid])[None, :] * (2.0 ** np.arange(-8, 8))[:, None]
@@ -60,7 +67,73 @@ def test_rounding_ties_and_grid_points(fmt):
     sin = mx.zeros((x.shape[1], 32))
     got = rope_quant.rope_fake_quant(x, 64, cos, sin, fmt)
     want = _graph(x, 64, cos, sin, fmt)
-    assert np.array_equal(np.array(got), np.array(want))
+    _assert_same(got, want)
+
+
+@needs_metal
+@pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])
+@pytest.mark.parametrize("special", [np.nan, -np.nan, np.inf, -np.inf, -0.0])
+def test_non_finite_and_signed_zero_match_the_graph(fmt, dtype, special):
+    # the graph propagates NaN through the block max (poisoning the whole
+    # block's scale), saturates to_fp8 (NaN -> +-448) and keeps -0 through FP8
+    rs = np.random.RandomState(3)
+    x = rs.randn(2, 3, 2, 128).astype(np.float32)
+    x[0, 0, 0, 5] = special  # pass-through channel
+    x[0, 1, 1, 100] = special  # rope tail channel
+    x[1, 2, 0, 64:80] = special  # a whole FP4 block
+    x[1, 0, 1, :] = -0.0  # an all -0 row
+    angles = rs.uniform(0, 6.3, (3, 32)).astype(np.float32)
+    cos, sin = mx.array(np.cos(angles)), mx.array(np.sin(angles))
+    x = mx.array(x).astype(dtype)
+    got = rope_quant.rope_fake_quant(x, 64, cos, sin, fmt)
+    want = _graph(x, 64, cos, sin, fmt)
+    _assert_same(got, want)
+
+
+@needs_metal
+def test_every_e4m3_value_midpoint_and_neighbor():
+    # each block of 32 opens with 448 * 2**k so the ue8m0 scale is exactly 2**k
+    # and the other 31 lanes land on, between and next to e4m3 codes
+    codes = np.arange(0x00, 0x7F, dtype=np.uint8)  # +0 .. 448
+    vals = np.array(mx.from_fp8(mx.array(codes), mx.float32))
+    mids = (vals[:-1] + vals[1:]) / 2
+    pts = np.concatenate([vals, mids, np.nextafter(mids, 0), np.nextafter(mids, 1e9)])
+    pts = np.concatenate([pts, -pts]).astype(np.float32)
+    pts = np.resize(pts, (-(-pts.size // 124)) * 124).reshape(-1, 31)
+    blocks = []
+    for k in (-6, 0, 5):
+        lead = np.full((pts.shape[0], 1), 448.0 * 2.0**k, dtype=np.float32)
+        blocks.append(np.concatenate([lead, pts * 2.0**k], axis=1))
+    rows = np.concatenate(blocks).reshape(1, -1, 128)  # 4 blocks per row
+    x = mx.array(rows)
+    s = x.shape[1]
+    cos, sin = mx.ones((s, 32)), mx.zeros((s, 32))
+    _assert_same(
+        rope_quant.rope_fake_quant(x, 64, cos, sin, "fp8_ue8m0"),
+        _graph(x, 64, cos, sin, "fp8_ue8m0"),
+    )
+
+
+@needs_metal
+@pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
+def test_strided_inputs_gathered_tables_and_partial_threadgroups(fmt):
+    rs = np.random.RandomState(5)
+    # [b, h, s, d] transposed to a non-contiguous [b, s, h, d]
+    x = mx.array(rs.randn(2, 3, 7, 96).astype(np.float32)).transpose(0, 2, 1, 3)
+    table = rs.uniform(0, 6.3, (50, 32)).astype(np.float32)
+    cos_t, sin_t = mx.array(np.cos(table)), mx.array(np.sin(table))
+    pos = (3 + mx.arange(7)) * 4  # int32 group positions, as the callers gather
+    cos, sin = cos_t[pos], sin_t[pos]
+    assert x.size % 256  # the last threadgroup is partial
+    _assert_same(
+        rope_quant.rope_fake_quant(x.astype(mx.bfloat16), 64, cos, sin, fmt),
+        _graph(x.astype(mx.bfloat16), 64, cos, sin, fmt),
+    )
+    _assert_same(
+        rope_quant.rope_fake_quant(x, 64, cos, sin, fmt),
+        _graph(x, 64, cos, sin, fmt),
+    )
 
 
 @needs_metal
@@ -75,18 +148,24 @@ def test_output_dtype_rounds_through_the_input_dtype():
 def test_supports_and_graph_fallback(monkeypatch):
     monkeypatch.setattr(rope_quant.mx, "default_device", lambda: mx.gpu)
     x = mx.zeros((1, 1, 4, 128), dtype=mx.bfloat16)
-    assert rope_quant.supports(x, 64)
-    assert rope_quant.supports(mx.zeros((1, 2, 512)), 64)
-    assert not rope_quant.supports(mx.zeros((1, 2, 4, 120)), 64)
-    assert not rope_quant.supports(mx.zeros((2, 128)), 64)
-    assert not rope_quant.supports(x.astype(mx.int32), 64)
-    assert not rope_quant.supports(x, 63)
-    assert not rope_quant.supports(x, 0)
+    t1, t2 = mx.zeros((1, 32)), mx.zeros((2, 32))
+    assert rope_quant.supports(x, 64, t1, t1)
+    assert rope_quant.supports(mx.zeros((1, 2, 512)), 64, t2, t2)
+    assert not rope_quant.supports(mx.zeros((1, 2, 4, 120)), 64, t2, t2)
+    assert not rope_quant.supports(mx.zeros((2, 128)), 64, t2, t2)
+    assert not rope_quant.supports(x.astype(mx.int32), 64, t1, t1)
+    assert not rope_quant.supports(x, 63, t1, t1)
+    assert not rope_quant.supports(x, 0, t1, t1)
+    # tables that are not one [rd // 2] row per position
+    assert not rope_quant.supports(x, 64, t2, t2)
+    assert not rope_quant.supports(x, 64, mx.zeros((1, 64)), mx.zeros((1, 64)))
+    assert not rope_quant.supports(x, 64, t1, mx.zeros((1, 16)))
+    assert not rope_quant.supports(x, 64, mx.zeros((32,)), mx.zeros((32,)))
     monkeypatch.setattr(fakequant, "DISABLE", True)
-    assert not rope_quant.supports(x, 64)
+    assert not rope_quant.supports(x, 64, t1, t1)
     monkeypatch.setattr(fakequant, "DISABLE", False)
     monkeypatch.setattr(rope_quant, "ENABLED", False)
-    assert not rope_quant.supports(x, 64)
+    assert not rope_quant.supports(x, 64, t1, t1)
     # the graph path when the kernel declines
     mx.random.seed(0)
     y = mx.random.normal((1, 2, 4, 128))
@@ -106,7 +185,7 @@ def test_dispatch_geometry(monkeypatch):
         calls.append(kw)
         return [mx.zeros(kw["output_shapes"][0], dtype=kw["output_dtypes"][0])]
 
-    monkeypatch.setattr(rope_quant, "supports", lambda x, rd: True)
+    monkeypatch.setattr(rope_quant, "supports", lambda x, rd, cos, sin: True)
     monkeypatch.setattr(rope_quant, "_kernel", lambda: fake)
     x = mx.zeros((2, 3, 4, 128), dtype=mx.bfloat16)
     out = rope_quant.rope_fake_quant(
