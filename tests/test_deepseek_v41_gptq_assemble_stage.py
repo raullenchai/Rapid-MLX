@@ -19,7 +19,15 @@ from tests.test_deepseek_v41_gptq_quality import fixture as quality_fixture
 
 @pytest.fixture(scope="module", params=[False, True], ids=["original", "amended"])
 def run(request, tmp_path_factory):
+    previous = mx.default_device()
     mx.set_default_device(mx.cpu)
+    try:
+        yield _staged_run(request, tmp_path_factory)
+    finally:
+        mx.set_default_device(previous)
+
+
+def _staged_run(request, tmp_path_factory):
     root = tmp_path_factory.mktemp("staged-assembly")
     # Use the same source/reference fixture as the amendment integration tests.
     source, c, _, _, _ = quality_fixture(root)

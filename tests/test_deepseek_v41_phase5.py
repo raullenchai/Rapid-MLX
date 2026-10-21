@@ -128,6 +128,8 @@ def test_reuse_source_and_filesystem_guards(source, reuse_build, tmp_path, monke
 
 
 def test_variant_accounting_matches_builder_and_cli(source, tmp_path, monkeypatch):
+    # inventory() follows convert.py's quantization rules, which import MLX.
+    pytest.importorskip("mlx.core")
     from scripts.deepseek_v41_variant_alloc import main
 
     config = json.loads((source / "config.json").read_text())
@@ -192,6 +194,7 @@ def test_variant_accounting_matches_builder_and_cli(source, tmp_path, monkeypatc
 
 @pytest.mark.parametrize("override", ["bad", "0=1/3/3", "0=3/3", "9=3/3/3", "-1=3/3/3"])
 def test_variant_invalid_overrides(source, override):
+    pytest.importorskip("mlx.core")
     config = json.loads((source / "config.json").read_text())
     cost = inventory(CheckpointIndex(source), config)
     with pytest.raises(ValueError):
