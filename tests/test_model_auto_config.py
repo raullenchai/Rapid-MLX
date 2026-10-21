@@ -3333,3 +3333,69 @@ def test_registry_invariant_default_on_implies_declared_mechanism(
         "verified+default-on aliases must declare a native MTP head or a "
         f"sidecar drafter so the info table can see it: {offenders}"
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RecursiveSI/flint-int4",
+        "RecursiveSI/flint",
+        "foo/flint-mlx-4bit",
+        "/tmp/models/flint-int4",
+        "flint",
+    ],
+)
+def test_flint_family_final_segment(name):
+    config = detect_model_config(name)
+    assert config.tool_call_parser == "glm47"
+    assert config.reasoning_parser == "qwen3"
+    assert config.is_hybrid is False
+    assert config.supports_spec_decode is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "foo/skinflint",
+        "foo/flintstone-7b",
+        "flint/unknown-model",
+        "/tmp/flint-int4/unknown-model",
+        "foo/notflint-7b",
+    ],
+)
+def test_flint_family_rejects_substrings_and_parent_segments(name):
+    config = detect_model_config(name)
+    assert config is None or config.tool_call_parser != "glm47"
+
+
+@pytest.mark.parametrize(
+    "directory", ["neutral", "Qwen3-40B", "DeepSeek-V3/flint-int4", "Qwen3.8-40B"]
+)
+def test_flint_metadata_overrides_name_families(tmp_path, directory):
+    import shutil
+    from pathlib import Path
+
+    model_path = tmp_path / directory
+    model_path.mkdir(parents=True)
+    shutil.copyfile(
+        Path(__file__).parent / "fixtures/flint_config.json", model_path / "config.json"
+    )
+    config = detect_model_config(str(model_path))
+    assert config.tool_call_parser == "glm47"
+    assert config.reasoning_parser == "qwen3"
+    assert config.is_moe is True
+    assert config.is_hybrid is False
+    assert config.is_hybrid_explicit is True
+    assert config.supports_spec_decode is False
+
+
+def test_flint_metadata_preserves_alias_precedence(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    shutil.copyfile(
+        Path(__file__).parent / "fixtures/flint_config.json", tmp_path / "config.json"
+    )
+    explicit = ModelConfig(tool_call_parser="hermes", reasoning_parser=None)
+    monkeypatch.setattr(auto_config_mod, "resolve_profile", lambda _: explicit)
+    assert detect_model_config(str(tmp_path)) is explicit

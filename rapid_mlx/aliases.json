@@ -1604,6 +1604,16 @@
     "supports_spec_decode": true,
     "min_memory_gb": 192
   },
+  "flint-40b-a2.5b-4bit": {
+    "hf_path": "RecursiveSI/flint-int4",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "qwen3",
+    "is_moe": true,
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false,
+    "min_memory_gb": 48
+  },
   "g9v3-39a5b-4bit": {
     "hf_path": "rapid-mlx/G9v3-39A5B-MLX-4bit",
     "tool_call_parser": "minicpm",

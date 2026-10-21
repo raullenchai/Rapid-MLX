@@ -61,6 +61,7 @@ RAPID_MODEL_TYPES: frozenset[str] = frozenset(
         "deepseek_v4",
         "deepseek_v41",
         "g9v3",
+        "flint",
         "gpt_oss_puzzle",
         "hy_v3",
         "k2_horizon",

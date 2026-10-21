@@ -10,6 +10,9 @@ from __future__ import annotations
 
 
 def convert(source: str, out: str, bits: int, group_size: int) -> None:
+    from ..utils.tokenizer import _register_vendored_archs
+
+    _register_vendored_archs()
     from mlx_lm import convert as mlx_convert
 
     mlx_convert(
@@ -23,9 +26,13 @@ def convert(source: str, out: str, bits: int, group_size: int) -> None:
 
 def smoke(out: str) -> None:
     """Load the converted model and generate one token."""
+    from ..utils.tokenizer import _register_vendored_archs
+
+    _register_vendored_archs()
     from mlx_lm import generate, load
 
-    model, tokenizer = load(out)
+    loaded = load(out)
+    model, tokenizer = loaded[:2]
     text = generate(model, tokenizer, prompt="Hello", max_tokens=1, verbose=False)
     if not isinstance(text, str):
         raise SystemExit("smoke test produced no text")

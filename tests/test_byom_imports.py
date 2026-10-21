@@ -388,6 +388,10 @@ def test_download_source_fetches_only_loadable_files(monkeypatch):
 
 
 def test_worker_steps_with_fake_mlx_lm(monkeypatch):
+    registry_calls = []
+    registration = types.ModuleType("rapid_mlx.utils.tokenizer")
+    registration._register_vendored_archs = lambda: registry_calls.append(True)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.utils.tokenizer", registration)
     calls = []
     fake = types.ModuleType("mlx_lm")
     fake.convert = lambda **kw: calls.append(("convert", kw))
@@ -406,6 +410,7 @@ def test_worker_steps_with_fake_mlx_lm(monkeypatch):
         },
     )
     assert worker.main(["smoke", "/out"]) == 0
+    assert len(registry_calls) == 2
     assert calls[-1][1]["max_tokens"] == 1
     fake.generate = lambda *a, **kw: None
     with pytest.raises(SystemExit, match="no text"):
@@ -627,13 +632,49 @@ def test_large_files_are_fingerprinted_by_metadata_only(tmp_path, monkeypatch):
     assert reads == []
 
 
-def test_convertible_model_types_use_mlx_lm_only(monkeypatch):
+def test_convertible_model_types_include_rapid_text_only(monkeypatch):
     monkeypatch.setattr(
         pf, "_installed_types", lambda pkg, dirs: {"llama"} if pkg == "mlx_lm" else None
     )
-    assert im.convertible_model_types() == frozenset({"llama"})
+    assert im.convertible_model_types() == frozenset({"llama", "flint"})
     monkeypatch.setattr(pf, "_installed_types", lambda pkg, dirs: None)
     assert im.convertible_model_types() is None
+
+
+@pytest.mark.parametrize("name", ["flint-local", None])
+def test_plan_flint_bf16_without_installed_flint(monkeypatch, tmp_path, name):
+    # Block runtime imports: planning must work without MLX or its registry.
+    for module in ("mlx", "mlx.core", "mlx_lm", "rapid_mlx.utils.tokenizer"):
+        monkeypatch.setitem(sys.modules, module, None)
+    monkeypatch.setattr(pf, "_installed_types", lambda pkg, dirs: {"llama"})
+    source = tmp_path / "flint-bf16"
+    source.mkdir()
+    config = {"model_type": "flint", "architectures": ["FlintForCausalLM"]}
+    (source / "config.json").write_text(json.dumps(config))
+    inspection = pf.Inspection(
+        ref=str(source),
+        is_local=True,
+        files=("config.json", "model.safetensors"),
+        weight_bytes=80_000_000_000,
+        dtype="bf16",
+        config=config,
+    )
+    plan = im.plan_import(
+        inspection.ref,
+        bits=4,
+        name=name,
+        inspection=inspection,
+        supported=im.convertible_model_types(),
+        hub_cached=True,
+    )
+    assert plan.name == (name or "flint-4bit")
+    assert plan.source == str(source) and plan.is_local
+    assert plan.model_type == "flint" and plan.dtype == "bf16" and plan.bits == 4
+    assert plan.source_bytes == 80_000_000_000
+    assert 0 < plan.output_bytes < plan.source_bytes
+    assert plan.download_bytes == 0
+    assert plan.revision.startswith("local:")
+    assert plan.key == im.cache_key(plan.source, plan.revision, plan.bits)
 
 
 def test_revision_cached_checks_the_exact_snapshot(monkeypatch, tmp_path):

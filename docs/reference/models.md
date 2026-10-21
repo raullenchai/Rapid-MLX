@@ -26,6 +26,21 @@ rapid-mlx serve deepseek-v41-flash-1017
 
 The default serves one request at a time. For concurrent requests, set `RAPID_MLX_DSV41_LANES=2`, `4`, or `8` before starting the server; this turns drafting off. See the [0.16.6 release notes](../release-notes/v0.16.6.md) for the pinned weights and runtime details.
 
+## Flint
+
+`flint-40b-a2.5b-4bit` serves Recursive's Flint (40B total / ~2.5B active MoE)
+from the official MLX INT4 checkpoint with `glm47` tool calls and `qwen3`
+reasoning. Validated revision: `RecursiveSI/flint-int4@3b93f9053b530488405ae9fca51d4900d6ce21f0`.
+It uses dense and sparse expert layers, sliding-window 513 + full no-RoPE
+layers, learned attention sinks, and an 8-bit embedding, BF16 routers, and 4-bit
+attention/expert/output projections.
+48 GB unified memory is recommended (weights: 22.6 GB); it runs on 36 GB,
+but concurrent ~8k prefills are admitted one at a time. KV cache stays bf16:
+quantized KV is refused because the quantized attention path does not support sinks.
+Speculative decoding and MTP are not enabled for this alias.
+
+Measured single-stream on M5 Max 36 GB (mlx 0.32.4, mlx-lm 0.31.3, greedy, 256 output tokens, streaming, defaults): ~1k TTFT 0.35–0.38 s / 131 tok/s / 23.6 GiB peak; ~8k TTFT 2.17–2.18 s / 118.5 tok/s / 24.9 GiB peak. See the [release notes](../release-notes/unreleased.md#highlights) for the server command and concurrency results.
+
 ## Image, video, and audio
 
 The CLI lists these model types separately. Start from the [image-generation guide](https://rapidmlx.com/docs/models/families/image.html), [video guide](../guides/video-generation.md), or [audio guide](../guides/audio.md) for a working request. Check the selected alias with `rapid-mlx info <alias>` before downloading a large model.

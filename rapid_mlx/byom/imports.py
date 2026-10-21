@@ -46,6 +46,9 @@ from rapid_mlx.byom import preflight as pf
 MANIFEST = "rapid-mlx-import.json"
 GROUP_SIZE = 64
 SUPPORTED_BITS = (2, 3, 4, 6, 8)
+# Text converters registered by the worker before mlx_lm.convert. Keep this
+# metadata-only: tokenizer's mutable registry requires runtime MLX patches.
+_RAPID_TEXT_CONVERTERS = frozenset({"flint"})
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCE_PATTERNS = [
     "*.json",
@@ -312,9 +315,9 @@ def _free_bytes(path: Path) -> int:
 
 
 def convertible_model_types() -> frozenset[str] | None:
-    """Model types ``mlx_lm.convert`` itself can build (no vision/audio)."""
+    """Installed and worker-registered text converters (no vision/audio)."""
     types_ = pf._installed_types("mlx_lm", ("models",))
-    return frozenset(types_) if types_ is not None else None
+    return frozenset(types_) | _RAPID_TEXT_CONVERTERS if types_ is not None else None
 
 
 def revision_cached(repo: str, inspection: pf.Inspection) -> bool:

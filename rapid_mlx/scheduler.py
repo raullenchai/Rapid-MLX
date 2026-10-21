@@ -5158,6 +5158,7 @@ class Scheduler:
                 if (
                     getattr(attention, "sinks", None) is not None
                     or getattr(attention, "attn_sink", None) is not None
+                    or getattr(attention, "softmax_offset", None) is not None
                 ):
                     return (
                         "attention sinks require a fused quantized-attention "

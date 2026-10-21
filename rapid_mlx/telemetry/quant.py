@@ -29,7 +29,7 @@ import re
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 #: Raw name token -> canonical ``quant`` enum value. The ``q<n>`` rows are
-#: the normalization the module exists for; the rest are identities.
+#: the normalization the module exists for; ``int<n>`` uses the same widths.
 _CANONICAL_BY_TOKEN: dict[str, str] = {
     "2bit": "2bit",
     "3bit": "3bit",
@@ -41,6 +41,8 @@ _CANONICAL_BY_TOKEN: dict[str, str] = {
     "q4": "4bit",
     "q6": "6bit",
     "q8": "8bit",
+    "int4": "4bit",
+    "int8": "8bit",
     "bf16": "bf16",
     "fp16": "fp16",
     "mxfp4": "mxfp4",
@@ -102,7 +104,7 @@ _PRECEDENCE: tuple[str, ...] = (
     "6bit",
     "8bit",
     # Round 2, P2: ``other`` sits ABOVE the precisions for the same reason
-    # the widths do. ``acme/model-int4-bf16`` is an INT4 checkpoint whose
+    # the widths do. ``acme/model-int5-bf16`` is an INT5 checkpoint whose
     # activations are bf16; reporting ``bf16`` would put it in the "not
     # quantized" bucket, which is round-1's P1 surviving in the ``other``
     # lane. No catalog name hits this today; it is closed so the rule is

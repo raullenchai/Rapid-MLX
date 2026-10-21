@@ -804,6 +804,23 @@ def _register_vendored_archs() -> None:
         # transformers AutoConfig cannot resolve this custom model type.
         _VENDORED_MODEL_TYPES.add("g9v3")
 
+    # Always install the Flint adapter, replacing even a pre-imported native
+    # module at this key only. Native PR #1998 lacks official INT4 support:
+    # U8 packed weights and an 8-bit embedding under a uniform 4-bit config.
+    # See the model's Sync policy before changing this registration.
+    try:
+        from ..models import flint as _flint
+
+        sys.modules["mlx_lm.models.flint"] = _flint
+    except Exception as e:
+        logger.warning(
+            "flint vendored module failed to register — "
+            "Flint checkpoints will not load until resolved: %s",
+            e,
+        )
+    else:
+        _VENDORED_MODEL_TYPES.add("flint")
+
     if "mlx_lm.models.bailing_hybrid" not in sys.modules:
         # inclusionAI Ling 3.0 family (tiny/flash) + Ling 2.6 — vendored
         # KDA+MLA hybrid backbone (see ``rapid_mlx/models/bailing_hybrid.py``

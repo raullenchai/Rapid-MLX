@@ -31,6 +31,9 @@ from rapid_mlx.telemetry.quant import (
         ("ibm-granite/granite-4.2-30b-q4-mlx", "4bit"),
         ("granite-4.2-30b-8bit", "8bit"),
         ("ibm-granite/granite-4.2-30b-q8-mlx", "8bit"),
+        ("RecursiveSI/flint-int4", "4bit"),
+        ("acme/model-INT8", "8bit"),
+        ("acme/model_int4_mlx", "4bit"),
         ("mflux-community/qwen-image-mflux-q6", "6bit"),
         # Identity rows.
         ("qwen3.5-4b-2bit", "2bit"),
@@ -69,10 +72,12 @@ def test_the_scheme_wins_over_the_bit_width(name, expected):
         ("qwen3.8-27b-4bit-fp16", "4bit"),
         ("rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX", "4bit"),
         ("some-model-bf16-4bit", "4bit"),
-        # Round 2, P2: the same rule in the ``other`` lane. An INT4
+        ("acme/model-int4-bf16", "4bit"),
+        ("acme/model-int8-bf16", "8bit"),
+        # Round 2, P2: the same rule in the ``other`` lane. An INT5
         # checkpoint with bf16 activations is quantized, whatever we call
         # the scheme.
-        ("acme/model-int4-bf16", "other"),
+        ("acme/model-int5-bf16", "other"),
         ("acme/model-awq-fp16", "other"),
     ],
 )
@@ -110,7 +115,9 @@ def test_a_dynamic_quant_reports_its_own_width_not_its_companion():
     [
         # Quantized, but by a scheme we have no canonical name for.
         "qwen3.8-27b-mixed-3.5bpw",
-        "some-model-int4",
+        "some-model-int5",
+        "acme/model-int40",
+        "acme/model-int80",
         "some-model-awq",
         "some-model-gptq",
         "some-model-5bit",
@@ -170,6 +177,10 @@ def test_known_tokens_all_resolve_to_themselves_or_their_canonical_form():
         # A fiscal quarter, not a 4-bit checkpoint: the token is ``2026q4``,
         # and the marker patterns are anchored so it cannot match.
         "acme/model-2026q4",
+        "acme/print4",
+        "acme/print8",
+        "acme/model-int4suffix",
+        "acme/model-int8suffix",
         # Version and parameter-count tokens next to nothing quant-shaped.
         "qwen3-vl-30b",
         "deepseek-v3.2-exp",

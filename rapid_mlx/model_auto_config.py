@@ -683,6 +683,17 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="hy_v3",
         ),
     ),
+    (
+        re.compile(r"(?:^|/)flint(?:$|[-_.][^/]*)$", re.IGNORECASE),
+        ModelConfig(
+            is_moe=True,
+            is_hybrid_explicit=True,
+            tool_call_parser="glm47",
+            reasoning_parser="qwen3",
+            is_hybrid=False,
+            supports_spec_decode=False,
+        ),
+    ),
     # Pure recurrent / linear-attention families (Mamba, Jamba, RWKV).
     # Tool/reasoning parsers unknown → leave defaults; capability flags
     # block batched-verify-style optimizations.
@@ -1249,7 +1260,17 @@ def _detect_metadata_config(
         )
     )
 
-    if "nemotron_h" in model_types and config.get("rapid_mlx_nemotron_h") is True:
+    if "flint" in model_types:
+        settings.update(
+            tool_call_parser="glm47",
+            reasoning_parser="qwen3",
+            is_moe=True,
+            is_hybrid=False,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("Flint text architecture")
+    elif "nemotron_h" in model_types and config.get("rapid_mlx_nemotron_h") is True:
         settings.update(
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -1377,12 +1398,16 @@ def _with_checkpoint_architecture(
 def detect_model_config(model_path: str) -> ModelConfig | None:
     """Detect optimal parser config from model name/path.
 
-    Two-stage lookup:
+    Lookup precedence:
     1. **Alias profile** (single source of truth) — if ``model_path`` is a
        known alias name (``qwen3.5-4b-4bit``) or maps to one's HF path
        (``mlx-community/Qwen3.5-4B-MLX-4bit``), return that profile's
        config directly. This guarantees per-alias granularity for any
        optimization that varies by size/quant within a family.
+    Flint checkpoint metadata takes precedence over name-family fallbacks;
+    alias profiles above remain authoritative. Other architectures retain
+    the existing family-first precedence.
+
     2. **Known-family fallback** (``_MODEL_PATTERNS``) — for non-aliased HF
        paths the user serves directly. Coarser-grained: one pattern
        covers a whole family.
@@ -1424,6 +1449,14 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     # parser defaults, while explicit architecture fields from this profile
     # enrich those fallbacks before they reach serving policy.
     metadata_cfg = _detect_metadata_config(model_path, log_resolution=False)
+    if metadata_cfg is not None:
+        metadata = read_model_metadata(model_path)
+        if metadata is not None and "flint" in _metadata_model_types(
+            metadata.config or {}
+        ):
+            # Flint's wire contract belongs to the checkpoint, even when a
+            # renamed directory or parent matches another parser family.
+            return metadata_cfg
 
     # DeepSeek-Coder-V2 / V2-Lite routing — handled here (not in the
     # ``_MODEL_PATTERNS`` regex table) because the decision MUST be scoped
