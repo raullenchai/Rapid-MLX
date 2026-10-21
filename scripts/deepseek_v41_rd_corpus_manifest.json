@@ -18,7 +18,10 @@
       "license": "MIT (dataset card)",
       "selection": "A bounded subset of train_sft messages and test_sft messages; include both user and assistant turns",
       "download_policy": "Selected parquet shard only if <200 MB; otherwise stream a bounded row export and count actual received bytes",
-      "revision": "8049631c405ae6576f93f445c6b8166f76f5505a"
+      "revision": "8049631c405ae6576f93f445c6b8166f76f5505a",
+      "approved_licenses": [
+        "mit"
+      ]
     },
     {
       "slices": [
@@ -28,7 +31,10 @@
       "url": "https://huggingface.co/datasets/bigcode/humanevalpack",
       "license": "MIT",
       "selection": "Python, JavaScript, Java, C++, Go, Rust; group translated task numbers before split; canonical code and tests as inert text.",
-      "revision": "9a41762f73a8cb23bb5811b73d5aab164efcf378"
+      "revision": "9a41762f73a8cb23bb5811b73d5aab164efcf378",
+      "approved_licenses": [
+        "MIT"
+      ]
     },
     {
       "slices": [
@@ -38,7 +44,10 @@
       "url": "https://huggingface.co/datasets/openai/gsm8k",
       "license": "MIT",
       "selection": "main; calibration train, heldout test; question and answer",
-      "revision": "740312add88f781978c0658806c59bc2815b9866"
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "approved_licenses": [
+        "MIT"
+      ]
     },
     {
       "slices": [
@@ -48,7 +57,10 @@
       "url": "https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1",
       "license": "Apache-2.0 (verify selected component license)",
       "selection": "Bounded rows including tool schemas, assistant calls, JSON arguments and tool results; deterministic disjoint conversation IDs",
-      "revision": "dae3e1d28cfbcf4b915c04ea1e072030529b4bda"
+      "revision": "dae3e1d28cfbcf4b915c04ea1e072030529b4bda",
+      "approved_licenses": [
+        "Apache-2.0"
+      ]
     },
     {
       "slices": [
@@ -84,7 +96,10 @@
         ]
       },
       "split": "Use auxiliary/dev/validation where available, otherwise deterministic disjoint test row IDs; render question, choices and answer text. Small domain probes, not clinical/legal/financial validation.",
-      "revision": "c30699e8356da336a370243923dbaf21066bb9fe"
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "approved_licenses": [
+        "MIT"
+      ]
     },
     {
       "slices": [
@@ -110,7 +125,10 @@
       "dataset": "Wikimedia Wikipedia multilingual article revisions",
       "url": "https://www.wikipedia.org/",
       "license": "CC-BY-SA-4.0",
-      "selection": "Daily-life, language, education, travel and civic articles. Curated disjoint article/concept sets across splits, native language scripts. Exact article revision content returned with IDs in one response. Language mapping is recorded per slice. FLORES and FLORES+ excluded: access gates and FLORES+ training-use restriction. No gated mirrors used."
+      "selection": "Daily-life, language, education, travel and civic articles. Curated disjoint article/concept sets across splits, native language scripts. Exact article revision content returned with IDs in one response. Language mapping is recorded per slice. FLORES and FLORES+ excluded: access gates and FLORES+ training-use restriction. No gated mirrors used.",
+      "approved_licenses": [
+        "CC-BY-SA-4.0"
+      ]
     },
     {
       "slices": [
@@ -120,7 +138,10 @@
       "url": "https://huggingface.co/datasets/allenai/WildChat-1M",
       "license": "ODC-BY-1.0; retain database attribution (verify pinned card)",
       "selection": "Public Chinese general conversations only: exclude toxic/redacted rows, PII patterns, cold/professional topics, long technical prompts and mostly non-Chinese text. Group normalized first user prompt across variants; retain conversation_hash and turn IDs; export only role/content, never user metadata.",
-      "revision": "7d6490e462285cf85d91eabea0f9a954fbddcd1f"
+      "revision": "7d6490e462285cf85d91eabea0f9a954fbddcd1f",
+      "approved_licenses": [
+        "ODC-BY-1.0"
+      ]
     },
     {
       "slices": [
@@ -130,7 +151,10 @@
       "url": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories",
       "license": "MIT dataset; retain underlying repository attribution for code excerpts",
       "selection": "ticks shard 0; calibration mahmoud/boltons at 3bfcfdd04395b6cc74a5c0cdc72c8f64cc4ac01f; held-out andialbrecht/sqlparse at e57923b3aa823c524c807953cecc48cf6eec2cb2. BSD-3-Clause repository notices retained. Start at first assistant action, preserving terminal observations; commands are inert text.",
-      "revision": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4"
+      "revision": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+      "approved_licenses": [
+        "MIT (dataset); BSD-3-Clause (repository excerpts)"
+      ]
     },
     {
       "slices": [
@@ -147,7 +171,10 @@
       "url": "https://en.wikipedia.org/w/api.php",
       "secondary_url": "https://zh.wikipedia.org/w/api.php",
       "license": "CC-BY-SA-4.0",
-      "selection": "Revision-pinned wikitext, mwparserfromhell 0.7.2 strip_code; bounded prefixes. Curated archaeology, folk customs and obscure history in English/Chinese; broad daily-topic language-matched references. Disjoint articles across slices and splits; oldid and contributors URLs retained."
+      "selection": "Revision-pinned wikitext, mwparserfromhell 0.7.2 strip_code; bounded prefixes. Curated archaeology, folk customs and obscure history in English/Chinese; broad daily-topic language-matched references. Disjoint articles across slices and splits; oldid and contributors URLs retained.",
+      "approved_licenses": [
+        "CC-BY-SA-4.0"
+      ]
     },
     {
       "slices": [
@@ -162,7 +189,10 @@
         "electrical_engineering"
       ],
       "split": "held-out only; no calibration rows from these subjects; preserve source row IDs and use disjoint source shards from other subjects",
-      "revision": "c30699e8356da336a370243923dbaf21066bb9fe"
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "approved_licenses": [
+        "MIT"
+      ]
     }
   ],
   "license_policy": "Retain each source license and attribution alongside local exports. Check cards at pinned revisions before fetching. Do not redistribute raw corpus in the model artifact.",
@@ -805,13 +835,5 @@
     "allenai/WildChat-1M": "7d6490e462285cf85d91eabea0f9a954fbddcd1f",
     "SWE-bench/SWE-smith-trajectories": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
     "bigcode/humanevalpack": "9a41762f73a8cb23bb5811b73d5aab164efcf378"
-  },
-  "approved_licenses": [
-    "Apache-2.0",
-    "CC-BY-SA-4.0",
-    "MIT",
-    "MIT (dataset); BSD-3-Clause (repository excerpts)",
-    "ODC-BY-1.0",
-    "mit"
-  ]
+  }
 }

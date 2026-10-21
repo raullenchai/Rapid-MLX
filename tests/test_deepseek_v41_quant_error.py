@@ -280,13 +280,13 @@ def test_write_group_failure_removes_partial_and_retry_succeeds(
         with pytest.raises(error_type, match="injected failure"):
             rd_build.write_group(path, entries, index, config)
         assert calls == 2
-        assert not path.with_suffix(".partial").exists()
+        assert not list(path.parent.glob(path.name + ".partial-*"))
         assert not path.exists()
 
         monkeypatch.setattr(rd_build, "transformed", transformed)
         rd_build.write_group(path, entries, index, config)
     assert rd_build.matching_file(path, entries)
-    assert not path.with_suffix(".partial").exists()
+    assert not list(path.parent.glob(path.name + ".partial-*"))
 
 
 def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch):
@@ -302,7 +302,7 @@ def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch)
     }
     copy_metadata_files = rd_build._copy_metadata_files
 
-    def simulate_write_group(path, entries, *_args):
+    def simulate_write_group(path, entries, *_args, **_kwargs):
         header = rd_build.header(entries)
         with path.open("xb") as output:
             output.write(struct.pack("<Q", len(header)))
@@ -323,6 +323,80 @@ def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch)
     rd_build.build(source, destination, tmp_path / "shared", allocation)
     assert destination.is_dir()
     assert (destination / "config.json").is_file()
+    assert not list(tmp_path.glob("build.partial-*"))
+
+
+@pytest.mark.parametrize("existing", ["race", "size mismatch", "header mismatch"])
+def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
+    tmp_path, monkeypatch, existing
+):
+    from types import ModuleType
+
+    # Only exercise file publication; tensor payloads are supplied below.
+    mlx = ModuleType("mlx")
+    mlx.core = ModuleType("mlx.core")
+    mlx.core.clear_cache = lambda: None
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx.core)
+
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    (source / "config.json").write_text(json.dumps(config))
+    destination = tmp_path / "build"
+    shared = tmp_path / "shared"
+    allocation = {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}}}
+    monkeypatch.setattr(
+        rd_build,
+        "transformed",
+        lambda _index, _config, entry, *_: bytes(entry.nbytes // len(entry.sources)),
+    )
+    link = rd_build.os.link
+    winners = {}
+    write_group = rd_build.write_group
+
+    def preexisting_shared_group(path, entries, *args, **kwargs):
+        if kwargs.get("publish_exclusive") and existing != "race":
+            raw = rd_build.header(entries)
+            data = (
+                struct.pack("<Q", len(raw))
+                + raw
+                + bytes(sum(entry.nbytes for entry in entries))
+            )
+            if existing == "size mismatch":
+                data = data[:-1]
+            else:
+                data = data[:8] + b"!" + data[9:]
+            path.write_bytes(data)
+        return write_group(path, entries, *args, **kwargs)
+
+    monkeypatch.setattr(rd_build, "write_group", preexisting_shared_group)
+
+    def competing_publish(temporary, path):
+        if path.parent.parent == shared and existing == "race":
+            # Our complete, fsynced temporary exists before the other builder wins.
+            assert ".partial-" in temporary.name
+            data = temporary.read_bytes()
+            # Distinct payload proves we keep the winner rather than overwrite it.
+            data = data[:-1] + b"\x01"
+            path.write_bytes(data)
+            winners[path.name] = (path.stat().st_ino, data)
+        return link(temporary, path)
+
+    monkeypatch.setattr(rd_build.os, "link", competing_publish)
+    if existing == "race":
+        rd_build.build(source, destination, shared, allocation)
+        assert winners
+        for name, (inode, data) in winners.items():
+            assert (destination / name).stat().st_ino == inode
+            assert (destination / name).read_bytes() == data
+    else:
+        with pytest.raises(ValueError, match=f"shared Engram (file )?{existing}"):
+            rd_build.build(source, destination, shared, allocation)
+        assert not destination.exists()
+    assert not list(shared.rglob("*.partial-*"))
     assert not list(tmp_path.glob("build.partial-*"))
 
 

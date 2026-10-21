@@ -57,6 +57,9 @@ def validate_provenance(manifest, calibration, heldout, provenance, tokenizer_pa
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
     specs = {s["name"]: s for s in manifest["slices"]}
     records = {(r["split"], r["name"]): r for r in provenance["slices"]}
+    sources_by_slice = {
+        name: source for source in manifest["sources"] for name in source["slices"]
+    }
     expected = {
         (split, name)
         for split, export in (("calibration", calibration), ("heldout", heldout))
@@ -88,10 +91,12 @@ def validate_provenance(manifest, calibration, heldout, provenance, tokenizer_pa
                     )
                 if not doc["license"] or not doc["row_id"] or not doc["source_split"]:
                     raise ValueError("missing source license, row ID or split")
-                if doc["license"] not in manifest["approved_licenses"]:
-                    raise ValueError("source license has not been approved")
                 if doc["dataset"] not in specs[name]["resolved_datasets"]:
                     raise ValueError("source dataset differs from slice manifest")
+                if doc["license"] not in sources_by_slice[name]["approved_licenses"]:
+                    raise ValueError(
+                        f"source license is not approved for dataset {doc['dataset']}"
+                    )
                 pin = manifest["pinned_sources"].get(doc["dataset"])
                 if pin is not None and revision != pin:
                     raise ValueError("source commit differs from manifest pin")

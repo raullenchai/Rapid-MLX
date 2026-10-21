@@ -405,15 +405,17 @@ def transformed(index, config, e, source_name, start=None, stop=None):
     return np.array(w.view(mx.uint16) if w.dtype == mx.bfloat16 else w).tobytes()
 
 
-def write_group(path, entries, index, config, row_chunk=65536):
+def write_group(
+    path, entries, index, config, row_chunk=65536, *, publish_exclusive=False
+):
     """Append output directly; repeated suffix quantization trades CPU time for bounded RAM."""
     import mlx.core as mx
 
     raw = header(entries)
-    temporary = path.with_suffix(".partial")
-    output = temporary.open("xb")
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".partial-")
+    temporary = Path(name)
     try:
-        with output as f:
+        with os.fdopen(fd, "wb") as f:
             f.write(struct.pack("<Q", len(raw)))
             f.write(raw)
             for e in entries:
@@ -440,10 +442,26 @@ def write_group(path, entries, index, config, row_chunk=65536):
                     raise ValueError(f"output size mismatch: {e.name}")
             f.flush()
             os.fsync(f.fileno())
-        temporary.replace(path)
+        if publish_exclusive:
+            os.link(temporary, path)
+            temporary.unlink()
+        else:
+            temporary.replace(path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def validate_shared_group(path, entries):
+    """Validate a previously published immutable shared Engram group."""
+    raw = header(entries)
+    with path.open("rb") as f:
+        if os.fstat(f.fileno()).st_size != 8 + len(raw) + sum(
+            e.nbytes for e in entries
+        ):
+            raise ValueError("shared Engram file size mismatch")
+        if f.read(8) != struct.pack("<Q", len(raw)) or f.read(len(raw)) != raw:
+            raise ValueError("shared Engram header mismatch")
 
 
 def matching_file(path, entries):
@@ -563,16 +581,10 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
                 os.link(original, target)
             elif group.startswith("engram-"):
                 common = shared_path / filename
-                if not common.exists():
-                    write_group(common, es, index, config)
-                else:
-                    expected_size = 8 + len(header(es)) + sum(e.nbytes for e in es)
-                    if common.stat().st_size != expected_size:
-                        raise ValueError("shared Engram file size mismatch")
-                    with common.open("rb") as f:
-                        length = struct.unpack("<Q", f.read(8))[0]
-                        if f.read(length) != header(es):
-                            raise ValueError("shared Engram header mismatch")
+                try:
+                    write_group(common, es, index, config, publish_exclusive=True)
+                except FileExistsError:
+                    validate_shared_group(common, es)
                 os.link(common, target)
             else:
                 write_group(target, es, index, config)
