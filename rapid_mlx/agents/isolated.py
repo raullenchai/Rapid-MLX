@@ -460,6 +460,8 @@ def configure(
     assert key is not None
     root = connection_dir() / "agents" / name
     _private_dir(root)
+    if name == "opencode":
+        _private_dir(root / "home")
     if name == "qwen-code":
         _private_dir(root / "runtime")
     if name == "aider":

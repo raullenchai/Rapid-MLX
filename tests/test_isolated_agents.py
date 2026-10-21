@@ -229,6 +229,18 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     assert "goose session --provider" in Path(goose).read_text()
 
 
+def test_opencode_runner_home_exists_and_survives_refresh(private_home):
+    isolated.configure("opencode", "qwen3.5-9b-4bit")
+    home = isolated.connection_dir() / "agents" / "opencode" / "home"
+    assert home.is_dir()
+    assert home.stat().st_mode & 0o777 == 0o700
+    marker = home / "session-marker"
+    marker.write_text("keep")
+
+    isolated.configure("opencode", "qwen3.5-9b-4bit")
+    assert marker.read_text() == "keep"
+
+
 @pytest.mark.parametrize("cleanup_outcome", ["clean", "timeout", "nonzero", "leftover"])
 def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outcome):
     root = isolated.connection_dir() / "agents" / "hermes"
