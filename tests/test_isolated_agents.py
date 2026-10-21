@@ -918,6 +918,23 @@ def test_short_launch_keeps_profile_untouched_when_server_cannot_be_verified(
     assert "could not verify" in capsys.readouterr().err
 
 
+def test_short_launch_rejects_unusable_saved_running_model(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.configure("codex", "qwen3.5-4b-4bit")
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-4b-4bit"
+        ),
+        patch("rapid_mlx.run.cli._select_model", return_value="qwen3.5-4b-4bit"),
+        patch("rapid_mlx.launch.cli.subprocess.call") as call,
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("codex"))
+    call.assert_not_called()
+    assert "does not meet" in capsys.readouterr().err
+
+
 def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     private_home, capsys
 ):

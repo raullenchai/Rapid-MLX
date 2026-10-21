@@ -369,9 +369,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 else None
             )
             explicit = getattr(args, "_original_alias", None) or args.model
-            reuse = bool(
-                active and not explicit and _usable_running_model(active, profile)
-            )
+            active_usable = bool(active and _usable_running_model(active, profile))
+            reuse = bool(active_usable and not explicit)
             model = (
                 active
                 if reuse
@@ -384,6 +383,15 @@ def launch_command(args: argparse.Namespace) -> None:
             )
             if model is None:
                 raise ValueError("no model fits this Mac; choose one with --model")
+            if (
+                active
+                and not explicit
+                and not active_usable
+                and _same_checkpoint(active, model)
+            ):
+                raise ValueError(
+                    f"running model {active} does not meet this agent's requirements"
+                )
             if active and not _same_checkpoint(active, model):
                 print(
                     f"  Local server serves {active}; stop it before launching {model}.",
