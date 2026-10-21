@@ -72,6 +72,10 @@ def window_idx_matrix(wp: int, n: int, window: int) -> mx.array:
     return mx.where(idx > end[:, None], mx.array(-1, mx.int32), idx.astype(mx.int32))
 
 
+# Rope rows a table grows by once it passes this length (see Attention._freqs).
+_ROPE_TABLE_CHUNK = 4096
+
+
 class Attention(nn.Module):
     def __init__(self, layer_id: int, args: ModelArgs):
         super().__init__()
@@ -134,9 +138,18 @@ class Attention(nn.Module):
 
     def _freqs(self, upto: int):
         if self._cos is None or self._cos.shape[0] < upto:
+            # Grow ahead of the position: an exact-length table would be
+            # rebuilt on every decode step. Each row depends only on its own
+            # position, so a longer table holds identical values. Doubling up
+            # to one chunk, then whole chunks, bounds the slack per layer.
+            size = 64
+            while size < upto and size < _ROPE_TABLE_CHUNK:
+                size *= 2
+            if size < upto:
+                size = -(-upto // _ROPE_TABLE_CHUNK) * _ROPE_TABLE_CHUNK
             rd, orig_len, theta, factor, bf, bs = self._rope
             self._cos, self._sin = precompute_freqs_cis(
-                rd, max(upto, 64), orig_len, theta, factor, bf, bs
+                rd, size, orig_len, theta, factor, bf, bs
             )
         return self._cos, self._sin
 

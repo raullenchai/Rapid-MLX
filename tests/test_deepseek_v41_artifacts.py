@@ -866,7 +866,7 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     assert isinstance(tokenizer, _Tokenizer)
     assert runtime.drafter is draft
     assert runtime.drafter_repo == "owner/head"
-    assert model.eval_interval == 40
+    assert model.eval_interval == serving.TARGET_EVAL_INTERVAL
     assert load_calls == [(("/target",), {"lazy": False, "engram_ssd_offload": True})]
     assert calls == [draft, draft]
 

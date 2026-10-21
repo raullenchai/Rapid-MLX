@@ -138,7 +138,8 @@ class Model(nn.Module):
         # A 40-layer V4.1 decode graph can exceed Metal's command-buffer
         # deadline on a 256 GiB host. Keep a correctness-first per-layer
         # boundary; qualification may raise this interval after proving the
-        # larger graph stays below the watchdog.
+        # larger graph stays below the watchdog. Boundaries are asynchronous,
+        # so a short interval also overlaps graph building with execution.
         self.eval_interval = 1
         self.engram_hasher = None
         if args.engram_layer_ids and token_map is not None:
@@ -213,7 +214,9 @@ class Model(nn.Module):
             else:
                 h, pre_mix = layer(h, pre_mix, start_pos, cache, shared)
             if self.eval_interval and execution_index % self.eval_interval == 0:
-                mx.eval(h, pre_mix)
+                # Commit this span without blocking: the GPU runs it while the
+                # host builds the next layers' graph. Values are unchanged.
+                mx.async_eval(h, pre_mix)
 
         h = hc_pre_norm(
             h, pre_mix, self.norm.weight, self.norm.eps

@@ -639,6 +639,7 @@ jobs:
             tests/test_deepseek_v41_gate_gemv.py \
             tests/test_deepseek_v41_fused_moe.py \
             tests/test_deepseek_v41_dspark.py \
+            tests/test_deepseek_v41_decode_overhead.py \
             tests/test_deepseek_v41_engram_offload.py \
             tests/test_deepseek_v41_hyper_connections.py \
             tests/test_deepseek_v41_native_load.py \
