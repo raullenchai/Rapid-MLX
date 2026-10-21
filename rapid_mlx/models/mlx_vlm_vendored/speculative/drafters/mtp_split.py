@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import os
+import pathlib
 import re
 import shutil
 import stat
@@ -88,6 +89,12 @@ def _is_hf_shared_blob_store(path: Path) -> bool:
         return False
 
 
+class _SharedBlobStoreRoot(pathlib.PosixPath):
+    # Tags the admitted shared store among the confinement roots so the
+    # entry-shape rule is decided once, not by re-reading the marker.
+    pass
+
+
 def _is_hf_shared_blob_entry(relative: Path) -> bool:
     # A store entry is exactly ``<hash[:2]>/<xet hash>``; the store's
     # ``.refs`` manifests, locks and marker are never checkpoint content.
@@ -115,7 +122,7 @@ def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
             allowed_roots.append(blobs_root.resolve())
         shared_store = repo_root.parent / "blobs"
         if _is_hf_shared_blob_store(shared_store):
-            allowed_roots.append(shared_store)
+            allowed_roots.append(_SharedBlobStoreRoot(shared_store))
     return allowed_roots
 
 
@@ -127,7 +134,7 @@ def _is_mlx_safetensors(file: Path) -> bool:
 def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
     for root in allowed_roots:
         if resolved.is_relative_to(root):
-            if _is_hf_shared_blob_store(root) and not _is_hf_shared_blob_entry(
+            if isinstance(root, _SharedBlobStoreRoot) and not _is_hf_shared_blob_entry(
                 resolved.relative_to(root)
             ):
                 break

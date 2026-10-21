@@ -888,6 +888,7 @@ import importlib
 import json
 import logging
 import os
+import pathlib
 import re
 import shutil
 import stat
@@ -907,7 +908,7 @@ import shutil""",
 def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
     for root in allowed_roots:
         if resolved.is_relative_to(root):
-            if _is_hf_shared_blob_store(root) and not _is_hf_shared_blob_entry(
+            if isinstance(root, _SharedBlobStoreRoot) and not _is_hf_shared_blob_entry(
                 resolved.relative_to(root)
             ):
                 break
@@ -1013,6 +1014,12 @@ def _is_hf_shared_blob_store(path: Path) -> bool:
         return False
 
 
+class _SharedBlobStoreRoot(pathlib.PosixPath):
+    # Tags the admitted shared store among the confinement roots so the
+    # entry-shape rule is decided once, not by re-reading the marker.
+    pass
+
+
 def _is_hf_shared_blob_entry(relative: Path) -> bool:
     # A store entry is exactly ``<hash[:2]>/<xet hash>``; the store's
     # ``.refs`` manifests, locks and marker are never checkpoint content.
@@ -1040,7 +1047,7 @@ def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
             allowed_roots.append(blobs_root.resolve())
         shared_store = repo_root.parent / "blobs"
         if _is_hf_shared_blob_store(shared_store):
-            allowed_roots.append(shared_store)
+            allowed_roots.append(_SharedBlobStoreRoot(shared_store))
     return allowed_roots
 
 
@@ -1985,6 +1992,27 @@ def test_shared_blob_store_requires_real_directory(tmp_path):
     snapshot = tmp_path / "hub" / "models--org--m" / "snapshots" / "rev"
     snapshot.mkdir(parents=True)
     assert _allowed_checkpoint_roots(snapshot) == [snapshot.resolve()]
+
+
+def test_shared_blob_store_entry_rule_survives_marker_change(tmp_path):
+    """The store's entry-shape rule is fixed when the roots are computed;
+    removing the marker afterwards cannot widen what the store admits."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        _allowed_checkpoint_roots,
+        _containing_root,
+    )
+
+    cache, snapshot = _fake_hub_with_shared_blob_store(
+        tmp_path, {"model.safetensors": b"payload"}
+    )
+    roots = _allowed_checkpoint_roots(snapshot)
+    store = cache / "blobs"
+    (store / "ab.refs").write_bytes(b"x")
+    (store / ".huggingface-shared-blobs").unlink()
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        _containing_root((store / "ab.refs").resolve(), roots)
+    entry = (snapshot / "model.safetensors").resolve()
+    assert _containing_root(entry, roots) == store.resolve()
 
 
 def test_mtp_splitter_reads_shards_from_hf_shared_blob_store(tmp_path):
