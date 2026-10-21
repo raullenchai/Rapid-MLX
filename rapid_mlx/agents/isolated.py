@@ -271,7 +271,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
             f"--weak-model openai/{quote(model)} --editor-model openai/{quote(model)}"
         )
         return (
-            f'if [[ "$PWD" == {quote(str(Path.home().resolve()))} ]]; then '
+            f'if [[ "$(pwd -P)" == {quote(str(Path.home().resolve()))} ]]; then '
             f"cd {quote(str(root / 'workspace'))} || exit 1; fi; "
             f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
             f"GIT_CEILING_DIRECTORIES={quote(str(root))} "
