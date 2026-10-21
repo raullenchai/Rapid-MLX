@@ -119,68 +119,93 @@ def test_installed_cli_launches_without_warning(private_home, capsys):
     assert "not installed" not in capsys.readouterr().err
 
 
-def test_current_path_hit_skips_login_shell(tmp_path, monkeypatch):
-    _executable(tmp_path / "fake-agent")
-    monkeypatch.setenv("PATH", str(tmp_path))
-    with patch.object(cli_preflight.subprocess, "run") as run:
-        assert cli_preflight.resolve_agent_binary("fake-agent") == str(
-            tmp_path / "fake-agent"
-        )
-    run.assert_not_called()
+MARK = "__rapid_mlx_cli_feedface__="
 
 
-def test_login_shell_path_is_used_when_current_path_misses(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", str(tmp_path))
+@pytest.fixture
+def fixed_marker(monkeypatch):
+    monkeypatch.setattr(cli_preflight.secrets, "token_hex", lambda _n: "feedface")
+
+
+def test_login_shell_answer_is_authoritative(tmp_path, monkeypatch, fixed_marker):
+    tool = _executable(tmp_path / "fake-agent")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     reply = subprocess.CompletedProcess(
         [],
         0,
-        stdout=(
-            "welcome banner\n\n__rapid_mlx_cli__=/opt/homebrew/bin/fake-agent\n"
-            "logout banner\n"
-        ),
+        stdout=f"welcome\n__rapid_mlx_cli__=/bogus\n\n{MARK}{tool}\nlogout banner\n",
         stderr="",
     )
     with patch.object(cli_preflight.subprocess, "run", return_value=reply) as run:
-        found = cli_preflight.resolve_agent_binary("fake-agent")
-    assert found == "/opt/homebrew/bin/fake-agent"
+        assert cli_preflight.resolve_agent_binary("fake-agent") == str(tool)
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
     assert "command -v -- fake-agent" in argv[2]
+    assert MARK in argv[2]
 
 
-@pytest.mark.parametrize(
-    ("returncode", "stdout"),
-    [
-        (1, ""),
-        (0, "/opt/homebrew/bin/fake-agent\n"),
-        (0, "\n__rapid_mlx_cli__=\n"),
-        (0, "__rapid_mlx_cli__=alias fake-agent='something'\n"),
-        (0, "__rapid_mlx_cli__=fake-agent\n"),
-    ],
-)
-def test_login_shell_miss_or_non_path_is_not_installed(
-    tmp_path, monkeypatch, returncode, stdout
+def test_current_path_hit_is_refused_when_login_shell_misses(
+    tmp_path, monkeypatch, fixed_marker
 ):
+    _executable(tmp_path / "fake-agent")
     monkeypatch.setenv("PATH", str(tmp_path))
-    reply = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
+    reply = subprocess.CompletedProcess([], 0, stdout=f"\n{MARK}\n", stderr="")
     with patch.object(cli_preflight.subprocess, "run", return_value=reply):
         assert cli_preflight.resolve_agent_binary("fake-agent") is None
 
 
 @pytest.mark.parametrize(
-    "error", [OSError("no shell"), subprocess.SubprocessError("probe failed")]
+    "stdout",
+    [
+        "",
+        "/opt/homebrew/bin/fake-agent\n",
+        f"{MARK}alias fake-agent='something'\n",
+        f"{MARK}fake-agent\n",
+        "__rapid_mlx_cli_other__=/bin/sh\n",
+    ],
 )
-def test_unprobeable_login_shell_falls_back_to_homebrew_prefixes(
+def test_login_shell_miss_or_non_executable_is_not_installed(
+    tmp_path, monkeypatch, fixed_marker, stdout
+):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    reply = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+    with patch.object(cli_preflight.subprocess, "run", return_value=reply):
+        assert cli_preflight.resolve_agent_binary("fake-agent") is None
+
+
+def test_login_shell_answer_must_be_executable_file(
+    tmp_path, monkeypatch, fixed_marker
+):
+    reply = subprocess.CompletedProcess([], 0, stdout=f"{MARK}{tmp_path}\n", stderr="")
+    with patch.object(cli_preflight.subprocess, "run", return_value=reply):
+        assert cli_preflight.resolve_agent_binary("fake-agent") is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("no shell"),
+        subprocess.TimeoutExpired("zsh", 30),
+        subprocess.SubprocessError("probe failed"),
+    ],
+)
+def test_unprobeable_login_shell_falls_back_to_path_and_homebrew(
     tmp_path, monkeypatch, error
 ):
     brew = tmp_path / "brew-bin"
     brew.mkdir()
-    _executable(brew / "fake-agent")
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    _executable(brew / "brew-agent")
+    current = tmp_path / "current-bin"
+    current.mkdir()
+    _executable(current / "path-agent")
+    monkeypatch.setenv("PATH", str(current))
     monkeypatch.setattr(cli_preflight, "_HOMEBREW_PREFIXES", (str(brew),))
     with patch.object(cli_preflight.subprocess, "run", side_effect=error):
-        assert cli_preflight.resolve_agent_binary("fake-agent") == str(
-            brew / "fake-agent"
+        assert cli_preflight.resolve_agent_binary("brew-agent") == str(
+            brew / "brew-agent"
+        )
+        assert cli_preflight.resolve_agent_binary("path-agent") == str(
+            current / "path-agent"
         )
         assert cli_preflight.resolve_agent_binary("other-agent") is None
 
@@ -191,6 +216,7 @@ def test_path_style_binary_requires_executable_file(tmp_path):
     plain.write_text("")
     assert cli_preflight.resolve_agent_binary(str(tool)) == str(tool)
     assert cli_preflight.resolve_agent_binary(str(plain)) is None
+    assert cli_preflight.resolve_agent_binary(str(tmp_path)) is None
     assert cli_preflight.resolve_agent_binary(str(tmp_path / "absent")) is None
 
 
@@ -235,6 +261,7 @@ def test_real_login_shell_output_around_answer_is_ignored(tmp_path, monkeypatch)
     zdot = tmp_path / "zdot"
     zdot.mkdir()
     (zdot / ".zprofile").write_text(
+        'echo "__rapid_mlx_cli__=/bin/sh"\n'
         f'echo "hello from profile"\nexport PATH="{bin_dir}:$PATH"\n'
     )
     (zdot / ".zlogout").write_text('echo "bye from logout"\n')
@@ -257,8 +284,16 @@ def test_user_profile_shadowing_builtin_keeps_builtin_cli_check():
     assert "npm install -g @anthropic-ai/claude-code" in message
 
 
-def test_slow_login_shell_is_not_a_refusal(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", str(tmp_path))
-    timeout = subprocess.TimeoutExpired("zsh", 10)
-    with patch.object(cli_preflight.subprocess, "run", side_effect=timeout):
-        assert cli_preflight.resolve_agent_binary("fake-agent") == "fake-agent"
+@pytest.mark.skipif(not os.access("/bin/zsh", os.X_OK), reason="needs /bin/zsh")
+def test_real_login_shell_that_drops_path_entry_is_refused(tmp_path, monkeypatch):
+    """The runner would not find a CLI that the login profile removes."""
+    bin_dir = tmp_path / "parent-bin"
+    bin_dir.mkdir()
+    _executable(bin_dir / "rapid-preflight-dropped-agent")
+    zdot = tmp_path / "zdot"
+    zdot.mkdir()
+    (zdot / ".zprofile").write_text('export PATH="/usr/bin:/bin"\n')
+    monkeypatch.setenv("ZDOTDIR", str(zdot))
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    assert shutil.which("rapid-preflight-dropped-agent") is not None
+    assert cli_preflight.resolve_agent_binary("rapid-preflight-dropped-agent") is None

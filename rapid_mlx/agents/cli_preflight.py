@@ -7,18 +7,17 @@ registry of its own.
 
 PATH resolution: the isolated runner executes through ``/bin/zsh -lc``. A
 login shell sources ``/etc/zprofile`` and ``~/.zprofile``, which commonly add
-Homebrew and other user prefixes that a GUI- or IDE-launched parent process
-may not carry. To avoid refusing a CLI the runner would find, a miss on the
-current PATH is re-checked in that same login shell (``command -v``). If the
-login shell cannot be probed, the common Homebrew prefixes are checked as a
-fallback. A probe that times out is not treated as a miss. A hit on the current PATH is accepted without the probe so a
-normal launch does not pay for an extra login shell; a login profile that
-removes an inherited PATH entry is not detected.
+(or replace) PATH entries such as Homebrew. The CLI is therefore resolved with
+``command -v`` in that same login shell, so the answer matches what the runner
+will see. Only when the login shell cannot be run, or does not answer within
+the probe deadline, does resolution fall back to the current PATH plus the
+common Homebrew prefixes.
 """
 
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -27,49 +26,55 @@ from rapid_mlx.agents import PROFILES_DIR, _load_profile_from_yaml
 from rapid_mlx.agents.base import AgentProfile
 
 _LOGIN_SHELL = "/bin/zsh"
-_PROBE_TIMEOUT_S = 10
+_PROBE_TIMEOUT_S = 30
 _HOMEBREW_PREFIXES = ("/opt/homebrew/bin", "/usr/local/bin")
-_MARKER = "__rapid_mlx_cli__="
+
+
+def _executable_file(path: str) -> str | None:
+    return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+
+
+def _fallback_lookup(binary: str) -> str | None:
+    """Current PATH plus Homebrew, for when the login shell cannot answer."""
+    entries = [os.environ.get("PATH", ""), *_HOMEBREW_PREFIXES]
+    return shutil.which(binary, path=os.pathsep.join(e for e in entries if e))
 
 
 def _login_shell_lookup(binary: str) -> str | None:
     """Resolve ``binary`` with the PATH the runner's login shell will see."""
+    # A per-probe marker keeps profile or logout output from posing as the
+    # answer, however it is formatted.
+    marker = f"__rapid_mlx_cli_{secrets.token_hex(8)}__="
+    script = (
+        f"found=$(command -v -- {shlex.quote(binary)}) || found=; "
+        f"printf '\\n{marker}%s\\n' \"$found\""
+    )
     try:
         result = subprocess.run(
-            [
-                _LOGIN_SHELL,
-                "-lc",
-                f"printf '\\n{_MARKER}%s\\n' "
-                f'"$(command -v -- {shlex.quote(binary)})"',
-            ],
+            [_LOGIN_SHELL, "-lc", script],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT_S,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        # A slow profile cannot be judged; the runner has no such deadline, so
-        # do not refuse a CLI it may still find.
-        return binary
     except (OSError, subprocess.SubprocessError):
-        return shutil.which(binary, path=os.pathsep.join(_HOMEBREW_PREFIXES))
-    # Login and logout scripts may print around the answer, so read only the
-    # marked line. Anything that is not an absolute path (alias, function,
-    # builtin) is not the CLI.
-    for line in result.stdout.splitlines():
-        if line.startswith(_MARKER):
-            found = line[len(_MARKER) :].strip()
-            return found if found.startswith("/") else None
-    return None
+        return _fallback_lookup(binary)
+    answers = [
+        line[len(marker) :].strip()
+        for line in result.stdout.splitlines()
+        if line.startswith(marker)
+    ]
+    # Anything that is not an executable file (alias, function, builtin,
+    # directory) is not the CLI.
+    return _executable_file(answers[-1]) if answers else None
 
 
 def resolve_agent_binary(binary: str) -> str | None:
     """Return where ``binary`` resolves for the launch runner, or ``None``."""
     if "/" in binary or binary.startswith("~"):
-        path = os.path.expanduser(binary)
-        return path if os.access(path, os.X_OK) else None
-    return shutil.which(binary) or _login_shell_lookup(binary)
+        return _executable_file(os.path.expanduser(binary))
+    return _login_shell_lookup(binary)
 
 
 def missing_agent_cli(profile: AgentProfile) -> str | None:
