@@ -595,6 +595,14 @@ snapshot revisions preserved in the full record.
 
 The installer and desktop app use the same RAM-tier recommendation catalog. Run `rapid-mlx recipe` to see its Smart and Fast picks for this Mac (`--max-ram 32` simulates another tier; `--json` is machine-readable). If you want to shop the full catalog: `rapid-mlx models` lists every alias, `rapid-mlx info <alias>` shows the per-alias profile (parser, MoE / hybrid flags, KV codec eligibility, speculative-decoding gates).
 
+Current Smart picks by unified memory:
+
+- **8 GB and up:** `lfm2.5-2.6b-4bit` — `rapid-mlx serve lfm2.5-2.6b-4bit`
+- **16 GB and up:** `qwen3.5-4b-4bit` — `rapid-mlx serve qwen3.5-4b-4bit`
+- **18 GB and up:** `qwen3.5-9b-4bit` — `rapid-mlx serve qwen3.5-9b-4bit`
+- **24 GB and up:** `bonsai-27b-2bit` — `rapid-mlx serve bonsai-27b-2bit`
+- **32 GB and up:** `qwen3.8-27b-4bit` — `rapid-mlx serve qwen3.8-27b-4bit`
+
 This table is the same one the desktop app's picker reads, and the installer
 prints the matching line for your Mac — a CI test parses both files and fails
 if they drift apart. Measured rows use the standard ~8K prompt peak of the
