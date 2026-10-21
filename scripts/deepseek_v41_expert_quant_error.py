@@ -19,7 +19,11 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.deepseek_v41_rd_common import affine_bytes, file_hash
+from scripts.deepseek_v41_rd_common import (
+    affine_bytes,
+    file_hash,
+    require_all_moe_layers,
+)
 from scripts.repack_deepseek_v41_native import _DTYPE_BYTES, CheckpointIndex
 
 
@@ -159,6 +163,7 @@ def inventory(index, config, nonexpert_bits=4):
     layers, experts = c["num_hidden_layers"], c["n_routed_experts"]
     costs = np.zeros((layers, experts, 4), np.int64)
     fixed, engram, router_rows = 0, 0, {}
+    layers_with_experts = set()
     for name, t in index.tensors.items():
         if name.startswith(("mtp.", "vision.", "aligner.", "image_")):
             continue
@@ -183,6 +188,7 @@ def inventory(index, config, nonexpert_bits=4):
         )
         if match:
             layer_id, e = map(int, match.groups())
+            layers_with_experts.add(layer_id)
             for j, b in enumerate((2, 3, 4), 1):
                 costs[layer_id, e, j] += affine_bytes(shape, b)
             continue
@@ -206,6 +212,7 @@ def inventory(index, config, nonexpert_bits=4):
             router_rows[layer_id] = router_rows.get(layer_id, 0) + size // experts
         else:
             fixed += size
+    require_all_moe_layers(config, layers_with_experts)
     if np.any(costs[..., 1:] <= 0) or set(router_rows) != set(range(layers)):
         raise ValueError("source inventory is missing routed experts or router rows")
     for layer_id, row_bytes in router_rows.items():

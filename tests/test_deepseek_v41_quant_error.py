@@ -117,6 +117,41 @@ def test_plan_preserves_released_aux_dtype_and_f32_router_biases(tmp_path):
         assert dtypes["layers.0.ffn.gate.bias_vl"] == "F32"
 
 
+@pytest.mark.parametrize("target", ["plan", "inventory"])
+@pytest.mark.parametrize(
+    "dense_field", ["first_k_dense_replace", "first_k_dense", None]
+)
+def test_dense_ffn_layers_fail_closed(tmp_path, target, dense_field):
+    if target == "inventory":
+        pytest.importorskip("mlx.core")
+
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    index = CheckpointIndex(source)
+    if dense_field is not None:
+        config["text_config"][dense_field] = 1
+    else:
+        index.tensors = {
+            name: tensor
+            for name, tensor in index.tensors.items()
+            if ".ffn.experts." not in name
+        }
+    with pytest.raises(ValueError, match="dense FFN layers are not supported") as exc:
+        if target == "plan":
+            rd_build.plan(
+                index,
+                config,
+                {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}}},
+            )
+        else:
+            inventory(index, config)
+    if dense_field is None:
+        assert "layers without routed experts: [0]" in str(exc.value)
+
+
 def test_tensor_stream_matches_native_fp4_decoder(tmp_path):
     import mlx.core as mx
 

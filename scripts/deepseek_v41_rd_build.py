@@ -26,6 +26,7 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.deepseek_v41_rd_common import require_all_moe_layers
 from scripts.repack_deepseek_v41_native import CheckpointIndex, _copy_metadata_files
 
 EXPERT = re.compile(r"layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.weight$")
@@ -196,6 +197,7 @@ def mtp_byte_costs(index, config):
 def plan(index, config, allocation):
     validate_allocation(allocation, config)
     entries, experts = [], {}
+    layers_with_experts = set()
     for name, t in sorted(index.tensors.items()):
         if name.startswith("mtp."):
             continue
@@ -205,6 +207,7 @@ def plan(index, config, allocation):
         match = EXPERT.fullmatch(name)
         if match:
             layer, expert, proj = match.groups()
+            layers_with_experts.add(int(layer))
             if int(expert) not in allocation["layers"][layer]["kept_expert_ids"]:
                 continue
             experts.setdefault((layer, proj), {})[int(expert)] = name
@@ -238,6 +241,7 @@ def plan(index, config, allocation):
         entries.extend(
             output_entries(name, shape, (name,), component, bits, rows=rows, fp32=fp32)
         )
+    require_all_moe_layers(config, layers_with_experts)
     if allocation.get("keep_mtp", False):
         entries.extend(mtp_entries(index, config, allocation.get("mtp_expert_bits", 4)))
     for layer, spec in allocation["layers"].items():

@@ -12,6 +12,24 @@ BITS = np.array([0, 2, 3, 4])
 GROUP_SIZE = 64
 
 
+def require_all_moe_layers(config, layers_with_experts):
+    """Reject dense FFN layers, whether declared or absent from the index."""
+    c = config.get("text_config", config)
+    missing = sorted(
+        set(range(c.get("num_hidden_layers", c.get("n_layers")))) - layers_with_experts
+    )
+    if (
+        c.get("first_k_dense_replace", 0) > 0
+        or c.get("first_k_dense", 0) > 0
+        or missing
+    ):
+        raise ValueError(
+            "dense FFN layers are not supported: this tooling targets all-MoE "
+            "DeepSeek V4.1 checkpoints "
+            f"(layers without routed experts: {missing})"
+        )
+
+
 def file_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
