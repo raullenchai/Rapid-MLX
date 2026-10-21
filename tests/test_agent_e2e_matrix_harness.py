@@ -275,13 +275,17 @@ def test_aider_documentation_prompt_is_declined(monkeypatch):
 def test_aider_waits_for_delayed_git_question_before_task(monkeypatch):
     writes = []
     screens = iter(["No git repo found, create one to track changes?", "Aider ready"])
+
+    def read_screen(*args, **kwargs):
+        screen = next(screens)
+        if stop_when := kwargs.get("stop_when"):
+            assert stop_when(screen)
+        return screen, None
+
     monkeypatch.setattr(
         "scripts.agent_e2e.run.os.write", lambda fd, data: writes.append(data)
     )
-    monkeypatch.setattr(
-        "scripts.agent_e2e.run.read_until",
-        lambda *args, **kwargs: (next(screens), None),
-    )
+    monkeypatch.setattr("scripts.agent_e2e.run.read_until", read_screen)
     opening = "Agent ready."
     assert "Aider ready" in handle_first_run_menus("aider", opening, 1, None, None)
     assert writes == [b"n\r"]
