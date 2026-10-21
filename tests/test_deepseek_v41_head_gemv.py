@@ -38,8 +38,10 @@ def gpu():
         pytest.skip("Metal kernel requires a GPU")
     previous = mx.default_device()
     mx.set_default_device(mx.gpu)
-    yield
-    mx.set_default_device(previous)
+    try:
+        yield
+    finally:
+        mx.set_default_device(previous)
 
 
 @needs_metal
@@ -116,11 +118,22 @@ def test_model_forward_uses_exact_head(gpu, monkeypatch, last_logit_only) -> Non
         calls.append(x.shape)
         return original(head, x)
 
+    launched = []
+    launch = head_gemv._launch
+
+    def launch_spy(weight, x):
+        launched.append(x.shape)
+        return launch(weight, x)
+
     monkeypatch.setattr("rapid_mlx.models.deepseek_v41_native.model.head_logits", spy)
+    monkeypatch.setattr(head_gemv, "_launch", launch_spy)
     cache = model.make_cache(max_seq_len=8)
     logits = model(tokens, cache, last_logit_only=last_logit_only)
     mx.eval(logits)
     assert calls and calls[0][-1] == 128
+    # the forward's own rows went through the kernel, not the stock fallback
+    # (the self-check's probe launches have a different shape)
+    assert calls[0] in launched
     rows = 1 if last_logit_only else 3
     assert logits.shape == (1, rows, 40)
     monkeypatch.setattr(head_gemv, "ENABLED", False)
