@@ -186,6 +186,9 @@ def inventory(index, config, nonexpert_bits=4):
             for j, b in enumerate((2, 3, 4), 1):
                 costs[layer_id, e, j] += affine_bytes(shape, b)
             continue
+        # Budget hc_*/attn_sink at source F32 width as a conservative upper bound:
+        # packed non-reference builds use BF16 (~79 MB less on the 1017 checkpoint).
+        # Keep this budget so existing allocations stay reproducible.
         fp32 = re.search(r"(hc_\w+|attn_sink|gate\.bias(_vl)?)$", name)
         size = (
             int(np.prod(shape)) * (4 if fp32 else 2) if has_scale or fp32 else t.nbytes

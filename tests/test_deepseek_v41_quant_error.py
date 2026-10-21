@@ -20,7 +20,7 @@ from scripts.repack_deepseek_v41_native import CheckpointIndex
 pytestmark = pytest.mark.requires_mlx
 
 
-def tiny_source(root: Path):
+def tiny_source(root: Path, *, include_f32_aux=False):
     """Actual safetensors bytes, including source FP4 and exponent-only scales."""
     root.mkdir()
     tensors = {}
@@ -44,6 +44,9 @@ def tiny_source(root: Path):
     tensors["head.weight"] = ("BF16", np.zeros((64, 64), np.uint16))
     tensors["norm.weight"] = ("F32", np.zeros(64, np.float32))
     tensors["layers.0.hc_attn_base"] = ("F16", np.zeros(128, np.float16))
+    if include_f32_aux:
+        tensors["layers.0.hc_attn_fn"] = ("F32", np.zeros(4, np.float32))
+        tensors["layers.0.attn.attn_sink"] = ("F32", np.zeros(2, np.float32))
     tensors["layers.0.engram.embed.weight"] = ("U8", np.zeros((2, 256), np.uint8))
     tensors["layers.0.engram.embed.scale"] = ("U8", np.full((2, 8), 127, np.uint8))
     tensors["mtp.omitted.weight"] = ("F32", np.ones(3, np.float32))
@@ -92,6 +95,26 @@ def test_header_inventory_counts_fixed_shared_router_and_excludes_engram(tmp_pat
     assert result["router_row_bytes_by_layer"] == {0: 136}
     expected = [0] + [3 * affine_bytes((64, 64), b) + 136 for b in (2, 3, 4)]
     assert result["expert_bytes"] == [[expected, expected]]
+
+
+def test_plan_preserves_released_aux_dtype_and_f32_router_biases(tmp_path):
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source, include_f32_aux=True)
+    config["text_config"]["num_experts_per_tok"] = 2
+    index = CheckpointIndex(source)
+    for reference, bits, aux_dtype in ((False, 4, "BF16"), (True, 16, "F32")):
+        allocation = {
+            "reference": reference,
+            "layers": {"0": {"kept_expert_ids": [0, 1], "bits": bits}},
+        }
+        entries, *_ = rd_build.plan(index, config, allocation)
+        dtypes = {entry.name: entry.dtype for entry in entries}
+        assert dtypes["layers.0.hc_attn_fn"] == aux_dtype
+        assert dtypes["layers.0.attn.attn_sink"] == aux_dtype
+        assert dtypes["layers.0.ffn.gate.bias"] == "F32"
+        assert dtypes["layers.0.ffn.gate.bias_vl"] == "F32"
 
 
 def test_tensor_stream_matches_native_fp4_decoder(tmp_path):

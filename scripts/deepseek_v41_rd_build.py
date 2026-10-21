@@ -217,6 +217,9 @@ def plan(index, config, allocation):
         component = "fixed_bf16"
         fp32 = False
         bits = None if allocation.get("reference") else fixed_precision(name, shape)
+        # Non-reference builds store source-F32 non-router tensors (hc_*, attn_sink)
+        # as BF16 to match the released artifact format; reference builds keep F32.
+        # Router biases stay F32 below.
         fp32 = bool(allocation.get("reference") and t.dtype == "F32")
         if router:
             rows = tuple(allocation["layers"][router[1]]["kept_expert_ids"])
