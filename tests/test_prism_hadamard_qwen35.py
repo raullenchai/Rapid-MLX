@@ -10,6 +10,337 @@ import pytest
 pytestmark = pytest.mark.requires_mlx
 
 
+@pytest.fixture
+def packed_siblings():
+    """Install independently stored sign vectors with equal and unequal contents."""
+    import mlx.core as mx
+    import numpy as np
+    from mlx import nn
+
+    from rapid_mlx.models.prism_hadamard_qwen35 import _install_packed
+
+    previous_device = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    rng = np.random.default_rng(5018)
+    signs = rng.choice([-1.0, 1.0], 1024)
+
+    class Siblings(nn.Module):
+        def __call__(self, x, cache=None, *, nested=False, fail=False):
+            outputs = tuple(layer.as_linear(x) for layer in self.values())
+            if nested:
+                self(x, cache=cache)
+                assert self.q_proj._rotation._cache.get()
+            if fail:
+                raise RuntimeError("forward failed")
+            return outputs
+
+    model = Siblings()
+    records, weights = [], {}
+    for name in (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "gate_proj",
+        "up_proj",
+        "embed",
+        "other_signs",
+        "other_block",
+        "other_dtype",
+        "plain",
+    ):
+        embedding = name == "embed"
+        setattr(
+            model,
+            name,
+            nn.Embedding(8, 1024) if embedding else nn.Linear(1024, 8, bias=False),
+        )
+        arrays = mx.quantize(
+            mx.array(rng.normal(size=(8, 1024)), dtype=mx.float16),
+            group_size=128,
+            bits=2,
+        )
+        prefix = f"language_model.{name}."
+        weights.update(
+            zip((prefix + s for s in ("weight", "scales", "biases")), arrays)
+        )
+        block = 0 if name == "plain" else 1024 if name == "other_block" else 512
+        if block:
+            weights[prefix + "signs"] = mx.array(
+                -signs if name == "other_signs" else signs,
+                dtype=mx.float16 if name == "other_dtype" else mx.float32,
+            )
+        records.append(
+            {"path": name, "block": block, "embedding": embedding, "dtype": "float16"}
+        )
+    _install_packed(model, {"modules": records}, weights)
+    model.load_weights(
+        [(k.removeprefix("language_model."), v) for k, v in weights.items()]
+    )
+    try:
+        yield model
+    finally:
+        mx.set_default_device(previous_device)
+
+
+def _unshared_packed_forward(layer, x):
+    """The original forward formula, with no memoization."""
+    import math
+
+    import mlx.core as mx
+
+    if layer.block:
+        shape, dtype = x.shape, x.dtype
+        x = x.astype(mx.float32) * layer.signs
+        x = mx.hadamard_transform(
+            x.reshape(-1, layer.block), scale=1 / math.sqrt(layer.block)
+        )
+        x = x.reshape(shape).astype(dtype)
+    return mx.quantized_matmul(
+        x,
+        layer.weight,
+        layer.scales,
+        layer.biases,
+        transpose=True,
+        group_size=128,
+        bits=2,
+    )
+
+
+@pytest.mark.parametrize("shape", [(1, 1, 1024), (2, 5, 1024)])
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
+def test_shared_rotation_is_bit_exact(packed_siblings, shape, dtype):
+    import mlx.core as mx
+
+    model = packed_siblings
+    mx.random.seed(5018)
+    x = mx.random.normal(shape).astype(getattr(mx, dtype))
+    for (name, layer), actual in zip(model.items(), model(x, cache=[])):
+        expected = _unshared_packed_forward(layer, x)
+        assert mx.array_equal(actual, expected).item(), name
+
+
+def test_rotation_install_groups_and_call_count(packed_siblings, monkeypatch):
+    import mlx.core as mx
+
+    model = packed_siblings
+    shared = model.q_proj._rotation
+    for name in ("k_proj", "v_proj", "gate_proj", "up_proj", "embed"):
+        assert model[name].signs is model.q_proj.signs
+    for name in ("other_signs", "other_block", "other_dtype"):
+        assert model[name].signs is not model.q_proj.signs
+
+    transform = Mock(wraps=mx.hadamard_transform)
+    monkeypatch.setattr(mx, "hadamard_transform", transform)
+    x = mx.ones((1, 1, 1024), dtype=mx.float16)
+    mx.eval(model(x, cache=[]))
+    assert transform.call_count == 4
+    assert shared._cache.get() is None
+    mx.eval(model(x, nested=True))
+    assert transform.call_count == 8
+    assert shared._cache.get() is None
+    # Direct projections do not cache, even for the same object.
+    mx.eval(model.q_proj(x), model.k_proj(x))
+    assert transform.call_count == 10
+    with shared.scope():
+        mx.eval(model.q_proj(x))
+        mx.eval(model.embed(mx.array([[0, 1]])))
+        mx.eval(model.embed.as_linear(x))
+        assert transform.call_count == 12
+    assert shared._cache.get() is None
+    assert set(model.q_proj.parameters()) == {"weight", "scales", "biases", "signs"}
+
+
+def test_rotation_identity_and_single_slot_lifetime(packed_siblings, monkeypatch):
+    import gc
+    import weakref
+
+    import mlx.core as mx
+
+    model = packed_siblings
+    rotation = model.q_proj._rotation
+    transform = Mock(wraps=mx.hadamard_transform)
+    monkeypatch.setattr(mx, "hadamard_transform", transform)
+    x = mx.ones((1, 32768, 1024), dtype=mx.float16)
+    old_input = weakref.ref(x)
+    with rotation.scope():
+        rotated = rotation(x, 512, model.q_proj.signs, "float16")
+        mx.eval(rotated)
+        old_result = weakref.ref(rotated)
+        assert rotation(x, 512, model.q_proj.signs, "float16") is rotated
+        equal_x = mx.ones(x.shape, dtype=x.dtype)
+        mx.eval(rotation(equal_x, 512, model.q_proj.signs, "float16"))
+        assert transform.call_count == 2
+        assert len(rotation._cache.get()) == 1
+        # A distinct manifest dtype also separates the runtime signature.
+        mx.eval(rotation(equal_x, 512, model.q_proj.signs, "float32"))
+        assert transform.call_count == 3
+    assert rotation._cache.get() is None
+    del x, rotated
+    gc.collect()
+    assert old_input() is None and old_result() is None
+    # A model forward also drops its large activation references.
+    old_input = weakref.ref(equal_x)
+    mx.eval(model(equal_x))
+    del equal_x
+    gc.collect()
+    assert old_input() is None
+    assert rotation._cache.get() is None
+
+
+@pytest.mark.parametrize("mutation", ["assign", "add"])
+def test_mutation_between_forwards(packed_siblings, mutation):
+    import mlx.core as mx
+
+    model = packed_siblings
+    x = mx.ones((1, 1, 1024), dtype=mx.float16)
+    original_input = x
+    before = model(x)[0]
+    mx.eval(before)
+    if mutation == "assign":
+        x[...] = 3
+    else:
+        x += 1
+    assert x is original_input
+    after = model(x)[0]
+    assert mx.array_equal(after, _unshared_packed_forward(model.q_proj, x)).item()
+    assert not mx.array_equal(before, after).item()
+
+
+@pytest.mark.parametrize("method", ["update", "load_weights"])
+def test_replaced_signs(packed_siblings, method, monkeypatch):
+    import mlx.core as mx
+
+    model = packed_siblings
+    x = mx.ones((1, 1, 1024), dtype=mx.float16)
+    transform = Mock(wraps=mx.hadamard_transform)
+    monkeypatch.setattr(mx, "hadamard_transform", transform)
+    # Replace after a sibling has populated the slot, within the same scope.
+    with model.q_proj._rotation.scope():
+        mx.eval(model.q_proj(x))
+        signs = -model.k_proj.signs
+        if method == "update":
+            model.update({"k_proj": {"signs": signs}})
+        else:
+            model.load_weights([("k_proj.signs", signs)], strict=False)
+        actual = model.k_proj(x)
+        assert transform.call_count == 2
+        assert mx.array_equal(actual, _unshared_packed_forward(model.k_proj, x)).item()
+    assert mx.array_equal(model(x)[1], _unshared_packed_forward(model.k_proj, x)).item()
+
+
+def test_exception_clears_forward(packed_siblings):
+    import mlx.core as mx
+
+    model = packed_siblings
+    with pytest.raises(RuntimeError, match="forward failed"):
+        model(mx.ones((1, 1, 1024), dtype=mx.float16), fail=True)
+    assert model.q_proj._rotation._cache.get() is None
+
+
+def test_real_language_model_forward_scope(monkeypatch):
+    import mlx.core as mx
+    from mlx_vlm.models.qwen3_5.config import ModelConfig, TextConfig, VisionConfig
+    from mlx_vlm.models.qwen3_5.language import LanguageModel
+
+    from rapid_mlx.models.prism_hadamard_qwen35 import _install_packed
+
+    args = TextConfig(
+        model_type="qwen3_5",
+        hidden_size=512,
+        intermediate_size=512,
+        linear_num_value_heads=4,
+        linear_num_key_heads=4,
+        linear_key_head_dim=128,
+        linear_value_head_dim=128,
+        linear_conv_kernel_dim=4,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        head_dim=128,
+        rms_norm_eps=1e-6,
+        vocab_size=16,
+        num_key_value_heads=4,
+        max_position_embeddings=64,
+        full_attention_interval=2,
+        rope_parameters={
+            "type": "default",
+            "mrope_section": [4, 4, 8],
+            "rope_theta": 100000,
+            "partial_rotary_factor": 0.25,
+        },
+    )
+    config = ModelConfig(
+        text_config=args, vision_config=VisionConfig(), model_type="qwen3_5"
+    )
+    model = LanguageModel(args, config)
+    untouched = LanguageModel(args, config)
+    records, weights = [], {}
+    for name in ("q_proj", "k_proj", "v_proj"):
+        path = "model.layers.1.self_attn." + name
+        layer = dict(model.named_modules())[path]
+        arrays = mx.quantize(layer.weight.astype(mx.float16), group_size=128, bits=2)
+        prefix = "language_model." + path + "."
+        weights.update(
+            zip((prefix + s for s in ("weight", "scales", "biases")), arrays)
+        )
+        weights[prefix + "signs"] = mx.ones((512,), dtype=mx.float16)
+        records.append(
+            {"path": path, "block": 512, "embedding": False, "dtype": "float16"}
+        )
+    _install_packed(model, {"modules": records}, weights)
+    assert type(untouched) is LanguageModel
+    assert isinstance(model, LanguageModel)
+    rotation = model.layers[1].self_attn.q_proj._rotation
+    transform = Mock(wraps=mx.hadamard_transform)
+    monkeypatch.setattr(mx, "hadamard_transform", transform)
+    cache = model.make_cache()
+    reference_cache = model.make_cache()
+    # The ordinary generation/prefill entry point, followed by cached decode.
+    for tokens in (mx.array([[1, 2, 3]]), mx.array([[4]])):
+        before = transform.call_count
+        output = model(tokens, cache=cache)
+        mx.eval(output.logits)
+        assert transform.call_count == before + 1
+        assert rotation._cache.get() is None
+        # Bypass only the installed scope for the identical uncached formula.
+        expected = LanguageModel.__call__(model, tokens, cache=reference_cache)
+        assert transform.call_count == before + 4
+        assert mx.array_equal(output.logits, expected.logits).item()
+
+
+def test_shared_rotation_compiled_retrace_and_eager(packed_siblings):
+    import mlx.core as mx
+
+    model = packed_siblings
+
+    def forward(x):
+        return model(x)[:3]
+
+    def reference(x):
+        return tuple(
+            _unshared_packed_forward(layer, x)
+            for layer in (model.q_proj, model.k_proj, model.v_proj)
+        )
+
+    compiled = mx.compile(forward)
+    compiled_reference = mx.compile(reference)
+    # Exercise graph reuse, shape/dtype retracing,
+    # and eager calls after a trace. Every call carries different values.
+    mx.random.seed(5018)
+    for tokens, dtype in (
+        (1, mx.float16),
+        (1, mx.float16),
+        (5, mx.float16),
+        (1, mx.float32),
+    ):
+        x = mx.random.normal((2, tokens, 1024)).astype(dtype)
+        mx.eval(forward(x))
+        actual = compiled(x)
+        expected = compiled_reference(x)
+        assert all(mx.array_equal(a, b).item() for a, b in zip(actual, expected))
+        eager = forward(x)
+        assert all(mx.array_equal(a, b).item() for a, b in zip(eager, reference(x)))
+
+
 @pytest.mark.parametrize("trust_remote_code", [False, True])
 def test_mllm_dispatches_bonsai2_to_owned_loader(monkeypatch, trust_remote_code):
     import mlx_vlm

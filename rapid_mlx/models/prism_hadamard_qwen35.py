@@ -27,6 +27,8 @@
 """Data-only loader for Bonsai 2's rotated, affine 2-bit Qwen3.5 pack."""
 
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import mlx.core as mx
 from mlx import nn
@@ -47,6 +49,53 @@ def _fwht(x, block, signs, *, inverse=False):
     return x.astype(dtype)
 
 
+class _Rotation:
+    """One slot per active signature, retained only during a model forward."""
+
+    def __init__(self):
+        self._cache: ContextVar[dict | None] = ContextVar(
+            "hadamard_rotation", default=None
+        )
+
+    @contextmanager
+    def scope(self):
+        if self._cache.get() is not None:
+            yield
+            return
+        cache = {}
+        token = self._cache.set(cache)
+        try:
+            yield
+        finally:
+            cache.clear()
+            self._cache.reset(token)
+
+    def __call__(self, x, block, signs, dtype):
+        cache = self._cache.get()
+        if cache is None:
+            return _fwht(x, block, signs)
+        key = (block, id(signs), dtype)
+        cached = cache.get(key)
+        # Projection inputs and signs are not mutated in place within a forward.
+        if cached is not None and x is cached[0] and signs is cached[1]:
+            return cached[2]
+        rotated = _fwht(x, block, signs)
+        cache[key] = (x, signs, rotated)
+        return rotated
+
+
+def _scope_forward(language_model, rotation):
+    # Special methods resolve on the class; isolate the hook to this instance.
+    original = type(language_model)
+
+    class ScopedLanguageModel(original):
+        def __call__(self, *args, **kwargs):
+            with rotation.scope():
+                return super().__call__(*args, **kwargs)
+
+    language_model.__class__ = ScopedLanguageModel
+
+
 class Packed(nn.Module):
     """Keep weights packed; rotate activations (or inverse-rotate embeddings)."""
 
@@ -54,6 +103,8 @@ class Packed(nn.Module):
         super().__init__()
         self.weight, self.scales, self.biases = arrays
         self.block, self.signs, self.embedding = block, signs, embedding
+        self._rotation = _Rotation()
+        self._rotation_dtype = "float16"
 
     def __call__(self, x):
         if self.embedding:
@@ -77,7 +128,7 @@ class Packed(nn.Module):
     def as_linear(self, x):
         """Project with the packed weights, including a tied embedding head."""
         if self.block:
-            x = _fwht(x, self.block, self.signs)
+            x = self._rotation(x, self.block, self.signs, self._rotation_dtype)
         return mx.quantized_matmul(
             x,
             self.weight,
@@ -92,6 +143,8 @@ class Packed(nn.Module):
 def _install_packed(language_model, config, weights):
     modules = dict(language_model.named_modules())
     replacements = []
+    sign_vectors: dict[tuple[int, mx.Dtype, tuple[float, ...], str], mx.array] = {}
+    rotation = _Rotation()
     seen = set()
     records = config.get("modules")
     if not isinstance(records, list) or not records:
@@ -145,10 +198,18 @@ def _install_packed(language_model, config, weights):
                 raise ValueError(f"Invalid Bonsai 2 sign vector: {name}")
         elif signs is not None:
             raise ValueError(f"Unexpected Bonsai 2 sign vector: {name}")
-        replacements.append(
-            (name, Packed(arrays, block, signs, record.get("embedding")))
-        )
+        packed = Packed(arrays, block, signs, record.get("embedding"))
+        if block:
+            # All forwards use float32 math and restore the input dtype. Sign
+            # dtype is part of the key to preserve promotion behavior as well.
+            key = (block, signs.dtype, tuple(signs.tolist()), record["dtype"])
+            packed.signs = sign_vectors.setdefault(key, signs)
+            weights[prefix + ".signs"] = packed.signs
+        packed._rotation = rotation
+        packed._rotation_dtype = record["dtype"]
+        replacements.append((name, packed))
     language_model.update_modules(tree_unflatten(replacements))
+    _scope_forward(language_model, rotation)
 
 
 def _build_processor(directory):
