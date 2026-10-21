@@ -15,6 +15,17 @@ Use `rapid-mlx info <alias>` for one model's memory needs, capabilities, and run
 
 Run `rapid-mlx models` to browse current text and vision aliases. Start a recommended text model with `rapid-mlx chat` or `rapid-mlx serve <alias>`. For images in a request, follow the [multimodal guide](../guides/multimodal.md).
 
+## DeepSeek V4.1 Flash 1017
+
+`deepseek-v41-flash-1017` is an experimental text-only model for a 256 GB Apple Silicon Mac. The CLI refuses to load it below 224 GiB unified memory. It serves greedy OpenAI chat with an 8,192-token input limit and a 4,096-token output limit; tool calling is not qualified. The alias uses the current pinned GPTQ weights. Check its requirements before downloading:
+
+```bash
+rapid-mlx info deepseek-v41-flash-1017
+rapid-mlx serve deepseek-v41-flash-1017
+```
+
+The default serves one request at a time. For concurrent requests, set `RAPID_MLX_DSV41_LANES=2`, `4`, or `8` before starting the server; this turns drafting off. See the [0.16.6 release notes](../release-notes/v0.16.6.md) for the pinned weights and runtime details.
+
 ## Image, video, and audio
 
 The CLI lists these model types separately. Start from the [image-generation guide](https://rapidmlx.com/docs/models/families/image.html), [video guide](../guides/video-generation.md), or [audio guide](../guides/audio.md) for a working request. Check the selected alias with `rapid-mlx info <alias>` before downloading a large model.
