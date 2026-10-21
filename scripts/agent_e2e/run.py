@@ -142,7 +142,9 @@ def read_until(
         if stop_when is not None and last is not None and time.monotonic() - last > 5:
             if stop_when("".join(pieces)):
                 break
-        ready, _, _ = select.select([fd], [], [], min(0.25, end - time.monotonic()))
+        ready, _, _ = select.select(
+            [fd], [], [], max(0, min(0.25, end - time.monotonic()))
+        )
         if not ready:
             if on_output is not None and pieces:
                 on_output("".join(pieces))

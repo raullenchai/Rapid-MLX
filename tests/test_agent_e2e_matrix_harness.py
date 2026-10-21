@@ -1,7 +1,9 @@
 """The release harness must not silently invent request or config evidence."""
 
 import asyncio
+import io
 import json
+from types import SimpleNamespace
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
@@ -10,6 +12,7 @@ from scripts.agent_e2e.run import (
     handle_first_run_menus,
     output_issues,
     preserved,
+    read_until,
     reply_finished,
     request_evidence,
     send_prompt,
@@ -55,6 +58,20 @@ def test_aider_file_creation_is_confirmed_once(monkeypatch):
     approve("Create new file? (Y)es/(N)o [Yes]:")
     approve("Create new file? (Y)es/(N)o [Yes]:")
     assert sent == [b"y\r"]
+
+
+def test_terminal_timeout_never_passes_negative_wait_to_select(monkeypatch):
+    times = iter((0.0, 0.5, 1.1, 1.2))
+    monkeypatch.setattr("time.monotonic", lambda: next(times))
+    waits = []
+
+    def select_once(_reads, _writes, _errors, timeout):
+        waits.append(timeout)
+        return [], [], []
+
+    monkeypatch.setattr("select.select", select_once)
+    output, first = read_until(1, SimpleNamespace(poll=lambda: None), 1, io.BytesIO())
+    assert (output, first, waits) == ("", None, [0])
 
 
 def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
