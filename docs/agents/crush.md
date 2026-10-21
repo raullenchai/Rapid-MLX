@@ -2,7 +2,7 @@
 
 ## One-command local launch
 
-Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and install Crush. Run `rapid-mlx launch crush`. The same command works after a restart; `rapid-mlx launch crush --remove` deletes only Rapid's private profile. Existing Crush settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Crush. Run `rapid-mlx launch crush`. The same command works after a restart; `rapid-mlx launch crush --remove` deletes only Rapid's private profile. Existing Crush settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
 
 
 Crush 0.98.1 uses an `openai-compat` provider with the Rapid-MLX `/v1` base URL. Its [current config guide](https://github.com/charmbracelet/crush/blob/v0.98.1/docs/config/README.md) prefers `crushrc` and still supports the JSON file that this setup profile writes.

@@ -6,7 +6,7 @@
 
 <p align="center"><strong>Run Codex, Claude Code, OpenCode, Pi, Hermes or Crush with a local model on Mac:</strong><br><code>rapid-mlx launch &lt;agent&gt;</code></p>
 
-Install on a stock Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash`, then install your chosen coding agent and run, for example, `rapid-mlx launch codex`. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
+Install on a stock Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash`, restart your terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install your chosen coding agent and run, for example, `rapid-mlx launch codex`. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
 
 
 <p align="center">
