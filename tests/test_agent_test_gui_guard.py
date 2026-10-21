@@ -148,17 +148,34 @@ def test_unrelated_browser_override_does_not_touch_its_directory(tmp_path):
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
-def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path):
+def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch):
     fake_home = tmp_path / "fake-home"
     fake_home.mkdir()
     guard_root = tmp_path / "guard"
     guard_root.mkdir()
     browser = _install_gui_launch_guard(guard_root)
+    marker = browser.parent / ".gui-launch-attempted"
     script = (
         "import subprocess, time; "
         "subprocess.run(['open', 'https://example.invalid']); "
-        "time.sleep(5)"
+        "time.sleep(30)"
     )
+
+    class LaunchedFirst(subprocess.Popen):
+        """Start the probe's timeout only once the child has reached the shim.
+
+        A loaded host can take longer than the timeout just to start Python, so
+        the timeout would otherwise race the launch it is meant to follow."""
+
+        def communicate(self, input=None, timeout=None):
+            deadline = time.monotonic() + 60
+            while not marker.exists() and self.poll() is None:
+                assert time.monotonic() < deadline, "child never reached the shim"
+                time.sleep(0.01)
+            return super().communicate(input, timeout)
+
+    monkeypatch.setattr(subprocess, "Popen", LaunchedFirst)
+    started = time.monotonic()
     output, error = _agent_query(
         sys.executable,
         f"python -c {shlex.quote(script)}",
@@ -168,11 +185,13 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path):
             "HOME": str(fake_home),
             "PATH": f"{browser.parent}{os.pathsep}{os.environ['PATH']}",
             "BROWSER": str(browser),
-            _GUI_LAUNCH_MARKER_ENV: str(browser.parent / ".gui-launch-attempted"),
+            _GUI_LAUNCH_MARKER_ENV: str(marker),
         },
     )
     assert output is None
     assert "agent tried to open a browser" in error
+    # the probe ended by its timeout, not by the child finishing its sleep
+    assert time.monotonic() - started < 30
 
 
 def test_previous_launch_marker_cannot_be_erased_by_next_probe(tmp_path):
