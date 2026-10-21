@@ -299,24 +299,33 @@ def test_metal_supported_moe_is_finite_without_bitwise_qualification(
 
 
 @pytest.mark.parametrize("delta", [0, 1])
-def test_metal_head_is_finite_without_bitwise_qualification(delta, monkeypatch):
+@pytest.mark.parametrize("rows", range(1, 6))
+def test_metal_head_is_finite_without_bitwise_qualification(delta, rows, monkeypatch):
     if not mx.metal.is_available():
         pytest.skip("Metal GPU unavailable")
     mx.set_default_device(mx.gpu)
     _, draft = bench.tiny_setup()
-    draft.w._arrays["head.weight"] = mx.random.normal((1003, 512)).astype(mx.bfloat16)
-    x = mx.random.normal((5, 512))
+    draft.w._arrays["head.weight"] = mx.random.normal((16384, 512)).astype(mx.bfloat16)
+    x = mx.random.normal((rows, 512))
     calls = []
+    variants = []
     original = kernels.head_gemv._launch
+    original_kernel = kernels.head_gemv._kernel
+
+    def kernel(shared=False):
+        variants.append(shared)
+        return original_kernel(shared)
 
     def launch(*args):
         calls.append(1)
         return original(*args) + delta
 
     monkeypatch.setattr(kernels.head_gemv, "_launch", launch)
+    monkeypatch.setattr(kernels.head_gemv, "_kernel", kernel)
     kernels.begin_round(draft)
     assert bool(mx.all(mx.isfinite(draft.head(x))))
     assert len(calls) == 1
+    assert variants == [rows > 1]
 
 
 def test_external_routes_do_not_require_target_router_gemv():
@@ -348,8 +357,9 @@ def test_external_routes_do_not_require_target_router_gemv():
 
 @pytest.mark.parametrize("seed", [7, 11, 42])
 @pytest.mark.parametrize("failure", [None, "mtp.0.ffn", "head"])
+@pytest.mark.parametrize("depth", [1, 2, 3, 4])
 def test_serving_acceptance_and_retry_equal_draft_off(
-    seed, failure, monkeypatch, caplog
+    seed, failure, depth, monkeypatch, caplog
 ):
     model, draft = bench.tiny_setup(seed)
     serving._install_vectorized_mtp_attention(draft)
@@ -359,6 +369,9 @@ def test_serving_acceptance_and_retry_equal_draft_off(
     counts = {}
 
     def dispatch(owner, label, x, bits, candidate, stock):
+        if label == "head":
+            assert 1 <= x.shape[0] <= depth
+
         def fused(value):
             counts[label] = counts.get(label, 0) + 1
             result = stock(value)
@@ -380,7 +393,7 @@ def test_serving_acceptance_and_retry_equal_draft_off(
             _supports_weight=lambda *_: True, _launch=kernels.head_gemv._launch
         ),
     )
-    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
+    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", str(depth))
     runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
     actual = [
         chunk.token

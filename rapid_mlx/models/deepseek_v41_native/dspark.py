@@ -723,9 +723,9 @@ class DSpark:
             hidden = _hc_post(ffn, hidden, post, combine)
         base = f"mtp.{self.layers[-1]}"
         collapsed = _hc_pre(hidden, pre)
-        logits = self.head(
-            self.adapter.norm(base + ".norm", collapsed).astype(mx.float32)
-        )
+        # Keep every decoder position above; only consumed rows need logits.
+        normalized = self.adapter.norm(base + ".norm", collapsed)
+        logits = self.head(normalized[:predictions].astype(mx.float32))
         output, biased_logits, markov_embeddings = [seed], [], []
         for index in range(predictions):
             token, biased, markov = self.markov(
@@ -748,7 +748,9 @@ class DSpark:
             ).astype(mx.float32),
         )
         confidence_finite = mx.all(mx.isfinite(confidence))
-        mx.eval(logits, confidence, finite, confidence_finite, self._draft_kernel_status)
+        mx.eval(
+            logits, confidence, finite, confidence_finite, self._draft_kernel_status
+        )
         if draft_kernels.disable_nonfinite(self):
             return self.propose(next_token, depth=depth, device=device)
         if not bool(finite) or not bool(confidence_finite):

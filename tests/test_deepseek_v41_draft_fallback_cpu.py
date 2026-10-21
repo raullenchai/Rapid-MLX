@@ -133,6 +133,173 @@ def test_draft_head_reuses_attached_resident_weight_without_qualification(kernel
     assert len(launches) == 3
 
 
+@pytest.mark.parametrize("rows", range(1, 6))
+def test_draft_head_selects_existing_shared_weight_kernel(kernels, rows):
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "rapid_mlx/models/deepseek_v41_native/head_gemv.py"
+    )
+    tree = ast.parse(path.read_text(), filename=str(path))
+    tree.body = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("_launch", "_shares_weight_read")
+        or isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+    ]
+    calls = []
+    fail = False
+    weight = np.ones((16384, 128), dtype=np.float32)
+    x = np.ones((rows, 128), dtype=np.float32)
+
+    def kernel(shared):
+        def launch(**kwargs):
+            calls.append((shared, kwargs))
+            value, resident = kwargs["inputs"]
+            assert resident is weight
+            if fail:
+                return (np.full((rows, 16384), np.nan),)
+            return (value @ resident.T,)
+
+        return launch
+
+    namespace = dict(
+        mx=np,
+        _kernel=kernel,
+        MAX_ROWS=8,
+        SHARED_READ_MIN_OUTPUTS=16384,
+        _OUTPUTS_PER_THREADGROUP=4,
+        _LANES=32,
+    )
+    exec(compile(tree, str(path), "exec"), namespace)
+    kernels.head.__globals__["head_gemv"] = SimpleNamespace(
+        _supports_weight=lambda *_: True, _launch=namespace["_launch"]
+    )
+    stock_calls = []
+
+    def stock(base, value):
+        stock_calls.append((base, value.shape))
+        return value @ weight.T
+
+    weights = SimpleNamespace(entries={}, read=lambda _: weight, linear=stock)
+    draft = SimpleNamespace(w=weights, adapter=SimpleNamespace())
+    kernels.begin_round(draft)
+    np.testing.assert_array_equal(kernels.head(weights, x), np.full((rows, 16384), 128))
+    assert len(calls) == 1
+    shared, kwargs = calls[0]
+    assert shared is (rows > 1)
+    assert kwargs["grid"][1] == 1
+    assert kwargs["output_shapes"] == [(rows, 16384)]
+    assert not stock_calls
+    # A finite input producing non-finite head logits disables this component
+    # and the next attempt uses the original stock projection at the same depth.
+    fail = True
+    kernels.begin_round(draft)
+    assert np.all(np.isnan(kernels.head(weights, x)))
+    draft._draft_kernel_status = kernels.round_status(draft)
+    assert kernels.disable_nonfinite(draft)
+    np.testing.assert_array_equal(kernels.head(weights, x), np.full((rows, 16384), 128))
+    assert len(calls) == 2
+    assert stock_calls == [("head", (rows, 128))]
+
+
+@pytest.mark.parametrize("depth", [1, 2, 3, 4, 5, None])
+@pytest.mark.parametrize("device", [False, True])
+@pytest.mark.parametrize("packed", [False, True])
+def test_propose_projects_only_consumed_rows(kernels, depth, device, packed):
+    """Execute the full proposal orchestration with NumPy component doubles."""
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "rapid_mlx/models/deepseek_v41_native/dspark.py"
+    )
+    tree = ast.parse(path.read_text(), filename=str(path))
+    cls = next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "DSpark"
+    )
+    propose = next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "propose"
+    )
+    propose.body = [n for n in propose.body if not isinstance(n, ast.ImportFrom)]
+    events, head_inputs, markov_inputs = [], [], []
+    namespace = dict(
+        mx=SimpleNamespace(
+            **{
+                name: getattr(np, name)
+                for name in (
+                    "array",
+                    "int32",
+                    "float32",
+                    "concatenate",
+                    "full",
+                    "repeat",
+                    "broadcast_to",
+                    "all",
+                    "isfinite",
+                )
+            },
+            async_eval=lambda *_: None,
+            eval=lambda *_: None,
+        ),
+        draft_kernels=kernels,
+        _hc_pre=lambda hidden, pre: hidden[:, 0],
+        _hc_post=lambda value, hidden, post, combine: hidden + value[:, None],
+    )
+    exec(
+        compile(ast.Module(body=[propose], type_ignores=[]), str(path), "exec"),
+        namespace,
+    )
+
+    def mixes(base, kind, hidden):
+        events.append((base, kind, hidden.shape[0]))
+        return None, None, None
+
+    def norm(base, value):
+        events.append((base, "norm", value.shape[0]))
+        return value + 1
+
+    def head(value):
+        head_inputs.append(value.copy())
+        return value
+
+    def markov(base, logits, previous):
+        markov_inputs.append(logits.copy())
+        return previous + 1, logits, np.ones((1, 3))
+
+    draft = SimpleNamespace(
+        block_size=5,
+        position=2,
+        layers=[0, 1, 2],
+        c={"dspark_noise_token_id": 0, "hc_mult": 4},
+        w=SimpleNamespace(
+            embedding=lambda base, ids: np.repeat(np.arange(5)[:, None], 3, axis=1),
+            linear=lambda base, value: value,
+        ),
+        adapter=SimpleNamespace(mixes=mixes, norm=norm, moe=lambda base, value: value),
+        attention=lambda base, value, stage: value,
+        head=head,
+        markov=markov,
+    )
+    if packed:
+        draft.adapter._packed_mtp_moe = True
+    proposals, status = namespace["propose"](draft, 4, depth=depth, device=device)
+    consumed = 5 if depth is None else depth
+    assert len(proposals) == consumed + 1
+    np.testing.assert_array_equal(proposals, np.arange(4, 5 + consumed))
+    assert len(head_inputs) == 1 and head_inputs[0].shape == (consumed, 3)
+    assert head_inputs[0].dtype == np.float32
+    # Each full-block stage maps h to 4*h + 3; final norm adds one.
+    expected = np.repeat((64 * (np.arange(consumed) + 1))[:, None], 3, axis=1)
+    np.testing.assert_array_equal(head_inputs[0], expected)
+    assert len(markov_inputs) == consumed
+    np.testing.assert_array_equal(np.concatenate(markov_inputs), head_inputs[0])
+    assert events and all(rows == 5 for _, _, rows in events)
+    if device:
+        assert status
+    else:
+        assert status.shape == (consumed, 6)
+
+
 def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
     """Four tiny target owners produce eight warnings, not repeated checks."""
     path = (
@@ -147,7 +314,7 @@ def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
     )
     launches = []
 
-    def broken_launch(weight, probe):
+    def broken_launch(weight, probe, shared):
         launches.append(weight)
         raise RuntimeError("FP32 weight forced into BF16 kernel")
 
@@ -160,6 +327,7 @@ def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
         "MAX_ROWS": 8,
         "_CHECK_ATTR": "_rapid_exact_head_check",
         "_launch": broken_launch,
+        "_shares_weight_read": lambda _: False,
         "weakref": weakref,
         "logger": logging.getLogger("target_qualification_cpu"),
     }

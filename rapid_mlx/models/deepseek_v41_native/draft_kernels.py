@@ -76,7 +76,7 @@ def disable_nonfinite(draft):
 
 
 def head(weights, x):
-    """Use supported draft GEMV; the target verifies every emitted token."""
+    """Reuse the head GEMV's shared weight read for multi-row draft logits."""
     stock = lambda value: weights.linear("head", value)
     if not ENABLED:
         return stock(x)
@@ -86,6 +86,8 @@ def head(weights, x):
     # Quantized/bias-bearing heads must retain their original projection.
     if "head.scales" in weights.entries or "head.bias" in weights.entries:
         return stock(x)
+    # _launch selects the existing shared-read vocabulary kernel for multiple
+    # rows. Keep draft finite checks here instead of target bitwise qualification.
     return _checked(
         weights,
         "head",
