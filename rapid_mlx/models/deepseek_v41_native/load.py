@@ -32,6 +32,7 @@ import mlx.nn as nn
 from mlx.utils import tree_flatten
 
 from ...model_load_errors import typed_mlx_load_boundaries
+from ...runtime.ubc_evict import ubc_evict
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
 from .model import Model
@@ -314,6 +315,14 @@ def load(
             model.load_weights(items, strict=False)
         if not lazy:
             mx.eval([v for _, v in items])
+            if items:
+                # MLX reads each shard through the file cache, so a
+                # materialized shard is held twice: once in its own buffers
+                # and once as cached file pages. Drop the cached copy now
+                # rather than leaving the kernel to reclaim it while the next
+                # shards are allocated, so the load peak stays near the
+                # resident weights instead of weights plus file cache.
+                ubc_evict(shard)
         loaded.update(k for k, _ in items)
         del w
 

@@ -608,3 +608,71 @@ def test_model_only_snapshots_cache_when_rollback_is_enabled(monkeypatch) -> Non
 
     model(mx.array([[1]]), cache, enable_rollback=True)
     assert calls == 1
+
+
+class _RecordingMx:
+    """``mx`` stand-in that records evaluations in the shared event log."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def __getattr__(self, name):
+        return getattr(mx, name)
+
+    def eval(self, *arrays):
+        self._events.append(("eval", len(arrays[0]) if arrays else 0))
+        return mx.eval(*arrays)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_load_releases_each_materialized_shard_from_the_file_cache(
+    tmp_path, monkeypatch, lazy
+) -> None:
+    _write_offload_fixture(tmp_path)
+    # A second shard whose tensors all stay on disk (Disk Engram) is never
+    # materialized, so there is nothing of it to release.
+    mx.save_safetensors(
+        str(tmp_path / "zz-engram-only.safetensors"),
+        {"layers.1.engram.embed.extra": mx.zeros((1, 1))},
+    )
+    _patch_minimal_offload_loader(monkeypatch)
+    monkeypatch.delenv("DSV41_LAZY", raising=False)
+    original_load = json.load
+
+    def config_or_index(stream):
+        if stream.name.endswith("index.json"):
+            data = original_load(stream)
+            data["weight_map"]["layers.1.engram.embed.extra"] = (
+                "zz-engram-only.safetensors"
+            )
+            return data
+        return {"quantization": {"group_size": 32, "engram_bits": 2}}
+
+    monkeypatch.setattr(native_load.json, "load", config_or_index)
+    events = []
+    monkeypatch.setattr(native_load, "mx", _RecordingMx(events))
+    monkeypatch.setattr(
+        native_load, "ubc_evict", lambda path: events.append(("evict", Path(path).name))
+    )
+    original_vision = native_load.VISION_PREFIXES
+    monkeypatch.setattr(
+        native_load,
+        "VISION_PREFIXES",
+        (*original_vision, "layers.1.engram.embed.extra"),
+    )
+
+    model, _args = native_load.load(
+        str(tmp_path), lazy=lazy, strict=False, engram_ssd_offload=True
+    )
+
+    if lazy:
+        # Lazy loads read weights on demand, so their source must stay cached.
+        assert not [event for event in events if event[0] == "evict"]
+    else:
+        # The shard is released only after its own tensors were evaluated.
+        evictions = [index for index, event in enumerate(events) if event[0] == "evict"]
+        assert [events[index] for index in evictions] == [
+            ("evict", "model.safetensors")
+        ]
+        assert events[evictions[0] - 1] == ("eval", 1)
+    model.layers[0].engram.embed.close()
