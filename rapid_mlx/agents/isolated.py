@@ -315,12 +315,16 @@ def configure(
             if git
             else None
         )
+        # The actual user HOME is already hidden from Aider by its private
+        # HOME. It may also be Terminal's working directory on Desktop.
+        user_home = Path.home().resolve()
         dirs = {cwd}
         if git_root and git_root.returncode == 0:
             dirs.add(Path(git_root.stdout.strip()).resolve())
         if any(
             (directory / filename).exists() or (directory / filename).is_symlink()
             for directory in dirs
+            if directory != user_home
             for filename in (".aider.conf.yml", ".aider.model.settings.yml", ".env")
         ):
             raise ValueError(
@@ -398,7 +402,31 @@ def configure(
                 if not isinstance(saved, dict):
                     raise ValueError("invalid isolated crush saved configuration")
                 saved.pop("providers", None)
-                saved.pop("models", None)
+                models = saved.get("models")
+                if isinstance(models, dict):
+                    tuning = {
+                        "max_tokens",
+                        "temperature",
+                        "top_p",
+                        "top_k",
+                        "frequency_penalty",
+                        "presence_penalty",
+                    }
+                    saved["models"] = {
+                        slot: {
+                            "provider": "rapid-mlx",
+                            "model": model,
+                            **{
+                                field: value
+                                for field, value in selected.items()
+                                if field in tuning
+                            },
+                        }
+                        for slot, selected in models.items()
+                        if slot in ("large", "small") and isinstance(selected, dict)
+                    }
+                else:
+                    saved.pop("models", None)
                 options = saved.get("options")
                 if isinstance(options, dict):
                     options.pop("data_directory", None)

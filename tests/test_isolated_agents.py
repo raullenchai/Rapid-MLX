@@ -1089,7 +1089,10 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
     data = root / "data" / project_id
     data.mkdir(parents=True)
     stale = {
-        "models": {"large": {"model": "cloud"}},
+        "models": {
+            "large": {"model": "cloud", "provider": "cloud", "temperature": 0.4},
+            "small": {"model": "cloud-small", "provider": "cloud", "max_tokens": 2048},
+        },
         "providers": {"cloud": {"api_key": "fake"}},
         "options": {
             "data_directory": "/tmp/remote",
@@ -1106,6 +1109,18 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
     isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
     for saved in (data / "crush.json", global_data / "crush.json"):
         assert json.loads(saved.read_text()) == {
+            "models": {
+                "large": {
+                    "provider": "rapid-mlx",
+                    "model": "qwen3.5-9b-4bit",
+                    "temperature": 0.4,
+                },
+                "small": {
+                    "provider": "rapid-mlx",
+                    "model": "qwen3.5-9b-4bit",
+                    "max_tokens": 2048,
+                },
+            },
             "options": {"compact_mode": True},
             "theme": "dark",
         }
@@ -1121,6 +1136,9 @@ def test_crush_rejects_invalid_saved_config(private_home, monkeypatch):
         isolated.connection_dir() / "agents" / "crush" / "global-data" / "crush.json"
     )
     saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_text('{"models": ["cloud"], "theme": "dark"}')
+    isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    assert json.loads(saved.read_text()) == {"theme": "dark"}
     saved.write_text("[]")
     with pytest.raises(ValueError, match="saved configuration"):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
@@ -1233,6 +1251,16 @@ def test_aider_rejects_project_configuration_before_writing_state(
     (project / ".env").write_text("AIDER_MODEL_SETTINGS_FILE=cloud-models.yml\n")
     with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+
+
+def test_aider_allows_existing_home_config_from_home_directory(
+    private_home, monkeypatch
+):
+    config = private_home / ".aider.conf.yml"
+    config.write_text("model: cloud\n")
+    monkeypatch.chdir(private_home)
+    isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    assert config.read_text() == "model: cloud\n"
 
 
 def test_aider_requires_git_for_private_home_shim(private_home, monkeypatch):
