@@ -81,9 +81,11 @@ class AudioProcessor:
             self._loaded = True
             logger.info(f"Audio processor loaded: {self.model_name}")
         except ImportError as e:
+            from rapid_mlx.connect import package_install_command
+
             logger.error(f"mlx-audio not installed: {e}")
             raise ImportError(
-                "mlx-audio is required. Install with: pip install mlx-audio"
+                f"mlx-audio is required. Install with: {package_install_command('mlx-audio')}"
             ) from e
 
     def separate(

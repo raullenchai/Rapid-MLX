@@ -10,6 +10,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from rapid_mlx.connect import package_install_command
+
 from .schema import Question, answer_from_probabilities, clm_pairs, to_text
 
 
@@ -44,7 +46,7 @@ class LayaBackend:
         except ImportError as exc:
             raise RuntimeError(
                 "Laya requires Python 3.11+ and the System One extra. "
-                "Install with: pip install 'rapid-mlx[system-one]'"
+                f"Install with: {package_install_command('rapid-mlx[system-one]')}"
             ) from exc
         self._agent = load(model, device=device, dtype=dtype, batch_size=batch_size)
         self.default_model = model
@@ -144,7 +146,8 @@ class ClefBackend:
                 installed = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError as exc:
                 raise RuntimeError(
-                    "Clef requires the optional runtime: pip install 'rapid-mlx[clef]'"
+                    "Clef requires the optional runtime: "
+                    f"{package_install_command('rapid-mlx[clef]')}"
                 ) from exc
             if installed not in SpecifierSet(constraint):
                 raise RuntimeError(
@@ -317,7 +320,7 @@ class ClefMLXBackend:
         if importlib.util.find_spec("mlx_vlm") is None:
             raise RuntimeError(
                 "native Clef requires the vision runtime: "
-                "pip install 'rapid-mlx[vision]'"
+                f"{package_install_command('rapid-mlx[vision]')}"
             )
         if named:
             from rapid_mlx._mirror import pinned_snapshot_download

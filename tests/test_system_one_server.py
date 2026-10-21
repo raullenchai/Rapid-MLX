@@ -321,11 +321,13 @@ def test_schema_renders_structured_values_and_all_answer_types():
 
 
 def test_laya_backend_adapter_and_errors(monkeypatch):
+    from rapid_mlx.connect import package_install_command
     from rapid_mlx.system_one.backends import LayaBackend
 
     monkeypatch.setitem(sys.modules, "laya_mlx", None)
-    with pytest.raises(RuntimeError, match="system-one"):
+    with pytest.raises(RuntimeError, match="system-one") as error:
         LayaBackend("missing")
+    assert package_install_command("rapid-mlx[system-one]") in str(error.value)
 
     calls = []
 
@@ -360,6 +362,27 @@ def test_laya_backend_adapter_and_errors(monkeypatch):
         {"rank": 2, "candidate": "a", "prob": 0.2},
     ]
     assert backend.models()[0]["backend"] == "laya-mlx"
+
+
+def test_clef_missing_runtimes_use_active_python(monkeypatch):
+    import importlib.metadata
+    import importlib.util
+
+    from rapid_mlx.connect import package_install_command
+    from rapid_mlx.system_one.backends import ClefBackend, ClefMLXBackend
+
+    def missing_package(_name):
+        raise importlib.metadata.PackageNotFoundError("torch")
+
+    monkeypatch.setattr(importlib.metadata, "version", missing_package)
+    with pytest.raises(RuntimeError) as clef_error:
+        ClefBackend("clef-flash", device="cpu")
+    assert package_install_command("rapid-mlx[clef]") in str(clef_error.value)
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+    with pytest.raises(RuntimeError) as vision_error:
+        ClefMLXBackend("clef-mlx", device="cpu")
+    assert package_install_command("rapid-mlx[vision]") in str(vision_error.value)
 
 
 @pytest.mark.requires_mlx

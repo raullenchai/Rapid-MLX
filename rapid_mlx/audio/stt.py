@@ -679,9 +679,12 @@ class STTEngine:
             self._loaded = True
             logger.info(f"STT model loaded: {self.model_name}")
         except ImportError as e:
+            from rapid_mlx.connect import package_install_command
+
             logger.error(f"mlx-audio not installed: {e}")
             raise ImportError(
-                "mlx-audio is required for STT. Install with: pip install mlx-audio"
+                "mlx-audio is required for STT. Install with: "
+                f"{package_install_command('mlx-audio')}"
             ) from e
 
     def _ensure_whisper_processor(self) -> None:

@@ -211,6 +211,8 @@ def test_clef_backend_loads_pinned_checkpoint_without_remote_code(
 def test_clef_backend_rejects_bad_setup(monkeypatch):
     import importlib.metadata
 
+    from rapid_mlx.connect import package_install_command
+
     torch = pytest.importorskip("torch")
     with pytest.raises(ValueError, match="unknown Clef model"):
         ClefBackend("Cloudflare/not-clef", device="cpu")
@@ -225,8 +227,9 @@ def test_clef_backend_rejects_bad_setup(monkeypatch):
         return original_version(package)
 
     monkeypatch.setattr(importlib.metadata, "version", missing_torch)
-    with pytest.raises(RuntimeError, match="optional runtime"):
+    with pytest.raises(RuntimeError, match="optional runtime") as error:
         ClefBackend("clef-flash", device="cpu")
+    assert package_install_command("rapid-mlx[clef]") in str(error.value)
     monkeypatch.setattr(
         importlib.metadata,
         "version",

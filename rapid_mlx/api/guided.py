@@ -30,6 +30,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from rapid_mlx.connect import package_install_command
+
 # ``GuidedSchemaCompileError`` originally lived in THIS module; it now lives in
 # the dependency-free ``errors`` module (so the app-startup exception handler
 # and route modules can reference it without triggering native MLX / llguidance
@@ -93,11 +95,12 @@ except ImportError as _guided_import_error:
     # still disabled.
     logger.warning(
         "Guided generation disabled: could not import the llguidance "
-        "stack (%s: %s). Install the extra with `pip install "
-        "'rapid-mlx[guided]'`; if it is installed, this indicates a "
+        "stack (%s: %s). Install the extra with `%s`; "
+        "if it is installed, this indicates a "
         "broken or version-incompatible llguidance/mlx install.",
         type(_guided_import_error).__name__,
         _guided_import_error,
+        package_install_command("rapid-mlx[guided]"),
     )
     HAS_LLGUIDANCE = False
     mx = None
@@ -241,7 +244,7 @@ class GuidedGenerator:
         if not HAS_LLGUIDANCE:
             raise ImportError(
                 "llguidance is required for guided generation. "
-                "Install with: pip install 'rapid-mlx[guided]'"
+                f"Install with: {package_install_command('rapid-mlx[guided]')}"
             )
 
         self._model = model

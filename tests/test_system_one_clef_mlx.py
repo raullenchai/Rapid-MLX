@@ -670,8 +670,11 @@ def test_backend_resolves_pinned_aliases_and_local_directories(tmp_path, monkeyp
     with pytest.raises(ValueError, match="'gpu' or 'cpu'"):
         ClefMLXBackend("clef-mlx", device="npu")
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[vision\]"):
+    with pytest.raises(RuntimeError, match=r"rapid-mlx\[vision\]") as error:
         ClefMLXBackend("clef-mlx")
+    from rapid_mlx.connect import package_install_command
+
+    assert package_install_command("rapid-mlx[vision]") in str(error.value)
 
 
 def test_cli_selects_and_starts_the_native_clef_backend(monkeypatch):

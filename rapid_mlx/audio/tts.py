@@ -656,9 +656,12 @@ class TTSEngine:
                 f"TTS model loaded: {self.model_name} (family: {self._model_family})"
             )
         except ImportError as e:
+            from rapid_mlx.connect import package_install_command
+
             logger.error(f"mlx-audio not installed: {e}")
             raise ImportError(
-                "mlx-audio is required for TTS. Install with: pip install mlx-audio"
+                "mlx-audio is required for TTS. Install with: "
+                f"{package_install_command('mlx-audio')}"
             ) from e
 
     def generate(

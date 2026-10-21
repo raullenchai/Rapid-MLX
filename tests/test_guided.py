@@ -435,12 +435,14 @@ class TestGuidedGenerator:
 
     def test_init_raises_import_error_without_llguidance(self):
         import rapid_mlx.api.guided as guided
+        from rapid_mlx.connect import package_install_command
 
         original = guided.HAS_LLGUIDANCE
         try:
             guided.HAS_LLGUIDANCE = False
-            with pytest.raises(ImportError, match="llguidance is required"):
+            with pytest.raises(ImportError, match="llguidance is required") as error:
                 guided.GuidedGenerator(None, None)
+            assert package_install_command("rapid-mlx[guided]") in str(error.value)
         finally:
             guided.HAS_LLGUIDANCE = original
 

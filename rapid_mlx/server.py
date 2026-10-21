@@ -3524,11 +3524,13 @@ async def init_mcp(config_path: str):
 
     try:
         await _start_mcp(config_path)
-    except ImportError:
+    except ImportError as exc:
         from rapid_mlx.connect import package_install_command
 
         _mcp_init_error = (
-            f"MCP SDK not installed. Install with: {package_install_command('mcp')}"
+            str(exc)
+            if getattr(exc, "name", None) == "yaml"
+            else f"MCP SDK not installed. Install with: {package_install_command('mcp')}"
         )
         logger.error(_mcp_init_error)
         _mcp_manager = None
