@@ -37,9 +37,9 @@ from mlx_lm.models.mla import MultiLinear  # noqa: E402
 
 from .compressor import Compressor
 from .config import ModelArgs
-from .fakequant import fake_quant_fp4_e4m3, fake_quant_fp8_ue8m0
 from .indexer import Indexer
 from .layers import RMSNorm, precompute_freqs_cis, rope_tail
+from .rope_quant import rope_fake_quant
 from .sparse_attention import sparse_attn
 
 
@@ -155,8 +155,7 @@ class Attention(nn.Module):
 
         # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
         kv = self.kv_norm(self.wkv(x))
-        kv = rope_tail(kv, rd, c_q, s_q)
-        kv = fake_quant_fp8_ue8m0(kv, 32)
+        kv = rope_fake_quant(kv, rd, c_q, s_q, "fp8_ue8m0")
 
         lc = cache.layers[self.layer_id]
         prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
@@ -199,9 +198,9 @@ class Attention(nn.Module):
                 g0 = start_pos // self.ratio
                 g = latents.shape[1]
                 pos = (g0 + mx.arange(g)) * self.ratio  # group j at position j*ratio
-                latents = rope_tail(latents, rd, cos[pos], sin[pos])
-                latents = fake_quant_fp4_e4m3(latents, 16)
-                lc.comp_kv[:bsz, g0 : g0 + g] = latents.astype(lc.dtype)
+                lc.comp_kv[:bsz, g0 : g0 + g] = rope_fake_quant(
+                    latents, rd, cos[pos], sin[pos], "fp4_e4m3", lc.dtype
+                )
 
             if compress_len:
                 comp = src.comp_kv[:bsz, :compress_len].astype(kv.dtype)
