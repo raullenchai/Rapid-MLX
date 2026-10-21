@@ -1109,6 +1109,15 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     return profile.hf_path if profile is not None else _imported_or(name)
 
 
+def resolve_hub_model(name: str) -> str:
+    """Resolve ``name`` for commands that manage the Hugging Face cache.
+
+    Same as :func:`resolve_model` but never returns a model found in an
+    external model folder: ``pull`` and ``rm`` act on the Hub repo id.
+    """
+    return resolve_model(name, include_external_roots=False)
+
+
 def _imported_or(name: str) -> str:
     """A ``rapid-mlx import`` result is served by its bare name."""
     from .byom.imports import imported_model_path

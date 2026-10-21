@@ -50,7 +50,7 @@ def external_model(monkeypatch, tmp_path) -> Path:
 @pytest.mark.parametrize("name", [ALIAS, REPO])
 def test_resolver_without_external_roots_returns_hub_id(external_model, name):
     assert model_aliases.resolve_model(name) == os.path.realpath(external_model)
-    assert model_aliases.resolve_model(name, include_external_roots=False) == REPO
+    assert model_aliases.resolve_hub_model(name) == REPO
 
 
 def test_serve_still_uses_external_folder(external_model, monkeypatch):
