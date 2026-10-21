@@ -11233,6 +11233,11 @@ def _pinned_checkpoint_revision(repo_id: str) -> str | None:
     return IMAGE_MODEL_REVISIONS.get(repo_id) or WAN_REVISIONS.get(repo_id)
 
 
+# Commands that download into or delete from the Hugging Face cache. They
+# operate on the Hub repo id, never on a model found in an external folder.
+_HF_CACHE_COMMANDS = frozenset({"pull", "rm"})
+
+
 def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
@@ -11260,7 +11265,7 @@ def pull_command(args):
     # data-only security boundary fail-closed for direct/internal calls too.
     from rapid_mlx.model_aliases import resolve_model
 
-    resolved_primary = resolve_model(primary_repo)
+    resolved_primary = resolve_model(primary_repo, include_external_roots=False)
     if resolved_primary in IMAGE_MODEL_DATA_FILES and resolved_primary != primary_repo:
         primary_args = copy.copy(args)
         primary_args._original_alias = (
@@ -15100,7 +15105,12 @@ def main():
                 args.model = resolved_model_ref(args.model)
                 resolved = args.model
             raise_if_missing_local_model(args.model)
-            resolved = resolve_model(args.model)
+            resolved = resolve_model(
+                args.model,
+                include_external_roots=(
+                    getattr(args, "command", None) not in _HF_CACHE_COMMANDS
+                ),
+            )
             if getattr(args, "command", None) == "serve":
                 validating_local_model = True
                 validate_local_model_for_serve(resolved)
