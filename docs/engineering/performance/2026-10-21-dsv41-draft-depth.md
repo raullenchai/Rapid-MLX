@@ -144,3 +144,63 @@ serving rolls back target cache offsets and restores overwritten window slots;
 the round is recomputed using the stock draft path for the failed component.
 Unsupported kernel layouts retain the stock draft path. Non-finite stock draft
 results still fail the request.
+
+## Negative result: multi-row attention projection GEMV (shelved)
+
+A custom Metal GEMV shared weight loads across 1–8 rows for five affine attention
+projections: `wq_a` 1280×5120, `wq_b` 32768×1280, `wkv` 512×5120, grouped
+`wo_a` 8×1024×4096, and `wo_b` 5120×8192 (4/8-bit, group size 64). Each row
+was bit-identical to the stock single-row projection. The motivation was a
+roofline estimate of about 5.5 ms/token recoverable in attention projections.
+
+A/B environment: M3 Ultra 256 GB, v2 checkpoint `c521050a`, in-process
+synchronized timers, depth 4, 256 tokens, greedy decoding, same GPU window.
+Baseline main `95f2215d4` was compared with `vector/dsv41-attn-gemv` at
+`14c9bba8c`. Times below are milliseconds.
+
+| Phase | Prompt | Baseline | Candidate |
+| --- | --- | --- | --- |
+| Verify (5 rows) | p1008 | 79.6 | 89.4 |
+| Verify (5 rows) | qa | 76.1 | 87.7 |
+| Verify (5 rows) | code | 75.9 | 87.4 |
+| Target-only step | p1008 | 37.0 | 37.8 |
+| Target-only step | qa | 30.5 | 33.2 |
+| Target-only step | code | 30.4 | 34.0 |
+
+Server single-stream results at default depth 2, per-stream decode tok/s over
+two rounds:
+
+| Prompt | Baseline | Candidate |
+| --- | --- | --- |
+| p1008 | 36.5 / 30.4 | 29.6 / 28.8 |
+| qa | 28.7 / 31.8 | 31.4 / 31.7 |
+
+These shared-machine results are noisier than the measured-defaults table;
+the candidate showed no throughput gain.
+
+The synthetic per-projection microbenchmark on the shelved branch,
+`scripts/bench_deepseek_v41_attention_gemv.py`, used synchronized timers,
+5 warm-up calls, 20 repeats, and float32 activations. Candidate/stock speed was
+0.73–0.99× for almost all projection/bit/row combinations with rows in {1, 5}.
+Exceptions at 5 rows were `wq_b` (1.20× at 8-bit, 1.35× at 4-bit) and `wo_b`
+8-bit (1.07×). Per-call times were 0.25–0.44 ms, with effective weight bandwidth
+of 5–150 GB/s.
+
+The results indicate launch/occupancy limits rather than weight-bandwidth limits:
+the 5.5 ms roofline estimate does not apply, and replacing the GEMV kernel does
+not recover it. Per-projection GEMV kernel work is shelved; further attention-side
+gains require fewer dispatches through fusion or graph compilation, rather than
+better bandwidth. Branches `vector/dsv41-attn-gemv` and
+`vector/dsv41-attn-gemv-test` are retained for reference. The latter includes a
+tiny-model test showing spec-on equals spec-off when every attention projection
+uses the per-row kernel; it passes on Metal.
+
+### Speculative vs plain greedy output
+
+On the real checkpoint, greedy speculative output is not guaranteed token-identical
+to plain decoding. Batched verify uses different multi-row reduction orders from
+single-row decode, so near-ties can fork. At depth 4 on main `95f2215d4`, the
+first divergence was token 38 (`p1008`), 63 (`qa`), and 237 (`code`); plain-decode
+token hashes were unchanged by the candidate. This is expected numerics, not a
+correctness bug; token identity is not a product invariant. Every emitted token
+is still the target model's greedy choice under the verify computation.
