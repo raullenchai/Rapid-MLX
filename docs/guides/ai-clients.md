@@ -1,279 +1,39 @@
-# AI Client Compatibility
+# AI clients
 
-Rapid-MLX is compatible with any AI client that supports the OpenAI API
-or Anthropic Messages API. This guide catalogs known-compatible clients,
-provides configuration examples, and tracks community-reported results.
-
-## API Compatibility Surface
-
-Rapid-MLX exposes two primary interfaces:
-
-| API | Endpoints | Use Case |
-|-----|-----------|----------|
-| **OpenAI-compatible** | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/speech` | Most AI clients, frameworks, and IDEs |
-| **Anthropic-compatible** | `/v1/messages`, `/v1/messages/count_tokens` | Claude Code, OpenCode, and other Anthropic SDK consumers |
-
-Clients that prepare prompts ahead of sending can use the Rapid-MLX
-[cache prefill API](cache-prefill.md). It requires an exact matching prompt
-prefix in the later chat request.
-
-Feature support available across both APIs:
-
-- Streaming (SSE)
-- Tool calling / function calling
-- Structured output (JSON mode, JSON schema)
-- Reasoning / chain-of-thought extraction
-- Multi-turn conversations
-- Vision (multimodal models)
-- Embeddings
-- Audio transcription
-- Text-to-speech
-
-## Quick Configuration Pattern
-
-Most OpenAI-compatible clients need three values:
-
-```
-Base URL:  http://localhost:8000/v1
-API Key:   not-needed (or any non-empty string if required)
-Model:     default (or the model ID from rapid-mlx models)
-```
-
-For Anthropic-compatible clients, leave off the `/v1` path:
-
-```
-Base URL:  http://localhost:8000
-API Key:   not-needed
-```
-
-> **Heads-up (L-01):** the Anthropic Python SDK silently appends
-> `/v1/messages` to whatever `base_url` you give it. If you pass
-> `http://localhost:8000/v1`, requests go to `/v1/v1/messages` and the
-> server returns `404`. Always pass the bare host (`http://localhost:8000`).
-> Full write-up in
-> [SDK Compatibility Notes — L-01](sdk-compat.md#l-01--anthropic-sdk-base_url-must-not-include-v1).
-
-## Verified Compatible Clients
-
-These clients have been verified through automated integration tests
-(`tests/integrations/`) or maintainer testing.
-
-### Frameworks and SDKs
-
-| Client | Type | Setup | Plain | Stream | Tools | Notes |
-|--------|------|-------|-------|--------|-------|-------|
-| [OpenAI SDK](https://pypi.org/project/openai/) | SDK | `base_url="http://localhost:8000/v1"` | Yes | Yes | Yes | Drop-in replacement |
-| [Anthropic SDK](https://pypi.org/project/anthropic/) | SDK | `base_url="http://localhost:8000"` | Yes | Yes | Yes | Uses `/v1/messages` |
-| [PydanticAI](https://ai.pydantic.dev) | Framework | `base_url="http://localhost:8000/v1"` | Yes | Yes | Yes | Typed agents, structured output |
-| [LangChain](https://langchain.com) | Framework | `ChatOpenAI(base_url="http://localhost:8000/v1")` | Yes | Yes | Yes | `ChatOpenAI`, tools, streaming |
-| [smolagents](https://huggingface.co/docs/smolagents) | Framework | `OpenAIServerModel(api_base="http://localhost:8000/v1")` | Yes | — | Yes | CodeAgent + ToolCallingAgent |
-
-### Coding Agents
-
-To run Codex, Claude Code, OpenCode, Pi, Hermes or Crush with a local Mac model, install Rapid-MLX with `curl -fsSL https://rapidmlx.com/install.sh | bash`, restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), install the agent, then run `rapid-mlx launch <agent>`. For a connection that still works after restarting Rapid, use **Launch → Coding
-agents → Launch** in Desktop. The app saves a private profile for the selected
-agent and opens it in Terminal. On later days, use the short command shown
-beside that agent, such as `rapid-mlx launch codex`. It reuses the saved model,
-starts the local server if needed, waits for it, and opens the agent.
-
-The CLI offers the same isolated profiles without changing your existing agent
-settings:
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, then run an installed coding agent with a local model:
 
 ```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
 rapid-mlx launch codex
-# Later, even after quitting Rapid and opening a new terminal:
-rapid-mlx launch codex
-# Remove only Rapid's private Codex profile:
-rapid-mlx launch codex --remove
 ```
 
-Replace `codex` with `claude-code`, `pi`, `opencode`, `hermes`, `goose`,
-`qwen-code`, `crush`, or `aider`. If a server already runs on a chosen port,
-pass `--port PORT` when saving the profile. The key and port stay under
-`~/.rapid-mlx/connect`; config files and the key are owner-only. Desktop
-connects on loopback and switches the embedded key to **Until I rotate** when
-you save a persistent agent connection. Rotating the key requires restarting
-the model before agents can use the new key.
+Use `claude-code`, `opencode`, `pi`, `hermes`, `crush`, or `goose` in place of `codex`. The command creates a private Rapid profile, starts the server if needed, and opens the agent. Use the same command on later days. `rapid-mlx launch codex --remove` removes Rapid's Codex profile. Run `rapid-mlx launch list` for additional integrations.
 
-OpenCode keeps its settings, credentials, and sessions in the private profile,
-but the shell commands it runs see your normal home directory and XDG folders, so
-git identity, CLI logins, and toolchains behave as in your own terminal.
+The [agent guides](https://rapidmlx.com/docs/agents/) cover each path. Claude Desktop uses its [official in-app Gateway settings](../integrations/claude-desktop.md).
 
-The generated files remain separate from your existing tool settings. If the
-server is already running, you can use the agent's native command with its
-private config directory:
+## Connect an app or SDK
+
+Start a local server:
 
 ```bash
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" CODEX_HOME="$HOME/.rapid-mlx/connect/agents/codex" codex --profile rapid
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" PI_CODING_AGENT_DIR="$HOME/.rapid-mlx/connect/agents/pi" pi --provider rapid-mlx --model "$(cat ~/.rapid-mlx/connect/agents/pi/model)"
-RAPID_MLX_API_KEY="$(cat ~/.rapid-mlx/connect/api-key)" HERMES_HOME="$HOME/.rapid-mlx/connect/agents/hermes" hermes -p rapid chat --provider custom --model "$(cat ~/.rapid-mlx/connect/agents/hermes/model)"
-claude --settings "$HOME/.rapid-mlx/connect/agents/claude-code/settings.json"
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
-The short `rapid-mlx launch <agent>` command also checks the key and model,
-starts a stopped server, and keeps track of a changed port. For the original
-config-writing CLI behavior, pass `--legacy-config`.
-
-Tier-1 coding agents have dedicated copy-paste setup pages with per-family
-config, plus an honest test-backed [support matrix](../agents/matrix.md):
-[Codex CLI](../agents/codex-cli.md) ·
-[Claude Code](../agents/claude-code.md) ·
-[OpenCode](../agents/opencode.md) ·
-[Qwen Code](../agents/qwen-code.md) ·
-[OpenHands](../agents/openhands.md) ·
-[Hermes Agent](../agents/hermes-agent.md) ·
-[DeepSeek Harness](../agents/deepseek-harness.md).
-
-| Client | Type | Setup | Status | Notes |
-|--------|------|-------|--------|-------|
-| [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | CLI / TUI / web | `rapid-mlx agents dsh --setup` | Verified | Tier-1 release gate; generic `openai-completions` provider, never `deepseek-official`. Needs Node 22.15+ |
-| [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `rapid-mlx agents claude-code --setup` | Compatible | Safe diff/confirm/backup flow; uses Anthropic `/v1/messages` |
-| [Cursor](https://cursor.com) | IDE | `RAPID_MLX_API_KEY=your-secret rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; public HTTPS and server auth are required |
-| [Continue.dev](https://continue.dev) | IDE Extension | `rapid-mlx agents continue --setup` | Compatible | Safe diff/confirm/backup flow; VS Code / JetBrains |
-| [pi](https://github.com/earendil-works/pi) | CLI | `rapid-mlx agents pi --setup` | Verified | `~/.pi/agent/models.json` (diff preview, consent, backup; your other providers and models are kept); `pi --print --no-session '<task>'` headless |
-| [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
-
-Rapid-MLX rejects explicit local/private Cursor addresses, but it does not use
-your Mac's DNS result as proof that Cursor's backend can reach a hostname.
-Split-horizon DNS may look different from Cursor's network, so verify the
-authenticated HTTPS endpoint from an external network before configuring it.
-
-### Web UIs
-
-| Client | Type | Setup | Status | Notes |
-|--------|------|-------|--------|-------|
-| [Open WebUI](https://openwebui.com) | Docker | `OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1` | Verified | Full chat UI |
-| [LibreChat](https://librechat.ai) | Docker | Configure custom endpoint `http://host.docker.internal:8000/v1` | Verified | Multi-provider chat |
-
-## Clients to Test
-
-The following clients support OpenAI-compatible APIs but have not yet been
-verified against Rapid-MLX. If you have Apple Silicon and can test one,
-see [Testing Methodology](#testing-methodology).
-
-- **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
-- **AutoGen** (Framework) — `base_url="http://localhost:8000/v1"` in `llm_config`
-- **LlamaIndex** (Framework) — `OpenAI(api_base="http://localhost:8000/v1")`
-- **Cline** (CLI and VS Code extension) — `rapid-mlx launch cline` sets Cline's OpenAI Compatible provider in `~/.cline/data/settings/providers.json` (what `cline auth -p openai` writes) and prints the VS Code settings steps: Provider OpenAI Compatible, Base URL `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
-- **Open Interpreter** (CLI) — `OPENAI_API_BASE=http://localhost:8000/v1 interpreter`
-- **Dify** (Platform) — Add custom OpenAI provider at `http://localhost:8000/v1`
-- **n8n AI Nodes** (Automation) — Node config: Base URL `http://localhost:8000/v1`
-- **Bolt.new** (Web) — `ANTHROPIC_BASE_URL=http://localhost:8000`
-- **Tabby** (IDE) — `TABBY_OPENAI_API_BASE=http://localhost:8000/v1`
-- **Windsurf** (IDE) — Settings > OpenAI Base URL
-- **Zed** (IDE) — `assistant.openai_api_url: "http://localhost:8000/v1"` in settings
-
-Clients with a `rapid-mlx agents` profile (pre-built config) not covered
-in the tables above:
-
-- **Codex CLI** (CLI) — `rapid-mlx agents codex --setup`
-- **Kilo Code** (IDE Extension) — `rapid-mlx agents kilo-code --setup`
-- **OpenHands** (Web/Docker) — `rapid-mlx agents openhands --setup`
-
-## Testing Methodology
-
-To contribute a compatibility report for a new client:
-
-1. **Start the server** on a model appropriate for your Mac's RAM:
-   ```bash
-   # 16 GB Mac
-   rapid-mlx serve qwen3.5-4b-4bit --port 8000
-
-   # 24-32 GB Mac
-   rapid-mlx serve qwen3.5-9b-4bit --port 8000
-   ```
-
-2. **Verify the server is reachable:**
-   ```bash
-   curl http://localhost:8000/health
-   curl http://localhost:8000/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{"model":"default","messages":[{"role":"user","content":"Say hello"}],"max_tokens":50}'
-   ```
-
-3. **Configure the client** using the pattern:
-   ```
-   Base URL:  http://localhost:8000/v1
-   API Key:   not-needed
-   Model:     default
-   ```
-
-4. **Test these scenarios** and note results:
-
-| Scenario | What to check |
-|----------|---------------|
-| Basic chat | Non-streaming response arrives, content is correct |
-| Streaming chat | Tokens arrive progressively (SSE) |
-| Tool calling | Model emits tool calls, client parses them, tool results fed back correctly |
-| Multi-turn | Conversation history preserved across turns |
-| Structured output | `response_format: {"type": "json_object"}` produces valid JSON |
-| System prompt | System message influences model behavior |
-
-5. **Report results** in the [issue #47
-   thread](https://github.com/raullenchai/Rapid-MLX/issues/47) with:
-   - Client name and version
-   - Model used
-   - What worked
-   - What did not work (with logs if available)
-   - Any workarounds discovered
-
-### Troubleshooting Common Issues
-
-**Client shows "Connection refused" or times out:**
-- Verify the server is running: `curl http://localhost:8000/health`
-- Check the host setting (`localhost` vs `127.0.0.1` vs `host.docker.internal` for Docker)
-- Ensure no firewall is blocking port 8000
-
-**Client requires an API key but won't accept "not-needed":**
-Try an arbitrary non-empty string. Some clients reject the literal
-string `not-needed`; use `sk-local` or `rapid-mlx` instead.
-
-**Tool calling does not work:**
-- Ensure `--enable-auto-tool-choice` is set on the server
-- Match `--tool-call-parser` to your model (see [Tool Calling](tool-calling.md))
-- Some models need the `hermes` parser for reliable tool calling
-
-**Streaming is slow or choppy:**
-- Adjust `--stream-interval` (lower = smoother, higher = throughput)
-- Check for client-side buffering (some frameworks buffer SSE chunks)
-
-**Model does not appear in the client's model list:**
-- Use `model="default"` -- this always resolves to the loaded model
-- If the client requires a specific model ID from the list endpoint,
-  the `/v1/models` response returns the loaded model's ID
-
-## Rapid-MLX agents CLI
-
-Rapid-MLX ships a built-in agent manager that can auto-configure
-several popular coding agents:
+Wait for the ready address. An OpenAI-compatible client uses `http://localhost:8000/v1`; an Anthropic-compatible client uses `http://localhost:8000`. Set the model to `default` when the client accepts a model ID. A client that requires an API key can use a nonempty placeholder unless server authentication is enabled.
 
 ```bash
-rapid-mlx agents              # List all supported agents
-rapid-mlx agents <name> --setup  # Auto-configure an agent
-rapid-mlx agents hermes --test   # Run the Hermes agent test suite
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Say hello"}]}'
 ```
 
-Currently supported profiles (in `rapid_mlx/agents/profiles/`):
+## Other clients
 
-| Profile | Agent | Auto-setup | Automated Tests |
-|---------|-------|------------|----------------|
-| `aider` | Aider | Env vars | Yes (`test_aider.sh`) |
-| `claude-code` | Claude Code | Env vars | Yes (`test_agents_matrix.py`) |
-| `codex` | Codex CLI | TOML config | Yes (`test_agents_matrix.py`) |
-| `continue` | Continue.dev | YAML config (`~/.continue/config.yaml`) | No |
-| `deepseek-harness` | DeepSeek Harness | YAML config | Yes (`test_deepseek_harness_tier1.py`) |
-| `hermes` | Hermes Agent | YAML config | Yes (`test_hermes.py`) |
-| `kilo-code` | Kilo Code | JSON config | Yes (`test_agents_matrix.py`) |
-| `langchain` | LangChain | Env vars | Yes (`test_langchain.py`) |
-| `opencode` | OpenCode | JSON config | Yes (`test_agents_matrix.py`) |
-| `pi` | Pi Coding Agent | JSON config | Unit tests (`test_pi_profile.py`) |
-| `openhands` | OpenHands | Env vars | Yes (`test_openhands.sh`) |
-| `pydanticai` | PydanticAI | Env vars | Yes (`test_pydantic_ai_full.py`) |
-| `qwen-code` | Qwen Code | JSON config | Yes (`test_agents_matrix.py`) |
-| `smolagents` | smolagents | Env vars | Yes (`test_smolagents_full.py`) |
+Apps and frameworks that let you set a local compatible endpoint can use the same server address. [Aider](../agents/aider.md) and [Qwen Code](../agents/qwen-code.md) have short setup guides. Consult the [server guide](server.md) for authentication and network options and the [CLI reference](../reference/cli.md) for flags.
 
-To add a new agent profile, create a YAML file in
-`rapid_mlx/agents/profiles/` following the structure in
-`aider.yaml`. See `rapid_mlx/agents/base.py` for the data model.
+## Troubleshooting
+
+- Run `rapid-mlx doctor` to check the installation.
+- If a connection fails, check that the server printed a ready address and use its actual port.
+- For an Anthropic SDK client, use the server root. The SDK adds `/v1/messages` itself.
+- If a model cannot call tools, choose a tool-capable model with `rapid-mlx recipe` and consult the [tool-calling guide](tool-calling.md).

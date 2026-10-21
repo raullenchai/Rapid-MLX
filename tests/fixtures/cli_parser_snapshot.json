@@ -3032,7 +3032,7 @@
        "const": null,
        "default": null,
        "dest": "client",
-       "help": "Agent to launch or client to configure (or \"list\" to print the detection matrix). Supported: cline, claude-code, continue-dev, cursor. Aliases: continue (for continue-dev).",
+       "help": "Agent to launch or client to configure. Use \"list\" to see all available agents and editors, including Codex, Claude Code, OpenCode, Pi, Hermes, Crush, and Goose. \"continue\" is an alias for \"continue-dev\".",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],

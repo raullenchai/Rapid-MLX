@@ -3,7 +3,7 @@
 A native SwiftUI Mac app for local LLMs, built on
 [rapid-mlx](https://github.com/raullenchai/Rapid-MLX). It bundles the
 inference engine as a sidecar — no separate install, no Python to manage —
-and gives you a ChatGPT / Ollama-style experience that runs entirely on your
+and gives you a local chat experience that runs entirely on your
 Apple-Silicon Mac. Your weights, your prompts, your data, on device.
 
 Open source (Apache-2.0), part of the [`raullenchai/Rapid-MLX`](https://github.com/raullenchai/Rapid-MLX)
@@ -16,7 +16,7 @@ Download the latest `.dmg` from
 open it, and drag **Rapid-MLX Desktop** to Applications.
 
 > The `rapid-mlx` name belongs to the **engine**, not this app:
-> `pip install rapid-mlx` and `brew install rapid-mlx` (in homebrew-core) both
+> `python3 -m pip install rapid-mlx` and `brew install rapid-mlx` (in homebrew-core) both
 > install the command-line inference server. The desktop app is distributed
 > **only** as a direct download — it bundles the engine, so there is nothing
 > else to install.
@@ -62,20 +62,9 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
 
 ## Privacy
 
-- **Default-on telemetry.** Starting in 0.15.0, anonymous telemetry is on by
-  default and is toggleable in Settings → Privacy or with
-  `rapid-mlx telemetry off`. The app sends its
-  events to `telemetry.rapidmlx.com` (a
-  Cloudflare Worker → R2), while the engine sends its v2 events to PostHog
-  Cloud (US). Both use the same local preference and anonymous install ID so
-  they never double-count an install. Paths are PII-redacted
-  (`/Users/<name>/` scrubbed); chat content and attachments are never sent.
-- **Self-update.** Signed releases use Sparkle to check an EdDSA-signed appcast,
-  download updates in the background, and install them when Rapid-MLX quits.
-  During the migration the existing six-hour version-status request remains;
-  it sends only the app version and records aggregate counts without storing
-  the IP. Opt out of both requests with `RAPIDMLX_NO_UPDATE_CHECK=1` or
-  `DO_NOT_TRACK=1`.
+Chats, attachments, and model weights stay on your Mac. Anonymous usage
+reporting can be switched off in Settings → Privacy. Signed app updates can be
+installed when Rapid-MLX quits.
 
 See [PRIVACY.md](PRIVACY.md) for the full field list, reset behavior, and
 retention.

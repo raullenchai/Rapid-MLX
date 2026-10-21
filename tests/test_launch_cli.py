@@ -1540,7 +1540,9 @@ def test_launch_help_lists_canonical_name_with_alias_noted():
     # before matching so the assertion doesn't depend on wrap width.
     help_text = " ".join(sub.choices["launch"].format_help().split())
     assert "continue-dev" in help_text
-    assert "Aliases: continue (for continue-dev)" in help_text
+    assert '"continue" is an alias for "continue-dev"' in help_text
+    for agent in ("Codex", "Claude Code", "OpenCode", "Pi", "Hermes", "Crush", "Goose"):
+        assert agent in help_text
 
 
 @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "abc"])

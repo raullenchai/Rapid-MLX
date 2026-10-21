@@ -2,27 +2,24 @@
 
 **Native AI inference for Apple Silicon** — GPU-accelerated text, image, video, and audio on Mac.
 
-## What is Rapid-MLX?
+Install on an Apple Silicon Mac, restart Terminal, then run a coding agent
+with a local model:
 
-Rapid-MLX is an independent inference engine that brings native Apple Silicon
-GPU acceleration to local AI workloads by integrating:
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+rapid-mlx launch codex
+```
 
-- **[MLX](https://github.com/ml-explore/mlx)**: Apple's ML framework with unified memory and Metal kernels
-- **[mlx-lm](https://github.com/ml-explore/mlx-lm)**: Optimized LLM inference with KV cache and quantization
-- **[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)**: Vision-language models for multimodal inference
-- **[mlx-audio](https://github.com/Blaizzy/mlx-audio)**: Text-to-Speech and Speech-to-Text with native voices
-- **[mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings)**: Text embeddings for semantic search and RAG
+Replace `codex` with `claude-code`, `opencode`, `pi`, `hermes`, `crush`, or
+`goose`. For a terminal conversation, run `rapid-mlx chat`.
+See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 
-## Key Features
+## What Rapid-MLX provides
 
-- **Multimodal** - Text, Image, Video & Audio in one platform
-- **Native GPU acceleration** on Apple Silicon (M1, M2, M3, M4)
-- **Native TTS voices** - Spanish, French, Chinese, Japanese + 5 more languages
-- **OpenAI API compatible** - drop-in replacement for OpenAI client
-- **Embeddings** - OpenAI-compatible `/v1/embeddings` endpoint
-- **MCP Tool Calling** - integrate external tools via Model Context Protocol
-- **Paged KV Cache** - memory-efficient caching with prefix sharing
-- **Continuous Batching** - high throughput for multiple concurrent users
+- Local text and multimodal inference on Apple Silicon
+- OpenAI- and Anthropic-compatible local API routes
+- Coding-agent launch with private profiles
+- Model recommendations based on this Mac's memory
 
 ## Quick Links
 
@@ -48,7 +45,7 @@ GPU acceleration to local AI workloads by integrating:
 - [SDK Compatibility Notes](guides/sdk-compat.md)
 
 ### Coding Agents
-- [Agent Support Matrix](agents/matrix.md) — family × agent, honest PASS/XFAIL
+- [Coding agents](agents/matrix.md) — one-command launch and client guides
 - [Codex CLI](agents/codex-cli.md)
 - [Claude Code](agents/claude-code.md)
 - [OpenCode](agents/opencode.md)

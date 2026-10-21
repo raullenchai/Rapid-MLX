@@ -1,6 +1,17 @@
 # Quick Start
 
-## Option 1: Interactive Chat (fastest first taste)
+Install on an Apple Silicon Mac, restart Terminal, then chat:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+rapid-mlx chat
+```
+
+For a coding agent, install the agent and run `rapid-mlx launch codex`
+(or `claude-code`, `opencode`, `pi`, `hermes`, `crush`, or `goose`).
+See the [agent guides](https://rapidmlx.com/docs/agents/).
+
+## Interactive Chat
 
 The shortest path to talking to a model — `chat` spawns its own server,
 downloads the model on first run (~3 GB for the default `qwen3.5-4b-4bit`), and
@@ -24,14 +35,9 @@ Start the server:
 rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
-The first interactive server start prints its base URL, model ID, and a short
-agent and SDK setup guide. To connect an editor later, keep the server running
-and use `rapid-mlx agents` to list supported tools. For example:
-
-```bash
-rapid-mlx agents claude-code --setup --base-url http://localhost:8000/v1 --model qwen3.5-4b-4bit
-rapid-mlx agents opencode --setup --base-url http://localhost:8000/v1 --model qwen3.5-4b-4bit
-```
+The server prints its address when ready. For coding agents, use
+`rapid-mlx launch <agent>`; it starts a server if needed and saves a private
+profile.
 
 On Desktop, the first completed chat reply also offers the **Agent setup**
 page, which shows the live address and connection details.
@@ -87,7 +93,7 @@ A browser-based chat UI ships in the optional `[chat]` extra as its own
 console script, `rapid-mlx-chat` (not a `rapid-mlx` subcommand):
 
 ```bash
-pip install 'rapid-mlx[chat]'
+python3 -m pip install 'rapid-mlx[chat]'
 # Then run:
 rapid-mlx-chat
 ```
@@ -96,7 +102,7 @@ If you installed with the curl one-liner, the extra must go into the
 installer's venv — plain `pip` targets a different environment:
 
 ```bash
-~/.rapid-mlx/bin/pip install 'rapid-mlx[chat]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[chat]'
 rapid-mlx-chat
 ```
 

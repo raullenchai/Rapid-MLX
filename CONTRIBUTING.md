@@ -10,8 +10,8 @@ git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
-pip install pytest ruff        # dev tools for testing and linting
+python3 -m pip install -e ".[test]"
+python3 -m pip install ruff
 
 # Start a dev server
 rapid-mlx serve qwen3.5-4b-4bit --port 8000

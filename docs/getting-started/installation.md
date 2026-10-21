@@ -1,11 +1,22 @@
 # Installation
 
+Install on an Apple Silicon Mac, then start a local chat:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx chat
+```
+
+If the command is unavailable in the current shell, run
+`export PATH="$HOME/.local/bin:$PATH"`.
+
 ## Requirements
 
-- macOS on Apple Silicon (M1/M2/M3/M4)
-- Python 3.10+
+- macOS on Apple Silicon
+- Python 3.10+ for a manual Python install; image and video need Python 3.11+
 
-## Install with uv (recommended)
+## Install with uv
 
 ```bash
 uv tool install rapid-mlx@latest
@@ -39,7 +50,7 @@ Upgrade later with `brew upgrade rapid-mlx`.
 ## Install with pip
 
 ```bash
-pip install rapid-mlx
+python3.12 -m pip install rapid-mlx
 ```
 
 If `python3 --version` reports 3.9 (macOS default), install a newer Python
@@ -50,26 +61,22 @@ first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
 ```bash
 git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
-pip install -e .
+python3 -m pip install -e .
 ```
 
 ## Optional Extras
 
 The base install includes the vision (mlx-vlm), image-generation (mflux) and
 video-generation (mlx-video) runtimes, so multimodal, image and video models
-start without an extra step. Image and video generation need Python 3.11+. On
-our M2 Pro (Python 3.11, arm64, fresh venv) the base install is about 360 MB to
-download and 1.7 GB on disk. Audio, embeddings and the other features below
+start without an extra step. Image and video generation need Python 3.11+.
+Audio, embeddings and the other features below
 ship as opt-in extras. `vision`, `image`, `video`, `dflash` and `mtp` remain
 accepted extra names for existing scripts; on macOS they add nothing.
 
-| Extra | Install | Adds |
-|---|---|---|
-| `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
-| `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
-| `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
-| `guided` | `pip install 'rapid-mlx[guided]'` | Legacy no-op kept for compatibility — llguidance ships in the core install (it replaced outlines in 0.10) |
-| `all` | `pip install 'rapid-mlx[all]'` | audio + embeddings + chat + System One + Computer Use on top of the base install |
+- **Audio:** `python3.12 -m pip install 'rapid-mlx[audio]'` adds speech and transcription.
+- **Embeddings:** `python3.12 -m pip install 'rapid-mlx[embeddings]'` adds embeddings.
+- **Browser chat:** `python3.12 -m pip install 'rapid-mlx[chat]'` adds the web UI.
+- **All optional runtimes:** `python3.12 -m pip install 'rapid-mlx[all]'`.
 
 When `rapid-mlx serve` finds that an optional runtime is absent, it prints a
 repair command matched to the detected install method. For a
@@ -119,10 +126,8 @@ uname -m  # Should output "arm64"
 
 ### Model download fails
 
-Check your internet connection and HuggingFace access. Some models require authentication:
-```bash
-huggingface-cli login
-```
+Check your internet connection and Hugging Face access. Some models require
+account access; follow the instructions on the model page.
 
 ### Out of memory
 

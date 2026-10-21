@@ -10,7 +10,8 @@ git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
 
 # Install with dev dependencies
-pip install -e ".[dev]"
+python3 -m pip install -e ".[test]"
+python3 -m pip install ruff
 ```
 
 ## Development Workflow

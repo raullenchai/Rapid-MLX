@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from . import ADAPTERS, CLIENT_ALIASES, canonical_client, cursor
+from . import ADAPTERS, canonical_client, cursor
 
 if TYPE_CHECKING:
     from rapid_mlx.agents.base import AgentProfile
@@ -706,14 +706,9 @@ def register(subparsers) -> None:
         nargs="?",
         default=None,
         help=(
-            'Agent to launch or client to configure (or "list" to print the detection matrix). '
-            "Supported: "
-            + ", ".join(ADAPTERS.keys())
-            + ". Aliases: "
-            + ", ".join(
-                f"{alias} (for {target})" for alias, target in CLIENT_ALIASES.items()
-            )
-            + "."
+            'Agent to launch or client to configure. Use "list" to see all available '
+            "agents and editors, including Codex, Claude Code, OpenCode, Pi, Hermes, "
+            'Crush, and Goose. "continue" is an alias for "continue-dev".'
         ),
     )
     p.add_argument(
