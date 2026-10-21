@@ -491,7 +491,7 @@ def session(
             output, _ = read_until(
                 master,
                 proc,
-                min(120, timeout),
+                timeout,
                 sink,
                 stop_when=lambda output: (
                     target.is_file()
@@ -520,7 +520,7 @@ def session(
                 output2, _ = read_until(
                     master,
                     proc,
-                    min(90, timeout),
+                    timeout,
                     sink,
                     stop_when=lambda output: (
                         target.is_file()
