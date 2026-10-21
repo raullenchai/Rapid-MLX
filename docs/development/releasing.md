@@ -254,7 +254,7 @@ Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). B
 The G0a fleet covers these architecture classes: small dense (Qwen 3.5 4B), hybrid MoE (Qwen 3.5 35B), large dense (Qwen 3.6), large MoE (gpt-oss), and multimodal (Gemma 4). If `mlx`, `mlx-lm`, `mlx-vlm`, or `mlx-audio` changed since the previous release tag, the script automatically selects the `toolchain` scope and adds the Ultra-only Hy3 path. This works both before and after the candidate commit is tagged. A shallow checkout with no discoverable tag keeps the normal release scope; pass a base ref explicitly when toolchain comparison is required. To compare against a different release base, set `RELEASE_FLEET_BASE_REF`:
 
 ```bash
-RELEASE_FLEET_BASE_REF="$(git describe --tags --abbrev=0)" make release-check-m3
+RELEASE_FLEET_BASE_REF="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^)" make release-check-m3
 ```
 
 A family may set `"reasoning_distill": true` in `scripts/release_fleet.json` (defaults to false) to mark a reasoning-distill family such as DeepSeek-R1. Such families participate in the G0a coherence sweep like any other, but the sweep boots them with `--thinking` (instead of `--no-thinking`) and passes `--reasoning-distill` to the coherence gate, which serves them with a larger token budget and scores the concluded (post-reasoning) answer against the golden token rather than the raw visible text (issue #1323).
