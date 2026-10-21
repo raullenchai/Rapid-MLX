@@ -2,10 +2,186 @@
 
 ## One-command local launch
 
-Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Codex CLI. Run `rapid-mlx launch codex`. The same command works after a restart; `rapid-mlx launch codex --remove` deletes only Rapid's private profile. Existing Codex CLI settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt.
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Codex CLI. Run `rapid-mlx launch codex`. The same command works after a restart; `rapid-mlx launch codex --remove` deletes only Rapid's private profile. Existing Codex CLI settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
 
-## Next steps
 
-Run `rapid-mlx recipe` to see model recommendations for this Mac. To use a specific installed alias, run `rapid-mlx launch codex --model <alias>`. The command saves a private profile and starts a local server if needed. Run `rapid-mlx launch codex --remove` to remove that profile.
+Point [OpenAI's Codex CLI](https://github.com/openai/codex) at a local
+rapid-mlx server. Codex is a Rust-based coding agent that talks to the
+OpenAI **Responses API** (`POST /v1/responses`); rapid-mlx implements that
+endpoint as a stateless shim, so any local model can drive Codex.
 
-If the first reply takes time, allow the model download and load to finish. Run `rapid-mlx doctor` to check the installation. See the [current Codex guide](https://rapidmlx.com/docs/agents/codex-cli) for setup details and troubleshooting.
+Requires **rapid-mlx >= 0.7.10**. Verified end-to-end against Qwen 3.6,
+Gemma 4, DeepSeek, and gpt-oss in the Tier-1 agent matrix
+(`tests/integrations/test_agents_matrix.py::TestCodexCLI`). See the
+[support matrix](matrix.md) for the current per-family status.
+
+## How Codex reaches rapid-mlx
+
+| Item | Value |
+|---|---|
+| Wire | `POST /v1/responses` (OpenAI Responses API shim) |
+| Base URL | `http://localhost:8000/v1` |
+| Config file | `~/.codex/config.toml` |
+| Auto-setup | `rapid-mlx agents codex --setup` |
+
+## TL;DR
+
+```bash
+# 1. Install Codex CLI
+brew install codex   # or: npm install -g @openai/codex
+
+# 2. Start rapid-mlx with a strong-enough model (see per-family below)
+rapid-mlx serve qwen3.6-35b-4bit --port 8000
+
+# 3. Point Codex at the local server (writes ~/.codex/config.toml)
+rapid-mlx agents codex --setup
+
+# 4. Run Codex
+codex                              # interactive
+codex exec "explain this repo"     # one-shot
+```
+
+After setup, check the **Saved Codex defaults** report: it reads the model,
+provider, endpoint and model catalog back from the files written to
+`CODEX_HOME` (or `~/.codex`). The catalog must contain the saved model's exact
+ID. A passed connection check verifies the server's health and model list;
+it does not mean a coding task has run. `--no-check` explicitly skips that
+live check, and `--dry-run` writes nothing.
+
+For a non-default port, `--base-url http://127.0.0.1:8899` is accepted by
+both `--setup` and `--test`: Codex's API base becomes
+`http://127.0.0.1:8899/v1`. Explicit API paths (including `/v1` and reverse
+proxy prefixes such as `/local/v1`) are preserved; supply the full API base
+when using a proxy. Server-root URLs with a query or fragment are rejected;
+use `RAPID_MLX_API_KEY` for authentication instead of a URL query parameter.
+
+Project settings, selected profiles and `codex --model` / `--config` flags
+can override those saved defaults. If Codex reports an unknown model or falls
+back to generic model metadata, compare its selected model ID with the ID
+printed by setup. A full Hugging Face repository name and its short alias
+are different catalog IDs even when they identify the same weights. Start
+with `codex` using the generated defaults; if you need a different model ID,
+rerun setup with `--model` set to that ID so the catalog matches. Existing
+custom settings and sandbox choices remain subject to the usual merge rules.
+
+## Manual config
+
+`rapid-mlx agents codex --setup` writes this block; write it by hand if you
+already have a `~/.codex/config.toml` you want to keep:
+
+```toml
+model = "qwen3.6-35b-4bit"   # or any rapid-mlx alias
+model_provider = "rapid-mlx"
+
+[model_providers.rapid-mlx]
+name = "Rapid-MLX (local)"
+base_url = "http://localhost:8000/v1"
+```
+
+Codex picks the provider from `model_provider` and resolves its `base_url`
+from the matching `[model_providers.NAME]` block. Do **not** add an inline
+`api_key = "..."` — Codex's `--strict-config` rejects it. If you started the
+server with `--api-key`, use env-var indirection instead:
+
+```toml
+[model_providers.rapid-mlx]
+name = "Rapid-MLX (local)"
+base_url = "http://localhost:8000/v1"
+env_key = "RAPID_MLX_API_KEY"
+```
+
+```bash
+export RAPID_MLX_API_KEY=your-secret
+```
+
+## Per-family setup
+
+Each family needs its matching tool-call parser and reasoning parser. These
+are auto-detected from the alias, so the `serve` line below is all you need;
+the parser column documents what rapid-mlx wires (and what the matrix test
+exercises).
+
+### Qwen 3.6 — recommended for Codex
+
+Codex leans hard on multi-tool calls + `apply_patch`; Qwen 3.6 is the
+recommended workhorse.
+
+```bash
+rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB weights, needs a 48 GB+ Mac
+# smaller: qwen3.6-27b-4bit
+```
+
+```toml
+model = "qwen3.6-35b-4bit"
+model_provider = "rapid-mlx"
+
+[model_providers.rapid-mlx]
+name = "Rapid-MLX (local)"
+base_url = "http://localhost:8000/v1"
+```
+
+- tool-call parser: `qwen3_coder_xml` · reasoning parser: `qwen3`
+- matrix cell: **PASS** ✅
+
+### Gemma 4
+
+```bash
+rapid-mlx serve gemma-4-12b-4bit --port 8000   # ~7 GB at 4-bit
+# larger: gemma-4-26b-4bit
+```
+
+- tool-call parser: `gemma4` · reasoning parser: `gemma4`
+- matrix cell: **PASS** ✅ (Codex uses the text-only `/v1/responses` route)
+
+> **Heads-up:** `gemma-4-12b-it` (any quant) can hang Codex on ~60% of
+> tool-use prompts due to a model-side degenerate `thought\n…` loop
+> (huggingface.co/google/gemma-4-12B-it/discussions/41). For sustained
+> Codex agent workflows prefer the Qwen 3.5 / 3.6 models.
+
+### gpt-oss
+
+```bash
+rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
+# larger: gpt-oss-120b
+```
+
+- tool-call parser: `harmony` · reasoning parser: `harmony`
+- matrix cell: **PASS** ✅ — rapid-mlx strips the harmony `analysis`
+  channel out of visible content (no `<|channel|>analysis` leak).
+
+## Model name passthrough
+
+Codex sends model names like `gpt-5` or `gpt-5-codex` in the request body.
+Rapid-mlx treats any `gpt-*` / `claude-*` model name as "the loaded engine,
+not a strict alias lookup", so the request reaches whatever model you
+started `rapid-mlx serve` with, regardless of what Codex thinks it's
+talking to.
+
+## Probing the endpoint
+
+Verify the shim is reachable without booting Codex:
+
+```bash
+curl -sS http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5","input":"Say hello in one word.","stream":false}' | jq .
+```
+
+You should see a `response` object with an `output` array containing a
+`message` item. With `--api-key`, add `-H "Authorization: Bearer <key>"`.
+
+## Troubleshooting
+
+- **Codex 404s on `/v1/responses`** — you're on rapid-mlx < 0.7.10. Upgrade
+  with `rapid-mlx upgrade` (or `python3.12 -m pip install -U rapid-mlx` if you installed with Python 3.12).
+- **Turn ends with no output / stream closes early** — upgrade to rapid-mlx
+  >= 0.7.12; the 0.7.10–0.7.11 shim mishandled Codex 0.136's request shape.
+- **Codex hangs on first run** — it's prompting for sandbox permissions
+  (Landlock on Linux, Seatbelt on macOS). Accept them; the second run is
+  non-interactive.
+
+## See also
+
+- [Agent support matrix](matrix.md)
+- [Codex CLI guide (full shim internals)](../guides/codex-cli.md)
+- [Server setup](../guides/server.md) · [Tool calling](../guides/tool-calling.md)

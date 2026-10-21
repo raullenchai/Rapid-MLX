@@ -2,10 +2,102 @@
 
 ## One-command local launch
 
-Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install OpenCode. Run `rapid-mlx launch opencode`. The same command works after a restart; `rapid-mlx launch opencode --remove` deletes only Rapid's private profile. Existing OpenCode settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt.
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install OpenCode. Run `rapid-mlx launch opencode`. The same command works after a restart; `rapid-mlx launch opencode --remove` deletes only Rapid's private profile. Existing OpenCode settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
 
-## Next steps
 
-Run `rapid-mlx recipe` to see model recommendations for this Mac. To use a specific installed alias, run `rapid-mlx launch opencode --model <alias>`. The command saves a private profile and starts a local server if needed. Run `rapid-mlx launch opencode --remove` to remove that profile.
+[OpenCode](https://github.com/anomalyco/opencode) can use a local rapid-mlx
+model through its OpenAI-compatible chat completions endpoint. OpenCode 1.x
+and 2.x use different custom-provider config keys. `rapid-mlx agents
+opencode --setup` detects the installed CLI and writes its supported shape
+to `~/.config/opencode/opencode.json`.
 
-If the first reply takes time, allow the model download and load to finish. Run `rapid-mlx doctor` to check the installation. See the [current OpenCode guide](https://rapidmlx.com/docs/agents/opencode) for setup details and troubleshooting.
+## Setup
+
+```bash
+# OpenCode 2.x (current package); for 1.x use: npm install -g opencode-ai@1
+npm install -g @opencode/cli@2
+
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
+# In another terminal:
+rapid-mlx agents opencode --setup --yes
+opencode models
+opencode run "Use the shell tool to run pwd and report the directory."
+```
+
+OpenCode 2.x uses `opencode serve --service` as a persistent background
+service. Its TUI, desktop, web, and `opencode run` clients may connect to an
+already-running service. OpenCode 2.0.26 can return an empty model list on
+the first `opencode models` call after service startup; repeat the command.
+If the list remains stale after setup, run `opencode service restart`, then
+repeat `opencode models`.
+`rapid-mlx agents opencode --test` runs 2.x with `--standalone`, which starts a
+private server for each headless test and closes it afterward. The 1.x test
+path continues to use `opencode run`.
+
+## Config file
+
+The global file is `~/.config/opencode/opencode.json`; a project can also
+provide `opencode.json`. For 2.x, setup writes both provider entries below.
+For 1.x, it writes only the singular `provider` entry because older 1.x
+releases reject the plural key. Setup substitutes the actual model ID and
+context limit reported by the running rapid-mlx server.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "rapid-mlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Rapid-MLX",
+      "options": {
+        "baseURL": "http://localhost:8000/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {"qwen3.5-4b-4bit": {}}
+    }
+  },
+  "providers": {
+    "rapid-mlx": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "name": "Rapid-MLX",
+      "settings": {
+        "baseURL": "http://localhost:8000/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "qwen3.5-4b-4bit": {
+          "name": "qwen3.5-4b-4bit",
+          "limit": {"context": 32768, "output": 8192},
+          "capabilities": {"tools": true, "input": ["text"], "output": ["text"]}
+        }
+      }
+    }
+  },
+  "model": "rapid-mlx/qwen3.5-4b-4bit"
+}
+```
+
+The singular `provider` entry is for 1.x. The plural `providers` entry is
+the native 2.x form. Re-run setup after changing OpenCode major versions.
+On upgrade, setup carries existing rapid-mlx model entries and provider
+settings such as timeouts into the native 2.x entry. If a legacy model uses
+fields that need manual conversion, setup reports that and leaves the file
+unchanged. On downgrade to an older 1.x, other native `providers` entries
+must be migrated or removed before setup can produce a valid 1.x file.
+If the CLI is not on `PATH`, pass `--agent-version 1.18.35` or
+`--agent-version 2.0.26` to select the intended shape. If your
+rapid-mlx server requires an API key, setup uses `{env:RAPID_MLX_API_KEY}`
+instead of `not-needed`; export that variable before launching OpenCode.
+
+## Troubleshooting
+
+- If the first `opencode models` call omits the model, repeat it. If the list
+  remains stale after setup, restart the 2.x service with
+  `opencode service restart`. Check the loaded config with
+  `opencode debug config`.
+- If the model is listed but requests fail, confirm rapid-mlx is running and
+  `baseURL` ends in `/v1`.
+- For one 2.x task without the persistent service, use
+  `opencode run --standalone "your prompt"`. On 1.x use `opencode run`.
+
+See the [agent support matrix](matrix.md) and [server setup](../guides/server.md).

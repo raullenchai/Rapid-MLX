@@ -2,10 +2,140 @@
 
 ## One-command local launch
 
-Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Claude Code. Run `rapid-mlx launch claude-code`. The same command works after a restart; `rapid-mlx launch claude-code --remove` deletes only Rapid's private profile. Existing Claude Code settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt.
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Claude Code. Run `rapid-mlx launch claude-code`. The same command works after a restart; `rapid-mlx launch claude-code --remove` deletes only Rapid's private profile. Existing Claude Code settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
 
-## Next steps
 
-Run `rapid-mlx recipe` to see model recommendations for this Mac. To use a specific installed alias, run `rapid-mlx launch claude-code --model <alias>`. The command saves a private profile and starts a local server if needed. Run `rapid-mlx launch claude-code --remove` to remove that profile.
+Point [Anthropic's Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+at a local rapid-mlx server. Claude Code speaks the **Anthropic Messages
+API** (`POST /v1/messages`); rapid-mlx implements that route natively, so
+you can drive Claude Code with any local model.
 
-If the first reply takes time, allow the model download and load to finish. Run `rapid-mlx doctor` to check the installation. See the [current Claude Code guide](https://rapidmlx.com/docs/agents/claude-code) for setup details and troubleshooting.
+Verified end-to-end against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-1
+agent matrix (`tests/integrations/test_agents_matrix.py::TestClaudeCode`,
+with the deep Anthropic-SDK flow in `test_anthropic_sdk.py`). See the
+[support matrix](matrix.md) for the current per-family status.
+
+## How Claude Code reaches rapid-mlx
+
+| Item | Value |
+|---|---|
+| Wire | `POST /v1/messages` (Anthropic Messages API) |
+| Base URL | `http://localhost:8000` — **bare host, no `/v1`** |
+| Config | `ANTHROPIC_BASE_URL` env var |
+
+> **Critical (L-01):** the Anthropic SDK appends `/v1/messages` to whatever
+> base URL you give it. Pass the **bare host** (`http://localhost:8000`). If
+> you include `/v1`, requests go to `/v1/v1/messages` and the server 404s.
+> Full write-up in
+> [SDK Compatibility Notes — L-01](../guides/sdk-compat.md#l-01--anthropic-sdk-base_url-must-not-include-v1).
+
+## TL;DR
+
+```bash
+# 1. Install Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# 2. Start rapid-mlx
+rapid-mlx serve qwen3.6-35b-4bit --port 8000
+
+# 3. Preview, then safely persist Claude Code's connection settings
+rapid-mlx agents claude-code --setup --dry-run
+rapid-mlx agents claude-code --setup
+```
+
+Setup shows the exact JSON diff before asking, preserves unrelated settings,
+waits for the server to advertise the selected model, backs up an existing
+file, and writes atomically. If the server is still starting, setup waits up
+to 60 seconds. A failed check leaves the config untouched and prints a retry
+command.
+For automation use `--yes`; use `--no-check` only when intentionally preparing
+the config before starting the server.
+
+To make it permanent, export the two env vars in your shell profile:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=not-needed   # any non-empty string
+```
+
+If you started the server with `--api-key`, set `ANTHROPIC_API_KEY` to that
+key instead of `not-needed`.
+
+## Per-family setup
+
+The parser is auto-detected from the alias — the `serve` line is all you
+need. The parser column documents what the matrix test exercises.
+
+### Qwen 3.6
+
+```bash
+rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB
+# smaller: qwen3.6-27b-4bit
+```
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8000 ANTHROPIC_API_KEY=not-needed claude
+```
+
+- tool-call parser: `qwen3_coder_xml` · reasoning parser: `qwen3`
+- matrix cell: **PASS** ✅
+
+### Gemma 4
+
+```bash
+rapid-mlx serve gemma-4-12b-4bit --port 8000   # ~7 GB at 4-bit
+# larger: gemma-4-26b-4bit
+```
+
+- tool-call parser: `gemma4` · reasoning parser: `gemma4`
+- matrix cell: **PASS** ✅
+
+### gpt-oss
+
+```bash
+rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
+# larger: gpt-oss-120b
+```
+
+- tool-call parser: `harmony` · reasoning parser: `harmony`
+- matrix cell: **PASS** ✅ — the harmony `analysis` channel is routed to
+  the reasoning block, not into visible content.
+
+## Verifying the route
+
+Confirm the Anthropic route is reachable without booting Claude Code:
+
+```bash
+curl -sS http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-3-5-sonnet","max_tokens":64,
+       "messages":[{"role":"user","content":"Say hello in one word."}]}' | jq .
+```
+
+Like Codex, any `claude-*` model name resolves to the loaded engine, so the
+request reaches whatever alias you started `rapid-mlx serve` with.
+
+## Troubleshooting
+
+- **404 on every request** — you included `/v1` in `ANTHROPIC_BASE_URL`.
+  Use the bare host `http://localhost:8000` (see L-01 above).
+- **Reasoning models emit a thinking block first** — that's expected;
+  rapid-mlx returns a `thinking` content block before the `text` block. The
+  matrix cell walks to the first `text` block.
+- **Client rejects `not-needed` as an API key** — use any non-empty string
+  (`sk-local`, `rapid-mlx`).
+- **Every turn re-prefills the whole session (slow first token on each tool
+  round)** — Claude Code 2.1.287 and later append a
+  `<total_tokens>N tokens left</total_tokens>` system message to every
+  request. Older rapid-mlx versions put it at the front of the prompt, so the
+  prefix cache missed on every turn (#4036). Upgrade: the server now drops
+  that counter. If other mid-conversation reminders still cause misses, see
+  `rapid-mlx serve --relocate-mid-conversation-system` and its trade-off in
+  `rapid-mlx serve --help`.
+
+## See also
+
+- [Agent support matrix](matrix.md)
+- [AI client compatibility](../guides/ai-clients.md)
+- [SDK compatibility notes](../guides/sdk-compat.md) · [Server setup](../guides/server.md)
