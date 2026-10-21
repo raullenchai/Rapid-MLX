@@ -33,11 +33,10 @@ AXApplication title="Rapid-MLX"
       AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
       AXGroup id="UpdateCard" desc="Rapid-MLX update <version> available" enabled=true
         AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXButton id="UpdateCard.Dismiss" desc="Dismiss update <version>" help="Dismiss this update" enabled=true
-        AXStaticText value=text enabled=true
-        AXLink id="UpdateCard.ReleaseNotes" desc="View release notes" enabled=true
+        AXStaticText help="Restarting to install stops active generations and local API sessions." value=text enabled=true
+        AXLink id="UpdateCard.ReleaseNotes" desc="Release notes" enabled=true
         AXBusyIndicator id="UpdateCard.Update" desc="Update in progress…" value=number enabled=false
+        AXButton id="UpdateCard.Dismiss" desc="Dismiss update <version>" help="Dismiss this update" enabled=true
       AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true

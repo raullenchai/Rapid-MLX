@@ -796,28 +796,25 @@ struct ContentView: View {
                     .accessibilityIdentifier("ContentView.LogDrawer")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // Reserve space for the update offer; it must never cover model
-            // readiness, the composer, or another workspace action.
+            // Compact update strip occupies its own row above the footer,
+            // keeping model readiness and composer actions unobstructed.
             if let release = presentedUpdateRelease {
-                HStack {
-                    Spacer(minLength: 0)
-                    UpdateDiscoveryCard(
-                        release: release,
-                        sparkleEnabled: sparkleUpdater.isEnabled,
-                        sparkleCanCheck: sparkleUpdater.canCheckForUpdates,
-                        releaseURL: Self.missingOverlayDownloadURL(for: release),
-                        onUpdate: {
-                            Self.handOffUpdate(
-                                version: release.version,
-                                start: sparkleUpdater.checkForUpdates
-                            ) { updateHandedOffVersion = $0 }
-                        },
-                        onDismiss: {
-                            dismissedUpdateVersion = release.version
-                        }
-                    )
-                }
-                .padding(16)
+                UpdateDiscoveryCard(
+                    release: release,
+                    sparkleEnabled: sparkleUpdater.isEnabled,
+                    sparkleCanCheck: sparkleUpdater.canCheckForUpdates,
+                    releaseURL: Self.missingOverlayDownloadURL(for: release),
+                    onUpdate: {
+                        Task { await updater.check() }
+                        Self.handOffUpdate(
+                            version: release.version,
+                            start: sparkleUpdater.checkForUpdates
+                        ) { updateHandedOffVersion = $0 }
+                    },
+                    onDismiss: {
+                        dismissedUpdateVersion = release.version
+                    }
+                )
             }
             statusFooter
         }
@@ -925,6 +922,7 @@ struct ContentView: View {
         case .exportDiagnostics:
             DiagnosticsBundle.exportViaSavePanel(server: server)
         case .checkUpdates:
+            Task { await updater.check() }
             if sparkleUpdater.isEnabled {
                 if sparkleUpdater.canCheckForUpdates {
                     sparkleUpdater.checkForUpdates()
@@ -934,7 +932,6 @@ struct ContentView: View {
                     }
                 }
             } else {
-                Task { _ = await updater.check() }
                 settingsRouter.route(to: .app) {
                     openWindow(id: "settings")
                 }

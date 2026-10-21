@@ -66,10 +66,9 @@ import Observation
 ///
 /// Decisions:
 ///
-///   * Per-launch only, no timer. Sparkle owns the recurring
-///     "is there a newer version" schedule; a second timer beside it was
-///     pure duplication. Mac users restart apps weekly+, so per-launch was
-///     the dominant cadence anyway.
+///   * Refresh at launch, every six hours, and on stale activation, with
+///     bounded retries after failures. This feeds discovery UI only;
+///     Sparkle independently owns download and installation.
 ///   * No background fetch via NSURLSession schedulers.
 ///   * No auth header — the endpoint is public.
 ///   * **Privacy contract.** The ONLY thing this request sends is
@@ -205,8 +204,7 @@ final class UpdateChecker {
     /// Last error from a check, or nil. Cleared on a successful poll.
     private(set) var lastError: String?
     /// When the last check finished (success OR failure). Surfaced for
-    /// diagnostics; nothing schedules off it now that the check is
-    /// per-launch.
+    /// diagnostics; refresh policy separately tracks successful checks.
     private(set) var lastCheckedAt: Date?
 
     /// Currently-installed version, read once from the bundle. Kept
@@ -234,14 +232,64 @@ final class UpdateChecker {
     /// first function-typed parameter). Pass this one by label.
     private let checksEnabled: @Sendable () -> Bool
 
+    private(set) var refreshPolicy = UpdateRefreshPolicy()
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var sleepTask: Task<Void, Error>?
+    @ObservationIgnored private var refreshID: UUID?
+    private let now: @MainActor () -> Date
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+
     init(
         currentVersion: String = UpdateChecker.bundleVersion(),
         fetcher: Fetcher? = nil,
-        checksEnabled: (@Sendable () -> Bool)? = nil
+        checksEnabled: (@Sendable () -> Bool)? = nil,
+        now: @escaping @MainActor () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = {
+            try await Task.sleep(for: .seconds($0))
+        }
     ) {
+        self.now = now
+        self.sleep = sleep
         self.currentVersion = currentVersion
         self.fetcher = fetcher ?? UpdateChecker.defaultFetch
         self.checksEnabled = checksEnabled ?? { UpdateChecker.updateChecksEnabled() }
+    }
+
+    /// Process-owned loop, independent of WindowGroup task cancellation/reopening.
+    /// The first iteration also performs the launch check.
+    func startRefreshing() {
+        guard refreshTask == nil else { return }
+        let id = UUID()
+        refreshID = id
+        refreshTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.refreshID == id {
+                await self.refreshIfNeeded()
+                guard !Task.isCancelled, self.refreshID == id else { return }
+                let delay = self.checksEnabled() ? self.refreshPolicy.delay(at: self.now()) : UpdateRefreshPolicy.refreshInterval
+                let sleeper = Task { [sleep = self.sleep] in
+                    try await sleep(delay > 0 ? delay : UpdateRefreshPolicy.refreshInterval)
+                }
+                self.sleepTask = sleeper
+                // Check completion wakes this sleep so even a manual failure
+                // during the six-hour wait gets its bounded retry deadline.
+                _ = await sleeper.result
+                if self.refreshID == id { self.sleepTask = nil }
+            }
+        }
+    }
+
+    func stopRefreshing() {
+        refreshID = nil
+        refreshTask?.cancel()
+        sleepTask?.cancel()
+        refreshTask = nil
+        sleepTask = nil
+    }
+
+    /// Used by scheduled wakes and activation; explicit checks call check() directly.
+    func refreshIfNeeded() async {
+        guard checksEnabled(), refreshPolicy.delay(at: now()) == 0 else { return }
+        await check()
     }
 
     /// Does the latest known release look strictly newer than the
@@ -269,14 +317,17 @@ final class UpdateChecker {
         checking = true
         defer {
             checking = false
-            lastCheckedAt = Date()
+            lastCheckedAt = now()
+            sleepTask?.cancel()
         }
         do {
             let release = try await fetcher()
+            refreshPolicy.succeeded(at: now())
             latest = release
             lastError = nil
             return release
         } catch is CancellationError {
+            refreshPolicy.cancelled(at: now())
             // Scene teardown / SwiftUI .task cancellation should not
             // surface a "failed to check for updates" banner — the
             // user didn't ask, the network round-trip was just
@@ -284,6 +335,7 @@ final class UpdateChecker {
             // [codex audit r1 UpdateChecker.swift:124]
             return latest
         } catch let urlError as URLError where urlError.code == .cancelled {
+            refreshPolicy.cancelled(at: now())
             // Same idea, URLSession's cancellation flavor.
             return latest
         } catch {
@@ -291,6 +343,7 @@ final class UpdateChecker {
             // briefly 5xx-ing"; we keep the previous ``latest`` so
             // the user doesn't see a transient blip wipe out the
             // update badge.
+            refreshPolicy.failed(at: now())
             lastError = error.localizedDescription
             return latest
         }

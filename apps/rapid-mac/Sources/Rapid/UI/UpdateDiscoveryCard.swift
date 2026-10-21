@@ -24,62 +24,43 @@ struct UpdateDiscoveryCard: View {
         return true
     }
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let restartNotice = "Restarting to install stops active generations and local API sessions."
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
-            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
-                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
-                    Text("Update Available")
-                        .font(RapidFont.bodyEmphasis)
-                        .foregroundStyle(RapidTheme.textPrimary)
-                    Text("Rapid-MLX v\(release.version) is ready.")
-                        .font(RapidFont.body)
-                        .foregroundStyle(RapidTheme.textPrimary)
-                }
-
-                Spacer(minLength: RapidTheme.Space.sm)
-
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(RapidTheme.textSecondary)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-                .help("Dismiss this update")
-                .accessibilityLabel("Dismiss update v\(release.version)")
-                .accessibilityIdentifier("UpdateCard.Dismiss")
-                .padding(.top, -8)
-                .padding(.trailing, -8)
-            }
-
-            Text("Download in the background. Restarting to install will stop active generations and local API sessions.")
+        HStack(spacing: RapidTheme.Space.sm) {
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
+            Text("Rapid-MLX v\(release.version) is available")
+                .font(RapidFont.bodyEmphasis)
+                .foregroundStyle(RapidTheme.textPrimary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text(restartNotice)
                 .font(RapidFont.caption)
                 .foregroundStyle(RapidTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+                .lineLimit(1)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
+                .help(restartNotice)
             if let releaseURL {
-                Link("View release notes", destination: releaseURL)
+                Link("Release notes", destination: releaseURL)
                     .font(RapidFont.caption)
+                    .fixedSize()
                     .accessibilityIdentifier("UpdateCard.ReleaseNotes")
             }
-
             if sparkleEnabled {
                 Button(action: onUpdate) {
-                    HStack(spacing: RapidTheme.Space.sm) {
+                    HStack(spacing: RapidTheme.Space.xs) {
                         if !sparkleCanCheck {
-                            ProgressView()
-                                .controlSize(.small)
+                            ProgressView().controlSize(.mini)
                         }
-                        Text(sparkleCanCheck ? "Update Rapid-MLX" : "Update in progress…")
-                            .frame(maxWidth: .infinity)
+                        Text(sparkleCanCheck ? "Update" : "Update in progress…")
                     }
                 }
-                .buttonStyle(.rapidPrimary)
+                .buttonStyle(.rapidPrimaryCompact)
+                .controlSize(.small)
+                .fixedSize()
                 .disabled(!sparkleCanCheck)
                 .accessibilityIdentifier("UpdateCard.Update")
             } else if let releaseURL {
@@ -90,25 +71,33 @@ struct UpdateDiscoveryCard: View {
                         onOpened: onDismiss
                     )
                 } label: {
-                    Label("Download from release page", systemImage: "arrow.up.right.square")
-                        .frame(maxWidth: .infinity)
+                    Text("Download")
                 }
-                .buttonStyle(.rapidPrimary)
+                .buttonStyle(.rapidPrimaryCompact)
+                .controlSize(.small)
+                .fixedSize()
                 .accessibilityIdentifier("UpdateCard.ManualDownload")
             }
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(RapidFont.caption)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(RapidTheme.textSecondary)
+            .fixedSize()
+            .help("Dismiss this update")
+            .accessibilityLabel("Dismiss update v\(release.version)")
+            .accessibilityIdentifier("UpdateCard.Dismiss")
         }
-        .padding(RapidTheme.Space.lg)
-        .frame(width: 360, alignment: .leading)
-        .background(RapidTheme.card)
-        .clipShape(RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                .strokeBorder(RapidTheme.hairline, lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.14), radius: 18, y: 8)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 6)
+        .background(.bar)
+        .overlay(Divider(), alignment: .bottom)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Rapid-MLX update v\(release.version) available")
         .accessibilityIdentifier("UpdateCard")
-        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+        .transition(.opacity)
     }
 }

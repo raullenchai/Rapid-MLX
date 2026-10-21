@@ -17,6 +17,7 @@ import SwiftUI
 ///     re-fires if ANOTHER failed Finder Replace happens between now
 ///     and then.
 struct FailedReplaceBanner: View {
+    @Environment(UpdateChecker.self) private var updater
     @Environment(InstallTracker.self) private var installTracker
     @Environment(SparkleUpdateController.self) private var sparkleUpdater
 
@@ -62,6 +63,7 @@ struct FailedReplaceBanner: View {
                     .accessibilityAddTraits(.isHeader)
                     HStack(spacing: 8) {
                         Button("Check for updates") {
+                            Task { await updater.check() }
                             sparkleUpdater.checkForUpdates()
                         }
                         .buttonStyle(.borderedProminent)

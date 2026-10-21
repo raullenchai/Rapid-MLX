@@ -485,22 +485,14 @@ struct RapidApp: App {
                         // download, signature validation, and install-on-quit.
                         sparkleUpdater.start()
                     }
-                    // ONE check, at launch — deliberately not a timer.
-                    //
-                    // Sparkle owns "is there a newer version", and running a
-                    // second six-hour poll beside its own was pure duplication.
-                    // This single call still earns its keep: it refreshes the
-                    // version pill and the Settings status, and it is the only
-                    // thing that reports this build's version to the update
-                    // endpoint, which is where the per-version install
-                    // distribution comes from. Losing that would mean losing
-                    // the only answer to "how many installs are still on an old
-                    // build" (see #1944).
-                    //
-                    // A relaunch re-runs it, which is frequent enough for a
-                    // distribution metric and for a status pill nobody watches
-                    // continuously.
-                    await updater.check()
+                    // Manifest discovery feeds the card, pill, and Settings at launch,
+                    // every six hours, and after failures with bounded backoff.
+                    // The checker owns one loop across window reopenings; Sparkle
+                    // remains the sole downloader and installer.
+                    updater.startRefreshing()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    Task { await updater.refreshIfNeeded() }
                 }
                 .task(id: server.servingAlias) {
                     // When the server transitions to ``.ready(alias)``,

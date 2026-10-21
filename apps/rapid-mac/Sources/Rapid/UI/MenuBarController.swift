@@ -206,6 +206,7 @@ final class MenuBarController: NSObject {
             AppDelegate.shared.chat?.newConversation()
             bringMainWindowForward()
         case .update:
+            Task { _ = await AppDelegate.shared.updater?.check() }
             if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
                 sparkle.checkForUpdates()
                 return
@@ -217,6 +218,7 @@ final class MenuBarController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             AppDelegate.openSettingsWindowAt?(.app)
         case .checkForUpdates:
+            Task { _ = await AppDelegate.shared.updater?.check() }
             if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
                 sparkle.checkForUpdates()
                 return
@@ -233,7 +235,6 @@ final class MenuBarController: NSObject {
             // Settings → App already renders the outcome, including the
             // running version, so route there rather than inventing a second
             // surface that could drift from the first.
-            Task { _ = await AppDelegate.shared.updater?.check() }
             NSApp.activate(ignoringOtherApps: true)
             AppDelegate.openSettingsWindowAt?(.app)
         case .copyEndpoint:

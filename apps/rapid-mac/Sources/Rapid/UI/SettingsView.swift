@@ -1150,6 +1150,7 @@ struct SettingsView: View {
                 if sparkleUpdater.isEnabled {
                     if sparkleUpdater.canCheckForUpdates {
                         Button {
+                            Task { await appUpdater.check() }
                             sparkleUpdater.checkForUpdates()
                         } label: {
                             Label("Update Rapid-MLX", systemImage: "arrow.down.circle.fill")
@@ -1264,10 +1265,9 @@ struct SettingsView: View {
     @ViewBuilder
     private var appUpdateRecheckButton: some View {
         Button {
+            Task { await appUpdater.check() }
             if sparkleUpdater.isEnabled {
                 sparkleUpdater.checkForUpdates()
-            } else {
-                Task { await appUpdater.check() }
             }
         } label: {
             if appUpdater.checking {
