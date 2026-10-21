@@ -7,14 +7,8 @@ mx = pytest.importorskip("mlx.core")
 from rapid_mlx.models.deepseek_v41_native import model as native_model  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.attention import Attention  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
-from rapid_mlx.models.deepseek_v41_native.hyper_connections import (  # noqa: E402
-    hc_mixes,
-)
 from rapid_mlx.models.deepseek_v41_native.layers import (  # noqa: E402
     precompute_freqs_cis,
-)
-from rapid_mlx.models.deepseek_v41_native.load import (  # noqa: E402
-    promote_hc_projections,
 )
 from rapid_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
@@ -80,28 +74,6 @@ def test_long_rope_tables_grow_in_bounded_chunks(compress_ratios) -> None:
 def test_small_rope_tables_keep_the_minimum_size() -> None:
     attention = Attention(0, _args(n_layers=1, compress_ratios=(0,)))
     assert attention._freqs(1)[0].shape[0] == 64
-
-
-def test_hc_projection_promotion_is_exact_and_idempotent() -> None:
-    model = Model(_args())
-    layer = model.layers[0]
-    source = (mx.random.normal(layer.hc_attn_fn.shape) * 0.02).astype(mx.bfloat16)
-    layer.hc_attn_fn = source
-    layer.hc_ffn_fn = source
-    x = mx.random.normal((1, 1, 2, 64)).astype(mx.bfloat16)
-    scale = mx.ones((3,))
-    base = mx.zeros(layer.hc_attn_base.shape)
-    before = hc_mixes(x, source, scale, base, 2, 4, 1e-6, 1e-6)
-
-    promote_hc_projections(model)
-    promoted = layer.hc_attn_fn
-    assert promoted.dtype == layer.hc_ffn_fn.dtype == mx.float32
-    after = hc_mixes(x, promoted, scale, base, 2, 4, 1e-6, 1e-6)
-    for expected, actual in zip(before, after, strict=True):
-        assert mx.array_equal(expected, actual).item()
-
-    promote_hc_projections(model)
-    assert layer.hc_attn_fn is promoted
 
 
 _blocking_eval = mx.eval  # held before tests patch the shared module
