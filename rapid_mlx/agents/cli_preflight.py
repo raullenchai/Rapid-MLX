@@ -50,7 +50,7 @@ def agent_cli_found(binary: str) -> bool | None:
                 f"builtin whence -p -- {target} >/dev/null 2>&1; "
                 f"builtin printf '%s\\n' \"$?\" >| {shlex.quote(str(answer))}"
             )
-            # A new session lets a timeout stop everything the profile started.
+            # A new session lets the probe stop everything the profile started.
             probe = subprocess.Popen(
                 [_LOGIN_SHELL, "-lc", script],
                 stdin=subprocess.DEVNULL,
@@ -58,12 +58,17 @@ def agent_cli_found(binary: str) -> bool | None:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            timed_out = False
             try:
                 probe.wait(timeout=_PROBE_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
+                timed_out = True
+            finally:
+                # Nothing the profile started for this probe may outlive it.
+                with contextlib.suppress(OSError):
                     os.killpg(probe.pid, signal.SIGKILL)
                 probe.wait()
+            if timed_out:
                 return None
             status = answer.read_bytes().strip() if answer.is_file() else b""
     except OSError:

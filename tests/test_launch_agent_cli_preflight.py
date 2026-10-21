@@ -117,11 +117,19 @@ def test_installed_cli_launches_without_warning(private_home, capsys):
     assert "not installed" not in capsys.readouterr().err
 
 
+@pytest.fixture(autouse=True)
+def no_real_group_kill(request, monkeypatch):
+    """Mocked probes have fake pids; never signal a real process group."""
+    if request.node.get_closest_marker("skipif"):
+        return
+    monkeypatch.setattr(cli_preflight.os, "killpg", lambda *_: None)
+
+
 def _reply(status: bytes | None):
     """A ``subprocess.Popen`` stand-in that writes the probe's answer file."""
 
     class Probe:
-        pid = 0
+        pid = 424242
 
         def __init__(self, argv, **kwargs):
             assert kwargs["stdout"] is subprocess.DEVNULL
@@ -276,18 +284,36 @@ def test_real_login_shell_checks_paths_and_ignores_profile_functions(
     assert cli_preflight.agent_cli_found("rapid-preflight-absent-agent") is False
 
 
+def _assert_exits(pid: int) -> None:
+    import time
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(pid, 9)
+    pytest.fail("a process started by the login profile outlived the probe")
+
+
 @needs_zsh
 def test_real_login_shell_background_child_does_not_block_probe(
     tmp_path, login_profile
 ):
-    """A profile-started process holding stdout must not stall the probe."""
+    """A profile-started process holding stdout neither stalls nor outlives it."""
     import time
 
     _executable(tmp_path / "rapid-preflight-bg-agent")
-    login_profile(f'export PATH="{tmp_path}:$PATH"\n(sleep 20 &)\n')
+    pid_file = tmp_path / "child.pid"
+    login_profile(
+        f'export PATH="{tmp_path}:$PATH"\nsleep 20 &\nprint $! > "{pid_file}"\n'
+    )
     started = time.monotonic()
     assert cli_preflight.agent_cli_found("rapid-preflight-bg-agent") is True
     assert time.monotonic() - started < 10
+    _assert_exits(int(pid_file.read_text()))
 
 
 @needs_zsh
@@ -295,20 +321,8 @@ def test_real_login_shell_timeout_stops_profile_children(
     tmp_path, monkeypatch, login_profile
 ):
     """A hung profile is unconfirmed, and nothing it started is left behind."""
-    import time
-
     pid_file = tmp_path / "child.pid"
     login_profile(f'sleep 30 &\nprint $! > "{pid_file}"\nwait\n')
     monkeypatch.setattr(cli_preflight, "_PROBE_TIMEOUT_S", 2)
     assert cli_preflight.agent_cli_found("rapid-preflight-any-agent") is None
-    child = int(pid_file.read_text())
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.05)
-    else:
-        os.kill(child, 9)
-        pytest.fail("profile child survived the probe timeout")
+    _assert_exits(int(pid_file.read_text()))
