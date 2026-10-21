@@ -317,15 +317,16 @@ def handle_first_run_menus(
             time.sleep(0.3)
             os.write(master, b"\r")
         elif (
-            "accessingworkspace" in screen
-            and "trust" in screen
+            "trust" in screen
             and "folder" in screen
-            and "entertoconfirm" in screen
+            and "yes," in screen
+            and "no,exit" in screen
             and "trust" not in answered
         ):
             answered.add("trust")
-            os.write(master, b"\x1b[B")  # Select Yes; No, exit is highlighted.
-            time.sleep(0.3)
+            if screen.rfind("no,exit") < screen.rfind("yes,"):
+                os.write(master, b"\x1b[B")  # New menu highlights No first.
+                time.sleep(0.3)
             os.write(master, b"\r")
         else:
             break
@@ -611,6 +612,23 @@ def normal_mode(
             os.close(master)
 
 
+def check_then_open_native(
+    home: Path,
+    agent: str,
+    before: dict[str, str],
+    env: dict[str, str],
+    workspace: Path,
+    transcript: Path,
+) -> tuple[bool, bool]:
+    """Attribute user-config changes to Rapid before native CLI bookkeeping."""
+    untouched = rapid_config_untouched(home, agent, before)
+    try:
+        opened = normal_mode(BINARIES[agent], env, workspace, transcript)
+    except OSError:
+        opened = False
+    return untouched, opened
+
+
 def live_server_pid(home: Path) -> int | None:
     path = home / ".rapid-mlx/launch.pid"
     try:
@@ -755,13 +773,14 @@ def main() -> int:
         # Rapid's private launch and removal must not change a user config.
         # The native CLI may add its own first-run bookkeeping when opened
         # below, so compare before starting that separate native session.
-        row["config_untouched"] = rapid_config_untouched(args.home, agent, before)
-        try:
-            row["normal_mode_opens"] = normal_mode(
-                BINARIES[agent], env, work, args.output / agent / "normal-mode.pty"
-            )
-        except OSError:
-            row["normal_mode_opens"] = False
+        row["config_untouched"], row["normal_mode_opens"] = check_then_open_native(
+            args.home,
+            agent,
+            before,
+            env,
+            work,
+            args.output / agent / "normal-mode.pty",
+        )
         row["ugly_output"] = output_issues(
             args.output / agent / "day-one.pty",
             args.output / agent / "day-two.pty",

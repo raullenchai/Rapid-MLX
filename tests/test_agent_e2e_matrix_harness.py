@@ -5,10 +5,12 @@ import io
 import json
 import signal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
     approval_handler,
+    check_then_open_native,
     classified_error,
     handle_first_run_menus,
     output_issues,
@@ -95,13 +97,22 @@ def test_codex_native_bookkeeping_does_not_mask_rapid_config_write(tmp_path):
     path.write_text(FILES[".codex/config.toml"])
     before = snapshot(tmp_path, "codex")
     assert rapid_config_untouched(tmp_path, "codex", before)
-    # Native Codex adds this only after the Rapid checkpoint.
-    path.write_text(path.read_text() + "\n[tui]\nseen = true\n")
-    assert not rapid_config_untouched(tmp_path, "codex", before)
+
+    def native_mode(*_args):
+        path.write_text(path.read_text() + "\n[tui]\nseen = true\n")
+        return True
+
+    with patch("scripts.agent_e2e.run.normal_mode", side_effect=native_mode):
+        assert check_then_open_native(
+            tmp_path, "codex", before, {}, tmp_path, tmp_path / "native.pty"
+        ) == (True, True)
     path.write_text(FILES[".codex/config.toml"])
     # Negative control: a Rapid write to the seeded user config stays red.
     path.write_text(path.read_text() + "\nmodel = 'rapid-overwrite'\n")
-    assert not rapid_config_untouched(tmp_path, "codex", before)
+    with patch("scripts.agent_e2e.run.normal_mode", return_value=True):
+        assert check_then_open_native(
+            tmp_path, "codex", before, {}, tmp_path, tmp_path / "native.pty"
+        ) == (False, True)
 
 
 def test_claude_folder_trust_menu_selects_yes(monkeypatch):
@@ -120,6 +131,13 @@ def test_claude_folder_trust_menu_selects_yes(monkeypatch):
     )
     handle_first_run_menus("claude-code", opening, 1, None, None)
     assert writes == [b"\x1b[B", b"\r"]
+    writes.clear()
+    old_menu = (
+        "Do you trust the files in this folder?\n"
+        "1. Yes, proceed\n2. No, exit\nEnter to confirm"
+    )
+    handle_first_run_menus("claude-code", old_menu, 1, None, None)
+    assert writes == [b"\r"]
 
 
 def test_request_evidence_never_substitutes_config_model(tmp_path):
