@@ -11,7 +11,7 @@ Homebrew and other user prefixes that a GUI- or IDE-launched parent process
 may not carry. To avoid refusing a CLI the runner would find, a miss on the
 current PATH is re-checked in that same login shell (``command -v``). If the
 login shell cannot be probed, the common Homebrew prefixes are checked as a
-fallback. A hit on the current PATH is accepted without the probe so a
+fallback. A probe that times out is not treated as a miss. A hit on the current PATH is accepted without the probe so a
 normal launch does not pay for an extra login shell; a login profile that
 removes an inherited PATH entry is not detected.
 """
@@ -48,6 +48,10 @@ def _login_shell_lookup(binary: str) -> str | None:
             timeout=_PROBE_TIMEOUT_S,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        # A slow profile cannot be judged; the runner has no such deadline, so
+        # do not refuse a CLI it may still find.
+        return binary
     except (OSError, subprocess.SubprocessError):
         return shutil.which(binary, path=os.pathsep.join(_HOMEBREW_PREFIXES))
     # Login and logout scripts may print around the answer, so read only the

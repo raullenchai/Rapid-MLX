@@ -168,7 +168,7 @@ def test_login_shell_miss_or_non_path_is_not_installed(
 
 
 @pytest.mark.parametrize(
-    "error", [OSError("no shell"), subprocess.TimeoutExpired("zsh", 10)]
+    "error", [OSError("no shell"), subprocess.SubprocessError("probe failed")]
 )
 def test_unprobeable_login_shell_falls_back_to_homebrew_prefixes(
     tmp_path, monkeypatch, error
@@ -255,3 +255,10 @@ def test_user_profile_shadowing_builtin_keeps_builtin_cli_check():
     resolve.assert_called_once_with("claude")
     assert message is not None
     assert "npm install -g @anthropic-ai/claude-code" in message
+
+
+def test_slow_login_shell_is_not_a_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    timeout = subprocess.TimeoutExpired("zsh", 10)
+    with patch.object(cli_preflight.subprocess, "run", side_effect=timeout):
+        assert cli_preflight.resolve_agent_binary("fake-agent") == "fake-agent"
