@@ -170,6 +170,11 @@ def test_unsupported_shared_and_bias_fall_back(monkeypatch, caplog):
     x = mx.ones((5, 32))
     reference = draft.adapter.moe(base, x)
     monkeypatch.setattr(kernels.moe_decode, "supports", lambda _: True)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsupported draft layout dispatched fused experts")
+
+    monkeypatch.setattr(kernels.moe_decode, "_experts", forbidden)
     exact(draft.adapter.moe(base, x), reference)
     assert not caplog.records
     # Bias-bearing quantized shared experts are also ineligible.
@@ -184,7 +189,10 @@ def test_unsupported_shared_and_bias_fall_back(monkeypatch, caplog):
         ):
             draft.w._arrays[prefix + "." + suffix] = value
             draft.w.entries[prefix + "." + suffix] = {"shape": value.shape}
-    draft.adapter.moe(base, x)
+    with monkeypatch.context() as patch:
+        patch.setattr(kernels, "ENABLED", False)
+        reference = draft.adapter.moe(base, x)
+    exact(draft.adapter.moe(base, x), reference)
     assert not caplog.records
 
 

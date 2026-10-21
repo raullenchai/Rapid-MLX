@@ -308,7 +308,11 @@ def test_verify_chunk_vs_sequential_and_hidden_handoff(seed, numerical_device):
 
 
 @pytest.mark.parametrize("mismatch", [None, 1, 2, 3, 4])
-def test_production_stream_greedy_rollback_observes_only_committed(mismatch):
+def test_production_stream_greedy_rollback_observes_only_committed(
+    mismatch, monkeypatch
+):
+    # Keep every parametrized rejection boundary reachable through index 4.
+    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
     model, draft = bench.tiny_setup()
     observed = []
     original_observe = draft.observe_many

@@ -53,7 +53,11 @@ class _OracleDrafter:
     "window_size,wrong_index",
     [(w, i) for w in (8, 3) for i in (None, 1, 2, 3, 4) if i is None or i < w],
 )
-def test_wrapped_window_speculation_matches_plain_greedy(wrong_index, window_size):
+def test_wrapped_window_speculation_matches_plain_greedy(
+    wrong_index, window_size, monkeypatch
+):
+    # Exercise rejected suffixes through index 4, independent of the default.
+    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
     mx.random.seed(0)
     args = ModelArgs(
         vocab_size=32,

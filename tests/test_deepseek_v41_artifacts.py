@@ -496,13 +496,15 @@ def test_product_request_rejects_sampling_fields_it_cannot_honor():
 
 
 @pytest.mark.requires_mlx
-def test_k4_stream_commits_target_authoritative_batch():
+def test_k4_stream_commits_target_authoritative_batch(monkeypatch):
     import mlx.core as mx
 
     from rapid_mlx.models.deepseek_v41_native.serving import (
         DSparkRuntime,
         stream_generate,
     )
+
+    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
 
     class Cache:
         offset = 0
