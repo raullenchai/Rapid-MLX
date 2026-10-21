@@ -13,7 +13,4 @@ It covers:
   `rapid_mlx.chip_tier.detect_chip_tier`)
 - Performance architecture and bottleneck analysis
 
-This page previously held a parallel copy that drifted out of date
-(it still documented the deleted `SimpleEngine` and a nonexistent
-`rapid_mlx.hardware` module). To keep a single source of truth, all
-content now lives in the root document above.
+Read the root document for the current implementation and module paths.

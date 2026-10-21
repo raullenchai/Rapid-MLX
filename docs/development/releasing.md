@@ -10,8 +10,6 @@ This page documents the **end-to-end release flow** and the **safety nets** that
 For the final gate that validates the exact wheel through real models, agents,
 and SDK/framework clients, see [Release artifact acceptance](release-artifact-acceptance.md).
 
-The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny-4bit`, `smollm3-3b-4bit`, `deepseek-v4-flash-8bit`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `rapid-mlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
-
 ## Quick reference
 
 | Trigger | What happens automatically |
@@ -33,15 +31,10 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    Builds the wheel from the working tree and installs it into a fresh
    venv with only PyPI deps, then imports every module the published
    entrypoints would import (`rapid_mlx`, `rapid_mlx.scheduler`,
-   `rapid_mlx.server`, `rapid_mlx.cli`). Catches the failure mode that
-   shipped in v0.6.53 (#408): code that imports cleanly on the dev
-   machine because the dev mlx has a symbol that hasn't appeared in any
-   released wheel yet. Every other gate (`make smoke`, the
-   `rapid-mlx bench --tier smoke|speed|harness|all` tiers,
-   `pr_validate`, codex review) runs against the dev mlx and is blind
-   to this class of bug. **Do not push a version bump commit if this
-   fails** — the failure indicates every `pip install` user will crash
-   on import.
+   `rapid_mlx.server`, `rapid_mlx.cli`). Catches import failures caused by
+   a dependency mismatch between a development environment and
+   the published wheel. **Do not push a version bump commit if this fails**.
+   Inspect the failing import and dependency versions first.
 
    Post-tag verification: `python3 scripts/release_smoke.py --version X.Y.Z`
    re-runs the gate against the wheel actually published to PyPI.
@@ -49,21 +42,21 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 2. **Bump `pyproject.toml` in a dedicated bump PR** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). A release candidate uses `X.Y.Z-rcN`, beginning at `rc1`; RCs publish as GitHub/PyPI prereleases and immutable desktop artifacts, but deliberately do not replace the stable desktop updater feed. Never push the bump directly to `main`: `version-check.yml` only accepts a `version`-line change in a PR titled `chore: bump version to X.Y.Z` or `chore: bump version to X.Y.Z-rcN` (see "Safety nets" below), and direct pushes to `main` are against repo convention anyway.
 
    ```bash
-   git checkout -b chore/bump-0.6.16 raullenchai/main
-   sed -i '' 's/^version = "0.6.15"/version = "0.6.16"/' pyproject.toml
+   # Replace X.Y.Z with the release version.
+   git checkout -b chore/bump-X.Y.Z main
+   # Edit pyproject.toml: set version = "X.Y.Z"
    git add pyproject.toml
-   git commit -m "chore: bump version to 0.6.16"
-   git push raullenchai chore/bump-0.6.16
+   git commit -m "chore: bump version to X.Y.Z"
+   git push origin chore/bump-X.Y.Z
    gh pr create --repo raullenchai/Rapid-MLX --base main \
-     --title "chore: bump version to 0.6.16" --body "Release 0.6.16."
+     --title "chore: bump version to X.Y.Z" --body "Release X.Y.Z."
    # after CI (incl. release-preflight.yml) is green, merge with the exact canonical
    # subject. PF-1 requires the bump-PR title to be exactly "chore: bump version to
    # X.Y.Z" (no suffix); passing --subject keeps the merged commit subject equally
-   # clean. Even without it, the post-merge detect step deliberately tolerates
-   # GitHub's default "(#NN)" squash suffix (see "Squash suffix" below), so a
-   # default squash merge no longer strands the release:
+   # clean. The post-merge detect step also accepts GitHub's default "(#NN)"
+   # squash suffix.
    gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash \
-     --subject "chore: bump version to 0.6.16" --delete-branch
+     --subject "chore: bump version to X.Y.Z" --delete-branch
    ```
 
    While you're in this PR, also roll the release notes:
@@ -92,7 +85,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 ### `version-check.yml` — forbid stray version bumps at PR time
 
-The guardrail (G4): the `pyproject.toml` `version` line may **only** change in a dedicated bump PR. This is the inverse of the old rule — the workflow used to *force* user-facing PRs (aliases / profiles / CLI flags) to bump the version, which fought our batch-then-cut release SOP and caused inline bumps to smuggle into `fix(...)` commits, drift the version, and silently skip releases (the commit subject didn't match `auto-release`'s regex).
+The guardrail (G4): change the `pyproject.toml` `version` line only in a dedicated bump PR.
 
 Runs on PRs that modify `pyproject.toml` (so any version-line edit is always checked, whoever makes it). The decision:
 
@@ -115,7 +108,7 @@ separately. If this really is the release bump, title the PR
 `chore: bump version to X.Y.Z`.
 ```
 
-**Legacy escape hatch**: the `skip-version-bump` label lets a maintainer intentionally change the `version` line *outside* a titled bump PR (rare — e.g. a revert-then-re-bump correction). It is no longer the primary bypass; the primary path is simply to title the PR `chore: bump version to X.Y.Z`.
+The `skip-version-bump` label allows a maintainer to correct the `version` line outside a titled bump PR, such as a rollback. For a release, title the PR `chore: bump version to X.Y.Z`.
 
 ### `_version_check.py` — warn end users on stale local installs
 
@@ -161,7 +154,7 @@ chore: bump version to X.Y.Z
 
 — where `X.Y.Z` is three numeric components matching the new `pyproject.toml` version. Anything else (extra words, different prefix, dev suffixes) is silently ignored.
 
-> **Two checks, two strictness levels.** The bump-PR **title** is checked strictly pre-merge by **PF-1** (`release-preflight.yml`, via `scripts/validate_release_subject.py`): it must be exactly `chore: bump version to X.Y.Z[-rcN]`, no `(#NN)` suffix — the canonical subject is kept clean. The **post-merge** detect step in `auto-release.yml` is deliberately **tolerant**: it runs the subject through `release_version.py subject --allow-pr-suffix`, so GitHub's default squash-merge appending `(#NN)` no longer strands a release between commit-on-main and publish. In short: title stays canonical (PF-1), merged subject tolerates the squash suffix (detect). Neither treats the suffix as a blocker anymore — PF-1 keeps it strict for hygiene, detect tolerates it so an un-`--subject` merge can't break shipping.
+> **Two checks, two strictness levels.** The bump-PR **title** is checked strictly pre-merge by **PF-1** (`release-preflight.yml`, via `scripts/validate_release_subject.py`): it must be exactly `chore: bump version to X.Y.Z[-rcN]`, no `(#NN)` suffix — the canonical subject is kept clean. The **post-merge** detect step in `auto-release.yml` is deliberately **tolerant**: it runs the subject through `release_version.py subject --allow-pr-suffix`, to accept GitHub's default `(#NN)` squash suffix. In short: title stays canonical (PF-1), merged subject tolerates the squash suffix (detect).
 >
 > To keep the merged subject canonical too, pass `--subject`:
 >
@@ -258,10 +251,10 @@ MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 
 Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). Before booting a model it audits that every selectable `pr_validate` benchmark candidate has a valid committed baseline and surfaces baselines older than the latest release. It then runs **G0a**, booting each family representative from [`scripts/release_fleet.json`](../../scripts/release_fleet.json) in turn. Next it boots the requested `MODEL` on port 8000 and runs **G0b** against that exact model, followed by G5 (stress), G7 (anthropic + pydantic_ai + smolagents), G7b (agent harness layer: a single `rapid-mlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain), G6 (parallel-tool-call cap repro), G9 (10-seq latency), G8 (parser microbench), and G8b (decode-throughput perf gate — enforces the reviewed floor in [`harness/perf_floors.json`](../../harness/perf_floors.json) when present, advisory otherwise). Servers are killed between models and on exit.
 
-The normal G0a fleet covers the architecture risk classes that have historically failed differently: small dense (Qwen 3.5 4B), hybrid MoE (Qwen 3.5 35B), large dense (Qwen 3.6), large MoE (gpt-oss), and multimodal (Gemma 4). If `mlx`, `mlx-lm`, `mlx-vlm`, or `mlx-audio` changed since the previous release tag, the script automatically selects the `toolchain` scope and adds the Ultra-only Hy3 path. This works both before and after the candidate commit is tagged. A shallow checkout with no discoverable tag keeps the normal release scope; pass a base ref explicitly when toolchain comparison is required. To compare against a different release base, set `RELEASE_FLEET_BASE_REF`:
+The G0a fleet covers these architecture classes: small dense (Qwen 3.5 4B), hybrid MoE (Qwen 3.5 35B), large dense (Qwen 3.6), large MoE (gpt-oss), and multimodal (Gemma 4). If `mlx`, `mlx-lm`, `mlx-vlm`, or `mlx-audio` changed since the previous release tag, the script automatically selects the `toolchain` scope and adds the Ultra-only Hy3 path. This works both before and after the candidate commit is tagged. A shallow checkout with no discoverable tag keeps the normal release scope; pass a base ref explicitly when toolchain comparison is required. To compare against a different release base, set `RELEASE_FLEET_BASE_REF`:
 
 ```bash
-RELEASE_FLEET_BASE_REF=v0.11.0 make release-check-m3
+RELEASE_FLEET_BASE_REF="$(git describe --tags --abbrev=0)" make release-check-m3
 ```
 
 A family may set `"reasoning_distill": true` in `scripts/release_fleet.json` (defaults to false) to mark a reasoning-distill family such as DeepSeek-R1. Such families participate in the G0a coherence sweep like any other, but the sweep boots them with `--thinking` (instead of `--no-thinking`) and passes `--reasoning-distill` to the coherence gate, which serves them with a larger token budget and scores the concluded (post-reasoning) answer against the golden token rather than the raw visible text (issue #1323).
@@ -271,7 +264,7 @@ For focused diagnosis only, `scripts/coherence_sweep.sh` still accepts explicit 
 G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 
 - **Part A** — `rapid-mlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`rapid_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
-- **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Codex-CLI shim added in v0.7.10 is reachable and emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
+- **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Responses route emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
 
 The remaining seven profiles (`goose`, `openhands`, `cline`, `openclaude`, `pydanticai`, `smolagents`, `generic`) are intentionally not in Part A:
 

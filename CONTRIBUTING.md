@@ -8,10 +8,11 @@ Thanks for your interest! Here's how to get started.
 # Clone and install in dev mode
 git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
-python3 -m venv .venv
+# Install uv if needed: https://docs.astral.sh/uv/getting-started/installation/
+curl -LsSf https://astral.sh/uv/install.sh | sh
+~/.local/bin/uv venv --python 3.11 .venv
 source .venv/bin/activate
-python3 -m pip install -e ".[test]"
-python3 -m pip install ruff
+~/.local/bin/uv pip install --python .venv/bin/python -e ".[test]" ruff
 
 # Start a dev server
 rapid-mlx serve qwen3.5-4b-4bit --port 8000
