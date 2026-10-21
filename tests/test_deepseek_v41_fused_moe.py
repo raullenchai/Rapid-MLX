@@ -12,7 +12,7 @@ from rapid_mlx.models.deepseek_v41_native.serving import (  # noqa: E402
     ExactDirectDownSwitchGLU,
 )
 
-DIM, INTER, EXPERTS, TOPK = 512, 128, 16, 4
+DIM, INTER, EXPERTS, TOPK = 512, 256, 64, 4
 
 
 def _moe(
@@ -219,7 +219,7 @@ def test_dispatch_geometry(monkeypatch) -> None:
     assert launches["down"]["grid"] == (32, (TOPK + 1) * DIM // 4, 1)
     assert launches["down"]["threadgroup"] == (32, TOPK + 1, 1)
     assert ("SVPT", 8) in launches["up"]["template"]
-    assert ("SDVPT", 4) in launches["down"]["template"]
+    assert ("SDVPT", 8) in launches["down"]["template"]
     assert ("ROWS", rows) in launches["down"]["template"]
     # wrong width: stock path
     monkeypatch.setattr(
