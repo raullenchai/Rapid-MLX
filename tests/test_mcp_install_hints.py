@@ -18,6 +18,7 @@ def test_yaml_config_missing_dependency_hint(tmp_path, monkeypatch):
     with pytest.raises(ImportError) as error:
         load_mcp_config(str(path))
 
+    assert error.value.name == "yaml"
     assert package_install_command("pyyaml") in str(error.value)
 
 
