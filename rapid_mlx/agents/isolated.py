@@ -254,7 +254,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         )
         return (
             data_path
-            + '[[ -n "$CRUSH_PRIVATE_DATA_PATH" ]] || exit 1\n'
+            + '[ -n "$CRUSH_PRIVATE_DATA_PATH" ] || exit 1\n'
             + f"{credential} CRUSH_GLOBAL_CONFIG={quote(str(root))} "
             f"CRUSH_GLOBAL_DATA={quote(str(root / 'global-data'))} "
             'crush --data-dir "$CRUSH_PRIVATE_DATA_PATH"'

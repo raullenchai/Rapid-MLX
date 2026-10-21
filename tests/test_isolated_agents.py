@@ -1049,7 +1049,7 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
     assert config["models"]["small"]["model"] == "qwen3.5-9b-4bit"
     assert config["options"]["disable_default_providers"] is True
     runner = isolated.connection_dir() / "agents" / "crush" / "run"
-    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    subprocess.run(["/bin/sh", str(runner)], check=True)
     assert capture.read_text() == str(isolated.connection_dir() / "agents/crush")
     assert data_capture.read_text() == str(
         isolated.connection_dir() / "agents/crush/global-data"
@@ -1170,9 +1170,7 @@ def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
     for project in projects:
         args_capture = private_home / f"{project.name}-args"
         monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
-        subprocess.run(
-            [shutil.which("zsh") or "/bin/bash", str(runner)], cwd=project, check=True
-        )
+        subprocess.run(["/bin/sh", str(runner)], cwd=project, check=True)
         args = args_capture.read_text().splitlines()
         captured.append(args[args.index("--data-dir") + 1])
     assert captured[0] != captured[1]
