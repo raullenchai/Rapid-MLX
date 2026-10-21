@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -432,14 +433,40 @@ def _hc_post(x, residual, post, combine):
     return hc_post(x[None], residual[None], post[None], combine[None])[0]
 
 
-def rotate_positions(x, positions, dim: int, base: float, inverse: bool = False):
-    frequency = 1 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
-    angles = positions[:, None] * frequency[None, :]
-    return rope_tail(x[None], dim, mx.cos(angles), mx.sin(angles), inverse)[0]
+@lru_cache(maxsize=16)
+def _rope_frequency(dim: int, base: float, device):
+    return 1 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+
+
+@lru_cache(maxsize=64)
+def _rope_tables(dim: int, base: float, start: int, end: int, device):
+    angles = (
+        mx.arange(start, end, dtype=mx.float32)[:, None]
+        * _rope_frequency(dim, base, device)[None, :]
+    )
+    return mx.cos(angles), mx.sin(angles)
+
+
+def rotate_positions(
+    x, positions, dim: int, base: float, inverse: bool = False, *, position_range=None
+):
+    device = str(mx.default_device())
+    if position_range is None:
+        angles = positions[:, None] * _rope_frequency(dim, base, device)[None, :]
+        cos, sin = mx.cos(angles), mx.sin(angles)
+    else:
+        start, end = position_range
+        # Bounded chunks share tables across stages, rotations and nearby rounds.
+        first, last = start // 256 * 256, (end + 255) // 256 * 256
+        cos, sin = _rope_tables(dim, base, first, last, device)
+        cos, sin = cos[start - first : end - first], sin[start - first : end - first]
+    return rope_tail(x[None], dim, cos, sin, inverse)[0]
 
 
 def _rotary(x, position, dim: int, base: float, inverse: bool = False):
-    return rotate_positions(x[None], mx.array([position]), dim, base, inverse)[0]
+    return rotate_positions(
+        x[None], None, dim, base, inverse, position_range=(position, position + 1)
+    )[0]
 
 
 def quantize_cache(x, bits: int, group: int, scale_format: str = "e8m0"):
@@ -543,7 +570,7 @@ class DSpark:
     def observe(self, main_hidden, position: int):
         self.observe_many(main_hidden[:, None], position)
 
-    def observe_many(self, main_hidden, position: int):
+    def observe_many(self, main_hidden, position: int, *, defer: bool = False):
         """Append a contiguous verified chunk of one stream.
 
         Observations only append independent sliding-window KV rows. Rows that
@@ -575,7 +602,10 @@ class DSpark:
                     -self.c["sliding_window"] :
                 ]
                 values.append(key_value)
-        mx.eval(*values)
+        if defer:
+            mx.async_eval(*values)
+        else:
+            mx.eval(*values)
         self.position = position + count - 1
 
     def attention(self, base, x, stage: int):
@@ -623,10 +653,27 @@ class DSpark:
         )
         return self.w.linear(base + ".wo_b", projected.astype(x.dtype))
 
-    def propose(self, next_token: int):
+    def propose(self, next_token, *, depth=None, device: bool = False):
+        """Draft with all decoder positions intact.
+
+        The legacy diagnostic call returns all predictions and confidence.
+        Serving supplies depth and device=True: return device IDs and a finite
+        flag, without confidence projection or a host synchronization.
+        """
+        predictions = self.block_size if depth is None else depth
+        if not 1 <= predictions <= self.block_size:
+            raise ValueError("draft depth must be between 1 and block size")
         if self.position < 1:
             raise ValueError("seed at least two verified positions before drafting")
-        ids = [next_token] + [self.c["dspark_noise_token_id"]] * (self.block_size - 1)
+        seed = mx.array(next_token, dtype=mx.int32).reshape(1)
+        ids = mx.concatenate(
+            [
+                seed,
+                mx.full(
+                    (self.block_size - 1,), self.c["dspark_noise_token_id"], mx.int32
+                ),
+            ]
+        )
         hidden = mx.repeat(
             self.w.embedding("embed", ids)[:, None, :], self.c["hc_mult"], axis=1
         )
@@ -660,8 +707,8 @@ class DSpark:
         logits = self.w.linear(
             "head", self.adapter.norm(base + ".norm", collapsed).astype(mx.float32)
         )
-        output, biased_logits, markov_embeddings = [mx.array([next_token])], [], []
-        for index in range(self.block_size):
+        output, biased_logits, markov_embeddings = [seed], [], []
+        for index in range(predictions):
             markov = self.w.embedding(base + ".markov_head.embed", output[-1])
             biased = logits[index : index + 1] + self.w.linear(
                 base + ".markov_head.head", markov.astype(mx.float32)
@@ -670,10 +717,15 @@ class DSpark:
             biased_logits.append(biased)
             markov_embeddings.append(markov)
         logits = mx.concatenate(biased_logits)
+        finite = mx.all(mx.isfinite(logits))
+        if device:
+            proposals = mx.concatenate(output)
+            mx.async_eval(proposals, finite)
+            return proposals, finite
         confidence = self.w.linear(
             base + ".confidence_head.proj",
             mx.concatenate(
-                (collapsed, mx.concatenate(markov_embeddings)), axis=-1
+                [collapsed[:predictions], mx.concatenate(markov_embeddings)], axis=-1
             ).astype(mx.float32),
         )
         mx.eval(logits, confidence)

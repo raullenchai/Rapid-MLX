@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import time
 import weakref
 from dataclasses import dataclass
 from types import MethodType, SimpleNamespace
@@ -20,6 +21,7 @@ from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
 from .affine_route_qmv import affine2_route_down_qmv
+from .draft_depth import DraftDepthPolicy, draft_depth
 from .dspark import (
     DSpark,
     DSparkWeights,
@@ -121,28 +123,30 @@ def install_target_qmv(model: Any) -> int:
 
 
 def _install_vectorized_mtp_attention(draft: DSpark) -> None:
-    def rotate_positions(x, positions, config, inverse=False):
+    def rotate_positions(x, config, inverse=False):
         return _rotate_positions(
-            x, positions, config["qk_rope_head_dim"], config["rope_theta"], inverse
+            x,
+            None,
+            config["qk_rope_head_dim"],
+            config["rope_theta"],
+            inverse,
+            position_range=(draft.position + 1, draft.position + 1 + x.shape[0]),
         )
 
     def vectorized_attention(self, base, x, stage):
         adapter = self.adapter
         config = self.c
         count = x.shape[0]
-        positions = mx.arange(count, dtype=mx.float32) + self.position + 1
         query_a = adapter.norm(base + ".q_norm", adapter.w.linear(base + ".wq_a", x))
         query = adapter.w.linear(base + ".wq_b", query_a).reshape(
             count, config["num_attention_heads"], config["head_dim"]
         )
         key_value = adapter.norm(base + ".kv_norm", adapter.w.linear(base + ".wkv", x))
-        query = rotate_positions(query, positions, config)
-        key_value = quantize_cache(
-            rotate_positions(key_value, positions, config), 8, 32
-        )
+        query = rotate_positions(query, config)
+        key_value = quantize_cache(rotate_positions(key_value, config), 8, 32)
         keys = mx.concatenate([*self.windows[stage], key_value])
         output = draft_attention(query, keys, adapter.w.read(base + ".attn_sink"))
-        output = rotate_positions(output, positions, config, inverse=True)
+        output = rotate_positions(output, config, inverse=True)
         output = output.astype(mx.float32).reshape(count, config["o_groups"], -1)
         shape = adapter.w.entries[base + ".wo_a.weight"]["shape"]
         rows = shape[0] // config["o_groups"]
@@ -381,14 +385,16 @@ def generation_kwargs(
     return {"max_tokens": max_tokens, "temperature": temperature, "top_p": top_p}
 
 
-def _match(candidate, target_logits, eos_id, seed_already_emitted):
+def _match(candidate, target_logits, eos_id, seed_already_emitted, expected_ids=None):
+    if not seed_already_emitted and candidate[0] == eos_id:
+        return [candidate[0]], None, True, 0
     committed = [] if seed_already_emitted else [candidate[0]]
     accepted = 0
     if len(candidate) == 1:
         return committed, None, False, accepted
-    expected_ids = mx.argmax(target_logits[:, : len(candidate) - 1], axis=-1)[
-        0
-    ].tolist()
+    if expected_ids is None:
+        expected_ids = mx.argmax(target_logits[:, : len(candidate) - 1], axis=-1)[0]
+    expected_ids = expected_ids.tolist()
     for index, expected in enumerate(expected_ids, 1):
         committed.append(expected)
         if candidate[index] != expected:
@@ -401,7 +407,10 @@ def _match(candidate, target_logits, eos_id, seed_already_emitted):
 
 def _observe_verified(drafter, hidden, position):
     if hasattr(drafter, "observe_many"):
-        drafter.observe_many(hidden, position)
+        if isinstance(drafter, DSpark):
+            drafter.observe_many(hidden, position, defer=True)
+        else:
+            drafter.observe_many(hidden, position)
     else:
         for index in range(hidden.shape[1]):
             drafter.observe(hidden[:, index], position + index)
@@ -435,6 +444,8 @@ def stream_generate(
         raise ValueError("prompt must contain at least two tokens")
     cache = model.make_cache(max_seq_len=len(input_ids) + max_tokens + 8)
     runtime.reset()
+    policy = DraftDepthPolicy(draft_depth())
+    track_draft = policy.mode != 0
     logits = hidden = None
     for start in range(0, len(input_ids), 512):
         logits, hidden = model(
@@ -443,7 +454,9 @@ def stream_generate(
             last_logit_only=False,
             return_dspark_hidden=True,
         )
-        if optimize_prefill and hasattr(runtime.drafter, "observe_many"):
+        if not track_draft:
+            mx.eval(logits)
+        elif optimize_prefill and hasattr(runtime.drafter, "observe_many"):
             # Flush every cache write, including layers after hidden capture.
             # Unconsumed intermediate logits stay lazy and are never projected.
             state: list[Any] = []
@@ -468,7 +481,7 @@ def stream_generate(
                 mx.eval(logits, hidden, state)
             else:
                 mx.eval(hidden, state)
-            runtime.drafter.observe_many(hidden, start)
+            _observe_verified(runtime.drafter, hidden, start)
         else:
             mx.eval(logits, hidden)
             for index in range(hidden.shape[1]):
@@ -491,51 +504,75 @@ def stream_generate(
         default=5,
     )
     while generated < max_tokens:
-        seed = int(mx.argmax(logits))
-        if not ignore_eos and not seed_already_emitted and seed == eos_id:
-            tokens = [seed]
-            hit_eos = True
-        else:
-            proposals, _confidence = runtime.drafter.propose(seed)
-            candidate = proposals[
-                : min(5, ring_limit, max_tokens - generated + int(seed_already_emitted))
-            ]
-            base_offset = cache.offset
-            # Offset rollback cannot recover older KV overwritten by rejected rows.
-            # Keep the touched ring slots on device until verification commits.
-            window_snapshots = []
-            for layer in getattr(cache, "layers", ()):
-                if not getattr(layer, "window", 0):
-                    continue
-                slots = (base_offset + mx.arange(len(candidate))) % layer.window
-                window_snapshots.append((layer, slots, layer.win_kv[:, slots]))
-            target_logits, target_hidden = model(
-                mx.array([candidate]),
-                cache,
-                last_logit_only=False,
-                return_dspark_hidden=True,
-                enable_rollback=True,
-            )
-            mx.eval(target_logits, target_hidden)
-            tokens, mismatch, hit_eos, _accepted = _match(
-                candidate,
-                target_logits,
-                -1 if ignore_eos else eos_id,
-                seed_already_emitted,
-            )
-            if mismatch is None:
-                _observe_verified(runtime.drafter, target_hidden, base_offset)
-                logits = target_logits[:, -1]
-                seed_already_emitted = False
-            else:
-                cache.rollback(base_offset + mismatch)
-                for layer, slots, previous in window_snapshots:
-                    layer.win_kv[:, slots[mismatch:]] = previous[:, mismatch:]
-                _observe_verified(
-                    runtime.drafter, target_hidden[:, :mismatch], base_offset
+        round_start = time.perf_counter()
+        seed = mx.argmax(logits).reshape(1)
+        count = min(5, ring_limit, max_tokens - generated + int(seed_already_emitted))
+        depth = policy.choose(count - 1)
+        finite = mx.array(True)
+        if depth:
+            if isinstance(runtime.drafter, DSpark):
+                candidate, finite = runtime.drafter.propose(
+                    seed, depth=depth, device=True
                 )
-                logits = target_logits[:, mismatch - 1]
-                seed_already_emitted = True
+            else:
+                proposals, _confidence = runtime.drafter.propose(int(seed.item()))
+                candidate = mx.array(proposals[: depth + 1])
+        else:
+            candidate = seed
+        base_offset = cache.offset
+        # Offset rollback cannot recover older KV overwritten by rejected rows.
+        # Keep the touched ring slots on device until verification commits.
+        window_snapshots = []
+        for layer in getattr(cache, "layers", ()):
+            if not getattr(layer, "window", 0):
+                continue
+            slots = (base_offset + mx.arange(len(candidate))) % layer.window
+            window_snapshots.append((layer, slots, layer.win_kv[:, slots]))
+        target_logits, target_hidden = model(
+            candidate[None],
+            cache,
+            last_logit_only=False,
+            return_dspark_hidden=True,
+            enable_rollback=True,
+        )
+        expected_ids = (
+            mx.argmax(target_logits[:, : len(candidate) - 1], axis=-1)[0]
+            if len(candidate) > 1
+            else mx.array([], dtype=mx.int32)
+        )
+        mx.eval(
+            target_logits,
+            target_hidden if track_draft else [],
+            candidate,
+            finite,
+            expected_ids,
+        )
+        # Draft and verify share this existing sync boundary. Charge all work
+        # to the depth used; submission timings cannot separate their costs.
+        policy.observe_cost(depth, round_ms=(time.perf_counter() - round_start) * 1000)
+        if not bool(finite):
+            raise FloatingPointError("non-finite DSpark output")
+        candidate = candidate.tolist()
+        tokens, mismatch, hit_eos, accepted = _match(
+            candidate,
+            target_logits,
+            -1 if ignore_eos else eos_id,
+            seed_already_emitted,
+            expected_ids,
+        )
+        policy.observe(accepted, depth)
+        if mismatch is None:
+            if track_draft:
+                _observe_verified(runtime.drafter, target_hidden, base_offset)
+            logits = target_logits[:, -1]
+            seed_already_emitted = False
+        else:
+            cache.rollback(base_offset + mismatch)
+            for layer, slots, previous in window_snapshots:
+                layer.win_kv[:, slots[mismatch:]] = previous[:, mismatch:]
+            _observe_verified(runtime.drafter, target_hidden[:, :mismatch], base_offset)
+            logits = target_logits[:, mismatch - 1]
+            seed_already_emitted = True
         for token in tokens:
             generated += 1
             # EOS is control state, not user-visible text. The release

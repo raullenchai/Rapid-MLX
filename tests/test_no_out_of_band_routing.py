@@ -162,6 +162,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # reported via /v1/models speculative info, runtime status and the
         # ready banner.
         "RAPID_MLX_DSV41_LANES",
+        # Draft-depth budget within the selected native V4.1 backend. Every
+        # setting uses the same target, weights, parser and greedy contract.
+        "RAPID_MLX_DSV41_DRAFT_DEPTH",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;
@@ -902,6 +905,8 @@ def _routing_attr_write_targets(node: ast.AST) -> list[tuple[str, ast.AST]]:
     # 1. Direct Attribute assignment / augassign / annassign.
     attr_targets: list[ast.Attribute] = []
     flat_targets: list[ast.AST] = []
+    t: ast.AST
+    tgt: ast.AST
     if isinstance(node, ast.Assign):
         for t in node.targets:
             flat_targets.extend(_flatten_targets(t))

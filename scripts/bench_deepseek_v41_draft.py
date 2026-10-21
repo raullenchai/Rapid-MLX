@@ -151,25 +151,37 @@ def speculative_decode(serving, model, tokenizer, runtime, prompt, count):
     original_propose = runtime.drafter.propose
     original_match = serving._match
     start = None
+    pending = False
 
     def close_round():
         if rounds:
+            mx.synchronize()
             rounds[-1]["round_ms"] = (time.perf_counter() - rounds[-1]["start"]) * 1000
 
-    def propose(seed):
-        nonlocal start
+    def begin_round():
+        nonlocal start, pending
         close_round()
+        mx.synchronize()
         now = time.perf_counter()
         if start is None:
             start = now
-        row = {"start": now, "verify_ms": 0.0}
+        row = {"start": now, "verify_ms": 0.0, "draft_ms": 0.0}
         rounds.append(row)
-        result = original_propose(seed)
-        mx.eval(result[1])
+        pending = True
+        return row
+
+    def propose(seed, **kwargs):
+        row = begin_round()
+        now = time.perf_counter()
+        result = original_propose(seed, **kwargs)
+        mx.eval(result)
+        mx.synchronize()
         row["draft_ms"] = (time.perf_counter() - now) * 1000
         return result
 
     def match(*args):
+        nonlocal pending
+        pending = False
         result = original_match(*args)
         rounds[-1]["accepted"] = result[3]
         return result
@@ -179,9 +191,13 @@ def speculative_decode(serving, model, tokenizer, runtime, prompt, count):
             return model.make_cache(**kwargs)
 
         def __call__(self, *args, **kwargs):
+            if kwargs.get("enable_rollback") and not pending:
+                begin_round()
+            mx.synchronize()
             now = time.perf_counter()
             result = model(*args, **kwargs)
             mx.eval(result)
+            mx.synchronize()
             if kwargs.get("enable_rollback"):
                 rounds[-1]["verify_ms"] = (time.perf_counter() - now) * 1000
             return result

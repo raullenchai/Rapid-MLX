@@ -647,6 +647,7 @@ jobs:
             tests/test_deepseek_v41_decode_overhead.py \
             tests/test_deepseek_v41_sparse_gather.py \
             tests/test_deepseek_v41_draft_numerics.py \
+            tests/test_deepseek_v41_draft_depth.py \
             tests/test_deepseek_v41_engram_offload.py \
             tests/test_deepseek_v41_hyper_connections.py \
             tests/test_deepseek_v41_native_load.py \

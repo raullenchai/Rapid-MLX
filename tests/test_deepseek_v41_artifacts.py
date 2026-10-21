@@ -20,7 +20,7 @@ def _write_file(path: Path, size: int, byte: bytes = b"x") -> str:
 
 
 def _product_serve_args(*extra: str):
-    captured = []
+    captured: list[object] = []
     with (
         patch.object(
             sys,
@@ -577,6 +577,10 @@ def test_stream_does_not_emit_literal_eos_marker():
 
         def observe(self, _hidden, position):
             self.position = position
+
+        def propose(self, seed):
+            # The device path checks seed EOS at the verify readback boundary.
+            return [seed] * 5, mx.ones((5,))
 
     runtime = DSparkRuntime(Draft(), "mtp", "t" * 40, "m" * 40)
     chunks = list(

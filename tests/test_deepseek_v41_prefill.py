@@ -89,7 +89,7 @@ def test_batched_observe_exact_windows_and_contiguity(seed, quantized):
 
 class TinyProcessor:
     eos_token_id = -1
-    all_special_ids = []
+    all_special_ids: list[int] = []
     clean_up_tokenization_spaces = False
 
     def encode(self, _text, **_kwargs):
@@ -140,15 +140,25 @@ def test_stream_prefill_and_draft_enabled_greedy_32_steps(length):
             finally:
                 depth[0] -= 1
 
-        def observe_many(hidden, start, original_many=original_many):
-            return record(np.array(hidden[0]), lambda: original_many(hidden, start))
+        def observe_many(hidden, start, original_many=original_many, **kwargs):
+            return record(
+                np.array(hidden[0]), lambda: original_many(hidden, start, **kwargs)
+            )
 
         def observe(hidden, position, original_one=original_one):
             return record(np.array(hidden), lambda: original_one(hidden, position))
 
         draft.observe_many = observe_many
         draft.observe = observe
-        draft.propose = lambda seed: ([seed, (seed + 1) % 64, 3, 4, 5], None)
+
+        def propose(seed, *, depth=4, device=False):
+            seed = int(seed.item()) if device else seed
+            proposals = [seed, (seed + 1) % 64, 3, 4, 5][: depth + 1]
+            return (
+                (mx.array(proposals), mx.array(True)) if device else (proposals, None)
+            )
+
+        draft.propose = propose
         drafter = ScalarOnlyDrafter(draft) if scalar_only else draft
         assert hasattr(drafter, "observe_many") is not scalar_only
         runtime = serving.DSparkRuntime(drafter, "tiny", "tiny", "tiny")
@@ -186,8 +196,11 @@ def test_serving_flushes_cache_and_batches_observation(monkeypatch):
 
     draft = bench.tiny_drafter()
 
-    # Stop precisely at the prefill/decode boundary.
-    def stop(seed):
+    # A one-token budget selects depth zero and bypasses propose entirely.
+    # Allow drafting so the stub stops precisely at the prefill/decode boundary.
+    def stop(seed, *, depth, device):
+        assert depth == 1
+        assert device
         raise RuntimeError("prefill complete")
 
     draft.propose = stop
@@ -199,7 +212,7 @@ def test_serving_flushes_cache_and_batches_observation(monkeypatch):
                 TinyProcessor(),
                 [1] * 513,
                 runtime=runtime,
-                max_tokens=1,
+                max_tokens=2,
             )
         )
     assert calls == [(512, False), (1, False)]
@@ -240,7 +253,12 @@ def test_checkpoint_bench_modes_with_synthetic_runtime(
     model = bench.tiny_model()
     processor = TinyProcessor()
     draft = bench.tiny_drafter()
-    draft.propose = lambda seed: ([seed, 1, 2, 3, 4], None)
+
+    def propose(seed, *, depth, device):
+        assert device
+        return mx.array([int(seed.item()), 1, 2, 3, 4][: depth + 1]), mx.array(True)
+
+    draft.propose = propose
     runtime = serving.DSparkRuntime(draft, "tiny", "tiny", "tiny")
     loads = []
 

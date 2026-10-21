@@ -313,21 +313,22 @@ def test_production_stream_greedy_rollback_observes_only_committed(mismatch):
     observed = []
     original_observe = draft.observe_many
 
-    def observe(hidden, position):
+    def observe(hidden, position, **kwargs):
         observed.extend(range(position, position + hidden.shape[1]))
-        original_observe(hidden, position)
+        original_observe(hidden, position, **kwargs)
 
     draft.observe_many = observe
     # An oracle draft makes acceptance/rejection deterministic for every boundary.
     prefix = [1, 2, 3, 4]
     plain, _ = bench.plain_decode(model, prefix, 18)
 
-    def propose(seed):
+    def propose(seed, **kwargs):
+        seed = int(seed.item())
         position = draft.position + 1 - len(prefix)
         candidates = [seed] + plain[position + 1 : position + 5]
         if mismatch is not None and len(candidates) > mismatch:
             candidates[mismatch] = (candidates[mismatch] + 1) % 32
-        return candidates, mx.ones((5, 1))
+        return mx.array(candidates[: kwargs["depth"] + 1]), mx.array(True)
 
     draft.propose = propose
     runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
@@ -350,6 +351,13 @@ def test_observe_provider_fallback():
         3,
     )
     assert observed == [([[1]], 3), ([[2]], 4)]
+    observed.clear()
+    serving._observe_verified(
+        SimpleNamespace(observe_many=lambda h, p: observed.append((h.tolist(), p))),
+        mx.array([[[1], [2]]]),
+        3,
+    )
+    assert observed == [([[[1], [2]]], 3)]
 
 
 def test_benchmark_main_tiny_and_checkpoint_provider(monkeypatch, capsys):
@@ -501,7 +509,13 @@ def test_observe_many_appends_into_populated_window(serial_rows, chunk_rows):
 
 @pytest.mark.parametrize("eos_index", [0, 2, 6])
 @pytest.mark.parametrize("mismatch", [None, 1, 3])
-def test_production_stream_stops_at_target_eos_with_draft(eos_index, mismatch):
+@pytest.mark.parametrize("depth", ["0", "1", "2", "3", "4", "auto"])
+def test_production_stream_stops_at_target_eos_with_draft(
+    eos_index, mismatch, depth, monkeypatch
+):
+    from rapid_mlx.models.deepseek_v41_native.draft_depth import DEPTH_ENV
+
+    monkeypatch.setenv(DEPTH_ENV, depth)
     model, draft = bench.tiny_setup()
     prefix = [1, 2, 3, 4]
     plain, _ = bench.plain_decode(model, prefix, 18)
@@ -509,12 +523,13 @@ def test_production_stream_stops_at_target_eos_with_draft(eos_index, mismatch):
     # first occurrence, so a repeated token cannot stop the stream earlier
     assert plain.index(eos) == eos_index
 
-    def propose(seed):
+    def propose(seed, **kwargs):
+        seed = int(seed.item())
         position = draft.position + 1 - len(prefix)
         candidates = [seed] + plain[position + 1 : position + 5]
         if mismatch is not None and len(candidates) > mismatch:
             candidates[mismatch] = (candidates[mismatch] + 1) % 32
-        return candidates, mx.ones((5, 1))
+        return mx.array(candidates[: kwargs["depth"] + 1]), mx.array(True)
 
     draft.propose = propose
 
@@ -530,3 +545,158 @@ def test_production_stream_stops_at_target_eos_with_draft(eos_index, mismatch):
         )
     ]
     assert output == plain[: plain.index(eos) + 1]
+
+
+@pytest.mark.usefixtures("cpu_device")
+@pytest.mark.parametrize(
+    "seed,baseline",
+    [(7, [4, 15, 0, 11, 11]), (11, [4, 6, 12, 12, 8]), (42, [4, 20, 19, 19, 25])],
+)
+def test_device_proposals_match_prechange_fixture(seed, baseline, monkeypatch):
+    # Captured from pre-change propose at 59460430b8dd951a684a946b25e807ae33ce8350,
+    # tiny_setup(seed), then random.normal((1, 3, 96)), then propose(4)[:5].
+    _, draft = bench.tiny_setup(seed)
+    draft.observe_many(mx.random.normal((1, 3, 96)), 0)
+    assert draft.propose(4)[0][:5] == baseline
+    serving._install_vectorized_mtp_attention(draft)
+    serving._install_packed_mtp_moe(draft)
+    calls = []
+    original = draft.w.linear
+
+    def linear(base, x):
+        calls.append(base)
+        return original(base, x)
+
+    monkeypatch.setattr(draft.w, "linear", linear)
+    for depth in range(1, 5):
+        calls.clear()
+        proposals, finite = draft.propose(mx.array([4]), depth=depth, device=True)
+        mx.eval(proposals, finite)
+        assert proposals.tolist() == baseline[: depth + 1]
+        assert bool(finite)
+        assert sum("markov_head.head" in c for c in calls) == depth
+        assert not any("confidence_head" in c for c in calls)
+    for depth in (0, 6):
+        with pytest.raises(ValueError, match="depth"):
+            draft.propose(4, depth=depth, device=True)
+
+
+@pytest.mark.usefixtures("cpu_device")
+def test_cached_rope_ranges_are_exact_and_reused():
+    dspark._rope_tables.cache_clear()
+    x = mx.random.normal((5, 2, 32))
+    for start in (0, 7, 254, 260, 8192):
+        for inverse in (False, True):
+            expected = dspark.rotate_positions(
+                x, mx.arange(5) + start, 8, 10000, inverse
+            )
+            actual = dspark.rotate_positions(
+                x, None, 8, 10000, inverse, position_range=(start, start + 5)
+            )
+            equal(actual, expected)
+    assert dspark._rope_tables.cache_info().hits >= 6
+
+
+@pytest.mark.usefixtures("cpu_device")
+@pytest.mark.parametrize("depth", ["0", "1", "2", "3", "4", "auto"])
+def test_all_depths_preserve_target_tokens(depth, monkeypatch):
+    from rapid_mlx.models.deepseek_v41_native.draft_depth import DEPTH_ENV
+
+    monkeypatch.setenv(DEPTH_ENV, depth)
+    model, draft = bench.tiny_setup()
+    serving._install_vectorized_mtp_attention(draft)
+    serving._install_packed_mtp_moe(draft)
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    prefix = [1, 2, 3, 4]
+    plain, _ = bench.plain_decode(model, prefix, 45)
+    output, stats = bench.speculative_decode(
+        serving, model, bench.TinyTokenizer(), runtime, prefix, 45
+    )
+    assert output == plain
+    assert stats["mean_round_ms"]["draft_ms"] >= 0
+    if depth == "0":
+        assert draft.position == -1
+        assert stats["mean_round_ms"]["draft_ms"] == 0
+
+
+@pytest.mark.usefixtures("cpu_device")
+def test_device_draft_has_no_sync_and_finite_check_is_deferred(monkeypatch):
+    _, draft = bench.tiny_setup()
+    serving._install_vectorized_mtp_attention(draft)
+    serving._install_packed_mtp_moe(draft)
+    draft.observe_many(mx.random.normal((1, 3, 96)), 0)
+    original = draft.w.linear
+
+    def broken(base, x):
+        result = original(base, x)
+        return result * float("nan") if "markov_head.head" in base else result
+
+    monkeypatch.setattr(draft.w, "linear", broken)
+    original_eval = mx.eval
+    with monkeypatch.context() as patch:
+
+        def no_sync(*args):
+            pytest.fail("draft must not synchronize")
+
+        patch.setattr(mx, "eval", no_sync)
+        proposals, finite = draft.propose(mx.array([4]), depth=4, device=True)
+        draft.observe_many(mx.random.normal((1, 1, 96)), 3, defer=True)
+    original_eval(proposals, finite)
+    assert not bool(finite)
+
+
+@pytest.mark.usefixtures("cpu_device")
+def test_serving_rejects_nonfinite_at_verify_boundary(monkeypatch):
+    model, draft = bench.tiny_setup()
+    monkeypatch.setattr(
+        draft,
+        "propose",
+        lambda seed, **kw: (mx.concatenate([seed, seed]), mx.array(False)),
+    )
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    with pytest.raises(FloatingPointError, match="non-finite"):
+        list(
+            serving.stream_generate(
+                model, bench.TinyTokenizer(), [1, 2], runtime=runtime, max_tokens=3
+            )
+        )
+
+
+@pytest.mark.usefixtures("cpu_device")
+def test_benchmark_waits_for_draft_completion(monkeypatch):
+    model, draft = bench.tiny_setup()
+    serving._install_vectorized_mtp_attention(draft)
+    serving._install_packed_mtp_moe(draft)
+    events = []
+    original_propose, original_eval = draft.propose, mx.eval
+    original_sync, original_time = mx.synchronize, bench.time.perf_counter
+
+    def propose(*args, **kwargs):
+        result = original_propose(*args, **kwargs)
+        events.append("draft_return")
+        return result
+
+    def evaluate(*args):
+        result = original_eval(*args)
+        events.append("eval")
+        return result
+
+    def synchronize(*args):
+        result = original_sync(*args)
+        events.append("sync")
+        return result
+
+    def timer():
+        events.append("timer")
+        return original_time()
+
+    monkeypatch.setattr(draft, "propose", propose)
+    monkeypatch.setattr(mx, "eval", evaluate)
+    monkeypatch.setattr(mx, "synchronize", synchronize)
+    monkeypatch.setattr(bench.time, "perf_counter", timer)
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    bench.speculative_decode(
+        serving, model, bench.TinyTokenizer(), runtime, [1, 2, 3], 3
+    )
+    index = events.index("draft_return")
+    assert events[index + 1 : index + 4] == ["eval", "sync", "timer"]
