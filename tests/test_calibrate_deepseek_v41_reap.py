@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +10,25 @@ import pytest
 
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
+
+
+@pytest.fixture
+def mlx_cpu():
+    mlx_probe = subprocess.run(
+        [sys.executable, "-c", "import mlx.core"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if mlx_probe.returncode:
+        pytest.skip("mlx.core is not importable")
+    mx = pytest.importorskip("mlx.core", exc_type=ImportError)
+    previous_device = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        yield mx
+    finally:
+        mx.set_default_device(previous_device)
 
 
 def _load_module():
@@ -69,13 +89,39 @@ def test_main_refuses_checkpoint_code_without_explicit_trust(
         ],
     )
 
-    with pytest.raises(SystemExit, match="refusing to execute"):
+    with pytest.raises(SystemExit) as error:
+        calibrate.main()
+    assert str(error.value) == (
+        "refusing to execute checkpoint-bundled Python without "
+        "--trust-checkpoint-runtime"
+    )
+
+
+def test_main_native_does_not_require_checkpoint_runtime_trust(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import ModuleType
+
+    monkeypatch.setitem(sys.modules, "mlx.core", ModuleType("mlx.core"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate_deepseek_v41_reap.py",
+            "--model",
+            str(tmp_path / "model"),
+            "--native",
+            "--output",
+            str(tmp_path / "result.npz"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="provide a corpus/slices"):
         calibrate.main()
 
 
-def test_moe_probe_applies_routing_weight_once() -> None:
-    import mlx.core as mx
-
+def test_moe_probe_applies_routing_weight_once(mlx_cpu) -> None:
+    mx = mlx_cpu
     module = _load_module()
     gate = mx.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]])
     tensors = {"layers.0.ffn.gate.weight": gate, "layers.0.ffn.gate.bias": mx.zeros(3)}

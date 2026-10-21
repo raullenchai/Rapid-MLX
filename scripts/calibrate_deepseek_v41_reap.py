@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     a = parse_args()
-    if not a.trust_checkpoint_runtime:
+    if not a.native and not a.trust_checkpoint_runtime:
         raise SystemExit(
             "refusing to execute checkpoint-bundled Python without --trust-checkpoint-runtime"
         )

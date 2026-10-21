@@ -104,7 +104,7 @@ def quant_error(weights, probes, limit=10.0):
             mx.eval(*packed)
             size += sum(t.nbytes for t in packed)
             expected = affine_bytes(weight.shape, bits)
-            if size < 0 or sum(t.nbytes for t in packed) != expected:
+            if sum(t.nbytes for t in packed) != expected:
                 raise ValueError("MLX quantized payload differs from byte contract")
             restored.append(mx.dequantize(*packed, group_size=64, bits=bits))
         output = expert_output(restored, probes, limit)
