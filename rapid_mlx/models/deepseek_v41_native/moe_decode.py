@@ -797,12 +797,17 @@ def fused_layers(model, dtype) -> tuple[int, int]:
     This snapshot does not qualify layers or run kernels. Read it after warmup
     to measure coverage, including fallbacks after the once-per-model log.
     """
+    ffns = [
+        ffn
+        for layer in model.layers
+        if (ffn := getattr(layer, "ffn", None)) is not None
+    ]
     return (
         sum(
-            getattr(layer.ffn, _CHECK_ATTR, (None, None, {}))[2].get(dtype) is not None
-            for layer in model.layers
+            getattr(ffn, _CHECK_ATTR, (None, None, {}))[2].get(dtype) is not None
+            for ffn in ffns
         ),
-        len(model.layers),
+        len(ffns),
     )
 
 
@@ -810,15 +815,20 @@ def log_coverage(model, dtype) -> None:
     """Report actual lazy qualification results once every layer has a verdict."""
     if getattr(model, "_rapid_moe_summary_logged", False):
         return
-    verdicts: list[dict] = [
-        getattr(layer.ffn, _CHECK_ATTR, (None, None, {}))[2] for layer in model.layers
-    ]
-    if not verdicts or any(dtype not in verdict for verdict in verdicts):
-        return
+    verdicts: list[dict] = []
     fallback = []
-    for i, (layer, verdict) in enumerate(zip(model.layers, verdicts, strict=True)):
+    for i, layer in enumerate(model.layers):
+        ffn = getattr(layer, "ffn", None)
+        if ffn is None:
+            continue
+        verdict = getattr(ffn, _CHECK_ATTR, (None, None, {}))[2]
+        if dtype not in verdict:
+            return
+        verdicts.append(verdict)
         if verdict[dtype] is None:
-            fallback.append(_layer_label(layer.ffn, getattr(layer, "layer_id", i)))
+            fallback.append(_layer_label(ffn, getattr(layer, "layer_id", i)))
+    if not verdicts:
+        return
     logger.info(
         "fused V4.1 MoE: %d/%d layers; fallback: %s",
         len(verdicts) - len(fallback),

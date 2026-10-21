@@ -285,6 +285,46 @@ def test_launch_fallback_after_coverage(qualification, monkeypatch, caplog):
     assert decode.fused_layers(model, "bf16") == (0, 1)
 
 
+@pytest.mark.parametrize("layers", [[], [Module(), Module()], [Module(ffn=None)]])
+def test_coverage_without_ffn(kernels, caplog, layers):
+    decode = kernels[0]
+    model = Module(layers=layers)
+    with caplog.at_level("INFO", logger=decode.__name__):
+        decode.log_coverage(model, "bf16")
+        decode.log_coverage(model, "bf16")
+    assert decode.fused_layers(model, "bf16") == (0, 0)
+    assert caplog.messages == []
+    assert not getattr(model, "_rapid_moe_summary_logged", False)
+
+
+def test_coverage_with_mixed_layers(kernels, caplog):
+    decode = kernels[0]
+    fused, stock, pending = moe(), moe(), moe()
+    setattr(fused, decode._CHECK_ATTR, (None, None, {"bf16": decode._layout(fused)}))
+    setattr(stock, decode._CHECK_ATTR, (None, None, {"bf16": None}))
+    model = Module(
+        layers=[
+            Module(),
+            Module(ffn=fused),
+            Module(ffn=None),
+            Module(ffn=stock),
+            Module(ffn=pending, layer_id=7),
+            Module(),
+        ]
+    )
+    with caplog.at_level("INFO", logger=decode.__name__):
+        decode.log_coverage(model, "bf16")
+        assert caplog.messages == []
+        assert decode.fused_layers(model, "bf16") == (1, 3)
+        setattr(pending, decode._CHECK_ATTR, (None, None, {"bf16": None}))
+        decode.log_coverage(model, "bf16")
+        decode.log_coverage(model, "bf16")
+    assert caplog.messages == [
+        "fused V4.1 MoE: 1/3 layers; fallback: layer 3 (2,2,2|8), layer 7 (2,2,2|8)"
+    ]
+    assert decode.fused_layers(model, "bf16") == (1, 3)
+
+
 def test_fused_layers_cached_verdicts(kernels):
     decode = kernels[0]
     assert decode.fused_layers(Module(layers=[]), "bf16") == (0, 0)
