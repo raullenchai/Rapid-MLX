@@ -82,7 +82,7 @@ def test_batched_observe_exact_windows_and_contiguity(seed, quantized):
     with pytest.raises(ValueError, match="contiguous"):
         new.observe_many(mx.zeros((1, 2, 96)), 0)
     for shape in ((2, 2, 96), (1, 0, 96)):
-        with pytest.raises(ValueError, match="nonempty"):
+        with pytest.raises(ValueError, match="one nonempty stream"):
             new.observe_many(mx.zeros(shape), before + 1)
     assert new.position == before
 
