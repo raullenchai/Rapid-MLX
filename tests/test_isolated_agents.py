@@ -1611,6 +1611,11 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     original = b"model: openai/cloud\nopenai-api-key: fake-cloud-key\n"
     user_config.write_bytes(original)
     (private_home / ".gitconfig").write_text("[user]\n  name = Real Developer\n")
+    # Run from a project outside any repository, so a checkout's own
+    # user.name cannot shadow the global identity this test asserts.
+    project = private_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     commands = private_home / "commands"
     commands.mkdir()
     rapid = commands / "rapid-mlx"
