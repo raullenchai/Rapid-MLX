@@ -39,6 +39,8 @@ def test_agents_list_client_column_aligns_for_max_width_name(monkeypatch, capsys
         SimpleNamespace(agent_name=None, base_url="http://localhost:8000")
     )
     out = capsys.readouterr().out
+    assert "rapid-mlx launch <agent>" in out
+    assert "rapid-mlx agents <name>          Show manual setup guide" in out
 
     header = next(line for line in out.splitlines() if "client" in line)
     short_row = next(line for line in out.splitlines() if "Claude Code" in line)

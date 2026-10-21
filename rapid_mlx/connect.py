@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Single source of truth (SSOT) for "Ready:" / "Connect:" server output.
 
-The "server is up, now point your tools at it" experience is fragmented:
-the shared post-bind startup seam prints a ``Ready:`` line, ``agents --setup`` writes a
-tool-specific config, and the desktop app separately assembles its own
-endpoint URLs. Any change to one is invisible to the others, so a user who
-copies the banner URL into a config gets subtly different paths than the
-one the desktop shows.
+The shared post-bind startup seam prints a ``Ready:`` line, coding agents use
+``rapid-mlx launch <agent>`` with private profiles, and the desktop app
+assembles endpoint URLs. This module keeps the displayed addresses consistent.
 
 This module owns the *shape* of every endpoint and its human/machine
 rendering. Both the serve banner and ``rapid-mlx connect`` render from the
