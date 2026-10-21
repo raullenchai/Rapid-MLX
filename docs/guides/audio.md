@@ -37,7 +37,7 @@ For transcription, start `rapid-mlx serve whisper-large-v3` and use the request 
 
 ## Choose an audio model
 
-Run `rapid-mlx models` to browse the current audio aliases. Common starting points are `kokoro` for speech synthesis and `whisper-large-v3` for transcription. The [model catalog](https://rapidmlx.com/docs/aliases.html) lists the full repository names and memory requirements.
+Run `rapid-mlx models` to browse the current audio aliases. Common starting points are `kokoro` for speech synthesis and `whisper-large-v3` for transcription. Use `rapid-mlx models --json` for repository names and `rapid-mlx info <alias>` for memory requirements. The [model catalog](https://rapidmlx.com/docs/aliases.html) is the longer browsing guide.
 
 ### TTS quick start
 
@@ -261,8 +261,8 @@ processor.save(result.residual, "background_only.wav")
 
 **CLI Example:**
 ```bash
-python examples/audio_separation_example.py meeting.mp3 --play
-python examples/audio_separation_example.py song.mp3 --description music -o music.wav
+~/.rapid-mlx/bin/python examples/audio_separation_example.py meeting.mp3 --play
+~/.rapid-mlx/bin/python examples/audio_separation_example.py song.mp3 --description music -o music.wav
 ```
 
 ### Drums Separation Demo
@@ -273,7 +273,7 @@ you have the rights to use — `--description` takes a free-form stem name
 complementary mix:
 
 ```bash
-python examples/audio_separation_example.py your_song.mp3 \
+~/.rapid-mlx/bin/python examples/audio_separation_example.py your_song.mp3 \
   --description "drums" \
   --output drums_isolated.wav \
   --background song_no_drums.wav
@@ -553,25 +553,27 @@ curl http://localhost:8000/v1/audio/voices?model=kokoro
 
 ## CLI Examples
 
+The following scripts live in the repository’s `examples/` directory; run them from a source checkout.
+
 ### Live Transcription / Closed Captions
 
 Real-time speech-to-text transcription from your microphone:
 
 ```bash
 # Closed captions with whisper-large-v3 (best quality)
-python examples/closed_captions.py --language es --chunk 5
+~/.rapid-mlx/bin/python examples/closed_captions.py --language es --chunk 5
 
 # Faster model for lower latency
-python examples/closed_captions.py --language en --model whisper-turbo --chunk 3
+~/.rapid-mlx/bin/python examples/closed_captions.py --language en --model whisper-turbo --chunk 3
 
 # Basic mic transcription (record then transcribe)
-python examples/mic_transcribe.py --language es
+~/.rapid-mlx/bin/python examples/mic_transcribe.py --language es
 
 # Real-time chunked transcription
-python examples/mic_realtime.py --language es --chunk 3
+~/.rapid-mlx/bin/python examples/mic_realtime.py --language es --chunk 3
 
 # Live transcription with voice activity detection
-python examples/mic_live.py --language es
+~/.rapid-mlx/bin/python examples/mic_live.py --language es
 ```
 
 **Requirements:**
@@ -583,44 +585,44 @@ python examples/mic_live.py --language es
 
 ```bash
 # Simple TTS example
-python examples/tts_example.py "Hello, how are you?" --play
+~/.rapid-mlx/bin/python examples/tts_example.py "Hello, how are you?" --play
 
 # With different voice
-python examples/tts_example.py "Hello!" --voice am_michael --play
+~/.rapid-mlx/bin/python examples/tts_example.py "Hello!" --voice am_michael --play
 
 # Save to file
-python examples/tts_example.py "Welcome to the demo" -o greeting.wav
+~/.rapid-mlx/bin/python examples/tts_example.py "Welcome to the demo" -o greeting.wav
 
 # List available voices
-python examples/tts_example.py --list-voices
+~/.rapid-mlx/bin/python examples/tts_example.py --list-voices
 ```
 
 ### Multilingual TTS
 
 ```bash
 # English (auto-selects best model)
-python examples/tts_multilingual.py "Hello world" --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "Hello world" --play
 
 # Spanish
-python examples/tts_multilingual.py "Hola mundo" --lang es --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "Hola mundo" --lang es --play
 
 # French
-python examples/tts_multilingual.py "Bonjour le monde" --lang fr --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "Bonjour le monde" --lang fr --play
 
 # Japanese
-python examples/tts_multilingual.py "こんにちは" --lang ja --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "こんにちは" --lang ja --play
 
 # Chinese
-python examples/tts_multilingual.py "你好世界" --lang zh --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "你好世界" --lang zh --play
 
 # Use specific model
-python examples/tts_multilingual.py "Hello" --model chatterbox --play
+~/.rapid-mlx/bin/python examples/tts_multilingual.py "Hello" --model chatterbox --play
 
 # List all models
-python examples/tts_multilingual.py --list-models
+~/.rapid-mlx/bin/python examples/tts_multilingual.py --list-models
 
 # List all languages
-python examples/tts_multilingual.py --list-languages
+~/.rapid-mlx/bin/python examples/tts_multilingual.py --list-languages
 ```
 
 ### Business Assistant Voice Examples
@@ -637,22 +639,22 @@ Pre-generated voice samples with **native voices** for common business use cases
 **Generate your own with native voices:**
 ```bash
 # English - Bank assistant (native voice: af_heart)
-python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
+~/.rapid-mlx/bin/python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
   --text "Welcome to First National Bank. How may I assist you today?" \
   --voice af_heart --lang_code a --file_prefix assistant_bank_en
 
 # Spanish - Customer service (native voice: ef_dora)
-python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
+~/.rapid-mlx/bin/python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
   --text "Gracias por llamar a servicio al cliente. Un agente le atendera pronto." \
   --voice ef_dora --lang_code e --file_prefix assistant_service_es
 
 # French - Call center (native voice: ff_siwis)
-python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
+~/.rapid-mlx/bin/python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
   --text "Bienvenue. Votre appel est important pour nous." \
   --voice ff_siwis --lang_code f --file_prefix assistant_callcenter_fr
 
 # Chinese - Tech support (native voice: zf_xiaobei)
-python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
+~/.rapid-mlx/bin/python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
   --text "欢迎致电技术支持中心。我们将竭诚为您服务。" \
   --voice zf_xiaobei --lang_code z --file_prefix assistant_support_zh
 ```
