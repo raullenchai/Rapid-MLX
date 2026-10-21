@@ -377,6 +377,11 @@ def _row_contiguous(a: mx.array) -> bool:
     the fused kernel reproduces only the row-major one. Arrays whose storage
     cannot be inspected (placeholders inside an ``mx.compile`` trace) report
     False and take the stock graph.
+
+    The projection is a loaded, already-evaluated weight, so ``mx.eval`` and
+    the buffer export return without waiting on in-flight GPU work (measured
+    under a 200 ms pending GPU graph on M3 Ultra: ~0.85 us per call, 80 calls
+    per token ~70 us total). Only a still-lazy weight would be computed here.
     """
     try:
         mx.eval(a)  # a placeholder raises here, as a Python exception
