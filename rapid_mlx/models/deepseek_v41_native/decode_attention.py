@@ -358,6 +358,11 @@ def attend(
     """
     bsz, n, heads, dim = q.shape
     window = win_kv.shape[1]
+    if not 1 <= n <= min(MAX_QUERY_ROWS, window):
+        raise ValueError(
+            f"query rows must be between 1 and min(MAX_QUERY_ROWS={MAX_QUERY_ROWS}, "
+            f"window={window}); got {n}"
+        )
     we = min(window, start_pos + 1)
     if n > 1 and (old_kv is None or old_kv.shape[1] != n):
         raise ValueError("a multi-row call needs the n ring rows it overwrites")

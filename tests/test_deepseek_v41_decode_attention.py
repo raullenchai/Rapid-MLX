@@ -453,6 +453,25 @@ def test_supports_declines_what_the_kernels_do_not_cover(monkeypatch):
     assert not ok()
 
 
+@pytest.mark.parametrize(
+    "n,window", [(5, 4), (decode_attention.MAX_QUERY_ROWS + 1, 16), (0, 8)]
+)
+def test_attend_rejects_unsupported_query_rows_before_metal(n, window, monkeypatch):
+    monkeypatch.setattr(
+        decode_attention, "_kernels", lambda: pytest.fail("kernel launch attempted")
+    )
+    # NumPy inputs keep this shape-only validation independent of Metal.
+    q = np.empty((1, n, 8, 128), dtype=np.float32)
+    ring = np.empty((1, window, 128), dtype=np.float32)
+    old = np.empty((1, n, 128), dtype=np.float32)
+    sink = np.empty((8,), dtype=np.float32)
+    cos = sin = np.empty((n, 32), dtype=np.float32)
+    with pytest.raises(ValueError, match="query rows must be between 1 and min"):
+        decode_attention.attend(
+            q, ring, 16, None, None, window + n, sink, cos, sin, 0.5, 64, old
+        )
+
+
 def test_kernel_dispatch_geometry(monkeypatch):
     """Exercise the kernel factories and launch wrappers with stand-ins on any host."""
     built, launches = [], []
