@@ -47,14 +47,16 @@ def _model(compress_ratios: tuple[int, ...]) -> Model:
     return model
 
 
-def _decode(model: Model, gather: bool, monkeypatch) -> list[mx.array]:
+def _decode(
+    model: Model, gather: bool, monkeypatch, repeat: int = 1, steps: int = 5
+) -> list[mx.array]:
     monkeypatch.setattr(attention, "GATHER_DECODE_ROWS", gather)
-    prompt = mx.array([[3, 9, 1, 30, 7, 22, 5, 11, 2, 40, 17, 8]] * 2)
-    prompt[1] = mx.array([4, 4, 12, 6, 19, 33, 2, 1, 9, 9, 27, 3])
-    cache = model.make_cache(bsz=2, max_seq_len=24)
+    prompt = mx.array([[3, 9, 1, 30, 7, 22, 5, 11, 2, 40, 17, 8] * repeat] * 2)
+    prompt[1] = mx.array([4, 4, 12, 6, 19, 33, 2, 1, 9, 9, 27, 3] * repeat)
+    cache = model.make_cache(bsz=2, max_seq_len=prompt.shape[1] + steps + 8)
     logits = [model(prompt, cache)]
     tokens = mx.array([[5], [13]])
-    for _ in range(5):
+    for _ in range(steps):
         step = model(tokens, cache)
         logits.append(step)
         tokens = mx.argmax(step[:, -1:], axis=-1).astype(mx.int32)
@@ -73,6 +75,40 @@ def test_decode_row_gather_is_bit_exact_with_full_concat(
         model = _model(compress_ratios)
         expected = _decode(model, False, monkeypatch)
         actual = _decode(model, True, monkeypatch)
+    finally:
+        mx.set_default_device(previous)
+    for want, got in zip(expected, actual, strict=True):
+        assert mx.array_equal(want, got).item()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_decode_row_gather_keeps_masked_selections_exact(device, monkeypatch) -> None:
+    # Severing the shared top-k hands consumer layers an all -1 selection.
+    previous = mx.default_device()
+    mx.set_default_device(device)
+    try:
+        model = _model((1, 1))
+        model._break_sharing = True
+        expected = _decode(model, False, monkeypatch)
+        actual = _decode(model, True, monkeypatch)
+    finally:
+        mx.set_default_device(previous)
+    for want, got in zip(expected, actual, strict=True):
+        assert mx.array_equal(want, got).item()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("compress_ratios", [(1, 1), (4, 4)])
+def test_decode_row_gather_is_exact_far_past_the_top_k(
+    device, compress_ratios, monkeypatch
+) -> None:
+    # 120-token prompt: the top-3 selection is a small fraction of the rows.
+    previous = mx.default_device()
+    mx.set_default_device(device)
+    try:
+        model = _model(compress_ratios)
+        expected = _decode(model, False, monkeypatch, repeat=10, steps=8)
+        actual = _decode(model, True, monkeypatch, repeat=10, steps=8)
     finally:
         mx.set_default_device(previous)
     for want, got in zip(expected, actual, strict=True):
