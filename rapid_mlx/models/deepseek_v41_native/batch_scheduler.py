@@ -29,10 +29,19 @@ logger = logging.getLogger(__name__)
 
 def _own_copy(error: Exception) -> Exception:
     """One instance per consumer, so concurrent re-raises cannot share tracebacks."""
-    try:
-        return copy.copy(error)
-    except Exception:  # exceptions whose constructor cannot be replayed
-        return error
+    if isinstance(error, HTTPException):
+        own: Exception = HTTPException(
+            status_code=error.status_code, detail=error.detail, headers=error.headers
+        )
+    else:
+        try:
+            own = copy.copy(error)
+        except Exception:  # exceptions whose constructor cannot be replayed
+            own = RuntimeError(f"{type(error).__name__}: {error}")
+    own.__cause__ = error
+    return own
+
+
 _END = object()
 
 

@@ -688,5 +688,20 @@ def test_shared_failure_gives_each_request_its_own_exception():
     error = RuntimeError("shared")
     copied = _own_copy(error)
     assert copied is not error and str(copied) == "shared"
-    unreplayable = HTTPException(status_code=400, detail="bad")
-    assert _own_copy(unreplayable) is unreplayable
+    assert copied.__cause__ is error
+    http = HTTPException(status_code=400, detail="bad")
+    own_http = _own_copy(http)
+    assert own_http is not http and isinstance(own_http, HTTPException)
+    assert (own_http.status_code, own_http.detail) == (400, "bad")
+
+    class UnreplayableError(Exception):
+        def __init__(self, a, b):
+            super().__init__(f"{a}/{b}")
+
+        def __reduce__(self):
+            raise TypeError("no replay")
+
+    odd = UnreplayableError(1, 2)
+    own_odd = _own_copy(odd)
+    assert own_odd is not odd and own_odd.__cause__ is odd
+    assert "UnreplayableError" in str(own_odd) and "1/2" in str(own_odd)
