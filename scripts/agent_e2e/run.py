@@ -428,19 +428,21 @@ def session(
 ) -> dict:
     marker = uuid.uuid4().hex[:12]
     target = workspace / "hello.txt"
-    challenge1 = f"verify-{uuid.uuid4().hex}"
-    challenge2 = f"verify-{uuid.uuid4().hex}"
+    challenge1 = f"verify-{uuid.uuid4().hex[:12]}"
+    challenge2 = f"verify-{uuid.uuid4().hex[:12]}"
     (workspace / "challenge.txt").write_text(challenge1 + "\n")
     if target.exists():
         target.unlink()
     first_prompt = (
         f"Create hello.txt containing exactly hi-{marker}. Use a tool to read "
-        "both hello.txt and challenge.txt, then report their contents."
+        "both hello.txt and challenge.txt. Quote each file's exact line in "
+        "your reply; challenge.txt begins with verify-."
     )
     second_prompt = (
         f"Use a tool to replace hello.txt with exactly hi-{marker}-second "
         "(one trailing newline is okay). Read both hello.txt and challenge.txt "
-        "again with a tool and report their contents."
+        "again with a tool. Quote each file's exact line in your reply; "
+        "challenge.txt begins with verify-."
     )
     master, slave = open_terminal()
     started = time.monotonic()
