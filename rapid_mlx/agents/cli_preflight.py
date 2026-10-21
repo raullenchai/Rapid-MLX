@@ -23,6 +23,7 @@ import shlex
 import shutil
 import subprocess
 
+from rapid_mlx.agents import PROFILES_DIR, _load_profile_from_yaml
 from rapid_mlx.agents.base import AgentProfile
 
 _LOGIN_SHELL = "/bin/zsh"
@@ -69,6 +70,11 @@ def resolve_agent_binary(binary: str) -> str | None:
 
 def missing_agent_cli(profile: AgentProfile) -> str | None:
     """Return a user-facing message when the profile's CLI is not installed."""
+    # The launch runner invokes the built-in CLI for an agent, so a user
+    # profile that shadows a built-in one must not change what is checked.
+    builtin = PROFILES_DIR / f"{profile.name}.yaml"
+    if builtin.is_file():
+        profile = _load_profile_from_yaml(builtin)
     binary = profile.testing.binary
     if not binary or resolve_agent_binary(binary) is not None:
         return None

@@ -244,3 +244,14 @@ def test_real_login_shell_output_around_answer_is_ignored(tmp_path, monkeypatch)
         bin_dir / "rapid-preflight-chatty-agent"
     )
     assert cli_preflight.resolve_agent_binary("rapid-preflight-absent-agent") is None
+
+
+def test_user_profile_shadowing_builtin_keeps_builtin_cli_check():
+    shadow = AgentProfile(name="claude-code", display_name="My Claude")
+    with patch.object(
+        cli_preflight, "resolve_agent_binary", return_value=None
+    ) as resolve:
+        message = cli_preflight.missing_agent_cli(shadow)
+    resolve.assert_called_once_with("claude")
+    assert message is not None
+    assert "npm install -g @anthropic-ai/claude-code" in message
