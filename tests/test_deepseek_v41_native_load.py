@@ -629,10 +629,10 @@ def test_load_releases_each_materialized_shard_from_the_file_cache(
     tmp_path, monkeypatch, lazy
 ) -> None:
     _write_offload_fixture(tmp_path)
-    # A second shard whose tensors all stay on disk (Disk Engram) is never
-    # materialized, so there is nothing of it to release.
+    # A second shard holding only declared passthrough tensors (skipped like
+    # vision weights) is never materialized, so there is nothing to release.
     mx.save_safetensors(
-        str(tmp_path / "zz-engram-only.safetensors"),
+        str(tmp_path / "zz-passthrough-only.safetensors"),
         {"layers.1.engram.embed.extra": mx.zeros((1, 1))},
     )
     _patch_minimal_offload_loader(monkeypatch)
@@ -643,7 +643,7 @@ def test_load_releases_each_materialized_shard_from_the_file_cache(
         if stream.name.endswith("index.json"):
             data = original_load(stream)
             data["weight_map"]["layers.1.engram.embed.extra"] = (
-                "zz-engram-only.safetensors"
+                "zz-passthrough-only.safetensors"
             )
             return data
         return {"quantization": {"group_size": 32, "engram_bits": 2}}
