@@ -499,16 +499,20 @@ def _qwen27_serve_alias() -> str:
 
     The default lane's alias profile declares an enforced ``min_memory_gb``
     and ``serve`` refuses it below that floor. On such a host, select the
-    batching MTP lane so sharing still works. An unknown memory probe (0.0)
-    keeps the default lane and leaves the serve-time gate authoritative.
+    batching MTP lane so sharing still works, but only when the memory
+    catalog recommends that lane for this RAM. Smaller hosts, and an unknown
+    memory probe (0.0), keep the default lane and leave the serve-time gate
+    authoritative (a clear refusal rather than a swapping node).
     """
     from rapid_mlx.model_aliases import resolve_profile
-    from rapid_mlx.recommendations import physical_ram_gb
+    from rapid_mlx.recommendations import is_recommended_alias, physical_ram_gb
 
     default_alias = CATALOG_DEFAULT_ALIAS["qwen3.8-27b"]
     floor_gb = getattr(resolve_profile(default_alias), "min_memory_gb", None) or 0
     ram_gb = physical_ram_gb()
     if not 0 < ram_gb < floor_gb:
+        return default_alias
+    if not is_recommended_alias(_QWEN27_SMALL_HOST_ALIAS, ram_gb):
         return default_alias
     print(
         f"share: this Mac has {ram_gb:.0f} GB of unified memory, below the "

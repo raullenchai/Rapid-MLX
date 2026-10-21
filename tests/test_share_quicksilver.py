@@ -831,6 +831,30 @@ def test_qwen_pool_below_memory_floor_selects_mtp_lane(
     assert "serving qwen3.8-27b-4bit (MTP lane)" in err
 
 
+@pytest.mark.parametrize("ram_gb", [32.0, 36.0])
+def test_qwen_pool_small_host_fallback_needs_recommended_ram(monkeypatch, ram_gb):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    assert qs.resolve_catalog(_make_args(model="qwen3.8-27b")) == (
+        "qwen3.8-27b",
+        "qwen3.8-27b-4bit",
+    )
+
+
+@pytest.mark.parametrize("ram_gb", [8.0, 16.0, 18.0, 24.0, 31.9])
+def test_qwen_pool_below_4bit_recommendation_keeps_tensorfold_refusal(
+    monkeypatch, capsys, ram_gb
+):
+    """Hosts too small for the 4-bit lane keep the TensorFold lane so its
+    serve-time memory floor refuses clearly instead of swapping."""
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    for typed in ("qwen3.8-27b", "qwen3.8-27b-4bit"):
+        assert qs.resolve_catalog(_make_args(model=typed)) == (
+            "qwen3.8-27b",
+            "qwen3.8-27b-tensorfold",
+        )
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize("ram_gb", [48.0, 192.0, 0.0])
 def test_qwen_pool_at_or_above_floor_or_unknown_keeps_tensorfold(
     monkeypatch, capsys, ram_gb

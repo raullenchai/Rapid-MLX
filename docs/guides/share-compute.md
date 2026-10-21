@@ -80,9 +80,11 @@ restart, cache eviction, or node switch can still require cold prefill.
 The qualified 27B backend advertises one concurrent request, matching its
 single inference lane; `--max-num-seqs` values above one are rejected before
 registration.
-On a Mac below the TensorFold memory floor, the CLI serves the 27B pool with
-`qwen3.8-27b-4bit` (MTP runtime, ordinary pool concurrency) instead and prints
-one line naming the runtime it chose.
+On a Mac below the TensorFold memory floor that still has enough memory for
+`qwen3.8-27b-4bit` (the 32 GB recommendation tier and up), the CLI serves the
+27B pool with `qwen3.8-27b-4bit` (MTP runtime, ordinary pool concurrency)
+instead and prints one line naming the runtime it chose. Smaller Macs are
+refused by the TensorFold memory-floor check instead.
 An existing registration bound to the old ordinary 27B alias needs one fresh
 registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect using
 the saved provider key, or save one in Settings if this is the first setup). Node credentials remain bound to the selected alias.
