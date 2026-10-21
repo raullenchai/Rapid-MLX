@@ -133,7 +133,10 @@ def test_login_shell_answer_is_authoritative(tmp_path, monkeypatch, fixed_marker
     reply = subprocess.CompletedProcess(
         [],
         0,
-        stdout=f"welcome\n__rapid_mlx_cli__=/bogus\n\n{MARK}{tool}\nlogout banner\n",
+        stdout=(
+            b"welcome \xff\xfe\n__rapid_mlx_cli__=/bogus\n\n"
+            + f"{MARK}{tool}\nlogout banner\n".encode()
+        ),
         stderr="",
     )
     with patch.object(cli_preflight.subprocess, "run", return_value=reply) as run:
@@ -149,7 +152,9 @@ def test_current_path_hit_is_refused_when_login_shell_misses(
 ):
     _executable(tmp_path / "fake-agent")
     monkeypatch.setenv("PATH", str(tmp_path))
-    reply = subprocess.CompletedProcess([], 0, stdout=f"\n{MARK}\n", stderr="")
+    reply = subprocess.CompletedProcess(
+        [], 0, stdout=f"\n{MARK}\n".encode(), stderr=b""
+    )
     with patch.object(cli_preflight.subprocess, "run", return_value=reply):
         assert cli_preflight.resolve_agent_binary("fake-agent") is None
 
@@ -168,7 +173,7 @@ def test_login_shell_miss_or_non_executable_is_not_installed(
     tmp_path, monkeypatch, fixed_marker, stdout
 ):
     monkeypatch.setenv("PATH", str(tmp_path))
-    reply = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+    reply = subprocess.CompletedProcess([], 0, stdout=stdout.encode(), stderr=b"")
     with patch.object(cli_preflight.subprocess, "run", return_value=reply):
         assert cli_preflight.resolve_agent_binary("fake-agent") is None
 
@@ -176,7 +181,9 @@ def test_login_shell_miss_or_non_executable_is_not_installed(
 def test_login_shell_answer_must_be_executable_file(
     tmp_path, monkeypatch, fixed_marker
 ):
-    reply = subprocess.CompletedProcess([], 0, stdout=f"{MARK}{tmp_path}\n", stderr="")
+    reply = subprocess.CompletedProcess(
+        [], 0, stdout=f"{MARK}{tmp_path}\n".encode(), stderr=b""
+    )
     with patch.object(cli_preflight.subprocess, "run", return_value=reply):
         assert cli_preflight.resolve_agent_binary("fake-agent") is None
 
@@ -262,9 +269,10 @@ def test_real_login_shell_output_around_answer_is_ignored(tmp_path, monkeypatch)
     zdot.mkdir()
     (zdot / ".zprofile").write_text(
         'echo "__rapid_mlx_cli__=/bin/sh"\n'
+        "printf 'non-utf8 \\377\\376\\n'\n"
         f'echo "hello from profile"\nexport PATH="{bin_dir}:$PATH"\n'
     )
-    (zdot / ".zlogout").write_text('echo "bye from logout"\n')
+    (zdot / ".zlogout").write_text("echo bye; printf '\\377\\376\\n'\n")
     monkeypatch.setenv("ZDOTDIR", str(zdot))
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     assert cli_preflight.resolve_agent_binary("rapid-preflight-chatty-agent") == str(

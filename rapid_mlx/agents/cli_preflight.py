@@ -55,7 +55,6 @@ def _login_shell_lookup(binary: str) -> str | None:
             [_LOGIN_SHELL, "-lc", script],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
             timeout=_PROBE_TIMEOUT_S,
             check=False,
         )
@@ -63,7 +62,8 @@ def _login_shell_lookup(binary: str) -> str | None:
         return _fallback_lookup(binary)
     answers = [
         line[len(marker) :].strip()
-        for line in result.stdout.splitlines()
+        # Startup files may print bytes in any encoding; decode like a path.
+        for line in os.fsdecode(result.stdout).splitlines()
         if line.startswith(marker)
     ]
     # Anything that is not an executable file (alias, function, builtin,
