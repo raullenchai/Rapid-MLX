@@ -20,8 +20,15 @@ from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
 from .affine_route_qmv import affine2_route_down_qmv
-from .dspark import DSpark, DSparkWeights, draft_attention, quantize_cache
+from .dspark import (
+    DSpark,
+    DSparkWeights,
+    draft_attention,
+    quantize_cache,
+    rotate_positions as _rotate_positions,
+)
 from .load import load, supports_engram_ssd_offload
+from .moe import ClampedSwiGLU
 
 MAX_INPUT_TOKENS = 8192
 TARGET_EVAL_INTERVAL = 2
@@ -111,24 +118,9 @@ def install_target_qmv(model: Any) -> int:
 
 def _install_vectorized_mtp_attention(draft: DSpark) -> None:
     def rotate_positions(x, positions, config, inverse=False):
-        rope_dim = config["qk_rope_head_dim"]
-        frequencies = 1 / (
-            config["rope_theta"]
-            ** (mx.arange(0, rope_dim, 2, dtype=mx.float32) / rope_dim)
+        return _rotate_positions(
+            x, positions, config["qk_rope_head_dim"], config["rope_theta"], inverse
         )
-        angles = positions[:, None] * frequencies[None, :]
-        if inverse:
-            angles = -angles
-        tail = x[..., -rope_dim:].astype(mx.float32)
-        tail = tail.reshape(*tail.shape[:-1], rope_dim // 2, 2)
-        real, imag = tail[..., 0], tail[..., 1]
-        expand = (slice(None),) + (None,) * (real.ndim - 2) + (slice(None),)
-        cosine = mx.cos(angles)[expand]
-        sine = mx.sin(angles)[expand]
-        rotated = mx.stack(
-            (real * cosine - imag * sine, real * sine + imag * cosine), axis=-1
-        ).reshape(*x.shape[:-1], rope_dim)
-        return mx.concatenate((x[..., :-rope_dim], rotated.astype(x.dtype)), axis=-1)
 
     def vectorized_attention(self, base, x, stage):
         adapter = self.adapter
@@ -147,7 +139,7 @@ def _install_vectorized_mtp_attention(draft: DSpark) -> None:
         keys = mx.concatenate([*self.windows[stage], key_value])
         output = draft_attention(query, keys, adapter.w.read(base + ".attn_sink"))
         output = rotate_positions(output, positions, config, inverse=True)
-        output = output.reshape(count, config["o_groups"], -1)
+        output = output.astype(mx.float32).reshape(count, config["o_groups"], -1)
         shape = adapter.w.entries[base + ".wo_a.weight"]["shape"]
         rows = shape[0] // config["o_groups"]
         grouped = mx.quantized_matmul(
@@ -159,7 +151,7 @@ def _install_vectorized_mtp_attention(draft: DSpark) -> None:
             **adapter.w.quant_config(base + ".wo_a"),
         )
         return adapter.w.linear(
-            base + ".wo_b", grouped.swapaxes(0, 1).reshape(count, -1)
+            base + ".wo_b", grouped.swapaxes(0, 1).reshape(count, -1).astype(x.dtype)
         )
 
     setattr(draft, "attention", MethodType(vectorized_attention, draft))
@@ -228,13 +220,11 @@ def _install_packed_mtp_moe(draft: DSpark) -> int:
 
         gate = project("w1", expanded).astype(mx.float32)
         up = project("w3", expanded).astype(mx.float32)
-        limit = config["swiglu_limit"]
-        if limit > 0:
-            gate, up = mx.minimum(gate, limit), mx.clip(up, -limit, limit)
-        hidden = (gate * mx.sigmoid(gate) * up * selected[..., None, None]).astype(
-            x.dtype
+        hidden = ClampedSwiGLU(config["swiglu_limit"])(up, gate)
+        routed = mx.sum(
+            project("w2", hidden).squeeze(-2).astype(mx.float32) * selected[..., None],
+            axis=-2,
         )
-        routed = mx.sum(project("w2", hidden).squeeze(-2).astype(mx.float32), axis=-2)
         shared = self.expert(base + ".shared_experts", x).astype(mx.float32)
         return (routed + shared).astype(x.dtype)
 
@@ -390,8 +380,12 @@ def generation_kwargs(
 def _match(candidate, target_logits, eos_id, seed_already_emitted):
     committed = [] if seed_already_emitted else [candidate[0]]
     accepted = 0
-    for index in range(1, len(candidate)):
-        expected = int(mx.argmax(target_logits[:, index - 1]))
+    if len(candidate) == 1:
+        return committed, None, False, accepted
+    expected_ids = mx.argmax(target_logits[:, : len(candidate) - 1], axis=-1)[
+        0
+    ].tolist()
+    for index, expected in enumerate(expected_ids, 1):
         committed.append(expected)
         if candidate[index] != expected:
             return committed, index, expected == eos_id, accepted
@@ -399,6 +393,14 @@ def _match(candidate, target_logits, eos_id, seed_already_emitted):
         if expected == eos_id:
             return committed, None, True, accepted
     return committed, None, False, accepted
+
+
+def _observe_verified(drafter, hidden, position):
+    if hasattr(drafter, "observe_many"):
+        drafter.observe_many(hidden, position)
+    else:
+        for index in range(hidden.shape[1]):
+            drafter.observe(hidden[:, index], position + index)
 
 
 def stream_generate(
@@ -518,20 +520,16 @@ def stream_generate(
                 seed_already_emitted,
             )
             if mismatch is None:
-                for index in range(len(candidate)):
-                    runtime.drafter.observe(
-                        target_hidden[:, index], base_offset + index
-                    )
+                _observe_verified(runtime.drafter, target_hidden, base_offset)
                 logits = target_logits[:, -1]
                 seed_already_emitted = False
             else:
                 cache.rollback(base_offset + mismatch)
                 for layer, slots, previous in window_snapshots:
                     layer.win_kv[:, slots[mismatch:]] = previous[:, mismatch:]
-                for index in range(mismatch):
-                    runtime.drafter.observe(
-                        target_hidden[:, index], base_offset + index
-                    )
+                _observe_verified(
+                    runtime.drafter, target_hidden[:, :mismatch], base_offset
+                )
                 logits = target_logits[:, mismatch - 1]
                 seed_already_emitted = True
         for token in tokens:
