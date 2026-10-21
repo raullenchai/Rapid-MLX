@@ -585,7 +585,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator, Optional, Tuple
 
-from .mtp_split import _containing_root, _open_confined
+from .mtp_split import _allowed_checkpoint_roots, _containing_root, _open_confined
 """,
             """import json
 import logging
@@ -692,8 +692,8 @@ logger = logging.getLogger(__name__)""",
     # the splitter's) one at a time, so a failed later open never
     # accumulates unconsumed descriptors. The index document and
     # ``weight_map`` must be objects of filename strings, and every
-    # shard must resolve inside the checkpoint directory or the
-    # repository's own HF blob cache.
+    # shard must resolve inside the checkpoint directory or the HF
+    # cache's blob stores (see ``_allowed_checkpoint_roots``).
     index_path = path / "model.safetensors.index.json"
     if index_path.exists():
         with open(index_path) as f:
@@ -715,11 +715,7 @@ logger = logging.getLogger(__name__)""",
         )
     if not filenames:
         raise ValueError(f"no safetensors found in {path}")
-    resolved_source = path.resolve()
-    allowed_roots = [resolved_source]
-    blobs_root = resolved_source.parent.parent / "blobs"
-    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-        allowed_roots.append(blobs_root.resolve())
+    allowed_roots = _allowed_checkpoint_roots(path)
     for name in filenames:
         shard = Path(name)
         if shard.is_absolute() or ".." in shard.parts:
@@ -892,6 +888,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -910,6 +907,10 @@ import shutil""",
 def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
     for root in allowed_roots:
         if resolved.is_relative_to(root):
+            if _is_hf_shared_blob_store(root) and not _is_hf_shared_blob_entry(
+                resolved.relative_to(root)
+            ):
+                break
             return root
     raise ValueError(f"{resolved.name!r} escapes the checkpoint directory")
 
@@ -991,15 +992,55 @@ def _safetensors_keys(fd: int) -> List[str]:
     ) -> Iterable[Tuple[Path, List[str]]]:""",
         ),
         (
-            """def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
-    # Checkpoint content must resolve inside the checkpoint directory or
+            """# huggingface_hub's cache-wide shared blob store: Xet-backed downloads keep
+# the payload once at ``<hub cache>/blobs/<hash[:2]>/<xet hash>`` and the
+# repository's ``blobs/<etag>`` entry is a relative symlink to it. The hub
+# recognises the store only by this layout marker, and so do we.
+_HF_SHARED_BLOBS_MARKER = ".huggingface-shared-blobs"
+_HF_SHARED_BLOBS_LAYOUT = b"1\\n"
+_XET_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _is_hf_shared_blob_store(path: Path) -> bool:
+    marker = path / _HF_SHARED_BLOBS_MARKER
+    try:
+        if not stat.S_ISDIR(path.lstat().st_mode):
+            return False
+        if not stat.S_ISREG(marker.lstat().st_mode):
+            return False
+        return marker.read_bytes() == _HF_SHARED_BLOBS_LAYOUT
+    except OSError:
+        return False
+
+
+def _is_hf_shared_blob_entry(relative: Path) -> bool:
+    # A store entry is exactly ``<hash[:2]>/<xet hash>``; the store's
+    # ``.refs`` manifests, locks and marker are never checkpoint content.
+    parts = relative.parts
+    return (
+        len(parts) == 2
+        and _XET_HASH_RE.fullmatch(parts[1]) is not None
+        and parts[0] == parts[1][:2]
+    )
+
+
+def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
+    # Checkpoint content must resolve inside the checkpoint directory,
     # the repository's own HF blob cache (snapshot entries symlink into
-    # the sibling ``blobs`` directory).
+    # the sibling ``blobs`` directory), or the hub cache's marked shared
+    # blob store that those repository blobs may in turn link to. The
+    # roots derive from the resolved snapshot's own position in the hub
+    # cache, never from the untrusted index.
     resolved_source = source_path.resolve()
     allowed_roots = [resolved_source]
-    blobs_root = resolved_source.parent.parent / "blobs"
-    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-        allowed_roots.append(blobs_root.resolve())
+    if resolved_source.parent.name == "snapshots":
+        repo_root = resolved_source.parent.parent
+        blobs_root = repo_root / "blobs"
+        if blobs_root.is_dir():
+            allowed_roots.append(blobs_root.resolve())
+        shared_store = repo_root.parent / "blobs"
+        if _is_hf_shared_blob_store(shared_store):
+            allowed_roots.append(shared_store)
     return allowed_roots
 
 
@@ -1824,6 +1865,147 @@ def test_sidecar_shard_descriptors_resist_path_swap(tmp_path):
     finally:
         for fd in fds:
             os.close(fd)
+
+
+def _fake_hub_with_shared_blob_store(tmp_path, payloads, *, marker=b"1\n"):
+    """Build a hub cache in the shared-blob-store layout: each snapshot
+    entry symlinks to the repository's ``blobs/<etag>``, which symlinks
+    to the cache-wide store entry ``blobs/<hash[:2]>/<xet hash>``."""
+    import hashlib
+    import os
+
+    cache = tmp_path / "hub"
+    store = cache / "blobs"
+    store.mkdir(parents=True)
+    if marker is not None:
+        (store / ".huggingface-shared-blobs").write_bytes(marker)
+    repo = cache / "models--org--drafter"
+    snapshot = repo / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    for name, payload in payloads.items():
+        xet_hash = hashlib.sha256(payload).hexdigest()
+        entry = store / xet_hash[:2] / xet_hash
+        entry.parent.mkdir(exist_ok=True)
+        entry.write_bytes(payload)
+        etag = hashlib.sha1(payload).hexdigest()
+        repo_blob = repo / "blobs" / etag
+        repo_blob.symlink_to(os.path.relpath(entry, repo_blob.parent))
+        (snapshot / name).symlink_to(os.path.relpath(repo_blob, snapshot))
+    return cache, snapshot
+
+
+def _close_all(fds):
+    import os
+
+    for fd in fds:
+        os.close(fd)
+
+
+def test_sidecar_shards_load_from_hf_shared_blob_store(tmp_path):
+    """A drafter whose snapshot links through the hub's cache-wide shared
+    blob store loads; the store is admitted only by its layout marker and
+    only for real store entries, and traversal stays rejected."""
+    import os
+
+    import mlx.core as mx
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import (
+        _sidecar_weight_shards,
+    )
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    mx.save_safetensors(str(staging / "w.safetensors"), {"w": mx.ones((2,))})
+    payload = (staging / "w.safetensors").read_bytes()
+    cache, snapshot = _fake_hub_with_shared_blob_store(
+        tmp_path, {"model.safetensors": payload}
+    )
+    index = {"weight_map": {"w": "model.safetensors"}}
+    (snapshot / "model.safetensors.index.json").write_text(json.dumps(index))
+
+    fds = list(_sidecar_weight_shards(snapshot))
+    try:
+        assert len(fds) == 1
+        with os.fdopen(os.dup(fds[0]), "rb") as f:
+            weights = mx.load(f, format="safetensors")
+        assert mx.array_equal(weights["w"], mx.ones((2,)))
+    finally:
+        _close_all(fds)
+
+    # Index entry names stay confined lexically, whatever the store.
+    for name in ("../model.safetensors", str(snapshot / "model.safetensors")):
+        index["weight_map"]["w"] = name
+        (snapshot / "model.safetensors.index.json").write_text(json.dumps(index))
+        with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+            list(_sidecar_weight_shards(snapshot))
+
+    # A link into the store that is not a store entry (the marker, a
+    # manifest) is rejected even though it is under the store root.
+    store = cache / "blobs"
+    (store / "ab.refs").write_bytes(b"x")
+    for target in (store / ".huggingface-shared-blobs", store / "ab.refs"):
+        link = snapshot / f"{target.name}-link.safetensors"
+        link.symlink_to(target)
+        index["weight_map"]["w"] = link.name
+        (snapshot / "model.safetensors.index.json").write_text(json.dumps(index))
+        with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+            list(_sidecar_weight_shards(snapshot))
+
+    # Without a valid layout marker the hub-level directory is not a
+    # blob store and the same legitimate-looking chain is rejected.
+    index["weight_map"]["w"] = "model.safetensors"
+    (snapshot / "model.safetensors.index.json").write_text(json.dumps(index))
+    for marker in (b"2\n", None):
+        (store / ".huggingface-shared-blobs").unlink(missing_ok=True)
+        if marker is not None:
+            (store / ".huggingface-shared-blobs").write_bytes(marker)
+        with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+            list(_sidecar_weight_shards(snapshot))
+    (store / ".huggingface-shared-blobs").mkdir()
+    with pytest.raises(ValueError, match="escapes the checkpoint directory"):
+        list(_sidecar_weight_shards(snapshot))
+
+
+def test_shared_blob_store_requires_real_directory(tmp_path):
+    """A symlinked or missing hub-level ``blobs`` is never a store."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        _allowed_checkpoint_roots,
+        _is_hf_shared_blob_store,
+    )
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / ".huggingface-shared-blobs").write_bytes(b"1\n")
+    assert _is_hf_shared_blob_store(real)
+    (tmp_path / "linked").symlink_to(real)
+    assert not _is_hf_shared_blob_store(tmp_path / "linked")
+    assert not _is_hf_shared_blob_store(tmp_path / "missing")
+
+    snapshot = tmp_path / "hub" / "models--org--m" / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    assert _allowed_checkpoint_roots(snapshot) == [snapshot.resolve()]
+
+
+def test_mtp_splitter_reads_shards_from_hf_shared_blob_store(tmp_path):
+    """MTPSplitter shares the confinement roots with the sidecar loader."""
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters.mtp_split import (
+        MTPSplitter,
+    )
+
+    class AllKeys(MTPSplitter):
+        def select_keys(self, key, text_config):
+            return True
+
+    _, snapshot = _fake_hub_with_shared_blob_store(
+        tmp_path, {"shard.safetensors": b"payload"}
+    )
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blk.0.mlp": "shard.safetensors"}})
+    )
+    resolved = (snapshot / "shard.safetensors").resolve()
+    assert resolved.parent.parent == (tmp_path / "hub" / "blobs").resolve()
+    assert list(AllKeys().iter_selected(snapshot, {})) == [(resolved, ["blk.0.mlp"])]
 
 
 def test_sidecar_shards_open_lazily_and_close(tmp_path):

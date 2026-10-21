@@ -383,3 +383,17 @@ def test_verified_target_with_overridden_drafter_is_experimental() -> None:
     )
     assert result.recommendation == "experimental"
     assert "performance-validated" in " ".join(result.warnings)
+
+
+def test_experimental_pair_without_drafter_names_declared_drafter() -> None:
+    """``method: dflash`` alone on an experimental pair stays gated, but
+    the refusal names the alias's declared drafter as the opt-in."""
+    from rapid_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile("qwen3.8-27b-4bit")
+    assert profile is not None
+    assert profile.supports_dflash is False
+    result = report(profile, alias="qwen3.8-27b-4bit", explicit=True)
+    joined = " ".join(result.reasons)
+    assert "requires an explicit drafter" in joined
+    assert repr(profile.dflash_draft_model) in joined

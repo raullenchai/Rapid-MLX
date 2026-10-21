@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator, Optional, Tuple
 
-from .mtp_split import _containing_root, _open_confined
+from .mtp_split import _allowed_checkpoint_roots, _containing_root, _open_confined
 
 from .dflash2 import DFlash2DraftModel
 from mlx_vlm.speculative.drafters.dspark import DSparkDraftModel
@@ -343,8 +343,8 @@ def _sidecar_weight_shards(path) -> Iterator[int]:
     # the splitter's) one at a time, so a failed later open never
     # accumulates unconsumed descriptors. The index document and
     # ``weight_map`` must be objects of filename strings, and every
-    # shard must resolve inside the checkpoint directory or the
-    # repository's own HF blob cache.
+    # shard must resolve inside the checkpoint directory or the HF
+    # cache's blob stores (see ``_allowed_checkpoint_roots``).
     index_path = path / "model.safetensors.index.json"
     if index_path.exists():
         with open(index_path) as f:
@@ -366,11 +366,7 @@ def _sidecar_weight_shards(path) -> Iterator[int]:
         )
     if not filenames:
         raise ValueError(f"no safetensors found in {path}")
-    resolved_source = path.resolve()
-    allowed_roots = [resolved_source]
-    blobs_root = resolved_source.parent.parent / "blobs"
-    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-        allowed_roots.append(blobs_root.resolve())
+    allowed_roots = _allowed_checkpoint_roots(path)
     for name in filenames:
         shard = Path(name)
         if shard.is_absolute() or ".." in shard.parts:

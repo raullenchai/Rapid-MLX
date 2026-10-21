@@ -105,7 +105,17 @@ def report(
     if not has_drafter:
         # Should be caught at JSON-load time by _coerce, but defend
         # against direct AliasProfile construction in tests/code.
-        reasons.append("DFlash requires an explicit drafter model")
+        reason = "DFlash requires an explicit drafter model"
+        if profile.dflash_draft_model:
+            # An experimental pair (supports_dflash=false) never inherits
+            # its declared drafter: naming it is the operator's opt-in.
+            # Point at it so the gate reads as a choice, not a lookup bug.
+            reason += (
+                f"; this alias's experimental pair uses "
+                f"{profile.dflash_draft_model!r} — pass it as the "
+                'speculative "model" to opt in'
+            )
+        reasons.append(reason)
     if explicit and not curated_pair:
         warnings.append(
             "this target/drafter pair is experimental and has not been "

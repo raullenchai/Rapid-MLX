@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -66,15 +67,55 @@ def _weight_map(model_path: Path) -> Dict[str, str]:
     return weight_map
 
 
+# huggingface_hub's cache-wide shared blob store: Xet-backed downloads keep
+# the payload once at ``<hub cache>/blobs/<hash[:2]>/<xet hash>`` and the
+# repository's ``blobs/<etag>`` entry is a relative symlink to it. The hub
+# recognises the store only by this layout marker, and so do we.
+_HF_SHARED_BLOBS_MARKER = ".huggingface-shared-blobs"
+_HF_SHARED_BLOBS_LAYOUT = b"1\n"
+_XET_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _is_hf_shared_blob_store(path: Path) -> bool:
+    marker = path / _HF_SHARED_BLOBS_MARKER
+    try:
+        if not stat.S_ISDIR(path.lstat().st_mode):
+            return False
+        if not stat.S_ISREG(marker.lstat().st_mode):
+            return False
+        return marker.read_bytes() == _HF_SHARED_BLOBS_LAYOUT
+    except OSError:
+        return False
+
+
+def _is_hf_shared_blob_entry(relative: Path) -> bool:
+    # A store entry is exactly ``<hash[:2]>/<xet hash>``; the store's
+    # ``.refs`` manifests, locks and marker are never checkpoint content.
+    parts = relative.parts
+    return (
+        len(parts) == 2
+        and _XET_HASH_RE.fullmatch(parts[1]) is not None
+        and parts[0] == parts[1][:2]
+    )
+
+
 def _allowed_checkpoint_roots(source_path: Path) -> List[Path]:
-    # Checkpoint content must resolve inside the checkpoint directory or
+    # Checkpoint content must resolve inside the checkpoint directory,
     # the repository's own HF blob cache (snapshot entries symlink into
-    # the sibling ``blobs`` directory).
+    # the sibling ``blobs`` directory), or the hub cache's marked shared
+    # blob store that those repository blobs may in turn link to. The
+    # roots derive from the resolved snapshot's own position in the hub
+    # cache, never from the untrusted index.
     resolved_source = source_path.resolve()
     allowed_roots = [resolved_source]
-    blobs_root = resolved_source.parent.parent / "blobs"
-    if resolved_source.parent.name == "snapshots" and blobs_root.is_dir():
-        allowed_roots.append(blobs_root.resolve())
+    if resolved_source.parent.name == "snapshots":
+        repo_root = resolved_source.parent.parent
+        blobs_root = repo_root / "blobs"
+        if blobs_root.is_dir():
+            allowed_roots.append(blobs_root.resolve())
+        shared_store = repo_root.parent / "blobs"
+        if _is_hf_shared_blob_store(shared_store):
+            allowed_roots.append(shared_store)
     return allowed_roots
 
 
@@ -86,6 +127,10 @@ def _is_mlx_safetensors(file: Path) -> bool:
 def _containing_root(resolved: Path, allowed_roots: List[Path]) -> Path:
     for root in allowed_roots:
         if resolved.is_relative_to(root):
+            if _is_hf_shared_blob_store(root) and not _is_hf_shared_blob_entry(
+                resolved.relative_to(root)
+            ):
+                break
             return root
     raise ValueError(f"{resolved.name!r} escapes the checkpoint directory")
 
