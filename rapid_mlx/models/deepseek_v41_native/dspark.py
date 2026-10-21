@@ -544,11 +544,20 @@ class DSpark:
         self.observe_many(main_hidden[:, None], position)
 
     def observe_many(self, main_hidden, position: int):
-        """Append a contiguous verified chunk with one projection/eval per stage."""
+        """Append a contiguous verified chunk of one stream.
+
+        Observations only append independent sliding-window KV rows. Rows that
+        this chunk itself evicts cannot affect a later proposal, so only the
+        live tail is projected; the whole chunk materializes at one boundary.
+        """
+        count = main_hidden.shape[1]
+        if main_hidden.shape[0] != 1 or count == 0:
+            raise ValueError("DSpark observations require one nonempty stream")
         if position != self.position + 1:
             raise ValueError("DSpark observations must be contiguous target positions")
-        count = main_hidden.shape[1]
-        main_hidden = main_hidden.reshape(count, -1)
+        first = max(0, count - self.c["sliding_window"])
+        live = count - first
+        main_hidden = main_hidden[:, first:].reshape(live, -1)
         main = self.adapter.norm(
             "mtp.0.main_norm", self.w.linear("mtp.0.main_proj", main_hidden)
         )
@@ -561,7 +570,7 @@ class DSpark:
             key_value = quantize_cache(
                 rotate_positions(
                     key_value,
-                    mx.arange(count) + position,
+                    mx.arange(live) + position + first,
                     self.c["qk_rope_head_dim"],
                     self.c["rope_theta"],
                 ),
@@ -569,7 +578,7 @@ class DSpark:
                 32,
             )
             self.windows[layer] = (
-                self.windows[layer] + [key_value[i : i + 1] for i in range(count)]
+                self.windows[layer] + [key_value[i : i + 1] for i in range(live)]
             )[-self.c["sliding_window"] :]
             values.append(key_value)
         mx.eval(*values)

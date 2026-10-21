@@ -200,6 +200,10 @@ def test_observe_many_matches_serial_windows_and_one_eval(monkeypatch):
         )
     with pytest.raises(ValueError, match="contiguous"):
         batched.observe_many(hidden, 14)
+    for shape in ((2, 2, 96), (1, 0, 96)):
+        with pytest.raises(ValueError, match="one nonempty stream"):
+            batched.observe_many(mx.zeros(shape), 12)
+    assert batched.position == 11
 
 
 def test_markov_chain_keeps_device_dependencies_and_checks_finite(monkeypatch):
