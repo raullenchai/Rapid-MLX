@@ -448,6 +448,7 @@ async def create_image(
                 },
             ) from exc
         except ImageRuntimeError as exc:
+            logger.error("Image generation request failed", exc_info=exc)
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -835,6 +836,7 @@ async def edit_image(
                     },
                 ) from exc
             except ImageRuntimeError as exc:
+                logger.error("Image edit request failed", exc_info=exc)
                 raise HTTPException(
                     status_code=500,
                     detail={

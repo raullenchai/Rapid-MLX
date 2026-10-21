@@ -9,8 +9,10 @@ aliases; ``rapid_mlx/image/engine.py`` owns the backend pipeline and the
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import sys
+import threading
 
 from ..image.engine import (
     ImageGenerationCancelled,
@@ -27,6 +29,41 @@ __all__ = [
     "image_runtime_issue",
     "require_image_runtime_or_exit",
 ]
+
+
+# MLX binds streams to the thread that creates them: a lazy array built on one
+# thread (mx.load weights, cached prompt embeddings, geometry caches) raises
+# "There is no Stream(cpu, N) in current thread" when first evaluated on another.
+# Every image-model operation therefore runs on one long-lived worker, the same
+# single-thread-executor shape the text (mlx-step) and retrieval lanes use. It
+# is process-wide because image generation is already serialized process-wide.
+_image_worker_lock = threading.Lock()
+_image_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_image_worker_state = threading.local()
+
+
+def _mark_image_worker_thread() -> None:
+    _image_worker_state.is_worker = True
+
+
+def run_on_image_worker(func, /, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    """Run ``func`` on the image lane's dedicated MLX thread and block for it.
+
+    Calls made from the worker itself run inline so nested engine calls cannot
+    deadlock the single thread.
+    """
+    global _image_executor
+    if getattr(_image_worker_state, "is_worker", False):
+        return func(*args, **kwargs)
+    with _image_worker_lock:
+        if _image_executor is None:
+            _image_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="mlx-image",
+                initializer=_mark_image_worker_thread,
+            )
+        future = _image_executor.submit(func, *args, **kwargs)
+    return future.result()
 
 
 def image_runtime_issue(model_name: str | None = None) -> str | None:
@@ -111,6 +148,9 @@ class ImageEngine:
 
     def ensure_resident(self, *, mode: str | None = None) -> None:
         """Eagerly materialize lazy image weights for budgeted residency."""
+        run_on_image_worker(self._ensure_resident, mode)
+
+    def _ensure_resident(self, mode: str | None) -> None:
         self.validate_residency_mode(mode)
         # ``None`` preserves the engine's family-aware default. In particular,
         # edit-only checkpoints must not be forced through the generation
@@ -188,6 +228,11 @@ class ImageEngine:
         self, **kwargs
     ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
         """Generate one image and atomically return its denoise timing."""
+        return run_on_image_worker(self._generate_with_performance, **kwargs)
+
+    def _generate_with_performance(
+        self, **kwargs
+    ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
         # Validate before preloading to avoid downloading invalid requests' weights.
         self._engine.validate_request(**kwargs)
         self._engine._ensure_loaded(  # noqa: SLF001
@@ -209,6 +254,30 @@ class ImageEngine:
         image_paths: list[str] | None = None,
     ) -> bytes:
         """Generate one image; returns PNG bytes. Raises ``ImageRuntimeError``."""
+        return run_on_image_worker(
+            self._generate,
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            seed=seed,
+            guidance=guidance,
+            negative_prompt=negative_prompt,
+            image_paths=image_paths,
+        )
+
+    def _generate(
+        self,
+        *,
+        prompt: str,
+        width: int,
+        height: int,
+        num_inference_steps: int,
+        seed: int,
+        guidance: float | None,
+        negative_prompt: str | None,
+        image_paths: list[str] | None,
+    ) -> bytes:
         # Validate before preloading to avoid downloading invalid requests' weights.
         self._engine.validate_request(
             prompt=prompt,
