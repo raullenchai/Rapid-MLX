@@ -13,6 +13,7 @@ from scripts.agent_e2e.run import (
     handle_first_run_menus,
     output_issues,
     preserved,
+    rapid_config_untouched,
     read_until,
     reply_finished,
     request_evidence,
@@ -86,6 +87,39 @@ def test_snapshot_only_tracks_preexisting_user_config(tmp_path):
     assert preserved(before, dict(before, **{".codex/session.json": "new"}))
     path.write_text(path.read_text() + "# changed\n")
     assert not preserved(before, snapshot(tmp_path, "codex"))
+
+
+def test_codex_native_bookkeeping_does_not_mask_rapid_config_write(tmp_path):
+    path = tmp_path / ".codex/config.toml"
+    path.parent.mkdir()
+    path.write_text(FILES[".codex/config.toml"])
+    before = snapshot(tmp_path, "codex")
+    assert rapid_config_untouched(tmp_path, "codex", before)
+    # Native Codex adds this only after the Rapid checkpoint.
+    path.write_text(path.read_text() + "\n[tui]\nseen = true\n")
+    assert not rapid_config_untouched(tmp_path, "codex", before)
+    path.write_text(FILES[".codex/config.toml"])
+    # Negative control: a Rapid write to the seeded user config stays red.
+    path.write_text(path.read_text() + "\nmodel = 'rapid-overwrite'\n")
+    assert not rapid_config_untouched(tmp_path, "codex", before)
+
+
+def test_claude_folder_trust_menu_selects_yes(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda _fd, data: writes.append(data)
+    )
+    monkeypatch.setattr("scripts.agent_e2e.run.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until", lambda *args: ("ready", None)
+    )
+    opening = (
+        "Accessing workspace: /private/project\n"
+        "Quick safety check: Is this a project you trust?\n"
+        "No, exit\nYes, I trust this folder\nEnter to confirm"
+    )
+    handle_first_run_menus("claude-code", opening, 1, None, None)
+    assert writes == [b"\x1b[B", b"\r"]
 
 
 def test_request_evidence_never_substitutes_config_model(tmp_path):

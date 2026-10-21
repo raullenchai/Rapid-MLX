@@ -82,6 +82,11 @@ def preserved(before: dict[str, str], after: dict[str, str]) -> bool:
     )
 
 
+def rapid_config_untouched(home: Path, agent: str, before: dict[str, str]) -> bool:
+    """Check immediately after Rapid launch/removal, before opening native mode."""
+    return preserved(before, snapshot(home, agent))
+
+
 def classified_error(value: str) -> str:
     """Use only fixed labels in the shareable matrix; raw errors stay private."""
     if not value:
@@ -311,8 +316,16 @@ def handle_first_run_menus(
             os.write(master, b"\x1b[A")  # default is No; select Yes
             time.sleep(0.3)
             os.write(master, b"\r")
-        elif "trustthefilesinthisfolder" in screen and "trust" not in answered:
+        elif (
+            "accessingworkspace" in screen
+            and "trust" in screen
+            and "folder" in screen
+            and "entertoconfirm" in screen
+            and "trust" not in answered
+        ):
             answered.add("trust")
+            os.write(master, b"\x1b[B")  # Select Yes; No, exit is highlighted.
+            time.sleep(0.3)
             os.write(master, b"\r")
         else:
             break
@@ -739,13 +752,16 @@ def main() -> int:
             removed.returncode == 0
             and not (args.home / ".rapid-mlx/connect/agents" / agent).exists()
         )
+        # Rapid's private launch and removal must not change a user config.
+        # The native CLI may add its own first-run bookkeeping when opened
+        # below, so compare before starting that separate native session.
+        row["config_untouched"] = rapid_config_untouched(args.home, agent, before)
         try:
             row["normal_mode_opens"] = normal_mode(
                 BINARIES[agent], env, work, args.output / agent / "normal-mode.pty"
             )
         except OSError:
             row["normal_mode_opens"] = False
-        row["config_untouched"] = preserved(before, snapshot(args.home, agent))
         row["ugly_output"] = output_issues(
             args.output / agent / "day-one.pty",
             args.output / agent / "day-two.pty",

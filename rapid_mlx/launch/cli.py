@@ -482,6 +482,12 @@ def launch_command(args: argparse.Namespace) -> None:
                         _stop_failed_start(server_pid)
                     print(f"launch: {exc}", file=sys.stderr)
                     raise SystemExit(1) from exc
+            if args.client == "claude-code":
+                print(
+                    "  Claude Code may ask you to trust this folder. "
+                    "Review the folder before choosing Yes.",
+                    flush=True,
+                )
             print(
                 "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
                 flush=True,
