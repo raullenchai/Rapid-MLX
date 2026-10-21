@@ -383,12 +383,7 @@ def launch_command(args: argparse.Namespace) -> None:
             )
             if model is None:
                 raise ValueError("no model fits this Mac; choose one with --model")
-            if (
-                active
-                and not explicit
-                and not active_usable
-                and _same_checkpoint(active, model)
-            ):
+            if active and not active_usable and _same_checkpoint(active, model):
                 raise ValueError(
                     f"running model {active} does not meet this agent's requirements"
                 )
