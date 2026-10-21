@@ -28,6 +28,7 @@ import mlx.core as mx
 from . import fakequant
 from .fakequant import FP4_MAX, FP8_MAX
 from .layers import rope_tail
+from .kernels import custom_kernels_enabled
 
 # Module switch: tests and A/B runs turn the kernel off to compare.
 ENABLED = True
@@ -142,6 +143,7 @@ def supports(x: mx.array, rd: int, cos: mx.array, sin: mx.array) -> bool:
     """
     if not (
         ENABLED
+        and custom_kernels_enabled()
         and not fakequant.DISABLE
         and mx.default_device() == mx.gpu
         and mx.metal.is_available()

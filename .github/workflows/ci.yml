@@ -639,6 +639,7 @@ jobs:
             tests/test_deepseek_v41_head_gemv.py \
             tests/test_deepseek_v41_gate_gemv.py \
             tests/test_deepseek_v41_fused_moe.py \
+            tests/test_deepseek_v41_fused_kill_switch.py \
             tests/test_deepseek_v41_mixed_precision_fallback.py \
             tests/test_deepseek_v41_dspark.py \
             tests/test_deepseek_v41_decode_overhead.py \

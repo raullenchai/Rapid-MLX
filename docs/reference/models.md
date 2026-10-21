@@ -89,6 +89,11 @@ The runtime verifies immutable revisions, expected file sizes, SHA-256 values
 for every sidecar data file, and the complete tensor/config contract before it
 reports healthy.
 
+Troubleshooting: decode uses custom Metal kernels that are qualified on the
+supported hardware. If requests fail inside a kernel on another chip or macOS
+version, restart the server with `RAPID_MLX_DSV41_FUSED=0` to run every kernel
+on its stock MLX path (same output, slower decode).
+
 ### MiniCPM5 2B
 
 `minicpm5-2b-4bit` is the compact, tool-capable option for latency-sensitive

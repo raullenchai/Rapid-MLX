@@ -27,6 +27,7 @@ from .dspark import (
     quantize_cache,
     rotate_positions as _rotate_positions,
 )
+from .kernels import custom_kernels_enabled
 from .load import load, supports_engram_ssd_offload
 from .moe import ClampedSwiGLU
 
@@ -88,7 +89,8 @@ class ExactDirectDownSwitchGLU(SwitchGLU):
 def supports_target_qmv(experts: Any) -> bool:
     down = experts.down_proj
     return (
-        getattr(down, "bits", None) == 2
+        custom_kernels_enabled()
+        and getattr(down, "bits", None) == 2
         and getattr(down, "group_size", None) == 64
         and getattr(down, "mode", "affine") == "affine"
         and getattr(down, "scales", None) is not None

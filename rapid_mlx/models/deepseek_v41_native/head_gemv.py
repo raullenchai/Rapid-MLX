@@ -33,6 +33,7 @@ import weakref
 from functools import lru_cache
 
 import mlx.core as mx
+from .kernels import custom_kernels_enabled
 import mlx.nn as nn
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ def supports(head, x: mx.array) -> bool:
 
 def _supports_weight(weight, x: mx.array) -> bool:
     """True when ``x @ weight.T`` can take the exact GEMV path."""
-    if not ENABLED or not _gpu_default():
+    if not ENABLED or not custom_kernels_enabled() or not _gpu_default():
         return False
     if (
         weight is None

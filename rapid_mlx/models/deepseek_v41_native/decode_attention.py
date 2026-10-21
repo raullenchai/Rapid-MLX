@@ -55,6 +55,8 @@ from functools import lru_cache
 
 import mlx.core as mx
 
+from .kernels import custom_kernels_enabled
+
 
 # Module switch: tests and A/B runs turn the fused path off to compare.
 ENABLED = True
@@ -256,7 +258,12 @@ def _scalar(value: float) -> mx.array:
 
 def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) -> bool:
     """Whether the fused kernels cover this attention call (one decode token)."""
-    if not (ENABLED and mx.default_device() == mx.gpu and mx.metal.is_available()):
+    if not (
+        ENABLED
+        and custom_kernels_enabled()
+        and mx.default_device() == mx.gpu
+        and mx.metal.is_available()
+    ):
         return False
     return (
         x.ndim == 3

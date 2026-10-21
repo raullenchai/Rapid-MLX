@@ -27,6 +27,7 @@ import threading
 from functools import cache
 
 import mlx.core as mx
+from .kernels import custom_kernels_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ logger = logging.getLogger(__name__)
 def _metal_fast_path_available() -> bool:
     """Return whether custom Metal kernels can execute on the active device."""
     return (
-        mx.default_device() == mx.gpu
+        custom_kernels_enabled()
+        and mx.default_device() == mx.gpu
         and hasattr(mx, "metal")
         and mx.metal.is_available()
     )

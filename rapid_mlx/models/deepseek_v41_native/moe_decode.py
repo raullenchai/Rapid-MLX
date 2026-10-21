@@ -54,6 +54,7 @@ from functools import lru_cache
 import mlx.core as mx
 
 from . import head_gemv
+from .kernels import custom_kernels_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +484,12 @@ def _layout(moe) -> tuple[int, int, int] | None:
 
 def supports(x: mx.array) -> bool:
     """True when an MoE call on ``x`` is a decode-sized fused candidate."""
-    if not ENABLED or mx.default_device() != mx.gpu or not mx.metal.is_available():
+    if (
+        not ENABLED
+        or not custom_kernels_enabled()
+        or mx.default_device() != mx.gpu
+        or not mx.metal.is_available()
+    ):
         return False
     rows = 1
     for size in x.shape[:-1]:

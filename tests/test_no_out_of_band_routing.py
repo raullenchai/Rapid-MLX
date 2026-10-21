@@ -147,6 +147,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # it never selects a model, parser, engine, or backend route, and every
         # unqualified profile refuses it before loading weights.
         "RAPID_MLX_TENSORFOLD_LANES",
+        # Operator kill switch for the native V4.1 backend's custom Metal
+        # kernels: 0/false/off sends each one to its stock MLX path at the same
+        # eligibility checks as the modules' ENABLED constants. It selects no
+        # model, parser, engine, checkpoint or serving lane.
+        "RAPID_MLX_DSV41_FUSED",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;

@@ -557,6 +557,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
 | `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Any non-empty value other than `0` / `false` / `no` / `off` / `disable` / `disabled` skips new-version checks, including the passive `serve` startup-log notice. Same as the global `--disable-version-check` flag. |
+| `RAPID_MLX_DSV41_FUSED` | enabled | DeepSeek V4.1 native backend only: `0` / `false` / `no` / `off` / `disable` / `disabled` sends every custom Metal kernel (head and router GEMV, fused MoE, hyper-connection kernels, rope + fake-quant, fused decode attention) to the stock MLX path. Output is unchanged; decode is slower. Use it if V4.1 requests fail inside a kernel on an untested chip or macOS version. |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
 | `RAPID_MLX_TEST_MODEL` | unset | Default model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace authentication token |
