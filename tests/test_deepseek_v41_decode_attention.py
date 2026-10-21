@@ -87,6 +87,26 @@ def _oracle(q, keys, idxs, sink):
     return out
 
 
+_MANTISSA = {mx.bfloat16: 7, mx.float16: 10, mx.float32: 23}
+
+
+def _ulp(x, dtype=mx.bfloat16):
+    """Spacing of ``dtype`` values at |x| (the smaller one below a power of two)."""
+    a = np.maximum(np.abs(x), np.finfo(np.float32).tiny)
+    return 2.0 ** (np.floor(np.log2(a)) - _MANTISSA[dtype])
+
+
+def _inverse_rope_f64(o, c, s):
+    """rope_tail(..., inverse=True) of a float64 [b, h, d] array, in float64."""
+    c = np.array(c.astype(mx.float32)).astype(np.float64)[0]
+    s = np.array(s.astype(mx.float32)).astype(np.float64)[0]
+    out = o.copy()
+    re, im = o[..., DIM - RD :: 2], o[..., DIM - RD + 1 :: 2]
+    out[..., DIM - RD :: 2] = re * c + im * s
+    out[..., DIM - RD + 1 :: 2] = im * c - re * s
+    return out
+
+
 @needs_metal
 @pytest.mark.parametrize(
     "b,start,n_comp,k",
@@ -121,6 +141,9 @@ def test_attend_matches_float64_oracle_at_least_as_well_as_graph(b, start, n_com
     assert fused.shape == (b, 1, HEADS, DIM) and fused.dtype == mx.float32
 
     exact = _oracle(q, keys, idxs, sink)
+    # the float64 oracle carried through the float64 inverse rope tail, so both
+    # paths are measured in the coordinates they return
+    exact_rot = _inverse_rope_f64(exact, c, s)
     # the exact result with the graph path's bf16 output rounding and rope
     rounded = rope_tail(
         mx.array(exact.astype(np.float32))[:, None].astype(mx.bfloat16),
@@ -138,7 +161,12 @@ def test_attend_matches_float64_oracle_at_least_as_well_as_graph(b, start, n_com
     )
     # fp32 accumulation order only flips rare bf16 roundings of the exact value
     assert (got != expected).mean() <= 2e-3
-    assert np.abs(got - exact).max() <= max(np.abs(ref - exact).max(), 1e-2)
+    # no further from the exact value than the graph path (both round their
+    # output to bf16, which dominates the error; the margin covers the rare
+    # accumulation-order flips counted above)
+    fused_err, graph_err = np.abs(got - exact_rot), np.abs(ref - exact_rot)
+    assert fused_err.max() <= graph_err.max() * 1.05
+    assert fused_err.mean() <= graph_err.mean() * 1.01
 
 
 @needs_metal
@@ -158,16 +186,43 @@ def test_attend_reads_the_ring_in_chronological_order():
 
 
 @needs_metal
+def test_attend_masks_compressed_indices_outside_the_rows():
+    """Indices below the offset or past the last compressed row read nothing."""
+    b, start, n_comp, k = 2, 400, 16, 8
+    q0, ring, comp, sink, offset, cidx, keys, idxs = _case(9, b, start, n_comp, k)
+    cos, sin = _rope_table()
+    c, s = cos[start : start + 1], sin[start : start + 1]
+    picks = np.array(cidx)
+    picks[:, 0, :4] = [offset - 1, offset + n_comp, offset + n_comp + 4096, -5]
+    masked = picks.copy()
+    masked[:, 0, :4] = -1
+
+    def run(ix):
+        return np.array(
+            decode_attention.attend(
+                q0, ring, start, comp, mx.array(ix), offset, sink, c, s, 0.1, RD
+            )
+        )
+
+    out = run(picks)
+    assert np.isfinite(out).all()
+    assert np.array_equal(out, run(masked))
+
+
+@needs_metal
+@pytest.mark.parametrize("act", [mx.bfloat16, mx.float16, mx.float32])
 @pytest.mark.parametrize("cache_dtype", [mx.float32, mx.bfloat16])
-def test_norms_kernel_matches_graph(cache_dtype):
+def test_norms_kernel_matches_graph(cache_dtype, act):
     cos, sin = _rope_table()
     q_rank = 1280
     q_diff = 0
     for trial in range(24):
         mx.random.seed(100 + trial)
-        scale = float(10 ** np.random.default_rng(trial).uniform(-3, 3))
-        qa = (mx.random.normal((2, 1, q_rank)) * scale).astype(mx.bfloat16)
-        kva = (mx.random.normal((2, 1, DIM)) * scale).astype(mx.bfloat16)
+        # fp16 tops out near 6.5e4, so keep its squares' sum finite
+        hi = 1 if act == mx.float16 else 3
+        scale = float(10 ** np.random.default_rng(trial).uniform(-3, hi))
+        qa = (mx.random.normal((2, 1, q_rank)) * scale).astype(act)
+        kva = (mx.random.normal((2, 1, DIM)) * scale).astype(act)
         q_norm, kv_norm = RMSNorm(q_rank, 1e-20), RMSNorm(DIM, 1e-20)
         q_norm.weight = mx.random.uniform(0.5, 2.0, (q_rank,))
         kv_norm.weight = mx.random.uniform(0.5, 2.0, (DIM,))
@@ -178,7 +233,7 @@ def test_norms_kernel_matches_graph(cache_dtype):
         got_q, got_kv = decode_attention.norms(
             qa, kva, q_norm.weight, kv_norm.weight, 1e-20, c, s, RD, cache_dtype
         )
-        assert got_q.dtype == mx.bfloat16 and got_kv.dtype == cache_dtype
+        assert got_q.dtype == act and got_kv.dtype == cache_dtype
         # the cached KV row (rope tail and FP8 fake-quant included) is exact
         assert np.array_equal(
             np.array(ref_kv.astype(cache_dtype).astype(mx.float32)),
@@ -187,9 +242,13 @@ def test_norms_kernel_matches_graph(cache_dtype):
         got = np.array(got_q.astype(mx.float32))
         differ = got != ref_q
         q_diff += int(differ.sum())
-        # a different fp32 sum order can move q_norm by at most one bf16 step
-        assert np.all(np.abs(got - ref_q)[differ] <= np.abs(ref_q[differ]) * 2**-7)
-    assert q_diff <= 24 * 2 * q_rank * 1e-4
+        # a different fp32 sum order can move a bf16/fp16 q_norm by at most
+        # one step; fp32 activations keep the fp32 rsqrt's few-ulp difference
+        steps = 4 if act == mx.float32 else 1
+        nearer = np.minimum(np.abs(got), np.abs(ref_q))[differ]
+        assert np.all(np.abs(got - ref_q)[differ] <= steps * _ulp(nearer, act))
+    if act != mx.float32:
+        assert q_diff <= 24 * 2 * q_rank * 1e-3
 
 
 def _tiny_args():
@@ -235,20 +294,24 @@ def _exact_sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale):
 
 @needs_metal
 @pytest.mark.parametrize(
-    "bsz,dtype,first,tol",
+    "bsz,dtype,first,tol,stock",
     [
-        (1, mx.float32, 1e-5, 3e-3),
+        (1, mx.float32, 1e-5, 3e-3, False),
         # row 1 of this seed puts one layer-2 window value on an FP8 rounding
         # boundary at the first decode step (one e4m3 code apart), so only the
         # per-step tolerance applies
-        (2, mx.float32, None, 3e-3),
-        (1, mx.bfloat16, 0.0, 5e-2),
+        (2, mx.float32, None, 3e-3, False),
+        (1, mx.bfloat16, 0.0, 5e-2, False),
+        # against the shipped graph attention as well
+        (1, mx.float32, 1e-5, 1e-4, True),
+        (2, mx.bfloat16, 0.0, 5e-2, True),
     ],
 )
 def test_model_decode_with_fused_attention_tracks_graph(
-    bsz, dtype, first, tol, monkeypatch
+    bsz, dtype, first, tol, stock, monkeypatch
 ):
-    monkeypatch.setattr(attention, "sparse_attn", _exact_sparse_attn)
+    if not stock:
+        monkeypatch.setattr(attention, "sparse_attn", _exact_sparse_attn)
     mx.random.seed(3)
     model = Model(_tiny_args())
     model.set_dtype(dtype)
@@ -301,6 +364,7 @@ def test_negative_control_hook_still_takes_the_graph_path(monkeypatch):
 
 def test_supports_declines_what_the_kernels_do_not_cover(monkeypatch):
     monkeypatch.setattr(decode_attention.mx, "default_device", lambda: mx.gpu)
+    monkeypatch.setattr(decode_attention.mx.metal, "is_available", lambda: True)
     x = mx.zeros((2, 1, 64), dtype=mx.bfloat16)
     ring = mx.zeros((2, 8, 512))
 
@@ -320,6 +384,9 @@ def test_supports_declines_what_the_kernels_do_not_cover(monkeypatch):
     assert not ok(head_dim=192, win_kv=mx.zeros((2, 8, 192)))
     assert not ok(rd=0)
     assert not ok(rd=63)
+    monkeypatch.setattr(decode_attention.mx.metal, "is_available", lambda: False)
+    assert not ok()  # no Metal device
+    monkeypatch.setattr(decode_attention.mx.metal, "is_available", lambda: True)
     monkeypatch.setattr(decode_attention, "ENABLED", False)
     assert not ok()
     monkeypatch.setattr(decode_attention.mx, "default_device", lambda: mx.cpu)

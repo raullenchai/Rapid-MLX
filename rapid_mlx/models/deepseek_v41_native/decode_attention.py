@@ -66,14 +66,16 @@ _DIMS_PER_GROUP = 128
 
 _KEY_ROW = r"""
 // Cache row of key j: the window ring for j < WE (oldest first), else the
-// compressed row selected by cidx (or -1 when masked). Small inputs arrive in
-// the constant address space, so the index pointer type is a template.
+// compressed row selected by cidx (or -1 when masked, or when the index falls
+// outside the NC compressed rows, so no load can leave the buffer). Small
+// inputs arrive in the constant address space, so the index pointer type is a
+// template.
 template <typename P>
-inline int key_row(int j, int start, int WE, int OFF, int W, P ci, thread bool& compressed) {
+inline int key_row(int j, int start, int WE, int OFF, int NC, int W, P ci, thread bool& compressed) {
     compressed = j >= WE;
     if (!compressed) return (start - WE + 1 + j) % W;
-    const int c = ci[j - WE];
-    return c >= 0 ? c - OFF : -1;
+    const int r = ci[j - WE] - OFF;
+    return r >= 0 && r < NC ? r : -1;
 }
 """
 
@@ -129,7 +131,7 @@ _ATTEND = r"""
         if (tid < 64) {
             const int j = blk * 64 + int(tid);
             bool c = false;
-            rows[tid] = j < KT ? key_row(j, start, WE, OFF, W, cidx + b * KC, c) : -1;
+            rows[tid] = j < KT ? key_row(j, start, WE, OFF, NC, W, cidx + b * KC, c) : -1;
             comp[tid] = c;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -333,7 +335,7 @@ def _scalar(value: float) -> mx.array:
 
 def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) -> bool:
     """Whether the fused kernels cover this attention call (one decode token)."""
-    if not (ENABLED and mx.default_device() == mx.gpu):
+    if not (ENABLED and mx.default_device() == mx.gpu and mx.metal.is_available()):
         return False
     return (
         x.ndim == 3
@@ -367,7 +369,8 @@ def attend(
 
     q [b, 1, h, d] (rope tail not yet applied); win_kv [>=b, window, d], the ring after this
     step's write; comp_kv [>=b, n_comp, d] with cidx [b, 1, k] concat-position
-    indices (``offset`` = first compressed position, -1 = masked), or None.
+    indices (``offset`` = first compressed position, -1 = masked; an index
+    outside [offset, offset + n_comp) is treated as masked), or None.
     cos/sin: this position's rope row, [1, rd // 2]. Returns [b, 1, h, d]
     float32 holding q-dtype values (the graph path's rounding, cast for wo_a).
     """
@@ -421,6 +424,9 @@ def norms(
     qa [b, 1, q_lora_rank], kva [b, 1, head_dim] (one decode token). Returns
     qr in the activation dtype and the window KV row in ``cache_dtype``
     (holding activation-dtype values, as the cache write would store them).
+    The RMS sums run in a different fp32 order than the graph path's, so qr can
+    sit one activation-dtype step away, and a KV value within that rounding of
+    an FP8 midpoint can land one e4m3 code away (not observed in the tests).
     """
     bsz, _, q_rank = qa.shape
     head_dim = kva.shape[-1]

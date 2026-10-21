@@ -17,6 +17,5 @@ MIT-licensed code from jundot/omlx revision
 directory for the MIT license text.
 
 The fused decode attention Metal kernels in decode_attention.py adapt the
-design of MIT-licensed code from jundot/omlx revision
-3bb916288625b7c4f3652e8b06727c8783bf24cf (Copyright (c) 2023 DeepSeek). See
-LICENSE-DSPARK in this directory for the MIT license text.
+design of MIT-licensed third-party code (Copyright (c) 2023 DeepSeek). The
+full MIT license text is reproduced in the header of decode_attention.py.
