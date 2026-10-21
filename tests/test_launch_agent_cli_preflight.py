@@ -136,7 +136,7 @@ def test_login_shell_exit_status_is_the_answer(fixed_marker):
         assert cli_preflight.agent_cli_found("fake-agent") is True
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
-    assert "whence -p -- fake-agent" in argv[2]
+    assert "builtin whence -p -- fake-agent" in argv[2]
     assert MARK in argv[2]
 
 
@@ -271,9 +271,13 @@ def test_real_login_shell_checks_paths_and_ignores_profile_functions(
     tool = _executable(tmp_path / "tool")
     plain = tmp_path / "plain"
     plain.write_text("")
-    login_profile("rapid-preflight-fn() { :; }\nalias rapid-preflight-alias=ls\n")
+    login_profile(
+        "rapid-preflight-fn() { :; }\nalias rapid-preflight-alias=ls\n"
+        "whence() { return 0; }\nprintf() { echo spoofed; }\n"
+    )
     assert cli_preflight.agent_cli_found(str(tool)) is True
     assert cli_preflight.agent_cli_found(str(plain)) is False
     assert cli_preflight.agent_cli_found(str(tmp_path)) is False
     assert cli_preflight.agent_cli_found("rapid-preflight-fn") is False
     assert cli_preflight.agent_cli_found("rapid-preflight-alias") is False
+    assert cli_preflight.agent_cli_found("rapid-preflight-absent-agent") is False

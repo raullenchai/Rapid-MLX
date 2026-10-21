@@ -37,7 +37,11 @@ def agent_cli_found(binary: str) -> bool | None:
     # A per-probe marker keeps profile output from posing as the answer.
     marker = f"__rapid_mlx_cli_{secrets.token_hex(8)}__="
     target = shlex.quote(os.path.expanduser(binary))
-    script = f"whence -p -- {target} >/dev/null 2>&1; printf '\\n{marker}%s\\n' \"$?\""
+    # ``builtin`` keeps profile functions from shadowing the probe itself.
+    script = (
+        f"builtin whence -p -- {target} >/dev/null 2>&1; "
+        f"builtin printf '\\n{marker}%s\\n' \"$?\""
+    )
     try:
         result = subprocess.run(
             [_LOGIN_SHELL, "-lc", script],
