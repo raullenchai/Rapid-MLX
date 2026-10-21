@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Single-stream greedy draft benchmark; tiny mode needs no checkpoint."""
+"""Single-stream greedy draft benchmark; tiny mode needs no checkpoint.
+
+Prompts are rendered through the serving chat template by default, so the
+numbers match what a chat client sees.  Acceptance depends heavily on the
+prompt: repetitive raw text accepts nearly every draft token while ordinary
+chat answers accept far fewer, so each prompt class is reported separately
+and ``--raw`` output is labelled as such.
+"""
 
 from __future__ import annotations
 
@@ -119,8 +126,62 @@ def tiny_setup(seed=7):
     return model, draft
 
 
+# Built-in chat prompt classes.  Speculative acceptance differs by an order of
+# magnitude between them, so a single prompt cannot stand for chat traffic.
+PROMPT_CLASSES = {
+    "qa": "Explain why the sky is blue, and why sunsets are red.",
+    "code": (
+        "Write a Python function that parses ISO-8601 durations like "
+        "'P3DT4H5M' into seconds, with type hints, a docstring and pytest tests."
+    ),
+    "structured": (
+        "Return a JSON array of the ten largest countries by area. Each item: "
+        "name, capital, area_km2, continent. JSON only."
+    ),
+    "summarize": (
+        "Summarize the following passage in three bullet points.\n\n"
+        "Before the marine chronometer, sailors could find their latitude from "
+        "the height of the sun at noon, but longitude required knowing the time "
+        "at a reference meridian while far out at sea. Pendulum clocks failed "
+        "on a rolling deck, and temperature swings changed the length of their "
+        "springs. After several naval disasters, a prize was offered for a "
+        "practical method. Astronomers favoured the lunar-distance method, "
+        "which compared the moon's position against bright stars and then "
+        "consulted printed tables, a calculation that took hours. A carpenter "
+        "turned clockmaker instead spent decades building a series of sea "
+        "clocks, each smaller than the last, using bimetallic strips to "
+        "compensate for heat and caged roller bearings to avoid lubrication. "
+        "His fourth design, roughly the size of a large pocket watch, lost only "
+        "a few seconds on a voyage to the Caribbean. The prize committee was "
+        "slow to accept the result, and he was paid in instalments only after "
+        "copies proved that the design could be reproduced. Within a century, "
+        "chronometers were standard equipment, and the lunar tables slowly "
+        "fell out of use."
+    ),
+}
+
+
+def encode_prompt(serving, model, tokenizer, text, *, raw):
+    """Token ids exactly as the server would build them, unless ``raw``."""
+    if not raw:
+        request = SimpleNamespace(
+            tools=None, messages=[SimpleNamespace(role="user", content=text)]
+        )
+        text = serving.render_prompt(tokenizer, model, request)
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def first_difference(left, right):
+    return next(
+        (i for i, (a, b) in enumerate(zip(left, right, strict=False)) if a != b),
+        None if len(left) == len(right) else min(len(left), len(right)),
+    )
+
+
 class TinyTokenizer:
     clean_up_tokenization_spaces = False
+    bos_token = "<bos>"
+    eos_token = "<eos>"
     eos_token_id = 31
     all_special_ids = [31]
 
@@ -273,6 +334,7 @@ def speculative_decode(
         runtime.drafter.propose = original_propose
         serving._match = original_match
     histogram = Counter(row["accepted"] for row in rounds)
+    accepted = sum(k * v for k, v in histogram.items()) / len(rounds)
     means = {
         key: sum(row[key] for row in rounds) / len(rounds)
         for key in ("draft_ms", "verify_ms", "round_ms")
@@ -289,7 +351,10 @@ def speculative_decode(
         "tokens_per_second": len(output) / elapsed,
         "decode_seconds": elapsed,
         "rounds": len(rounds),
-        "mean_accepted_tokens": sum(k * v for k, v in histogram.items()) / len(rounds),
+        "mean_accepted_tokens": accepted,
+        # Accepted draft tokens plus the verify's own token: what one round
+        # emits.  Speculation only pays when this exceeds round_ms / step_ms.
+        "tokens_per_round": accepted + 1,
         "acceptance_histogram": dict(sorted(histogram.items())),
         "mean_round_ms": means,
     }
@@ -323,7 +388,25 @@ def _main(argv=None):
         help="Synchronize draft attention/MoE/head/Markov boundaries (perturbs latency)",
     )
     parser.add_argument("--label", default="new")
-    parser.add_argument("--prompt", default="Explain why the sky is blue.")
+    parser.add_argument(
+        "--prompt-class",
+        action="append",
+        choices=sorted(PROMPT_CLASSES),
+        help="Built-in chat prompt class; repeatable (default: all classes)",
+    )
+    parser.add_argument(
+        "--prompt", help="Custom user message, measured as prompt class 'custom'"
+    )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Encode prompt text as-is instead of rendering the chat template",
+    )
+    parser.add_argument(
+        "--mixed-target-precision",
+        action="store_true",
+        help="Load a mixed-precision target, as the server does for such checkpoints",
+    )
     parser.add_argument("--tokens", type=int, default=64)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=7)
@@ -337,6 +420,7 @@ def _main(argv=None):
             args.draft or args.model,
             target_revision="local",
             mtp_revision="local",
+            **({"mixed_target_precision": True} if args.mixed_target_precision else {}),
         )
     else:
         mx.set_default_device(mx.cpu)
@@ -346,28 +430,48 @@ def _main(argv=None):
         serving._install_packed_mtp_moe(draft)
         tokenizer = TinyTokenizer()
         runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
-    prompt = tokenizer.encode(args.prompt, add_special_tokens=False)
+    if args.prompt is not None and args.prompt_class:
+        parser.error("--prompt and --prompt-class are mutually exclusive")
+    if args.prompt is not None:
+        texts = {"custom": args.prompt}
+    else:
+        texts = {
+            name: PROMPT_CLASSES[name] for name in args.prompt_class or PROMPT_CLASSES
+        }
+    prompts = {
+        name: encode_prompt(serving, model, tokenizer, text, raw=args.raw)
+        for name, text in texts.items()
+    }
     # Warm both paths; each measured run starts with fresh target/draft caches.
-    plain_decode(model, prompt, min(8, args.tokens))
-    speculative_decode(serving, model, tokenizer, runtime, prompt, min(8, args.tokens))
-    runs = []
-    for _ in range(args.repeats):
-        plain, off = plain_decode(model, prompt, args.tokens)
-        speculative, on = speculative_decode(
-            serving,
-            model,
-            tokenizer,
-            runtime,
-            prompt,
-            args.tokens,
-            component_timers=args.component_timers,
-        )
-        runs.append(
+    warm = next(iter(prompts.values()))
+    plain_decode(model, warm, min(8, args.tokens))
+    speculative_decode(serving, model, tokenizer, runtime, warm, min(8, args.tokens))
+    classes = []
+    for name, prompt in prompts.items():
+        runs = []
+        for _ in range(args.repeats):
+            plain, off = plain_decode(model, prompt, args.tokens)
+            speculative, on = speculative_decode(
+                serving, model, tokenizer, runtime, prompt, args.tokens,
+                component_timers=args.component_timers,
+            )
+            runs.append(
+                {
+                    "draft_off": off,
+                    "draft_on": on,
+                    # Batched verify and single-token decode reduce in different
+                    # orders, so on real checkpoints draft-on output is exact with
+                    # respect to the verify forward but may fork from plain greedy.
+                    "greedy_equal": plain == speculative,
+                    "first_difference": first_difference(plain, speculative),
+                    "speedup": on["tokens_per_second"] / off["tokens_per_second"],
+                }
+            )
+        classes.append(
             {
-                "draft_off": off,
-                "draft_on": on,
-                "greedy_equal": plain == speculative,
-                "speedup": on["tokens_per_second"] / off["tokens_per_second"],
+                "prompt_class": name,
+                "prompt_tokens": len(prompt),
+                "runs": runs,
             }
         )
     print(
@@ -381,9 +485,10 @@ def _main(argv=None):
                 "mlx": mx.__version__,
                 "device": str(mx.default_device()),
                 "seed": args.seed,
-                "prompt_tokens": len(prompt),
+                # "raw" numbers are not chat numbers; never quote them as such.
+                "prompt_format": "raw" if args.raw else "chat",
                 "generated_tokens": args.tokens,
-                "runs": runs,
+                "classes": classes,
             },
             __file__,
         )

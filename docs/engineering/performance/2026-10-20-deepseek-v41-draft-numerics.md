@@ -154,15 +154,21 @@ Keep all other native dependencies identical. Exact measured commands:
 python -m scripts.bench_deepseek_v41_draft \
   --model "$TARGET_MODEL" --draft "$DRAFT_MODEL" \
   --runtime-module baseline_native.serving --label old \
-  --prompt 'Explain why the sky is blue.' --tokens 256 --repeats 5 --seed 7 \
-  > draft-old.json
+  --tokens 256 --repeats 5 --seed 7 > draft-old.json
 python -m scripts.bench_deepseek_v41_draft \
   --model "$TARGET_MODEL" --draft "$DRAFT_MODEL" --label new \
-  --prompt 'Explain why the sky is blue.' --tokens 256 --repeats 5 --seed 7 \
-  > draft-new.json
+  --tokens 256 --repeats 5 --seed 7 > draft-new.json
 ```
 
-Repeat for code, reasoning and prose prompts. Inspect token equality rather than
+Prompts are rendered through the serving chat template and every built-in
+class (QA, code, structured output, summarization) is reported separately with
+tokens per round (accepted draft tokens + 1). Add `--mixed-target-precision`
+for checkpoints the server loads that way. `--raw` encodes text without the
+chat template; its output is labelled `"prompt_format": "raw"` and must not be
+quoted as a chat result, because repetitive raw text accepts nearly every draft
+token. On full checkpoints draft-on output is exact with respect to the verify
+forward but may fork from single-token greedy decode (`first_difference`),
+because batched verify reduces in a different order. Inspect token equality rather than
 assuming it: five-token versus one-token GPU kernels may disagree near ties.
 Measure real bf16/affine projection equivalence, target logits, acceptance
 histograms, memory impact of live ring snapshots, draft/verify/host times, and

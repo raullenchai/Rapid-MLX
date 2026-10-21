@@ -398,8 +398,75 @@ def test_benchmark_main_tiny_and_checkpoint_provider(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["mode"] == "checkpoint" and result["label"] == "old"
     assert calls[0][0] == ("checkpoint", "sidecar")
+    assert "mixed_target_precision" not in calls[0][1]
+    assert (
+        bench.main(
+            [
+                "--model",
+                "checkpoint",
+                "--mixed-target-precision",
+                "--tokens",
+                "1",
+                "--repeats",
+                "1",
+                "--prompt-class",
+                "qa",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert calls[1][1]["mixed_target_precision"] is True
     with pytest.raises(SystemExit):
         bench.main(["--tokens", "0"])
+    with pytest.raises(SystemExit):
+        bench.main(["--prompt", "hi", "--prompt-class", "qa"])
+
+
+class RecordingTokenizer(bench.TinyTokenizer):
+    def __init__(self):
+        self.encoded = []
+
+    def encode(self, text, **kwargs):
+        self.encoded.append(text)
+        return super().encode(text, **kwargs)
+
+
+@pytest.mark.parametrize("raw", [False, True])
+def test_benchmark_renders_chat_prompts_per_class_unless_raw(monkeypatch, capsys, raw):
+    model, draft = bench.tiny_setup()
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    tokenizer = RecordingTokenizer()
+    monkeypatch.setattr(
+        serving, "load_product_runtime", lambda *a, **k: (model, tokenizer, runtime)
+    )
+    argv = ["--model", "checkpoint", "--tokens", "2", "--repeats", "1"]
+    assert bench.main(argv + (["--raw"] if raw else [])) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["prompt_format"] == ("raw" if raw else "chat")
+    assert [c["prompt_class"] for c in result["classes"]] == list(bench.PROMPT_CLASSES)
+    for row in result["classes"]:
+        on = row["runs"][0]["draft_on"]
+        assert on["tokens_per_round"] == on["mean_accepted_tokens"] + 1
+        assert row["prompt_tokens"] == 4
+    measured = [t for t in tokenizer.encoded if bench.PROMPT_CLASSES["qa"] in t]
+    rendered = (
+        "<bos><｜User｜>" + bench.PROMPT_CLASSES["qa"] + "<｜Assistant｜></think>"
+    )
+    assert (measured[-1] == bench.PROMPT_CLASSES["qa"]) is raw
+    assert (measured[-1] == rendered) is not raw
+
+    assert bench.main(argv + ["--prompt", "Say hi."]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert [c["prompt_class"] for c in result["classes"]] == ["custom"]
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [([1, 2, 3], [1, 2, 3], None), ([1, 2, 3], [1, 4, 3], 1), ([1, 2], [1, 2, 3], 2)],
+)
+def test_first_difference(left, right, expected):
+    assert bench.first_difference(left, right) == expected
 
 
 @pytest.mark.usefixtures("cpu_device")
@@ -427,7 +494,8 @@ def test_benchmark_script_entrypoint(monkeypatch, capsys):
     with pytest.raises(SystemExit) as result:
         runpy.run_path(bench.__file__, run_name="__main__")
     assert result.value.code == 0
-    assert json.loads(capsys.readouterr().out)["runs"][0]["greedy_equal"]
+    run = json.loads(capsys.readouterr().out)["classes"][0]["runs"][0]
+    assert run["greedy_equal"] and run["first_difference"] is None
 
 
 @pytest.mark.parametrize("dtype", [mx.float32, mx.bfloat16])
