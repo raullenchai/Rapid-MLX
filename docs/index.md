@@ -2,11 +2,15 @@
 
 **Native AI inference for Apple Silicon** — GPU-accelerated text, image, video, and audio on Mac.
 
-Install on an Apple Silicon Mac, restart Terminal, then run a coding agent
-with a local model:
+Install on an Apple Silicon Mac:
 
 ```bash
 curl -fsSL https://rapidmlx.com/install.sh | bash
+```
+
+Restart Terminal, then run a coding agent with a local model:
+
+```bash
 rapid-mlx launch codex
 ```
 
@@ -49,10 +53,10 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 - [Codex CLI](agents/codex-cli.md)
 - [Claude Code](agents/claude-code.md)
 - [OpenCode](agents/opencode.md)
-- [Qwen Code](agents/qwen-code.md)
-- [OpenHands](agents/openhands.md)
+- [Pi](agents/pi.md)
 - [Hermes Agent](agents/hermes-agent.md)
-- [DeepSeek Harness](agents/deepseek-harness.md)
+- [Crush](agents/crush.md)
+- [Goose](agents/goose.md)
 
 ### Reference
 - [CLI Commands](reference/cli.md)
@@ -60,11 +64,8 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 - [Configuration](reference/configuration.md)
 
 ### Benchmarks
-- [LLM Benchmarks](benchmarks/llm.md)
-- [M4 Pro 48 GB Community Benchmark](benchmarks/m4-pro-48gb-community.md)
-- [Image Benchmarks](benchmarks/image.md)
-- [Video Benchmarks](benchmarks/video.md)
-- [Audio Benchmarks](benchmarks/audio.md)
+- [Measure on your Mac](benchmarks/README.md)
+- [Text generation](benchmarks/llm.md)
 
 ### Development
 - [Architecture](development/architecture.md)
