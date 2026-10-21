@@ -173,7 +173,7 @@ You should see a `response` object with an `output` array containing a
 ## Troubleshooting
 
 - **Codex 404s on `/v1/responses`** — you're on rapid-mlx < 0.7.10. Upgrade
-  with `rapid-mlx upgrade` (or `pip install -U rapid-mlx`).
+  with `rapid-mlx upgrade` (or `python3.12 -m pip install -U rapid-mlx` if you installed with Python 3.12).
 - **Turn ends with no output / stream closes early** — upgrade to rapid-mlx
   >= 0.7.12; the 0.7.10–0.7.11 shim mishandled Codex 0.136's request shape.
 - **Codex hangs on first run** — it's prompting for sandbox permissions
