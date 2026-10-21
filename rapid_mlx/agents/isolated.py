@@ -324,7 +324,11 @@ def configure(
         if not cleaned.is_file():
             skills_dir = profile_root / "skills"
             _reject_symlinked_ancestors(skills_dir)
-            if skills_dir.is_dir() and shutil.which("hermes"):
+            if skills_dir.is_dir():
+                if not shutil.which("hermes"):
+                    raise ValueError(
+                        "Hermes private skill cleanup needs the Hermes CLI; install it and retry launch."
+                    )
                 # Hermes removes only its own unmodified bundled skills.
                 try:
                     result = subprocess.run(
@@ -351,9 +355,8 @@ def configure(
                         "Bundled skills opt-out completed for private profile.\n",
                     )
                 else:
-                    print(
-                        "Hermes private skill cleanup did not complete; retry launch to try again.",
-                        file=sys.stderr,
+                    raise ValueError(
+                        "Hermes private skill cleanup did not complete; retry launch."
                     )
             elif not skills_dir.is_dir():
                 _private_write(

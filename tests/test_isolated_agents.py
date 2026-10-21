@@ -152,7 +152,7 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     assert "goose session --provider" in Path(goose).read_text()
 
 
-@pytest.mark.parametrize("cleanup_outcome", ["clean", "timeout", "leftover"])
+@pytest.mark.parametrize("cleanup_outcome", ["clean", "timeout", "nonzero", "leftover"])
 def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outcome):
     root = isolated.connection_dir() / "agents" / "hermes"
     skills = root / "profiles" / "rapid" / "skills"
@@ -166,19 +166,42 @@ def test_existing_private_hermes_skills_are_opted_out(private_home, cleanup_outc
         if cleanup_outcome == "timeout":
             cleanup.side_effect = subprocess.TimeoutExpired("hermes", 120)
         else:
-            cleanup.return_value.returncode = 0
+            cleanup.return_value.returncode = 1 if cleanup_outcome == "nonzero" else 0
             if cleanup_outcome == "clean":
                 cleanup.side_effect = lambda *_args, **_kwargs: (
                     bundled_skill.unlink() or cleanup.return_value
                 )
-        isolated.configure("hermes", "qwen3.5-9b-4bit")
-        isolated.configure("hermes", "qwen3.5-9b-4bit")
-    assert cleanup.call_count == (2 if cleanup_outcome == "timeout" else 1)
+        for _ in range(2):
+            if cleanup_outcome in {"timeout", "nonzero"}:
+                with pytest.raises(ValueError, match="skill cleanup did not complete"):
+                    isolated.configure("hermes", "qwen3.5-9b-4bit")
+            else:
+                isolated.configure("hermes", "qwen3.5-9b-4bit")
+    assert cleanup.call_count == (2 if cleanup_outcome in {"timeout", "nonzero"} else 1)
     assert cleanup.call_args.kwargs["env"]["HERMES_HOME"] == str(root)
-    assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file()
+    assert (root / "profiles" / "rapid" / ".no-bundled-skills").is_file() == (
+        cleanup_outcome not in {"timeout", "nonzero"}
+    )
     assert (
         root / "profiles" / "rapid" / ".rapid-bundled-skills-cleaned"
-    ).is_file() == (cleanup_outcome != "timeout")
+    ).is_file() == (cleanup_outcome not in {"timeout", "nonzero"})
+
+
+def test_existing_private_hermes_skills_require_cli(private_home):
+    skills = (
+        isolated.connection_dir()
+        / "agents"
+        / "hermes"
+        / "profiles"
+        / "rapid"
+        / "skills"
+    )
+    skills.mkdir(parents=True)
+    with (
+        patch("rapid_mlx.agents.isolated.shutil.which", return_value=None),
+        pytest.raises(ValueError, match="needs the Hermes CLI"),
+    ):
+        isolated.configure("hermes", "qwen3.5-9b-4bit")
 
 
 def test_hermes_uses_served_context_ceiling_before_opening(private_home):
