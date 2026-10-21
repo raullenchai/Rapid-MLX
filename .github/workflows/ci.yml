@@ -657,6 +657,8 @@ jobs:
             tests/test_deepseek_v41_ring_rollback.py \
             tests/test_deepseek_v41_rope_quant.py \
             tests/test_deepseek_v41_prefill.py \
+            tests/test_calibrate_deepseek_v41_reap.py \
+            tests/test_deepseek_v41_quant_error.py \
             tests/test_model_load_entrypoint_boundaries.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \

@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import json
+import struct
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from scripts.deepseek_v41_expert_quant_error import (
+    inventory,
+    load_expert,
+    main,
+    quant_error,
+)
+from scripts.deepseek_v41_rd_common import affine_bytes
+from scripts.repack_deepseek_v41_native import CheckpointIndex
+
+pytestmark = pytest.mark.requires_mlx
+
+
+def tiny_source(root: Path):
+    """Actual safetensors bytes, including source FP4 and exponent-only scales."""
+    root.mkdir()
+    tensors = {}
+    rng = np.random.default_rng(8)
+    for expert in range(2):
+        for projection in ("w1", "w2", "w3"):
+            base = f"layers.0.ffn.experts.{expert}.{projection}"
+            tensors[base + ".weight"] = (
+                "U8",
+                rng.integers(0, 256, (64, 32), dtype=np.uint8),
+            )
+            tensors[base + ".scale"] = ("U8", np.full((64, 2), 124, np.uint8))
+    for projection in ("w1", "w2", "w3"):
+        tensors[f"layers.0.ffn.shared_experts.{projection}.weight"] = (
+            "BF16",
+            np.zeros((64, 64), np.uint16),
+        )
+    tensors["layers.0.ffn.gate.weight"] = ("BF16", np.zeros((2, 64), np.uint16))
+    tensors["layers.0.ffn.gate.bias"] = ("F16", np.zeros(2, np.float16))
+    tensors["layers.0.ffn.gate.bias_vl"] = ("F16", np.zeros(2, np.float16))
+    tensors["head.weight"] = ("BF16", np.zeros((64, 64), np.uint16))
+    tensors["norm.weight"] = ("F32", np.zeros(64, np.float32))
+    tensors["layers.0.hc_attn_base"] = ("F16", np.zeros(128, np.float16))
+    tensors["layers.0.engram.embed.weight"] = ("U8", np.zeros((2, 256), np.uint8))
+    tensors["layers.0.engram.embed.scale"] = ("U8", np.full((2, 8), 127, np.uint8))
+    tensors["mtp.omitted.weight"] = ("F32", np.ones(3, np.float32))
+    tensors["vision.omitted.weight"] = ("F32", np.ones(3, np.float32))
+    offset = 0
+    header = {}
+    for name, (dtype, array) in tensors.items():
+        header[name] = {
+            "dtype": dtype,
+            "shape": list(array.shape),
+            "data_offsets": [offset, offset + array.nbytes],
+        }
+        offset += array.nbytes
+    encoded = json.dumps(header).encode()
+    encoded += b" " * (-len(encoded) % 8)
+    with (root / "tiny.safetensors").open("wb") as output:
+        output.write(struct.pack("<Q", len(encoded)))
+        output.write(encoded)
+        for _, array in tensors.values():
+            output.write(array.tobytes())
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {k: "tiny.safetensors" for k in tensors}})
+    )
+    config = {
+        "text_config": {
+            "num_hidden_layers": 1,
+            "n_routed_experts": 2,
+            "hidden_size": 64,
+            "swiglu_limit": 10.0,
+        },
+        "quantization_config": {"expert_dtype": "fp4"},
+    }
+    (root / "config.json").write_text(json.dumps(config))
+    return config
+
+
+def test_header_inventory_counts_fixed_shared_router_and_excludes_engram(tmp_path):
+    config = tiny_source(tmp_path / "source")
+    index = CheckpointIndex(tmp_path / "source")
+    result = inventory(index, config)
+    assert (
+        result["fixed_non_expert_bytes"]
+        == 4 * affine_bytes((64, 64), 4) + 64 * 4 + 128 * 4
+    )
+    assert result["excluded_engram_bytes"] == 528
+    assert result["router_row_bytes_by_layer"] == {0: 136}
+    expected = [0] + [3 * affine_bytes((64, 64), b) + 136 for b in (2, 3, 4)]
+    assert result["expert_bytes"] == [[expected, expected]]
+
+
+def test_tensor_stream_matches_native_fp4_decoder(tmp_path):
+    import mlx.core as mx
+
+    from rapid_mlx.models.deepseek_v41_native.dequant import dequant_fp4
+    from scripts.deepseek_v41_expert_quant_error import read_tensor
+
+    tiny_source(tmp_path / "source")
+    index = CheckpointIndex(tmp_path / "source")
+    with mx.stream(mx.cpu):
+        weights = load_expert(index, 0, 0)
+        base = "layers.0.ffn.experts.0.w1"
+        expected = dequant_fp4(
+            read_tensor(index.tensors[base + ".weight"]),
+            read_tensor(index.tensors[base + ".scale"]),
+            mx.bfloat16,
+        )
+        np.testing.assert_array_equal(
+            np.array(weights[0].astype(mx.float32)),
+            np.array(expected.astype(mx.float32)),
+        )
+        assert all(w.shape == (64, 64) for w in weights)
+
+
+def test_zero_energy_probes_fail_closed():
+    import mlx.core as mx
+
+    with mx.stream(mx.cpu), pytest.raises(ValueError, match="reference energy"):
+        quant_error([mx.zeros((64, 64)) for _ in range(3)], mx.ones((2, 64)))
+
+
+def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch):
+    tiny_source(tmp_path / "source")
+    args = [
+        "quant-error",
+        "--source",
+        str(tmp_path / "source"),
+        "--inventory",
+        str(tmp_path / "costs.json"),
+        "--output",
+        str(tmp_path / "errors.npz"),
+        "--probes",
+        "2",
+        "--stop",
+        "1",
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+    main()
+    with np.load(tmp_path / "errors.npz") as data:
+        first = data["q"][0, 0].copy()
+        assert data["completed"].tolist() == [[True, False]]
+    args[-1] = "2"
+    monkeypatch.setattr(sys, "argv", args + ["--resume"])
+    main()
+    with np.load(tmp_path / "errors.npz") as data:
+        np.testing.assert_array_equal(data["q"][0, 0], first)
+        assert data["completed"].all()
+    monkeypatch.setattr(sys, "argv", args + ["--resume", "--seed", "9"])
+    with pytest.raises(ValueError, match="provenance"):
+        main()
+
+
+def test_fp8_expert_stream_uses_native_decoder(tmp_path):
+    import mlx.core as mx
+
+    from scripts.repack_deepseek_v41_native import SourceTensor
+
+    # e4m3 0x38 = 1; ue8m0 127 = scale 1. All projections share tiny slices.
+    path = tmp_path / "fp8.bin"
+    path.write_bytes(bytes([0x38]) * 4096 + bytes([127]) * 4)
+    tensors = {}
+    for projection in ("w1", "w3", "w2"):
+        base = f"layers.0.ffn.experts.0.{projection}"
+        tensors[base + ".weight"] = SourceTensor(
+            base + ".weight", path, 0, 4096, "F8_E4M3", (64, 64)
+        )
+        tensors[base + ".scale"] = SourceTensor(
+            base + ".scale", path, 4096, 4, "U8", (2, 2)
+        )
+    from types import SimpleNamespace
+
+    with mx.stream(mx.cpu):
+        weights = load_expert(
+            SimpleNamespace(tensors=tensors), 0, 0, expert_dtype="fp8"
+        )
+        for weight in weights:
+            np.testing.assert_array_equal(
+                np.array(weight.astype(mx.float32)), np.ones((64, 64))
+            )
+
+
+def test_native_calibration_main_saves_domain_halves_hashes_and_revision(
+    tmp_path, monkeypatch
+):
+    import mlx.core as mx
+    import tokenizers
+
+    import rapid_mlx.models.deepseek_v41_native.load as native_load
+    from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
+    from rapid_mlx.models.deepseek_v41_native.moe import MoE
+    from scripts import calibrate_deepseek_v41_reap as calibration
+
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    config = {"num_hidden_layers": 1, "n_routed_experts": 4, "num_experts_per_tok": 2}
+    (model_path / "config.json").write_text(json.dumps(config))
+    for name in ("code", "math"):
+        (tmp_path / f"{name}.txt").write_text(f"{name} distinct corpus")
+    manifest = tmp_path / "slices.json"
+    manifest.write_text(
+        json.dumps({"slices": {"code": ["code.txt"], "math": ["math.txt"]}})
+    )
+
+    class TinyTokenizer:
+        @classmethod
+        def from_file(cls, path):
+            return cls()
+
+        def encode(self, text):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(ids=[1, 2, 3, 4])
+
+    class TinyModel:
+        def __init__(self):
+            from types import SimpleNamespace
+
+            self.layers = [
+                SimpleNamespace(
+                    ffn=MoE(
+                        ModelArgs(
+                            dim=64,
+                            moe_inter_dim=64,
+                            n_routed_experts=4,
+                            n_activated_experts=2,
+                        )
+                    )
+                )
+            ]
+            self.caches = []
+
+        def make_cache(self, **kwargs):
+            cache = {}
+            self.caches.append(cache)
+            return cache
+
+        def __call__(self, ids, cache, **kwargs):
+            return self.layers[0].ffn(mx.ones((1, 1, 64)) * ids.item())
+
+    with mx.stream(mx.cpu):
+        model = TinyModel()
+        monkeypatch.setattr(native_load, "load", lambda *args, **kwargs: (model, None))
+        monkeypatch.setattr(tokenizers, "Tokenizer", TinyTokenizer)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "calibrate",
+                "--model",
+                str(model_path),
+                "--native",
+                "--slices",
+                str(manifest),
+                "--tokens",
+                "4",
+                "--keep-experts",
+                "2",
+                "--model-revision",
+                "r",
+                "--trust-checkpoint-runtime",
+                "--output",
+                str(tmp_path / "scores.npz"),
+            ],
+        )
+        calibration.main()
+    assert len(model.caches) == 2 and model.caches[0] is not model.caches[1]
+    with np.load(tmp_path / "scores.npz") as result:
+        metadata = json.loads(str(result["metadata"]))
+        assert metadata["model_revision"] == "r"
+        assert metadata["tokens_per_slice"] == [4, 4]
+        assert metadata["slice_names"] == ["code", "math"]
+        assert (
+            metadata["corpus"]["code"][0]["sha256"]
+            != metadata["corpus"]["math"][0]["sha256"]
+        )
+        assert result["counts_by_slice"].sum() == 16
+        assert result["reap_halves"].shape == (2, 2, 1, 4)
+        assert result["split_keep_overlap"].shape == (2, 3)
