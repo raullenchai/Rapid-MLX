@@ -171,19 +171,11 @@ class Attention(nn.Module):
             x, lc.win_kv, self.n_heads, self.head_dim, rd
         )
         if fused:
-            # one decode token: q_norm, kv_norm, the KV rope tail and its FP8
-            # fake-quant in one kernel; the query rope runs inside attention
-            qr, kv = decode_attention.norms(
-                self.wq_a(x),
-                self.wkv(x),
-                self.q_norm.weight,
-                self.kv_norm.weight,
-                self.eps,
-                c_q,
-                s_q,
-                rd,
-                lc.dtype,
-            )
+            # one decode token: stock norms and KV rope + FP8 fake-quant (bit-exact
+            # with the graph path, so the indexer and the cache see stock values);
+            # the query rope and its inverse run inside the attention kernel
+            qr = self.q_norm(self.wq_a(x))
+            kv = rope_fake_quant(self.kv_norm(self.wkv(x)), rd, c_q, s_q, "fp8_ue8m0")
             q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
             wp = min(start_pos, self.window_size)
         else:

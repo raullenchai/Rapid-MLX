@@ -55,7 +55,6 @@ from functools import lru_cache
 
 import mlx.core as mx
 
-from .fakequant import FP8_MAX
 
 # Module switch: tests and A/B runs turn the fused path off to compare.
 ENABLED = True
@@ -226,77 +225,6 @@ _ATTEND = r"""
     }
 """
 
-_NORMS_HEADER = r"""
-// E4M3 round-to-nearest-even of a value already clamped to [-448, 448].
-inline float round_e4m3(float v) {
-    const float a = abs(v);
-    const int step_e = max(int((as_type<uint>(a) >> 23) & 0xFFu) - 127 - 3, -9);
-    const float step = as_type<float>(uint(step_e + 127) << 23);
-    const float q = min(rint(a / step) * step, 448.0f);
-    return v < 0.0f ? -q : q;
-}
-// 2^ceil(log2(x)) for positive normal x, from the IEEE bits.
-inline float pow2_ceil(float x) {
-    const uint bits = as_type<uint>(x);
-    const int e = int((bits >> 23) & 0xFFu) - 127 + int((bits & 0x7FFFFFu) != 0u);
-    return as_type<float>(uint(e + 127) << 23);
-}
-"""
-
-_NORMS = r"""
-    #pragma clang fp contract(off)
-    const uint tid = thread_index_in_threadgroup;
-    const uint lane = thread_index_in_simdgroup;
-    const uint b = threadgroup_position_in_grid.z;
-    threadgroup float red[16];
-    const float e = eps[0];
-    if (threadgroup_position_in_grid.y == 0) {
-        // q_norm: RMSNorm in fp32, back to the activation dtype
-        const device auto* x = qa + size_t(b) * QR;
-        float sq = 0.0f;
-        for (int d = int(tid); d < QR; d += 512) { const float v = float(x[d]); const float v2 = v * v; sq += v2; }
-        sq = simd_sum(sq);
-        if (lane == 0) red[tid / 32] = sq;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        float total = 0.0f;
-        for (int i = 0; i < 16; ++i) total += red[i];
-        const float r = metal::precise::rsqrt(total / float(QR) + e);
-        for (int d = int(tid); d < QR; d += 512) {
-            const float xr = float(x[d]) * r;
-            qr[size_t(b) * QR + d] = T(qw[d] * xr);
-        }
-        return;
-    }
-    // kv_norm, rope tail, FP8 (e4m3, 32-blocks, power-of-two scale) fake-quant
-    const uint d = tid;
-    const float v = d < uint(HD) ? float(kva[size_t(b) * HD + d]) : 0.0f;
-    const float v2 = v * v;
-    float sq = simd_sum(v2);
-    if (lane == 0) red[tid / 32] = sq;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float total = 0.0f;
-    for (int i = 0; i < HD / 32; ++i) total += red[i];
-    const float r = metal::precise::rsqrt(total / float(HD) + e);
-    const float xr = v * r;
-    float y = d < uint(HD) ? float(T(kw[d] * xr)) : 0.0f;
-    const float partner = simd_shuffle_xor(y, 1u);
-    if (d >= uint(HD - RD) && d < uint(HD)) {
-        const uint p = (d - uint(HD - RD)) / 2;
-        const float c = cosv[p], sn = sinv[p];
-        const bool odd = (d & 1u) != 0u;
-        const float re = odd ? partner : y, im = odd ? y : partner;
-        float o;
-        if (odd) { const float a = re * sn; const float bb = im * c; o = a + bb; }
-        else { const float a = re * c; const float bb = im * sn; o = a - bb; }
-        y = float(T(o));
-    }
-    const float amax = max(simd_max(abs(y)), 1e-4f);
-    const float sc = pow2_ceil(amax * fp8_inv[0]);
-    const float qv = round_e4m3(clamp(y / sc, -448.0f, 448.0f)) * sc;
-    if (d < uint(HD)) kv[size_t(b) * HD + d] = CT(T(qv));
-"""
-
-
 @lru_cache(maxsize=None)
 def _kernels():
     attend_k = mx.fast.metal_kernel(
@@ -316,14 +244,7 @@ def _kernels():
         source=_ATTEND,
         header=_KEY_ROW + "#include <metal_simdgroup_matrix>\n",
     )
-    norms = mx.fast.metal_kernel(
-        name="rapid_v41_decode_attn_norms",
-        input_names=["qa", "kva", "qw", "kw", "eps", "fp8_inv", "cosv", "sinv"],
-        output_names=["qr", "kv"],
-        source=_NORMS,
-        header=_NORMS_HEADER,
-    )
-    return attend_k, norms
+    return attend_k
 
 
 @lru_cache(maxsize=None)
@@ -389,7 +310,7 @@ def attend(
     slices = 32
     while (dim // 8) % slices:
         slices //= 2
-    attend_k, _ = _kernels()
+    attend_k = _kernels()
     out = attend_k(
         inputs=[q, win_kv, comp_kv, cidx, meta, _scalar(scale), sink, cos, sin],
         template=[
@@ -407,51 +328,3 @@ def attend(
     )[0]
     return out.reshape(bsz, 1, heads, dim)
 
-
-def norms(
-    qa: mx.array,
-    kva: mx.array,
-    q_norm_weight: mx.array,
-    kv_norm_weight: mx.array,
-    eps: float,
-    cos: mx.array,
-    sin: mx.array,
-    rd: int,
-    cache_dtype,
-) -> tuple[mx.array, mx.array]:
-    """q_norm(qa) and fake_quant_fp8(rope_tail(kv_norm(kva))) in one dispatch.
-
-    qa [b, 1, q_lora_rank], kva [b, 1, head_dim] (one decode token). Returns
-    qr in the activation dtype and the window KV row in ``cache_dtype``
-    (holding activation-dtype values, as the cache write would store them).
-    The RMS sums run in a different fp32 order than the graph path's, so qr can
-    sit one activation-dtype step away, and a KV value within that rounding of
-    an FP8 midpoint can land one e4m3 code away (not observed in the tests).
-    """
-    bsz, _, q_rank = qa.shape
-    head_dim = kva.shape[-1]
-    _, norms_k = _kernels()
-    qr, kv = norms_k(
-        inputs=[
-            qa,
-            kva,
-            q_norm_weight,
-            kv_norm_weight,
-            _scalar(eps),
-            _scalar(1.0 / FP8_MAX),  # the graph path's fp32 FP8_MAX_INV
-            cos,
-            sin,
-        ],
-        template=[
-            ("T", qa.dtype),
-            ("CT", cache_dtype),
-            ("QR", q_rank),
-            ("HD", head_dim),
-            ("RD", rd),
-        ],
-        grid=(512, 2, bsz),
-        threadgroup=(512, 1, 1),
-        output_shapes=[(bsz, 1, q_rank), (bsz, 1, head_dim)],
-        output_dtypes=[qa.dtype, cache_dtype],
-    )
-    return qr, kv

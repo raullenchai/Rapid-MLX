@@ -20,7 +20,6 @@ from rapid_mlx.models.deepseek_v41_native.cache import LayerCache
 from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
 from rapid_mlx.models.deepseek_v41_native.fakequant import fake_quant_fp8_ue8m0
 from rapid_mlx.models.deepseek_v41_native.layers import (
-    RMSNorm,
     precompute_freqs_cis,
     rope_tail,
 )
@@ -209,48 +208,6 @@ def test_attend_masks_compressed_indices_outside_the_rows():
     assert np.array_equal(out, run(masked))
 
 
-@needs_metal
-@pytest.mark.parametrize("act", [mx.bfloat16, mx.float16, mx.float32])
-@pytest.mark.parametrize("cache_dtype", [mx.float32, mx.bfloat16])
-def test_norms_kernel_matches_graph(cache_dtype, act):
-    cos, sin = _rope_table()
-    q_rank = 1280
-    q_diff = 0
-    for trial in range(24):
-        mx.random.seed(100 + trial)
-        # fp16 tops out near 6.5e4, so keep its squares' sum finite
-        hi = 1 if act == mx.float16 else 3
-        scale = float(10 ** np.random.default_rng(trial).uniform(-3, hi))
-        qa = (mx.random.normal((2, 1, q_rank)) * scale).astype(act)
-        kva = (mx.random.normal((2, 1, DIM)) * scale).astype(act)
-        q_norm, kv_norm = RMSNorm(q_rank, 1e-20), RMSNorm(DIM, 1e-20)
-        q_norm.weight = mx.random.uniform(0.5, 2.0, (q_rank,))
-        kv_norm.weight = mx.random.uniform(0.5, 2.0, (DIM,))
-        pos = trial * 97
-        c, s = cos[pos : pos + 1], sin[pos : pos + 1]
-        ref_q = np.array(q_norm(qa).astype(mx.float32))
-        ref_kv = fake_quant_fp8_ue8m0(rope_tail(kv_norm(kva), RD, c, s), 32)
-        got_q, got_kv = decode_attention.norms(
-            qa, kva, q_norm.weight, kv_norm.weight, 1e-20, c, s, RD, cache_dtype
-        )
-        assert got_q.dtype == act and got_kv.dtype == cache_dtype
-        # the cached KV row (rope tail and FP8 fake-quant included) is exact
-        assert np.array_equal(
-            np.array(ref_kv.astype(cache_dtype).astype(mx.float32)),
-            np.array(got_kv.astype(mx.float32)),
-        )
-        got = np.array(got_q.astype(mx.float32))
-        differ = got != ref_q
-        q_diff += int(differ.sum())
-        # a different fp32 sum order can move a bf16/fp16 q_norm by at most
-        # one step; fp32 activations keep the fp32 rsqrt's few-ulp difference
-        steps = 4 if act == mx.float32 else 1
-        nearer = np.minimum(np.abs(got), np.abs(ref_q))[differ]
-        assert np.all(np.abs(got - ref_q)[differ] <= steps * _ulp(nearer, act))
-    if act != mx.float32:
-        assert q_diff <= 24 * 2 * q_rank * 1e-3
-
-
 def _tiny_args():
     return ModelArgs(
         vocab_size=64,
@@ -347,6 +304,48 @@ def test_model_decode_with_fused_attention_tracks_graph(
         np.testing.assert_allclose(fused[1], graph[1], rtol=first, atol=first)
     for left, right in zip(graph, fused, strict=True):
         np.testing.assert_allclose(right, left, rtol=tol, atol=tol)
+
+
+@needs_metal
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float32])
+def test_fused_decode_keeps_stock_selection_and_cache_rows(dtype, monkeypatch):
+    """The fused path changes only the attention sums: the query/KV norms, the
+    cached window row and the indexer's top-k selection stay bit-exact."""
+    import dataclasses
+
+    from rapid_mlx.models.deepseek_v41_native.indexer import Indexer
+
+    mx.random.seed(5)
+    # 21 prompt tokens at ratio 4 give 5 compressed rows; top-2 is selective
+    model = Model(dataclasses.replace(_tiny_args(), index_topk=2))
+    model.set_dtype(dtype)
+    prompt = mx.random.randint(0, 64, (2, 21))
+    step = mx.random.randint(0, 64, (2, 1))
+    picks = []
+    call = Indexer.__call__
+
+    def spy(self, *a, **kw):
+        out = call(self, *a, **kw)
+        picks.append(out)
+        return out
+
+    monkeypatch.setattr(Indexer, "__call__", spy)
+
+    def run(enabled):
+        monkeypatch.setattr(decode_attention, "ENABLED", enabled)
+        picks.clear()
+        cache = model.make_cache(bsz=2, max_seq_len=64)
+        model(prompt, cache, last_logit_only=True)
+        model(step, cache)
+        rows = [np.array(lc.win_kv.astype(mx.float32)) for lc in cache.layers]
+        return np.array(picks[-1]), rows
+
+    fused_pick, fused_rows = run(True)
+    graph_pick, graph_rows = run(False)
+    assert fused_pick.shape[-1] == 2
+    np.testing.assert_array_equal(fused_pick, graph_pick)
+    for left, right in zip(graph_rows, fused_rows, strict=True):
+        np.testing.assert_array_equal(right, left)
 
 
 @needs_metal
@@ -458,27 +457,7 @@ def test_kernel_dispatch_geometry(monkeypatch):
         # D = 128: 16 slices, each still a whole 8-wide tile
         assert attend["grid"] == (16 * 32, 1, 1) and ("SL", 16) in attend["template"]
 
-        launches.clear()
-        qr, kv = decode_attention.norms(
-            mx.zeros((2, 1, 96), dtype=mx.bfloat16),
-            mx.zeros((2, 1, 256), dtype=mx.bfloat16),
-            mx.ones((96,)),
-            mx.ones((256,)),
-            1e-6,
-            cos,
-            sin,
-            64,
-            mx.float32,
-        )
-        (norms,) = launches
-        assert norms["grid"] == (512, 2, 2)
-        assert ("QR", 96) in norms["template"] and ("HD", 256) in norms["template"]
-        assert qr.shape == (2, 1, 96) and qr.dtype == mx.bfloat16
-        assert kv.shape == (2, 1, 256) and kv.dtype == mx.float32
-        assert built == [
-            "rapid_v41_decode_attn",
-            "rapid_v41_decode_attn_norms",
-        ]
+        assert built == ["rapid_v41_decode_attn"]
     finally:
         decode_attention._kernels.cache_clear()
 
