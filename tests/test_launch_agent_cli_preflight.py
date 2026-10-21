@@ -118,21 +118,28 @@ def test_installed_cli_launches_without_warning(private_home, capsys):
 
 
 def _reply(status: bytes | None):
-    """A ``subprocess.run`` stand-in that writes the probe's answer file."""
+    """A ``subprocess.Popen`` stand-in that writes the probe's answer file."""
 
-    def run(argv, **kwargs):
-        assert kwargs["stdout"] is subprocess.DEVNULL
-        assert kwargs["stderr"] is subprocess.DEVNULL
-        if status is not None:
-            Path(shlex.split(argv[2].rsplit(">|", 1)[1])[0]).write_bytes(status)
-        return subprocess.CompletedProcess(argv, 0)
+    class Probe:
+        pid = 0
 
-    return run
+        def __init__(self, argv, **kwargs):
+            assert kwargs["stdout"] is subprocess.DEVNULL
+            assert kwargs["stderr"] is subprocess.DEVNULL
+            assert kwargs["start_new_session"] is True
+            if status is not None:
+                answer = shlex.split(argv[2].rsplit(">|", 1)[1])[0]
+                Path(answer).write_bytes(status)
+
+        def wait(self, timeout=None):
+            return 0
+
+    return Probe
 
 
 def test_login_shell_exit_status_is_the_answer():
     with patch.object(
-        cli_preflight.subprocess, "run", side_effect=_reply(b"0\n")
+        cli_preflight.subprocess, "Popen", side_effect=_reply(b"0\n")
     ) as run:
         assert cli_preflight.agent_cli_found("fake-agent") is True
     argv = run.call_args.args[0]
@@ -142,7 +149,7 @@ def test_login_shell_exit_status_is_the_answer():
 
 def test_path_style_binary_is_expanded_for_the_shell():
     with patch.object(
-        cli_preflight.subprocess, "run", side_effect=_reply(b"0\n")
+        cli_preflight.subprocess, "Popen", side_effect=_reply(b"0\n")
     ) as run:
         assert cli_preflight.agent_cli_found("~/bin/tool") is True
     expected = f"whence -p -- {os.path.expanduser('~/bin/tool')}"
@@ -154,20 +161,14 @@ def test_path_style_binary_is_expanded_for_the_shell():
     [(b"1\n", False), (b"0\n", True), (b"", None), (None, None)],
 )
 def test_login_shell_answer_file(status, expected):
-    with patch.object(cli_preflight.subprocess, "run", side_effect=_reply(status)):
+    with patch.object(cli_preflight.subprocess, "Popen", side_effect=_reply(status)):
         assert cli_preflight.agent_cli_found("fake-agent") is expected
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        OSError("no shell"),
-        subprocess.TimeoutExpired("zsh", 30),
-        subprocess.SubprocessError("probe failed"),
-    ],
-)
-def test_unavailable_login_shell_is_unconfirmed(error):
-    with patch.object(cli_preflight.subprocess, "run", side_effect=error):
+def test_unavailable_login_shell_is_unconfirmed():
+    with patch.object(
+        cli_preflight.subprocess, "Popen", side_effect=OSError("no shell")
+    ):
         assert cli_preflight.agent_cli_found("fake-agent") is None
 
 
@@ -287,3 +288,27 @@ def test_real_login_shell_background_child_does_not_block_probe(
     started = time.monotonic()
     assert cli_preflight.agent_cli_found("rapid-preflight-bg-agent") is True
     assert time.monotonic() - started < 10
+
+
+@needs_zsh
+def test_real_login_shell_timeout_stops_profile_children(
+    tmp_path, monkeypatch, login_profile
+):
+    """A hung profile is unconfirmed, and nothing it started is left behind."""
+    import time
+
+    pid_file = tmp_path / "child.pid"
+    login_profile(f'sleep 30 &\nprint $! > "{pid_file}"\nwait\n')
+    monkeypatch.setattr(cli_preflight, "_PROBE_TIMEOUT_S", 2)
+    assert cli_preflight.agent_cli_found("rapid-preflight-any-agent") is None
+    child = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(child, 9)
+        pytest.fail("profile child survived the probe timeout")
