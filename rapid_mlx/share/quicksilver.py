@@ -87,6 +87,9 @@ ALIAS_TO_CATALOG: dict[str, str] = {
 }
 # Preserve the old pool entry spelling while selecting the qualified runtime.
 ALIAS_TO_CATALOG["qwen3.8-27b-4bit"] = "qwen3.8-27b"
+# The qualified Qwen27 lane carries a hard memory floor in its alias profile.
+# Below it, the pool listing is served by the batching MTP lane instead.
+_QWEN27_SMALL_HOST_ALIAS = "qwen3.8-27b-4bit"
 # Pool listings whose upstream contract has reasoning permanently ON (the
 # cloud origin 400s ``reasoning.enabled=false``). Pool mode normally injects
 # ``--no-thinking`` (plain-share parity); for these models a node that
@@ -477,7 +480,7 @@ def resolve_catalog(args: argparse.Namespace) -> tuple[str, str]:
         None,
         "qwen3.8-27b",
     }:
-        return "qwen3.8-27b", CATALOG_DEFAULT_ALIAS["qwen3.8-27b"]
+        return "qwen3.8-27b", _qwen27_serve_alias()
     if explicit:
         return explicit, typed
     if typed in CATALOG_DEFAULT_ALIAS:
@@ -489,6 +492,31 @@ def resolve_catalog(args: argparse.Namespace) -> tuple[str, str]:
         f"listing explicitly, e.g. --quicksilver-model qwen3.8-27b "
         f"(known: {', '.join(sorted(CATALOG_DEFAULT_ALIAS))})"
     )
+
+
+def _qwen27_serve_alias() -> str:
+    """Pick the Qwen27 pool lane this Mac can run.
+
+    The default lane's alias profile declares an enforced ``min_memory_gb``
+    and ``serve`` refuses it below that floor. On such a host, select the
+    batching MTP lane so sharing still works. An unknown memory probe (0.0)
+    keeps the default lane and leaves the serve-time gate authoritative.
+    """
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.recommendations import physical_ram_gb
+
+    default_alias = CATALOG_DEFAULT_ALIAS["qwen3.8-27b"]
+    floor_gb = getattr(resolve_profile(default_alias), "min_memory_gb", None) or 0
+    ram_gb = physical_ram_gb()
+    if not 0 < ram_gb < floor_gb:
+        return default_alias
+    print(
+        f"share: this Mac has {ram_gb:.0f} GB of unified memory, below the "
+        f"{floor_gb:.0f} GB that {default_alias} requires; serving "
+        f"{_QWEN27_SMALL_HOST_ALIAS} (MTP lane) for qwen3.8-27b instead.",
+        file=sys.stderr,
+    )
+    return _QWEN27_SMALL_HOST_ALIAS
 
 
 def _resolve_serve_hf_path(serve_alias: str) -> str:

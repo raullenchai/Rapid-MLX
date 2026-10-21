@@ -99,6 +99,19 @@ def _enter(*ctxs):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _host_memory_above_qwen27_floor(monkeypatch):
+    """Pin host RAM above the Qwen27 lane floor so lane selection does not
+    depend on the test machine; small-host tests override this value."""
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 64.0)
+
+
+def _qwen27_floor_gb() -> float:
+    from rapid_mlx.model_aliases import resolve_profile
+
+    return float(resolve_profile("qwen3.8-27b-tensorfold").min_memory_gb)
+
+
 def _http_error(code: int, body: bytes = b"{}") -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         "https://pay.test",
@@ -791,6 +804,49 @@ def test_resolve_catalog_explicit_flag_wins_and_unknown_passes_through():
 def test_qwen_pool_default_uses_tensorfold_with_explicit_catalog(typed):
     assert qs.resolve_catalog(
         _make_args(model=typed, quicksilver_model="qwen3.8-27b")
+    ) == ("qwen3.8-27b", "qwen3.8-27b-tensorfold")
+
+
+@pytest.mark.parametrize(
+    "typed, explicit",
+    [
+        ("qwen3.8-27b", None),
+        ("qwen3.8-27b-4bit", None),
+        ("qwen3.8-27b", "qwen3.8-27b"),
+    ],
+)
+def test_qwen_pool_below_memory_floor_selects_mtp_lane(
+    monkeypatch, capsys, typed, explicit
+):
+    floor = _qwen27_floor_gb()
+    assert floor == 48
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: floor - 12)
+    assert qs.resolve_catalog(_make_args(model=typed, quicksilver_model=explicit)) == (
+        "qwen3.8-27b",
+        "qwen3.8-27b-4bit",
+    )
+    err = capsys.readouterr().err
+    assert "36 GB of unified memory" in err
+    assert "below the 48 GB that qwen3.8-27b-tensorfold requires" in err
+    assert "serving qwen3.8-27b-4bit (MTP lane)" in err
+
+
+@pytest.mark.parametrize("ram_gb", [48.0, 192.0, 0.0])
+def test_qwen_pool_at_or_above_floor_or_unknown_keeps_tensorfold(
+    monkeypatch, capsys, ram_gb
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    assert qs.resolve_catalog(_make_args(model="qwen3.8-27b")) == (
+        "qwen3.8-27b",
+        "qwen3.8-27b-tensorfold",
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_explicit_tensorfold_alias_is_not_rewritten_below_floor(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 36.0)
+    assert qs.resolve_catalog(
+        _make_args(model="qwen3.8-27b-tensorfold", quicksilver_model=None)
     ) == ("qwen3.8-27b", "qwen3.8-27b-tensorfold")
 
 
@@ -1792,6 +1848,38 @@ def test_qwen_pool_registers_and_serves_one_tensorfold_lane():
     assert json.loads(registration.data)["max_concurrency"] == 1
     assert spawned["extra_args"][:3] == ["--disable-disk-caches", "--max-num-seqs", "1"]
     assert spawned["alias"] == "qwen3.8-27b-tensorfold"
+    assert spawned["quicksilver_pool"] is True
+
+
+def test_qwen_pool_below_memory_floor_serves_mtp_lane_with_default_concurrency(
+    monkeypatch,
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 36.0)
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    spawned: dict = {}
+    calls: list = []
+
+    def fake_spawn(**kw):
+        spawned.update(kw)
+        return serve
+
+    def fake_open(req, timeout=None):
+        calls.append(req)
+        return _FakeResp(_register_payload(model="qwen3.8-27b"))
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_open", fake_open),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(model="qwen3.8-27b", provider_key=PROVIDER_KEY))
+    registration = next(r for r in calls if r.full_url.endswith("/nodes/register"))
+    body = json.loads(registration.data)
+    assert body["max_concurrency"] == qs._POOL_DEFAULT_MAX_CONCURRENCY == 2
+    assert spawned["extra_args"][:3] == ["--disable-disk-caches", "--max-num-seqs", "2"]
+    assert spawned["alias"] == "qwen3.8-27b-4bit"
     assert spawned["quicksilver_pool"] is True
 
 
