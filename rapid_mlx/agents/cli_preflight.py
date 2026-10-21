@@ -21,6 +21,7 @@ import os
 import secrets
 import shlex
 import subprocess
+import tempfile
 
 from rapid_mlx.agents import PROFILES_DIR, _load_profile_from_yaml
 from rapid_mlx.agents.base import AgentProfile
@@ -43,19 +44,25 @@ def agent_cli_found(binary: str) -> bool | None:
         f"builtin printf '\\n{marker}%s\\n' \"$?\""
     )
     try:
-        result = subprocess.run(
-            [_LOGIN_SHELL, "-lc", script],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=_PROBE_TIMEOUT_S,
-            check=False,
-        )
+        # A file, not a pipe: a background process started by the profile
+        # could hold a pipe open and keep the probe waiting past its deadline.
+        with tempfile.TemporaryFile() as out:
+            subprocess.run(
+                [_LOGIN_SHELL, "-lc", script],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.DEVNULL,
+                timeout=_PROBE_TIMEOUT_S,
+                check=False,
+            )
+            out.seek(0)
+            output = out.read()
     except (OSError, subprocess.SubprocessError):
         return None
     answers = [
         line[len(marker) :].strip()
         # Startup files may print bytes in any encoding; decode like a path.
-        for line in os.fsdecode(result.stdout).splitlines()
+        for line in os.fsdecode(output).splitlines()
         if line.startswith(marker)
     ]
     return answers[-1] == "0" if answers else None

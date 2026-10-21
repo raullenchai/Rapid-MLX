@@ -124,15 +124,21 @@ def fixed_marker(monkeypatch):
     monkeypatch.setattr(cli_preflight.secrets, "token_hex", lambda _n: "feedface")
 
 
-def _reply(stdout: bytes) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess([], 0, stdout=stdout, stderr=b"")
+def _reply(stdout: bytes):
+    """A ``subprocess.run`` stand-in that writes the probe's output file."""
+
+    def run(argv, **kwargs):
+        kwargs["stdout"].write(stdout)
+        return subprocess.CompletedProcess(argv, 0)
+
+    return run
 
 
 def test_login_shell_exit_status_is_the_answer(fixed_marker):
     reply = _reply(
         b"welcome \xff\xfe\n__rapid_mlx_cli__=0\n\n" + f"{MARK}0\nbye\n".encode()
     )
-    with patch.object(cli_preflight.subprocess, "run", return_value=reply) as run:
+    with patch.object(cli_preflight.subprocess, "run", side_effect=reply) as run:
         assert cli_preflight.agent_cli_found("fake-agent") is True
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
@@ -142,7 +148,7 @@ def test_login_shell_exit_status_is_the_answer(fixed_marker):
 
 def test_path_style_binary_is_expanded_for_the_shell(fixed_marker):
     with patch.object(
-        cli_preflight.subprocess, "run", return_value=_reply(f"{MARK}0\n".encode())
+        cli_preflight.subprocess, "run", side_effect=_reply(f"{MARK}0\n".encode())
     ) as run:
         assert cli_preflight.agent_cli_found("~/bin/tool") is True
     assert (
@@ -161,7 +167,7 @@ def test_path_style_binary_is_expanded_for_the_shell(fixed_marker):
 )
 def test_login_shell_miss_or_unmarked_output(fixed_marker, stdout, expected):
     with patch.object(
-        cli_preflight.subprocess, "run", return_value=_reply(stdout.encode())
+        cli_preflight.subprocess, "run", side_effect=_reply(stdout.encode())
     ):
         assert cli_preflight.agent_cli_found("fake-agent") is expected
 
@@ -281,3 +287,17 @@ def test_real_login_shell_checks_paths_and_ignores_profile_functions(
     assert cli_preflight.agent_cli_found("rapid-preflight-fn") is False
     assert cli_preflight.agent_cli_found("rapid-preflight-alias") is False
     assert cli_preflight.agent_cli_found("rapid-preflight-absent-agent") is False
+
+
+@needs_zsh
+def test_real_login_shell_background_child_does_not_block_probe(
+    tmp_path, login_profile
+):
+    """A profile-started process holding stdout must not stall the probe."""
+    import time
+
+    _executable(tmp_path / "rapid-preflight-bg-agent")
+    login_profile(f'export PATH="{tmp_path}:$PATH"\n(sleep 20 &)\n')
+    started = time.monotonic()
+    assert cli_preflight.agent_cli_found("rapid-preflight-bg-agent") is True
+    assert time.monotonic() - started < 10
