@@ -618,7 +618,7 @@ def test_request_cancelled_while_queued_is_never_admitted():
         backend.close()
 
 
-def test_decode_failure_also_fails_the_partial_prefill():
+def test_decode_failure_spares_the_partial_prefill():
     model = CountingModel()
     failed = False
 
@@ -638,9 +638,13 @@ def test_decode_failure_also_fails_the_partial_prefill():
         long = backend.submit([1] * 1100, max_tokens=4)
         with ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(collect, stream) for stream in (short, long)]
-            for future in futures:
-                with pytest.raises(RuntimeError, match="injected decode"):
-                    future.result(timeout=10)
+            # the decode row ends with the shared step's failure ...
+            with pytest.raises(RuntimeError, match="injected decode"):
+                futures[0].result(timeout=10)
+            # ... while the prefill that was mid-prompt owns its cache and
+            # finishes normally
+            assert len(futures[1].result(timeout=10)) == 4
+        assert failed
         after = backend.submit([3, 4], max_tokens=2)
         assert len(collect(after)) == 2
     finally:

@@ -331,13 +331,13 @@ class BatchBackend:
                     # A shared forward cannot attribute its failure to one row,
                     # so every row of the failed step ends, each with its own
                     # exception instance. Per-request failures are isolated at
-                    # admission, prefill and token emission.
+                    # admission, prefill and token emission; a partial prefill
+                    # owns its cache and took no part in the step, so it keeps
+                    # going (its own chunk failure ends only it).
                     logger.exception("DeepSeek V4.1 batch step failed")
                     for request in rows:
                         request.finish(_own_copy(error))
-                    if prefill is not None:
-                        prefill.finish(_own_copy(error))
-                    rows, batch, prefill = [], None, None
+                    rows, batch = [], None
         finally:
             with self._condition:
                 self._closed = True
