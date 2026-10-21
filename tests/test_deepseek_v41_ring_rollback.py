@@ -47,8 +47,12 @@ class _OracleDrafter:
         return proposals, None
 
 
-@pytest.mark.parametrize("window_size", [8, 3])
-@pytest.mark.parametrize("wrong_index", [None, 1, 2, 3, 4])
+# stream_generate keeps at most ``window_size`` proposals per chunk, so a
+# corrupted index at or past it would never reach the verifier
+@pytest.mark.parametrize(
+    "window_size,wrong_index",
+    [(w, i) for w in (8, 3) for i in (None, 1, 2, 3, 4) if i is None or i < w],
+)
 def test_wrapped_window_speculation_matches_plain_greedy(wrong_index, window_size):
     mx.random.seed(0)
     args = ModelArgs(
