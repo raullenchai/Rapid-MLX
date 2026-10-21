@@ -60,6 +60,23 @@ def test_rope_table_grows_geometrically_with_identical_rows(compress_ratios) -> 
     assert mx.array_equal(grown_sin[:129], exact_sin).item()
 
 
+@pytest.mark.parametrize("compress_ratios", [(0,), (2,)])
+def test_long_rope_tables_grow_in_bounded_chunks(compress_ratios) -> None:
+    attention = Attention(0, _args(n_layers=1, compress_ratios=compress_ratios))
+    assert attention._freqs(4096)[0].shape[0] == 4096
+    assert attention._freqs(4097)[0].shape[0] == 8192
+    cos, sin = attention._freqs(16385)
+    assert cos.shape[0] == 20480  # past one chunk: whole chunks, not doubling
+    assert attention._freqs(20480)[0] is cos
+
+    rd, orig_len, theta, factor, beta_fast, beta_slow = attention._rope
+    exact_cos, exact_sin = precompute_freqs_cis(
+        rd, 16385, orig_len, theta, factor, beta_fast, beta_slow
+    )
+    assert mx.array_equal(cos[:16385], exact_cos).item()
+    assert mx.array_equal(sin[:16385], exact_sin).item()
+
+
 def test_small_rope_tables_keep_the_minimum_size() -> None:
     attention = Attention(0, _args(n_layers=1, compress_ratios=(0,)))
     assert attention._freqs(1)[0].shape[0] == 64
@@ -87,11 +104,25 @@ def test_hc_projection_promotion_is_exact_and_idempotent() -> None:
     assert layer.hc_attn_fn is promoted
 
 
-def test_layer_boundaries_commit_without_blocking(monkeypatch) -> None:
-    model = Model(_args())
-    cache = model.make_cache(max_seq_len=8)
-    reference = model(mx.array([[1, 2, 3]]), cache)
-    mx.eval(reference)
+_blocking_eval = mx.eval  # held before tests patch the shared module
+
+
+def _decode_trace(model: Model, interval: int) -> list:
+    model.eval_interval = interval
+    cache = model.make_cache(max_seq_len=40)
+    outputs = [model(mx.array([[1, 2, 3, 4, 5]]), cache)]
+    for token in range(6, 24):
+        outputs.append(model(mx.array([[token % 32]]), cache))
+    _blocking_eval(outputs)
+    return outputs
+
+
+def test_async_layer_boundaries_leave_logits_bit_identical(monkeypatch) -> None:
+    mx.random.seed(7)
+    model = Model(_args(n_layers=4, compress_ratios=(0, 0, 0, 0)))
+    mx.eval(model.parameters())
+    # The stock path: no boundary at all inside the forward pass.
+    reference = _decode_trace(model, 0)
 
     committed = []
     original = mx.async_eval
@@ -105,11 +136,9 @@ def test_layer_boundaries_commit_without_blocking(monkeypatch) -> None:
         "eval",
         lambda *_arrays: pytest.fail("a layer boundary blocked the host"),
     )
-    model.eval_interval = 1
-    logits = model(mx.array([[4]]), cache)
-    assert committed == [2, 2]
-
-    model.eval_interval = 0
-    model(mx.array([[5]]), cache)
-    assert committed == [2, 2]
-    assert logits.shape == (1, 1, 32)
+    for interval, boundaries in ((1, 4), (2, 2), (40, 0)):
+        committed.clear()
+        actual = _decode_trace(model, interval)
+        assert committed == [2] * boundaries * len(actual)
+        for expected, got in zip(reference, actual, strict=True):
+            assert mx.array_equal(expected, got).item()
