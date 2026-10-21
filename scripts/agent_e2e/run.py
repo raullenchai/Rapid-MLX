@@ -394,6 +394,11 @@ def opencode_reply_seen(home: Path, since: float, hello: str, nonce: str) -> boo
     )
 
 
+def is_opencode_v2(version_text: str) -> bool:
+    """Route by CLI major version, not a matching minor component."""
+    return bool(re.match(r"^(?:opencode\s+)?v?2\.", version_text, re.IGNORECASE))
+
+
 def approval_handler(agent: str, master: int):
     """Accept an explicit local tool approval, as a user at the terminal would."""
     if agent == "aider":
@@ -471,9 +476,7 @@ def session(
     timeout: float,
     day_two: bool,
 ) -> dict:
-    opencode_v2 = command[2] == "opencode" and bool(
-        re.search(r"\bv?2\.", version("opencode", env))
-    )
+    opencode_v2 = command[2] == "opencode" and is_opencode_v2(version("opencode", env))
     marker = uuid.uuid4().hex[:12]
     target = workspace / "hello.txt"
     nonce1 = f"nonce-{uuid.uuid4().hex[:12]}"

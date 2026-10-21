@@ -14,6 +14,7 @@ from scripts.agent_e2e.run import (
     check_then_open_native,
     classified_error,
     handle_first_run_menus,
+    is_opencode_v2,
     opencode_reply_seen,
     output_issues,
     preserved,
@@ -26,6 +27,13 @@ from scripts.agent_e2e.run import (
     stop_terminal_process,
 )
 from scripts.agent_e2e.seed_home import FILES
+
+
+def test_opencode_evidence_reader_follows_cli_major_version():
+    assert is_opencode_v2("opencode v2.1.2")
+    assert is_opencode_v2("2.1.2")
+    assert not is_opencode_v2("opencode v1.2.27")
+    assert not is_opencode_v2("opencode 1.2.3")
 
 
 def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
