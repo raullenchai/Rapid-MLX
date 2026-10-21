@@ -191,25 +191,27 @@ def _subnet_bucket(host: str) -> str:
 
 
 def _rate_limit_client_id(request: Request) -> str:
-    """Resolve the default client id for rate limiting."""
-    x_api_key = request.headers.get("x-api-key")
-    authorization = request.headers.get("Authorization")
-    if authorization:
-        bearer_key = _extract_bearer_token(authorization)
-        if bearer_key is not None:
-            return _bucket_id(bearer_key)
-        # A recognized ``Bearer`` scheme carrying an empty / whitespace-only
-        # token is not a real credential — fall through to subnet/unknown
-        # bucketing so a client can't mint a fresh rate-limit bucket per
-        # request by padding the header with varying whitespace (#1291). A
-        # non-Bearer scheme (e.g. ``Basic``) still buckets by the raw header
-        # so it keeps a stable per-credential identity.
-        scheme = authorization.split(" ", 1)[0].lower()
-        if scheme != "bearer" and not x_api_key:
-            return _bucket_id(authorization)
+    """Bucket verified credentials separately; use the subnet otherwise."""
+    configured_key = get_config().api_key
 
-    if x_api_key:
-        return _bucket_id(x_api_key)
+    def matches(candidate: str | None) -> bool:
+        if not configured_key or not candidate:
+            return False
+        try:
+            return secrets.compare_digest(candidate, configured_key)
+        except TypeError:
+            return False
+
+    authorization_headers = request.headers.getlist("Authorization")
+    if len(authorization_headers) == 1:
+        bearer_key = _extract_bearer_token(authorization_headers[0])
+        if matches(bearer_key):
+            assert bearer_key is not None
+            return _bucket_id(bearer_key)
+
+    x_api_keys = request.headers.getlist("x-api-key")
+    if len(x_api_keys) == 1 and matches(x_api_keys[0]):
+        return _bucket_id(x_api_keys[0])
 
     if request.client and request.client.host:
         return _subnet_bucket(request.client.host)
@@ -217,18 +219,8 @@ def _rate_limit_client_id(request: Request) -> str:
 
 
 def _anthropic_rate_limit_client_id(request: Request) -> str:
-    """Resolve a stable client id for Anthropic-compatible API-key headers."""
-    bearer_key = _extract_bearer_token(request.headers.get("Authorization"))
-    if bearer_key:
-        return _bucket_id(bearer_key)
-
-    x_api_key = request.headers.get("x-api-key")
-    if x_api_key:
-        return _bucket_id(x_api_key)
-
-    if request.client and request.client.host:
-        return _subnet_bucket(request.client.host)
-    return "unknown"
+    """Use the same verified identity for compatibility routes."""
+    return _rate_limit_client_id(request)
 
 
 async def check_rate_limit(request: Request):

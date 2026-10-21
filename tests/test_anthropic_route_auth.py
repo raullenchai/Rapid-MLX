@@ -720,11 +720,22 @@ def test_anthropic_count_tokens_rate_limit_treats_header_forms_as_same_key(
     assert second.json()["detail"].startswith("Rate limit exceeded.")
 
 
-def test_shared_rate_limit_uses_x_api_key_for_standard_routes(
-    anthropic_client,
+@pytest.mark.parametrize("configured_key", [None, "test-secret"])
+@pytest.mark.parametrize(
+    ("header", "first_value", "second_value"),
+    [
+        ("x-api-key", "one", "two"),
+        ("Authorization", "Bearer one", "Bearer two"),
+        ("Authorization", "Basic one", "Basic two"),
+    ],
+)
+def test_shared_rate_limit_ignores_unverified_credentials_for_standard_routes(
+    anthropic_client, configured_key, header, first_value, second_value
 ):
+    from rapid_mlx.config import get_config
     from rapid_mlx.middleware.auth import check_rate_limit
 
+    get_config().api_key = configured_key
     anthropic_client.rate_limiter.enabled = True
     anthropic_client.rate_limiter.requests_per_minute = 1
 
@@ -735,11 +746,42 @@ def test_shared_rate_limit_uses_x_api_key_for_standard_routes(
         return {"ok": True}
 
     client = TestClient(app)
-    first = client.get("/test", headers={"x-api-key": "one"})
-    second = client.get("/test", headers={"x-api-key": "two"})
+    first = client.get("/test", headers={header: first_value})
+    second = client.get("/test", headers={header: second_value})
 
     assert first.status_code == 200
-    assert second.status_code == 200
+    assert second.status_code == 429
+
+
+def test_public_anthropic_rate_limit_ignores_rotated_api_keys(anthropic_client):
+    from rapid_mlx.config import get_config
+
+    get_config().api_key = None
+    anthropic_client.rate_limiter.enabled = True
+    anthropic_client.rate_limiter.requests_per_minute = 1
+    first = anthropic_client.client.post(
+        "/v1/messages", json=_messages_payload(), headers={"x-api-key": "one"}
+    )
+    second = anthropic_client.client.post(
+        "/v1/messages", json=_messages_payload(), headers={"x-api-key": "two"}
+    )
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+def test_shared_rate_limit_ignores_non_ascii_key(anthropic_client):
+    from fastapi import Request
+
+    from rapid_mlx.middleware.auth import _rate_limit_client_id
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"x-api-key", b"\xff")],
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+    assert _rate_limit_client_id(request) == "127.0.0.0"
 
 
 def test_shared_rate_limit_uses_x_api_key_before_unsupported_auth(anthropic_client):
