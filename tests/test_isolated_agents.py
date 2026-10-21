@@ -55,7 +55,11 @@ def test_profiles_are_isolated_idempotent_and_removable(private_home):
         }
         assert all(
             stat.S_IMODE(p.stat().st_mode)
-            == (0o700 if p.name in ("run", "git") else 0o600)
+            == (
+                0o700
+                if p.name in ("run", "git", "crush-launch", "aider-launch")
+                else 0o600
+            )
             for p in root.rglob("*")
             if p.is_file()
         )
@@ -1028,6 +1032,7 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
         'printf "%s" "$CRUSH_GLOBAL_CONFIG" > "$TEST_CAPTURE"\n'
         'printf "%s" "$CRUSH_GLOBAL_DATA" > "$TEST_DATA_CAPTURE"\n'
         'printf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
+        'printf "%s" "${GIT_DIR:-}" > "$TEST_GIT_CAPTURE"\n'
     )
     crush.chmod(0o700)
     monkeypatch.setenv("HOME", str(private_home))
@@ -1035,9 +1040,11 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
     capture = private_home / "crush-config-dir"
     args_capture = private_home / "crush-args"
     data_capture = private_home / "crush-global-data"
+    git_capture = private_home / "crush-git-scope"
     monkeypatch.setenv("TEST_CAPTURE", str(capture))
     monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
     monkeypatch.setenv("TEST_DATA_CAPTURE", str(data_capture))
+    monkeypatch.setenv("TEST_GIT_CAPTURE", str(git_capture))
     monkeypatch.setenv("OPENAI_API_KEY", "fake-cloud-key")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
@@ -1049,7 +1056,13 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
     assert config["models"]["small"]["model"] == "qwen3.5-9b-4bit"
     assert config["options"]["disable_default_providers"] is True
     runner = isolated.connection_dir() / "agents" / "crush" / "run"
+    assert (
+        str(isolated.connection_dir() / "agents/crush/bin/crush-launch")
+        in runner.read_text()
+    )
+    monkeypatch.setenv("GIT_DIR", str(private_home / "wrong-repo"))
     subprocess.run(["/bin/sh", str(runner)], check=True)
+    assert git_capture.read_text() == ""
     assert capture.read_text() == str(isolated.connection_dir() / "agents/crush")
     assert data_capture.read_text() == str(
         isolated.connection_dir() / "agents/crush/global-data"
@@ -1297,8 +1310,8 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
         not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
     )
     assert (
-        "GIT_CONFIG_VALUE_0=''"
-        in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+        "Environment Author"
+        not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
     )
     assert (
         "GIT_DIR="
@@ -1312,6 +1325,7 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
         "GIT_INDEX_FILE="
         not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
     )
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Current Author")
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
         monkeypatch.delenv(variable)
@@ -1319,7 +1333,7 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
         ["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], cwd=project, text=True
     ).strip()
     assert commit == (
-        "Environment Author <author@example.invalid>|"
+        "Current Author <author@example.invalid>|"
         "Environment Committer <committer@example.invalid>"
     )
 
