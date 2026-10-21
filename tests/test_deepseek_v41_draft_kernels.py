@@ -371,7 +371,15 @@ def test_serving_acceptance_and_retry_equal_draft_off(
 
     monkeypatch.setattr(kernels, "_checked", dispatch)
     monkeypatch.setattr(kernels.moe_decode, "supports", lambda _: True)
-    monkeypatch.setattr(kernels.head_gemv, "_supports_weight", lambda *_: True)
+    # Force only draft dispatch: patching the shared module's support predicate
+    # also sends the tiny target's FP32 head/router weights into a BF16 kernel.
+    monkeypatch.setattr(
+        kernels,
+        "head_gemv",
+        SimpleNamespace(
+            _supports_weight=lambda *_: True, _launch=kernels.head_gemv._launch
+        ),
+    )
     monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
     runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
     actual = [
@@ -387,12 +395,17 @@ def test_serving_acceptance_and_retry_equal_draft_off(
     ]
     assert actual == expected
     assert counts["head"] >= 1
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == kernels.logger.name and record.levelname == "WARNING"
+    ]
     if failure:
         assert counts[failure] == 1
-        assert len(caplog.records) == 1
-        assert failure in caplog.text
+        assert len(warnings) == 1
+        assert failure in warnings[0].getMessage()
     else:
-        assert not caplog.records
+        assert not warnings
 
 
 @pytest.mark.parametrize("failure", ["mtp.0.ffn", "head"])

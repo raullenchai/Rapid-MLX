@@ -1,6 +1,8 @@
 """Execute draft fallback host contracts without importing the Metal runtime."""
 
 import ast
+import logging
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,6 +83,99 @@ def test_finite_difference_dispatches_once_and_unsupported_uses_stock(kernels):
     np.testing.assert_array_equal(
         kernels._checked(SimpleNamespace(), "head", x, (), candidate, stock), x + 10
     )
+
+
+def test_draft_head_reuses_attached_resident_weight_without_qualification(kernels):
+    """Run the production attachment/reader and dispatch across draft rounds."""
+    root = Path(__file__).resolve().parents[1]
+    path = root / "rapid_mlx/models/deepseek_v41_native/dspark.py"
+    tree = ast.parse(path.read_text(), filename=str(path))
+    cls = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "DSparkWeights"
+    )
+    cls.body = [
+        node
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name in ("attach_target", "read")
+    ]
+    namespace = {}
+    exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), "exec"), namespace)
+    weights = namespace["DSparkWeights"]()
+    weights._arrays, weights.entries, weights.resident = {}, {}, {}
+    weight = np.ones((64, 128), dtype=np.float32)
+    model = SimpleNamespace(
+        embed=SimpleNamespace(weight=weight), head=SimpleNamespace(weight=weight)
+    )
+    weights.attach_target(model)
+    launches = []
+
+    def launch(resident, x):
+        assert resident is weight
+        launches.append(resident)
+        return x @ resident.T
+
+    # No _matches_stock entry point: any draft qualification would fail here.
+    kernels.head.__globals__["head_gemv"] = SimpleNamespace(
+        _supports_weight=lambda w, x: w is weight, _launch=launch
+    )
+    draft = SimpleNamespace(w=weights, adapter=SimpleNamespace())
+    for rows in (5, 1, 5):
+        kernels.begin_round(draft)
+        assert weights.read("head.weight") is model.head.weight
+        assert weights.resident["head.weight"] is model.head.weight
+        np.testing.assert_array_equal(
+            kernels.head(weights, np.ones((rows, 128))), np.full((rows, 64), 128)
+        )
+        draft._draft_kernel_status = kernels.round_status(draft)
+        assert not kernels.disable_nonfinite(draft)
+    assert len(launches) == 3
+
+
+def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
+    """Four tiny target owners produce eight warnings, not repeated checks."""
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "rapid_mlx/models/deepseek_v41_native/head_gemv.py"
+    )
+    tree = ast.parse(path.read_text(), filename=str(path))
+    check = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_matches_stock"
+    )
+    launches = []
+
+    def broken_launch(weight, probe):
+        launches.append(weight)
+        raise RuntimeError("FP32 weight forced into BF16 kernel")
+
+    namespace = {
+        "mx": SimpleNamespace(
+            random=SimpleNamespace(
+                normal=lambda shape, **kw: np.ones(shape), key=lambda seed: seed
+            )
+        ),
+        "MAX_ROWS": 8,
+        "_CHECK_ATTR": "_rapid_exact_head_check",
+        "_launch": broken_launch,
+        "weakref": weakref,
+        "logger": logging.getLogger("target_qualification_cpu"),
+    }
+    exec(
+        compile(ast.Module(body=[check], type_ignores=[]), str(path), "exec"), namespace
+    )
+    owners = [SimpleNamespace(weight=np.ones((4, 32))) for _ in range(4)]
+    for _ in range(12):
+        for owner in owners:
+            assert not namespace["_matches_stock"](owner)
+    assert len(launches) == 4
+    assert len(caplog.records) == 8
+    owners[0].weight = np.zeros((4, 32))
+    assert not namespace["_matches_stock"](owners[0])
+    assert len(launches) == 5
+    assert len(caplog.records) == 10
 
 
 @pytest.mark.parametrize("failure", ["mtp.0.ffn", "head"])
