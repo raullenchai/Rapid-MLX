@@ -58,11 +58,8 @@ first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
 
 ### From source (for development)
 
-```bash
-git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
-python3 -m pip install -e .
-```
+Follow the [contributor setup](../../CONTRIBUTING.md) to create a supported
+Python environment and install the repository in editable mode.
 
 ## Optional Extras
 

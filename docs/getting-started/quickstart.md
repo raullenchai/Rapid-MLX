@@ -93,18 +93,14 @@ A browser-based chat UI ships in the optional `[chat]` extra as its own
 console script, `rapid-mlx-chat` (not a `rapid-mlx` subcommand):
 
 ```bash
-python3 -m pip install 'rapid-mlx[chat]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[chat]'
 # Then run:
 rapid-mlx-chat
 ```
 
-If you installed with the curl one-liner, the extra must go into the
-installer's venv — plain `pip` targets a different environment:
-
-```bash
-~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[chat]'
-rapid-mlx-chat
-```
+The command installs the extra into the official installer's environment.
+If you installed Rapid-MLX with another Python, use that Python's `-m pip`
+instead.
 
 ## Multimodal Models
 

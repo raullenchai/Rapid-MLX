@@ -16,7 +16,7 @@ Download the latest `.dmg` from
 open it, and drag **Rapid-MLX Desktop** to Applications.
 
 > The `rapid-mlx` name belongs to the **engine**, not this app:
-> `python3 -m pip install rapid-mlx` and `brew install rapid-mlx` (in homebrew-core) both
+> the [official installer](https://rapidmlx.com/install.sh) and `brew install rapid-mlx` (in homebrew-core) both
 > install the command-line inference server. The desktop app is distributed
 > **only** as a direct download — it bundles the engine, so there is nothing
 > else to install.
