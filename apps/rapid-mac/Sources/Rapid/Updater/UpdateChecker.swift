@@ -266,6 +266,11 @@ final class UpdateChecker {
                 await self.refreshIfNeeded()
                 guard !Task.isCancelled, self.refreshID == id else { return }
                 let delay = self.checksEnabled() ? self.refreshPolicy.delay(at: self.now()) : UpdateRefreshPolicy.refreshInterval
+                // A due check can coalesce with an in-flight manual fetch. Use a
+                // positive wait to avoid spinning until that fetch completes;
+                // check()'s defer cancels this sleeper to recalculate its deadline.
+                // Both tasks run on MainActor, so completion cannot slip between
+                // calculating this delay and assigning sleepTask below.
                 let sleeper = Task { [sleep = self.sleep] in
                     try await sleep(delay > 0 ? delay : UpdateRefreshPolicy.refreshInterval)
                 }

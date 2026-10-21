@@ -27,22 +27,44 @@ actor UpdateTestFeed {
 }
 
 private actor UpdateTestSleeper {
-    private var pending: CheckedContinuation<Void, Error>?
+    private struct SleepState {
+        var cancelled = false
+        var continuation: CheckedContinuation<Void, Error>?
+    }
+    private var pending: [UUID: SleepState] = [:]
     private var waits: [(Int, CheckedContinuation<TimeInterval, Never>)] = []
     private var delays: [TimeInterval] = []
 
     func sleep(_ seconds: TimeInterval) async throws {
+        let id = UUID()
+        pending[id] = SleepState()
         try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            try await withCheckedThrowingContinuation { continuation in
-                pending = continuation
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // Actor isolation makes registration atomic with cancelSleep.
+                // Retain early cancellation until this generation registers.
+                guard pending[id]?.cancelled == false, !Task.isCancelled else {
+                    pending[id] = nil
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                pending[id]?.continuation = continuation
                 delays.append(seconds)
                 let ready = waits.filter { $0.0 <= delays.count }
                 waits.removeAll { $0.0 <= delays.count }
                 for (number, waiter) in ready { waiter.resume(returning: delays[number - 1]) }
             }
         } onCancel: {
-            Task { await self.wake() }
+            Task { await self.cancelSleep(id) }
+        }
+    }
+
+    private func cancelSleep(_ id: UUID) {
+        guard let state = pending[id] else { return }
+        if let continuation = state.continuation {
+            pending[id] = nil
+            continuation.resume(throwing: CancellationError())
+        } else {
+            pending[id]?.cancelled = true
         }
     }
 
@@ -52,9 +74,12 @@ private actor UpdateTestSleeper {
     }
 
     func wake() {
-        let continuation = pending
-        pending = nil
-        continuation?.resume()
+        for (id, state) in pending {
+            if let continuation = state.continuation {
+                pending[id] = nil
+                continuation.resume()
+            }
+        }
     }
 }
 
@@ -139,6 +164,49 @@ struct UpdateRefreshPolicyTests {
             #expect(policy.delay(at: date) == expected)
             #expect(policy.lastSuccessAt == date)
         }
+    }
+
+    @Test("Cancellation after stale success retries in one minute without a failure")
+    func cancelledStaleSuccess() {
+        var policy = UpdateRefreshPolicy()
+        let success = Date(timeIntervalSince1970: 0)
+        let cancelled = success.addingTimeInterval(UpdateRefreshPolicy.refreshInterval + 1)
+        policy.succeeded(at: success)
+        policy.cancelled(at: cancelled)
+        #expect(policy.lastSuccessAt == success)
+        #expect(policy.consecutiveFailures == 0)
+        #expect(policy.delay(at: cancelled) == 60)
+        #expect(policy.delay(at: cancelled.addingTimeInterval(59)) == 1)
+        #expect(policy.delay(at: cancelled.addingTimeInterval(60)) == 0)
+        policy.succeeded(at: cancelled.addingTimeInterval(60))
+        #expect(policy.lastCancelledAt == nil)
+        #expect(policy.delay(at: cancelled.addingTimeInterval(60)) == UpdateRefreshPolicy.refreshInterval)
+    }
+
+    @Test("Cancellation before any success retries in one minute without a failure")
+    func cancelledBeforeSuccess() {
+        var policy = UpdateRefreshPolicy()
+        let date = Date(timeIntervalSince1970: 0)
+        policy.cancelled(at: date)
+        #expect(policy.lastSuccessAt == nil)
+        #expect(policy.consecutiveFailures == 0)
+        #expect(policy.delay(at: date) == 60)
+        #expect(policy.delay(at: date.addingTimeInterval(60)) == 0)
+    }
+
+    @Test("Cancellation preserves failure count and the next failure resumes backoff")
+    func cancellationDuringBackoff() {
+        var policy = UpdateRefreshPolicy()
+        let date = Date(timeIntervalSince1970: 0)
+        policy.failed(at: date)
+        policy.failed(at: date)
+        policy.cancelled(at: date)
+        #expect(policy.consecutiveFailures == 2)
+        #expect(policy.delay(at: date) == 60)
+        policy.failed(at: date.addingTimeInterval(60))
+        #expect(policy.lastCancelledAt == nil)
+        #expect(policy.consecutiveFailures == 3)
+        #expect(policy.delay(at: date.addingTimeInterval(60)) == 240)
     }
 
     @Test("Opt-out skips scheduled, activation and forced fetches and waits six hours")
