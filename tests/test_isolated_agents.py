@@ -1033,6 +1033,7 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
         'printf "%s" "$CRUSH_GLOBAL_DATA" > "$TEST_DATA_CAPTURE"\n'
         'printf "%s\\n" "$@" > "$TEST_ARGS_CAPTURE"\n'
         'printf "%s" "${GIT_DIR:-}" > "$TEST_GIT_CAPTURE"\n'
+        'printf "%s" "${GIT_AUTHOR_NAME:-}" > "$TEST_AUTHOR_CAPTURE"\n'
     )
     crush.chmod(0o700)
     monkeypatch.setenv("HOME", str(private_home))
@@ -1041,10 +1042,12 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
     args_capture = private_home / "crush-args"
     data_capture = private_home / "crush-global-data"
     git_capture = private_home / "crush-git-scope"
+    author_capture = private_home / "crush-author"
     monkeypatch.setenv("TEST_CAPTURE", str(capture))
     monkeypatch.setenv("TEST_ARGS_CAPTURE", str(args_capture))
     monkeypatch.setenv("TEST_DATA_CAPTURE", str(data_capture))
     monkeypatch.setenv("TEST_GIT_CAPTURE", str(git_capture))
+    monkeypatch.setenv("TEST_AUTHOR_CAPTURE", str(author_capture))
     monkeypatch.setenv("OPENAI_API_KEY", "fake-cloud-key")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
@@ -1061,16 +1064,22 @@ def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
         in runner.read_text()
     )
     monkeypatch.setenv("GIT_DIR", str(private_home / "wrong-repo"))
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Current Author")
     subprocess.run(["/bin/sh", str(runner)], check=True)
     assert git_capture.read_text() == ""
+    assert author_capture.read_text() == "Current Author"
     assert capture.read_text() == str(isolated.connection_dir() / "agents/crush")
     assert data_capture.read_text() == str(
         isolated.connection_dir() / "agents/crush/global-data"
     )
+    assert stat.S_IMODE(Path(data_capture.read_text()).stat().st_mode) == 0o700
     args = args_capture.read_text().splitlines()
     project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]
     assert args[args.index("--data-dir") + 1] == str(
         isolated.connection_dir() / "agents/crush/data" / project_id
+    )
+    assert (
+        stat.S_IMODE(Path(args[args.index("--data-dir") + 1]).stat().st_mode) == 0o700
     )
     assert user_config.read_bytes() == original
 
@@ -1103,7 +1112,7 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
     root = isolated.connection_dir() / "agents" / "crush"
     project_id = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:24]
     data = root / "data" / project_id
-    data.mkdir(parents=True)
+    assert stat.S_IMODE(data.stat().st_mode) == 0o700
     stale = {
         "models": {
             "large": {"model": "cloud", "provider": "cloud", "temperature": 0.4},
@@ -1165,6 +1174,9 @@ def test_crush_rejects_invalid_saved_config(private_home, monkeypatch):
     saved.write_text("[]")
     with pytest.raises(ValueError, match="saved configuration"):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    saved.write_text("{")
+    with pytest.raises(ValueError, match="saved configuration.*crush.json"):
+        isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
 
 
 def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
@@ -1202,6 +1214,37 @@ def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
         assert data_dir == str(
             isolated.connection_dir() / "agents/crush/data" / project_id
         )
+
+
+@pytest.mark.parametrize("agent", ("crush", "aider"))
+def test_private_helper_handles_spaced_interpreter_path(
+    private_home, monkeypatch, agent
+):
+    project = private_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    capture = private_home / "launched"
+    client = commands / agent
+    client.write_text(f'#!/bin/sh\nprintf launched > "{capture}"\n')
+    client.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    interpreter_dir = private_home / "Application Support"
+    interpreter_dir.mkdir()
+    interpreter = interpreter_dir / "python3"
+    interpreter.symlink_to(sys.executable)
+    with (
+        patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)),
+        patch("rapid_mlx.agents.isolated.sys.executable", str(interpreter)),
+    ):
+        isolated.configure(agent, "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents" / agent / "run"
+    subprocess.run(["/bin/sh", str(runner)], check=True)
+    assert capture.read_text() == "launched"
 
 
 def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):

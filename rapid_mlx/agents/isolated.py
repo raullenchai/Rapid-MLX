@@ -109,6 +109,17 @@ def _private_write(path: Path, content: str) -> None:
         raise
 
 
+def _private_python_launcher(path: Path, source: str) -> None:
+    script = path.with_suffix(".py")
+    _private_write(script, source)
+    _private_write(
+        path,
+        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -I "
+        f'{shlex.quote(str(script))} "$@"\n',
+    )
+    path.chmod(0o700)
+
+
 def stable_key(*, create: bool = True) -> str | None:
     path = key_path()
     _reject_symlinked_ancestors(path)
@@ -382,13 +393,20 @@ def configure(
         # UI model selections in either higher-precedence layer must not
         # override the model just selected in Rapid. Keep session databases.
         project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]
+        _private_dir(root / "global-data")
+        _private_dir(root / "data" / project_id)
         for saved_config in (
             root / "global-data" / "crush.json",
             root / "data" / project_id / "crush.json",
         ):
             _reject_symlinked_ancestors(saved_config)
             if saved_config.is_file():
-                saved = json.loads(saved_config.read_text())
+                try:
+                    saved = json.loads(saved_config.read_text())
+                except (json.JSONDecodeError, UnicodeError) as exc:
+                    raise ValueError(
+                        f"invalid isolated crush saved configuration: {saved_config}"
+                    ) from exc
                 if not isinstance(saved, dict):
                     raise ValueError("invalid isolated crush saved configuration")
                 saved.pop("providers", None)
@@ -543,9 +561,8 @@ def configure(
         )
         _private_write(root / "aider.conf.yml", "{}\n")
         helper = root / "bin" / "aider-launch"
-        _private_write(
+        _private_python_launcher(
             helper,
-            f"#!{sys.executable} -I\n"
             "import os\nfrom pathlib import Path\n"
             f"root = Path({str(root)!r})\n"
             f"key_path = Path({str(key_path())!r})\n"
@@ -577,24 +594,30 @@ def configure(
             "'--editor-model', selected_model]\n"
             "os.execvpe('aider', args, environment)\n",
         )
-        helper.chmod(0o700)
     elif name == "qwen-code":
         _private_write(
             root / "qwen.env", f"OPENAI_BASE_URL={base}\nOPENAI_MODEL={model}\n"
         )
     if name == "crush":
         helper = root / "bin" / "crush-launch"
-        _private_write(
+        _private_python_launcher(
             helper,
-            f"#!{sys.executable} -I\n"
             "import hashlib\nimport os\nfrom pathlib import Path\n"
             f"data_root = Path({str(root / 'data')!r})\n"
             "project_id = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:24]\n"
-            "environment = {key: value for key, value in os.environ.items() "
+            f"allowed_git = {tuple(sorted(_GIT_PASSTHROUGH))!r}\n"
+            "source = os.environ\n"
+            "environment = {key: value for key, value in source.items() "
             "if not key.startswith('GIT_')}\n"
+            "for name, value in source.items():\n"
+            "    indexed = name.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_')) "
+            "and name.rsplit('_', 1)[-1].isdigit()\n"
+            "    valid = name.isascii() and all(c.isupper() or c.isdigit() or c == '_' "
+            "for c in name)\n"
+            "    if valid and (name in allowed_git or indexed):\n"
+            "        environment[name] = value\n"
             "os.execvpe('crush', ['crush', '--data-dir', str(data_root / project_id)], environment)\n",
         )
-        helper.chmod(0o700)
     command = _command(name, root, model, port)
     cli = _cli_invocation()
     runner = root / "run"
