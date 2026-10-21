@@ -144,6 +144,30 @@ def test_claude_folder_trust_menu_selects_yes(monkeypatch):
     assert writes == [b"\r"]
 
 
+def test_claude_security_page_is_confirmed_before_folder_trust(monkeypatch):
+    writes = []
+    pages = iter(
+        (
+            "Accessing workspace /private/project\nNo, exit\n"
+            "Yes, I trust this folder\nEnter to confirm",
+            "ready",
+        )
+    )
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.os.write", lambda _fd, data: writes.append(data)
+    )
+    monkeypatch.setattr("scripts.agent_e2e.run.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "scripts.agent_e2e.run.read_until", lambda *args: (next(pages), None)
+    )
+    opening = (
+        "Security notes: Due to prompt injection risks, only use code you trust. "
+        "Press Enter to continue"
+    )
+    handle_first_run_menus("claude-code", opening, 1, None, None)
+    assert writes == [b"\r", b"\x1b[B", b"\r"]
+
+
 def test_request_evidence_never_substitutes_config_model(tmp_path):
     assert request_evidence(None, "pi", 0, 100)["model_requested"] is None
     log = tmp_path / "requests.jsonl"

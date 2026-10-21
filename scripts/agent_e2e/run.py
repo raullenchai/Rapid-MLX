@@ -306,7 +306,7 @@ def handle_first_run_menus(
     if agent != "claude-code":
         return output
     answered = set()
-    for _ in range(4):
+    for _ in range(5):
         screen = _compact_screen(output)
         if "choosethetextstyle" in screen and "theme" not in answered:
             answered.add("theme")
@@ -327,6 +327,13 @@ def handle_first_run_menus(
             if screen.rfind("no,exit") < screen.rfind("yes,"):
                 os.write(master, b"\x1b[B")  # New menu highlights No first.
                 time.sleep(0.3)
+            os.write(master, b"\r")
+        elif (
+            "promptinjection" in screen
+            and "tocontinue" in screen
+            and "security" not in answered
+        ):
+            answered.add("security")
             os.write(master, b"\r")
         else:
             break
