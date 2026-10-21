@@ -570,7 +570,8 @@ def _experts(
         output_shapes=[(rows, dim)],
         output_dtypes=[xf.dtype],
     )
-    return out
+    result: mx.array = out
+    return result
 
 
 def _fused(moe, layout, x: mx.array) -> mx.array:
@@ -582,10 +583,21 @@ def _fused(moe, layout, x: mx.array) -> mx.array:
 def _signature(moe) -> tuple[list, tuple]:
     """Arrays (by identity) and settings a qualification verdict depends on."""
     experts, shared, gate = moe.experts, moe.shared_experts, moe.gate
-    modules = (experts.gate_proj, experts.up_proj, experts.down_proj)
-    modules += (shared.w1, shared.w2, shared.w3)
-    arrays = [m.weight for m in modules] + [gate.weight]
+    modules = (
+        experts.gate_proj,
+        experts.up_proj,
+        experts.down_proj,
+        shared.w1,
+        shared.w2,
+        shared.w3,
+    )
+    # every kernel input array: a replaced one re-runs eligibility and the
+    # self-check (None where an unquantized module has no such array)
+    names = ("weight", "scales", "biases")
+    arrays = [getattr(m, name, None) for m in modules for name in names]
+    arrays += [getattr(gate, "weight", None), getattr(gate, "bias", None)]
     settings = (
+        tuple("bias" in m for m in modules),
         gate.score_func,
         gate.topk,
         bool(gate.norm_topk_prob),
@@ -598,14 +610,18 @@ def _signature(moe) -> tuple[list, tuple]:
 def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
     """This layer's layout once each fused row equals its single-row stock."""
     arrays, settings = _signature(moe)
-    cached = getattr(moe, _CHECK_ATTR, None)
-    current = (
+    cached: tuple | None = getattr(moe, _CHECK_ATTR, None)
+    verdicts: dict = {}
+    if (
         cached is not None
         and cached[1] == settings
-        and all(ref() is array for ref, array in zip(cached[0], arrays, strict=True))
-    )
-    if not current or dtype not in cached[2]:
-        verdicts: dict = cached[2] if current else {}
+        and all(
+            (ref is None and array is None) or (ref is not None and ref() is array)
+            for ref, array in zip(cached[0], arrays, strict=True)
+        )
+    ):
+        verdicts = cached[2]
+    if dtype not in verdicts:
         layout = _layout(moe)
         ok = layout is not None
         if layout is not None:
@@ -629,10 +645,9 @@ def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
         verdicts[dtype] = layout if ok else None
         # Plain attribute (not a parameter); the weak references re-qualify
         # replaced weights without keeping the old arrays alive.
-        refs = tuple(weakref.ref(array) for array in arrays)
-        cached = (refs, settings, verdicts)
-        object.__setattr__(moe, _CHECK_ATTR, cached)
-    verdict: tuple[int, int, int] | None = cached[2][dtype]
+        refs = tuple(None if a is None else weakref.ref(a) for a in arrays)
+        object.__setattr__(moe, _CHECK_ATTR, (refs, settings, verdicts))
+    verdict: tuple[int, int, int] | None = verdicts[dtype]
     return verdict
 
 
@@ -645,7 +660,16 @@ def moe_forward(moe, x: mx.array, stock) -> mx.array | None:
         return None
     if x.size > x.shape[-1] and not _router_rows_exact(moe.gate, x):
         return None
-    return _fused(moe, layout, x)
+    try:
+        return _fused(moe, layout, x)
+    except Exception:  # graph-build failure after qualification: stay stock
+        # (a device fault during lazy evaluation surfaces like any stock
+        # kernel's; the self-check already ran these kernels on this layer)
+        logger.warning(
+            "fused V4.1 MoE failed: stock path for this layer", exc_info=True
+        )
+        getattr(moe, _CHECK_ATTR)[2][x.dtype] = None
+        return None
 
 
 def _router_rows_exact(gate, x: mx.array) -> bool:

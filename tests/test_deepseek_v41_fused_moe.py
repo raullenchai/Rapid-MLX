@@ -379,3 +379,40 @@ def test_qualification_follows_layer_changes(gpu) -> None:
     verdicts = getattr(layer, moe_decode._CHECK_ATTR)[2]
     moe_decode._qualified(layer, layer._stock, mx.bfloat16)
     assert getattr(layer, moe_decode._CHECK_ATTR)[2] is not verdicts
+
+
+def test_failure_after_qualification_falls_back(gpu, monkeypatch) -> None:
+    layer = _moe()
+    x = mx.random.normal((2, DIM)).astype(mx.bfloat16)
+    assert moe_decode.moe_forward(layer, x, layer._stock) is not None
+
+    def broken(*args):
+        raise RuntimeError("launch failed")
+
+    monkeypatch.setattr(moe_decode, "_experts", broken)
+    assert mx.array_equal(layer(x), layer._stock(x)).item()
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] is None
+
+
+def test_qualification_follows_array_and_bias_changes(gpu) -> None:
+    layer = _moe()
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is not None
+    # replaced scales alone re-run the self-check
+    verdicts = getattr(layer, moe_decode._CHECK_ATTR)[2]
+    w2 = layer.shared_experts.w2
+    w2.scales = mx.array(w2.scales)
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is not None
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2] is not verdicts
+    # an added projection bias is not fused: stock path
+    w2.bias = mx.ones((DIM,))
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is None
+
+
+def test_unquantized_layer_stays_stock(gpu) -> None:
+    layer = MoE(
+        ModelArgs(
+            dim=DIM, moe_inter_dim=INTER, n_routed_experts=8, n_activated_experts=2
+        )
+    )
+    x = mx.random.normal((1, DIM)).astype(mx.bfloat16)
+    assert moe_decode.moe_forward(layer, x, layer._stock) is None
