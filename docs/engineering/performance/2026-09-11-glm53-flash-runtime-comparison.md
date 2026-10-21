@@ -10,7 +10,7 @@
 Rapid's production alias is
 `Vontra/GLM-5.3-Flash-MLX-4bit-MTP@06d6c7530e8290e20fabdc37a825ce07bdfc490c`:
 uniform affine q4-g64, 43 shards, 181,709,451,790 bytes. The checked-in
-[same-machine campaign](../../benchmarks/recent-large-models-m3-ultra.md)
+[same-machine campaign data](../../benchmarks/results/2026-09-02-large-model-runs.csv)
 recorded:
 
 | Prompt tokens | Rapid prompt tok/s | Rapid decode tok/s | Rapid TTFT |
