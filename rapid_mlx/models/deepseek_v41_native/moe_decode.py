@@ -175,6 +175,15 @@ inline void rows_partial_multi(
   }
 }
 
+// Stock floating minimum/maximum: a NaN first operand propagates.
+inline float minimum_ref(float x, float y) {
+  return metal::isnan(x) ? x : (x < y ? x : y);
+}
+
+inline float maximum_ref(float x, float y) {
+  return metal::isnan(x) ? x : (x > y ? x : y);
+}
+
 inline float sigmoid_ref(float x) {
   auto y = 1 / (1 + metal::precise::exp(metal::abs(x)));
   return (x < 0) ? y : 1 - y;
@@ -267,8 +276,8 @@ _UP = r"""
           float gate = float(static_cast<T>(gate_sum));
           float up = float(static_cast<T>(up_sum));
           if (LIMIT > 0) {
-            up = metal::min(metal::max(up, -LIMIT), LIMIT);
-            gate = metal::min(gate, LIMIT);
+            up = minimum_ref(maximum_ref(up, -LIMIT), LIMIT);
+            gate = minimum_ref(gate, LIMIT);
           }
           float h = (gate * sigmoid_ref(gate)) * up;
           if (shared_slot) {
@@ -458,7 +467,10 @@ def _layout(moe) -> tuple[int, int, int] | None:
         and gate.score_func == "sqrtsoftplus"
         and tuple(gate.bias.shape) == (experts_n,)
         and gate.bias.dtype == mx.float32
-        and 1 <= gate.topk <= min(16, experts_n)
+        # stock combines more than eight routes in strided partial sums
+        and 1 <= gate.topk <= min(8, experts_n)
+        and float(getattr(experts.activation, "limit", 0.0))
+        == float(getattr(shared, "limit", 0.0))
         and experts_n <= 1024
         # multi-row router logits must come from the exact per-row GEMV
         and getattr(gate.weight, "dtype", None) == mx.bfloat16
@@ -567,14 +579,33 @@ def _fused(moe, layout, x: mx.array) -> mx.array:
     return _experts(moe, layout, xf, weights, indices).reshape(x.shape)
 
 
+def _signature(moe) -> tuple[list, tuple]:
+    """Arrays (by identity) and settings a qualification verdict depends on."""
+    experts, shared, gate = moe.experts, moe.shared_experts, moe.gate
+    modules = (experts.gate_proj, experts.up_proj, experts.down_proj)
+    modules += (shared.w1, shared.w2, shared.w3)
+    arrays = [m.weight for m in modules] + [gate.weight]
+    settings = (
+        gate.score_func,
+        gate.topk,
+        bool(gate.norm_topk_prob),
+        float(getattr(experts.activation, "limit", 0.0)),
+        float(getattr(shared, "limit", 0.0)),
+    )
+    return arrays, settings
+
+
 def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
     """This layer's layout once each fused row equals its single-row stock."""
-    weight = moe.experts.gate_proj.weight
+    arrays, settings = _signature(moe)
     cached = getattr(moe, _CHECK_ATTR, None)
-    if cached is None or cached[0]() is not weight or dtype not in cached[1]:
-        verdicts: dict = (
-            {} if cached is None or cached[0]() is not weight else cached[1]
-        )
+    current = (
+        cached is not None
+        and cached[1] == settings
+        and all(ref() is array for ref, array in zip(cached[0], arrays, strict=True))
+    )
+    if not current or dtype not in cached[2]:
+        verdicts: dict = cached[2] if current else {}
         layout = _layout(moe)
         ok = layout is not None
         if layout is not None:
@@ -596,11 +627,12 @@ def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
             if not ok:
                 logger.warning("fused V4.1 MoE disabled: stock path for this layer")
         verdicts[dtype] = layout if ok else None
-        # Plain attribute (not a parameter); the weak reference re-qualifies
+        # Plain attribute (not a parameter); the weak references re-qualify
         # replaced weights without keeping the old arrays alive.
-        cached = (weakref.ref(weight), verdicts)
+        refs = tuple(weakref.ref(array) for array in arrays)
+        cached = (refs, settings, verdicts)
         object.__setattr__(moe, _CHECK_ATTR, cached)
-    verdict: tuple[int, int, int] | None = cached[1][dtype]
+    verdict: tuple[int, int, int] | None = cached[2][dtype]
     return verdict
 
 

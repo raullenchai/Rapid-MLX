@@ -12,7 +12,7 @@ from rapid_mlx.models.deepseek_v41_native.serving import (  # noqa: E402
     ExactDirectDownSwitchGLU,
 )
 
-DIM, INTER, EXPERTS, TOPK = 512, 256, 64, 4
+DIM, INTER, EXPERTS, TOPK = 512, 256, 64, 6
 
 
 def _moe(
@@ -97,7 +97,7 @@ def test_moe_call_takes_the_qualified_kernels(gpu, monkeypatch, limit) -> None:
     monkeypatch.setattr(moe_decode, "_experts", spy)
     x = mx.random.normal((1, 3, DIM)).astype(mx.bfloat16) * 4
     actual = layer(x)
-    assert getattr(layer, moe_decode._CHECK_ATTR)[1][mx.bfloat16] == (DIM, INTER, 2)
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] == (DIM, INTER, 2)
     assert moe_decode._CHECK_ATTR not in layer.parameters()
     assert calls[-1] == (3, DIM)
     monkeypatch.setattr(moe_decode, "ENABLED", False)
@@ -118,7 +118,7 @@ def test_self_check_mismatch_keeps_the_stock_path(gpu, monkeypatch) -> None:
     monkeypatch.setattr(moe_decode, "_down_kernel", lambda: wrong)
     x = mx.random.normal((1, DIM)).astype(mx.bfloat16)
     assert mx.array_equal(layer(x), layer._stock(x)).item()
-    assert getattr(layer, moe_decode._CHECK_ATTR)[1][mx.bfloat16] is None
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] is None
     # a replaced weight is qualified again
     layer.experts.gate_proj.weight = mx.array(layer.experts.gate_proj.weight)
     monkeypatch.undo()
@@ -134,7 +134,7 @@ def test_launch_failure_keeps_the_stock_path(gpu, monkeypatch) -> None:
     monkeypatch.setattr(moe_decode, "_route_kernel", lambda normalize: broken)
     x = mx.random.normal((1, DIM)).astype(mx.bfloat16)
     assert mx.array_equal(layer(x), layer._stock(x)).item()
-    assert getattr(layer, moe_decode._CHECK_ATTR)[1][mx.bfloat16] is None
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] is None
 
 
 def test_supports_declines_off_the_decode_shape(monkeypatch) -> None:
@@ -324,3 +324,58 @@ def test_several_rows_need_the_exact_router(gpu, monkeypatch) -> None:
     assert moe_decode.moe_forward(layer, x, layer._stock) is None
     # one row keeps single-row stock router logits either way
     assert moe_decode.moe_forward(layer, x[:1], layer._stock) is not None
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_seeded_matrix_equals_single_row_stock(gpu, seed: int) -> None:
+    # 2-bit and 8-bit shared experts, input scales 1-4x, every row count
+    layer = _moe(seed=100 + seed, shared_bits=8 if seed % 2 else 2)
+    layer.experts.__class__ = ExactDirectDownSwitchGLU
+    layout = moe_decode._layout(layer)
+    assert layout is not None
+    for rows in range(1, moe_decode.MAX_ROWS + 1):
+        x = (mx.random.normal((rows, DIM)) * (1 + seed % 4)).astype(mx.bfloat16)
+        actual = moe_decode._fused(layer, layout, x)
+        expected = mx.concatenate([layer._stock(x[r : r + 1]) for r in range(rows)])
+        mx.eval(actual, expected)
+        assert mx.array_equal(actual, expected).item(), rows
+
+
+def test_nan_projection_propagates_through_the_clamps(gpu) -> None:
+    # stock minimum/maximum keep a NaN; a plain clamp would make it finite
+    layer = _moe()
+    layer.experts.__class__ = ExactDirectDownSwitchGLU
+    up = layer.experts.up_proj
+    up.scales = mx.where(mx.arange(INTER)[None, :, None] == 3, mx.nan, up.scales)
+    w1 = layer.shared_experts.w1
+    w1.scales = mx.where(mx.arange(INTER)[:, None] == 5, mx.nan, w1.scales)
+    x = mx.random.normal((2, DIM)).astype(mx.bfloat16)
+    actual = moe_decode._fused(layer, moe_decode._layout(layer), x)
+    expected = mx.concatenate([layer._stock(x[r : r + 1]) for r in range(2)])
+    mx.eval(actual, expected)
+    assert mx.isnan(expected).any().item()
+    assert mx.array_equal(actual, expected, equal_nan=True).item()
+
+
+def test_layout_declines_wide_topk_and_split_limits() -> None:
+    layer = _moe()
+    layer.gate.topk = 9
+    assert moe_decode._layout(layer) is None
+    layer = _moe()
+    layer.shared_experts.limit = 5.0
+    assert moe_decode._layout(layer) is None
+
+
+def test_qualification_follows_layer_changes(gpu) -> None:
+    layer = _moe()
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is not None
+    layer.gate.score_func = "sigmoid"
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is None
+    layer.gate.score_func = "sqrtsoftplus"
+    assert moe_decode._qualified(layer, layer._stock, mx.bfloat16) is not None
+    # a replaced shared projection is qualified again
+    layer.shared_experts.w2.biases = layer.shared_experts.w2.biases + 1
+    layer.shared_experts.w2.weight = mx.array(layer.shared_experts.w2.weight)
+    verdicts = getattr(layer, moe_decode._CHECK_ATTR)[2]
+    moe_decode._qualified(layer, layer._stock, mx.bfloat16)
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2] is not verdicts
