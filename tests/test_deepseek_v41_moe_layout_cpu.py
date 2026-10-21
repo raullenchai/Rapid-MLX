@@ -211,6 +211,97 @@ def test_route_launch_and_unsupported_qualification(kernels, monkeypatch):
     assert decode._qualified(moe((8, 2, 2)), None, "bf16") is None
 
 
+@pytest.fixture
+def qualification(kernels, monkeypatch):
+    decode = kernels[0]
+    mx = sys.modules["mlx.core"]
+    monkeypatch.setattr(Tensor, "__getitem__", lambda x, key: x, raising=False)
+    monkeypatch.setattr(Tensor, "astype", lambda x, dtype: x, raising=False)
+    monkeypatch.setattr(
+        mx,
+        "random",
+        Module(key=lambda seed: seed, normal=lambda shape, **kw: Tensor(shape)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mx, "array_equal", lambda a, b: Module(item=lambda: True), raising=False
+    )
+    monkeypatch.setattr(decode, "_fused", lambda moe, layout, x: x)
+    monkeypatch.setattr(decode, "supports", lambda x: True)
+    layer = moe((2, 2, 3), 4)
+    object.__setattr__(layer, "layer_id", 7)
+    return decode, layer
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "exception"])
+def test_exactness_fallback_warning(qualification, monkeypatch, caplog, failure):
+    decode, layer = qualification
+    if failure == "mismatch":
+        monkeypatch.setattr(
+            sys.modules["mlx.core"],
+            "array_equal",
+            lambda a, b: Module(item=lambda: False),
+        )
+    else:
+
+        def fail(*args):
+            raise RuntimeError("self-check launch failed")
+
+        monkeypatch.setattr(decode, "_fused", fail)
+    with caplog.at_level("WARNING", logger=decode.__name__):
+        assert decode._qualified(layer, lambda x: x, "bf16") is None
+        assert decode._qualified(layer, lambda x: x, "bf16") is None
+    record = caplog.records[-1]
+    assert record.levelname == "WARNING"
+    assert record.getMessage() == (
+        "fused V4.1 MoE disabled: stock path for layer 7 (2,2,3|4)"
+    )
+    assert len(caplog.records) == (1 if failure == "mismatch" else 2)
+    assert decode.fused_layers(Module(layers=[Module(ffn=layer)]), "bf16") == (0, 1)
+
+
+def test_launch_fallback_after_coverage(qualification, monkeypatch, caplog):
+    decode, layer = qualification
+    model = Module(layers=[Module(ffn=layer)])
+    x = Module(shape=(1, 512), size=512, dtype="bf16")
+    assert decode._qualified(layer, lambda x: x, "bf16") is not None
+    with caplog.at_level("INFO", logger=decode.__name__):
+        decode.log_coverage(model, "bf16")
+        assert decode.fused_layers(model, "bf16") == (1, 1)
+
+        def fail(*args):
+            raise RuntimeError("decode launch failed")
+
+        monkeypatch.setattr(decode, "_fused", fail)
+        assert decode.moe_forward(layer, x, None) is None
+        assert decode.moe_forward(layer, x, None) is None
+        decode.log_coverage(model, "bf16")
+    assert caplog.messages == [
+        "fused V4.1 MoE: 1/1 layers; fallback: none",
+        "fused V4.1 MoE failed: stock path for layer 7 (2,2,3|4)",
+    ]
+    assert caplog.records[-1].levelname == "WARNING"
+    assert isinstance(caplog.records[-1].exc_info[1], RuntimeError)
+    assert decode.fused_layers(model, "bf16") == (0, 1)
+
+
+def test_fused_layers_cached_verdicts(kernels):
+    decode = kernels[0]
+    assert decode.fused_layers(Module(layers=[]), "bf16") == (0, 0)
+    layers = [Module(ffn=moe()) for _ in range(4)]
+    model = Module(layers=layers)
+    assert decode.fused_layers(model, "bf16") == (0, 4)
+    for layer, verdicts in zip(
+        layers,
+        [{"bf16": decode._layout(layers[0].ffn)}, {"bf16": None}, {"fp16": (1,)}, {}],
+        strict=True,
+    ):
+        object.__setattr__(layer.ffn, decode._CHECK_ATTR, (None, None, verdicts))
+    assert decode.fused_layers(model, "bf16") == (1, 4)
+    assert decode.fused_layers(model, "fp16") == (1, 4)
+    assert decode.fused_layers(model, "fp32") == (0, 4)
+
+
 def test_model_hook_and_target_gate_without_runtime(kernels, monkeypatch, caplog):
     """Execute the model's real forward and serving gates with inert dependencies."""
     from unittest.mock import MagicMock
@@ -278,6 +369,20 @@ def test_model_hook_and_target_gate_without_runtime(kernels, monkeypatch, caplog
         experts.down_proj.weight = Tensor((64, 512, 1), "u32")
         assert not serving.supports_target_qmv(experts)
     model_module = load("model")
+    args = Module(
+        norm_eps=1e-6,
+        hc_mult=4,
+        hc_sinkhorn_iters=20,
+        hc_eps=1e-6,
+        experts_per_layer=(),
+        dim=512,
+        engram_layer_ids=(),
+    )
+    for name in ("Attention", "MoE", "RMSNorm"):
+        monkeypatch.setattr(model_module, name, lambda *args: Module())
+    monkeypatch.setattr(mx, "zeros", lambda *args, **kw: None, raising=False)
+    block = model_module.Block(7, args)
+    assert block.ffn.layer_id == block.layer_id == 7
     model = model_module.Model.__new__(model_module.Model)
     ffn = moe()
     setattr(ffn, decode._CHECK_ATTR, (None, None, {"bf16": decode._layout(ffn)}))

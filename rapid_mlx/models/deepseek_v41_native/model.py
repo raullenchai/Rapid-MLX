@@ -73,6 +73,7 @@ class Block(nn.Module):
             if args.experts_per_layer
             else args
         )
+        object.__setattr__(self.ffn, "layer_id", layer_id)
         self.attn_norm = RMSNorm(args.dim, args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, args.norm_eps)
 

@@ -735,7 +735,9 @@ def _qualified(moe, stock, dtype) -> Layout | None:
                 logger.warning("fused V4.1 MoE unavailable", exc_info=True)
                 ok = False
             if not ok:
-                logger.warning("fused V4.1 MoE disabled: stock path for this layer")
+                logger.warning(
+                    "fused V4.1 MoE disabled: stock path for %s", _layer_label(moe)
+                )
         verdicts[dtype] = layout if ok else None
         # Plain attribute (not a parameter); the weak references re-qualify
         # replaced weights without keeping the old arrays alive.
@@ -760,7 +762,7 @@ def moe_forward(moe, x: mx.array, stock) -> mx.array | None:
         # (a device fault during lazy evaluation surfaces like any stock
         # kernel's; the self-check already ran these kernels on this layer)
         logger.warning(
-            "fused V4.1 MoE failed: stock path for this layer", exc_info=True
+            "fused V4.1 MoE failed: stock path for %s", _layer_label(moe), exc_info=True
         )
         getattr(moe, _CHECK_ATTR)[2][x.dtype] = None
         return None
@@ -771,6 +773,36 @@ def _router_rows_exact(gate, x: mx.array) -> bool:
     probe = x.reshape(-1, x.shape[-1]).astype(mx.float32)
     return head_gemv._supports_weight(gate.weight, probe) and head_gemv._matches_stock(
         gate
+    )
+
+
+def _layer_label(moe, layer_id=None) -> str:
+    """Identify a layer and its gate, up, down and shared quantization bits."""
+    bits = [
+        getattr(m, "bits", "dense")
+        for m in (
+            moe.experts.gate_proj,
+            moe.experts.up_proj,
+            moe.experts.down_proj,
+            moe.shared_experts.w1,
+        )
+    ]
+    index = getattr(moe, "layer_id", layer_id)
+    return f"layer {index} ({bits[0]},{bits[1]},{bits[2]}|{bits[3]})"
+
+
+def fused_layers(model, dtype) -> tuple[int, int]:
+    """Count cached fused verdicts for dtype; pending layers count only in total.
+
+    This snapshot does not qualify layers or run kernels. Read it after warmup
+    to measure coverage, including fallbacks after the once-per-model log.
+    """
+    return (
+        sum(
+            getattr(layer.ffn, _CHECK_ATTR, (None, None, {}))[2].get(dtype) is not None
+            for layer in model.layers
+        ),
+        len(model.layers),
     )
 
 
@@ -786,17 +818,7 @@ def log_coverage(model, dtype) -> None:
     fallback = []
     for i, (layer, verdict) in enumerate(zip(model.layers, verdicts, strict=True)):
         if verdict[dtype] is None:
-            moe = layer.ffn
-            bits = [
-                getattr(m, "bits", "dense")
-                for m in (
-                    moe.experts.gate_proj,
-                    moe.experts.up_proj,
-                    moe.experts.down_proj,
-                    moe.shared_experts.w1,
-                )
-            ]
-            fallback.append(f"layer {i} ({bits[0]},{bits[1]},{bits[2]}|{bits[3]})")
+            fallback.append(_layer_label(layer.ffn, getattr(layer, "layer_id", i)))
     logger.info(
         "fused V4.1 MoE: %d/%d layers; fallback: %s",
         len(verdicts) - len(fallback),
