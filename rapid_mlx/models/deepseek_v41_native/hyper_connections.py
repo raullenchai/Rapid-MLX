@@ -22,9 +22,13 @@ plausible but wrong.
 
 from __future__ import annotations
 
+import logging
+import threading
 from functools import cache
 
 import mlx.core as mx
+
+logger = logging.getLogger(__name__)
 
 
 def _metal_fast_path_available() -> bool:
@@ -129,7 +133,7 @@ def split_sinkhorn(
 
 
 @mx.compile
-def hc_mixes(
+def _hc_mixes_reference(
     x: mx.array,
     hc_fn: mx.array,
     hc_scale: mx.array,
@@ -146,6 +150,358 @@ def hc_mixes(
     rsqrt = mx.rsqrt(mx.mean(mx.square(xf), axis=-1, keepdims=True) + norm_eps)
     mixes = (xf @ hc_fn.astype(mx.float32).T) * rsqrt
     return split_sinkhorn(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, hc_eps)
+
+
+# Decode-time coefficient projection in two dispatches instead of ~16. The
+# stock path materializes FP32 copies of the stream and of the checkpoint's
+# BF16 projection, the square, the row sum, the GEMV, the scaled mixes, three
+# slices, three split epilogues, the softmax and the Sinkhorn kernel; these
+# kernels convert in registers instead (the conversions are exact). They
+# keep the stock operation order of each step (the installed MLX's FP32 GEMV lane split for K >= 16 * N: eight
+# simdgroups across K, four contiguous values per lane, shuffle-down tree,
+# then the simdgroup partials summed in order; the 1024-thread row reduction
+# for the sum of squares; the stock sigmoid, softmax and Sinkhorn arithmetic),
+# so each row equals its own single-row stock result. A one-time self-check
+# per configuration proves it on the running MLX/GPU; a difference, or a
+# compile/launch failure during that check, keeps the stock path. After a
+# configuration qualifies, its kernels run like any other MLX kernel: a later
+# GPU execution failure surfaces at evaluation, exactly as a stock kernel
+# failure would, and is not retried on the stock graph. Inputs are passed with
+# the default row-contiguous copy, so strided streams, scales and bases reach
+# the kernels densely packed.
+HC_MIXES_ENABLED = True
+HC_MIXES_MAX_ROWS = 8
+_GEMV_SPLIT = 8  # simdgroups across K per output (stock lane split)
+_SSQ_SIMDGROUPS = 32  # stock row reduction: 1024 threads, four values each
+_FLOAT_TYPES = (mx.bfloat16, mx.float16, mx.float32)
+
+_HC_MIXES_PARTIAL_SOURCE = r"""
+    const uint lane = thread_index_in_simdgroup;
+    const uint group = thread_position_in_grid.y;
+    const uint row = thread_position_in_grid.z;
+    const device T* input = x + size_t(row) * K;
+    if (group < N * SPLIT) {
+        const uint out = group / SPLIT, split = group % SPLIT;
+        const device W* weight = w + size_t(out) * K;
+        float result = 0.0f;
+        int offset = int(split * 32 + lane) * 4;
+        for (int block = 0; block < K / (SPLIT * 128); ++block) {
+            float values[4];
+            float weights[4];
+            for (int i = 0; i < 4; ++i) values[i] = float(input[offset + i]);
+            for (int i = 0; i < 4; ++i) weights[i] = float(weight[offset + i]);
+            for (int i = 0; i < 4; ++i) result += weights[i] * values[i];
+            offset += SPLIT * 128;
+        }
+        for (ushort delta = 16; delta >= 1; delta >>= 1)
+            result += simd_shuffle_down(result, delta);
+        if (lane == 0) partial[(size_t(row) * SPLIT + split) * N + out] = result;
+    } else {
+        const uint simd = group - N * SPLIT;
+        const device T* values = input + (simd * 32 + lane) * 4;
+        float total = 0.0f;
+        for (int block = 0; block < K / (SSQ * 128); ++block) {
+            for (int i = 0; i < 4; ++i) {
+                total = square_add(float(values[i]), total);
+            }
+            values += SSQ * 128;
+        }
+        total = simd_sum(total);
+        if (lane == 0) squares[size_t(row) * SSQ + simd] = total;
+    }
+"""
+
+_HC_MIXES_PARTIAL_HEADER = r"""
+// The stock row reduction adds stored squares; never fuse them into an FMA.
+static inline float square_add(float value, float total) {
+    #pragma clang fp contract(off)
+    const float square = value * value;
+    return square + total;
+}
+"""
+
+_HC_MIXES_FINISH_SOURCE = r"""
+    const uint lane = thread_index_in_simdgroup;
+    const uint row = threadgroup_position_in_grid.y;
+    const float total = simd_sum(squares[size_t(row) * SSQ + lane]);
+    if (lane != 0) return;
+    const float r = rsqrt_ref(scale_add(total, inv_k[0], eps[1]));
+    float m[N];
+    for (int o = 0; o < N; ++o) {
+        float acc = partial[size_t(row) * SPLIT * N + o];
+        for (int s = 1; s < SPLIT; ++s) acc += partial[(size_t(row) * SPLIT + s) * N + o];
+        m[o] = acc * r;
+    }
+    float scale[3];
+    float base[N];
+    for (int i = 0; i < 3; ++i) scale[i] = float(hc_scale[i]);
+    for (int i = 0; i < N; ++i) base[i] = float(hc_base[i]);
+    for (int i = 0; i < 4; ++i) {
+        pre[row * 4 + i] = sigmoid_ref(scale_add(m[i], scale[0], base[i])) + eps[0];
+        post[row * 4 + i] =
+            2.0f * sigmoid_ref(scale_add(m[4 + i], scale[1], base[4 + i]));
+    }
+    float values[16];
+    for (int r4 = 0; r4 < 4; ++r4) {
+        float ld[4];
+        for (int c = 0; c < 4; ++c)
+            ld[c] = scale_add(m[8 + r4 * 4 + c], scale[2], base[8 + r4 * 4 + c]);
+        float maxval = metal::numeric_limits<float>::lowest();
+        for (int c = 0; c < 4; ++c) maxval = (maxval < ld[c]) ? ld[c] : maxval;
+        float normalizer = 0.0f;
+        for (int c = 0; c < 4; ++c) {
+            ld[c] = metal::fast::exp(ld[c] - maxval);
+            normalizer += ld[c];
+        }
+        normalizer = 1 / normalizer;
+        for (int c = 0; c < 4; ++c) values[r4 * 4 + c] = ld[c] * normalizer + eps[0];
+    }
+    sinkhorn_ref(values, eps[0], ITERS);
+    for (int i = 0; i < 16; ++i) comb[row * 16 + i] = values[i];
+"""
+
+_HC_MIXES_FINISH_HEADER = r"""
+// Every intermediate below is a stored FP32 tensor on the stock path.
+#pragma clang fp contract(off)
+static inline float scale_add(float value, float scale, float bias) {
+    return value * scale + bias;
+}
+static inline float rsqrt_ref(float x) { return metal::precise::rsqrt(x); }
+static inline float sigmoid_ref(float x) {
+    auto y = 1 / (1 + metal::precise::exp(metal::abs(x)));
+    return (x < 0) ? y : 1 - y;
+}
+#pragma clang fp reassociate(off)
+static inline void sinkhorn_ref(thread float* values, float eps, int iters) {
+    for (int iteration = 0; iteration < iters; ++iteration) {
+        if (iteration > 0) {
+            for (int r = 0; r < 4; ++r) {
+                float total = 0.0f;
+                for (int c = 0; c < 4; ++c) total += values[r * 4 + c];
+                total += eps;
+                for (int c = 0; c < 4; ++c) values[r * 4 + c] /= total;
+            }
+        }
+        for (int c = 0; c < 4; ++c) {
+            float total = 0.0f;
+            for (int r = 0; r < 4; ++r) total += values[r * 4 + c];
+            total += eps;
+            for (int r = 0; r < 4; ++r) values[r * 4 + c] /= total;
+        }
+    }
+}
+"""
+
+
+@cache
+def _hc_mixes_partial_kernel():
+    return mx.fast.metal_kernel(
+        name="rapid_deepseek_v41_hc_mixes_partial",
+        input_names=["x", "w"],
+        output_names=["partial", "squares"],
+        source=_HC_MIXES_PARTIAL_SOURCE,
+        header=_HC_MIXES_PARTIAL_HEADER,
+    )
+
+
+@cache
+def _hc_mixes_finish_kernel():
+    return mx.fast.metal_kernel(
+        name="rapid_deepseek_v41_hc_mixes_finish",
+        input_names=["partial", "squares", "hc_scale", "hc_base", "inv_k", "eps"],
+        output_names=["pre", "post", "comb"],
+        source=_HC_MIXES_FINISH_SOURCE,
+        header=_HC_MIXES_FINISH_HEADER,
+    )
+
+
+def _fused_hc_mixes(
+    x: mx.array,
+    hc_fn: mx.array,
+    hc_scale: mx.array,
+    hc_base: mx.array,
+    sinkhorn_iters: int,
+    norm_eps: float,
+    hc_eps: float,
+):
+    lead = x.shape[:2]
+    width = x.shape[-2] * x.shape[-1]
+    rows = x.size // width
+    outputs = hc_fn.shape[0]
+    partial, squares = _hc_mixes_partial_kernel()(
+        inputs=[x.reshape(rows, width), hc_fn],
+        template=[
+            ("T", x.dtype),
+            ("W", hc_fn.dtype),
+            ("K", width),
+            ("N", outputs),
+            ("SPLIT", _GEMV_SPLIT),
+            ("SSQ", _SSQ_SIMDGROUPS),
+        ],
+        grid=(32, outputs * _GEMV_SPLIT + _SSQ_SIMDGROUPS, rows),
+        threadgroup=(32, 8, 1),
+        output_shapes=[(rows, _GEMV_SPLIT, outputs), (rows, _SSQ_SIMDGROUPS)],
+        output_dtypes=[mx.float32, mx.float32],
+    )
+    pre, post, comb = _hc_mixes_finish_kernel()(
+        inputs=[
+            partial,
+            squares,
+            hc_scale,
+            hc_base,
+            mx.array([1.0 / width], dtype=mx.float32),
+            mx.array([hc_eps, norm_eps], dtype=mx.float32),
+        ],
+        template=[
+            ("N", outputs),
+            ("SPLIT", _GEMV_SPLIT),
+            ("SSQ", _SSQ_SIMDGROUPS),
+            ("ITERS", max(1, sinkhorn_iters)),
+        ],
+        grid=(32, rows, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[(rows, 4), (rows, 4), (rows, 16)],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+    )
+    return (
+        pre.reshape(*lead, 4),
+        post.reshape(*lead, 4),
+        comb.reshape(*lead, 4, 4),
+    )
+
+
+def _row_contiguous(a: mx.array) -> bool:
+    """Whether ``a`` is stored row-major (the checkpoint layout).
+
+    The stock GEMV picks its reduction order from the projection's layout and
+    the fused kernel reproduces only the row-major one. Arrays whose storage
+    cannot be inspected (placeholders inside an ``mx.compile`` trace) report
+    False and take the stock graph.
+
+    The projection is a loaded, already-evaluated weight, so ``mx.eval`` and
+    the buffer export return without waiting on in-flight GPU work (measured
+    under a 200 ms pending GPU graph on M3 Ultra: ~0.85 us per call, 80 calls
+    per token ~70 us total). Only a still-lazy weight would be computed here.
+    """
+    try:
+        mx.eval(a)  # a placeholder raises here, as a Python exception
+        return memoryview(a).c_contiguous
+    except Exception:
+        return False
+
+
+def _hc_mixes_supported(x, hc_fn, hc_scale, hc_base, hc_mult) -> bool:
+    if not HC_MIXES_ENABLED or not _metal_fast_path_available():
+        return False
+    if x.ndim != 4 or hc_mult != 4 or x.shape[-2] != 4 or not x.size:
+        return False
+    width = 4 * x.shape[-1]
+    rows = x.size // width
+    return (
+        1 <= rows <= HC_MIXES_MAX_ROWS
+        and hc_fn.shape == (24, width)
+        and hc_scale.shape == (3,)
+        and hc_base.shape == (24,)
+        and all(p.dtype in _FLOAT_TYPES for p in (x, hc_fn, hc_scale, hc_base))
+        # the stock lane splits this order reproduces: GEMV for K >= 16 * N
+        # with whole 1024-wide blocks, and whole 4096-wide reduction blocks
+        and width % (_SSQ_SIMDGROUPS * 128) == 0
+        and _row_contiguous(hc_fn)
+    )
+
+
+# (input dtypes, width, iters, norm_eps, hc_eps) -> the fused kernels match
+# stock. The input dtypes and the width fix the kernel specializations.
+_HC_MIXES_VERDICTS: dict = {}
+_HC_MIXES_LOCK = threading.Lock()
+
+
+def _hc_mixes_probe(x, hc_fn, hc_scale, hc_base):
+    """Concrete inputs with the caller's layout and dtypes.
+
+    The probe never reads the caller's arrays, so qualifying from inside an
+    ``mx.compile`` trace evaluates no placeholder. Rows of growing magnitude
+    reach both sigmoid branches and a wide spread of softmax inputs; the
+    weights span the release scale of the coefficient projection.
+    """
+    keys = mx.random.split(mx.random.key(0x4C), 4)
+    width = 4 * x.shape[-1]
+    spread = mx.power(2.0, mx.arange(HC_MIXES_MAX_ROWS) - 3.0)
+    probe = (
+        mx.random.normal((HC_MIXES_MAX_ROWS, 1, 4, x.shape[-1]), key=keys[0])
+        * spread[:, None, None, None]
+    ).astype(x.dtype)
+    fn = (mx.random.normal((24, width), key=keys[1]) * 0.05).astype(hc_fn.dtype)
+    scale = (mx.random.uniform(0.25, 4.0, (3,), key=keys[2])).astype(hc_scale.dtype)
+    base = (mx.random.normal((24,), key=keys[3])).astype(hc_base.dtype)
+    return probe, fn, scale, base
+
+
+def _hc_mixes_qualified(x, hc_fn, hc_scale, hc_base, iters, norm_eps, hc_eps):
+    key = (
+        x.dtype,
+        hc_fn.dtype,
+        hc_scale.dtype,
+        hc_base.dtype,
+        x.shape[-1],
+        iters,
+        norm_eps,
+        hc_eps,
+    )
+    verdict = _HC_MIXES_VERDICTS.get(key)
+    if verdict is not None:
+        return verdict
+    with _HC_MIXES_LOCK:
+        if key in _HC_MIXES_VERDICTS:
+            return _HC_MIXES_VERDICTS[key]
+        verdict = False
+        try:
+            probe, fn, scale, base = _hc_mixes_probe(x, hc_fn, hc_scale, hc_base)
+            expected = [
+                _hc_mixes_reference(
+                    probe[r : r + 1], fn, scale, base, 4, iters, norm_eps, hc_eps
+                )
+                for r in range(HC_MIXES_MAX_ROWS)
+            ]
+            actual = _fused_hc_mixes(probe, fn, scale, base, iters, norm_eps, hc_eps)
+            verdict = all(
+                mx.array_equal(actual[i][r : r + 1], expected[r][i]).item()
+                for r in range(HC_MIXES_MAX_ROWS)
+                for i in range(3)
+            )
+        except Exception:  # compile/launch failure on this runtime: stay stock
+            logger.warning("fused V4.1 HC mixes unavailable", exc_info=True)
+        if not verdict:
+            logger.warning("fused V4.1 HC mixes disabled: stock path")
+        _HC_MIXES_VERDICTS[key] = verdict
+    return verdict
+
+
+def hc_mixes(
+    x: mx.array,
+    hc_fn: mx.array,
+    hc_scale: mx.array,
+    hc_base: mx.array,
+    hc_mult: int,
+    sinkhorn_iters: int,
+    norm_eps: float,
+    hc_eps: float,
+):
+    """(pre, post, comb) for the stream; two Metal dispatches at decode shapes.
+
+    Each decode row equals its own single-row stock result (see the kernels
+    above); prefill and unsupported layouts take the stock graph."""
+    if _hc_mixes_supported(
+        x, hc_fn, hc_scale, hc_base, hc_mult
+    ) and _hc_mixes_qualified(
+        x, hc_fn, hc_scale, hc_base, sinkhorn_iters, norm_eps, hc_eps
+    ):
+        return _fused_hc_mixes(
+            x, hc_fn, hc_scale, hc_base, sinkhorn_iters, norm_eps, hc_eps
+        )
+    return _hc_mixes_reference(
+        x, hc_fn, hc_scale, hc_base, hc_mult, sinkhorn_iters, norm_eps, hc_eps
+    )
 
 
 @mx.compile
