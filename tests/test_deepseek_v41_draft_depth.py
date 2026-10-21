@@ -35,14 +35,17 @@ def test_depth_environment(monkeypatch, value, expected):
 
 def test_depth_default(monkeypatch):
     monkeypatch.delenv(DEPTH_ENV, raising=False)
-    assert draft_depth() == 4
+    assert draft_depth() == 2
 
 
 @pytest.mark.parametrize("value", ["", "-1", "5", "1.0", "yes"])
 def test_invalid_depth_warns(monkeypatch, caplog, value):
     monkeypatch.setenv(DEPTH_ENV, value)
-    assert draft_depth() == 4
-    assert DEPTH_ENV in caplog.text and "using 4" in caplog.text
+    assert draft_depth() == 2
+    assert (
+        f"{DEPTH_ENV}={value!r} is invalid; expected 0..4 or auto; using 2"
+        in caplog.text
+    )
 
 
 @pytest.mark.parametrize("depth", range(5))

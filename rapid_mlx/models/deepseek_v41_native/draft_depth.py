@@ -15,15 +15,15 @@ HOST_MS = 3.0
 
 
 def draft_depth() -> int | str:
-    value = os.environ.get(DEPTH_ENV, "4").strip().lower()
+    value = os.environ.get(DEPTH_ENV, "2").strip().lower()
     if value == "auto":
         return value
     if value in ("0", "1", "2", "3", "4"):
         return int(value)
     logging.getLogger(__name__).warning(
-        "%s=%r is invalid; expected 0..4 or auto; using 4", DEPTH_ENV, value
+        "%s=%r is invalid; expected 0..4 or auto; using 2", DEPTH_ENV, value
     )
-    return 4
+    return 2
 
 
 @dataclass
