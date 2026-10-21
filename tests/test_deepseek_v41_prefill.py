@@ -128,14 +128,23 @@ def test_stream_prefill_and_draft_enabled_greedy_32_steps(length):
         seen = []
         original_many = draft.observe_many
         original_one = draft.observe
+        # observe() may delegate to observe_many(); record each row once.
+        depth = [0]
 
-        def observe_many(hidden, start, seen=seen, original_many=original_many):
-            seen.extend(np.array(hidden[0]))
-            return original_many(hidden, start)
+        def record(rows, call, seen=seen, depth=depth):
+            if not depth[0]:
+                seen.extend(rows)
+            depth[0] += 1
+            try:
+                return call()
+            finally:
+                depth[0] -= 1
 
-        def observe(hidden, position, seen=seen, original_one=original_one):
-            seen.extend(np.array(hidden))
-            return original_one(hidden, position)
+        def observe_many(hidden, start, original_many=original_many):
+            return record(np.array(hidden[0]), lambda: original_many(hidden, start))
+
+        def observe(hidden, position, original_one=original_one):
+            return record(np.array(hidden), lambda: original_one(hidden, position))
 
         draft.observe_many = observe_many
         draft.observe = observe

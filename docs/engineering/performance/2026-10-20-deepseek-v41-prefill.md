@@ -17,16 +17,15 @@ last captured hidden state and bounds the lazy graph at every chunk. Engram hist
 continues to be updated by the existing forward. The final chunk still evaluates
 the original full-sequence head and returns its last logits.
 
-The only additive change to `dspark.py` is `observe_many`. Observation projections
+The only change to `dspark.py` is `observe_many` (with `observe` delegating to it). Observation projections
 are independent of previous observations. It projects only rows that survive in
 the sliding window, retains the original scalar projection/rotation/quantization
 operations, and evaluates the resulting rows together. Existing window list shape,
 chronological order, position validation, and decode observations remain intact.
 This is batching of evaluation and live-row selection, not a change to draft numerics.
-The draft-numerics change defines `observe_many` with the same signature, guards,
-error text, eviction rule and position update but a batched projection body; when
-both land, the second rebase keeps that batched body and deletes this per-row one
-(lint flags a duplicate method definition if both survive a merge).
+`observe` now delegates to `observe_many` (bit-identical: same per-row operations).
+The draft-numerics change carries the textually identical `observe`/`observe_many`
+block, so the two branches compose without a merge conflict in either order.
 
 Experiments rejected both a one-row vocabulary projection and multi-row drafter
 projection: CPU matrix kernels change their reduction rounding when batch shapes
