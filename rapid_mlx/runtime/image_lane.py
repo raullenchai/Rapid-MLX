@@ -48,7 +48,13 @@ def _mark_image_worker_thread() -> None:
 
 
 def _reset_image_worker_after_fork() -> None:
-    """A forked child inherits neither the worker thread nor a usable lock."""
+    """A forked child inherits neither the worker thread nor a usable lock.
+
+    This only keeps the dispatch bookkeeping from hanging a child on a dead
+    executor. MLX/Metal model state itself is not fork-safe, so a child never
+    reuses a resident image model inherited from its parent; it must build its
+    own, which then happens on the child's fresh worker.
+    """
     global _image_worker_lock, _image_executor, _image_worker_state
     _image_worker_lock = threading.Lock()
     _image_executor = None
