@@ -1,10 +1,21 @@
 # Rerank
 
+Install Rapid-MLX on an Apple Silicon Mac and restart Terminal:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+```
+
 rapid-mlx provides a Cohere/Jina-compatible `/v1/rerank` endpoint for the model
 loaded with `--rerank-model`. Run it next to a chat model or alone:
 
 ```bash
 rapid-mlx serve --rerank-model mlx-community/Qwen3-Reranker-0.6B-mxfp8
+```
+
+In another Terminal window:
+
+```bash
 curl http://localhost:8000/v1/rerank \
   -H 'Content-Type: application/json' \
   -d '{"query": "capital of China", "documents": ["Beijing is the capital.", "Cookies were invented in 1938."], "top_n": 1}'
@@ -18,13 +29,7 @@ are rejected at startup. When a model's name does not reveal its family, for
 example a fine-tune or a renamed local copy, name the family with
 `--rerank-model-family`; the model type and architecture must still match.
 
-| Family | `--rerank-model-family` | Example | Detected by | Default instruction | Judging prompt | `auto` pair length |
-|--------|-------------------------|---------|-------------|---------------------|----------------|--------------------|
-| Qwen3-Reranker | `qwen3` | `mlx-community/Qwen3-Reranker-0.6B-mxfp8` | `qwen3` causal LM named `*Qwen3-Reranker*` | `Given a web search query, retrieve relevant passages that answer the query` | yes | 8192 |
-| BGE reranker v2 Gemma | `bge2` | `BAAI/bge-reranker-v2-gemma` | `gemma` causal LM named `*bge-reranker-v2-gemma*` | `Given a query A and a passage B, determine whether the passage contains an answer to the query by providing a prediction of either 'Yes' or 'No'.` | no | 1024 |
-| mxbai-rerank-v2 | `mxbai2` | `mlx-community/mxbai-rerank-large-v2` | `qwen2` causal LM named `*mxbai-rerank*` | none | yes | 8192 |
-| XLM-RoBERTa cross-encoder | `roberta` | `BAAI/bge-reranker-v2-m3` | `XLMRobertaForSequenceClassification` with one label | not supported | no | 512 |
-| jina-reranker-v3 | `jina3` | `mlx-community/jina-reranker-v3-4bit-mxfp4` | `JinaForRanking` | none | yes | 2048 per document |
+Supported reranker families include Qwen3, BGE, mxbai, XLM-RoBERTa, and Jina. Run `rapid-mlx serve --help` for `--rerank-model-family` when a local checkpoint name does not identify its family. Use the [model catalog](https://rapidmlx.com/docs/aliases.html) to choose a current checkpoint.
 
 The generative families and jina-reranker-v3 run on the base install.
 XLM-RoBERTa cross-encoders need the `[embeddings]` extra. jina-reranker-v3 is

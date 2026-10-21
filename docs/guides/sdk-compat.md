@@ -1,18 +1,14 @@
 # SDK Compatibility Notes
 
-This page collects small but important details about how rapid-mlx's
-OpenAI-compatible and Anthropic-compatible surfaces deviate from — or
-sit slightly outside of — the upstream specifications. None of these
-break common SDK usage in practice, but each has tripped at least one
-user during 0.7.x / 0.8.0 dogfooding. If you are debugging a strict-mode
-parser, building your own SDK wrapper, or pinning a vendored client to
-a specific schema, read through these before assuming you have hit a
-bug.
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start the local API:
 
-Each entry is tagged with its tracking id (e.g. `L-01`) so you can grep
-back to the upstream issue list.
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve qwen3.5-4b-4bit
+```
 
----
+Use the printed host and port. OpenAI-compatible clients use the `/v1` base URL; Anthropic-compatible clients use the server root. The sections below cover response fields and streaming behavior relevant to strict SDK parsers.
 
 ## L-01 — Anthropic SDK `base_url` must NOT include `/v1`
 
@@ -90,10 +86,8 @@ the legacy `delta.function_call` (the pre-1.0 function-calling field,
 deprecated in favor of `delta.tool_calls`). It does **not** define
 `delta.reasoning_content`.
 
-For us this is intentional: it mirrors the non-stream
-`message.reasoning_content` field that rapid-mlx already adds (also
-non-standard, but widely adopted by other reasoning-model providers
-like DeepSeek and Together AI). Keeping the field name identical
+This mirrors the non-stream
+`message.reasoning_content` field that Rapid-MLX adds. Keeping the field name identical
 across streaming and non-streaming makes client code symmetric.
 
 **What this means for SDK consumers:**
@@ -120,7 +114,7 @@ OpenAI reference for what the canonical schema actually contains:
 
 ---
 
-## L-04 — Streaming `usage` requires `stream_options.include_usage` (historical — now spec-aligned)
+## L-04 — Streaming `usage` requires `stream_options.include_usage`
 
 The OpenAI spec says token-usage data is only delivered on the wire
 when the client opts in with:
@@ -136,7 +130,7 @@ When `include_usage` is `true`, OpenAI sends a **dedicated trailer
 chunk** after `finish_reason` is set, with an empty `choices` array
 and a populated `usage` object — followed by `data: [DONE]`.
 
-rapid-mlx now matches this exactly:
+Rapid-MLX sends usage as follows:
 
 1. When `include_usage` is unset or `false`, `usage` is omitted from
    **every** chunk.
@@ -144,23 +138,7 @@ rapid-mlx now matches this exactly:
    dedicated trailer chunk (empty `choices`) after the finish chunk;
    terminal content / tool-call chunks carry `"usage": null`.
 
-**Historical note:** earlier releases always embedded `usage` directly
-into the last content chunk (the one carrying `finish_reason`),
-regardless of the opt-in — non-spec behavior that made LangChain /
-AI-SDK-style aggregators double-count token totals. That emission has
-been removed; this entry is kept so anyone who coded around the old
-behavior knows why their workaround stopped seeing inline usage.
-
-**What this means for clients:**
-
-- To read usage from a stream, **set
-  `stream_options.include_usage=True`** and read it from the trailer
-  chunk — exactly as you would against OpenAI.
-- Code written against the old behavior that read `chunk.usage` off
-  the last content chunk *without* opting in now gets `None`. Add the
-  opt-in.
-- Strict parsers that disallow `usage` on a chunk with a non-empty
-  `choices` array no longer have anything to reject.
+**What this means for clients:** Set `stream_options.include_usage=True` and read usage from the trailer chunk with an empty `choices` array.
 
 Example of spec-aligned consumption:
 
@@ -267,9 +245,7 @@ See also:
 
 ## Quick reference
 
-| Tag | Surface | Symptom | Mitigation |
-|-----|---------|---------|------------|
-| **L-01** | Anthropic SDK | `404` on every request | `base_url="http://host:port"` — no `/v1` suffix |
-| **L-03** | OpenAI SDK / streaming | Strict parser rejects `delta.reasoning_content` | Loosen parser, or pre-filter chunks |
-| **L-04** | OpenAI SDK / streaming | `chunk.usage` is `None` without opt-in (historical: arrived uninvited on the last content chunk) | Opt in via `stream_options.include_usage=True` and read from the trailer chunk |
-| **L-06** | OpenAI / Anthropic streaming | `reasoning_content` deltas after first `content` delta | Buffer separately, join at end of stream |
+- For Anthropic-compatible SDKs, use the server root as `base_url`.
+- For OpenAI-compatible SDKs, include `/v1` in `base_url`.
+- Request streaming usage explicitly with `stream_options.include_usage=True`.
+- Buffer reasoning and answer deltas independently.

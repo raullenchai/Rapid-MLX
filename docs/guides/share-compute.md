@@ -15,7 +15,7 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
    The key is stored in this Mac's Keychain, separately from the ledger key;
    app preferences contain no secret. You can also paste and save the key in
    the first connection sheet. Saving settings does not start sharing.
-4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). This release shares Qwen 27B only.
+4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). Choose the supported model shown in Live Pool.
    Rapid unloads the current local model and runs an exclusive pool process:
    the sharing model is unavailable to local chat. Chat explains that sharing
    must stop before a local model can start; it does not offer a blocked Start.
@@ -67,7 +67,7 @@ that runtime. For a standalone Python install, install its qualified revision
 once in the same environment as Rapid:
 
 ```bash
-python -m pip install 'mlx==0.32.3' \
+~/.rapid-mlx/bin/python -m pip install 'mlx==0.32.3' \
   'tensorfold @ git+https://github.com/ashhart/TensorFold.git@cb2ebf0540f42604e2759b2ddef497861e928248'
 ```
 

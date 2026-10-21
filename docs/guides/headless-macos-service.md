@@ -1,5 +1,12 @@
 # Headless macOS service
 
+Install Rapid-MLX on the Apple Silicon Mac with the official installer, then use `rapid-mlx service install` from an administrator session after preparing a dedicated service account and downloading the model as that account:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal; see the account setup below before installing the service.
+```
+
 Run Rapid-MLX as a system `launchd` daemon when a Mac is used as an unattended
 inference appliance. A system daemon starts after macOS boots and does not
 depend on a graphical login. This is the macOS equivalent of an enabled
@@ -80,10 +87,6 @@ If bootstrap, endpoint readiness, or model loading fails, it restores the
 previous config and service.
 This prevents a lazy service from appearing successfully deployed in
 `standby` only to fail hours later on its first real request.
-
-An installation created by the original argv-in-plist service release has no
-versioned config yet. Migrate it once with `service uninstall` followed by
-`service install`; this preserves its models, caches, credentials, and logs.
 
 ```bash
 sudo rapid-mlx service configure \

@@ -1,14 +1,14 @@
 # Rapid Agent Runtime
 
-Rapid Agent Runtime is a bounded tool loop for headless Server and authenticated
-API clients. It reuses the model, tool-call parser, admission control, MCP
-connections, sandbox, and authentication already owned by `rapid-mlx serve`.
-It does not add a second model server, tool ecosystem, database, or daemon.
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a server with an MCP configuration and API key:
 
-This first server surface is process-local. Restarting the server cancels all
-in-flight runs, and completed runs expire after 15 minutes. Use ordinary
-`/v1/chat/completions` or `/v1/responses` when a managed tool loop is not
-needed; those endpoints are unchanged.
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then set RAPID_API_KEY and provide mcp.json:
+rapid-mlx serve minicpm5-2b-4bit --api-key "$RAPID_API_KEY" --mcp-config ./mcp.json
+```
+
+The server prints its address. Create a run with the API example below. The runtime uses the model, tool parser, MCP connections, sandbox, and authentication configured for `rapid-mlx serve`. Runs are process-local; restarting the server cancels active runs.
 
 ## Start the server
 

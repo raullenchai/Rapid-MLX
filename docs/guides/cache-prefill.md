@@ -1,5 +1,15 @@
 # Cache prefill API
 
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a local server:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve qwen3.5-4b-4bit
+```
+
+In another Terminal window, send the prefill request below to the printed port before a normal chat request.
+
 `POST /v1/cache/prefill` warms a loaded model's KV cache before a normal chat
 request. It is a Rapid-MLX endpoint, separate from the OpenAI and Anthropic
 APIs. It consumes a prompt through the usual chat scheduler, discards the

@@ -2,34 +2,13 @@
 
 rapid-mlx supports the Model Context Protocol (MCP) for integrating external tools with LLMs.
 
-## How Tool Calling Works
+Install Rapid-MLX on an Apple Silicon Mac and restart Terminal:
 
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Tool Calling Flow                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  1. User Request                                                    │
-│     ─────────────────►  "List files in /tmp"                       │
-│                                                                     │
-│  2. LLM Generates Tool Call                                         │
-│     ─────────────────►  tool_calls: [{                             │
-│                           name: "list_directory",                   │
-│                           arguments: {path: "/tmp"}                 │
-│                         }]                                          │
-│                                                                     │
-│  3. App Executes Tool via MCP                                       │
-│     ─────────────────►  MCP Server executes list_directory         │
-│                         Returns: ["file1.txt", "file2.txt"]        │
-│                                                                     │
-│  4. Tool Result Sent Back to LLM                                    │
-│     ─────────────────►  role: "tool", content: [...]               │
-│                                                                     │
-│  5. LLM Generates Final Response                                    │
-│     ─────────────────►  "The /tmp directory contains 2 files..."   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+The filesystem tool in this example uses `npx`. On a stock Mac, install [Node.js from its official download page](https://nodejs.org/en/download), restart Terminal, and verify `npx --version` first. Then create an `mcp.json` configuration below and start a chat session with `rapid-mlx chat qwen3.5-9b-4bit --mcp-config mcp.json`. The chat process runs MCP tools; the model server receives standard tool calls and results.
 
 ## Quick Start
 
