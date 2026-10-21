@@ -39,8 +39,8 @@ def agent_clis_installed(monkeypatch):
     treated as installed so results do not depend on the host's PATH.
     """
     monkeypatch.setattr(
-        "rapid_mlx.agents.cli_preflight.resolve_agent_binary",
-        lambda binary: f"/usr/local/bin/{binary}",
+        "rapid_mlx.agents.cli_preflight.agent_cli_found",
+        lambda binary: True,
     )
 
 

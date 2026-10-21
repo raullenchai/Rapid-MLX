@@ -7,11 +7,11 @@ registry of its own.
 
 PATH resolution: the isolated runner executes through ``/bin/zsh -lc``. A
 login shell sources ``/etc/zprofile`` and ``~/.zprofile``, which commonly add
-(or replace) PATH entries such as Homebrew. The CLI is therefore resolved with
-``command -v`` in that same login shell, so the answer matches what the runner
-will see. Only when the login shell cannot be run, or does not answer within
-the probe deadline, does resolution fall back to the current PATH plus the
-common Homebrew prefixes.
+(or replace) PATH entries such as Homebrew. The CLI is therefore checked with
+``command -v`` in that same login shell and working directory, and the
+shell's own exit status is the answer, so it matches what the runner can
+invoke. If that shell cannot be run or does not answer within the deadline,
+launch refuses as well, because the runner depends on the same shell.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import secrets
 import shlex
-import shutil
 import subprocess
 
 from rapid_mlx.agents import PROFILES_DIR, _load_profile_from_yaml
@@ -27,29 +26,17 @@ from rapid_mlx.agents.base import AgentProfile
 
 _LOGIN_SHELL = "/bin/zsh"
 _PROBE_TIMEOUT_S = 30
-_HOMEBREW_PREFIXES = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
-def _executable_file(path: str) -> str | None:
-    return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+def agent_cli_found(binary: str) -> bool | None:
+    """Whether the runner's login shell can invoke ``binary``.
 
-
-def _fallback_lookup(binary: str) -> str | None:
-    """Current PATH plus Homebrew, for when the login shell cannot answer."""
-    entries = [os.environ.get("PATH", ""), *_HOMEBREW_PREFIXES]
-    found = shutil.which(binary, path=os.pathsep.join(e for e in entries if e))
-    return _executable_file(found) if found else None
-
-
-def _login_shell_lookup(binary: str) -> str | None:
-    """Resolve ``binary`` with the PATH the runner's login shell will see."""
-    # A per-probe marker keeps profile or logout output from posing as the
-    # answer, however it is formatted.
+    Returns ``None`` when the login shell cannot be run or does not answer.
+    """
+    # A per-probe marker keeps profile output from posing as the answer.
     marker = f"__rapid_mlx_cli_{secrets.token_hex(8)}__="
-    script = (
-        f"found=$(command -v -- {shlex.quote(binary)}) || found=; "
-        f"printf '\\n{marker}%s\\n' \"$found\""
-    )
+    target = shlex.quote(os.path.expanduser(binary))
+    script = f"command -v -- {target} >/dev/null 2>&1; printf '\\n{marker}%s\\n' \"$?\""
     try:
         result = subprocess.run(
             [_LOGIN_SHELL, "-lc", script],
@@ -59,36 +46,38 @@ def _login_shell_lookup(binary: str) -> str | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return _fallback_lookup(binary)
+        return None
     answers = [
         line[len(marker) :].strip()
         # Startup files may print bytes in any encoding; decode like a path.
         for line in os.fsdecode(result.stdout).splitlines()
         if line.startswith(marker)
     ]
-    # Anything that is not an executable file (alias, function, builtin,
-    # directory) is not the CLI.
-    return _executable_file(answers[-1]) if answers else None
-
-
-def resolve_agent_binary(binary: str) -> str | None:
-    """Return where ``binary`` resolves for the launch runner, or ``None``."""
-    if "/" in binary or binary.startswith("~"):
-        return _executable_file(os.path.expanduser(binary))
-    return _login_shell_lookup(binary)
+    return answers[-1] == "0" if answers else None
 
 
 def missing_agent_cli(profile: AgentProfile) -> str | None:
-    """Return a user-facing message when the profile's CLI is not installed."""
+    """Return a user-facing message when the profile's CLI is not usable."""
     # The launch runner invokes the built-in CLI for an agent, so a user
     # profile that shadows a built-in one must not change what is checked.
     builtin = PROFILES_DIR / f"{profile.name}.yaml"
     if builtin.is_file():
         profile = _load_profile_from_yaml(builtin)
     binary = profile.testing.binary
-    if not binary or resolve_agent_binary(binary) is not None:
+    if not binary:
         return None
-    message = f"{profile.display_name} CLI ({binary}) is not installed or not on PATH."
+    found = agent_cli_found(binary)
+    if found:
+        return None
+    if found is None:
+        message = (
+            f"Could not confirm that the {profile.display_name} CLI ({binary}) "
+            f"is installed: the login shell ({_LOGIN_SHELL} -l) did not respond."
+        )
+    else:
+        message = (
+            f"{profile.display_name} CLI ({binary}) is not installed or not on PATH."
+        )
     if profile.testing.install_cmd:
         message += f" Install it, then retry:\n  {profile.testing.install_cmd}"
     return message
