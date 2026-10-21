@@ -153,10 +153,14 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # model, parser, engine, checkpoint or serving lane.
         "RAPID_MLX_DSV41_FUSED",
         # Opt-in request concurrency (1/2/4/8) for the already-selected native
-        # V4.1 product backend, mirroring RAPID_MLX_TENSORFOLD_LANES. It never
-        # selects a model, parser, engine, or checkpoint. Counts above 1 serve
-        # the same target weights without the paired draft, and report that
-        # truthfully via /v1/models speculative info and the ready banner.
+        # V4.1 product backend, like RAPID_MLX_TENSORFOLD_LANES. This one is a
+        # serving-lane switch inside that backend: counts above 1 replace the
+        # drafted single-stream lane with a target-only batched lane over the
+        # same target weights. Permitted because it never changes the model,
+        # checkpoint, parser, tier, or engine route, it is only read by that
+        # backend after its own selection, and the lane actually serving is
+        # reported via /v1/models speculative info, runtime status and the
+        # ready banner.
         "RAPID_MLX_DSV41_LANES",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
