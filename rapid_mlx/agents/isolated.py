@@ -261,15 +261,19 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         )
     if name == "aider":
         base = f'"http://127.0.0.1:$(cat {quote(str(port_path()))})/v1"'
-        return (
-            f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
-            f"HOME={quote(str(root / 'home'))} "
-            f'AIDER_OPENAI_API_KEY="$(cat {key})" OPENAI_API_KEY="$(cat {key})" '
-            f"AIDER_OPENAI_API_BASE={base} aider "
-            f"--config {quote(str(root / 'aider.conf.yml'))} "
+        inner = (
+            f'local_key="$(cat {key})"; '
+            'export AIDER_OPENAI_API_KEY="$local_key" OPENAI_API_KEY="$local_key"; '
+            f"export AIDER_OPENAI_API_BASE={base}; "
+            f"exec aider --config {quote(str(root / 'aider.conf.yml'))} "
             f"--env-file {quote(str(root / 'aider.env'))} "
             f"--openai-api-base {base} --model openai/{quote(model)} "
             f"--weak-model openai/{quote(model)} --editor-model openai/{quote(model)}"
+        )
+        return (
+            f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
+            f"HOME={quote(str(root / 'home'))} "
+            f"/bin/zsh -c {quote(inner)}"
         )
     if name == "qwen-code":
         saved_port = quote(str(port_path()))
@@ -388,9 +392,18 @@ def configure(
             root / "global-data" / "crush.json",
             root / "data" / project_id / "crush.json",
         ):
-            _reject_symlinked_ancestors(saved_config.parent)
-            if saved_config.is_file() or saved_config.is_symlink():
-                saved_config.unlink()
+            _reject_symlinked_ancestors(saved_config)
+            if saved_config.is_file():
+                saved = json.loads(saved_config.read_text())
+                if not isinstance(saved, dict):
+                    raise ValueError("invalid isolated crush saved configuration")
+                saved.pop("providers", None)
+                saved.pop("models", None)
+                options = saved.get("options")
+                if isinstance(options, dict):
+                    options.pop("data_directory", None)
+                    options.pop("disable_default_providers", None)
+                _private_write(saved_config, json.dumps(saved, indent=2) + "\n")
     _private_write(root / "model", model + "\n")
     base = f"http://127.0.0.1:{port}/v1"
     previous = os.environ.get("RAPID_MLX_API_KEY")

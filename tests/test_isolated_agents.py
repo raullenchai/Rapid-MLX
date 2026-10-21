@@ -1088,15 +1088,42 @@ def test_crush_ignores_config_above_project_and_resets_saved_model(
     project_id = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:24]
     data = root / "data" / project_id
     data.mkdir(parents=True)
-    (data / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
+    stale = {
+        "models": {"large": {"model": "cloud"}},
+        "providers": {"cloud": {"api_key": "fake"}},
+        "options": {
+            "data_directory": "/tmp/remote",
+            "disable_default_providers": False,
+            "compact_mode": True,
+        },
+        "theme": "dark",
+    }
+    (data / "crush.json").write_text(json.dumps(stale))
     (data / "crush.db").write_text("history")
     global_data = root / "global-data"
     global_data.mkdir(exist_ok=True)
-    (global_data / "crush.json").write_text('{"models":{"large":{"model":"cloud"}}}')
+    (global_data / "crush.json").write_text(json.dumps(stale))
     isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
-    assert not (data / "crush.json").exists()
-    assert not (global_data / "crush.json").exists()
+    for saved in (data / "crush.json", global_data / "crush.json"):
+        assert json.loads(saved.read_text()) == {
+            "options": {"compact_mode": True},
+            "theme": "dark",
+        }
     assert (data / "crush.db").read_text() == "history"
+
+
+def test_crush_rejects_invalid_saved_config(private_home, monkeypatch):
+    project = private_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    saved = (
+        isolated.connection_dir() / "agents" / "crush" / "global-data" / "crush.json"
+    )
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_text("[]")
+    with pytest.raises(ValueError, match="saved configuration"):
+        isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
 
 
 def test_crush_data_is_separate_for_each_project(private_home, monkeypatch):
