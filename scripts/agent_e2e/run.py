@@ -228,10 +228,26 @@ def handle_first_run_menus(
             return output + more
         return output
     if agent == "aider":
+        # Rapid can print its own ready line before Aider reaches the Git
+        # onboarding question. Wait for that question before sending a task.
+        if "nogitrepofound,createone" not in _compact_screen(output):
+            more, _ = read_until(
+                master,
+                proc,
+                20,
+                sink,
+                stop_when=lambda screen: (
+                    "nogitrepofound,createone" in _compact_screen(screen)
+                ),
+            )
+            output += more
         answered = set()
         for _ in range(3):
             screen = _ANSI.sub("", output)
-            if "No git repo found, create one" in screen and "git" not in answered:
+            if (
+                "nogitrepofound,createone" in _compact_screen(screen)
+                and "git" not in answered
+            ):
                 answered.add("git")
             elif (
                 "Open documentation url for more info?" in screen
