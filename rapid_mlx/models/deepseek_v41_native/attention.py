@@ -35,7 +35,7 @@ _mlx_compat.install()
 
 from mlx_lm.models.mla import MultiLinear  # noqa: E402
 
-from . import decode_attention
+from . import attention_gemv, decode_attention
 from .compressor import Compressor
 from .config import ModelArgs
 from .indexer import Indexer
@@ -165,7 +165,8 @@ class Attention(nn.Module):
         if isinstance(cache, BatchModelCache):
             from .batched_decode import attention_decode
 
-            return attention_decode(self, x, cache, shared)
+            batched: mx.array = attention_decode(self, x, cache, shared)
+            return batched
         bsz, n, _ = x.shape
         rd = self.rope_head_dim
         end_pos = start_pos + n
@@ -175,9 +176,21 @@ class Attention(nn.Module):
         lc = cache.layers[self.layer_id]
         # queries and window KV (rope tail + FP8 fake-quant over the whole
         # vector); the fused path applies the query rope inside its kernel
-        qr = self.q_norm(self.wq_a(x))
-        q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
-        kv = rope_fake_quant(self.kv_norm(self.wkv(x)), rd, c_q, s_q, "fp8_ue8m0")
+        qr = self.q_norm(
+            attention_gemv.project(self.wq_a, x, f"layer {self.layer_id} wq_a")
+        )
+        q = attention_gemv.project(
+            self.wq_b, qr, f"layer {self.layer_id} wq_b"
+        ).reshape(bsz, n, self.n_heads, self.head_dim)
+        kv = rope_fake_quant(
+            self.kv_norm(
+                attention_gemv.project(self.wkv, x, f"layer {self.layer_id} wkv")
+            ),
+            rd,
+            c_q,
+            s_q,
+            "fp8_ue8m0",
+        )
         # The kernel rounds every key/value row to q's dtype, as the graph rounds
         # them to kv's, and reads this token back through the ring: both are
         # exact only when q and kv share a dtype the ring stores losslessly.
@@ -255,7 +268,7 @@ class Attention(nn.Module):
         sink = mx.zeros_like(self.attn_sink) if self._break_sink else self.attn_sink
         if fused:
             # the kernels read the ring and the selected compressed rows in place
-            selected = (None, None, 0)
+            selected: tuple[mx.array | None, mx.array | None, int] = (None, None, 0)
             if self.ratio and compress_len:
                 selected = (src.comp_kv, cidx, offset)
             o = decode_attention.attend(
@@ -280,5 +293,11 @@ class Attention(nn.Module):
         # QuantizedMultiLinear treats the penultimate axis as matrix rows;
         # retain a singleton row so the group axis broadcasts against the
         # leading weight axis instead of being consumed as M.
-        o = self.wo_a(o.astype(mx.float32)[..., None, :]).squeeze(-2)
-        return self.wo_b(o.reshape(bsz, n, -1).astype(x.dtype))
+        o = attention_gemv.project(
+            self.wo_a, o.astype(mx.float32)[..., None, :], f"layer {self.layer_id} wo_a"
+        ).squeeze(-2)
+        return attention_gemv.project(
+            self.wo_b,
+            o.reshape(bsz, n, -1).astype(x.dtype),
+            f"layer {self.layer_id} wo_b",
+        )

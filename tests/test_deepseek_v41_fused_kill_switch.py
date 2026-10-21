@@ -13,6 +13,7 @@ import mlx.nn as nn  # noqa: E402
 
 from rapid_mlx.models.deepseek_v41_native import (  # noqa: E402
     affine_route_qmv,
+    attention_gemv,
     decode_attention,
     head_gemv,
     kernels,
@@ -34,6 +35,7 @@ needs_metal = pytest.mark.skipif(
 # every custom Metal kernel factory of the backend
 FACTORIES = [
     (affine_route_qmv, "_kernel"),
+    (attention_gemv, "_kernel"),
     (decode_attention, "_kernels"),
     (head_gemv, "_kernel"),
     (hc, "_sinkhorn_kernel"),
@@ -74,6 +76,7 @@ def _stock(monkeypatch):
     """The stock paths, by the per-module switches the kill switch mirrors."""
     monkeypatch.setattr(decode_attention, "ENABLED", False)
     monkeypatch.setattr(head_gemv, "ENABLED", False)
+    monkeypatch.setattr(attention_gemv, "ENABLED", False)
     monkeypatch.setattr(moe_decode, "ENABLED", False)
     monkeypatch.setattr(rope_quant, "ENABLED", False)
     monkeypatch.setattr(hc, "HC_MIXES_ENABLED", False)
@@ -115,6 +118,9 @@ def test_every_eligibility_check_declines_when_off(monkeypatch):
             mx.zeros((1, 1, 64), dtype=mx.bfloat16), mx.zeros((1, 8, 512)), 64, 512, 64
         ),
         "head_gemv": lambda: head_gemv.supports(head, x),
+        "attention_gemv": lambda: attention_gemv.supports(
+            nn.QuantizedLinear(512, 64, bias=False, group_size=64, bits=8), x
+        ),
         "moe_decode": lambda: moe_decode.supports(mx.zeros((1, 1, 512))),
         "rope_quant": lambda: rope_quant.supports(
             mx.zeros((1, 1, 4, 128), dtype=mx.bfloat16), 64, t1, t1

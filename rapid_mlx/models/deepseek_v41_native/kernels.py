@@ -4,7 +4,7 @@
 ``RAPID_MLX_DSV41_FUSED=0`` (or ``false``/``no``/``off``/``disable``/
 ``disabled``) sends every custom kernel of this backend (head and router GEMV,
 fused MoE and down-route QMV, hyper-connection kernels, rope + fake-quant and
-fused decode attention) to its stock MLX path. It is read at each kernel's
+fused decode attention, affine attention GEMVs) to its stock MLX path. It is read at each kernel's
 existing eligibility check, next to the module's ``ENABLED`` constant, so it
 takes effect without reloading weights. It selects no model, parser, engine or
 serving lane; it only trades speed for the stock numerics.

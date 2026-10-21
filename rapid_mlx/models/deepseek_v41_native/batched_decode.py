@@ -7,6 +7,7 @@ The chunk-general attention and compression implementations remain unchanged.
 
 import mlx.core as mx
 
+from . import attention_gemv
 from .fakequant import (
     fake_quant_fp4_e4m3,
     fake_quant_fp4_ue8m0,
@@ -107,10 +108,20 @@ def attention_decode(attn, x, cache, shared):
     rd, width = attn.rope_head_dim, attn.window_size
     rows = mx.arange(b)
     lc = cache.layers[attn.layer_id]
-    qr = attn.q_norm(attn.wq_a(x))
-    q = attn.wq_b(qr).reshape(b, 1, attn.n_heads, attn.head_dim)
+    qr = attn.q_norm(
+        attention_gemv.project(attn.wq_a, x, f"layer {attn.layer_id} wq_a")
+    )
+    q = attention_gemv.project(attn.wq_b, qr, f"layer {attn.layer_id} wq_b").reshape(
+        b, 1, attn.n_heads, attn.head_dim
+    )
     q = row_rope(q, rd, cos, sin, positions)
-    kv = row_rope(attn.kv_norm(attn.wkv(x)), rd, cos, sin, positions)
+    kv = row_rope(
+        attn.kv_norm(attention_gemv.project(attn.wkv, x, f"layer {attn.layer_id} wkv")),
+        rd,
+        cos,
+        sin,
+        positions,
+    )
     kv = fake_quant_fp8_ue8m0(kv, 32)
 
     wp = mx.minimum(positions, width)
@@ -175,5 +186,13 @@ def attention_decode(attn, x, cache, shared):
     if not attn._break_rope_inverse:
         output = row_rope(output, rd, cos, sin, positions, inverse=True)
     output = output.reshape(b, 1, attn.n_groups, -1)
-    output = attn.wo_a(output.astype(mx.float32)[..., None, :]).squeeze(-2)
-    return attn.wo_b(output.reshape(b, 1, -1).astype(x.dtype))
+    output = attention_gemv.project(
+        attn.wo_a,
+        output.astype(mx.float32)[..., None, :],
+        f"layer {attn.layer_id} wo_a",
+    ).squeeze(-2)
+    return attention_gemv.project(
+        attn.wo_b,
+        output.reshape(b, 1, -1).astype(x.dtype),
+        f"layer {attn.layer_id} wo_b",
+    )
