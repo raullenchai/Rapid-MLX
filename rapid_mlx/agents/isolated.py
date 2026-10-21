@@ -315,7 +315,13 @@ def _display_cli_invocation() -> str:
 
 
 def _command(
-    name: str, root: Path, model: str, port: int, *, version: str | None = None
+    name: str,
+    root: Path,
+    model: str,
+    port: int,
+    *,
+    version: str | None = None,
+    opencode_run: bool = False,
 ) -> str:
     quote = shlex.quote
     key = quote(str(key_path()))
@@ -340,6 +346,7 @@ def _command(
         # fixed port. That service may belong to the user's normal OpenCode
         # session and does not inherit this private profile or Rapid key.
         standalone = " --standalone" if not (version or "").startswith("1.") else ""
+        invocation = "opencode run" if opencode_run else "opencode"
         return (
             f'{credential} OPENCODE_CONFIG_CONTENT="$(cat {config})" '
             "env -u OPENCODE_CONFIG_DIR "
@@ -348,7 +355,7 @@ def _command(
             f"XDG_DATA_HOME={quote(str(root / 'xdg-data'))} "
             f"XDG_CACHE_HOME={quote(str(root / 'xdg-cache'))} "
             f"XDG_STATE_HOME={quote(str(root / 'xdg-state'))} "
-            f"OPENCODE_CONFIG={config} opencode{standalone}"
+            f"OPENCODE_CONFIG={config} {invocation}{standalone}"
         )
     if name == "hermes":
         return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"

@@ -593,6 +593,10 @@ def test_new_opencode_model_comes_from_private_config(private_home):
     assert "OPENCODE_CONFIG_CONTENT=" in runner
     assert "opencode --standalone" in runner
     assert "opencode --model" not in runner
+    smoke = isolated._command(
+        "opencode", root, "qwen3.5-9b-4bit", 7660, version="2.1.2", opencode_run=True
+    )
+    assert smoke.endswith("opencode run --standalone")
 
 
 def test_old_opencode_runner_keeps_v1_cli_flags(private_home):
@@ -602,6 +606,15 @@ def test_old_opencode_runner_keeps_v1_cli_flags(private_home):
         isolated.configure("opencode", "qwen3.5-9b-4bit")
     runner = (isolated.connection_dir() / "agents" / "opencode" / "run").read_text()
     assert "opencode --standalone" not in runner
+    smoke = isolated._command(
+        "opencode",
+        isolated.connection_dir() / "agents" / "opencode",
+        "qwen3.5-9b-4bit",
+        7660,
+        version="1.0.0",
+        opencode_run=True,
+    )
+    assert smoke.endswith("opencode run")
 
 
 def test_isolated_dry_run_preserves_saved_profile(private_home, capsys):
