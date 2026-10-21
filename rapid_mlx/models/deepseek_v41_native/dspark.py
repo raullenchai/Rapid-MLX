@@ -15,6 +15,9 @@ from typing import Any
 import mlx.core as mx
 
 from .fakequant import fake_quant_fp8_ue8m0
+from .hyper_connections import hc_mixes, hc_post, hc_pre
+from .layers import rope_tail
+from .moe import ClampedSwiGLU
 
 _REQUIRED_CONFIG = {
     "dspark_block_size",
@@ -355,10 +358,10 @@ class DSparkWeights:
             )
         else:
             weight = self.read(base + ".weight")
-            y = x.astype(weight.dtype) @ weight.T
+            y = x @ weight.T
         if base + ".bias" in self._arrays:
             y = y + self.read(base + ".bias")
-        return y.astype(x.dtype)
+        return y
 
     def embedding(self, base: str, ids):
         ids = mx.array(ids, dtype=mx.int32)
@@ -409,21 +412,12 @@ def _rms_impl(x, weight, eps: float):
 
 
 def _hc_mixes_impl(x, weight, scale, base, hc, iterations, eps, norm_eps):
-    flat = x.reshape(*x.shape[:-2], -1).astype(mx.float32)
-    mixed = (flat @ weight.T) * mx.rsqrt(
-        mx.mean(flat * flat, axis=-1, keepdims=True) + norm_eps
+    return tuple(
+        value[0]
+        for value in hc_mixes(
+            x[None], weight, scale, base, hc, iterations, norm_eps, eps
+        )
     )
-    pre = mx.sigmoid(mixed[..., :hc] * scale[0] + base[:hc]) + eps
-    post = 2 * mx.sigmoid(mixed[..., hc : 2 * hc] * scale[1] + base[hc : 2 * hc])
-    combine = (mixed[..., 2 * hc :] * scale[2] + base[2 * hc :]).reshape(
-        *flat.shape[:-1], hc, hc
-    )
-    combine = mx.softmax(combine, axis=-1) + eps
-    combine = combine / (mx.sum(combine, axis=-2, keepdims=True) + eps)
-    for _ in range(iterations - 1):
-        combine = combine / (mx.sum(combine, axis=-1, keepdims=True) + eps)
-        combine = combine / (mx.sum(combine, axis=-2, keepdims=True) + eps)
-    return pre, post, combine
 
 
 _compiled_rms = mx.compile(_rms_impl)
@@ -431,29 +425,21 @@ _compiled_hc_mixes = mx.compile(_hc_mixes_impl)
 
 
 def _hc_pre(x, pre):
-    return mx.sum(x.astype(mx.float32) * pre[..., None], axis=-2).astype(x.dtype)
+    return hc_pre(x[None], pre[None])[0]
 
 
 def _hc_post(x, residual, post, combine):
-    carried = mx.einsum("...ij,...id->...jd", combine, residual.astype(mx.float32))
-    return (post[..., None] * x[..., None, :] + carried).astype(x.dtype)
+    return hc_post(x[None], residual[None], post[None], combine[None])[0]
+
+
+def rotate_positions(x, positions, dim: int, base: float, inverse: bool = False):
+    frequency = 1 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+    angles = positions[:, None] * frequency[None, :]
+    return rope_tail(x[None], dim, mx.cos(angles), mx.sin(angles), inverse)[0]
 
 
 def _rotary(x, position, dim: int, base: float, inverse: bool = False):
-    frequency = 1 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
-    angle = frequency * position * (-1 if inverse else 1)
-    tail = x[..., -dim:].astype(mx.float32).reshape(*x.shape[:-1], dim // 2, 2)
-    real, imag = tail[..., 0], tail[..., 1]
-    rotated = mx.stack(
-        (
-            real * mx.cos(angle) - imag * mx.sin(angle),
-            real * mx.sin(angle) + imag * mx.cos(angle),
-        ),
-        axis=-1,
-    )
-    return mx.concatenate(
-        (x[..., :-dim], rotated.reshape(*x.shape[:-1], dim).astype(x.dtype)), axis=-1
-    )
+    return rotate_positions(x[None], mx.array([position]), dim, base, inverse)[0]
 
 
 def quantize_cache(x, bits: int, group: int, scale_format: str = "e8m0"):
@@ -503,13 +489,14 @@ class _DraftAdapter:
     def expert(self, base, x, routing=None):
         gate = self.w.linear(base + ".w1", x).astype(mx.float32)
         up = self.w.linear(base + ".w3", x).astype(mx.float32)
-        limit = self.c["swiglu_limit"]
-        if limit > 0:
-            gate, up = mx.minimum(gate, limit), mx.clip(up, -limit, limit)
-        hidden = gate * mx.sigmoid(gate) * up
+        hidden = ClampedSwiGLU(self.c["swiglu_limit"])(up, gate)
+        # Routed experts retain the fp32 activation used by the target's
+        # gathered down projection; shared experts explicitly return to input dtype.
+        down_input = hidden if ".experts." in base else hidden.astype(x.dtype)
+        output = self.w.linear(base + ".w2", down_input)
         if routing is not None:
-            hidden = hidden * routing
-        return self.w.linear(base + ".w2", hidden.astype(x.dtype))
+            return output.astype(mx.float32) * routing
+        return output
 
     def moe(self, base, x):
         logits = (
@@ -554,8 +541,14 @@ class DSpark:
             self.w.pin_mtp()
 
     def observe(self, main_hidden, position: int):
+        self.observe_many(main_hidden[:, None], position)
+
+    def observe_many(self, main_hidden, position: int):
+        """Append a contiguous verified chunk with one projection/eval per stage."""
         if position != self.position + 1:
             raise ValueError("DSpark observations must be contiguous target positions")
+        count = main_hidden.shape[1]
+        main_hidden = main_hidden.reshape(count, -1)
         main = self.adapter.norm(
             "mtp.0.main_norm", self.w.linear("mtp.0.main_proj", main_hidden)
         )
@@ -566,14 +559,21 @@ class DSpark:
                 base + ".kv_norm", self.w.linear(base + ".wkv", main)
             )
             key_value = quantize_cache(
-                self.adapter.rotate(key_value, position, 0), 8, 32
+                rotate_positions(
+                    key_value,
+                    mx.arange(count) + position,
+                    self.c["qk_rope_head_dim"],
+                    self.c["rope_theta"],
+                ),
+                8,
+                32,
             )
-            self.windows[layer] = (self.windows[layer] + [key_value])[
-                -self.c["sliding_window"] :
-            ]
+            self.windows[layer] = (
+                self.windows[layer] + [key_value[i : i + 1] for i in range(count)]
+            )[-self.c["sliding_window"] :]
             values.append(key_value)
         mx.eval(*values)
-        self.position = position
+        self.position = position + count - 1
 
     def attention(self, base, x, stage: int):
         count = x.shape[0]
@@ -612,13 +612,13 @@ class DSpark:
             [
                 self.w.grouped(
                     base + ".wo_a",
-                    output[i].reshape(self.c["o_groups"], -1),
+                    output[i].astype(mx.float32).reshape(self.c["o_groups"], -1),
                     self.c["o_groups"],
                 )
                 for i in range(count)
             ]
         )
-        return self.w.linear(base + ".wo_b", projected)
+        return self.w.linear(base + ".wo_b", projected.astype(x.dtype))
 
     def propose(self, next_token: int):
         if self.position < 1:
@@ -642,25 +642,28 @@ class DSpark:
             hidden = _hc_post(attention, hidden, post, combine)
             pre, post, combine = self.adapter.mixes(base, "ffn", hidden)
             x = self.adapter.norm(base + ".ffn_norm", _hc_pre(hidden, attn_pre))
-            ffn = mx.concatenate(
-                [
-                    self.adapter.moe(base + ".ffn", x[i : i + 1])
-                    for i in range(self.block_size)
-                ]
-            )
+            if hasattr(self.adapter, "_packed_mtp_moe"):
+                ffn = self.adapter.moe(base + ".ffn", x)
+            else:
+                ffn = mx.concatenate(
+                    [
+                        self.adapter.moe(base + ".ffn", x[i : i + 1])
+                        for i in range(self.block_size)
+                    ]
+                )
             hidden = _hc_post(ffn, hidden, post, combine)
         base = f"mtp.{self.layers[-1]}"
         collapsed = _hc_pre(hidden, pre)
         logits = self.w.linear(
             "head", self.adapter.norm(base + ".norm", collapsed).astype(mx.float32)
         )
-        output, biased_logits, markov_embeddings = [next_token], [], []
+        output, biased_logits, markov_embeddings = [mx.array([next_token])], [], []
         for index in range(self.block_size):
-            markov = self.w.embedding(base + ".markov_head.embed", [output[-1]])
+            markov = self.w.embedding(base + ".markov_head.embed", output[-1])
             biased = logits[index : index + 1] + self.w.linear(
                 base + ".markov_head.head", markov.astype(mx.float32)
             )
-            output.append(int(mx.argmax(biased)))
+            output.append(mx.argmax(biased, axis=-1))
             biased_logits.append(biased)
             markov_embeddings.append(markov)
         logits = mx.concatenate(biased_logits)
@@ -671,11 +674,9 @@ class DSpark:
             ).astype(mx.float32),
         )
         mx.eval(logits, confidence)
-        if not bool(mx.all(mx.isfinite(logits))) or not bool(
-            mx.all(mx.isfinite(confidence))
-        ):
+        if not bool(mx.all(mx.isfinite(logits)) & mx.all(mx.isfinite(confidence))):
             raise FloatingPointError("non-finite DSpark output")
-        return output, confidence
+        return mx.concatenate(output).tolist(), confidence
 
 
 def verify_greedy(proposals, logits, advance, observe, eos, remaining):
