@@ -8,4 +8,4 @@ Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/
 
 Run `rapid-mlx recipe` to see model recommendations for this Mac. To use a specific installed alias, run `rapid-mlx launch pi --model <alias>`. The command saves a private profile and starts a local server if needed. Run `rapid-mlx launch pi --remove` to remove that profile.
 
-If the first reply takes time, allow the model download and load to finish. Run `rapid-mlx doctor` to check the installation. See the [current Pi guide](https://rapidmlx.com/docs/agents/) for setup details and troubleshooting.
+If the first reply takes time, allow the model download and load to finish. Run `rapid-mlx doctor` to check the installation. See the [current Pi guide](https://rapidmlx.com/docs/agents/pi) for setup details and troubleshooting.

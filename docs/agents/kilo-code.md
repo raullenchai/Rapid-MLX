@@ -6,4 +6,4 @@ Install Rapid-MLX on an Apple Silicon Mac and restart Terminal:
 curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
-Run `rapid-mlx launch list` to see the current integration for Kilo Code. The [agent guides](https://rapidmlx.com/docs/agents/) cover local connection details. Run `rapid-mlx recipe` to choose a model that fits this Mac.
+Run `rapid-mlx recipe` to choose a model that fits this Mac, then start it with `rapid-mlx serve <alias>`. In another terminal, run `rapid-mlx agents kilo-code` for this client’s connection instructions.
