@@ -8,6 +8,7 @@ import importlib
 import platform
 import time
 from collections import Counter
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -145,7 +146,56 @@ def plain_decode(model, prompt, count):
     return output, {"tokens_per_second": count / elapsed, "decode_seconds": elapsed}
 
 
-def speculative_decode(serving, model, tokenizer, runtime, prompt, count):
+@contextmanager
+def draft_component_timing(draft, enabled=False):
+    """Diagnostic boundaries force completion; totals include synchronization cost."""
+    totals = {name: 0.0 for name in ("attention", "moe", "head", "markov")}
+    originals = []
+
+    def wrap(original, name):
+        def timed(*args, **kwargs):
+            # Materialize inputs before starting: lazy HC/norm work belongs
+            # outside these component totals, not to the next projection.
+            mx.eval(
+                [
+                    value
+                    for value in (*args, *kwargs.values())
+                    if isinstance(value, mx.array)
+                ]
+            )
+            mx.synchronize()
+            start = time.perf_counter()
+            result = original(*args, **kwargs)
+            mx.eval(result)
+            mx.synchronize()
+            totals[name] += (time.perf_counter() - start) * 1000
+            return result
+
+        return timed
+
+    try:
+        if enabled:
+            for owner, attribute, name in (
+                (draft, "attention", "attention"),
+                (draft.adapter, "moe", "moe"),
+                (draft, "head", "head"),
+                (draft, "markov", "markov"),
+            ):
+                original = getattr(owner, attribute)
+                originals.append((owner, attribute, original, attribute in vars(owner)))
+                setattr(owner, attribute, wrap(original, name))
+        yield totals
+    finally:
+        for owner, attribute, original, was_instance in reversed(originals):
+            if was_instance:
+                setattr(owner, attribute, original)
+            else:
+                delattr(owner, attribute)
+
+
+def speculative_decode(
+    serving, model, tokenizer, runtime, prompt, count, *, component_timers=False
+):
     """Time production decode, excluding prefill and including streaming host work."""
     rounds = []
     original_propose = runtime.drafter.propose
@@ -205,19 +255,20 @@ def speculative_decode(serving, model, tokenizer, runtime, prompt, count):
     runtime.drafter.propose = propose
     serving._match = match
     try:
-        output = [
-            chunk.token
-            for chunk in serving.stream_generate(
-                TimedModel(),
-                tokenizer,
-                prompt,
-                runtime=runtime,
-                max_tokens=count,
-                ignore_eos=True,
-            )
-        ]
-        close_round()
-        elapsed = time.perf_counter() - start
+        with draft_component_timing(runtime.drafter, component_timers) as component_ms:
+            output = [
+                chunk.token
+                for chunk in serving.stream_generate(
+                    TimedModel(),
+                    tokenizer,
+                    prompt,
+                    runtime=runtime,
+                    max_tokens=count,
+                    ignore_eos=True,
+                )
+            ]
+            close_round()
+            elapsed = time.perf_counter() - start
     finally:
         runtime.drafter.propose = original_propose
         serving._match = original_match
@@ -227,6 +278,13 @@ def speculative_decode(serving, model, tokenizer, runtime, prompt, count):
         for key in ("draft_ms", "verify_ms", "round_ms")
     }
     means["host_ms"] = means["round_ms"] - means["draft_ms"] - means["verify_ms"]
+    if component_timers:
+        means.update(
+            {
+                f"draft_{name}_ms": total / len(rounds)
+                for name, total in component_ms.items()
+            }
+        )
     return output, {
         "tokens_per_second": len(output) / elapsed,
         "decode_seconds": elapsed,
@@ -258,6 +316,11 @@ def _main(argv=None):
         "--runtime-module",
         default="rapid_mlx.models.deepseek_v41_native.serving",
         help="Serving provider module; select a baseline provider for old/new comparisons",
+    )
+    parser.add_argument(
+        "--component-timers",
+        action="store_true",
+        help="Synchronize draft attention/MoE/head/Markov boundaries (perturbs latency)",
     )
     parser.add_argument("--label", default="new")
     parser.add_argument("--prompt", default="Explain why the sky is blue.")
@@ -291,7 +354,13 @@ def _main(argv=None):
     for _ in range(args.repeats):
         plain, off = plain_decode(model, prompt, args.tokens)
         speculative, on = speculative_decode(
-            serving, model, tokenizer, runtime, prompt, args.tokens
+            serving,
+            model,
+            tokenizer,
+            runtime,
+            prompt,
+            args.tokens,
+            component_timers=args.component_timers,
         )
         runs.append(
             {
@@ -307,6 +376,7 @@ def _main(argv=None):
                 "label": args.label,
                 "mode": "checkpoint" if args.model else "tiny",
                 "runtime_module": args.runtime_module,
+                "component_timers": args.component_timers,
                 "python": platform.python_version(),
                 "mlx": mx.__version__,
                 "device": str(mx.default_device()),

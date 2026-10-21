@@ -657,6 +657,18 @@ class DSpark:
         )
         return self.w.linear(base + ".wo_b", projected.astype(x.dtype))
 
+    def head(self, x):
+        from .draft_kernels import head
+
+        return head(self.w, x)
+
+    def markov(self, base, logits, previous):
+        markov = self.w.embedding(base + ".markov_head.embed", previous)
+        biased = logits + self.w.linear(
+            base + ".markov_head.head", markov.astype(mx.float32)
+        )
+        return mx.argmax(biased, axis=-1), biased, markov
+
     def propose(self, next_token, *, depth=None, device: bool = False):
         """Draft with all decoder positions intact.
 
@@ -669,6 +681,9 @@ class DSpark:
             raise ValueError("draft depth must be between 1 and block size")
         if self.position < 1:
             raise ValueError("seed at least two verified positions before drafting")
+        from . import draft_kernels
+
+        draft_kernels.begin_round(self)
         seed = mx.array(next_token, dtype=mx.int32).reshape(1)
         ids = mx.concatenate(
             [
@@ -708,23 +723,23 @@ class DSpark:
             hidden = _hc_post(ffn, hidden, post, combine)
         base = f"mtp.{self.layers[-1]}"
         collapsed = _hc_pre(hidden, pre)
-        logits = self.w.linear(
-            "head", self.adapter.norm(base + ".norm", collapsed).astype(mx.float32)
+        logits = self.head(
+            self.adapter.norm(base + ".norm", collapsed).astype(mx.float32)
         )
         output, biased_logits, markov_embeddings = [seed], [], []
         for index in range(predictions):
-            markov = self.w.embedding(base + ".markov_head.embed", output[-1])
-            biased = logits[index : index + 1] + self.w.linear(
-                base + ".markov_head.head", markov.astype(mx.float32)
+            token, biased, markov = self.markov(
+                base, logits[index : index + 1], output[-1]
             )
-            output.append(mx.argmax(biased, axis=-1))
+            output.append(token)
             biased_logits.append(biased)
             markov_embeddings.append(markov)
         logits = mx.concatenate(biased_logits)
-        finite = mx.all(mx.isfinite(logits))
+        self._draft_kernel_status = draft_kernels.round_status(self)
+        finite = mx.all(mx.isfinite(logits)) & mx.all(self._draft_kernel_status)
         if device:
             proposals = mx.concatenate(output)
-            mx.async_eval(proposals, finite)
+            mx.async_eval(proposals, finite, self._draft_kernel_status)
             return proposals, finite
         confidence = self.w.linear(
             base + ".confidence_head.proj",
@@ -732,8 +747,11 @@ class DSpark:
                 [collapsed[:predictions], mx.concatenate(markov_embeddings)], axis=-1
             ).astype(mx.float32),
         )
-        mx.eval(logits, confidence)
-        if not bool(mx.all(mx.isfinite(logits)) & mx.all(mx.isfinite(confidence))):
+        confidence_finite = mx.all(mx.isfinite(confidence))
+        mx.eval(logits, confidence, finite, confidence_finite, self._draft_kernel_status)
+        if draft_kernels.disable_nonfinite(self):
+            return self.propose(next_token, depth=depth, device=device)
+        if not bool(finite) or not bool(confidence_finite):
             raise FloatingPointError("non-finite DSpark output")
         return mx.concatenate(output).tolist(), confidence
 

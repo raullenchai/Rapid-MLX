@@ -95,7 +95,31 @@ Phase sums therefore measure isolated work and cannot quantify serving overlap.
 
 The proposal fixtures in `test_deepseek_v41_draft_numerics.py` record the
 pre-change proposal IDs at commit `59460430b8dd951a684a946b25e807ae33ce8350`
-for three deterministic CPU fixtures. CPU tests require exact proposal prefixes
-and exact greedy tokens at every depth and in auto mode. Metal performance and
+for three deterministic CPU fixtures. Stock draft CPU tests require exact proposal prefixes; optimized draft tests
+require finite proposals and exact greedy output tokens. Output tokens must
+match at every depth and in auto mode. Metal performance and
 token equality require the deployment hardware run; CPU timings do not establish
 the 5 ms draft target.
+
+## Stage A2: acceptance-qualified draft kernels
+
+The fused draft MoE and draft head GEMV are **acceptance-qualified, not
+bit-exact** against the batched stock draft. Supported layouts, dtypes, and row
+counts use the optimized kernels directly, without numerical equality probes.
+Draft rounding can change proposals and acceptance, but the target verification
+forward decides every emitted token. The target path and its exactness
+qualification remain unchanged. The correctness contract is token equality to
+draft-off greedy on the fixtures, rather than equality of draft proposals,
+logits, or confidence.
+
+Each optimized component records a device finite flag. These flags and the
+final draft logits are evaluated at the existing per-round verify boundary;
+checking them adds no host synchronization to successful rounds. A component
+that produces NaN/inf from finite input is permanently disabled independently
+of other layers and the head, with one WARNING identifying the layer/head and
+bit combination (head dtype). Non-finite values propagated from an earlier
+component do not disable downstream components. Before retrying a failed round,
+serving rolls back target cache offsets and restores overwritten window slots;
+the round is recomputed using the stock draft path for the failed component.
+Unsupported kernel layouts retain the stock draft path. Non-finite stock draft
+results still fail the request.

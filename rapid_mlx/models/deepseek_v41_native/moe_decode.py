@@ -499,7 +499,7 @@ def _projection_shape(module, n: tuple[int, ...], k: int) -> bool:
     return tuple(module.weight.shape) == (*n, _packed_width(k, module.bits))
 
 
-def _layout(moe) -> Layout | None:
+def _layout(moe, *, external_routing: bool = False) -> Layout | None:
     """Dimensions and per-projection bits when ``moe`` matches the fused kernels."""
     experts, shared, gate = moe.experts, moe.shared_experts, moe.gate
     gp, up, dp = experts.gate_proj, experts.up_proj, experts.down_proj
@@ -547,10 +547,16 @@ def _layout(moe) -> Layout | None:
         and float(getattr(experts.activation, "limit", 0.0))
         == float(getattr(shared, "limit", 0.0))
         and experts_n <= 1024
-        # multi-row router logits must come from the exact per-row GEMV
-        and getattr(gate.weight, "dtype", None) == mx.bfloat16
-        and tuple(gate.weight.shape) == (experts_n, dim)
-        and dim < 16 * experts_n
+        # The internal router requires exact per-row GEMV logits. Callers
+        # supplying their own qualified routes only reuse the expert kernels.
+        and (
+            external_routing
+            or (
+                getattr(gate.weight, "dtype", None) == mx.bfloat16
+                and tuple(gate.weight.shape) == (experts_n, dim)
+                and dim < 16 * experts_n
+            )
+        )
     ):
         return None
     return Layout(dim, inter, sbits, gp.bits, up.bits, dp.bits)

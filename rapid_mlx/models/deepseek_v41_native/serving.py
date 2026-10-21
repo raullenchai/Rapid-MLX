@@ -20,6 +20,7 @@ _mlx_compat.install()
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
+from . import draft_kernels
 from .affine_route_qmv import affine2_route_down_qmv
 from .draft_depth import DraftDepthPolicy, draft_depth
 from .dspark import (
@@ -196,7 +197,7 @@ def _install_packed_mtp_moe(draft: DSpark) -> int:
         packed[base] = projections
         mx.clear_cache()
 
-    def packed_moe(self, base, x):
+    def route(self, base, x):
         config = self.c
         logits = (
             x.astype(mx.float32)
@@ -211,6 +212,11 @@ def _install_packed_mtp_moe(draft: DSpark) -> int:
         if config["norm_topk_prob"] and topk > 1:
             selected = selected / (mx.sum(selected, axis=-1, keepdims=True) + 1e-20)
         selected = selected * config["routed_scaling_factor"]
+        return selected, picks
+
+    def stock(self, base, x):
+        config = self.c
+        selected, picks = route(self, base, x)
         expanded = mx.expand_dims(x, (-2, -3))
 
         def project(name, values):
@@ -235,6 +241,16 @@ def _install_packed_mtp_moe(draft: DSpark) -> int:
         )
         shared = self.expert(base + ".shared_experts", x).astype(mx.float32)
         return (routed + shared).astype(x.dtype)
+
+    def packed_moe(self, base, x):
+        return draft_kernels.moe(
+            self,
+            base,
+            x,
+            packed[base],
+            lambda value: route(self, base, value),
+            lambda value: stock(self, base, value),
+        )
 
     setattr(
         draft.adapter,
@@ -555,9 +571,15 @@ def stream_generate(
             candidate,
             finite,
             expected_ids,
+            getattr(runtime.drafter, "_draft_kernel_status", []),
         )
         verify_ms = (time.perf_counter() - verify_start) * 1000
         if not bool(finite):
+            if draft_kernels.disable_nonfinite(runtime.drafter):
+                cache.rollback(base_offset)
+                for layer, slots, previous in window_snapshots:
+                    layer.win_kv[:, slots] = previous
+                continue
             raise FloatingPointError("non-finite DSpark output")
         candidate = candidate.tolist()
         tokens, mismatch, hit_eos, accepted = _match(
