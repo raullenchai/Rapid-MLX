@@ -371,14 +371,19 @@ def configure(
     if name == "aider":
         _private_dir(root / "home")
         git_env = f"HOME={shlex.quote(str(Path.home()))} "
-        for name_ in (
-            "XDG_CONFIG_HOME",
-            "GIT_CONFIG_GLOBAL",
-            "SSH_AUTH_SOCK",
-            "GPG_TTY",
-        ):
-            value = os.environ.get(name_)
-            if value:
+        for name_, value in os.environ.items():
+            if value and (
+                name_.startswith("GIT_")
+                or name_
+                in (
+                    "XDG_CONFIG_HOME",
+                    "SSH_AUTH_SOCK",
+                    "SSH_ASKPASS",
+                    "GPG_TTY",
+                    "GNUPGHOME",
+                    "EMAIL",
+                )
+            ):
                 git_env += f"{name_}={shlex.quote(value)} "
         git_shim = root / "bin" / "git"
         _private_write(git_shim, f'#!/bin/sh\n{git_env}exec {shlex.quote(git)} "$@"\n')

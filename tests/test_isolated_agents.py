@@ -1254,6 +1254,40 @@ def test_aider_rejects_project_configuration_before_writing_state(
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
 
 
+def test_aider_git_shim_preserves_environment_only_commit_identity(
+    private_home, monkeypatch
+):
+    project = private_home / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    aider = commands / "aider"
+    aider.write_text("#!/bin/sh\ngit commit --allow-empty -m local-edit\n")
+    aider.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Environment Author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "author@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Environment Committer")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "committer@example.invalid")
+    monkeypatch.chdir(project)
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents/aider/run"
+    subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    commit = subprocess.check_output(
+        ["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], cwd=project, text=True
+    ).strip()
+    assert commit == (
+        "Environment Author <author@example.invalid>|"
+        "Environment Committer <committer@example.invalid>"
+    )
+
+
 def test_aider_rejects_existing_home_config_from_home_directory(
     private_home, monkeypatch
 ):
