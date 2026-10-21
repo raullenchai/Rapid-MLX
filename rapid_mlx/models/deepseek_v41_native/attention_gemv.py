@@ -1,9 +1,17 @@
 """Exact affine attention projections with shared weight loads for 1..8 rows.
 
-Each lane retains stock QMV's K blocks, dot expression and SIMD reduction.
-Packed uint/uint2 loads are hoisted outside the input-row loop. Qualification
-uses the actual stock module call and shape, including grouped broadcasting
-and multi-row QMM dispatch, rather than a concatenation of single-row calls.
+Each lane retains stock single-row QMV's K blocks, dot expression and SIMD
+reduction. Up to ``MAX_ROWS`` rows share packed uint/uint2 weight loads and run
+the same per-row arithmetic: each row is bit-identical to its own single-row
+stock projection. Speculative verify and batched lanes therefore get the same
+per-row arithmetic as sequential decode. Larger batches stay on the stock path.
+Stock multi-row calls can dispatch a different quantized-matmul algorithm and
+are not the bit reference.
+
+The first call for each weight, dtype and shape checks seeded probes covering
+the full row count against concatenated single-row stock projections, retaining
+grouped broadcasting. Any bit difference or compile/launch failure keeps that
+shape on stock with a warning; replaced weights are validated again.
 The reused MLX helpers carry their MIT notice in moe_decode.py.
 """
 
@@ -199,7 +207,17 @@ def _qualified(module, x: mx.array, label: str) -> bool:
                 probe = (
                     mx.random.normal(x.shape, key=mx.random.key(seed)) * scale
                 ).astype(x.dtype)
-                actual, expected = _launch(module, probe), module(probe)
+                # Flatten only the logical row axes, retaining each grouped
+                # row's [groups, 1, K] shape for stock broadcasting.
+                row_shape = (
+                    probe.shape[-3:] if module.weight.ndim == 3 else probe.shape[-1:]
+                )
+                row_probe = probe.reshape(-1, *row_shape)
+                expected = mx.concatenate(
+                    [module(row_probe[r : r + 1]) for r in range(row_probe.shape[0])],
+                    axis=0,
+                ).reshape(*probe.shape[:-1], module.scales.shape[-2])
+                actual = _launch(module, probe)
                 ok = (
                     bool(
                         mx.array_equal(

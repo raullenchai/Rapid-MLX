@@ -37,16 +37,19 @@ packed uint or uint2 plus scale/bias once per output/K block and reuses those
 registers for all input rows. No partial sums are combined across input rows
 or SIMD groups.
 
-Each module lazily compares two deterministic probes with the **actual stock
-module call** at the same full input shape and dtype. Comparison uses byte
-views, including signed zeros. It never substitutes concatenated single-row
-stock results for multi-row stock. A changed weight, scale, bias or quantization
-setting invalidates cached verdicts; checks use weak references and are not
-model parameters. Each newly checked shape emits an INFO coverage line with
-its exactness verdict and qualified/fallback row counts. Mismatches and kernel
-failures emit WARNING and retain stock for that shape. Thus a runtime choosing
-multi-row QMM or another reduction order can reject those row counts while
-keeping qualified single-row GEMVs. Unchecked shapes qualify on first use.
+Each row is bit-identical to its own single-row stock QMV projection, so
+speculative verification and batched lanes use the same per-row arithmetic as
+sequential decode. Stock multi-row calls can use a different quantized-matmul
+algorithm and are not the bit reference. Larger batches stay on stock.
+
+Each module lazily compares two deterministic probes covering the full row
+count and dtype of the call against concatenated single-row stock projections,
+retaining grouped broadcasting. Comparison uses byte views, including signed
+zeros. A changed weight, scale, bias or quantization setting invalidates cached
+verdicts; checks use weak references and are not model parameters. Each newly
+checked shape emits an INFO coverage line with its exactness verdict and
+qualified/fallback row counts. Mismatches and kernel failures emit WARNING and
+retain stock for that shape. Unchecked shapes qualify on first use.
 The existing `RAPID_MLX_DSV41_FUSED=0` switch disables these kernels too.
 
 ## Verification and measurement
@@ -54,9 +57,9 @@ The existing `RAPID_MLX_DSV41_FUSED=0` switch disables these kernels too.
 The Apple CI test list includes `tests/test_deepseek_v41_attention_gemv.py`.
 Its Metal cases exercise both bit widths, all five target layouts, every row
 count 1–8, FP32/BF16 activations, FP16 scale/input combinations, odd output
-widths, K tails and noncontiguous inputs. The tests require direct candidate
-parity for single-row cases; multi-row cases require parity for every enabled
-specialization and exact stock fallback otherwise. CPU tests cover eligibility,
+widths, K tails and noncontiguous inputs. For every row count, the tests require
+qualification to pass and both the raw candidate and production dispatch to
+match concatenated single-row stock results bit-for-bit. CPU tests cover eligibility,
 qualification caching/invalidation, compile/mismatch/launch fallback, signed
 zero comparisons, both attention wiring paths and benchmark synchronization.
 
@@ -73,7 +76,8 @@ shapes; it does not download or load a checkpoint. It synchronizes before and
 after each timed evaluation, warms up outside timing, and reports median stock,
 raw candidate and qualified production dispatch latency separately. JSON lines
 include host/device/runtime, dimensions, bits, row count, exactness qualification,
-sample parity, bytes and effective GB/s. Bandwidth counts each packed weight,
+sample parity against the stock multi-row call (a diagnostic, not the per-row
+exactness contract), bytes and effective GB/s. Bandwidth counts each packed weight,
 scale and bias once per call, including all groups. Qualification/JIT overhead
 is excluded from steady-state timing.
 

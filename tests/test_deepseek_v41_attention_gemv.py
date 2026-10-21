@@ -1,4 +1,4 @@
-"""Stock-call parity, lazy qualification and attention projection wiring."""
+"""Single-row stock parity, lazy qualification and attention projection wiring."""
 
 from __future__ import annotations
 
@@ -42,6 +42,15 @@ def inputs(rows=2, k=320, groups=1, dtype=None):
 def equal(a, b):
     mx.eval(a, b)
     return bool(mx.array_equal(a.view(mx.uint8), b.view(mx.uint8)).item())
+
+
+def per_row_stock(layer, x):
+    """Match qualification's single-row calls, retaining grouped row dimensions."""
+    row_shape = x.shape[-3:] if layer.weight.ndim == 3 else x.shape[-1:]
+    rows = x.reshape(-1, *row_shape)
+    return mx.concatenate(
+        [layer(rows[r : r + 1]) for r in range(rows.shape[0])], axis=0
+    ).reshape(*x.shape[:-1], layer.scales.shape[-2])
 
 
 def test_layout_rejections_and_cpu_fallback(monkeypatch):
@@ -111,7 +120,8 @@ def test_factory_and_dispatch_with_cpu_standin(monkeypatch, groups):
     gemv._kernel.cache_clear()
     monkeypatch.setattr(mx.fast, "metal_kernel", factory)
     layer, x = projection(groups=groups), inputs(groups=groups)
-    assert equal(gemv._launch(layer, x), layer(x))
+    gemv._launch(layer, x)
+    assert seen["inputs"][0] is x
     assert seen["grid"] == (32, 8, groups)
     assert seen["threadgroup"] == (32, 4, 1)
     assert dict(seen["template"])["ROWS"] == 2
@@ -127,21 +137,23 @@ def test_qualification_caches_by_actual_shape_dtype_and_weight(monkeypatch, capl
 
     def launch(m, x):
         launches.append(x.shape)
-        return m(x)
+        return per_row_stock(m, x)
 
     monkeypatch.setattr(gemv, "_launch", launch)
     layer = projection()
     with caplog.at_level(logging.INFO):
         for _ in range(2):
             x = inputs()
-            assert equal(gemv.project(layer, x, "layer 0 wq_a"), layer(x))
+            assert equal(
+                gemv.project(layer, x, "layer 0 wq_a"), per_row_stock(layer, x)
+            )
     # Two qualification probes, then two hot launches.
     assert len(launches) == 4
     assert "coverage" in caplog.text and "exact=True" in caplog.text
     assert gemv._CHECK_ATTR not in layer.parameters()
     for x in (inputs(3), inputs(dtype=mx.float16), mx.zeros((2, 320))):
         before = len(launches)
-        assert equal(gemv.project(layer, x), layer(x))
+        assert equal(gemv.project(layer, x), per_row_stock(layer, x))
         assert len(launches) == before + 3
     for name in ("weight", "scales", "biases"):
         old_ref = getattr(layer, gemv._CHECK_ATTR)[0][
@@ -155,11 +167,54 @@ def test_qualification_caches_by_actual_shape_dtype_and_weight(monkeypatch, capl
     layer.group_size = 32
     # Deliberately replace launch with a matching stand-in: settings invalidate
     # the verdict independently of the array identity and shape.
-    monkeypatch.setattr(gemv, "_launch", lambda m, x: m(x))
+    monkeypatch.setattr(gemv, "_launch", per_row_stock)
     layer.weight, layer.scales, layer.biases = mx.quantize(
         mx.ones((19, 320)), group_size=32, bits=8
     )
     assert gemv._qualified(layer, inputs(), "settings changed")
+
+
+@pytest.mark.parametrize("groups", [1, 3])
+def test_qualification_uses_single_row_stock_for_every_lane(monkeypatch, groups):
+    layer = projection(groups=groups)
+    calls = []
+
+    class Stock:
+        weight, scales, biases = layer.weight, layer.scales, layer.biases
+        bits, group_size, mode = layer.bits, layer.group_size, "affine"
+
+        def __call__(self, x):
+            calls.append(x.shape)
+            # Deliberately model a different stock multi-row algorithm.
+            rows = x.size // (groups * x.shape[-1])
+            return layer(x) + (1 if rows > 1 else 0)
+
+    stock = Stock()
+    shape = (2, 4, groups, 1, 320) if groups > 1 else (2, 4, 320)
+    x = mx.random.normal(shape)
+    launches = []
+
+    def launch(m, probe):
+        launches.append(probe.shape)
+        return per_row_stock(layer, probe)
+
+    monkeypatch.setattr(gemv, "_launch", launch)
+    monkeypatch.setattr(gemv, "supports", lambda *a: True)
+    assert gemv._qualified(stock, x, "per-row reference")
+    assert launches == [shape, shape]
+    single_shape = (1, groups, 1, 320) if groups > 1 else (1, 320)
+    assert calls == [single_shape] * 16
+    assert equal(gemv.project(stock, x), per_row_stock(layer, x))
+    assert not equal(per_row_stock(layer, x), stock(x))
+
+    def wrong_last_row(m, probe):
+        result = per_row_stock(layer, probe).reshape(8, groups, -1)
+        return mx.concatenate([result[:-1], result[-1:] + 1], axis=0).reshape(
+            *probe.shape[:-1], layer.scales.shape[-2]
+        )
+
+    monkeypatch.setattr(gemv, "_launch", wrong_last_row)
+    assert not gemv._qualified(Stock(), x, "last lane mismatch")
 
 
 def test_mismatch_and_compile_failure_stay_stock(monkeypatch, caplog):
@@ -188,8 +243,8 @@ def test_mismatch_and_compile_failure_stay_stock(monkeypatch, caplog):
 def test_hot_launch_failure_disables_only_that_shape(monkeypatch, caplog):
     monkeypatch.setattr(gemv, "supports", lambda *a: True)
     layer, x = projection(), inputs()
-    monkeypatch.setattr(gemv, "_launch", lambda m, x: m(x))
-    assert equal(gemv.project(layer, x), layer(x))
+    monkeypatch.setattr(gemv, "_launch", per_row_stock)
+    assert equal(gemv.project(layer, x), per_row_stock(layer, x))
 
     def broken(*a):
         raise RuntimeError("graph failure")
@@ -203,28 +258,20 @@ def test_hot_launch_failure_disables_only_that_shape(monkeypatch, caplog):
 @needs_metal
 @pytest.mark.parametrize("bits", [4, 8])
 @pytest.mark.parametrize("name,n,k,groups", LAYOUTS)
-def test_shipped_layouts_rows_1_to_8_against_actual_stock(
-    bits, name, n, k, groups, caplog
-):
+def test_shipped_layouts_rows_1_to_8_against_single_row_stock(bits, name, n, k, groups):
     mx.set_default_device(mx.gpu)
     layer = projection(bits, n, k, groups)
-    # Exercise FP32 as used in serving and BF16 retained by dense projections.
-    for dtype in [mx.float32] if groups > 1 else [mx.float32, mx.bfloat16]:
+    for dtype in [mx.float32, mx.bfloat16]:
         for rows in range(1, 9):
             x = inputs(rows, k, groups, dtype)
-            qualified = gemv._qualified(layer, x, name)
-            candidate, stock = gemv._launch(layer, x), layer(x)
-            if rows == 1:
-                assert qualified, (
-                    f"single-row {name}/{bits}/{dtype} failed qualification"
-                )
-            if qualified:
-                assert equal(candidate, stock)
+            assert gemv._qualified(layer, x, name), (
+                f"{rows}-row {name}/{bits}/{dtype} failed qualification"
+            )
+            stock = per_row_stock(layer, x)
+            assert equal(gemv._launch(layer, x), stock)
             assert equal(gemv.project(layer, x, name), stock)
-            # A failed multi-row qualification is a meaningful stock QMM
-            # rounding result, not a passing kernel test hidden by fallback.
-            if not qualified:
-                assert "stock fallback" in caplog.text
+            # Stock multi-row QMM uses different arithmetic; it is not the
+            # bit reference for sequential-decode parity.
 
 
 @needs_metal
@@ -237,9 +284,10 @@ def test_odd_output_and_k_tails_and_noncontiguous_rows(bits, groups, dtype):
     for rows in range(1, 9):
         full = inputs(rows * 2, 320, groups, dtype)
         x = full[:, ::2]
-        if rows == 1:
-            assert equal(gemv._launch(layer, x), layer(x))
-        assert equal(gemv.project(layer, x), layer(x))
+        stock = per_row_stock(layer, x)
+        assert gemv._qualified(layer, x, "tails")
+        assert equal(gemv._launch(layer, x), stock)
+        assert equal(gemv.project(layer, x), stock)
 
 
 @pytest.mark.parametrize("rows", [1, 3, 8])
@@ -279,7 +327,7 @@ def test_microbenchmark_synchronizes_and_reports_production_fallback(monkeypatch
     from scripts import bench_deepseek_v41_attention_gemv as bench
 
     monkeypatch.setattr(gemv, "supports", lambda *a: True)
-    monkeypatch.setattr(gemv, "_launch", lambda m, x: m(x))
+    monkeypatch.setattr(gemv, "_launch", per_row_stock)
     monkeypatch.setitem(bench.LAYOUTS, "wq_a", (19, 320, 1))
     monkeypatch.setitem(bench.LAYOUTS, "wo_a", (19, 320, 3))
     syncs = []
@@ -287,7 +335,8 @@ def test_microbenchmark_synchronizes_and_reports_production_fallback(monkeypatch
     for name in ("wq_a", "wo_a"):
         results = bench.benchmark(name, 4, [1, 3], mx.bfloat16, 1, 2)
         assert [r["rows"] for r in results] == [1, 3]
-        assert all(r["qualified"] and r["sample_exact"] for r in results)
+        assert all(r["qualified"] for r in results)
+        assert all(r["sample_exact"] for r in results if r["rows"] == 1)
         assert all(r["weight_bytes"] > 0 and r["candidate_GB_s"] > 0 for r in results)
     assert len(syncs) == 2 * 2 * 3 * 5
 
