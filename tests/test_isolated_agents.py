@@ -1274,10 +1274,15 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "author@example.invalid")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "Environment Committer")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "committer@example.invalid")
+    monkeypatch.setenv("GIT_BAD-NAME", "should-not-enter-a-shell-script")
     monkeypatch.chdir(project)
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
     runner = isolated.connection_dir() / "agents/aider/run"
+    assert (
+        "should-not-enter-a-shell-script"
+        not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+    )
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     commit = subprocess.check_output(
         ["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], cwd=project, text=True

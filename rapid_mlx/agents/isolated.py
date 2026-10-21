@@ -372,16 +372,24 @@ def configure(
         _private_dir(root / "home")
         git_env = f"HOME={shlex.quote(str(Path.home()))} "
         for name_, value in os.environ.items():
-            if value and (
-                name_.startswith("GIT_")
-                or name_
-                in (
-                    "XDG_CONFIG_HOME",
-                    "SSH_AUTH_SOCK",
-                    "SSH_ASKPASS",
-                    "GPG_TTY",
-                    "GNUPGHOME",
-                    "EMAIL",
+            valid_name = name_.isascii() and all(
+                character.isupper() or character.isdigit() or character == "_"
+                for character in name_
+            )
+            if (
+                valid_name
+                and value
+                and (
+                    name_.startswith("GIT_")
+                    or name_
+                    in (
+                        "XDG_CONFIG_HOME",
+                        "SSH_AUTH_SOCK",
+                        "SSH_ASKPASS",
+                        "GPG_TTY",
+                        "GNUPGHOME",
+                        "EMAIL",
+                    )
                 )
             ):
                 git_env += f"{name_}={shlex.quote(value)} "
