@@ -1,17 +1,11 @@
 # Python API
 
-Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a local API:
+Use the OpenAI-compatible server via any OpenAI client library.
+
+## Start Server
 
 ```bash
-curl -fsSL https://rapidmlx.com/install.sh | bash
-# Restart Terminal, then:
-rapid-mlx serve qwen3.5-4b-4bit --port 8000
-```
-
-The server prints its address. In another Terminal window, install the client and run the examples with the installer Python:
-
-```bash
-~/.rapid-mlx/bin/python -m pip install openai
+rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 ```
 
 ## Basic Usage
@@ -22,7 +16,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 response = client.chat.completions.create(
-    model="qwen3.5-4b-4bit",
+    model="mlx-community/Llama-3.2-3B-Instruct-4bit",
     messages=[{"role": "user", "content": "What is the capital of France?"}],
     max_tokens=100,
 )
@@ -33,7 +27,7 @@ print(response.choices[0].message.content)
 
 ```python
 stream = client.chat.completions.create(
-    model="qwen3.5-4b-4bit",
+    model="mlx-community/Llama-3.2-3B-Instruct-4bit",
     messages=[{"role": "user", "content": "Tell me a story about a robot"}],
     stream=True,
 )
@@ -61,11 +55,31 @@ tools = [
 ]
 
 response = client.chat.completions.create(
-    model="qwen3.5-4b-4bit",
+    model="mlx-community/Llama-3.2-3B-Instruct-4bit",
     messages=[{"role": "user", "content": "What's the weather in Tokyo?"}],
     tools=tools,
 )
 print(response.choices[0].message.tool_calls)
+```
+
+## Engine API (Advanced)
+
+For embedding rapid-mlx in your own application:
+
+```python
+from rapid_mlx.engine import BatchedEngine
+
+engine = BatchedEngine("mlx-community/Llama-3.2-3B-Instruct-4bit")
+await engine.start()
+
+# Generate via the engine directly
+async for output in engine.stream_chat(
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=100,
+):
+    print(output.new_text, end="")
+
+await engine.stop()
 ```
 
 ## Error Handling

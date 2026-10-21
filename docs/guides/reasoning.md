@@ -1,15 +1,5 @@
 # Reasoning Models
 
-Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a reasoning-capable model:
-
-```bash
-curl -fsSL https://rapidmlx.com/install.sh | bash
-# Restart Terminal, then:
-rapid-mlx serve qwen3.5-9b-4bit
-```
-
-The alias profile selects its reasoning parser. Use `rapid-mlx chat qwen3.5-9b-4bit --think` for an interactive session that shows thinking, or send an API request to the printed endpoint.
-
 rapid-mlx supports reasoning models that show their thinking process before giving an answer. Models like Qwen3 and DeepSeek-R1 wrap their reasoning in `<think>...</think>` tags, and rapid-mlx can parse these tags to separate the reasoning from the final response.
 
 ## Why Use Reasoning Parsing?
@@ -30,9 +20,15 @@ Without reasoning parsing, you get the raw output with the tags included. With r
 
 ## Getting Started
 
-### Start the server
+### Start the Server with Reasoning Parser
 
-The recommended alias carries its reasoning parser, so the opening `serve` command needs no parser flag. Run `rapid-mlx info qwen3.5-9b-4bit` to inspect its profile. For a custom checkpoint without a catalog profile, run `rapid-mlx serve --help` and select a matching `--reasoning-parser` explicitly.
+```bash
+# For Qwen3 models
+rapid-mlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
+
+# For DeepSeek-R1 models
+rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
+```
 
 ### API Response Format
 
@@ -133,9 +129,37 @@ print(f"\n\nFinal reasoning: {reasoning_text}")
 print(f"Final answer: {content_text}")
 ```
 
-## Parser selection
+## Supported Parsers
 
-Catalog aliases carry their parser in the model profile. Use `rapid-mlx info <alias>` to inspect it. For other checkpoints, choose a parser from `rapid-mlx serve --help` that matches the checkpoint's output format.
+The full registry: `qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`,
+`gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`,
+`ui_tars`, `vibethinker`. Aliases carry their parser in the per-alias profile
+(`rapid-mlx info <alias>` shows it), so you rarely need the flag at all. The two
+most common parsers in detail:
+
+### Qwen3 Parser (`qwen3`)
+
+For Qwen3 models that use explicit `<think>` and `</think>` tags.
+
+- Requires **both** opening and closing tags
+- If tags are missing, output is treated as regular content
+- Best for: Qwen3-0.6B, Qwen3-4B, Qwen3-8B and similar models
+
+```bash
+rapid-mlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
+```
+
+### DeepSeek-R1 Parser (`deepseek_r1`)
+
+For DeepSeek-R1 models that may omit the opening `<think>` tag.
+
+- More lenient than Qwen3 parser
+- Handles cases where `<think>` is implicit
+- Content before `</think>` is treated as reasoning even without `<think>`
+
+```bash
+rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
+```
 
 ## How It Works
 
@@ -221,9 +245,11 @@ Explicit knobs on the same dimension always win: `chat_template_kwargs.reasoning
 
 A chat template that never reads `enable_thinking` but branches on its own boolean `reasoning` variable in an eagerly evaluated template scope (Cohere's convention; North Mini Code defaults it to on) still turns off: a resolved `enable_thinking=false` (Desktop's default, `rapid-mlx chat` without `--think`, `reasoning_effort: none`) is passed as `reasoning=false`. `reasoning` is the only such switch recognised today; it is detected from the template's own reads and reachable `if` tests, not from the model name. Deferred macro/call-block bodies and loops that may not execute do not establish a switch. A request that already sets `reasoning` or `reasoning_effort` in `chat_template_kwargs` keeps control.
 
-## Chat-template controls
+## Backward Compatibility
 
-Catalog aliases can select their reasoning parser automatically. Run `rapid-mlx info <alias>` to inspect model capabilities. To explicitly disable reasoning parsing, use `--no-reasoning-parser` with `serve`.
+The catalog selects a reasoning parser by default for supported models. Pass
+`--no-reasoning-parser` when starting the server to keep generated thinking
+tags in `content` without a separate `reasoning_content` field.
 
 ## Example: Math Problem Solver
 
@@ -285,7 +311,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### No `reasoning_content` field in response
 
-- Check the alias profile with `rapid-mlx info <alias>`; custom checkpoints may need `--reasoning-parser`.
+- Make sure you started the server with `--reasoning-parser`
 - Check that the model actually uses thinking tags (not all prompts trigger reasoning)
 
 ### Reasoning appears in content
