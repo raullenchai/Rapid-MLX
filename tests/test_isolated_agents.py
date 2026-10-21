@@ -491,6 +491,7 @@ def test_hermes_saved_runner_check_stops_on_missing_limit(private_home, capsys):
         )
     assert "served limit unavailable" in capsys.readouterr().err
 
+
 def test_new_opencode_model_comes_from_private_config(private_home):
     with patch(
         "rapid_mlx.agents.opencode_version.installed_version", return_value="2.0.26"
