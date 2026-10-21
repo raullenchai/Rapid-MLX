@@ -128,6 +128,7 @@ def test_claude_launch_rejects_symlinked_private_config(private_home):
 
     assert not list(target.iterdir())
 
+
 def test_codex_launcher_pins_the_local_model(private_home):
     # A saved TUI model can override the profile value. The executable flags
     # must still choose the exact local model advertised by Rapid-MLX.
