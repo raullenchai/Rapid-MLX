@@ -144,6 +144,8 @@ def read_until(
                 break
         ready, _, _ = select.select([fd], [], [], min(0.25, end - time.monotonic()))
         if not ready:
+            if on_output is not None and pieces:
+                on_output("".join(pieces))
             continue
         try:
             data = os.read(fd, 65536)
@@ -293,16 +295,20 @@ def approval_handler(agent: str, master: int):
     if agent == "crush":
         waiting = False
         last_answered = 0.0
+        retries = 0
 
         def answer_crush(output: str) -> None:
-            nonlocal waiting, last_answered
+            nonlocal waiting, last_answered, retries
             raw_tail = output[-3000:]
             tail = _ANSI.sub("", raw_tail)
             menu = "Allow for Session" in tail and "Deny" in tail
-            if menu and not waiting:
+            if menu and (
+                not waiting or (retries < 3 and time.monotonic() - last_answered > 2)
+            ):
                 os.write(master, b"\r")  # Highlighted Allow, for this action only.
                 waiting = True
                 last_answered = time.monotonic()
+                retries += 1
             elif (
                 waiting
                 and not menu
@@ -310,6 +316,7 @@ def approval_handler(agent: str, master: int):
                 and time.monotonic() - last_answered > 1
             ):
                 waiting = False
+                retries = 0
 
         return answer_crush
     if agent != "qwen-code":
