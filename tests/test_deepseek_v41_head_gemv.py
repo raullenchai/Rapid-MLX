@@ -250,3 +250,18 @@ def test_self_check_launch_failure_falls_back(monkeypatch) -> None:
     x = mx.random.normal((1, 512))
     assert mx.array_equal(head_logits(head, x), head(x)).item()
     assert getattr(head, head_gemv._CHECK_ATTR)[1] is False
+
+
+def test_launch_failure_after_qualification_falls_back(monkeypatch) -> None:
+    monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
+    monkeypatch.setattr(head_gemv, "_matches_stock", lambda head: True)
+
+    def broken_launch(weight, x):
+        raise RuntimeError("unable to build metal library")
+
+    monkeypatch.setattr(head_gemv, "_launch", broken_launch)
+    head = _head()
+    x = mx.random.normal((1, 512))
+    assert mx.array_equal(head_logits(head, x), head(x)).item()
+    cached = getattr(head, head_gemv._CHECK_ATTR)
+    assert cached[0]() is head.weight and cached[1] is False
