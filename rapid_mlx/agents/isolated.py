@@ -271,7 +271,10 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
             f"--weak-model openai/{quote(model)} --editor-model openai/{quote(model)}"
         )
         return (
+            f'if [[ "$PWD" == {quote(str(Path.home().resolve()))} ]]; then '
+            f"cd {quote(str(root / 'workspace'))} || exit 1; fi; "
             f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
+            f"GIT_CEILING_DIRECTORIES={quote(str(root))} "
             f"HOME={quote(str(root / 'home'))} "
             f"/bin/zsh -c {quote(inner)}"
         )
@@ -324,7 +327,7 @@ def configure(
         if any(
             (directory / filename).exists() or (directory / filename).is_symlink()
             for directory in dirs
-            if directory != user_home
+            if directory != user_home or cwd != user_home
             for filename in (".aider.conf.yml", ".aider.model.settings.yml", ".env")
         ):
             raise ValueError(
@@ -548,6 +551,8 @@ def configure(
         }
         _private_write(root / "settings.json", json.dumps(settings, indent=2) + "\n")
     elif name == "aider":
+        workspace = root / "workspace"
+        _private_dir(workspace)
         _private_write(
             root / "aider.env",
             f"AIDER_OPENAI_API_KEY={key}\nOPENAI_API_KEY={key}\n"
