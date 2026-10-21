@@ -201,7 +201,8 @@ def test_plain_and_host_cost_learning():
 
 @pytest.mark.parametrize("depth", [0, 1, 4, "auto"])
 @pytest.mark.parametrize("eos_id", [9, 1])
-def test_serving_learns_completed_phases(depth, eos_id):
+@pytest.mark.parametrize("reject", [False, True])
+def test_serving_learns_completed_phases(depth, eos_id, reject):
     """Execute production host orchestration with a deferred array test double.
 
     Loading just the host functions avoids importing Metal on CPU-only hosts.
@@ -221,37 +222,56 @@ def test_serving_learns_completed_phases(depth, eos_id):
             or isinstance(node, ast.Import)
             and node.names[0].name == "time"
             or isinstance(node, (ast.FunctionDef, ast.ClassDef))
-            and node.name in ("stream_generate", "_match", "GenerationChunk")
+            and node.name
+            in ("stream_generate", "_match", "_observe_verified", "GenerationChunk")
         )
     ]
     clock = 0.0
     pending = 0.0
     evals = []
+    syncs = []
     costs = []
     policy = DraftDepthPolicy(depth)
     original_observe = policy.observe_cost
 
     def observe_cost(used_depth, **kwargs):
+        if depth == "auto":
+            assert pending == 0  # Observation must finish before round_ms is read.
         costs.append((used_depth, kwargs))
         original_observe(used_depth, **kwargs)
 
     policy.observe_cost = observe_cost
 
-    def evaluate(*_args):
+    def evaluate(*args):
         nonlocal clock, pending
-        evals.append(pending)
+        if len(args) == 1 and args[0] is runtime.drafter.windows:
+            syncs.append(pending)
+        else:
+            evals.append(pending)
         clock += pending
         pending = 0.0
 
     class Drafter:
+        def __init__(self):
+            self.windows = {}
+
         def observe(self, *_args):
             pass
+
+        def observe_many(self, hidden, position, *, defer):
+            nonlocal pending
+            assert defer
+            self.windows = {0: [hidden]}
+            pending += 0.007
 
         def propose(self, seed, *, depth, device):
             nonlocal pending
             assert device
             pending += 0.0196
-            return np.ones(depth + 1, dtype=int), np.array(True)
+            candidate = np.ones(depth + 1, dtype=int)
+            if reject:
+                candidate[1] = 0
+            return candidate, np.array(True)
 
     def model(ids, _cache, **kwargs):
         nonlocal pending
@@ -261,13 +281,15 @@ def test_serving_learns_completed_phases(depth, eos_id):
         logits[..., 1] = 1
         return logits, np.zeros((*ids.shape, 1))
 
-    model.make_cache = lambda **_kw: SimpleNamespace(offset=2, layers=[])
+    rollbacks = []
+    model.make_cache = lambda **_kw: SimpleNamespace(
+        offset=2, layers=[], rollback=rollbacks.append
+    )
     namespace = {
         "dataclass": dataclass,
         "DraftDepthPolicy": lambda _mode: policy,
         "draft_depth": lambda: depth,
         "DSpark": Drafter,
-        "_observe_verified": lambda *_args: None,
         "NaiveStreamingDetokenizer": lambda _p: SimpleNamespace(
             text="", add_token=lambda _t: None, finalize=lambda: None
         ),
@@ -276,6 +298,25 @@ def test_serving_learns_completed_phases(depth, eos_id):
             array=np.array, argmax=np.argmax, int32=np.int32, eval=evaluate
         ),
     }
+    # Exercise the production synchronization method without importing MLX.
+    dspark_path = path.with_name("dspark.py")
+    dspark_class = next(
+        node
+        for node in ast.parse(dspark_path.read_text()).body
+        if isinstance(node, ast.ClassDef) and node.name == "DSpark"
+    )
+    sync_method = next(
+        node
+        for node in dspark_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "sync_pending"
+    )
+    exec(
+        compile(
+            ast.Module(body=[sync_method], type_ignores=[]), str(dspark_path), "exec"
+        ),
+        namespace,
+    )
+    Drafter.sync_pending = namespace["sync_pending"]
     exec(compile(tree, str(path), "exec"), namespace)
     namespace["time"] = SimpleNamespace(perf_counter=lambda: clock)
     runtime = SimpleNamespace(drafter=Drafter(), reset=lambda: None)
@@ -290,18 +331,24 @@ def test_serving_learns_completed_phases(depth, eos_id):
         )
     )
     assert [chunk.token for chunk in chunks] == [1] * (1 if eos_id == 1 else 6)
-    assert len(evals) == len(costs) + 1 + int(depth == "auto")
+    draft_syncs = sum(bool(used) for used, _ in costs) if depth == "auto" else 0
+    assert len(evals) == len(costs) + 1 + draft_syncs
     expected_depths = {
         0: [0, 0, 0, 0, 0, 0],
-        1: [1, 1, 1],
-        4: [4, 0],
-        "auto": [4, 0],
+        1: [1] * 5 if reject else [1, 1, 1],
+        4: [4, 4, 3, 2, 1] if reject else [4, 0],
+        "auto": [4, 4, 3, 2, 1] if reject else [4, 0],
     }[depth]
     assert [used for used, _ in costs] == (
         expected_depths[:1] if eos_id == 1 else expected_depths
     )
-    for used, measurement in costs:
-        assert measurement["round_ms"] == pytest.approx(20 + (19.6 if used else 0))
+    assert len(rollbacks) == (len(costs) if reject and depth and eos_id != 1 else 0)
+    assert syncs == (pytest.approx([0.007] * len(costs)) if depth == "auto" else [])
+    for index, (used, measurement) in enumerate(costs):
+        observation_ms = 7 if depth == "auto" or (depth and index) else 0
+        assert measurement["round_ms"] == pytest.approx(
+            20 + (19.6 if used else 0) + observation_ms
+        )
         if depth == "auto":
             assert measurement["verify_ms"] == pytest.approx(20)
             assert measurement["draft_ms"] == (pytest.approx(19.6) if used else None)
@@ -311,8 +358,13 @@ def test_serving_learns_completed_phases(depth, eos_id):
     if depth == "auto":
         assert policy.learned_draft_ms == pytest.approx(19.6)
         assert policy.learned_verify_ms[4] == pytest.approx(20)
-        assert policy.full_rounds == int(eos_id != 1)
-        assert policy.accepted_histogram == [0, 0, 0, 0, int(eos_id != 1)]
+        assert policy.host_ms == pytest.approx(7 - 4 * 0.75**draft_syncs)
+        full_rounds = (2 if reject else 1) * int(eos_id != 1)
+        assert policy.full_rounds == full_rounds
+        mass = sum(0.9**i for i in range(full_rounds))
+        assert policy.accepted_histogram == pytest.approx(
+            [mass, 0, 0, 0, 0] if reject else [0, 0, 0, 0, mass]
+        )
     else:
         assert policy.learned_draft_ms is None
         assert policy.learned_verify_ms == {}

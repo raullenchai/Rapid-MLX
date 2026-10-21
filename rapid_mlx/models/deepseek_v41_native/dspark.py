@@ -608,6 +608,10 @@ class DSpark:
             mx.eval(*values)
         self.position = position + count - 1
 
+    def sync_pending(self):
+        """Complete deferred observations retained in the context windows."""
+        mx.eval(self.windows)
+
     def attention(self, base, x, stage: int):
         count = x.shape[0]
         query = self.adapter.norm(base + ".q_norm", self.w.linear(base + ".wq_a", x))

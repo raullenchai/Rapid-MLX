@@ -582,6 +582,9 @@ def stream_generate(
             _observe_verified(runtime.drafter, target_hidden[:, :mismatch], base_offset)
             logits = target_logits[:, mismatch - 1]
             seed_already_emitted = True
+        if policy.mode == "auto" and isinstance(runtime.drafter, DSpark):
+            # Charge deferred context updates to this round, not the next draft.
+            runtime.drafter.sync_pending()
         policy.observe_cost(
             depth,
             draft_ms=draft_ms,
