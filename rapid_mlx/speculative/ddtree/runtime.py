@@ -19,9 +19,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx.connect import package_install_command
+
 from .eligibility import have_runtime
 
 logger = logging.getLogger(__name__)
+DDTREE_INSTALL_COMMAND = package_install_command(
+    "dtree-mlx @ git+https://github.com/DrHB/dtree-mlx.git"
+)
 
 
 @dataclass
@@ -43,7 +48,7 @@ def load_runtime(
     if not have_runtime():
         raise RuntimeError(
             "DDTree runtime not available — install the experimental runtime with: "
-            "pip install 'dtree-mlx @ git+https://github.com/DrHB/dtree-mlx.git'"
+            f"{DDTREE_INSTALL_COMMAND}"
         )
 
     from dtree_mlx.api import DFlashGenerator

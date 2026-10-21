@@ -33,7 +33,7 @@ from rapid_mlx.api.models import (
 from rapid_mlx.config import get_config
 
 from .eligibility import DDTreeUnavailable, have_runtime
-from .runtime import DDTreeRuntime, load_runtime
+from .runtime import DDTREE_INSTALL_COMMAND, DDTreeRuntime, load_runtime
 
 logger = logging.getLogger(__name__)
 _LOAD_FAILURE_DETAIL = "DDTree runtime failed to load; check server logs."
@@ -547,7 +547,7 @@ def run_ddtree_server(
     if not have_runtime():
         raise RuntimeError(
             "DDTree server requires the experimental dtree-mlx runtime — install with "
-            "``pip install 'dtree-mlx @ git+https://github.com/DrHB/dtree-mlx.git'``."
+            f"`{DDTREE_INSTALL_COMMAND}`."
         )
     if not drafter_repo:
         raise DDTreeUnavailable(

@@ -64,9 +64,12 @@ from typing import Any
 try:
     import websockets
 except ImportError as exc:  # pragma: no cover — declared as install dep
+    from rapid_mlx.connect import package_install_command
+
     raise ImportError(
         "rapid-mlx share requires the ``websockets`` package "
-        "(it ships in rapid-mlx core deps; pip install websockets if missing)"
+        "(it ships in rapid-mlx core deps; repair this Python with "
+        f"{package_install_command('websockets')})"
     ) from exc
 
 log = logging.getLogger(__name__)

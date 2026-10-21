@@ -4473,12 +4473,13 @@ def _preflight_ddtree_or_exit(args):
     for warning in assessment.warnings:
         print(f"\n  ⚠ Experimental DDTree: {warning}.\n")
     if not have_runtime():
+        from rapid_mlx.speculative.ddtree.runtime import DDTREE_INSTALL_COMMAND
+
         probe_error = runtime_probe_error()
         detail = f" Probe failure: {probe_error}." if probe_error else ""
         print(
             "\n  Error: DDTree requires the experimental dtree-mlx "
-            "runtime. Install with: ``pip install 'dtree-mlx @ "
-            f"git+https://github.com/DrHB/dtree-mlx.git'``.{detail}\n"
+            f"runtime. Install with: `{DDTREE_INSTALL_COMMAND}`.{detail}\n"
         )
         sys.exit(1)
 

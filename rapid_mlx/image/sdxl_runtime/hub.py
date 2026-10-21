@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rapid_mlx.connect import package_install_command
+
 _INSTALL_HINT = (
     "Resolving a Hub repo id requires `huggingface_hub`. "
-    "Install it with `pip install mlx-diffuser[hub]` (or `pip install huggingface_hub`)."
+    f"Install it with `{package_install_command('huggingface_hub')}`."
 )
 
 

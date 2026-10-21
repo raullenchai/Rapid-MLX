@@ -251,8 +251,10 @@ def _load_tokenizer(folder: Path):
     try:
         from transformers import CLIPTokenizer
     except ImportError as exc:  # pragma: no cover
+        from rapid_mlx.connect import package_install_command
+
         raise ImportError(
             "The SDXL pipeline needs `transformers` for tokenization. "
-            "Install it with `pip install transformers`."
+            f"Install it with `{package_install_command('transformers')}`."
         ) from exc
     return CLIPTokenizer.from_pretrained(str(folder))
