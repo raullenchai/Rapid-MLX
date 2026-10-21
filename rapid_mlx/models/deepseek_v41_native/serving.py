@@ -503,12 +503,14 @@ def stream_generate(
         ],
         default=5,
     )
+    policy.max_depth = min(4, ring_limit - 1)
     while generated < max_tokens:
         round_start = time.perf_counter()
         seed = mx.argmax(logits).reshape(1)
         count = min(5, ring_limit, max_tokens - generated + int(seed_already_emitted))
         depth = policy.choose(count - 1)
         finite = mx.array(True)
+        draft_start = time.perf_counter()
         if depth:
             if isinstance(runtime.drafter, DSpark):
                 candidate, finite = runtime.drafter.propose(
@@ -519,6 +521,12 @@ def stream_generate(
                 candidate = mx.array(proposals[: depth + 1])
         else:
             candidate = seed
+        draft_ms = None
+        if policy.mode == "auto" and depth:
+            # Auto needs completed phase costs: submission time is not GPU time.
+            # Fixed-depth serving retains its asynchronous draft/verify path.
+            mx.eval(candidate, finite)
+            draft_ms = (time.perf_counter() - draft_start) * 1000
         base_offset = cache.offset
         # Offset rollback cannot recover older KV overwritten by rejected rows.
         # Keep the touched ring slots on device until verification commits.
@@ -528,6 +536,7 @@ def stream_generate(
                 continue
             slots = (base_offset + mx.arange(len(candidate))) % layer.window
             window_snapshots.append((layer, slots, layer.win_kv[:, slots]))
+        verify_start = time.perf_counter()
         target_logits, target_hidden = model(
             candidate[None],
             cache,
@@ -547,9 +556,7 @@ def stream_generate(
             finite,
             expected_ids,
         )
-        # Draft and verify share this existing sync boundary. Charge all work
-        # to the depth used; submission timings cannot separate their costs.
-        policy.observe_cost(depth, round_ms=(time.perf_counter() - round_start) * 1000)
+        verify_ms = (time.perf_counter() - verify_start) * 1000
         if not bool(finite):
             raise FloatingPointError("non-finite DSpark output")
         candidate = candidate.tolist()
@@ -560,7 +567,9 @@ def stream_generate(
             seed_already_emitted,
             expected_ids,
         )
-        policy.observe(accepted, depth)
+        # EOS truncates the tested prefix; do not treat its suffix as rejected.
+        if not hit_eos:
+            policy.observe(accepted, depth)
         if mismatch is None:
             if track_draft:
                 _observe_verified(runtime.drafter, target_hidden, base_offset)
@@ -573,6 +582,12 @@ def stream_generate(
             _observe_verified(runtime.drafter, target_hidden[:, :mismatch], base_offset)
             logits = target_logits[:, mismatch - 1]
             seed_already_emitted = True
+        policy.observe_cost(
+            depth,
+            draft_ms=draft_ms,
+            verify_ms=verify_ms if policy.mode == "auto" else None,
+            round_ms=(time.perf_counter() - round_start) * 1000,
+        )
         for token in tokens:
             generated += 1
             # EOS is control state, not user-visible text. The release

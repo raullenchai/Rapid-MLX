@@ -8,15 +8,22 @@ seed-plus-four verification width. All positive depths retain all five draft
 decoder positions, including their noise embeddings. Only the consumed Markov
 predictions are generated. The serving path skips confidence projection.
 
-Auto mode owns its acceptance and cost estimates per request. It maximizes
-`(1 + a + ... + a**K) / (verify_ms[K] + draft_ms)` for positive K, comparing
-against `1 / verify_ms[0]`. Accepted predictions and the first rejection update
-an exponential estimate with weight 0.25. Unchecked suffixes do not count as
-failures. The initial estimate is 0.5. Switching positive depths requires a 10%
-gain; any proposed positive depth must beat target-only by 5%. Unprofitable
-drafting is disabled immediately. Every 32 target-only rounds, a probe uses
-the largest depth permitted by the remaining output budget and cache rings.
-The probe refreshes acceptance and measured costs even while drafting is disabled.
+Auto mode owns its acceptance and cost estimates per request. For depth K it
+maximizes `(E[min(a, K)] + 1) / round_cost(K)`, where a is the accepted prefix
+length observed at the request's maximum depth (normally 4). A decayed histogram
+of accepted counts preserves bimodal distributions; every full-depth observation
+multiplies existing weights by 0.9 and adds one to its accepted-count bin. Smaller
+depths, including budget-limited tails, are excluded from the histogram because
+their suffix is censored; they still update costs. EOS-truncated rounds are also
+excluded. Cache rings may lower the request's maximum depth, in which case only
+rounds at that maximum update the histogram.
+
+The first eight maximum-depth rounds warm up the histogram, then the policy
+selects the highest estimated rate. Switching to a positive depth requires a 10%
+gain over the current choice; an unprofitable current depth is discarded
+immediately. After 32 completed plain steps at K=0, two consecutive rounds probe
+at maximum depth, even if the first probe changes the preferred rate. The output
+budget and cache rings cap all choices, including warm-up and probes.
 
 ## Cost provenance and online learning
 
@@ -32,22 +39,25 @@ seed plus K draft predictions, so `VERIFY_MS[K]` uses K + 1 rows.
 | 4 | 69.5 |
 | 5 | 81.7 |
 
-The draft prior remains 21 ms from the pre-optimization M3 Ultra measurement;
-it does not assume the unverified 5 ms optimization target. These constants
-are hardware/workload priors only. Real costs are learned online, separately
-for each depth and request. The first measurement replaces its prior; later
-measurements update an EMA with weight 0.25. `rate()` uses measured costs when
-available and the priors for depths or phases not yet measured.
+The depth-independent draft prior is 19.6 ms: all positive depths execute the
+same five decoder positions. Host overhead starts at 3 ms. One shared draft EMA
+learns from every positive depth. Verify costs are learned per observed row count;
+unobserved costs use their prior multiplied by the arithmetic mean of the
+learned/prior ratios at observed depths. Observed costs are never overwritten by
+this scaling. Cost EMAs use weight 0.25, with the first phase measurement replacing
+its prior. K=0 uses its learned whole plain-step cost directly, falling back to
+the scaled one-row verify prior plus host overhead until a plain step is observed.
 
-Phase costs may be learned separately only when existing host sync points
-already bound completed work. Serving submits draft work asynchronously and
-completes both draft and verify at the existing verify `mx.eval`. It therefore
-records the whole round from before draft submission through that boundary,
-including deferred work completed there, and attributes the total to the depth
-actually used (including K=0 and budget-limited depths). This learned total
-replaces both phase priors: nothing is subtracted, and no draft prior is added
-again. No `mx.eval` or synchronization is added for timing. Time spent yielding
-tokens to the caller is outside this interval.
+Auto serving completes candidate IDs and the finite flag with an `mx.eval` before
+submitting verification, so the draft EMA measures completed work instead of
+asynchronous submission time. The existing verify eval then measures the verify
+phase independently. This adds a completion boundary only in auto mode; fixed
+depths keep their asynchronous draft/verify path. Whole-round timing ends after
+matching, rollback and draft-context observation, before tokens are yielded to
+the caller. The residual after measured draft and verify phases learns host
+overhead (clamped at zero for timing noise). No phase is inferred by subtracting
+a prior from an asynchronous combined measurement. The extra auto completion
+boundary needs server throughput validation on the target hardware.
 
 For independent Metal recalibration, prefill a representative prompt once,
 verify a fixed token sequence of each width with rollback to the original offset
