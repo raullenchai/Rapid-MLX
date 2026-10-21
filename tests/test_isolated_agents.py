@@ -1071,6 +1071,8 @@ def test_crush_isolated_launch_rejects_project_config_override(
     cloud_config = project.parent / ".crush.json"
     cloud_config.write_text('{"models":{"large":{"provider":"cloud","model":"cloud"}}}')
     monkeypatch.chdir(project)
+    monkeypatch.setenv("GIT_DIR", str(private_home / "wrong-repo"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(private_home / "wrong-tree"))
     with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
     assert cloud_config.read_text().startswith('{"models"')
@@ -1139,7 +1141,14 @@ def test_crush_rejects_invalid_saved_config(private_home, monkeypatch):
     saved.parent.mkdir(parents=True, exist_ok=True)
     saved.write_text('{"models": ["cloud"], "theme": "dark"}')
     isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
-    assert json.loads(saved.read_text()) == {"theme": "dark"}
+    pinned = {
+        slot: {"provider": "rapid-mlx", "model": "qwen3.5-9b-4bit"}
+        for slot in ("large", "small")
+    }
+    assert json.loads(saved.read_text()) == {"models": pinned, "theme": "dark"}
+    saved.write_text('{"models": {"large": {}}, "theme": "dark"}')
+    isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
+    assert json.loads(saved.read_text()) == {"models": pinned, "theme": "dark"}
     saved.write_text("[]")
     with pytest.raises(ValueError, match="saved configuration"):
         isolated.configure("crush", "qwen3.5-9b-4bit", port=7660)
@@ -1337,6 +1346,8 @@ def test_aider_rejects_home_git_root_config_from_subdirectory(
     project = private_home / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setenv("GIT_DIR", str(private_home / "wrong-repo"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(private_home / "wrong-tree"))
     with pytest.raises(ValueError, match="project configuration"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
 

@@ -301,6 +301,12 @@ def configure(
     if profile is None or profile.name not in SUPPORTED:
         raise ValueError(f"unsupported isolated agent: {name}")
     name = profile.name
+    if name in ("aider", "crush"):
+        git_discovery_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
     if name == "aider":
         cwd = Path.cwd()
         git = shutil.which("git")
@@ -310,6 +316,7 @@ def configure(
             subprocess.run(
                 [git, "rev-parse", "--show-toplevel"],
                 cwd=cwd,
+                env=git_discovery_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -338,6 +345,7 @@ def configure(
             subprocess.run(
                 [git, "rev-parse", "--show-toplevel"],
                 cwd=cwd,
+                env=git_discovery_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -429,30 +437,28 @@ def configure(
                     raise ValueError("invalid isolated crush saved configuration")
                 saved.pop("providers", None)
                 models = saved.get("models")
-                if isinstance(models, dict):
-                    tuning = {
-                        "max_tokens",
-                        "temperature",
-                        "top_p",
-                        "top_k",
-                        "frequency_penalty",
-                        "presence_penalty",
-                    }
-                    saved["models"] = {
-                        slot: {
-                            "provider": "rapid-mlx",
-                            "model": model,
-                            **{
+                models = models if isinstance(models, dict) else {}
+                tuning = {
+                    "max_tokens",
+                    "temperature",
+                    "top_p",
+                    "top_k",
+                    "frequency_penalty",
+                    "presence_penalty",
+                }
+                pinned = {}
+                for slot in ("large", "small"):
+                    pinned[slot] = {"provider": "rapid-mlx", "model": model}
+                    selected = models.get(slot)
+                    if isinstance(selected, dict):
+                        pinned[slot].update(
+                            {
                                 field: value
                                 for field, value in selected.items()
                                 if field in tuning
-                            },
-                        }
-                        for slot, selected in models.items()
-                        if slot in ("large", "small") and isinstance(selected, dict)
-                    }
-                else:
-                    saved.pop("models", None)
+                            }
+                        )
+                saved["models"] = pinned
                 options = saved.get("options")
                 if isinstance(options, dict):
                     options.pop("data_directory", None)
