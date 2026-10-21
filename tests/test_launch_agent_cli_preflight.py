@@ -1,6 +1,7 @@
 """`rapid-mlx launch <agent>` refuses early when the agent CLI is missing."""
 
 import os
+import shlex
 import subprocess
 from argparse import ArgumentParser
 from pathlib import Path
@@ -116,59 +117,44 @@ def test_installed_cli_launches_without_warning(private_home, capsys):
     assert "not installed" not in capsys.readouterr().err
 
 
-MARK = "__rapid_mlx_cli_feedface__="
-
-
-@pytest.fixture
-def fixed_marker(monkeypatch):
-    monkeypatch.setattr(cli_preflight.secrets, "token_hex", lambda _n: "feedface")
-
-
-def _reply(stdout: bytes):
-    """A ``subprocess.run`` stand-in that writes the probe's output file."""
+def _reply(status: bytes | None):
+    """A ``subprocess.run`` stand-in that writes the probe's answer file."""
 
     def run(argv, **kwargs):
-        kwargs["stdout"].write(stdout)
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        if status is not None:
+            Path(shlex.split(argv[2].rsplit(">|", 1)[1])[0]).write_bytes(status)
         return subprocess.CompletedProcess(argv, 0)
 
     return run
 
 
-def test_login_shell_exit_status_is_the_answer(fixed_marker):
-    reply = _reply(
-        b"welcome \xff\xfe\n__rapid_mlx_cli__=0\n\n" + f"{MARK}0\nbye\n".encode()
-    )
-    with patch.object(cli_preflight.subprocess, "run", side_effect=reply) as run:
+def test_login_shell_exit_status_is_the_answer():
+    with patch.object(
+        cli_preflight.subprocess, "run", side_effect=_reply(b"0\n")
+    ) as run:
         assert cli_preflight.agent_cli_found("fake-agent") is True
     argv = run.call_args.args[0]
     assert argv[:2] == ["/bin/zsh", "-lc"]
     assert "builtin whence -p -- fake-agent" in argv[2]
-    assert MARK in argv[2]
 
 
-def test_path_style_binary_is_expanded_for_the_shell(fixed_marker):
+def test_path_style_binary_is_expanded_for_the_shell():
     with patch.object(
-        cli_preflight.subprocess, "run", side_effect=_reply(f"{MARK}0\n".encode())
+        cli_preflight.subprocess, "run", side_effect=_reply(b"0\n")
     ) as run:
         assert cli_preflight.agent_cli_found("~/bin/tool") is True
-    assert (
-        f"whence -p -- {os.path.expanduser('~/bin/tool')}" in run.call_args.args[0][2]
-    )
+    expected = f"whence -p -- {os.path.expanduser('~/bin/tool')}"
+    assert expected in run.call_args.args[0][2]
 
 
 @pytest.mark.parametrize(
-    ("stdout", "expected"),
-    [
-        (f"{MARK}1\n", False),
-        (f"{MARK}0\n{MARK}1\n", False),
-        ("__rapid_mlx_cli_other__=0\n", None),
-        ("", None),
-    ],
+    ("status", "expected"),
+    [(b"1\n", False), (b"0\n", True), (b"", None), (None, None)],
 )
-def test_login_shell_miss_or_unmarked_output(fixed_marker, stdout, expected):
-    with patch.object(
-        cli_preflight.subprocess, "run", side_effect=_reply(stdout.encode())
-    ):
+def test_login_shell_answer_file(status, expected):
+    with patch.object(cli_preflight.subprocess, "run", side_effect=_reply(status)):
         assert cli_preflight.agent_cli_found("fake-agent") is expected
 
 

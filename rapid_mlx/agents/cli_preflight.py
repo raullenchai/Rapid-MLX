@@ -18,10 +18,10 @@ launch refuses as well, because the runner depends on the same shell.
 from __future__ import annotations
 
 import os
-import secrets
 import shlex
 import subprocess
 import tempfile
+from pathlib import Path
 
 from rapid_mlx.agents import PROFILES_DIR, _load_profile_from_yaml
 from rapid_mlx.agents.base import AgentProfile
@@ -35,37 +35,31 @@ def agent_cli_found(binary: str) -> bool | None:
 
     Returns ``None`` when the login shell cannot be run or does not answer.
     """
-    # A per-probe marker keeps profile output from posing as the answer.
-    marker = f"__rapid_mlx_cli_{secrets.token_hex(8)}__="
     target = shlex.quote(os.path.expanduser(binary))
-    # ``builtin`` keeps profile functions from shadowing the probe itself.
-    script = (
-        f"builtin whence -p -- {target} >/dev/null 2>&1; "
-        f"builtin printf '\\n{marker}%s\\n' \"$?\""
-    )
     try:
-        # A file, not a pipe: a background process started by the profile
-        # could hold a pipe open and keep the probe waiting past its deadline.
-        with tempfile.TemporaryFile() as out:
+        # The answer goes to a private file opened only after startup, and
+        # the shell's own output is discarded. Profile output therefore cannot
+        # pose as the answer, and a background process started by the profile
+        # cannot hold a pipe open or write into the answer.
+        with tempfile.TemporaryDirectory(prefix="rapid-mlx-cli-") as private:
+            answer = Path(private) / "status"
+            # ``builtin`` keeps profile functions from shadowing the probe.
+            script = (
+                f"builtin whence -p -- {target} >/dev/null 2>&1; "
+                f"builtin printf '%s\\n' \"$?\" >| {shlex.quote(str(answer))}"
+            )
             subprocess.run(
                 [_LOGIN_SHELL, "-lc", script],
                 stdin=subprocess.DEVNULL,
-                stdout=out,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=_PROBE_TIMEOUT_S,
                 check=False,
             )
-            out.seek(0)
-            output = out.read()
+            status = answer.read_bytes().strip() if answer.is_file() else b""
     except (OSError, subprocess.SubprocessError):
         return None
-    answers = [
-        line[len(marker) :].strip()
-        # Startup files may print bytes in any encoding; decode like a path.
-        for line in os.fsdecode(output).splitlines()
-        if line.startswith(marker)
-    ]
-    return answers[-1] == "0" if answers else None
+    return status == b"0" if status else None
 
 
 def missing_agent_cli(profile: AgentProfile) -> str | None:
