@@ -76,17 +76,8 @@ def test_render_banner_matches_spec():
     assert "OpenAI:    http://localhost:8000/v1" in out
     assert "Anthropic: http://localhost:8000" in out
     assert "Model:     qwen3.6-35b-4bit" in out
-    # First-class agent setup commands carry the real endpoint so a user
-    # copying from the banner wires up the actual server, not localhost.
-    assert (
-        "rapid-mlx agents claude-code --setup --base-url http://localhost:8000/v1"
-        in out
-    )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://localhost:8000/v1" in out
-    )
-    # #2348: every Connect row carries the live endpoint — including the Python
-    # snippet, which a standalone `connect` process otherwise can't know.
+    assert "rapid-mlx launch codex" in out
+    # Python connects to this server, so its command carries the live endpoint.
     assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
 
 
@@ -396,15 +387,10 @@ def test_connect_valid_port_accepted():
 
 # --- Review round 2: banner must carry endpoint; explicit --model must win ----
 def test_render_banner_connect_carries_remote_endpoint():
-    """Copying the Ready banner's setup command must target the real server."""
+    """The SDK command targets the live server; launch starts its own."""
     out = connect.render_banner(connect.ServerEndpoints("mini.local", 9000, model="m1"))
-    assert (
-        "rapid-mlx agents claude-code --setup "
-        "--base-url http://mini.local:9000/v1" in out
-    )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://mini.local:9000/v1" in out
-    )
+    assert "rapid-mlx launch codex" in out
+    assert "rapid-mlx connect openai-python --base-url http://mini.local:9000/v1" in out
 
 
 def test_render_banner_connect_carries_ipv6_endpoint():
@@ -517,30 +503,16 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
     ep = connect.ServerEndpoints("::1", 9123, model="my served model")
     out = connect.render_serve_next(ep, api_key="key with ' quote")
     assert out.count("Next:") == 1
-    assert len(out.splitlines()) == 13
+    assert out.count("rapid-mlx launch ") == 7
     assert "curl -i -sS " in out
     assert "http://[::1]:9123/v1/chat/completions" in out
     assert "my served model" in out
     assert '-H "Authorization: Bearer $RAPID_MLX_API_KEY"' in out
-    assert "rapid-mlx agents opencode --setup" in out
+    assert "rapid-mlx launch opencode" in out
     assert "Set RAPID_MLX_API_KEY to the server key first." in out
     assert "key with ' quote" not in out
-    assert "Full list: rapid-mlx agents" in out
-    assert "--base-url 'http://[::1]:9123/v1'" in out
-    for agent in ("opencode", "claude-code", "codex"):
-        setup = next(
-            line.strip()
-            for line in out.splitlines()
-            if line.strip().startswith(f"rapid-mlx agents {agent} --setup")
-        )
-        assert shlex.split(setup) == [
-            "rapid-mlx",
-            "agents",
-            agent,
-            "--setup",
-            "--base-url",
-            "http://[::1]:9123/v1",
-        ]
+    for agent in ("codex", "claude-code", "opencode", "pi", "hermes", "crush", "goose"):
+        assert f"rapid-mlx launch {agent}" in out
     assert "OpenAI SDK base_url: http://[::1]:9123/v1; model: my served model" in out
     assert "from openai import OpenAI" in out
     assert 'environ["RAPID_MLX_API_KEY"]' in out
@@ -549,7 +521,7 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth():
 def test_serve_next_has_no_auth_header_without_key():
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
     assert "Authorization" not in out
-    assert len(out.splitlines()) == 12
+    assert out.count("rapid-mlx launch ") == 7
     assert (
         connect.render_serve_next(connect.ServerEndpoints("", 0, "m", listen_fd=3))
         == ""
@@ -560,8 +532,7 @@ def test_serve_next_has_no_auth_header_without_key():
 def test_serve_next_lists_agents_when_no_setup_profile_is_available(monkeypatch):
     monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: None)
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
-    assert "Connect a coding agent: rapid-mlx agents\n" in out
-    assert "List agents: rapid-mlx agents" in out
+    assert "Coding agent: rapid-mlx launch codex" in out
 
 
 # --- #2348: connect must accept/use the live instance base URL ---------------

@@ -147,17 +147,10 @@ class ServerEndpoints:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
 
 
-# The ``--setup`` verbs printed in the human banner's "Connect:" section.
-# Each row is ``(app label, command prefix, OpenAI endpoint?)``. Every row —
-# including ``openai-python`` — takes an OpenAI-style ``/v1`` base URL and
-# gets ``--base-url <url>`` appended so the copied command targets the
-# *actual* running server, not the localhost:8000 default the standalone
-# process would otherwise assume (#2348). ``connect`` accepts ``--base-url``
-# as the explicit way to receive that instance context, so the pasted command
-# resolves the real host/port/model instead of printing placeholders.
+# The agent launcher starts its own private server. The Python row connects to
+# this running server and therefore carries its actual OpenAI endpoint.
 _CONNECT_ROWS: list[tuple[str, str, bool]] = [
-    ("Claude Code", "rapid-mlx agents claude-code --setup", True),
-    ("Continue", "rapid-mlx agents continue --setup", True),
+    ("Coding agent", "rapid-mlx launch codex", False),
     ("Python", "rapid-mlx connect openai-python", True),
 ]
 
@@ -241,7 +234,17 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
     from rapid_mlx.agents import get_profile
 
     agents = [
-        name for name in ("opencode", "claude-code", "codex") if get_profile(name)
+        name
+        for name in (
+            "codex",
+            "claude-code",
+            "opencode",
+            "pi",
+            "hermes",
+            "crush",
+            "goose",
+        )
+        if get_profile(name)
     ]
     python_key = (
         '__import__("os").environ["RAPID_MLX_API_KEY"]'
@@ -253,17 +256,14 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
         lines.append("    Set RAPID_MLX_API_KEY to the server key first.")
     lines.append(f"    {curl}")
     if agents:
-        lines.append("    Connect a coding agent (choose one):")
-        lines.extend(
-            f"      rapid-mlx agents {agent} --setup --base-url {shlex.quote(ep.openai_url)}"
-            for agent in agents
+        lines.append(
+            "    Launch a coding agent with its own local server (choose one):"
         )
-        lines.append("    Full list: rapid-mlx agents")
+        lines.extend(f"      rapid-mlx launch {agent}" for agent in agents)
     else:
         lines.extend(
             [
-                "    Connect a coding agent: rapid-mlx agents",
-                "    List agents: rapid-mlx agents",
+                "    Coding agent: rapid-mlx launch codex",
             ]
         )
     lines.extend(

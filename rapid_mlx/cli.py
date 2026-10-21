@@ -13827,8 +13827,11 @@ def agents_command(args):
             )
         else:
             print(f"  {agent_count} {agents_label} supported")
-        print("  Usage: rapid-mlx agents <name>          Show setup guide")
-        print("         rapid-mlx agents <name> --setup   Auto-configure")
+        print(
+            "  Usage: rapid-mlx launch <agent>         Start a private local coding agent"
+        )
+        print("         rapid-mlx agents <name>          Show manual setup guide")
+        print("         rapid-mlx agents <name> --setup   Configure other integrations")
         print("         rapid-mlx agents <name> --test    Run integration tests")
         print()
         return

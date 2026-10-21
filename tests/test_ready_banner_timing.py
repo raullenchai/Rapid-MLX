@@ -96,16 +96,7 @@ def test_ready_banner_emitted_by_post_bind_callback():
     assert "OpenAI:    http://localhost:8765/v1" in out
     assert "Anthropic: http://localhost:8765" in out
     assert "Model:     qwen3.6-35b-4bit" in out
-    # Connect section mirrors what a user runs to wire up each tool. The
-    # setup commands must carry the real endpoint (--base-url) so a user who
-    # copies them connects to the running server, not the localhost default.
-    assert (
-        "rapid-mlx agents claude-code --setup "
-        "--base-url http://localhost:8765/v1" in out
-    )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://localhost:8765/v1" in out
-    )
+    assert "rapid-mlx launch codex" in out
     assert "rapid-mlx connect openai-python" in out
 
 
