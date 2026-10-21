@@ -225,3 +225,24 @@ def test_image_500_logs_traceback(
     ]
     assert "no Stream" in str(record.exc_info[1])
     assert isinstance(record.exc_info[1].__cause__, RuntimeError)
+
+
+def test_forked_child_gets_a_fresh_image_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Start the worker, then simulate the after-fork hook a child process runs.
+    image_lane.run_on_image_worker(lambda: None)
+    parent_lock = image_lane._image_worker_lock  # noqa: SLF001
+    parent_executor = image_lane._image_executor  # noqa: SLF001
+    assert parent_executor is not None
+    monkeypatch.setattr(image_lane, "_image_worker_lock", parent_lock)
+    monkeypatch.setattr(image_lane, "_image_executor", parent_executor)
+
+    image_lane._reset_image_worker_after_fork()  # noqa: SLF001
+
+    assert image_lane._image_executor is None  # noqa: SLF001
+    assert image_lane._image_worker_lock is not parent_lock  # noqa: SLF001
+    assert image_lane.run_on_image_worker(lambda: 7) == 7
+    child_executor = image_lane._image_executor  # noqa: SLF001
+    assert child_executor is not parent_executor
+    child_executor.shutdown(wait=True)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import importlib.util
+import os
 import sys
 import threading
 
@@ -44,6 +45,17 @@ _image_worker_state = threading.local()
 
 def _mark_image_worker_thread() -> None:
     _image_worker_state.is_worker = True
+
+
+def _reset_image_worker_after_fork() -> None:
+    """A forked child inherits neither the worker thread nor a usable lock."""
+    global _image_worker_lock, _image_executor
+    _image_worker_lock = threading.Lock()
+    _image_executor = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_image_worker_after_fork)
 
 
 def run_on_image_worker(func, /, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
