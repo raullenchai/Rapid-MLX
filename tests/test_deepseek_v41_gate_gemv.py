@@ -7,7 +7,7 @@ mx = pytest.importorskip("mlx.core")
 from rapid_mlx.models.deepseek_v41_native import head_gemv, moe  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.head_gemv import project  # noqa: E402
-from rapid_mlx.models.deepseek_v41_native.moe import MoE, Gate  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.moe import Gate, MoE  # noqa: E402
 
 
 def _gate(experts: int = 384, dim: int = 1024) -> Gate:
