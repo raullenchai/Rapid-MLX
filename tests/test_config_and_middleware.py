@@ -284,14 +284,14 @@ class TestCheckRateLimit:
 
 
 class TestRateLimitClientId:
-    def test_rate_limit_distinguishes_clients_by_hashed_bearer(self):
-        """Two distinct bearer tokens get separate buckets.
-
-        Pins #192: raw header values used to conflate everyone into one bucket.
-        """
+    def test_rate_limit_verified_bearer_uses_hashed_bucket(self, monkeypatch):
+        """A verified Bearer token has its own bucket; an invalid one does not."""
         from starlette.requests import Request
 
-        from rapid_mlx.middleware.auth import _rate_limit_client_id
+        from rapid_mlx.config import get_config
+        from rapid_mlx.middleware.auth import _bucket_id, _rate_limit_client_id
+
+        monkeypatch.setattr(get_config(), "api_key", "sk-token-alpha")
 
         scope_1 = {
             "type": "http",
@@ -307,16 +307,10 @@ class TestRateLimitClientId:
         client_id_1 = _rate_limit_client_id(Request(scope_1))
         client_id_2 = _rate_limit_client_id(Request(scope_2))
 
-        assert client_id_1 != client_id_2, (
-            f"Different tokens must produce different client IDs, "
-            f"got {client_id_1!r} == {client_id_2!r}"
-        )
-        assert "sk-token-alpha" not in client_id_1, (
-            "Raw token must not appear in client_id"
-        )
-        assert "sk-token-beta" not in client_id_2, (
-            "Raw token must not appear in client_id"
-        )
+        assert client_id_1 == _bucket_id("sk-token-alpha")
+        assert client_id_1 != client_id_2
+        assert client_id_2 == "192.0.2.0"
+        assert "sk-token-alpha" not in client_id_1
 
     def test_rate_limit_groups_unauth_clients_by_subnet(self):
         """IPv4 clients in the same /24 share a bucket."""
@@ -342,14 +336,20 @@ class TestRateLimitClientId:
             f"Same /24 must share a bucket, got {client_id_a!r} != {client_id_b!r}"
         )
 
-    def test_rate_limit_same_token_via_bearer_and_x_api_key_share_bucket(self):
+    def test_rate_limit_same_token_via_bearer_and_x_api_key_share_bucket(
+        self, monkeypatch
+    ):
         """Same key value via Bearer and x-api-key maps to same bucket."""
         from starlette.requests import Request
 
         from rapid_mlx.middleware.auth import (
+            _bucket_id,
             _anthropic_rate_limit_client_id,
             _rate_limit_client_id,
         )
+        from rapid_mlx.config import get_config
+
+        monkeypatch.setattr(get_config(), "api_key", "sk-abc")
 
         bearer_scope = {
             "type": "http",
@@ -369,6 +369,7 @@ class TestRateLimitClientId:
             f"Same key via Bearer and x-api-key must produce same bucket, "
             f"got {bearer_id!r} != {x_api_id!r}"
         )
+        assert bearer_id == _bucket_id("sk-abc")
 
     def test_extract_bearer_token_whitespace_normalization(self):
         """_extract_bearer_token strips leading, trailing, and tab/newline whitespace."""
@@ -379,7 +380,7 @@ class TestRateLimitClientId:
         assert _extract_bearer_token("Bearer my-token   ") == "my-token"
         assert _extract_bearer_token("Bearer   ") is None
 
-    def test_rate_limit_bearer_whitespace_variants_share_bucket(self):
+    def test_rate_limit_bearer_whitespace_variants_share_bucket(self, monkeypatch):
         """Auth-equivalent Bearer values must resolve to one rate-limit bucket.
 
         This pins the security *contract* (not just the helper): the bug being
@@ -390,7 +391,10 @@ class TestRateLimitClientId:
         """
         from starlette.requests import Request
 
+        from rapid_mlx.config import get_config
         from rapid_mlx.middleware.auth import _rate_limit_client_id
+
+        monkeypatch.setattr(get_config(), "api_key", "test-secret")
 
         def client_id(auth_value: str) -> str:
             scope = {
@@ -439,18 +443,18 @@ class TestRateLimitClientId:
                 f"got {client_id(empty)!r} != {subnet!r}"
             )
 
-    def test_rate_limit_non_bearer_scheme_still_buckets_by_header(self):
-        """Non-Bearer auth (e.g. Basic) keeps a stable per-credential bucket."""
+    def test_rate_limit_non_bearer_scheme_uses_subnet(self):
+        """Unsupported auth cannot create an independent rate-limit bucket."""
         from starlette.requests import Request
 
-        from rapid_mlx.middleware.auth import _bucket_id, _rate_limit_client_id
+        from rapid_mlx.middleware.auth import _rate_limit_client_id
 
         scope = {
             "type": "http",
             "headers": [(b"authorization", b"Basic dXNlcjpwYXNz")],
             "client": ("192.0.2.7", 443),
         }
-        assert _rate_limit_client_id(Request(scope)) == _bucket_id("Basic dXNlcjpwYXNz")
+        assert _rate_limit_client_id(Request(scope)) == "192.0.2.0"
 
 
 # ======================================================================
