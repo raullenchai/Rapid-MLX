@@ -38,7 +38,9 @@ def _own_copy(error: Exception) -> Exception:
             own = copy.copy(error)
         except Exception:  # exceptions whose constructor cannot be replayed
             own = RuntimeError(f"{type(error).__name__}: {error}")
-    own.__cause__ = error
+    # no chaining: the shared original (and its traceback) stays with the log
+    own.__cause__ = None
+    own.__suppress_context__ = True
     return own
 
 
@@ -290,7 +292,11 @@ class BatchBackend:
                                     )
                                     del joined
                                     rows.append(prefill)
-                                self._emit(prefill, token)
+                                # cancelled while its prefill ran: no token
+                                if prefill.cancelled:
+                                    prefill.finish()
+                                else:
+                                    self._emit(prefill, token)
                                 prefill.cache = None
                                 prefill = None
                         except Exception as error:
@@ -310,6 +316,10 @@ class BatchBackend:
                         tokens = mx.argmax(logits, axis=-1)
                         mx.eval(tokens)
                         for request, token in zip(rows, tokens.tolist()):
+                            # cancelled during the step: finish without a token
+                            if request.cancelled:
+                                request.finish()
+                                continue
                             # Detokenizer failures end only their own request;
                             # the next _filter compacts it out of the batch.
                             try:
@@ -318,6 +328,10 @@ class BatchBackend:
                                 logger.exception("DeepSeek V4.1 token emission failed")
                                 request.finish(error)
                 except Exception as error:
+                    # A shared forward cannot attribute its failure to one row,
+                    # so every row of the failed step ends, each with its own
+                    # exception instance. Per-request failures are isolated at
+                    # admission, prefill and token emission.
                     logger.exception("DeepSeek V4.1 batch step failed")
                     for request in rows:
                         request.finish(_own_copy(error))

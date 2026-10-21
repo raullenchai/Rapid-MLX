@@ -181,7 +181,13 @@ def test_cancel_frees_lane(phase):
         with ThreadPoolExecutor() as pool:
             result = pool.submit(collect, following).result(timeout=10)
             if phase != "unread":
-                pool.submit(collect, stream).result(timeout=10)
+                cancelled = pool.submit(collect, stream).result(timeout=10)
+                # cancelled mid-step: the step's token is never delivered
+                # (only the first token from the finished prefill, if any)
+                emitted = [
+                    chunk.token for chunk in cancelled if chunk.token is not None
+                ]
+                assert len(emitted) == (1 if phase == "decode" else 0)
         assert [chunk.token for chunk in result] == [3] * 3
         # A cancelled prefill never runs its second chunk.
         if phase != "decode":
@@ -693,7 +699,7 @@ def test_shared_failure_gives_each_request_its_own_exception():
     error = RuntimeError("shared")
     copied = _own_copy(error)
     assert copied is not error and str(copied) == "shared"
-    assert copied.__cause__ is error
+    assert copied.__cause__ is None
     http = HTTPException(status_code=400, detail="bad")
     own_http = _own_copy(http)
     assert own_http is not http and isinstance(own_http, HTTPException)
@@ -708,5 +714,5 @@ def test_shared_failure_gives_each_request_its_own_exception():
 
     odd = UnreplayableError(1, 2)
     own_odd = _own_copy(odd)
-    assert own_odd is not odd and own_odd.__cause__ is odd
+    assert own_odd is not odd and own_odd.__cause__ is None
     assert "UnreplayableError" in str(own_odd) and "1/2" in str(own_odd)
