@@ -458,7 +458,7 @@ PyTorch or vLLM while serving.
 | | | |
 |---|---|---|
 | **Chat in the terminal** | `rapid-mlx chat qwen3.5-9b-4bit` | Streaming REPL, `/help` for slash commands, `--think` / `--no-think` to control CoT. |
-| **OpenAI server for your apps** | `rapid-mlx serve qwen3.5-9b-4bit` | Point Aider, LibreChat, Open WebUI, or LangChain at `http://localhost:8000/v1`. |
+| **OpenAI server for your apps** | `rapid-mlx serve qwen3.5-9b-4bit` | OpenAI-compatible API at `http://localhost:8000/v1` — point Aider, LibreChat, LangChain, or any OpenAI SDK client at it. |
 | **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 14 clients, including Cline, Goose, and Crush, auto-configure via `agents <name> --setup` once the server is up (12 in the family matrix, 5 Tier-1) — see [Agent support](#agent-support). |
 | **Benchmark your Mac** | `rapid-mlx benchmark run qwen3.5-9b-4bit` | Reproducible model-first benchmark; saves privately, with a separate consent-gated `benchmark share RUN_ID`. |
 
