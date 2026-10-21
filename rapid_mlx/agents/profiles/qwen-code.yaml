@@ -45,7 +45,6 @@ models:
     - "qwen3-coder-30b-4bit"
     - "qwen3.6-35b-4bit"
     - "qwen3.6-27b-4bit"
-    - "qwen3.5-9b-4bit"
 
 streaming:
   extra_tool_tags: []
@@ -58,9 +57,8 @@ testing:
   # qwen-code has a one-shot mode: `qwen -p "<prompt>"` runs without a
   # REPL. Useful for CI smokes.
   query_cmd: "qwen -p '{query}'"
-  # Current Qwen Code injects ~30K prompt tokens and 59 tools before the user
-  # turn.  A local 9B prefill can legitimately exceed two minutes; allow the
-  # complete tool-result round trip rather than classifying progress as a hang.
+  # Qwen Code can inject a large system prompt and tool list; allow a full
+  # local tool-result round trip rather than classifying prefill as a hang.
   query_timeout: 360
   install_cmd: "npm install -g @qwen-code/qwen-code@latest"
 
@@ -69,4 +67,5 @@ capabilities:
   streaming: true
 
 known_issues:
+  - "Qwen3.5 9B sometimes answers a file task without calling offered tools; prefer a larger recommended coding model for reliable edits"
   - "Set the OpenAI provider baseUrl to the full `http://localhost:8000/v1` endpoint; Qwen Code sends chat completions relative to that URL."

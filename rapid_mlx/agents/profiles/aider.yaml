@@ -15,10 +15,7 @@ config:
 
 models:
   recommended:
-    - "qwen3.5-9b-4bit"
     - "qwen3.6-35b-4bit"
-    - "qwen3.5-4b-4bit"
-    - "deepseek-r1-8b-4bit"
 
 streaming:
   extra_tool_tags: []
@@ -39,6 +36,6 @@ capabilities:
 
 known_issues:
   - "Does NOT use function calling — uses text edit formats (unified diff, search/replace)"
-  - "Best local model support of any agent — works with virtually any model"
+  - "Qwen3.5 9B did not follow Aider's whole-file edit format in a four-turn file task; choose a stronger coding model for file edits"
   - "Architect mode: dual model (one plans, one edits) — use --architect flag"
   - "Voice-to-code via Whisper"
