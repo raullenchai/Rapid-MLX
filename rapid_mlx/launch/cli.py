@@ -30,14 +30,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from . import ADAPTERS, CLIENT_ALIASES, canonical_client, cursor
+
+if TYPE_CHECKING:
+    from rapid_mlx.agents.base import AgentProfile
 
 # Where we drop the PID of a ``--start-server`` subprocess. Pulled out
 # so tests can monkeypatch it to a tmp_path and assert the file's
@@ -142,6 +147,35 @@ def _stop_failed_start(pid: int | None) -> None:
             PID_FILE.unlink()
     except FileNotFoundError:
         pass
+
+
+def _usable_running_model(model: str, profile: AgentProfile) -> bool:
+    """Check tool support and the documented floor for a coding agent."""
+    from rapid_mlx.model_auto_config import detect_model_config
+
+    config = detect_model_config(model)
+    if config is None or (
+        profile.needs_function_calling and not config.tool_call_parser
+    ):
+        return False
+    if profile.name == "codex":
+        identity = (
+            model
+            if re.search(r"\d+(?:\.\d+)?b(?:-|$)", model.lower())
+            else config.hf_path
+        )
+        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)b(?:-|$)", identity.lower())
+        return bool(match and float(match.group(1)) >= 9)
+    return True
+
+
+def _same_checkpoint(first: str, second: str) -> bool:
+    from rapid_mlx.model_aliases import resolve_model
+
+    try:
+        return resolve_model(first) == resolve_model(second)
+    except ValueError:
+        return first == second
 
 
 def _print_preview(
@@ -265,6 +299,7 @@ def launch_command(args: argparse.Namespace) -> None:
             configure,
             connection_status,
             remove,
+            running_model,
             saved_model,
             stable_key,
             stable_port,
@@ -325,13 +360,34 @@ def launch_command(args: argparse.Namespace) -> None:
             from rapid_mlx.run.cli import _select_model
 
             port = args.port if args.port is not None else stable_port()
-            model = getattr(args, "_original_alias", None) or _select_model(
-                explicit=args.model or saved_model(args.client),
-                profile=profile,
-                no_download=False,
+            key = stable_key(create=False)
+            active = (
+                running_model(port, key)
+                if key and getattr(args, "run", False)
+                else None
+            )
+            explicit = getattr(args, "_original_alias", None) or args.model
+            reuse = bool(
+                active and not explicit and _usable_running_model(active, profile)
+            )
+            model = (
+                active
+                if reuse
+                else explicit
+                or _select_model(
+                    explicit=saved_model(args.client),
+                    profile=profile,
+                    no_download=False,
+                )
             )
             if model is None:
                 raise ValueError("no model fits this Mac; choose one with --model")
+            if active and not _same_checkpoint(active, model):
+                print(
+                    f"  Local server serves {active}; stop it before launching {model}.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
             if args.model:
                 from rapid_mlx.recommendations import physical_ram_gb
                 from rapid_mlx.run.cli import _fits_host
@@ -359,6 +415,8 @@ def launch_command(args: argparse.Namespace) -> None:
             f"--no-setup --port {port}"
         )
         if getattr(args, "run", False):
+            if reuse:
+                print(f"  Using running model {model} for {args.client}.")
             key = stable_key(create=False)
             assert key is not None  # configure() created or reused it above.
             server_pid = None

@@ -763,6 +763,116 @@ def test_isolated_run_executes_when_ready(private_home):
     assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
 
 
+def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
+    class Reply:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return self.payload
+
+    with patch(
+        "rapid_mlx.agents.isolated.urllib.request.urlopen",
+        return_value=Reply(
+            b'{"data":[{"id":"mlx-community/Qwen3.5-9B-4bit"},{"id":"qwen3.5-9b-4bit"},{"id":"audio","capabilities":["audio"]},{"id":"tier","anthropic_family_tier":"opus"}]}'
+        ),
+    ) as get:
+        assert isolated.running_model(7660, "secret") == "qwen3.5-9b-4bit"
+    assert get.call_args.args[0].get_header("Authorization") == "Bearer secret"
+    with patch(
+        "rapid_mlx.agents.isolated.urllib.request.urlopen",
+        return_value=Reply(
+            b'{"data":[{"id":"qwen3.5-9b-4bit"},{"id":"qwen3.5-4b-4bit"}]}'
+        ),
+    ):
+        assert isolated.running_model(7660, "secret") is None
+    with patch("rapid_mlx.agents.isolated.urllib.request.urlopen", side_effect=OSError):
+        assert isolated.running_model(7660, "secret") is None
+    for payload in (b"{}", b'{"data":[]}'):
+        with patch(
+            "rapid_mlx.agents.isolated.urllib.request.urlopen",
+            return_value=Reply(payload),
+        ):
+            assert isolated.running_model(7660, "secret") is None
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.urllib.request.urlopen",
+            return_value=Reply(b'{"data":[{"id":"custom"}]}'),
+        ),
+        patch("rapid_mlx.model_aliases.resolve_model", side_effect=ValueError),
+    ):
+        assert isolated.running_model(7660, "secret") is None
+
+
+def test_running_model_capability_and_checkpoint_floor():
+    from types import SimpleNamespace
+
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.launch import cli as launch_cli
+
+    codex = get_profile("codex")
+    assert codex is not None
+    with patch("rapid_mlx.model_auto_config.detect_model_config", return_value=None):
+        assert not launch_cli._usable_running_model("unknown", codex)
+    with patch(
+        "rapid_mlx.model_auto_config.detect_model_config",
+        return_value=SimpleNamespace(tool_call_parser=None, hf_path="repo/Model-9B"),
+    ):
+        assert not launch_cli._usable_running_model("model-9b-4bit", codex)
+    with patch(
+        "rapid_mlx.model_auto_config.detect_model_config",
+        return_value=SimpleNamespace(
+            tool_call_parser="hermes", hf_path="repo/Model-9B"
+        ),
+    ):
+        assert not launch_cli._usable_running_model("model-4b-4bit", codex)
+        assert launch_cli._usable_running_model("model-9b-4bit", codex)
+        assert launch_cli._usable_running_model("repo/Model-9B", codex)
+    with patch("rapid_mlx.model_aliases.resolve_model", side_effect=ValueError):
+        assert launch_cli._same_checkpoint("custom", "custom")
+        assert not launch_cli._same_checkpoint("custom", "other")
+
+
+def test_short_launch_reuses_compatible_running_model(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-9b-4bit"
+        ),
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.run.cli._select_model") as select,
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0),
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(_launch_args("goose"))
+    select.assert_not_called()
+    assert isolated.saved_model("goose") == "qwen3.5-9b-4bit"
+    assert "Using running model" in capsys.readouterr().out
+
+
+def test_short_launch_refuses_explicit_different_running_model(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-9b-4bit"
+        ),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("goose", "--model", "qwen3.5-4b-4bit"))
+    assert isolated.saved_model("goose") is None
+    assert "stop it before launching" in capsys.readouterr().err
+
+
 def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     private_home, capsys
 ):

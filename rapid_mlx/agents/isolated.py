@@ -246,6 +246,44 @@ def hermes_context_length(
     return context
 
 
+def running_model(port: int, key: str) -> str | None:
+    """Find a single text checkpoint on the authenticated local server."""
+    from rapid_mlx.model_aliases import resolve_model
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError):
+        return None
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+    names = [
+        entry["id"]
+        for entry in models
+        if isinstance(entry, dict)
+        and isinstance(entry.get("id"), str)
+        and entry["id"]
+        and not entry.get("anthropic_family_tier")
+        and (
+            not isinstance(entry.get("capabilities"), list)
+            or "text" in entry["capabilities"]
+        )
+    ]
+    if not names:
+        return None
+    try:
+        if len({resolve_model(name) for name in names}) != 1:
+            return None
+    except ValueError:
+        return None
+    return min(names, key=lambda name: ("/" in name, len(name)))
+
+
 def _cli_invocation() -> str:
     current = Path(sys.argv[0])
     if current.name == "rapid-mlx" and current.is_file():
