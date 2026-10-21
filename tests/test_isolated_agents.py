@@ -59,6 +59,7 @@ def test_profiles_are_isolated_idempotent_and_removable(private_home):
             == (
                 0o700
                 if p.name in ("run", "git", "crush-launch", "aider-launch")
+                or p.parent.name == "shell"
                 else 0o600
             )
             for p in root.rglob("*")
@@ -227,6 +228,102 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     assert not (isolated.connection_dir() / "agents" / "hermes" / "auth.json").exists()
     goose = isolated.configure("goose", "qwen3.5-9b-4bit")
     assert "goose session --provider" in Path(goose).read_text()
+
+
+def test_opencode_commands_see_real_home_while_config_stays_private(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "Real User Home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    user_xdg = home / "my config"
+    (user_xdg / "gh").mkdir(parents=True)
+    (user_xdg / "gh" / "hosts.yml").write_text("login: real\n")
+    (home / ".gitconfig").write_text(
+        "[user]\n  name = Real Developer\n  email = real@example.invalid\n"
+    )
+    project = tmp_path / "project dir"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    agent_env = tmp_path / "agent-env"
+    child_env = tmp_path / "child-env"
+    # Stand-in for OpenCode: record its own environment, then start a command
+    # through $SHELL with -c, as its shell tool does.
+    probe = commands / "opencode"
+    probe.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" '
+        f'"$OPENCODE_CONFIG" "$SHELL" > "{agent_env}"\n'
+        'exec "$SHELL" -c \'printf "%s\\n" "$HOME" "${XDG_CONFIG_HOME-unset}" '
+        '"${XDG_DATA_HOME-unset}" "$SHELL" "$(git config --global user.email)" '
+        f'"$(cat "$XDG_CONFIG_HOME/gh/hosts.yml")" > "{child_env}"\'\n'
+    )
+    probe.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_xdg))
+    for variable in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(variable, raising=False)
+    for variable in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    with (
+        patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)),
+        patch(
+            "rapid_mlx.agents.opencode_version.installed_version",
+            return_value="2.1.2",
+        ),
+    ):
+        isolated.configure("opencode", "qwen3.5-9b-4bit", port=7660)
+    root = isolated.connection_dir() / "agents" / "opencode"
+    wrapper = root / "shell" / "sh"
+    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o700
+    subprocess.run(
+        [shutil.which("zsh") or "/bin/bash", str(root / "run")],
+        cwd=project,
+        check=True,
+    )
+    assert agent_env.read_text().splitlines() == [
+        str(root / "home"),
+        str(root / "xdg-config"),
+        str(root / "xdg-data"),
+        str(root / "opencode.json"),
+        str(wrapper),
+    ]
+    assert child_env.read_text().splitlines() == [
+        str(home),
+        str(user_xdg),
+        "unset",
+        "/bin/sh",
+        "real@example.invalid",
+        "login: real",
+    ]
+    assert not (home / ".config").exists()
+    assert not (user_xdg / "opencode").exists()
+
+
+def test_opencode_shell_falls_back_from_unsupported_login_shell(
+    private_home, monkeypatch
+):
+    monkeypatch.setenv("SHELL", "/usr/local/bin/fish")
+    monkeypatch.setenv("XDG_STATE_HOME", str(private_home / "state dir"))
+    monkeypatch.setattr(isolated.shutil, "which", lambda name: None)
+    isolated.configure("opencode", "qwen3.5-9b-4bit")
+    root = isolated.connection_dir() / "agents" / "opencode"
+    wrapper = (root / "shell" / "sh").read_text()
+    assert (
+        f"XDG_STATE_HOME='{private_home / 'state dir'}'; export XDG_STATE_HOME"
+        in wrapper
+    )
+    assert "SHELL=/bin/sh; export SHELL" in wrapper
+    assert wrapper.endswith('exec /bin/sh "$@"\n')
+    assert f"SHELL={root / 'shell' / 'sh'} " in (root / "run").read_text()
 
 
 def test_opencode_runner_home_exists_and_survives_refresh(private_home):

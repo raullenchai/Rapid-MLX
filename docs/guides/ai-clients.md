@@ -95,6 +95,10 @@ connects on loopback and switches the embedded key to **Until I rotate** when
 you save a persistent agent connection. Rotating the key requires restarting
 the model before agents can use the new key.
 
+OpenCode keeps its settings, credentials, and sessions in the private profile,
+but the shell commands it runs see your normal home directory and XDG folders, so
+git identity, CLI logins, and toolchains behave as in your own terminal.
+
 The generated files remain separate from your existing tool settings. If the
 server is already running, you can use the agent's native command with its
 private config directory:

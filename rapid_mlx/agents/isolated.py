@@ -53,6 +53,9 @@ _GIT_PASSTHROUGH = frozenset(
         "GIT_TERMINAL_PROMPT",
     }
 )
+# Shells OpenCode accepts for its shell tool on every supported major version.
+_OPENCODE_SHELLS = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
+_XDG_DIRS = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME")
 _HERMES_MIN_CONTEXT = 64_000
 _HERMES_MAX_CONTEXT = 131_072
 
@@ -297,6 +300,54 @@ def running_model(port: int, key: str) -> str | None:
     return min(names, key=lambda name: ("/" in name, len(name)))
 
 
+def _user_shell() -> str:
+    """Return the POSIX shell OpenCode would otherwise use for commands."""
+    shell = os.environ.get("SHELL", "")
+    if (
+        os.path.isabs(shell)
+        and Path(shell).name in _OPENCODE_SHELLS
+        and os.path.isfile(shell)
+        and os.access(shell, os.X_OK)
+    ):
+        return shell
+    # OpenCode rejects shells such as fish and falls back to zsh on macOS.
+    return shutil.which("zsh") or "/bin/sh"
+
+
+def _opencode_shell(root: Path) -> Path:
+    # OpenCode derives shell arguments from the basename, so keep it.
+    return root / "shell" / Path(_user_shell()).name
+
+
+def _write_opencode_shell(root: Path) -> None:
+    """Give commands started by OpenCode the user's own HOME and XDG dirs.
+
+    OpenCode reads its global config, credentials, and session data only from
+    HOME and the XDG base directories, so the OpenCode process itself needs
+    private values. Its shell and terminal tools start every command through
+    $SHELL, so this wrapper restores the user's environment before the real
+    shell starts. Git identity, CLI logins, and toolchains then behave as in
+    the user's own terminal.
+    """
+    quote = shlex.quote
+    real = _user_shell()
+    lines = ["#!/bin/sh"]
+    for variable, value in (
+        ("HOME", str(Path.home())),
+        ("SHELL", real),
+        *((variable, os.environ.get(variable)) for variable in _XDG_DIRS),
+    ):
+        lines.append(
+            f"unset {variable}"
+            if value is None
+            else f"{variable}={quote(value)}; export {variable}"
+        )
+    lines.append(f'exec {quote(real)} "$@"')
+    wrapper = _opencode_shell(root)
+    _private_write(wrapper, "\n".join(lines) + "\n")
+    wrapper.chmod(0o700)
+
+
 def _cli_invocation() -> str:
     current = Path(sys.argv[0])
     if current.name == "rapid-mlx" and current.is_file():
@@ -341,6 +392,7 @@ def _command(
         # Its config loader also reads and may rewrite the default XDG file.
         # Give the process a private home. Inline config has precedence over
         # project config, which would otherwise replace our selected model.
+        # SHELL restores the user's HOME and XDG dirs for agent commands.
         config = quote(str(root / "opencode.json"))
         # OpenCode 2.x otherwise joins its shared background service on a
         # fixed port. That service may belong to the user's normal OpenCode
@@ -355,6 +407,7 @@ def _command(
             f"XDG_DATA_HOME={quote(str(root / 'xdg-data'))} "
             f"XDG_CACHE_HOME={quote(str(root / 'xdg-cache'))} "
             f"XDG_STATE_HOME={quote(str(root / 'xdg-state'))} "
+            f"SHELL={quote(str(_opencode_shell(root)))} "
             f"OPENCODE_CONFIG={config} {invocation}{standalone}"
         )
     if name == "hermes":
@@ -475,6 +528,7 @@ def configure(
     _private_dir(root)
     if name == "opencode":
         _private_dir(root / "home")
+        _write_opencode_shell(root)
     if name == "qwen-code":
         _private_dir(root / "runtime")
     if name == "aider":
