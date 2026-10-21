@@ -172,10 +172,11 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch
             while not marker.exists() and self.poll() is None:
                 assert time.monotonic() < deadline, "child never reached the shim"
                 time.sleep(0.01)
+            launched.append(time.monotonic())
             return super().communicate(input, timeout)
 
+    launched = []
     monkeypatch.setattr(subprocess, "Popen", LaunchedFirst)
-    started = time.monotonic()
     output, error = _agent_query(
         sys.executable,
         f"python -c {shlex.quote(script)}",
@@ -190,8 +191,10 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch
     )
     assert output is None
     assert "agent tried to open a browser" in error
-    # the probe ended by its timeout, not by the child finishing its sleep
-    assert time.monotonic() - started < 30
+    # the probe ended by its timeout, not by the child finishing its sleep;
+    # measured from the launch so slow child start-up does not count
+    assert len(launched) == 1
+    assert time.monotonic() - launched[0] < 20
 
 
 def test_previous_launch_marker_cannot_be_erased_by_next_probe(tmp_path):
