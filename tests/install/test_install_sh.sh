@@ -240,25 +240,24 @@ refresh_starter_from_installed_cache
 dim() { printf '%s\n' "$*"; }
 BANNER="$(print_quick_start_commands)"
 case "$BANNER" in
-    *"rapid-mlx chat qwen3.8-27b-4bit"*"rapid-mlx serve qwen3.8-27b-4bit --port 8000"*"rapid-mlx launch --all --model qwen3.8-27b-4bit"*)
-        ok "post-install structured cache choice reaches chat and stable agent workflow" ;;
+    *"rapid-mlx chat qwen3.8-27b-4bit"*"rapid-mlx launch codex"*)
+        ok "post-install banner leads with agent launch after cached chat starter" ;;
     *)
-        bad "post-install structured cache choice reaches chat and stable agent workflow"
+        bad "post-install banner leads with agent launch after cached chat starter"
         printf '        banner: %s\n' "$BANNER" ;;
 esac
 case "$BANNER" in
-    *"serve exits if :8000 is busy; use another port in both commands:"*)
-        ok "post-install banner explains the explicit-port fallback literally" ;;
+    *"Launch chooses a model suitable for that agent and your Mac."*"Run the same command tomorrow; add --remove"*)
+        ok "post-install banner explains model choice and repeat launch" ;;
     *)
-        bad "post-install banner explains the explicit-port fallback literally"
+        bad "post-install banner explains model choice and repeat launch"
         printf '        banner: %s\n' "$BANNER" ;;
 esac
 case "$BANNER" in
-    *"rapid-mlx serve qwen3.8-27b-4bit --port 8001"*"--server-url http://127.0.0.1:8001"*)
-        ok "post-install banner gives a matching alternate-port workflow" ;;
+    *"rapid-mlx launch codex --model qwen3.8-27b-4bit"*|*"rapid-mlx launch --all --model"*)
+        bad "post-install banner does not force a chat starter on an agent" ;;
     *)
-        bad "post-install banner gives a matching alternate-port workflow"
-        printf '        banner: %s\n' "$BANNER" ;;
+        ok "post-install banner does not force a chat starter on an agent" ;;
 esac
 
 # A subprocess can print a syntactically valid partial result and still fail.
