@@ -174,6 +174,33 @@ def test_login_shell_answer_file(status, expected):
         assert cli_preflight.agent_cli_found("fake-agent") is expected
 
 
+def test_timed_out_probe_stops_its_group_before_reaping(monkeypatch):
+    events = []
+
+    class HungProbe:
+        pid = 424242
+
+        def __init__(self, argv, **kwargs):
+            pass
+
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("zsh", timeout)
+            return -9
+
+    monkeypatch.setattr(
+        cli_preflight.os, "killpg", lambda pid, sig: events.append(("killpg", pid))
+    )
+    with patch.object(cli_preflight.subprocess, "Popen", HungProbe):
+        assert cli_preflight.agent_cli_found("fake-agent") is None
+    assert events == [
+        ("wait", cli_preflight._PROBE_TIMEOUT_S),
+        ("killpg", 424242),
+        ("wait", None),
+    ]
+
+
 def test_unavailable_login_shell_is_unconfirmed():
     with patch.object(
         cli_preflight.subprocess, "Popen", side_effect=OSError("no shell")
