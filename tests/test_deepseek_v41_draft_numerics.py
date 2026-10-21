@@ -28,6 +28,14 @@ from rapid_mlx.models.deepseek_v41_native.sparse_attention import sparse_attn
 from scripts import bench_deepseek_v41_draft as bench
 
 
+@pytest.fixture(autouse=True)
+def restore_default_device():
+    """The tiny benchmark CLI selects the CPU; never leak that to later modules."""
+    previous = mx.default_device()
+    yield
+    mx.set_default_device(previous)
+
+
 @pytest.fixture
 def cpu_device():
     """Keep algebraic/bit-exact checks independent of the default device."""
