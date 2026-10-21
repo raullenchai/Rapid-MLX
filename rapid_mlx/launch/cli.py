@@ -330,7 +330,7 @@ def launch_command(args: argparse.Namespace) -> None:
                 sys.exit(1)
             status = connection_status(port, key, model)
             if status == "ready":
-                if args.client == "hermes":
+                if args.client in {"hermes", "codex"}:
                     try:
                         configure(
                             args.client, model, port=port, require_live_context=True
@@ -474,7 +474,7 @@ def launch_command(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
-            if args.client == "hermes":
+            if args.client in {"hermes", "codex"}:
                 try:
                     configure(args.client, model, port=port, require_live_context=True)
                 except (OSError, ValueError) as exc:

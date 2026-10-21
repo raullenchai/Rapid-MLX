@@ -323,6 +323,72 @@ def test_hermes_uses_served_context_ceiling_before_opening(private_home):
     opened.assert_called_once()
 
 
+def test_codex_private_config_and_catalog_use_live_served_window(private_home):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"qwen3.5-9b-4bit","context_window":262144,"max_model_len":98304}]}'
+
+    with patch("urllib.request.urlopen", return_value=Response()):
+        isolated.configure(
+            "codex", "qwen3.5-9b-4bit", port=7660, require_live_context=True
+        )
+    root = isolated.connection_dir() / "agents" / "codex"
+    config = tomllib.loads((root / "rapid.config.toml").read_text())
+    catalog = json.loads((root / "rapid-mlx-model-catalog.json").read_text())
+    assert config["model_context_window"] == 98304
+    assert catalog["models"][0]["context_window"] == 98304
+
+
+def test_codex_live_preflight_requires_served_limit(private_home):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"qwen3.5-9b-4bit","context_window":262144}]}'
+
+    with (
+        patch("urllib.request.urlopen", return_value=Response()),
+        pytest.raises(ValueError, match="ready local server"),
+    ):
+        isolated.configure(
+            "codex", "qwen3.5-9b-4bit", port=7660, require_live_context=True
+        )
+
+
+def test_codex_offline_profile_uses_provisional_window(private_home):
+    with patch("urllib.request.urlopen", side_effect=OSError):
+        isolated.configure("codex", "qwen3.5-9b-4bit", port=7660)
+    root = isolated.connection_dir() / "agents" / "codex"
+    config = tomllib.loads((root / "rapid.config.toml").read_text())
+    catalog = json.loads((root / "rapid-mlx-model-catalog.json").read_text())
+    assert config["model_context_window"] == 32768
+    assert catalog["models"][0]["context_window"] == 32768
+
+
+def test_codex_saved_runner_check_stops_without_live_limit(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=None),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(
+            _launch_args("codex", "--isolated", "--check", "--model", "qwen3.5-9b-4bit")
+        )
+
+
 def test_hermes_rejects_served_window_below_minimum(private_home, capsys):
     from rapid_mlx.launch.cli import launch_command
 
@@ -411,6 +477,7 @@ def test_hermes_failed_preflight_stops_only_new_server(private_home):
         ),
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
         patch("rapid_mlx.run.cli._confirm_download", return_value=True),
+        patch("rapid_mlx.cli._ensure_model_downloaded"),
         patch("rapid_mlx.launch.cli._start_server_background", return_value=12345),
         patch("rapid_mlx.launch.cli._stop_failed_start") as stopped,
         patch("rapid_mlx.launch.cli.subprocess.call") as opened,
@@ -609,6 +676,7 @@ def test_launch_waits_through_startup_http_error(private_home):
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded"),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as agent,
         patch("time.sleep"),
         pytest.raises(SystemExit) as exit_info,
@@ -779,6 +847,7 @@ def test_isolated_cli_checks_saved_endpoint(private_home, capsys, status, expect
     isolated.stable_key()
     with (
         patch("rapid_mlx.agents.isolated.connection_status", return_value=status),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=32768),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
     ):
         if expected:
@@ -842,6 +911,7 @@ def test_isolated_run_executes_when_ready(private_home):
 
     with (
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
         patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
         pytest.raises(SystemExit, match="0"),
@@ -850,6 +920,10 @@ def test_isolated_run_executes_when_ready(private_home):
             _launch_args("codex", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
     assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
+    config = (
+        isolated.connection_dir() / "agents" / "codex" / "rapid.config.toml"
+    ).read_text()
+    assert tomllib.loads(config)["model_context_window"] == 98304
 
 
 def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
@@ -1049,6 +1123,7 @@ def test_short_launch_reuses_saved_model_and_starts_stopped_server(
             "rapid_mlx.agents.isolated.connection_status",
             side_effect=["stopped", "ready"],
         ),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded") as download,
         patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,

@@ -182,15 +182,10 @@ def connection_status(port: int, key: str, model: str) -> str:
     return "ready" if model in advertised else "model-mismatch"
 
 
-def hermes_context_length(
-    port: int, key: str, model: str, *, require_live: bool = False
-) -> int:
-    """Use the served KV budget for Hermes, bounded by the native window.
-
-    A stopped server can be configured provisionally from cached model metadata.
-    The launch path calls this again after readiness, before starting Hermes.
-    """
-    context = None
+def served_context_length(
+    port: int, key: str, model: str, *, require_served: bool = False
+) -> int | None:
+    """Read the active KV limit, bounded by the model's native window."""
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/models",
         headers={"Authorization": f"Bearer {key}"},
@@ -213,16 +208,24 @@ def hermes_context_length(
 
                 native = _valid_context_window(entry.get("context_window"))
                 served = _valid_context_window(entry.get("max_model_len"))
-                if served is not None or (native is not None and not require_live):
-                    context = min(
-                        *(
-                            value
-                            for value in (served, native, _HERMES_MAX_CONTEXT)
-                            if value is not None
-                        )
-                    )
+                if served is not None or (native is not None and not require_served):
+                    return min(value for value in (served, native) if value is not None)
     except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError):
         pass
+    return None
+
+
+def hermes_context_length(
+    port: int, key: str, model: str, *, require_live: bool = False
+) -> int:
+    """Use the served KV budget for Hermes, bounded by the native window.
+
+    A stopped server can be configured provisionally from cached model metadata.
+    The launch path calls this again after readiness, before starting Hermes.
+    """
+    context = served_context_length(port, key, model, require_served=require_live)
+    if context is not None:
+        context = min(context, _HERMES_MAX_CONTEXT)
     if context is None and not require_live:
         from rapid_mlx.run.cli import _cached_context_window
 
@@ -533,6 +536,17 @@ def configure(
             context_length = hermes_context_length(
                 port, key, model, require_live=require_live_context
             )
+        if name == "codex":
+            context_length = served_context_length(
+                port, key, model, require_served=require_live_context
+            )
+            if context_length is None:
+                if require_live_context:
+                    raise ValueError(
+                        f"Codex needs a context limit from the ready local server for {model}; "
+                        "check /v1/models and retry."
+                    )
+                context_length = 32_768
         rendered = profile.render_config(
             base, model, version, context_length=context_length
         )
@@ -568,7 +582,8 @@ def configure(
         _private_write(root / "rapid.config.toml", rendered)
         _private_write(
             catalog,
-            json.dumps({"models": [build_codex_model_info(model, None)]}) + "\n",
+            json.dumps({"models": [build_codex_model_info(model, context_length)]})
+            + "\n",
         )
     elif name == "pi":
         _private_write(root / "models.json", str(rendered))
