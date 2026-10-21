@@ -266,29 +266,27 @@ def test_self_check_launch_failure_falls_back(monkeypatch) -> None:
 
 
 def test_self_check_compiles_the_hot_path_specialization(monkeypatch) -> None:
-    """Every later launch reuses the template the self-check evaluated."""
-    templates = []
-    real = head_gemv._kernel
+    """The real self-check evaluates the specialization every later launch uses."""
+    launches = []
 
-    def spy():
-        kernel = real()
-
-        def call(**kwargs):
-            templates.append(tuple(kwargs["template"]))
-            return kernel(**kwargs)
+    def recording_kernel():
+        def call(*, inputs, template, **_kwargs):
+            x, weight = inputs
+            # A Metal pipeline is specialized by its template and input dtypes.
+            launches.append((tuple(template), x.dtype, weight.dtype, x.shape[0]))
+            # each row's own stock projection (the kernel's contract), so the
+            # self-check passes
+            return [mx.concatenate([x[r : r + 1] @ weight.T for r in range(len(x))])]
 
         return call
 
-    monkeypatch.setattr(head_gemv, "_kernel", spy)
-    monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
-    monkeypatch.setattr(head_gemv, "_matches_stock", lambda head: True)
+    monkeypatch.setattr(head_gemv, "_kernel", recording_kernel)
+    monkeypatch.setattr(head_gemv, "_gpu_default", lambda: True)
     head = _head()
     for rows in (1, 3, 8):
-        head_gemv._launch(head.weight, mx.zeros((rows, 512)))
-    head_logits(head, mx.zeros((2, 512)))
-    probe = (
-        ("K", 512),
-        ("N", head.weight.shape[0]),
-        ("OUTPUTS", head_gemv._OUTPUTS_PER_THREADGROUP),
-    )
-    assert set(templates) == {probe}
+        mx.eval(head_logits(head, mx.random.normal((rows, 512))))
+    assert getattr(head, head_gemv._CHECK_ATTR)[1] is True
+    probe, *hot = launches
+    assert probe[3] == head_gemv.MAX_ROWS  # the self-check ran first, on the full grid
+    assert [rows for *_, rows in hot] == [1, 3, 8]
+    assert {launch[:3] for launch in launches} == {probe[:3]}
