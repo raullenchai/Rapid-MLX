@@ -360,6 +360,16 @@ def launch_command(args: argparse.Namespace) -> None:
             profile = get_profile(args.client)
             if profile is None:
                 raise ValueError(f"unknown agent: {args.client}")
+            from rapid_mlx.agents.cli_preflight import missing_agent_cli
+
+            # Refuse before choosing, downloading, or starting a model: a
+            # missing CLI would otherwise surface only as exit 127 afterwards.
+            # Saving a profile without --run still succeeds, with a warning.
+            missing_cli = missing_agent_cli(profile)
+            if missing_cli and getattr(args, "run", False):
+                raise ValueError(missing_cli)
+            if missing_cli:
+                print(f"  Warning: {missing_cli}", file=sys.stderr)
             from rapid_mlx.run.cli import _select_model
 
             port = args.port if args.port is not None else stable_port()

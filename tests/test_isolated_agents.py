@@ -31,6 +31,19 @@ def private_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def agent_clis_installed(monkeypatch):
+    """These tests cover profile and server flows, not CLI installation.
+
+    The missing-CLI preflight has its own tests; here every agent CLI is
+    treated as installed so results do not depend on the host's PATH.
+    """
+    monkeypatch.setattr(
+        "rapid_mlx.agents.cli_preflight.resolve_agent_binary",
+        lambda binary: f"/usr/local/bin/{binary}",
+    )
+
+
 def test_stable_key_is_reused_and_owner_only(private_home):
     first = isolated.stable_key()
     assert len(first) == 64
