@@ -342,12 +342,12 @@ class TestRateLimitClientId:
         """Same key value via Bearer and x-api-key maps to same bucket."""
         from starlette.requests import Request
 
+        from rapid_mlx.config import get_config
         from rapid_mlx.middleware.auth import (
-            _bucket_id,
             _anthropic_rate_limit_client_id,
+            _bucket_id,
             _rate_limit_client_id,
         )
-        from rapid_mlx.config import get_config
 
         monkeypatch.setattr(get_config(), "api_key", "sk-abc")
 
