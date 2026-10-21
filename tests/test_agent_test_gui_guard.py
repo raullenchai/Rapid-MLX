@@ -175,7 +175,7 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch
                     self.wait()
                     raise AssertionError("child never reached the shim")
                 time.sleep(0.01)
-            launched.append(time.monotonic())
+            launched.append((time.monotonic(), timeout))
             return super().communicate(input, timeout)
 
     launched = []
@@ -194,10 +194,13 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch
     )
     assert output is None
     assert "agent tried to open a browser" in error
-    # the probe ended by its timeout, not by the child finishing its sleep;
-    # measured from the launch so slow child start-up does not count
+    # the probe ended by its own 2 s timeout, not by the child finishing its
+    # sleep; timed from the launch so slow child start-up does not count, with
+    # a scheduling allowance for killing the child on a loaded host
     assert len(launched) == 1
-    assert time.monotonic() - launched[0] < 20
+    launch_time, probe_timeout = launched[0]
+    assert probe_timeout == 2
+    assert time.monotonic() - launch_time < 8
 
 
 def test_previous_launch_marker_cannot_be_erased_by_next_probe(tmp_path):
