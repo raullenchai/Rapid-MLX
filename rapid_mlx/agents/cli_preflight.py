@@ -37,7 +37,8 @@ def _executable_file(path: str) -> str | None:
 def _fallback_lookup(binary: str) -> str | None:
     """Current PATH plus Homebrew, for when the login shell cannot answer."""
     entries = [os.environ.get("PATH", ""), *_HOMEBREW_PREFIXES]
-    return shutil.which(binary, path=os.pathsep.join(e for e in entries if e))
+    found = shutil.which(binary, path=os.pathsep.join(e for e in entries if e))
+    return _executable_file(found) if found else None
 
 
 def _login_shell_lookup(binary: str) -> str | None:
