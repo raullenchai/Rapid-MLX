@@ -937,6 +937,29 @@ def test_isolated_run_executes_when_ready(private_home):
     assert tomllib.loads(config)["model_context_window"] == 98304
 
 
+def test_claude_launch_explains_folder_trust_without_pretrusting(private_home, capsys):
+    from rapid_mlx.launch.cli import launch_command
+
+    with (
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0),
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(
+            _launch_args(
+                "claude-code", "--isolated", "--run", "--model", "qwen3.5-9b-4bit"
+            )
+        )
+    assert "Review the folder before choosing Yes" in capsys.readouterr().out
+    settings = json.loads(
+        (
+            isolated.connection_dir() / "agents" / "claude-code" / "settings.json"
+        ).read_text()
+    )
+    assert "trustedDirectories" not in settings
+
+
 def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
     class Reply:
         def __init__(self, payload):

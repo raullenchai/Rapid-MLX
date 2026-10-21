@@ -113,6 +113,10 @@ def test_codex_native_bookkeeping_does_not_mask_rapid_config_write(tmp_path):
         assert check_then_open_native(
             tmp_path, "codex", before, {}, tmp_path, tmp_path / "native.pty"
         ) == (False, True)
+    with patch("scripts.agent_e2e.run.normal_mode", side_effect=OSError):
+        assert check_then_open_native(
+            tmp_path, "codex", before, {}, tmp_path, tmp_path / "native.pty"
+        ) == (False, False)
 
 
 def test_claude_folder_trust_menu_selects_yes(monkeypatch):
