@@ -273,7 +273,7 @@ def _command(name: str, root: Path, model: str, port: int) -> str:
         return (
             f'env -i PATH={quote(str(root / "bin"))}:"$PATH" TERM="${{TERM:-xterm-256color}}" '
             f"HOME={quote(str(root / 'home'))} "
-            f"/bin/zsh -c {quote(inner)}"
+            f"/bin/sh -c {quote(inner)}"
         )
     if name == "qwen-code":
         saved_port = quote(str(port_path()))

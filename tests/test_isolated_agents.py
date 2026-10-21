@@ -1334,6 +1334,7 @@ def test_saved_runner_checks_new_working_directory_before_agent_starts(
     private_home, monkeypatch, agent, project_config
 ):
     monkeypatch.setenv("HOME", str(private_home))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     commands = private_home / "commands"
     commands.mkdir()
     rapid = commands / "rapid-mlx"
