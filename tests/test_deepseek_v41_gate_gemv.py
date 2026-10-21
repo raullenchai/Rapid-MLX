@@ -108,3 +108,41 @@ def test_moe_routes_through_the_exact_projection(monkeypatch) -> None:
     out = layer(mx.random.normal((1, 1, 64)).astype(mx.bfloat16))
     mx.eval(out)
     assert calls == [("Gate", mx.float32, (1, 64))]
+
+
+def test_product_router_geometry_qualifies_for_every_row_count(gpu) -> None:
+    # the product router: 384 experts x 5120 hidden
+    gate = _gate(experts=384, dim=5120)
+    assert head_gemv._matches_stock(gate)
+    for rows in range(1, head_gemv.MAX_ROWS + 1):
+        x = mx.random.normal((rows, 5120))
+        actual = project(gate, x)
+        expected = mx.concatenate([_stock(gate, x[i : i + 1]) for i in range(rows)])
+        mx.eval(actual, expected)
+        assert mx.array_equal(actual, expected).item()
+
+
+def test_replaced_router_weight_is_checked_again(monkeypatch) -> None:
+    monkeypatch.setattr(head_gemv, "_gpu_default", lambda: True)
+    checks = []
+    original = head_gemv._launch
+
+    def counting(weight, x):
+        checks.append(x.shape)
+        return original(weight, x)
+
+    monkeypatch.setattr(head_gemv, "_launch", counting)
+    gate = _gate(experts=64, dim=256)
+    monkeypatch.setattr(head_gemv, "_kernel", lambda: _zero_kernel)
+    x = mx.random.normal((1, 256))
+    project(gate, x)
+    project(gate, x)
+    assert len(checks) == 1  # one self-check, cached verdict: stock
+    gate.weight = mx.array(gate.weight)
+    project(gate, x)
+    assert len(checks) == 2  # the new weight is checked again
+
+
+def _zero_kernel(**kwargs):
+    rows, outputs = kwargs["output_shapes"][0]
+    return [mx.zeros((rows, outputs), dtype=mx.float32)]
