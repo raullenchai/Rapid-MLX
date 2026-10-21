@@ -175,16 +175,9 @@ def head_logits(head, x: mx.array) -> mx.array:
     """FP32 logits for ``head(x)``; exact GEMV when supported, stock otherwise."""
     if not supports(head, x) or not _matches_stock(head):
         return head(x)
-    # The self-check already evaluated this exact kernel specialization: the
-    # template is (K, N, OUTPUTS) only and the dtypes are fixed by supports(),
-    # so the Metal pipeline that runs lazily here has compiled and launched
-    # once. What can still fail is graph construction, handled below; forcing
-    # an eval here would serialize the decode step.
-    try:
-        return _launch(head.weight, x)
-    except Exception:  # graph-build failure after qualification: stay stock
-        logger.warning(
-            "exact V4.1 head GEMV failed: stock path for this head", exc_info=True
-        )
-        object.__setattr__(head, _CHECK_ATTR, (weakref.ref(head.weight), False))
-        return head(x)
+    # No runtime fallback past this point: the self-check above already
+    # evaluated this exact kernel specialization (the template is K, N,
+    # OUTPUTS only and supports() fixes the dtypes), so the Metal pipeline
+    # that runs lazily here has compiled and launched once. ENABLED is the
+    # switch back to stock.
+    return _launch(head.weight, x)
