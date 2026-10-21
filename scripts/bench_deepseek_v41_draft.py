@@ -276,7 +276,7 @@ def speculative_decode(
         now = time.perf_counter()
         if start is None:
             start = now
-        row = {"start": now, "verify_ms": 0.0, "draft_ms": 0.0}
+        row = {"start": now, "verify_ms": 0.0, "draft_ms": 0.0, "emitted": 0}
         rounds.append(row)
         pending = True
         return row
@@ -317,19 +317,23 @@ def speculative_decode(
     serving._match = match
     try:
         with draft_component_timing(runtime.drafter, component_timers) as component_ms:
-            output = [
-                chunk.token
-                for chunk in serving.stream_generate(
-                    TimedModel(),
-                    tokenizer,
-                    prompt,
-                    runtime=runtime,
-                    max_tokens=count,
-                    ignore_eos=True,
-                )
-            ]
+            output = []
+            for chunk in serving.stream_generate(
+                TimedModel(),
+                tokenizer,
+                prompt,
+                runtime=runtime,
+                max_tokens=count,
+                ignore_eos=True,
+            ):
+                output.append(chunk.token)
+                # Count what each round actually emits; a round cut short by EOS
+                # or the token limit emits fewer than its accepted drafts + 1.
+                if rounds:
+                    rounds[-1]["emitted"] += 1
             close_round()
             elapsed = time.perf_counter() - start
+
     finally:
         runtime.drafter.propose = original_propose
         serving._match = original_match
@@ -352,9 +356,9 @@ def speculative_decode(
         "decode_seconds": elapsed,
         "rounds": len(rounds),
         "mean_accepted_tokens": accepted,
-        # Accepted draft tokens plus the verify's own token: what one round
-        # emits.  Speculation only pays when this exceeds round_ms / step_ms.
-        "tokens_per_round": accepted + 1,
+        # Tokens one round emits (normally accepted drafts + the verify's own
+        # token).  Speculation only pays when this exceeds round_ms / step_ms.
+        "tokens_per_round": sum(row["emitted"] for row in rounds) / len(rounds),
         "acceptance_histogram": dict(sorted(histogram.items())),
         "mean_round_ms": means,
     }

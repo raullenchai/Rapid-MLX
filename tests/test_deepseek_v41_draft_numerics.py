@@ -447,7 +447,8 @@ def test_benchmark_renders_chat_prompts_per_class_unless_raw(monkeypatch, capsys
     assert [c["prompt_class"] for c in result["classes"]] == list(bench.PROMPT_CLASSES)
     for row in result["classes"]:
         on = row["runs"][0]["draft_on"]
-        assert on["tokens_per_round"] == on["mean_accepted_tokens"] + 1
+        # every generated token is emitted by exactly one round
+        assert on["tokens_per_round"] * on["rounds"] == 2
         assert row["prompt_tokens"] == 4
     measured = [t for t in tokenizer.encoded if bench.PROMPT_CLASSES["qa"] in t]
     rendered = (
@@ -772,3 +773,16 @@ def test_benchmark_waits_for_draft_completion(monkeypatch):
     )
     index = events.index("draft_return")
     assert events[index + 1 : index + 4] == ["eval", "sync", "timer"]
+
+
+def test_tokens_per_round_counts_only_emitted_tokens():
+    # A token limit inside a round emits fewer than accepted drafts + 1.
+    model, draft = bench.tiny_setup()
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    prompt = bench.TinyTokenizer().encode("")
+    for count in (1, 3, 7):
+        output, stats = bench.speculative_decode(
+            serving, model, bench.TinyTokenizer(), runtime, prompt, count
+        )
+        assert len(output) == count
+        assert stats["tokens_per_round"] * stats["rounds"] == count
