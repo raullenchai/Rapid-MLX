@@ -156,14 +156,19 @@ def _hc_mixes_reference(
 # stock path materializes FP32 copies of the stream and of the checkpoint's
 # BF16 projection, the square, the row sum, the GEMV, the scaled mixes, three
 # slices, three split epilogues, the softmax and the Sinkhorn kernel; these
-# kernels convert in registers instead (the conversions are exact). These kernels keep the stock operation order of each
-# step (the installed MLX's FP32 GEMV lane split for K >= 16 * N: eight
+# kernels convert in registers instead (the conversions are exact). They
+# keep the stock operation order of each step (the installed MLX's FP32 GEMV lane split for K >= 16 * N: eight
 # simdgroups across K, four contiguous values per lane, shuffle-down tree,
 # then the simdgroup partials summed in order; the 1024-thread row reduction
 # for the sum of squares; the stock sigmoid, softmax and Sinkhorn arithmetic),
 # so each row equals its own single-row stock result. A one-time self-check
-# per configuration proves it on the running MLX/GPU; any difference keeps the
-# stock path.
+# per configuration proves it on the running MLX/GPU; a difference, or a
+# compile/launch failure during that check, keeps the stock path. After a
+# configuration qualifies, its kernels run like any other MLX kernel: a later
+# GPU execution failure surfaces at evaluation, exactly as a stock kernel
+# failure would, and is not retried on the stock graph. Inputs are passed with
+# the default row-contiguous copy, so strided streams, scales and bases reach
+# the kernels densely packed.
 HC_MIXES_ENABLED = True
 HC_MIXES_MAX_ROWS = 8
 _GEMV_SPLIT = 8  # simdgroups across K per output (stock lane split)

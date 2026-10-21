@@ -486,3 +486,17 @@ def test_hc_mixes_column_major_projection_takes_the_stock_graph(
     # the fused order differs here, which is why the layout is excluded
     fused = hc._fused_hc_mixes(x, column_major, scale, base, 20, 1e-6, 1e-6)
     assert not mx.array_equal(fused[0], expected[0]).item()
+
+
+def test_fused_hc_mixes_reads_strided_scale_and_base_densely() -> None:
+    """Strided scale/base views are packed before launch, so the kernels read
+    the viewed elements, not the underlying buffer."""
+    _requires_metal()
+    x, fn, scale, base = _mix_inputs(2, mx.bfloat16, seed=74)
+    scale_view = mx.stack([scale, mx.full((3,), 9.0)], axis=1).reshape(-1)[::2]
+    base_view = mx.stack([base, mx.full((24,), -9.0)], axis=1).reshape(-1)[::2]
+    actual = hc._fused_hc_mixes(x, fn, scale_view, base_view, 20, 1e-6, 1e-6)
+    for r in range(2):
+        stock = hc._hc_mixes_reference(x[r : r + 1], fn, scale, base, 4, 20, 1e-6, 1e-6)
+        for fused, ref in zip(actual, stock, strict=True):
+            assert mx.array_equal(fused[r : r + 1], ref).item()
