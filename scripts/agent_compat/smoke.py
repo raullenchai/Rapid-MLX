@@ -366,14 +366,10 @@ def main() -> None:
                     (project / "opencode.json").write_text(
                         '{"model":"remote/project-model"}\n'
                     )
-                    from rapid_mlx.agents.opencode_version import installed_version
-
                     command = isolated._command(agent, root, MODEL, port)
                     if known_bad:
                         command += f" --model rapid-mlx/{MODEL}"
                     command += " run"
-                    if (installed_version() or "").startswith("2."):
-                        command += " --standalone"
                     command += " " + shlex.quote("Say " + REPLY)
                     cmd = ["sh", "-c", command]
                 before = len(Handler.requests)
