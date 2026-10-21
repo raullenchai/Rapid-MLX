@@ -1160,8 +1160,14 @@ class ImageGenerationEngine:
                 "use an image-edit capable model."
             )
         if self._qwen21_turbo:
-            from .qwen21_turbo import TURBO_GUIDANCE
+            from .qwen21_turbo import TURBO_GUIDANCE, TURBO_STEPS
 
+            if num_inference_steps != TURBO_STEPS:
+                raise ImageRequestError(
+                    "Qwen-Image 2.1 Turbo supports its published "
+                    f"{TURBO_STEPS}-step schedule only; omit steps or set it "
+                    f"to {TURBO_STEPS}."
+                )
             if guidance is not None and guidance != TURBO_GUIDANCE:
                 raise ImageRequestError(
                     "Qwen-Image 2.1 Turbo runs without classifier-free guidance; "

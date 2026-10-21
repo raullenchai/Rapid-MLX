@@ -35,24 +35,16 @@ SCHEDULER_PATH = "rapid_mlx.image.qwen21_turbo_scheduler.Qwen21TurboScheduler"
 
 
 def turbo_sigmas(steps: int) -> list[float]:
-    """Sigma ladder (including the terminal 0) for *steps* denoising steps.
+    """Sigma ladder (including the terminal 0) for the published schedule.
 
-    Eight steps use the published nodes as they are. Other counts sample the
-    same piecewise-linear curve (the nodes plus the terminal 0) at evenly
-    spaced points, which keeps the schedule's shape instead of falling back
-    to the base model's shifted linear ramp.
+    The checkpoint documents only its eight saved nodes; other schedules are
+    unevaluated upstream, so any other step count is refused rather than
+    synthesized.
     """
 
-    if steps < 1:
-        raise ValueError("steps must be at least 1")
-    nodes = [*TURBO_SIGMAS, 0.0]
-    if steps == TURBO_STEPS:
-        return nodes
-    last = len(nodes) - 1
-    sigmas: list[float] = []
-    for index in range(steps + 1):
-        position = index * last / steps
-        lower = min(int(position), last - 1)
-        fraction = position - lower
-        sigmas.append(nodes[lower] + (nodes[lower + 1] - nodes[lower]) * fraction)
-    return sigmas
+    if steps != TURBO_STEPS:
+        raise ValueError(
+            f"Qwen-Image 2.1 Turbo samples its published {TURBO_STEPS}-step "
+            f"schedule only; got {steps} steps."
+        )
+    return [*TURBO_SIGMAS, 0.0]

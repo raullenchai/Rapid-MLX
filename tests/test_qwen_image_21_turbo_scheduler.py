@@ -40,9 +40,6 @@ def test_sigmas_timesteps_and_euler_step():
     assert stepped.tolist()[0] == pytest.approx([1.0 - 2 * 0.414568] * 4, abs=1e-2)
 
 
-def test_non_default_step_count_samples_the_same_curve():
-    scheduler = Qwen21TurboScheduler(_config(4))
-    assert scheduler.sigmas.tolist() == pytest.approx(
-        [1.0, 0.95418, 0.89508, 0.704534, 0.0]
-    )
-    assert scheduler.timesteps.tolist() == list(range(4))
+def test_rejects_other_step_counts():
+    with pytest.raises(ValueError, match="8-step schedule only"):
+        Qwen21TurboScheduler(_config(4))

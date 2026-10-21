@@ -131,8 +131,10 @@ def test_request_validation():
     engine = ImageGenerationEngine(REPO)
     engine.validate_request(prompt="sign", num_inference_steps=8)
     engine.validate_request(prompt="sign", num_inference_steps=8, guidance=1.0)
-    # Other step counts follow the same sigma curve, like the upstream runtime.
-    engine.validate_request(prompt="sign", num_inference_steps=4)
+    # The checkpoint documents only its saved eight-node schedule.
+    for steps in (4, 40):
+        with pytest.raises(ImageRequestError, match="8-step schedule only"):
+            engine.validate_request(prompt="sign", num_inference_steps=steps)
     with pytest.raises(ImageRequestError, match="classifier-free guidance"):
         engine.validate_request(prompt="sign", num_inference_steps=8, guidance=4.0)
     for paths in (["a.png"], ["a.png", "b.png"]):
@@ -150,20 +152,11 @@ def test_gen_kwargs_select_turbo_scheduler():
     assert "scheduler" not in base._gen_kwargs(3, "sign", 40, None, None)  # noqa: SLF001
 
 
-def test_turbo_sigmas_use_published_nodes_and_interpolate():
+def test_turbo_sigmas_are_the_published_nodes_only():
     assert turbo_sigmas(8) == [*TURBO_SIGMAS, 0.0]
-    four = turbo_sigmas(4)
-    assert len(four) == 5
-    assert four[0] == 1.0 and four[-1] == 0.0
-    # Every other published node (positions 0, 2, 4, 6, 8 of nine).
-    assert four == pytest.approx([1.0, 0.95418, 0.89508, 0.704534, 0.0])
-    one = turbo_sigmas(1)
-    assert one == [1.0, 0.0]
-    sixteen = turbo_sigmas(16)
-    assert sixteen[::2] == pytest.approx([*TURBO_SIGMAS, 0.0])
-    assert all(a > b for a, b in zip(sixteen, sixteen[1:], strict=False))
-    with pytest.raises(ValueError, match="at least 1"):
-        turbo_sigmas(0)
+    for steps in (0, 4, 16):
+        with pytest.raises(ValueError, match="8-step schedule only"):
+            turbo_sigmas(steps)
 
 
 def _install_module(monkeypatch, name, **members):
