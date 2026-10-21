@@ -359,3 +359,130 @@ def test_hc_mixes_support_declines_off_the_release_layout(monkeypatch) -> None:
     monkeypatch.setattr(hc, "HC_MIXES_ENABLED", True)
     monkeypatch.setattr(hc, "_metal_fast_path_available", lambda: False)
     assert not hc._hc_mixes_supported(x, fn, scale, base, 4)
+
+
+@pytest.mark.parametrize(
+    "lead, width",
+    [((1, 3), _MIX_WIDTH), ((2, 3), _MIX_WIDTH), ((2, 1), 2 * _MIX_WIDTH)],
+)
+def test_hc_mixes_dispatch_matches_single_row_stock(
+    fresh_mix_verdicts, monkeypatch, lead, width
+) -> None:
+    """Speculative-verify rows, batched verify rows and a multi-block width
+    through the public dispatch, from a strided stream."""
+    _requires_metal()
+    mx.random.seed(70)
+    b, s = lead
+    wide = mx.random.normal((b, s, 4, 2 * width)).astype(mx.bfloat16)
+    x = wide[..., ::2]  # non-contiguous view
+    fn = (mx.random.normal((24, 4 * width)) * 0.02).astype(mx.bfloat16)
+    scale = mx.array([0.6, 0.8, 1.7]).astype(mx.bfloat16)
+    base = (mx.random.normal((24,)) * 0.5).astype(mx.bfloat16)
+
+    calls = []
+    original = hc._fused_hc_mixes
+
+    def spy(value, *args):
+        calls.append(value.shape)
+        return original(value, *args)
+
+    monkeypatch.setattr(hc, "_fused_hc_mixes", spy)
+    actual = hc.hc_mixes(x, fn, scale, base, 4, 20, 1e-6, 1e-6)
+    assert x.shape in calls
+    mx.eval(actual)
+    assert actual[2].shape == (b, s, 4, 4)
+    for i in range(b):
+        for j in range(s):
+            row = mx.array(x[i : i + 1, j : j + 1])
+            stock = hc._hc_mixes_reference(row, fn, scale, base, 4, 20, 1e-6, 1e-6)
+            for fused, ref in zip(actual, stock, strict=True):
+                assert mx.array_equal(fused[i : i + 1, j : j + 1], ref).item()
+
+
+@pytest.mark.parametrize("changed", [0, 1, 2])
+def test_hc_mixes_verdicts_are_per_parameter_dtype(
+    fresh_mix_verdicts, monkeypatch, changed: int
+) -> None:
+    """A verdict for one parameter dtype never authorizes another, whichever
+    of the projection, scale or base differs."""
+    _requires_metal()
+    x, fn, scale, base = _mix_inputs(1, mx.bfloat16, seed=71)
+    params = [p.astype(mx.bfloat16) for p in (fn, scale, base)]
+    hc.hc_mixes(x, *params, 4, 20, 1e-6, 1e-6)
+    assert list(hc._HC_MIXES_VERDICTS.values()) == [True]
+    params[changed] = (fn, scale, base)[changed]  # FP32
+    fn, scale, base = params
+
+    real = hc._hc_mixes_finish_kernel()
+
+    def wrong(**kwargs):
+        pre, post, comb = real(**kwargs)
+        return [pre, post, comb + 1]
+
+    monkeypatch.setattr(hc, "_hc_mixes_finish_kernel", lambda: wrong)
+    actual = hc.hc_mixes(x, fn, scale, base, 4, 20, 1e-6, 1e-6)
+    assert sorted(hc._HC_MIXES_VERDICTS.values()) == [False, True]
+    expected = hc._hc_mixes_reference(x, fn, scale, base, 4, 20, 1e-6, 1e-6)
+    for a, e in zip(actual, expected, strict=True):
+        assert mx.array_equal(a, e).item()
+
+
+def test_hc_mixes_qualifies_inside_a_compiled_caller(fresh_mix_verdicts) -> None:
+    """A cold verdict reached from an mx.compile trace qualifies on concrete
+    probe inputs instead of evaluating the caller's stream placeholder."""
+    _requires_metal()
+    x, fn, scale, base = _mix_inputs(2, mx.bfloat16, seed=72)
+    fn, scale, base = (p.astype(mx.bfloat16) for p in (fn, scale, base))
+
+    @mx.compile
+    def traced(value):
+        return hc.hc_mixes(value, fn, scale, base, 4, 20, 1e-6, 1e-6)
+
+    actual = traced(x)
+    assert list(hc._HC_MIXES_VERDICTS.values()) == [True]
+    eager = hc.hc_mixes(x, fn, scale, base, 4, 20, 1e-6, 1e-6)
+    for a, e in zip(actual, eager, strict=True):
+        assert mx.array_equal(a, e).item()
+
+
+def test_hc_mixes_traced_parameters_take_the_stock_graph(fresh_mix_verdicts) -> None:
+    """Parameters that are trace placeholders cannot be layout-checked: the
+    stock graph runs and no verdict is recorded."""
+    _requires_metal()
+    x, fn, scale, base = _mix_inputs(2, mx.bfloat16, seed=73)
+
+    @mx.compile
+    def traced(value, weight, s, b):
+        return hc.hc_mixes(value, weight, s, b, 4, 20, 1e-6, 1e-6)
+
+    actual = traced(x, fn, scale, base)
+    assert hc._HC_MIXES_VERDICTS == {}
+    expected = hc._hc_mixes_reference(x, fn, scale, base, 4, 20, 1e-6, 1e-6)
+    for a, e in zip(actual, expected, strict=True):
+        assert mx.array_equal(a, e).item()
+
+
+def test_hc_mixes_column_major_projection_takes_the_stock_graph(
+    fresh_mix_verdicts,
+) -> None:
+    """The stock GEMV reduces a column-major projection in another order; a
+    cancelling column exposes the difference, so that layout stays stock even
+    after the row-major layout has qualified."""
+    _requires_metal()
+    x = mx.ones((1, 1, 4, _MIX_WIDTH))
+    scale, base = mx.ones((3,)), mx.zeros((24,))
+    row_major = mx.zeros((24, 4 * _MIX_WIDTH))
+    hc.hc_mixes(x, row_major, scale, base, 4, 20, 1e-6, 1e-6)
+    assert list(hc._HC_MIXES_VERDICTS.values()) == [True]
+
+    column = mx.zeros((4 * _MIX_WIDTH, 24))
+    column[mx.array([0, 32, 1024]), 0] = mx.array([2.0**24, 1.0, -(2.0**24)])
+    column_major = column.T
+    assert not hc._hc_mixes_supported(x, column_major, scale, base, 4)
+    actual = hc.hc_mixes(x, column_major, scale, base, 4, 20, 1e-6, 1e-6)
+    expected = hc._hc_mixes_reference(x, column_major, scale, base, 4, 20, 1e-6, 1e-6)
+    for a, e in zip(actual, expected, strict=True):
+        assert mx.array_equal(a, e).item()
+    # the fused order differs here, which is why the layout is excluded
+    fused = hc._fused_hc_mixes(x, column_major, scale, base, 20, 1e-6, 1e-6)
+    assert not mx.array_equal(fused[0], expected[0]).item()

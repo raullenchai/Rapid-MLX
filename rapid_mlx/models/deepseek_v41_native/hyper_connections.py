@@ -23,6 +23,7 @@ plausible but wrong.
 from __future__ import annotations
 
 import logging
+import threading
 from functools import cache
 
 import mlx.core as mx
@@ -364,6 +365,21 @@ def _fused_hc_mixes(
     )
 
 
+def _row_contiguous(a: mx.array) -> bool:
+    """Whether ``a`` is stored row-major (the checkpoint layout).
+
+    The stock GEMV picks its reduction order from the projection's layout and
+    the fused kernel reproduces only the row-major one. Arrays whose storage
+    cannot be inspected (placeholders inside an ``mx.compile`` trace) report
+    False and take the stock graph.
+    """
+    try:
+        mx.eval(a)  # a placeholder raises here, as a Python exception
+        return memoryview(a).c_contiguous
+    except Exception:
+        return False
+
+
 def _hc_mixes_supported(x, hc_fn, hc_scale, hc_base, hc_mult) -> bool:
     if not HC_MIXES_ENABLED or not _metal_fast_path_available():
         return False
@@ -380,43 +396,64 @@ def _hc_mixes_supported(x, hc_fn, hc_scale, hc_base, hc_mult) -> bool:
         # the stock lane splits this order reproduces: GEMV for K >= 16 * N
         # with whole 1024-wide blocks, and whole 4096-wide reduction blocks
         and width % (_SSQ_SIMDGROUPS * 128) == 0
+        and _row_contiguous(hc_fn)
     )
 
 
-# (x dtype, width, iters, norm_eps, hc_eps) -> the fused kernels match stock
+# (input dtypes, width, iters, norm_eps, hc_eps) -> the fused kernels match
+# stock. The input dtypes and the width fix the kernel specializations.
 _HC_MIXES_VERDICTS: dict = {}
+_HC_MIXES_LOCK = threading.Lock()
+
+
+def _hc_mixes_probe(x, hc_fn, hc_scale, hc_base):
+    """Concrete inputs with the caller's layout and dtypes.
+
+    The probe never reads the caller's arrays, so qualifying from inside an
+    ``mx.compile`` trace evaluates no placeholder. Rows of growing magnitude
+    reach both sigmoid branches and a wide spread of softmax inputs; the
+    weights span the release scale of the coefficient projection.
+    """
+    keys = mx.random.split(mx.random.key(0x4C), 4)
+    width = 4 * x.shape[-1]
+    spread = mx.power(2.0, mx.arange(HC_MIXES_MAX_ROWS) - 3.0)
+    probe = (
+        mx.random.normal((HC_MIXES_MAX_ROWS, 1, 4, x.shape[-1]), key=keys[0])
+        * spread[:, None, None, None]
+    ).astype(x.dtype)
+    fn = (mx.random.normal((24, width), key=keys[1]) * 0.05).astype(hc_fn.dtype)
+    scale = (mx.random.uniform(0.25, 4.0, (3,), key=keys[2])).astype(hc_scale.dtype)
+    base = (mx.random.normal((24,), key=keys[3])).astype(hc_base.dtype)
+    return probe, fn, scale, base
 
 
 def _hc_mixes_qualified(x, hc_fn, hc_scale, hc_base, iters, norm_eps, hc_eps):
-    key = (x.dtype, x.shape[-1], iters, norm_eps, hc_eps)
-    if key not in _HC_MIXES_VERDICTS:
+    key = (
+        x.dtype,
+        hc_fn.dtype,
+        hc_scale.dtype,
+        hc_base.dtype,
+        x.shape[-1],
+        iters,
+        norm_eps,
+        hc_eps,
+    )
+    verdict = _HC_MIXES_VERDICTS.get(key)
+    if verdict is not None:
+        return verdict
+    with _HC_MIXES_LOCK:
+        if key in _HC_MIXES_VERDICTS:
+            return _HC_MIXES_VERDICTS[key]
         verdict = False
         try:
-            # rows of growing magnitude reach both sigmoid branches and a
-            # wide spread of softmax inputs
-            spread = mx.power(2.0, mx.arange(HC_MIXES_MAX_ROWS) - 3.0)
-            probe = (
-                mx.random.normal(
-                    (HC_MIXES_MAX_ROWS, 1, 4, x.shape[-1]), key=mx.random.key(0x4C)
-                )
-                * spread[:, None, None, None]
-            ).astype(x.dtype)
+            probe, fn, scale, base = _hc_mixes_probe(x, hc_fn, hc_scale, hc_base)
             expected = [
                 _hc_mixes_reference(
-                    probe[r : r + 1],
-                    hc_fn,
-                    hc_scale,
-                    hc_base,
-                    4,
-                    iters,
-                    norm_eps,
-                    hc_eps,
+                    probe[r : r + 1], fn, scale, base, 4, iters, norm_eps, hc_eps
                 )
                 for r in range(HC_MIXES_MAX_ROWS)
             ]
-            actual = _fused_hc_mixes(
-                probe, hc_fn, hc_scale, hc_base, iters, norm_eps, hc_eps
-            )
+            actual = _fused_hc_mixes(probe, fn, scale, base, iters, norm_eps, hc_eps)
             verdict = all(
                 mx.array_equal(actual[i][r : r + 1], expected[r][i]).item()
                 for r in range(HC_MIXES_MAX_ROWS)
@@ -427,7 +464,7 @@ def _hc_mixes_qualified(x, hc_fn, hc_scale, hc_base, iters, norm_eps, hc_eps):
         if not verdict:
             logger.warning("fused V4.1 HC mixes disabled: stock path")
         _HC_MIXES_VERDICTS[key] = verdict
-    return _HC_MIXES_VERDICTS[key]
+    return verdict
 
 
 def hc_mixes(
