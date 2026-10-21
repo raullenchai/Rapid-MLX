@@ -808,6 +808,9 @@ class TestKokoroMisakiGate:
         assert "rapid-mlx[audio]" in detail_lower or "pip install" in detail_lower, (
             f"503 envelope should include an install hint. Got: {detail}"
         )
+        from rapid_mlx.connect import package_install_command
+
+        assert package_install_command("misaki") in detail
 
     def test_kokoro_g2p_model_failure_surfaces_as_503_not_500(
         self, monkeypatch, _reset_audio_probe

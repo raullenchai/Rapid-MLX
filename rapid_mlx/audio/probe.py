@@ -43,6 +43,7 @@ import logging
 import threading
 from dataclasses import dataclass
 
+from rapid_mlx.connect import package_install_command
 from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ _KOKORO_EXTRA_DEP = "misaki"
 _KOKORO_EXTRA_HINT = (
     "Kokoro TTS requires the optional `misaki` G2P package, which is "
     "not installed. " + optional_extra_install_hint("audio", include_paths=False) + " "
-    "to pull every audio dep, or `pip install misaki` for a "
+    "to pull every audio dep, or `" + package_install_command("misaki") + "` for a "
     "minimal Kokoro-only install."
 )
 

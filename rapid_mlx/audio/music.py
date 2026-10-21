@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from rapid_mlx.connect import package_install_command
+
 _SA3_DIR = Path(__file__).parent / "sa3"
 _SA3_CLI = _SA3_DIR / "scripts" / "sa3_mlx.py"
 _SA3_MLX_DIR = _SA3_DIR / "models" / "mlx"
@@ -125,7 +127,7 @@ class MusicEngine:
             except ImportError as e:
                 raise RuntimeError(
                     "huggingface_hub is required to auto-download SA3 weights.\n"
-                    "Run:  pip install huggingface_hub"
+                    f"Run:  {package_install_command('huggingface_hub')}"
                 ) from e
             from rapid_mlx import model_downloads
 
