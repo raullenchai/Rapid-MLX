@@ -73,6 +73,9 @@ def agent_cli_found(binary: str) -> bool | None:
                 # reach an unrelated process group.
                 with contextlib.suppress(OSError):
                     os.killpg(probe.pid, signal.SIGKILL)
+                # The leader itself, should the group signal have failed, so
+                # the final wait cannot hang.
+                probe.kill()
                 probe.wait()
                 return None
             status = answer.read_bytes().strip() if answer.is_file() else b""

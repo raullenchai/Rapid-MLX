@@ -183,6 +183,9 @@ def test_timed_out_probe_stops_its_group_before_reaping(monkeypatch):
         def __init__(self, argv, **kwargs):
             pass
 
+        def kill(self):
+            events.append(("kill", self.pid))
+
         def wait(self, timeout=None):
             events.append(("wait", timeout))
             if timeout is not None:
@@ -197,6 +200,7 @@ def test_timed_out_probe_stops_its_group_before_reaping(monkeypatch):
     assert events == [
         ("wait", cli_preflight._PROBE_TIMEOUT_S),
         ("killpg", 424242),
+        ("kill", 424242),
         ("wait", None),
     ]
 
