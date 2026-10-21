@@ -192,5 +192,6 @@ def project(owner, x: mx.array) -> mx.array:
     """
     weight = owner.weight
     if not _supports_weight(weight, x) or not _matches_stock(owner):
-        return x @ weight.astype(mx.float32).T
+        stock: mx.array = x @ weight.astype(mx.float32).T
+        return stock
     return _launch(weight, x)
