@@ -53,6 +53,8 @@ from functools import lru_cache
 
 import mlx.core as mx
 
+from . import head_gemv
+
 logger = logging.getLogger(__name__)
 
 # Module switch for A/B runs and the negative-control tests.
@@ -199,12 +201,19 @@ _ROUTE = r"""
     score[e] = sc;
     biased[e] = sc + bias[e];
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    // Stable descending order: rank by larger value, then lower index.
+    // Stable ascending order of -biased, NaN last (the stock sort order):
+    // a strict total order, so the ranks are a permutation and every
+    // picked slot is written even when the scores carry NaN.
     const float mine = -biased[e];
+    const bool mine_nan = metal::isnan(mine);
     int rank = 0;
     for (uint j = 0; j < E; j++) {
       const float other = -biased[j];
-      rank += (other < mine || (other == mine && j < e)) ? 1 : 0;
+      const bool other_nan = metal::isnan(other);
+      const bool before = (mine_nan || other_nan)
+          ? (!other_nan || (mine_nan && j < e))
+          : (other < mine || (other == mine && j < e));
+      rank += before ? 1 : 0;
     }
     threadgroup uint picked[TOPK];
     if (rank < TOPK) {
@@ -443,12 +452,18 @@ def _layout(moe) -> tuple[int, int, int] | None:
         and int(w1.weight.shape[1]) * 32 // sbits == dim
         and int(w2.weight.shape[1]) * 32 // sbits == inter
         and dim % 512 == 0
+        # a 64- or 128-wide reduction takes the stock quad QMV kernel
         and inter % 64 == 0
+        and inter > 128
         and gate.score_func == "sqrtsoftplus"
         and tuple(gate.bias.shape) == (experts_n,)
         and gate.bias.dtype == mx.float32
-        and 1 <= gate.topk <= 16
+        and 1 <= gate.topk <= min(16, experts_n)
         and experts_n <= 1024
+        # multi-row router logits must come from the exact per-row GEMV
+        and getattr(gate.weight, "dtype", None) == mx.bfloat16
+        and tuple(gate.weight.shape) == (experts_n, dim)
+        and dim < 16 * experts_n
     ):
         return None
     return dim, inter, sbits
@@ -567,9 +582,10 @@ def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
                 key = mx.random.key(41)
                 probe = mx.random.normal((MAX_ROWS, layout[0]), key=key).astype(dtype)
                 # Stock picks a different multi-row QMV, so the contract is
-                # per row: batched decode matches single-stream decode.
+                # per row: batched decode matches single-stream decode. Every
+                # row count is its own kernel specialization, so probe each.
                 expected = [stock(probe[r : r + 1]) for r in range(MAX_ROWS)]
-                for rows in (1, 2, MAX_ROWS):
+                for rows in range(1, MAX_ROWS + 1):
                     actual = _fused(moe, layout, probe[:rows])
                     for r in range(rows):
                         same = mx.array_equal(actual[r : r + 1], expected[r])
@@ -595,4 +611,14 @@ def moe_forward(moe, x: mx.array, stock) -> mx.array | None:
     layout = _qualified(moe, stock, x.dtype)
     if layout is None or int(x.shape[-1]) != layout[0]:
         return None
+    if x.size > x.shape[-1] and not _router_rows_exact(moe.gate, x):
+        return None
     return _fused(moe, layout, x)
+
+
+def _router_rows_exact(gate, x: mx.array) -> bool:
+    """True while several rows get single-row router logits (exact GEMV)."""
+    probe = x.reshape(-1, x.shape[-1]).astype(mx.float32)
+    return head_gemv._supports_weight(gate.weight, probe) and head_gemv._matches_stock(
+        gate
+    )

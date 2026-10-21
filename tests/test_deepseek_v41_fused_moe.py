@@ -5,7 +5,7 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 
-from rapid_mlx.models.deepseek_v41_native import moe_decode  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native import head_gemv, moe_decode  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.moe import MoE  # noqa: E402
 from rapid_mlx.models.deepseek_v41_native.serving import (  # noqa: E402
@@ -250,3 +250,77 @@ def test_kernel_builders(monkeypatch) -> None:
     assert len(set(names)) == 5
     assert "if (true)" in built[0]["source"] and "if (false)" in built[1]["source"]
     assert "(10.0f)" in built[2]["source"] and "(-1.5f)" in built[3]["source"]
+
+
+def _stock_route(layer: MoE, scores: mx.array):
+    gate = layer.gate
+    gate.scores = lambda x: scores
+    try:
+        return type(gate).__call__(gate, mx.zeros((scores.shape[0], 1)))
+    finally:
+        del gate.scores
+
+
+@pytest.mark.parametrize("case", ["nan", "ties", "inf"])
+def test_route_matches_stock_selection_on_special_scores(gpu, case) -> None:
+    # stock top-k is a stable sort with NaN last; every slot must be written
+    layer = _moe()
+    scores = mx.random.normal((4, EXPERTS), key=mx.random.key(7))
+    if case == "nan":
+        scores[0, mx.array([3, 7, 9])] = mx.nan
+        scores[1] = mx.full((EXPERTS,), mx.nan)
+    elif case == "ties":
+        scores = mx.round(scores)
+        layer.gate.bias = mx.zeros((EXPERTS,))
+    else:
+        scores[2, mx.array([1, 2])] = mx.inf
+        scores[3, 5] = -mx.inf
+    weights, indices = moe_decode._route(layer, scores)
+    stock_weights, stock_indices = _stock_route(layer, scores)
+    mx.eval(weights, indices, stock_weights, stock_indices)
+    assert mx.array_equal(indices, stock_indices.astype(mx.uint32)).item()
+    assert mx.array_equal(weights, stock_weights, equal_nan=True).item()
+
+
+def test_layout_declines_stock_kernel_switches() -> None:
+    layer = _moe()
+    layer.gate.topk = EXPERTS + 1
+    assert moe_decode._layout(layer) is None
+    # the router weight must take the exact per-row GEMV
+    layer = _moe()
+    layer.gate.weight = layer.gate.weight.astype(mx.float32)
+    assert moe_decode._layout(layer) is None
+    narrow = MoE(
+        ModelArgs(
+            dim=DIM, moe_inter_dim=128, n_routed_experts=64, n_activated_experts=2
+        )
+    )
+    narrow.gate.weight = narrow.gate.weight.astype(mx.bfloat16)
+    nn.quantize(
+        narrow,
+        group_size=64,
+        bits=2,
+        class_predicate=lambda p, m: (
+            p.startswith("experts.") and hasattr(m, "to_quantized")
+        ),
+    )
+    nn.quantize(
+        narrow,
+        group_size=64,
+        bits=8,
+        class_predicate=lambda p, m: (
+            p.startswith("shared_experts.") and hasattr(m, "to_quantized")
+        ),
+    )
+    # a 128-wide down reduction runs the stock quad kernel
+    assert moe_decode._layout(narrow) is None
+
+
+def test_several_rows_need_the_exact_router(gpu, monkeypatch) -> None:
+    layer = _moe()
+    x = mx.random.normal((3, DIM)).astype(mx.bfloat16)
+    assert moe_decode.moe_forward(layer, x, layer._stock) is not None
+    monkeypatch.setattr(head_gemv, "ENABLED", False)
+    assert moe_decode.moe_forward(layer, x, layer._stock) is None
+    # one row keeps single-row stock router logits either way
+    assert moe_decode.moe_forward(layer, x[:1], layer._stock) is not None
