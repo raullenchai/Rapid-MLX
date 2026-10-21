@@ -61,7 +61,7 @@ run the same command to return online using the cached node, without a key
 prompt. `--reregister` repairs an expired or changed registration binding; it
 is not required for ordinary offline/online use. The recommended CLI flow uses the interactive prompt, keeping the key out of
 argv and shell history. GUI Keychain settings are not imported into CLI.
-The Qwen3.8 27B pool requires 48 GB+ unified memory and defaults to the qualified TensorFold runtime in both CLI
+The Qwen3.8 27B pool defaults to the qualified TensorFold runtime (48 GB+ unified memory) in both CLI
 and Desktop, including in-memory message-boundary prefix reuse. Desktop bundles
 that runtime. For a standalone Python install, install its qualified revision
 once in the same environment as Rapid:
@@ -80,6 +80,9 @@ restart, cache eviction, or node switch can still require cold prefill.
 The qualified 27B backend advertises one concurrent request, matching its
 single inference lane; `--max-num-seqs` values above one are rejected before
 registration.
+On a Mac below the TensorFold memory floor, the CLI serves the 27B pool with
+`qwen3.8-27b-4bit` (MTP runtime, ordinary pool concurrency) instead and prints
+one line naming the runtime it chose.
 An existing registration bound to the old ordinary 27B alias needs one fresh
 registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect using
 the saved provider key, or save one in Settings if this is the first setup). Node credentials remain bound to the selected alias.
