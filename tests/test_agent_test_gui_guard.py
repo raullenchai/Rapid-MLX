@@ -170,7 +170,10 @@ def test_launch_attempt_remains_failure_if_agent_times_out(tmp_path, monkeypatch
         def communicate(self, input=None, timeout=None):
             deadline = time.monotonic() + 60
             while not marker.exists() and self.poll() is None:
-                assert time.monotonic() < deadline, "child never reached the shim"
+                if time.monotonic() >= deadline:
+                    self.kill()
+                    self.wait()
+                    raise AssertionError("child never reached the shim")
                 time.sleep(0.01)
             launched.append(time.monotonic())
             return super().communicate(input, timeout)
