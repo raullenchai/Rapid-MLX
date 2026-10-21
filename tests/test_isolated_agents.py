@@ -1275,6 +1275,9 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "rapidmlxtest.empty")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "")
+    monkeypatch.setenv("GIT_DIR", str(private_home / "wrong-repo"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(private_home / "wrong-tree"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(private_home / "wrong-index"))
     monkeypatch.setenv("GIT_BAD-NAME", "should-not-enter-a-shell-script")
     monkeypatch.chdir(project)
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
@@ -1288,7 +1291,21 @@ def test_aider_git_shim_preserves_environment_only_commit_identity(
         "GIT_CONFIG_VALUE_0=''"
         in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
     )
+    assert (
+        "GIT_DIR="
+        not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+    )
+    assert (
+        "GIT_WORK_TREE="
+        not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+    )
+    assert (
+        "GIT_INDEX_FILE="
+        not in (isolated.connection_dir() / "agents/aider/bin/git").read_text()
+    )
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
+    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(variable)
     commit = subprocess.check_output(
         ["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], cwd=project, text=True
     ).strip()

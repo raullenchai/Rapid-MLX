@@ -377,8 +377,29 @@ def configure(
                 character.isupper() or character.isdigit() or character == "_"
                 for character in name_
             )
+            indexed_config = (
+                name_.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+                and name_.rsplit("_", 1)[-1].isdigit()
+            )
+            git_passthrough = indexed_config or name_ in {
+                "GIT_AUTHOR_NAME",
+                "GIT_AUTHOR_EMAIL",
+                "GIT_AUTHOR_DATE",
+                "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL",
+                "GIT_COMMITTER_DATE",
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_SYSTEM",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_CONFIG_COUNT",
+                "GIT_SSH",
+                "GIT_SSH_COMMAND",
+                "GIT_SSH_VARIANT",
+                "GIT_ASKPASS",
+                "GIT_TERMINAL_PROMPT",
+            }
             if valid_name and (
-                name_.startswith("GIT_")
+                git_passthrough
                 or name_
                 in (
                     "XDG_CONFIG_HOME",
