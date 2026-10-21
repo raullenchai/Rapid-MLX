@@ -9,7 +9,10 @@ must run model load and generation on one dedicated thread.
 
 import asyncio
 import concurrent.futures
+import os
+import signal
 import threading
+import warnings
 
 import pytest
 from PIL import Image
@@ -253,3 +256,32 @@ def test_forked_child_gets_a_fresh_image_worker(
     child_executor = image_lane._image_executor  # noqa: SLF001
     assert child_executor is not parent_executor
     child_executor.shutdown(wait=True)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+def test_real_fork_from_worker_gives_child_a_live_worker() -> None:
+    """A child forked from the image worker can still dispatch (no hang)."""
+
+    def fork_from_worker() -> int:
+        with warnings.catch_warnings():
+            # CPython warns about forking a multi-threaded process; the
+            # at-fork hook is exactly what makes this child usable.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
+        if pid != 0:
+            return pid
+        status = 1
+        try:
+            signal.alarm(10)  # a hang fails the child instead of the suite
+            caller = threading.get_ident()
+            worker_ident, worker_name = image_lane.run_on_image_worker(
+                lambda: (threading.get_ident(), threading.current_thread().name)
+            )
+            if worker_ident != caller and worker_name.startswith("mlx-image"):
+                status = 0
+        finally:
+            os._exit(status)
+
+    pid = image_lane.run_on_image_worker(fork_from_worker)
+    _, wait_status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(wait_status) == 0
