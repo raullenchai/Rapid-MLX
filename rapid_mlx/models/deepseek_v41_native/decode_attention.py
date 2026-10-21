@@ -34,7 +34,15 @@ softmax, the rope tail and the dtype casts). Keys are read in place: the window
 from the cache ring (after this step's write), compressed rows from the kv
 source's cache through the selected indices.
 
-One threadgroup per (8-head group, batch row) walks the keys in 64-key blocks.
+A speculative verify chunk (up to ``MAX_QUERY_ROWS`` tokens, within the window
+ring) runs the same kernel with one threadgroup row per query row. Each query
+row reads the keys its own decode step would see, so its result is
+bit-identical to the one-row call at that position; keys that a later row of
+the chunk has already overwritten in the ring are read from a snapshot of
+those ring rows taken before the write (:func:`overwritten_rows`).
+
+One threadgroup per (8-head group, batch row, query row) walks the keys in
+64-key blocks.
 Scores are 8x8 simdgroup matrix products (8 heads x 8 keys, over four quarters
 of the head dimension), the softmax is online (running max seeded with the
 sink, per-block correction), and the value sum is again 8x8 matrix products in
@@ -66,17 +74,34 @@ _HEADS_PER_GROUP = 8
 _DIMS_PER_GROUP = 128
 
 _KEY_ROW = r"""
-// Cache row of key j: the window ring for j < WE (oldest first), else the
-// compressed row selected by cidx (or -1 when masked, or when the index falls
-// outside the NC compressed rows, so no load can leave the buffer). Small
-// inputs arrive in the constant address space, so the index pointer type is a
-// template.
+// Cache row of key j for the query at position start (WE window keys, oldest
+// first, then KC compressed keys). Window keys come from the ring after this
+// call's writes; a key whose ring slot a later query row of the same call has
+// already overwritten (position < LIVE0) comes from ``old``, the slots' prior
+// contents, row ``position - (LIVE0 - NQ)``. Compressed keys are the rows
+// selected by cidx (-1 when masked, or when the index falls outside the NC
+// compressed rows, so no load can leave the buffer). ``src`` reports the
+// buffer: 0 ring, 1 compressed, 2 old. Small inputs arrive in the constant
+// address space, so the index pointer type is a template.
 template <typename P>
-inline int key_row(int j, int start, int WE, int OFF, int NC, int W, P ci, thread bool& compressed) {
-    compressed = j >= WE;
-    if (!compressed) return (start - WE + 1 + j) % W;
+inline int key_row(int j, int start, int WE, int OFF, int NC, int W, int LIVE0, int NQ, P ci, thread int& src) {
+    if (j < WE) {
+        const int position = start - WE + 1 + j;
+        if (position < LIVE0) {
+            src = 2;
+            return position - (LIVE0 - NQ);
+        }
+        src = 0;
+        return position % W;
+    }
+    src = 1;
     const int r = ci[j - WE] - OFF;
     return r >= 0 && r < NC ? r : -1;
+}
+
+template <typename T>
+inline const device T* key_base(int src, const device T* ring, const device T* comp, const device T* old) {
+    return src == 1 ? comp : (src == 2 ? old : ring);
 }
 """
 
@@ -89,8 +114,15 @@ _ATTEND = r"""
     const uint lane = thread_index_in_simdgroup;
     const uint sg = simdgroup_index_in_threadgroup;
     const uint head0 = threadgroup_position_in_grid.x * 8;
-    const uint b = threadgroup_position_in_grid.y;
-    const int start = meta[0], WE = meta[1], KC = meta[2], OFF = meta[3], NC = meta[4];
+    // one threadgroup per (head group, batch row, query row): query row qi of
+    // a call that covers positions first .. first + NQ - 1
+    const int NQ = meta[5];
+    const uint b = threadgroup_position_in_grid.y / uint(NQ);
+    const int qi = int(threadgroup_position_in_grid.y % uint(NQ));
+    const uint qrow = b * uint(NQ) + uint(qi);
+    const int first = meta[0], KC = meta[2], OFF = meta[3], NC = meta[4];
+    const int start = first + qi, WE = min(W, start + 1);
+    const int LIVE0 = first + NQ - W;  // oldest position still in the ring
     const int KT = WE + KC, NB = (KT + 63) / 64;
     // simdgroup 8x8 fragment: this lane holds row fm, columns fn and fn + 1
     const uint fm = ((lane >> 2) & 4) + ((lane >> 1) & 3);
@@ -99,17 +131,17 @@ _ATTEND = r"""
     threadgroup float dots[CHAINS * 64];
     threadgroup float prob[8 * 64];
     threadgroup int rows[64];
-    threadgroup bool comp[64];
+    threadgroup int srcs[64];
     threadgroup float run_max[8], blk_max[8], corr[8], den_blk[8], den_run[8];
     // the query, its rope tail applied: products rounded separately, result
     // rounded to the query dtype
     for (uint i = tid; i < uint(8 * D / 2); i += TPG) {
         const uint hh = i / (D / 2), dim = (i % (D / 2)) * 2;
-        const device auto* qh = q + (size_t(b) * H + head0 + hh) * D;
+        const device auto* qh = q + (size_t(qrow) * H + head0 + hh) * D;
         float x0 = float(qh[dim]), x1 = float(qh[dim + 1]);
         if (dim >= uint(D - RD)) {
             const uint p = (dim - uint(D - RD)) / 2;
-            const float c = cosv[p], sn = sinv[p];
+            const float c = cosv[qi * (RD / 2) + p], sn = sinv[qi * (RD / 2) + p];
             const float a = x0 * c, bb = x1 * sn;
             const float e = x0 * sn, f = x1 * c;
             x0 = float(OT(a - bb));
@@ -127,21 +159,22 @@ _ATTEND = r"""
     }
     const device auto* wk = win_kv + size_t(b) * W * D;
     const device auto* ck = comp_kv + size_t(b) * NC * D;
+    const device auto* ok = old_kv + size_t(b) * NQ * D;
     for (int blk = 0; blk < NB; ++blk) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tid < 64) {
             const int j = blk * 64 + int(tid);
-            bool c = false;
-            rows[tid] = j < KT ? key_row(j, start, WE, OFF, NC, W, cidx + b * KC, c) : -1;
-            comp[tid] = c;
+            int src = 0;
+            rows[tid] = j < KT ? key_row(j, start, WE, OFF, NC, W, LIVE0, NQ, cidx + qrow * KC, src) : -1;
+            srcs[tid] = src;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // scores: chain = (key tile, quarter), 8 heads x 8 keys over D / 4 dims
         for (uint chain = sg; chain < uint(CHAINS); chain += SL) {
             const uint tile = chain / 4, quarter = chain % 4;
             const int r0 = rows[tile * 8 + fn], r1 = rows[tile * 8 + fn + 1];
-            const device auto* k0 = comp[tile * 8 + fn] ? ck + size_t(max(r0, 0)) * D : wk + size_t(max(r0, 0)) * D;
-            const device auto* k1 = comp[tile * 8 + fn + 1] ? ck + size_t(max(r1, 0)) * D : wk + size_t(max(r1, 0)) * D;
+            const device auto* k0 = key_base(srcs[tile * 8 + fn], wk, ck, ok) + size_t(max(r0, 0)) * D;
+            const device auto* k1 = key_base(srcs[tile * 8 + fn + 1], wk, ck, ok) + size_t(max(r1, 0)) * D;
             simdgroup_matrix<float, 8, 8> score, qa, kb;
             score.thread_elements()[0] = 0.0f; score.thread_elements()[1] = 0.0f;
             for (int k = int(quarter) * (D / 4); k < int(quarter + 1) * (D / 4); k += 8) {
@@ -186,7 +219,7 @@ _ATTEND = r"""
             a.thread_elements()[0] = prob[fm * 64 + tile * 8 + fn];
             a.thread_elements()[1] = prob[fm * 64 + tile * 8 + fn + 1];
             const int r = rows[tile * 8 + fm];
-            const device auto* kr = comp[tile * 8 + fm] ? ck + size_t(max(r, 0)) * D : wk + size_t(max(r, 0)) * D;
+            const device auto* kr = key_base(srcs[tile * 8 + fm], wk, ck, ok) + size_t(max(r, 0)) * D;
             for (int v = 0; v < NV; ++v) {
                 const uint d = slice * (D / SL) + v * 8 + fn;
                 bm.thread_elements()[0] = r >= 0 ? float(OT(kr[d])) : 0.0f;
@@ -215,17 +248,18 @@ _ATTEND = r"""
         // inverse rope on the tail pairs: (re, im) * conj(cos + i sin)
         if (d >= uint(D - RD)) {
             const uint p = (d - uint(D - RD)) / 2;
-            const float c = cosv[p], sn = -sinv[p];
+            const float c = cosv[qi * (RD / 2) + p], sn = -sinv[qi * (RD / 2) + p];
             const float a0 = re * c, b0 = im * sn;
             const float a1 = re * sn, b1 = im * c;
             const float r0 = a0 - b0, r1 = a1 + b1;
             re = float(OT(r0));
             im = float(OT(r1));
         }
-        out[(size_t(b) * H + h) * D + d] = re;
-        out[(size_t(b) * H + h) * D + d + 1] = im;
+        out[(size_t(qrow) * H + h) * D + d] = re;
+        out[(size_t(qrow) * H + h) * D + d + 1] = im;
     }
 """
+
 
 @lru_cache(maxsize=None)
 def _kernels():
@@ -235,6 +269,7 @@ def _kernels():
             "q",
             "win_kv",
             "comp_kv",
+            "old_kv",
             "cidx",
             "meta",
             "scale",
@@ -256,8 +291,14 @@ def _scalar(value: float) -> mx.array:
     return a
 
 
+# Query rows one call covers: decode (1) and speculative verify chunks.
+MAX_QUERY_ROWS = 8
+
+
 def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) -> bool:
-    """Whether the fused kernels cover this attention call (one decode token)."""
+    """Whether the fused kernels cover this attention call: one decode token,
+    or a speculative verify chunk of up to ``MAX_QUERY_ROWS`` tokens that fits
+    in the window ring."""
     if not (
         ENABLED
         and custom_kernels_enabled()
@@ -267,7 +308,7 @@ def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) 
         return False
     return (
         x.ndim == 3
-        and x.shape[1] == 1
+        and 1 <= x.shape[1] <= min(MAX_QUERY_ROWS, win_kv.shape[1])
         and x.dtype in (mx.bfloat16, mx.float16, mx.float32)
         and win_kv.dtype in (mx.float32, mx.bfloat16, mx.float16)
         and win_kv.shape[0] == x.shape[0]
@@ -278,6 +319,14 @@ def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) 
         and 0 < rd <= head_dim
         and rd % 2 == 0
     )
+
+
+def overwritten_rows(win_kv: mx.array, start_pos: int, n: int) -> mx.array | None:
+    """The ring rows an ``n``-token write at ``start_pos`` replaces, read before
+    the write: earlier query rows of the same call still attend to them."""
+    if n == 1:
+        return None
+    return win_kv[:, (start_pos + mx.arange(n)) % win_kv.shape[1]]
 
 
 def attend(
@@ -292,34 +341,54 @@ def attend(
     sin: mx.array,
     scale: float,
     rd: int,
+    old_kv: mx.array | None = None,
 ) -> mx.array:
-    """Attention output of one decode query per batch row, inverse-roped.
+    """Attention output of each query row, inverse-roped.
 
-    q [b, 1, h, d] (rope tail not yet applied); win_kv [>=b, window, d], the ring after this
-    step's write; comp_kv [>=b, n_comp, d] with cidx [b, 1, k] concat-position
-    indices (``offset`` = first compressed position, -1 = masked; an index
-    outside [offset, offset + n_comp) is treated as masked), or None.
-    cos/sin: this position's rope row, [1, rd // 2]. Returns [b, 1, h, d]
-    float32 holding q-dtype values (the graph path's rounding, cast for wo_a).
+    q [b, n, h, d] (rope tail not yet applied) for positions start_pos ..
+    start_pos + n - 1; win_kv [>=b, window, d], the ring after this call's
+    writes; old_kv [b, n, d], :func:`overwritten_rows` before those writes
+    (None when n == 1); comp_kv [>=b, n_comp, d] with cidx [b, n, k]
+    concat-position indices (``offset`` = first compressed position, -1 =
+    masked; an index outside [offset, offset + n_comp) is treated as masked),
+    or None. cos/sin: these positions' rope rows, [n, rd // 2]. Returns
+    [b, n, h, d] float32 holding q-dtype values (the graph path's rounding,
+    cast for wo_a). Each query row is computed exactly as a one-row call at
+    its position would compute it.
     """
-    bsz, _, heads, dim = q.shape
+    bsz, n, heads, dim = q.shape
     window = win_kv.shape[1]
     we = min(window, start_pos + 1)
+    if n > 1 and (old_kv is None or old_kv.shape[1] != n):
+        raise ValueError("a multi-row call needs the n ring rows it overwrites")
     if comp_kv is None or cidx is None or cidx.shape[-1] == 0:
         kc, n_comp = 0, 0
         comp_kv = win_kv  # never read: every key index is below WE
         cidx = mx.zeros((1,), dtype=mx.int32)
     else:
         kc, n_comp = cidx.shape[-1], comp_kv.shape[1]
-        cidx = cidx.reshape(bsz, kc).astype(mx.int32)
-    meta = mx.array([start_pos, we, kc, offset, n_comp], dtype=mx.int32)
+        cidx = cidx.reshape(bsz * n, kc).astype(mx.int32)
+    if old_kv is None:
+        old_kv = win_kv  # never read: one row overwrites nothing it attends to
+    meta = mx.array([start_pos, we, kc, offset, n_comp, n], dtype=mx.int32)
     # dimension slices: one simdgroup per slice, each owning whole 8-wide tiles
     slices = 32
     while (dim // 8) % slices:
         slices //= 2
     attend_k = _kernels()
     out = attend_k(
-        inputs=[q, win_kv, comp_kv, cidx, meta, _scalar(scale), sink, cos, sin],
+        inputs=[
+            q,
+            win_kv,
+            comp_kv,
+            old_kv,
+            cidx,
+            meta,
+            _scalar(scale),
+            sink,
+            cos,
+            sin,
+        ],
         template=[
             ("OT", q.dtype),
             ("H", heads),
@@ -328,10 +397,9 @@ def attend(
             ("W", window),
             ("SL", slices),
         ],
-        grid=(heads // _HEADS_PER_GROUP * slices * 32, bsz, 1),
+        grid=(heads // _HEADS_PER_GROUP * slices * 32, bsz * n, 1),
         threadgroup=(slices * 32, 1, 1),
-        output_shapes=[(bsz * heads * dim,)],
+        output_shapes=[(bsz * n * heads * dim,)],
         output_dtypes=[mx.float32],
     )[0]
-    return out.reshape(bsz, 1, heads, dim)
-
+    return out.reshape(bsz, n, heads, dim)

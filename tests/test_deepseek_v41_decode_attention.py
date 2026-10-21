@@ -427,7 +427,13 @@ def test_supports_declines_what_the_kernels_do_not_cover(monkeypatch):
         return decode_attention.supports(**args)
 
     assert ok()
-    assert not ok(x=mx.zeros((2, 2, 64), dtype=mx.bfloat16))  # prefill chunk
+    # verify chunks up to MAX_QUERY_ROWS rows that fit in the ring
+    assert ok(x=mx.zeros((2, 5, 64), dtype=mx.bfloat16))
+    assert ok(x=mx.zeros((2, 8, 64), dtype=mx.bfloat16))
+    assert not ok(x=mx.zeros((2, 9, 64), dtype=mx.bfloat16))  # prefill chunk
+    assert not ok(  # longer than the ring
+        x=mx.zeros((2, 5, 64), dtype=mx.bfloat16), win_kv=mx.zeros((2, 4, 512))
+    )
     assert not ok(x=mx.zeros((2, 1, 64), dtype=mx.int32))
     assert not ok(win_kv=ring.astype(mx.int32))
     assert not ok(win_kv=mx.zeros((3, 8, 512)))  # cache rows != batch
@@ -480,7 +486,9 @@ def test_kernel_dispatch_geometry(monkeypatch):
         assert attend["grid"] == (2 * 32 * 32, 2, 1)
         assert attend["threadgroup"] == (32 * 32, 1, 1)
         assert ("SL", 32) in attend["template"] and ("W", 8) in attend["template"]
-        assert np.array(attend["inputs"][4]).tolist() == [3, 4, 0, 4, 0]
+        assert np.array(attend["inputs"][5]).tolist() == [3, 4, 0, 4, 0, 1]
+        # one row overwrites nothing it attends to: the ring stands in
+        assert attend["inputs"][3] is attend["inputs"][1]
 
         launches.clear()
         comp = mx.zeros((2, 40, 256))
@@ -489,8 +497,37 @@ def test_kernel_dispatch_geometry(monkeypatch):
             q, ring, 200, comp, cidx, 9, mx.zeros((16,)), cos, sin, 0.5, 64
         )
         (attend,) = launches
-        assert np.array(attend["inputs"][4]).tolist() == [200, 8, 35, 9, 40]
-        assert attend["inputs"][3].shape == (2, 35)
+        assert np.array(attend["inputs"][5]).tolist() == [200, 8, 35, 9, 40, 1]
+        assert attend["inputs"][4].shape == (2, 35)
+
+        # a verify chunk: one threadgroup row per (batch row, query row)
+        launches.clear()
+        q5 = mx.zeros((2, 5, 16, 256), dtype=mx.bfloat16)
+        old = mx.ones((2, 5, 256))
+        out = decode_attention.attend(
+            q5,
+            ring,
+            200,
+            comp,
+            mx.full((2, 5, 35), 5, dtype=mx.int32),
+            13,
+            mx.zeros((16,)),
+            mx.zeros((5, 32)),
+            mx.zeros((5, 32)),
+            0.5,
+            64,
+            old,
+        )
+        assert out.shape == (2, 5, 16, 256)
+        (attend,) = launches
+        assert attend["grid"] == (2 * 32 * 32, 10, 1)
+        assert np.array(attend["inputs"][5]).tolist() == [200, 8, 35, 13, 40, 5]
+        assert attend["inputs"][4].shape == (10, 35)
+        assert attend["inputs"][3] is old
+        with pytest.raises(ValueError, match="overwrites"):
+            decode_attention.attend(
+                q5, ring, 200, None, None, 13, mx.zeros((16,)), cos, sin, 0.5, 64
+            )
 
         launches.clear()
         q128 = mx.zeros((1, 1, 8, 128), dtype=mx.bfloat16)
@@ -512,6 +549,9 @@ def test_kernel_dispatch_geometry(monkeypatch):
         assert attend["grid"] == (16 * 32, 1, 1) and ("SL", 16) in attend["template"]
 
         assert built == ["rapid_v41_decode_attn"]
+        assert decode_attention.overwritten_rows(ring, 3, 1) is None
+        rows = decode_attention.overwritten_rows(mx.arange(8)[None, :, None], 6, 4)
+        assert np.array(rows).ravel().tolist() == [6, 7, 0, 1]
     finally:
         decode_attention._kernels.cache_clear()
 
@@ -530,3 +570,101 @@ def test_single_token_window_write_matches_chunk_write(pos):
     keep_slots = (pos + mx.arange(1)) % chunk.window
     chunk.win_kv[:, keep_slots] = kv.astype(chunk.dtype)
     assert np.array_equal(np.array(single.win_kv), np.array(chunk.win_kv))
+
+
+@needs_metal
+@pytest.mark.parametrize("n", [2, 5, 8])
+@pytest.mark.parametrize("start", [0, 3, 120, 125, 127, 128, 300])
+@pytest.mark.parametrize("k", [0, 6])
+def test_verify_rows_equal_one_row_calls_at_their_positions(n, start, k):
+    """Every query row of a multi-row call is bit-identical to the one-row call
+    at its position, seeing the ring as it is after that row's own write."""
+    b, n_comp = 2, 10
+    mx.random.seed(start * 31 + n + k)
+    ring0 = fake_quant_fp8_ue8m0(mx.random.normal((b, WINDOW, DIM)), 32)
+    kv = fake_quant_fp8_ue8m0(mx.random.normal((b, n, DIM)), 32)
+    q0 = (mx.random.normal((b, n, HEADS, DIM)) * 0.5).astype(mx.bfloat16)
+    comp = mx.random.normal((b, n_comp, DIM))
+    sink = mx.random.normal((HEADS,))
+    offset = min(start, WINDOW) + n
+    cidx = None
+    if k:
+        rng = np.random.default_rng(start + n)
+        picks = np.stack(
+            [[rng.permutation(n_comp)[:k] for _ in range(n)] for _ in range(b)]
+        )
+        picks[..., ::3] = -1
+        cidx = mx.array(np.where(picks >= 0, picks + offset, -1).astype(np.int32))
+    cos, sin = _rope_table()
+
+    def written(rows):
+        ring = mx.array(ring0)
+        if rows:
+            ring[:, (start + mx.arange(rows)) % WINDOW] = kv[:, :rows]
+        return ring
+
+    old = decode_attention.overwritten_rows(ring0, start, n)
+    multi = decode_attention.attend(
+        q0,
+        written(n),
+        start,
+        comp if k else None,
+        cidx,
+        offset,
+        sink,
+        cos[start : start + n],
+        sin[start : start + n],
+        DIM**-0.5,
+        RD,
+        old,
+    )
+    assert multi.shape == (b, n, HEADS, DIM)
+    for i in range(n):
+        single = decode_attention.attend(
+            q0[:, i : i + 1],
+            written(i + 1),
+            start + i,
+            comp if k else None,
+            None if cidx is None else cidx[:, i : i + 1],
+            offset,
+            sink,
+            cos[start + i : start + i + 1],
+            sin[start + i : start + i + 1],
+            DIM**-0.5,
+            RD,
+        )
+        assert np.array_equal(np.array(multi[:, i : i + 1]), np.array(single)), i
+
+
+@needs_metal
+@pytest.mark.parametrize("dtype", [mx.float32, mx.bfloat16])
+def test_model_verify_chunk_with_fused_attention_tracks_graph(dtype, monkeypatch):
+    """A speculative verify chunk (rollback enabled) runs the fused multi-row
+    kernel and stays within the decode test's tolerance of the graph path."""
+    mx.random.seed(11)
+    model = Model(_tiny_args())
+    model.set_dtype(dtype)
+    prompt = mx.random.randint(0, 64, (1, 21))
+    chunk = mx.random.randint(0, 64, (1, 5))
+    rows = []
+    attend = decode_attention.attend
+    monkeypatch.setattr(
+        decode_attention,
+        "attend",
+        lambda *a, **kw: rows.append(a[0].shape[1]) or attend(*a, **kw),
+    )
+
+    def run(enabled):
+        monkeypatch.setattr(decode_attention, "ENABLED", enabled)
+        cache = model.make_cache(max_seq_len=64)
+        model(prompt, cache, last_logit_only=True)
+        out = model(chunk, cache, enable_rollback=True)
+        mx.eval(out)
+        return np.array(out.astype(mx.float32))
+
+    fused = run(True)
+    assert rows == [5, 5, 5]
+    graph = run(False)
+    assert rows == [5, 5, 5]
+    tol = 5e-2 if dtype == mx.bfloat16 else 3e-3
+    np.testing.assert_allclose(fused, graph, rtol=tol, atol=tol)

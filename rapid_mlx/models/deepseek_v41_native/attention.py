@@ -187,8 +187,12 @@ class Attention(nn.Module):
             and lc.win_kv.dtype in (kv.dtype, mx.float32)
             and decode_attention.supports(x, lc.win_kv, self.n_heads, self.head_dim, rd)
         )
+        old_kv = None
         if fused:
             wp = min(start_pos, self.window_size)
+            # verify chunks: earlier rows still attend to the ring rows that
+            # later rows' writes replace
+            old_kv = decode_attention.overwritten_rows(lc.win_kv, start_pos, n)
         else:
             q = rope_tail(q, rd, c_q, s_q)
             prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
@@ -268,6 +272,7 @@ class Attention(nn.Module):
                 s_q,
                 self.softmax_scale,
                 rd,
+                old_kv,
             )
         else:
             o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
