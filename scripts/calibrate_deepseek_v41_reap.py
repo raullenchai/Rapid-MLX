@@ -41,6 +41,7 @@ def _load_runtime(model: Path):
 
 
 def _corpus_tokens(runtime, paths: list[Path], count: int) -> list[int]:
+    """Return exactly ``count`` token ids or raise ValueError for a shorter corpus."""
     text = "\n\n".join(path.read_text(errors="replace") for path in paths)
     ids = runtime.tokenizer.encode(text).ids
     if len(ids) < count:
@@ -232,6 +233,7 @@ def main() -> None:
                 resident_backbone=a.resident_backbone,
                 execution_mode="compiled",
             )
+        # The half boundary and recorded token count rely on len(ids) == a.tokens.
         ids = _corpus_tokens(runtime, paths, a.tokens)
         cursor = {"half": 0}
 

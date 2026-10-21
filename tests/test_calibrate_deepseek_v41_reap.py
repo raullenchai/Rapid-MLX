@@ -76,12 +76,11 @@ def test_corpus_tokens_requires_requested_sample(tmp_path: Path) -> None:
     class Runtime:
         tokenizer = Tokenizer()
 
-    try:
+    with pytest.raises(ValueError, match="corpus has"):
         calibrate._corpus_tokens(Runtime(), [corpus], count=3)
-    except ValueError as error:
-        assert "need 3" in str(error)
-    else:
-        raise AssertionError("short calibration corpus must be rejected")
+
+    Encoding.ids = [1, 2, 3, 4, 5]
+    assert calibrate._corpus_tokens(Runtime(), [corpus], count=3) == [1, 2, 3]
 
 
 def test_main_refuses_checkpoint_code_without_explicit_trust(
