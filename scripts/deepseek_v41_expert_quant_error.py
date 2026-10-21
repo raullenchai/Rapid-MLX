@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -230,6 +231,21 @@ def save_result(path, q, costs, completed, metadata, projection_q=None):
     os.replace(temp, path)
 
 
+def save_inventory(path, account):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".tmp-")
+    try:
+        with os.fdopen(fd, "w") as output:
+            output.write(json.dumps(account, indent=2) + "\n")
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", type=Path, required=True)
@@ -294,9 +310,8 @@ def main():
             "release: nonexperts 8-bit g64 / BF16; Engram 4-bit g32 SSD; MTP omitted"
         )
     account["model_revision"] = revision
-    a.inventory.parent.mkdir(parents=True, exist_ok=True)
-    a.inventory.write_text(json.dumps(account, indent=2) + "\n")
     if a.inventory_only:
+        save_inventory(a.inventory, account)
         return
     if a.output is None:
         raise ValueError("--output required unless --inventory-only")
@@ -335,6 +350,7 @@ def main():
                 old["expert_weight_bytes"].copy(),
                 old["completed"].copy(),
             )
+    save_inventory(a.inventory, account)
     stop = np.prod(shape) if a.stop is None else a.stop
     if not a.start <= stop <= np.prod(shape):
         raise ValueError("invalid expert range")

@@ -150,9 +150,48 @@ def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch)
     with np.load(tmp_path / "errors.npz") as data:
         np.testing.assert_array_equal(data["q"][0, 0], first)
         assert data["completed"].all()
+    (tmp_path / "costs.json").write_text("unchanged\n")
     monkeypatch.setattr(sys, "argv", args + ["--resume", "--seed", "9"])
     with pytest.raises(ValueError, match="provenance"):
         main()
+    assert (tmp_path / "costs.json").read_text() == "unchanged\n"
+
+
+def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    (source / "config.json").write_text(json.dumps(config))
+    destination = tmp_path / "build"
+    allocation = {
+        "layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}},
+    }
+    copy_metadata_files = rd_build._copy_metadata_files
+
+    def simulate_write_group(path, entries, *_args):
+        header = rd_build.header(entries)
+        with path.open("xb") as output:
+            output.write(struct.pack("<Q", len(header)))
+            output.write(header)
+            output.write(bytes(sum(entry.nbytes for entry in entries)))
+
+    def fail_copy(*_args):
+        raise RuntimeError("injected failure")
+
+    monkeypatch.setattr(rd_build, "write_group", simulate_write_group)
+    monkeypatch.setattr(rd_build, "_copy_metadata_files", fail_copy)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        rd_build.build(source, destination, tmp_path / "shared", allocation)
+    assert not destination.exists()
+    assert not list(tmp_path.glob("build.partial-*"))
+
+    monkeypatch.setattr(rd_build, "_copy_metadata_files", copy_metadata_files)
+    rd_build.build(source, destination, tmp_path / "shared", allocation)
+    assert destination.is_dir()
+    assert (destination / "config.json").is_file()
+    assert not list(tmp_path.glob("build.partial-*"))
 
 
 def test_fp8_expert_stream_uses_native_decoder(tmp_path):
@@ -280,4 +319,15 @@ def test_native_calibration_main_saves_domain_halves_hashes_and_revision(
         )
         assert result["counts_by_slice"].sum() == 16
         assert result["reap_halves"].shape == (2, 2, 1, 4)
-        assert result["split_keep_overlap"].shape == (2, 3)
+        assert result["split_keep_overlap"].shape == ()
+        assert result["split_keep_overlap_by_domain"].shape == (2, 3)
+        assert result["split_keep_overlap"] == pytest.approx(
+            result["split_keep_overlap_by_domain"][:, 0].min()
+        )
+        assert metadata["split_keep_overlap"] == pytest.approx(
+            result["split_keep_overlap"].item()
+        )
+        np.testing.assert_array_equal(
+            metadata["split_keep_overlap_by_domain"],
+            result["split_keep_overlap_by_domain"],
+        )

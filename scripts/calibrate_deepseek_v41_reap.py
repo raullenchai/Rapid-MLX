@@ -282,6 +282,7 @@ def main() -> None:
             for d in range(len(slices))
         ]
     )
+    split_keep_overlap = float(overlap[:, 0].min())
     metadata = {
         "schema_version": 1,
         "model_revision": a.model_revision or model.name,
@@ -297,6 +298,8 @@ def main() -> None:
         },
         "normalization": "raw score max over domains; equal tokens per slice; halves checked separately",
         "split_overlap_columns": ["reap", "man", "msan"],
+        "split_keep_overlap": split_keep_overlap,
+        "split_keep_overlap_by_domain": overlap.tolist(),
         "keep_experts": a.keep_experts,
     }
     a.output.parent.mkdir(parents=True, exist_ok=True)
@@ -311,7 +314,8 @@ def main() -> None:
         counts_halves=counts.sum(0),
         tokens=np.array(a.tokens * len(slices)),
         keep_experts=np.array(a.keep_experts),
-        split_keep_overlap=overlap,
+        split_keep_overlap=split_keep_overlap,
+        split_keep_overlap_by_domain=overlap,
         method=np.array("reap_output_norm"),
         selection_policy=np.array("max_domain_with_half_stability"),
     )
@@ -319,7 +323,8 @@ def main() -> None:
         json.dumps(
             {
                 "output": str(a.output),
-                "split_keep_overlap": overlap.tolist(),
+                "split_keep_overlap": split_keep_overlap,
+                "split_keep_overlap_by_domain": overlap.tolist(),
                 "never_routed": int((counts.sum((0, 1)) == 0).sum()),
             }
         ),

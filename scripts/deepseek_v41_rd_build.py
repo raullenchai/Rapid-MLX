@@ -17,8 +17,10 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 import sys
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -529,99 +531,106 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
         raise ValueError(
             "shared Engram and builds must be on the same filesystem for hard links"
         )
-    destination.mkdir()
-    mapping = {}
-    mtp_mapping = {}
-    for group, es in groups.items():
-        filename = f"model-{group}.safetensors"
-        target = destination / filename
-        if group == "mtp":
-            (destination / "dspark").mkdir()
-            target = destination / "dspark" / filename
-        if reuse is not None and str(group_path(group)) in reuse["reused"]:
-            # Recheck before linking; builds used as reuse inputs must be immutable.
-            original = reuse_from / group_path(group)
-            if not matching_file(original, es):
-                raise ValueError(f"reuse file changed during build: {original}")
-            os.link(original, target)
-        elif group.startswith("engram-"):
-            common = shared_path / filename
-            if not common.exists():
-                write_group(common, es, index, config)
+    staging = Path(
+        tempfile.mkdtemp(dir=destination.parent, prefix=destination.name + ".partial-")
+    )
+    try:
+        mapping = {}
+        mtp_mapping = {}
+        for group, es in groups.items():
+            filename = f"model-{group}.safetensors"
+            target = staging / filename
+            if group == "mtp":
+                (staging / "dspark").mkdir()
+                target = staging / "dspark" / filename
+            if reuse is not None and str(group_path(group)) in reuse["reused"]:
+                # Recheck before linking; builds used as reuse inputs must be immutable.
+                original = reuse_from / group_path(group)
+                if not matching_file(original, es):
+                    raise ValueError(f"reuse file changed during build: {original}")
+                os.link(original, target)
+            elif group.startswith("engram-"):
+                common = shared_path / filename
+                if not common.exists():
+                    write_group(common, es, index, config)
+                else:
+                    expected_size = 8 + len(header(es)) + sum(e.nbytes for e in es)
+                    if common.stat().st_size != expected_size:
+                        raise ValueError("shared Engram file size mismatch")
+                    with common.open("rb") as f:
+                        length = struct.unpack("<Q", f.read(8))[0]
+                        if f.read(length) != header(es):
+                            raise ValueError("shared Engram header mismatch")
+                os.link(common, target)
             else:
-                expected_size = 8 + len(header(es)) + sum(e.nbytes for e in es)
-                if common.stat().st_size != expected_size:
-                    raise ValueError("shared Engram file size mismatch")
-                with common.open("rb") as f:
-                    length = struct.unpack("<Q", f.read(8))[0]
-                    if f.read(length) != header(es):
-                        raise ValueError("shared Engram header mismatch")
-            os.link(common, target)
-        else:
-            write_group(target, es, index, config)
-        (mtp_mapping if group == "mtp" else mapping).update(
-            {e.name: filename for e in es}
-        )
-    config["model_type"] = "deepseek_v41"
-    counts = [
-        len(allocation["layers"][str(i)]["kept_expert_ids"])
-        for i in range(len(allocation["layers"]))
-    ]
-    config["experts_per_layer"] = counts
-    if "text_config" in config:
-        config["text_config"]["experts_per_layer"] = counts
-    mtp_modules = {n: v for n, v in modules.items() if n.startswith("mtp.")}
-    modules = {n: v for n, v in modules.items() if not n.startswith("mtp.")}
-    config["quantization"] = {
-        "bits": 8,
-        "group_size": 64,
-        "modules": modules,
-        "engram_bits": 4,
-        "engram_group_size": 32,
-    }
-    if mtp_mapping:
-        sidecar_config = {**config, **config.get("text_config", {})}
-        sidecar_config["quantization"] = {
+                write_group(target, es, index, config)
+            (mtp_mapping if group == "mtp" else mapping).update(
+                {e.name: filename for e in es}
+            )
+        config["model_type"] = "deepseek_v41"
+        counts = [
+            len(allocation["layers"][str(i)]["kept_expert_ids"])
+            for i in range(len(allocation["layers"]))
+        ]
+        config["experts_per_layer"] = counts
+        if "text_config" in config:
+            config["text_config"]["experts_per_layer"] = counts
+        mtp_modules = {n: v for n, v in modules.items() if n.startswith("mtp.")}
+        modules = {n: v for n, v in modules.items() if not n.startswith("mtp.")}
+        config["quantization"] = {
             "bits": 8,
             "group_size": 64,
-            "modules": mtp_modules,
+            "modules": modules,
+            "engram_bits": 4,
+            "engram_group_size": 32,
         }
-        (destination / "dspark" / "config.json").write_text(
-            json.dumps(sidecar_config, indent=2) + "\n"
-        )
-        (destination / "dspark" / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": mtp_mapping}, indent=2) + "\n"
-        )
-    config["rapid_quantization"] = {
-        "format": "native-packed-affine",
-        "allocation": allocation,
-        "shared_engram_identity": identity,
-        "mtp": bool(mtp_mapping),
-        "vision": False,
-        "bytes": report,
-    }
-    (destination / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    (destination / "model.safetensors.index.json").write_text(
-        json.dumps(
-            {
-                "metadata": {
-                    "total_size": report["total_payload_bytes"]
-                    - report["components"].get("mtp", 0)
+        if mtp_mapping:
+            sidecar_config = {**config, **config.get("text_config", {})}
+            sidecar_config["quantization"] = {
+                "bits": 8,
+                "group_size": 64,
+                "modules": mtp_modules,
+            }
+            (staging / "dspark" / "config.json").write_text(
+                json.dumps(sidecar_config, indent=2) + "\n"
+            )
+            (staging / "dspark" / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": mtp_mapping}, indent=2) + "\n"
+            )
+        config["rapid_quantization"] = {
+            "format": "native-packed-affine",
+            "allocation": allocation,
+            "shared_engram_identity": identity,
+            "mtp": bool(mtp_mapping),
+            "vision": False,
+            "bytes": report,
+        }
+        (staging / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+        (staging / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "total_size": report["total_payload_bytes"]
+                        - report["components"].get("mtp", 0)
+                    },
+                    "weight_map": mapping,
                 },
-                "weight_map": mapping,
-            },
-            indent=2,
+                indent=2,
+            )
+            + "\n"
         )
-        + "\n"
-    )
-    _copy_metadata_files(source, destination)
-    (destination / "README.md").write_text(
-        "# Experimental pruned native build\n\nUnqualified. Vision omitted; see config for optional DSpark sidecar. Engram files are hard links to a shared immutable payload.\n"
-    )
-    if reuse is not None:
-        (destination / "reuse-provenance.json").write_text(
-            json.dumps(reuse, indent=2) + "\n"
+        _copy_metadata_files(source, staging)
+        (staging / "README.md").write_text(
+            "# Experimental pruned native build\n\nUnqualified. Vision omitted; see config for optional DSpark sidecar. Engram files are hard links to a shared immutable payload.\n"
         )
+        if reuse is not None:
+            (staging / "reuse-provenance.json").write_text(
+                json.dumps(reuse, indent=2) + "\n"
+            )
+        os.replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return {**report, **({"reuse": reuse} if reuse is not None else {})}
 
 
