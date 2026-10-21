@@ -104,13 +104,19 @@ def _gpu_default() -> bool:
 
 def supports(head, x: mx.array) -> bool:
     """True when ``head(x)`` can take the exact GEMV path."""
+    return (
+        type(head) is nn.Linear
+        and "bias" not in head
+        and _supports_weight(getattr(head, "weight", None), x)
+    )
+
+
+def _supports_weight(weight, x: mx.array) -> bool:
+    """True when ``x @ weight.T`` can take the exact GEMV path."""
     if not ENABLED or not _gpu_default():
         return False
-    weight = getattr(head, "weight", None)
     if (
-        type(head) is not nn.Linear
-        or "bias" in head
-        or weight is None
+        weight is None
         or weight.ndim != 2
         or weight.dtype != mx.bfloat16
         or x.dtype != mx.float32
@@ -142,9 +148,9 @@ def _launch(weight: mx.array, x: mx.array) -> mx.array:
     return logits.reshape(*x.shape[:-1], outputs)
 
 
-def _matches_stock(head) -> bool:
-    weight = head.weight
-    cached = getattr(head, _CHECK_ATTR, None)
+def _matches_stock(owner) -> bool:
+    weight = owner.weight
+    cached = getattr(owner, _CHECK_ATTR, None)
     if cached is None or cached[0]() is not weight:
         try:
             # Cover the full row grid: each row must equal its stock single-row
@@ -157,17 +163,17 @@ def _matches_stock(head) -> bool:
             for row in range(MAX_ROWS):
                 # One stock row at a time: each call promotes the whole weight
                 # to FP32, so a single graph would hold MAX_ROWS copies.
-                expected = head(probe[row : row + 1])
+                expected = probe[row : row + 1] @ weight.T
                 ok = ok and bool(mx.array_equal(actual[row : row + 1], expected).item())
         except Exception:  # compile/launch failure on this runtime: stay stock
-            logger.warning("exact V4.1 head GEMV unavailable", exc_info=True)
+            logger.warning("exact V4.1 GEMV unavailable", exc_info=True)
             ok = False
         if not ok:
-            logger.warning("exact V4.1 head GEMV disabled: stock path for this head")
+            logger.warning("exact V4.1 GEMV disabled: stock path for this weight")
         # Plain attribute (not a parameter); the weak reference re-validates a
         # replaced weight without keeping the old 1.3 GB array alive.
         cached = (weakref.ref(weight), ok)
-        object.__setattr__(head, _CHECK_ATTR, cached)
+        object.__setattr__(owner, _CHECK_ATTR, cached)
     return bool(cached[1])
 
 
@@ -177,7 +183,24 @@ def head_logits(head, x: mx.array) -> mx.array:
         return head(x)
     # No runtime fallback past this point: the self-check above already
     # evaluated this exact kernel specialization (the template is K, N,
-    # OUTPUTS only and supports() fixes the dtypes), so the Metal pipeline
-    # that runs lazily here has compiled and launched once. ENABLED is the
-    # switch back to stock.
+    # OUTPUTS only and the support checks fix the dtypes), so the Metal
+    # pipeline that runs lazily here has compiled and launched once. ENABLED
+    # is the switch back to stock.
     return _launch(head.weight, x)
+
+
+def project(owner, x: mx.array) -> mx.array:
+    """FP32 ``x @ owner.weight.T`` for a BF16 ``owner.weight`` (router gates).
+
+    Same contract as :func:`head_logits` for weights that are not held by a
+    bias-free ``nn.Linear``; the stock expression promotes the weight first.
+    """
+    weight = owner.weight
+
+    def stock() -> mx.array:
+        out: mx.array = x @ weight.astype(mx.float32).T
+        return out
+
+    if not _supports_weight(weight, x) or not _matches_stock(owner):
+        return stock()
+    return _launch(weight, x)
