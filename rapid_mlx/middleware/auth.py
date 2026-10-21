@@ -210,7 +210,7 @@ def _rate_limit_client_id(request: Request) -> str:
             return _bucket_id(bearer_key)
 
     x_api_keys = request.headers.getlist("x-api-key")
-    if len(x_api_keys) == 1 and matches(x_api_keys[0]):
+    if x_api_keys and all(matches(candidate) for candidate in x_api_keys):
         return _bucket_id(x_api_keys[0])
 
     if request.client and request.client.host:
