@@ -48,7 +48,11 @@ import threading
 import time
 from pathlib import Path
 
-from .precision import is_packaged_bf16_model, is_qwen_image_21_full_q4
+from .precision import (
+    is_packaged_bf16_model,
+    is_qwen_image_21_full_q4,
+    is_qwen_image_21_turbo,
+)
 
 # A pre-quantized mflux repo carries a quant tag in its id — either the
 # ``<n>bit`` / ``<n>-bit`` convention (``FLUX.1-schnell-mflux-4bit``) or the
@@ -243,7 +247,13 @@ _DEFAULT_STEPS_BY_FAMILY = {
 
 def default_steps_for_model(model_name: str) -> int:
     """Public catalog view of the same family default used at generation."""
-    return _DEFAULT_STEPS_BY_FAMILY.get(_detect_family(model_name), 4)
+    family = _detect_family(model_name)
+    if family == "qwen-image-2.1" and is_qwen_image_21_turbo(model_name):
+        # Distilled checkpoint: its published schedule has eight sigma nodes.
+        from .qwen21_turbo import TURBO_STEPS
+
+        return TURBO_STEPS
+    return _DEFAULT_STEPS_BY_FAMILY.get(family, 4)
 
 
 def _looks_like_prequantized(model_name: str) -> bool:
@@ -274,15 +284,25 @@ class ImageGenerationEngine:
         self.model_name = model_name
         self.family = _detect_family(model_name)
         self.supports_generation = self.family != "qwen-image-edit"
-        self.supports_editing = self.family in {
-            "flux2-klein",
-            "qwen-image-edit",
-            "qwen-image-2.1",
-        }
+        # The distilled Qwen-Image 2.1 Turbo checkpoint is text-to-image only
+        # here: its editing path needs the reference-image conditioning that
+        # the pinned mflux runtime does not provide for Qwen-Image 2.1.
+        self._qwen21_turbo = self.family == "qwen-image-2.1" and (
+            is_qwen_image_21_turbo(model_name)
+        )
+        self.supports_editing = (
+            self.family
+            in {
+                "flux2-klein",
+                "qwen-image-edit",
+                "qwen-image-2.1",
+            }
+            and not self._qwen21_turbo
+        )
         # Kept for compatibility with callers that distinguish exclusive edit
         # checkpoints. FLUX.2 supports both operations, so it is not edit-only.
         self.is_edit = self.family == "qwen-image-edit"
-        self.default_steps = _DEFAULT_STEPS_BY_FAMILY.get(self.family, 4)
+        self.default_steps = default_steps_for_model(model_name)
         self.default_edit_steps = (
             40
             if self.family == "qwen-image-2.1"
@@ -517,6 +537,8 @@ class ImageGenerationEngine:
         if self.family == "qwen-image-2.1":
             from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 
+            if self._qwen21_turbo:
+                return self._build_qwen21_turbo(QwenImage21, model_path)
             if not self._qwen21_full_q4:
                 return QwenImage21(
                     quantize=self._quantize,
@@ -564,6 +586,39 @@ class ImageGenerationEngine:
         return Flux1(
             quantize=self._quantize, model_path=model_path, model_config=config
         )
+
+    def _build_qwen21_turbo(self, model_cls, model_path):
+        """Load the official Turbo checkpoint through the Qwen-Image 2.1 path.
+
+        Turbo shares the base architecture and weight names, but ships its
+        Qwen3-VL text encoder as one unsharded ``model.safetensors``. The
+        pinned mflux definition loads that component through the shard index
+        only, so switch it to the glob loader for this build and restore the
+        process-global definition at once, like the full-q4 build above.
+        """
+        from mflux.models.common.config.model_config import ModelConfig
+        from mflux.models.qwen21.weights.qwen21_weight_definition import (
+            Qwen21WeightDefinition,
+        )
+
+        original_components = Qwen21WeightDefinition.get_components
+
+        def turbo_components():
+            components = original_components()
+            for component in components:
+                if component.name == "text_encoder":
+                    component.loading_mode = "multi_glob"
+            return components
+
+        Qwen21WeightDefinition.get_components = staticmethod(turbo_components)
+        try:
+            return model_cls(
+                quantize=self._quantize,
+                model_path=model_path,
+                model_config=ModelConfig.qwen_image_21(),
+            )
+        finally:
+            Qwen21WeightDefinition.get_components = staticmethod(original_components)
 
     def _report_native_step(self, step: int, total: int) -> None:
         """Bridge a vendored runtime into the shared progress/cancel contract."""
@@ -882,14 +937,24 @@ class ImageGenerationEngine:
             "lives, or carries quantization scale/bias tensors.)"
         )
 
-    @staticmethod
-    def _read_text_encoder_weight_map(text_encoder_dir: Path) -> dict | None:
+    @classmethod
+    def _read_text_encoder_weight_map(cls, text_encoder_dir: Path) -> dict | None:
         import json
 
         index_path = text_encoder_dir / "model.safetensors.index.json"
         try:
             with open(index_path, encoding="utf-8") as fh:
                 index = json.load(fh)
+        except FileNotFoundError:
+            # An unsharded encoder (Qwen-Image 2.1 Turbo) has no index; its
+            # one file's header names every tensor, so derive the same map.
+            single = text_encoder_dir / "model.safetensors"
+            if not single.is_file():
+                return None
+            header = cls._read_safetensors_header(str(single))
+            if header is None:
+                return None
+            return {key: single.name for key in header if key != "__metadata__"}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return None
         weight_map = index.get("weight_map") if isinstance(index, dict) else None
@@ -1073,17 +1138,35 @@ class ImageGenerationEngine:
         """Validate before lazy loading; accept the unused seed for call parity."""
         input_paths = image_paths or []
         editing = bool(input_paths)
-        if self.family == "qwen-image-2.1" and editing and len(input_paths) != 1:
+        if (
+            self.family == "qwen-image-2.1"
+            and self.supports_editing
+            and editing
+            and len(input_paths) != 1
+        ):
             raise ImageRequestError("Qwen-Image 2.1 img2img accepts one input image.")
         if not editing and not self.supports_generation:
             raise ImageRequestError(
                 "qwen-image-edit requires at least one input image (image_paths)."
             )
         if editing and not self.supports_editing:
+            if self._qwen21_turbo:
+                raise ImageRequestError(
+                    "Qwen-Image 2.1 Turbo is text-to-image only and does not "
+                    "accept input images; use qwen-image-2.1 to edit images."
+                )
             raise ImageRequestError(
                 f"{self.family} is text-to-image only and does not accept input images; "
                 "use an image-edit capable model."
             )
+        if self._qwen21_turbo:
+            from .qwen21_turbo import TURBO_GUIDANCE
+
+            if guidance is not None and guidance != TURBO_GUIDANCE:
+                raise ImageRequestError(
+                    "Qwen-Image 2.1 Turbo runs without classifier-free guidance; "
+                    "omit guidance or set it to 1.0."
+                )
         if self.family == "hidream-o1-dev":
             if len(prompt) > 4096:
                 raise ImageRequestError(
@@ -1374,6 +1457,10 @@ class ImageGenerationEngine:
             kwargs["guidance"] = guidance
         if negative_prompt is not None and self.supports_negative_prompt:
             kwargs["negative_prompt"] = negative_prompt
+        if self._qwen21_turbo:
+            from .qwen21_turbo import SCHEDULER_PATH
+
+            kwargs["scheduler"] = SCHEDULER_PATH
         return kwargs
 
     @staticmethod

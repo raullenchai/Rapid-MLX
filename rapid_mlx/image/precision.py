@@ -16,6 +16,8 @@ QWEN_IMAGE_21_Q4_ALIAS = "qwen-image-2.1"
 QWEN_IMAGE_21_BF16_ALIAS = "qwen-image-2.1-bf16"
 QWEN_IMAGE_21_Q4_REPO = "mlx-community/Qwen-Image-2.1-mflux-q4"
 QWEN_IMAGE_21_BF16_REPO = "Qwen/Qwen-Image-2.1"
+QWEN_IMAGE_21_TURBO_ALIAS = "qwen-image-2.1-turbo"
+QWEN_IMAGE_21_TURBO_REPO = "Qwen/Qwen-Image-2.1-Turbo"
 
 _FLUX2_KLEIN_SOURCES = frozenset(
     {
@@ -73,3 +75,16 @@ def is_qwen_image_21_full_q4(model_name: str) -> bool:
     """Whether *model_name* is Rapid's reviewed full-q4 Qwen 2.1 pack."""
 
     return model_name.casefold() == QWEN_IMAGE_21_Q4_REPO.casefold()
+
+
+def is_qwen_image_21_turbo(model_name: str) -> bool:
+    """Whether *model_name* is the pinned official Qwen-Image 2.1 Turbo checkpoint.
+
+    Deliberately exact: third-party step-distillation LoRAs and community
+    re-packs use other layouts and have not been qualified.
+    """
+
+    return (model_name or "").casefold() in {
+        QWEN_IMAGE_21_TURBO_ALIAS.casefold(),
+        QWEN_IMAGE_21_TURBO_REPO.casefold(),
+    }

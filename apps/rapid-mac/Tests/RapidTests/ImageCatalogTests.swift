@@ -23,7 +23,7 @@ struct ImageCatalogTests {
       ────────────────────────────
       ltx-2.3-mlx-q4        24.0 GiB   [video:gen] notapalindrome/ltx23-mlx-av-q4
 
-      Image models (10 aliases)
+      Image models (11 aliases)
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
@@ -37,12 +37,13 @@ struct ImageCatalogTests {
       qwen-image-edit       34.9 GiB    [image:edit] OsaurusAI/Qwen-Image-Edit-mflux-q8
       qwen-image-2.1         8.9 GiB    [image:both] mlx-community/Qwen-Image-2.1-mflux-q4
       qwen-image-2.1-bf16   30.9 GiB    [image:both] Qwen/Qwen-Image-2.1
+      qwen-image-2.1-turbo  30.2 GiB    [image:gen] Qwen/Qwen-Image-2.1-Turbo
     """
 
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 10)
+        #expect(rows.count == 11)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
@@ -55,6 +56,7 @@ struct ImageCatalogTests {
         #expect(aliases.contains("qwen-image-edit"))
         #expect(aliases.contains("qwen-image-2.1"))
         #expect(aliases.contains("qwen-image-2.1-bf16"))
+        #expect(aliases.contains("qwen-image-2.1-turbo"))
         // No chat / video alias leaks in.
         #expect(!aliases.contains("qwen3.6-27b-4bit"))
         #expect(!aliases.contains("ltx-2.3-mlx-q4"))
@@ -93,6 +95,11 @@ struct ImageCatalogTests {
         #expect(qwen21BF16?.hfRepo == "Qwen/Qwen-Image-2.1")
         #expect(qwen21BF16?.size == "30.9 GiB")
         #expect(qwen21BF16?.capability == .generationAndEditing)
+        // The distilled Turbo checkpoint is text-to-image only.
+        let qwen21Turbo = rows.first { $0.alias == "qwen-image-2.1-turbo" }
+        #expect(qwen21Turbo?.hfRepo == "Qwen/Qwen-Image-2.1-Turbo")
+        #expect(qwen21Turbo?.size == "30.2 GiB")
+        #expect(qwen21Turbo?.capability == .generation)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -184,5 +191,6 @@ struct ImageCatalogTests {
         #expect(excluded.contains("qwen-image-edit"))
         #expect(excluded.contains("qwen-image-2.1"))
         #expect(excluded.contains("qwen-image-2.1-bf16"))
+        #expect(excluded.contains("qwen-image-2.1-turbo"))
     }
 }

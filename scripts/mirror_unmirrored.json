@@ -57,6 +57,11 @@
       "since": "2026-10-20"
     },
     {
+      "hf_path": "Qwen/Qwen-Image-2.1-Turbo",
+      "reason": "new alias; HF fallback until a mirror upload is authorized",
+      "since": "2026-10-20"
+    },
+    {
       "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
       "reason": "large variant; HF fallback; mirror cost not justified",
       "since": "2026-10-05"

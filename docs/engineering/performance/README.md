@@ -57,6 +57,7 @@ summary statistics, and limitations.
 - [Gemma 4 26B-A4B assistant-sidecar MTP qualification](2026-09-20-gemma4-assistant-mtp.md)
 - [Qwen Image 2.1 source-environment dogfood (2026-09-21)](2026-09-21-qwen-image-2.1-dogfood.md)
 - [Qwen Image 2.1 8/16 GB feasibility spike (2026-09-25)](2026-09-25-qwen-image-2.1-low-memory-spike.md)
+- [Qwen Image 2.1 Turbo real-weight dogfood (2026-10-20)](2026-10-20-qwen-image-2.1-turbo-dogfood.md)
 - [Qwen 27B pool customer experience, 2026-09-30](2026-09-30-qwen-pool-customer-ux.md)
 - [MTP under concurrency on an M4 Pro (2026-10-02)](2026-10-02-mtp-concurrency-m4-pro.md)
 - [Muse-Glimmer 30B 8-bit DFlash qualification](muse-glimmer-30b-dflash-qualification.md)

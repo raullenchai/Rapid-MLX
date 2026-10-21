@@ -1709,6 +1709,7 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "mflux-community/qwen-image-mflux-q6": "f57c43e57ecc0eef7b08092d660eda8afe7fc6cc",
     "mlx-community/Qwen-Image-2.1-mflux-q4": "746a58556820933a2df5c75887a2570f1ad200c0",
     "Qwen/Qwen-Image-2.1": "790c92633540aa0cb11d9abf19eb46d861714758",
+    "Qwen/Qwen-Image-2.1-Turbo": "fc13ba1986fcb905854dc8de2f52eee395f49b5b",
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": "a458969f2a612433cf036bfc3d8d818ceba29fab",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
@@ -1795,6 +1796,7 @@ _MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
 _MFLUX_TOKENIZER_DIRS: dict[str, tuple[str, ...]] = {
     # Official Qwen 2.1 stores its Qwen3-VL tokenizer under processor/.
     "Qwen/Qwen-Image-2.1": ("processor",),
+    "Qwen/Qwen-Image-2.1-Turbo": ("processor",),
     "mlx-community/Qwen-Image-2.1-mflux-q4": ("processor",),
 }
 _MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
@@ -1813,9 +1815,18 @@ _MFLUX_SINGLE_FILE_COMPONENTS: dict[str, dict[str, str]] = {
     "Qwen/Qwen-Image-2.1": {
         "vae": "diffusion_pytorch_model.safetensors",
     },
+    # The distilled Turbo checkpoint ships its Qwen3-VL encoder as one
+    # unsharded ``model.safetensors`` with no index.
+    "Qwen/Qwen-Image-2.1-Turbo": {
+        "text_encoder": "model.safetensors",
+        "vae": "diffusion_pytorch_model.safetensors",
+    },
 }
 _MFLUX_INDEX_FILES: dict[str, dict[str, str]] = {
     "Qwen/Qwen-Image-2.1": {
+        "transformer": "diffusion_pytorch_model.safetensors.index.json",
+    },
+    "Qwen/Qwen-Image-2.1-Turbo": {
         "transformer": "diffusion_pytorch_model.safetensors.index.json",
     },
 }

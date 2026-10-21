@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from rapid_mlx.image.precision import is_qwen_image_21_turbo
+
 from .canonical import rcj_digest
 from .validation import ContractValidator
 
@@ -23,6 +25,8 @@ def _availability(*, desktop: bool = True) -> dict[str, bool]:
 
 def _image_operations(repo_id: str) -> list[str]:
     folded = repo_id.casefold().replace("_", "-")
+    if is_qwen_image_21_turbo(repo_id):
+        return ["text_to_image"]
     if "qwen-image-2.1" in folded:
         return ["text_to_image", "image_to_image"]
     if "flux2" in folded or "flux.2" in folded or "klein" in folded:

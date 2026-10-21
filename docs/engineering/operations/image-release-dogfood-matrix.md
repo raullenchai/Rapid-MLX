@@ -27,6 +27,7 @@ column.
 | `qwen-image-2.1` | mflux / Qwen Image 2.1 full q4 | Generate + img2img | Required manually | [Low-memory qualification](../performance/2026-09-25-qwen-image-2.1-low-memory-spike.md) |
 | `qwen-image` | Same checkpoint and pin as `qwen-image-2.1` | Generate + img2img | Required manually | Covered by the `qwen-image-2.1` qualification |
 | `qwen-image-2.1-bf16` | mflux / Qwen Image 2.1 q8 on load | Generate + img2img | Required manually | [Source-environment real-weight dogfood](../performance/2026-09-21-qwen-image-2.1-dogfood.md) |
+| `qwen-image-2.1-turbo` | mflux / Qwen Image 2.1 Turbo q8 on load, 8-step schedule | Generate | Required manually | [Turbo real-weight dogfood](../performance/2026-10-20-qwen-image-2.1-turbo-dogfood.md) |
 | `qwen-image-edit` | mflux / Qwen Image Edit 2509 q8 | Edit | Required manually | [Qwen Image Edit dogfood](../performance/2026-09-05-qwen-image-edit-dogfood.md) |
 <!-- image-release-matrix:end -->
 
