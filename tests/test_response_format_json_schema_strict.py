@@ -1468,7 +1468,7 @@ def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_strict_false_guided_unavailable_falls_through_to_prompt_injection():
+def test_strict_false_guided_unavailable_falls_through_to_prompt_injection(caplog):
     """``strict=false`` without llguidance must NOT 400.
 
     The existing prompt-injection contract is suggestion-only; clients
@@ -1485,6 +1485,9 @@ def test_strict_false_guided_unavailable_falls_through_to_prompt_injection():
     assert snap["strict_requests_total"] == 0
     # Unconstrained chat path serves the response.
     assert len(engine.chat_calls) == 1
+    from rapid_mlx.connect import package_install_command
+
+    assert package_install_command("rapid-mlx[guided]") in caplog.text
 
 
 def test_strict_false_guided_available_routes_to_guided():

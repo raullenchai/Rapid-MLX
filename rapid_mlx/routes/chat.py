@@ -5808,6 +5808,8 @@ async def _create_chat_completion_impl(
             elif use_guided or _mllm_schema_processor is not None:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:
+                from rapid_mlx.connect import package_install_command
+
                 # Surface the silent-degradation case: client asked for
                 # json_schema response_format but the engine can't
                 # enforce it (most commonly: the user installed
@@ -5821,10 +5823,10 @@ async def _create_chat_completion_impl(
                     "generation is unavailable (engine="
                     "%s.supports_guided_generation=False). Falling back "
                     "to unconstrained decoding — schema will NOT be "
-                    "enforced. Install with `pip install "
-                    "'rapid-mlx[guided]'` to enable llguidance-backed "
+                    "enforced. Install with `%s` to enable llguidance-backed "
                     "schema enforcement.",
                     type(engine).__name__,
+                    package_install_command("rapid-mlx[guided]"),
                 )
 
     _buffer_strict_tool_stream = bool(request.stream and strict_mode and request.tools)

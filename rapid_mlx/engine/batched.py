@@ -5200,9 +5200,11 @@ class BatchedEngine(BaseEngine):
         import asyncio
 
         if not self.supports_guided_generation:
+            from rapid_mlx.connect import package_install_command
+
             raise RuntimeError(
                 "Guided generation not available. "
-                "Install with: pip install 'rapid-mlx[guided]'"
+                f"Install with: {package_install_command('rapid-mlx[guided]')}"
             )
 
         if not self._loaded:

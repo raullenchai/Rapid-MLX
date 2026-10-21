@@ -1968,7 +1968,7 @@ class MLXMultimodalLM:
         except ImportError:
             raise ImportError(
                 "mlx_vlm.video_generate is required for native video support. "
-                "Upgrade with: pip install --upgrade mlx-vlm"
+                f"Upgrade with: {shlex.quote(sys.executable)} -m pip install --upgrade mlx-vlm"
             )
 
         # Translate OpenAI API messages into process_vision_info format
@@ -2084,7 +2084,7 @@ class MLXMultimodalLM:
         except ImportError:
             raise ImportError(
                 "mlx_vlm.video_generate is required for native video support. "
-                "Upgrade with: pip install --upgrade mlx-vlm"
+                f"Upgrade with: {shlex.quote(sys.executable)} -m pip install --upgrade mlx-vlm"
             )
 
         text, gen_kwargs = self._prepare_native_video_inputs(

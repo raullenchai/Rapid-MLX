@@ -1678,6 +1678,7 @@ async def _run_stt_request(
         )
 
     except ImportError:
+        from rapid_mlx.connect import package_install_command
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
         # No ``model``: ``model_name`` is the resolved request form field
@@ -1690,7 +1691,10 @@ async def _run_stt_request(
         )
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+            detail=(
+                "mlx-audio not installed. Install with: "
+                f"{package_install_command('mlx-audio')}"
+            ),
         )
     except (HTTPException, ModelDownloadsDisabledError):
         # Preserve our own status codes (e.g. 413 for oversized uploads,
@@ -2298,6 +2302,7 @@ async def _run_alignment_request(
         return _format_stt_response(result, response_format, task="transcribe")
 
     except ImportError:
+        from rapid_mlx.connect import package_install_command
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
         # No ``model``: ``model_name`` is the resolved request form field
@@ -2310,7 +2315,10 @@ async def _run_alignment_request(
         )
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+            detail=(
+                "mlx-audio not installed. Install with: "
+                f"{package_install_command('mlx-audio')}"
+            ),
         )
     except (HTTPException, ModelDownloadsDisabledError):
         raise
