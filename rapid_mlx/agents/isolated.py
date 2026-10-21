@@ -370,6 +370,7 @@ def configure(
         _private_dir(root / "runtime")
     if name == "aider":
         _private_dir(root / "home")
+        assert git is not None
         git_env = f"HOME={shlex.quote(str(Path.home()))} "
         for name_, value in os.environ.items():
             valid_name = name_.isascii() and all(
