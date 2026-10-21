@@ -5,7 +5,7 @@ CPU-verifiable phase, 2026-10-20. Owner: Vector. Branch:
 `59dfabfa2955a5eeb24821bcd3e1133a91f96ea5`.
 Scope: DSpark, installed draft helpers, post-prefill speculative loop,
 benchmark, regression tests and Apple CI registration. Target modules and the
-512-token prefill loop are unchanged. No commit or GPU qualification is implied.
+512-token prefill loop are unchanged. No GPU qualification is implied.
 
 ## Findings
 
@@ -18,7 +18,7 @@ benchmark, regression tests and Apple CI registration. Target modules and the
 | Scalar and packed projections preserve native precision | Scalar `linear` rounded dense inputs to weight dtype and forced all outputs back to input dtype. Native projections promote mixed inputs/weights normally. The native routed activation stays fp32 into down projection; the shared expert explicitly casts it back. These boundaries differ from the old scalar and packed draft. | Remove premature scalar casts, keep routed down inputs fp32, retain the shared-expert cast, and scale routed outputs afterward. Full native MoE versus scalar/packed tests use identical affine weights, fp32/bf16 inputs and fp32/bf16 projection storage. Dense projections match native layers bit-exactly in all four input/weight dtype combinations. |
 | HC mixing or Sinkhorn differs | Staggered pre-mixes and residual orientation agree. The duplicate draft projection lacked the target's explicit weight promotion; separate einsum/reduction implementations risked drift. | Reuse target HC mixing, pre-collapse and post-expansion, including dtype handling and Sinkhorn implementation. CPU component tests are bit-exact. |
 | Hidden-state source or positions are wrong | Release and native configuration select zero-based layers `[37, 38, 39]`. Native captures the arithmetic mean over HC copies at block entry, before RMSNorm and before learned HC collapse; concatenation follows configured layer order and preserves stream dtype. Release captures after any Engram update; native captures before it. Release Engram layers are `[1, 14]`, so this does not affect the selected layers. | No capture change. Tests verify block-entry means and deliberately reordered layer IDs. Batch observations preserve absolute contiguous positions and the final sliding window. |
-| Rejection observes or retains invalid state | Existing loop only observes target hidden states through `mismatch - 1`, correctly excluding the replacement until it is actually forwarded. However, offset rollback did **not** restore older KV rows overwritten by the rejected suffix. On the tiny model, rejection at index 1 diverged from plain greedy as early as output index 2. | Preserve observation boundary; retain only the ring slots touched by each verify and restore rejected slots after rollback. No target/cache implementation change. Regression crosses window wrap with rejection at every K4 boundary. Qualified window is 128, larger than the five-token verify. |
+| Rejection observes or retains invalid state | Existing loop only observes target hidden states through `mismatch - 1`, correctly excluding the replacement until it is actually forwarded. Offset rollback alone did not restore older ring rows overwritten by a rejected suffix; on the tiny model, rejection at index 1 diverged from plain greedy as early as output index 2. | Preserve the observation boundary (now one `observe_many` call over the verified prefix). Ring-row restoration and the verify-length cap come from the parent sliding-window rollback change, which this change builds on unmodified. |
 | Five-token verify differs from sequential target calls | Seeds 7, 11, 42, float32: max absolute logit differences `6.5565109e-7`, `7.1525574e-7`, `2.9802322e-7`; all five argmaxes agree per seed. Small CPU reduction differences exist, with no greedy divergence in these measurements. | No target kernel changes. Assert a `2e-5` CPU bound and test whole-generation equality and deterministic draft proposals. Full bf16 target execution cannot run on this CPU backend: GatherMM supports float32 only. GPU near-tie behavior remains unverified. |
 | Per-round host overhead is excessive | Old Markov chain performed five scalar argmax readbacks; verifier performed up to four more. Observations evaluated once per accepted position; installed packed MoE still dispatched once per draft position. | Keep Markov dependencies on device and read all proposal IDs together; one batched verifier argmax readback; one batched observation projection/eval; one packed MoE dispatch per stage. Keep the short host acceptance loop to preserve mismatch/EOS ordering. |
 
@@ -106,10 +106,12 @@ Verification results:
 ## Pending GPU measurement and handoff
 
 Vector owns checkpoint acceptance/numerical qualification; Harbor owns the
-Apple CI follow-through. Team start/completion FYIs could not be delivered:
-Orca agent messaging was unavailable. This document records the intention,
-scoped changes, evidence, risks and next action for Atlas, Pixel, Harbor and Echo.
-No commit was made at the user's request.
+Apple CI follow-through. This document records the intention, scoped changes,
+evidence, risks and next action.
+
+`DSpark.observe_many` shares its signature, single-stream/nonempty guards, error
+text, sliding-window eviction rule and position update with the prefill change;
+this batched body is the one to keep when both land.
 
 On an isolated M3 Ultra, set `TARGET_MODEL` and `DRAFT_MODEL` to existing local
 checkpoint directories. Use the same revisions, prompt, token count, precision,

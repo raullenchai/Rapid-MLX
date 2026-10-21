@@ -468,3 +468,55 @@ def test_dense_linear_matches_native_without_premature_input_rounding(
     linear.weight = mx.random.normal((32, 32)).astype(weight_dtype)
     draft.w._arrays["dense.weight"] = linear.weight
     equal(draft.w.linear("dense", x), linear(x))
+
+
+@pytest.mark.usefixtures("cpu_device")
+@pytest.mark.parametrize("serial_rows,chunk_rows", [(5, 6), (3, 12), (8, 1)])
+def test_observe_many_appends_into_populated_window(serial_rows, chunk_rows):
+    _, serial = bench.tiny_setup()
+    _, batched = bench.tiny_setup()
+    hidden = mx.random.normal((1, serial_rows + chunk_rows, 96))
+    for i in range(serial_rows):
+        serial.observe(hidden[:, i], i)
+        batched.observe(hidden[:, i], i)
+    for i in range(serial_rows, serial_rows + chunk_rows):
+        serial.observe(hidden[:, i], i)
+    batched.observe_many(hidden[:, serial_rows:], serial_rows)
+    assert batched.position == serial.position == serial_rows + chunk_rows - 1
+    for layer in serial.layers:
+        assert len(batched.windows[layer]) == len(serial.windows[layer])
+        equal(
+            mx.concatenate(batched.windows[layer]),
+            mx.concatenate(serial.windows[layer]),
+        )
+
+
+@pytest.mark.parametrize("eos_index", [0, 2, 5])
+@pytest.mark.parametrize("mismatch", [None, 1, 3])
+def test_production_stream_stops_at_target_eos_with_draft(eos_index, mismatch):
+    model, draft = bench.tiny_setup()
+    prefix = [1, 2, 3, 4]
+    plain, _ = bench.plain_decode(model, prefix, 18)
+    eos = plain[eos_index]
+
+    def propose(seed):
+        position = draft.position + 1 - len(prefix)
+        candidates = [seed] + plain[position + 1 : position + 5]
+        if mismatch is not None and len(candidates) > mismatch:
+            candidates[mismatch] = (candidates[mismatch] + 1) % 32
+        return candidates, mx.ones((5, 1))
+
+    draft.propose = propose
+
+    class EosTokenizer(bench.TinyTokenizer):
+        eos_token_id = eos
+        all_special_ids = [eos]
+
+    runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+    output = [
+        chunk.token
+        for chunk in serving.stream_generate(
+            model, EosTokenizer(), prefix, runtime=runtime, max_tokens=18
+        )
+    ]
+    assert output == plain[: plain.index(eos) + 1]
