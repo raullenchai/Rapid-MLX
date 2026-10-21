@@ -155,13 +155,12 @@ def test_login_shell_exit_status_is_the_answer():
     assert "builtin whence -p -- fake-agent" in argv[2]
 
 
-def test_path_style_binary_is_expanded_for_the_shell():
+def test_binary_is_passed_to_the_shell_verbatim():
     with patch.object(
         cli_preflight.subprocess, "Popen", side_effect=_reply(b"0\n")
-    ) as run:
-        assert cli_preflight.agent_cli_found("~/bin/tool") is True
-    expected = f"whence -p -- {os.path.expanduser('~/bin/tool')}"
-    assert expected in run.call_args.args[0][2]
+    ) as popen:
+        assert cli_preflight.agent_cli_found("my agent") is True
+    assert "whence -p -- 'my agent' " in popen.call_args.args[0][2]
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,8 @@ shell's own exit status is the answer. ``-p`` accepts only executables found
 on PATH (or an executable path), not profile functions or aliases, which the
 generated runner script would not inherit. If that shell cannot be run or does not answer within the deadline,
 launch refuses as well, because the runner depends on the same shell.
+The probe sources the login profile one extra time per launch, with no
+terminal attached, and stops anything that profile started for it.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ def agent_cli_found(binary: str) -> bool | None:
 
     Returns ``None`` when the login shell cannot be run or does not answer.
     """
-    target = shlex.quote(os.path.expanduser(binary))
+    # Passed verbatim: the login shell, not this process, interprets it.
+    target = shlex.quote(binary)
     try:
         # The answer goes to a private file opened only after startup, and
         # the shell's own output is discarded. Profile output therefore cannot
