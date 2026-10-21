@@ -14,6 +14,8 @@ import importlib.util
 import os
 import sys
 import threading
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 
 from ..image.engine import (
     ImageGenerationCancelled,
@@ -38,6 +40,8 @@ __all__ = [
 # Every image-model operation therefore runs on one long-lived worker, the same
 # single-thread-executor shape the text (mlx-step) and retrieval lanes use. It
 # is process-wide because image generation is already serialized process-wide.
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 _image_worker_lock = threading.Lock()
 _image_executor: concurrent.futures.ThreadPoolExecutor | None = None
 _image_worker_state = threading.local()
@@ -67,7 +71,9 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_image_worker_after_fork)
 
 
-def run_on_image_worker(func, /, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+def run_on_image_worker(
+    func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+) -> _T:
     """Run ``func`` on the image lane's dedicated MLX thread and block for it.
 
     Calls made from the worker itself run inline so nested engine calls cannot
