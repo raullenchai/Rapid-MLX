@@ -34,11 +34,11 @@ The server listens on loopback by default and prints its selected port. An expli
 
 ### KV cache dtype and quantization
 
-Use `rapid-mlx serve --help` for the current `--kv-cache-*` options and defaults. The [server guide](../guides/server.md) describes cache tradeoffs.
+The default BF16 KV cache favors fidelity. `--kv-cache-dtype int8` or `int4` uses less memory and can change output quality or speed. Use `rapid-mlx serve --help` for the current quantization options and defaults; the [performance flags guide](https://rapidmlx.com/docs/perf-flags.html) covers tuning.
 
 ### PFlash long-prompt compression
 
-Use `rapid-mlx serve --help` for the current `--pflash*` options and defaults. Compression can discard prompt content; see the [server guide](../guides/server.md) before enabling it.
+PFlash compresses long prompts before prefill. `--pflash auto` applies it at the configured threshold; `--pflash always` applies it to eligible prompts. It is off by default. Compression discards some prompt content, so validate results on your workload. Use `rapid-mlx serve --help` for its current tuning flags and the [performance flags guide](https://rapidmlx.com/docs/perf-flags.html) for examples.
 
 ## `rapid-mlx chat`
 

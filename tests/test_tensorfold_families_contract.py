@@ -672,7 +672,7 @@ def test_head_profile_pins_a_real_head_layout(profile_id: str, tmp_path: Path) -
 def test_models_reference_documents_every_family_profile() -> None:
     reference = (REPO_ROOT / "docs" / "reference" / "models.md").read_text()
     for profile_id in PROFILE_IDS:
-        assert f"`{profile_id}`" in reference
+        assert f"- `{profile_id}`" in reference
 
 
 def test_preload_probes_leave_mlx_unimported_for_family_env() -> None:

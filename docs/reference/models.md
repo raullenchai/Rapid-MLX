@@ -17,8 +17,18 @@ Run `rapid-mlx models` to browse current text and vision aliases. Start a recomm
 
 ## Image, video, and audio
 
-The CLI lists these model types separately. Start from the [image and vision guide](../guides/multimodal.md), [video guide](../guides/video-generation.md), or [audio guide](../guides/audio.md) for a working request. Check the selected alias with `rapid-mlx info <alias>` before downloading a large model.
+The CLI lists these model types separately. Start from the [image-generation guide](https://rapidmlx.com/docs/models/families/image.html), [video guide](../guides/video-generation.md), or [audio guide](../guides/audio.md) for a working request. Check the selected alias with `rapid-mlx info <alias>` before downloading a large model.
 
 ## Embeddings and reranking
 
 Use the [embeddings guide](../guides/embeddings.md) or [rerank guide](../guides/rerank.md) for the optional runtime and serving commands.
+
+## TensorFold family profiles
+
+The following aliases are available for qualified hardware and their matching draft paths. Use `rapid-mlx info <alias>` for requirements:
+
+- `bonsai2-27b-tensorfold`
+- `nemotron-3.5-lightning-tensorfold`
+- `qwen3.8-flash-next-tensorfold`
+- `gemma-4-26b-tensorfold`
+- `deepseek-v4-flash-tensorfold`
