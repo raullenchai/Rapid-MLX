@@ -248,6 +248,8 @@ def hermes_context_length(
 
 def running_model(port: int, key: str) -> str | None:
     """Find a single text checkpoint on the authenticated local server."""
+    from http.client import HTTPException
+
     from rapid_mlx.model_aliases import resolve_model
 
     request = urllib.request.Request(
@@ -261,7 +263,7 @@ def running_model(port: int, key: str) -> str | None:
         if isinstance(exc.reason, ConnectionRefusedError):
             return None
         raise ValueError("could not verify the running local server") from exc
-    except (OSError, TimeoutError, ValueError, TypeError) as exc:
+    except (OSError, TimeoutError, ValueError, TypeError, HTTPException) as exc:
         raise ValueError("could not verify the running local server") from exc
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):

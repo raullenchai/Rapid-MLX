@@ -163,10 +163,10 @@ def _usable_running_model(model: str, profile: AgentProfile) -> bool:
     if profile.name == "codex":
         identity = (
             model
-            if re.search(r"\d+(?:\.\d+)?b(?:-|$)", model.lower())
+            if re.search(r"\d+(?:\.\d+)?b(?=[^a-z0-9]|$)", model.lower())
             else config.hf_path
         )
-        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)b(?:-|$)", identity.lower())
+        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)b(?=[^a-z0-9]|$)", identity.lower())
         return bool(match and float(match.group(1)) >= 9)
     return True
 

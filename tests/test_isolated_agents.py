@@ -1,6 +1,7 @@
 """Day-two configurations stay private and never rewrite existing agent state."""
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -800,6 +801,14 @@ def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
         pytest.raises(ValueError, match="could not verify"),
     ):
         isolated.running_model(7660, "secret")
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.urllib.request.urlopen",
+            side_effect=http.client.IncompleteRead(b""),
+        ),
+        pytest.raises(ValueError, match="could not verify"),
+    ):
+        isolated.running_model(7660, "secret")
     with patch(
         "rapid_mlx.agents.isolated.urllib.request.urlopen",
         side_effect=urllib.error.URLError(ConnectionRefusedError()),
@@ -860,6 +869,7 @@ def test_running_model_capability_and_checkpoint_floor():
         assert not launch_cli._usable_running_model("model-4b-4bit", codex)
         assert launch_cli._usable_running_model("model-9b-4bit", codex)
         assert launch_cli._usable_running_model("repo/Model-9B", codex)
+        assert launch_cli._usable_running_model("model-14B_Instruct", codex)
         assert not launch_cli._usable_running_model("gemma-4-12b-it-4bit", codex)
     with patch("rapid_mlx.model_aliases.resolve_model", side_effect=ValueError):
         assert launch_cli._same_checkpoint("custom", "custom")
