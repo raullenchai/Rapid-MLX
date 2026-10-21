@@ -350,29 +350,27 @@ def reply_finished(agent: str, output: str) -> bool:
     return True
 
 
-def opencode_reply_seen(
-    home: Path, since: float, hello: str, nonce: str
-) -> bool | None:
-    """Read v2's completed conversation instead of fragmented TUI redraws.
-
-    Return None for v1, which has no private v2 session database.
-    """
+def opencode_reply_seen(home: Path, since: float, hello: str, nonce: str) -> bool:
+    """Read one v2 conversation instead of fragmented TUI redraws."""
     db = home / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
     if not db.is_file():
-        return None
+        return False
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2) as conn:
             rows = conn.execute(
-                "SELECT data FROM session_message WHERE type = 'assistant' "
+                "SELECT session_id, data FROM session_message WHERE type = 'assistant' "
                 "AND time_created >= ? ORDER BY time_created, seq",
                 (int(since * 1000),),
             ).fetchall()
     except sqlite3.Error:
         return False
-    reads = set()
-    replies = []
-    for (raw,) in rows:
-        message = json.loads(raw)
+    sessions: dict[str, tuple[set[str], list[str]]] = {}
+    for session_id, raw in rows:
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+        reads, replies = sessions.setdefault(session_id, (set(), []))
         for part in message.get("content", []):
             if part.get("type") == "tool" and part.get("name") == "read":
                 state = part.get("state", {})
@@ -389,8 +387,10 @@ def opencode_reply_seen(
                 "completed"
             ):
                 replies.append(part.get("text", ""))
-    return reads == {"hello.txt", "nonce.txt"} and any(
-        hello in reply and nonce in reply for reply in replies
+    return any(
+        reads == {"hello.txt", "nonce.txt"}
+        and any(hello in reply and nonce in reply for reply in replies)
+        for reads, replies in sessions.values()
     )
 
 
@@ -471,6 +471,9 @@ def session(
     timeout: float,
     day_two: bool,
 ) -> dict:
+    opencode_v2 = command[2] == "opencode" and bool(
+        re.search(r"\bv?2\.", version("opencode", env))
+    )
     marker = uuid.uuid4().hex[:12]
     target = workspace / "hello.txt"
     nonce1 = f"nonce-{uuid.uuid4().hex[:12]}"
@@ -517,10 +520,8 @@ def session(
     }
 
     def reply_seen(output: str, hello: str, nonce: str, since: float) -> bool:
-        if command[2] == "opencode":
-            stored = opencode_reply_seen(Path(env["HOME"]), since, hello, nonce)
-            if stored is not None:
-                return stored
+        if opencode_v2:
+            return opencode_reply_seen(Path(env["HOME"]), since, hello, nonce)
         return nonce in output and reply_finished(command[2], output)
 
     with transcript.open("wb") as sink:

@@ -29,13 +29,13 @@ from scripts.agent_e2e.seed_home import FILES
 
 
 def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
-    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is None
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is False
     db = tmp_path / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
     db.parent.mkdir(parents=True)
     with sqlite3.connect(db) as conn:
         conn.execute(
             "CREATE TABLE session_message "
-            "(type TEXT, time_created INTEGER, seq INTEGER, data TEXT)"
+            "(session_id TEXT, type TEXT, time_created INTEGER, seq INTEGER, data TEXT)"
         )
         parts = [
             {
@@ -54,8 +54,9 @@ def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
         ]
         parts.append({"type": "text", "text": "hi-abc and nonce-def"})
         conn.execute(
-            "INSERT INTO session_message VALUES (?, ?, ?, ?)",
+            "INSERT INTO session_message VALUES (?, ?, ?, ?, ?)",
             (
+                "session-a",
                 "assistant",
                 11000,
                 1,
@@ -71,6 +72,43 @@ def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
             "UPDATE session_message SET data = ?",
             (json.dumps({"time": {"completed": 12}, "content": parts}),),
         )
+    assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is False
+
+
+def test_opencode_v2_does_not_combine_reads_with_another_session(tmp_path):
+    db = tmp_path / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE session_message "
+            "(session_id TEXT, type TEXT, time_created INTEGER, seq INTEGER, data TEXT)"
+        )
+        reads = [
+            {
+                "type": "tool",
+                "name": "read",
+                "state": {
+                    "status": "completed",
+                    "input": {"path": path},
+                    "content": [{"text": value}],
+                },
+            }
+            for path, value in (("hello.txt", "hi-abc"), ("nonce.txt", "nonce-def"))
+        ]
+        for session_id, content in (
+            ("session-a", reads),
+            ("session-b", [{"type": "text", "text": "hi-abc nonce-def"}]),
+        ):
+            conn.execute(
+                "INSERT INTO session_message VALUES (?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    "assistant",
+                    11000,
+                    1,
+                    json.dumps({"time": {"completed": 12}, "content": content}),
+                ),
+            )
     assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is False
 
 
