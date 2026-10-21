@@ -548,7 +548,8 @@ class DSpark:
 
         Observations only append independent sliding-window KV rows. Rows that
         this chunk itself evicts cannot affect a later proposal, so only the
-        live tail is projected; the whole chunk materializes at one boundary.
+        live tail is projected, one row at a time so every row is bit-identical
+        however verified rows are chunked; the chunk materializes at one boundary.
         """
         count = main_hidden.shape[1]
         if main_hidden.shape[0] != 1 or count == 0:
@@ -556,31 +557,24 @@ class DSpark:
         if position != self.position + 1:
             raise ValueError("DSpark observations must be contiguous target positions")
         first = max(0, count - self.c["sliding_window"])
-        live = count - first
-        main_hidden = main_hidden[:, first:].reshape(live, -1)
-        main = self.adapter.norm(
-            "mtp.0.main_norm", self.w.linear("mtp.0.main_proj", main_hidden)
-        )
         values = []
-        for layer in self.layers:
-            base = f"mtp.{layer}.attn"
-            key_value = self.adapter.norm(
-                base + ".kv_norm", self.w.linear(base + ".wkv", main)
+        for index in range(first, count):
+            main = self.adapter.norm(
+                "mtp.0.main_norm",
+                self.w.linear("mtp.0.main_proj", main_hidden[:, index]),
             )
-            key_value = quantize_cache(
-                rotate_positions(
-                    key_value,
-                    mx.arange(live) + position + first,
-                    self.c["qk_rope_head_dim"],
-                    self.c["rope_theta"],
-                ),
-                8,
-                32,
-            )
-            self.windows[layer] = (
-                self.windows[layer] + [key_value[i : i + 1] for i in range(live)]
-            )[-self.c["sliding_window"] :]
-            values.append(key_value)
+            for layer in self.layers:
+                base = f"mtp.{layer}.attn"
+                key_value = self.adapter.norm(
+                    base + ".kv_norm", self.w.linear(base + ".wkv", main)
+                )
+                key_value = quantize_cache(
+                    self.adapter.rotate(key_value, position + index, 0), 8, 32
+                )
+                self.windows[layer] = (self.windows[layer] + [key_value])[
+                    -self.c["sliding_window"] :
+                ]
+                values.append(key_value)
         mx.eval(*values)
         self.position = position + count - 1
 

@@ -20,7 +20,7 @@ benchmark, regression tests and Apple CI registration. Target modules and the
 | Hidden-state source or positions are wrong | Release and native configuration select zero-based layers `[37, 38, 39]`. Native captures the arithmetic mean over HC copies at block entry, before RMSNorm and before learned HC collapse; concatenation follows configured layer order and preserves stream dtype. Release captures after any Engram update; native captures before it. Release Engram layers are `[1, 14]`, so this does not affect the selected layers. | No capture change. Tests verify block-entry means and deliberately reordered layer IDs. Batch observations preserve absolute contiguous positions and the final sliding window. |
 | Rejection observes or retains invalid state | Existing loop only observes target hidden states through `mismatch - 1`, correctly excluding the replacement until it is actually forwarded. Offset rollback alone did not restore older ring rows overwritten by a rejected suffix; on the tiny model, rejection at index 1 diverged from plain greedy as early as output index 2. | Preserve the observation boundary (now one `observe_many` call over the verified prefix). Ring-row restoration and the verify-length cap come from the parent sliding-window rollback change, which this change builds on unmodified. |
 | Five-token verify differs from sequential target calls | Seeds 7, 11, 42, float32: max absolute logit differences `6.5565109e-7`, `7.1525574e-7`, `2.9802322e-7`; all five argmaxes agree per seed. Small CPU reduction differences exist, with no greedy divergence in these measurements. | No target kernel changes. Assert a `2e-5` CPU bound and test whole-generation equality and deterministic draft proposals. Full bf16 target execution cannot run on this CPU backend: GatherMM supports float32 only. GPU near-tie behavior remains unverified. |
-| Per-round host overhead is excessive | Old Markov chain performed five scalar argmax readbacks; verifier performed up to four more. Observations evaluated once per accepted position; installed packed MoE still dispatched once per draft position. | Keep Markov dependencies on device and read all proposal IDs together; one batched verifier argmax readback; one batched observation projection/eval; one packed MoE dispatch per stage. Keep the short host acceptance loop to preserve mismatch/EOS ordering. |
+| Per-round host overhead is excessive | Old Markov chain performed five scalar argmax readbacks; verifier performed up to four more. Observations evaluated once per accepted position; installed packed MoE still dispatched once per draft position. | Keep Markov dependencies on device and read all proposal IDs together; one batched verifier argmax readback; one observation evaluation per verified chunk (rows projected individually so draft state does not depend on chunking); one packed MoE dispatch per stage. Keep the short host acceptance loop to preserve mismatch/EOS ordering. |
 
 Release configuration was read as data from the cached official 1017 revision
 `1bae0e1088993b9b82de08f59de5be5a34e42170` and compared with the native
@@ -109,9 +109,11 @@ Vector owns checkpoint acceptance/numerical qualification; Harbor owns the
 Apple CI follow-through. This document records the intention, scoped changes,
 evidence, risks and next action.
 
-`DSpark.observe_many` shares its signature, single-stream/nonempty guards, error
-text, sliding-window eviction rule and position update with the prefill change;
-this batched body is the one to keep when both land.
+`DSpark.observe`/`observe_many` are textually identical to the prefill change, so
+the two compose without a merge conflict. Rows are projected one at a time and
+evaluated together: a batched projection rounded differently from a single-row
+one (CPU dense GEMM and Metal), which made draft state depend on how verified
+rows happened to be chunked.
 
 On an isolated M3 Ultra, set `TARGET_MODEL` and `DRAFT_MODEL` to existing local
 checkpoint directories. Use the same revisions, prompt, token count, precision,
