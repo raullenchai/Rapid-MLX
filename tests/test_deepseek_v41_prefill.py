@@ -99,13 +99,31 @@ class TinyProcessor:
         return " ".join(map(str, tokens))
 
 
-def test_stream_prefill_and_draft_enabled_greedy_32_steps(monkeypatch):
+class ScalarOnlyDrafter:
+    """Drafter adapter without ``observe_many``; serving must use the old path."""
+
+    def __init__(self, drafter):
+        object.__setattr__(self, "_drafter", drafter)
+
+    def __getattr__(self, name):
+        if name == "observe_many":
+            raise AttributeError(name)
+        return getattr(self._drafter, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._drafter, name, value)
+
+
+@pytest.mark.parametrize("length", [2, 511, 512, 513, 1024])
+def test_stream_prefill_and_draft_enabled_greedy_32_steps(length):
     # Production observe/observe_many and real target rollback. The synthetic
     # proposal deliberately causes rejections to exercise continuation state.
+    # Runs: original path, optimized path, and a scalar-only drafter under the
+    # default optimization flag (falls back to per-row observation).
     model = bench.tiny_model()
     processor = TinyProcessor()
     outputs, states, captures = [], [], []
-    for optimized in (False, True):
+    for optimized, scalar_only in ((False, False), (True, False), (True, True)):
         draft = bench.tiny_drafter()
         seen = []
         original_many = draft.observe_many
@@ -122,12 +140,14 @@ def test_stream_prefill_and_draft_enabled_greedy_32_steps(monkeypatch):
         draft.observe_many = observe_many
         draft.observe = observe
         draft.propose = lambda seed: ([seed, (seed + 1) % 64, 3, 4, 5], None)
-        runtime = serving.DSparkRuntime(draft, "tiny", "tiny", "tiny")
+        drafter = ScalarOnlyDrafter(draft) if scalar_only else draft
+        assert hasattr(drafter, "observe_many") is not scalar_only
+        runtime = serving.DSparkRuntime(drafter, "tiny", "tiny", "tiny")
         chunks = list(
             serving.stream_generate(
                 model,
                 processor,
-                (np.arange(513) % 64).tolist(),
+                (np.arange(length) % 64).tolist(),
                 runtime=runtime,
                 max_tokens=32,
                 ignore_eos=True,
@@ -138,9 +158,10 @@ def test_stream_prefill_and_draft_enabled_greedy_32_steps(monkeypatch):
         states.append(draft.windows)
         captures.append(seen)
     assert len(outputs[0]) == 32
-    assert outputs[0] == outputs[1]
-    assert_state_equal(states[0], states[1])
-    assert_state_equal(captures[0], captures[1])
+    for index in (1, 2):
+        assert outputs[0] == outputs[index]
+        assert_state_equal(states[0], states[index])
+        assert_state_equal(captures[0], captures[index])
 
 
 def test_serving_flushes_cache_and_batches_observation(monkeypatch):

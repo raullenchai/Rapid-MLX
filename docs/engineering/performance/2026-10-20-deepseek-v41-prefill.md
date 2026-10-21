@@ -1,7 +1,7 @@
 # Native V4.1 prefill: CPU-verifiable acceleration
 
 Owner: Vector. GPU qualification remains with Vector; Apple test registration is
-included for Harbor. This change is local and uncommitted; no release is authorized.
+included for Harbor. No release is authorized.
 
 ## Implementation and compatibility
 
@@ -23,6 +23,10 @@ the sliding window, retains the original scalar projection/rotation/quantization
 operations, and evaluates the resulting rows together. Existing window list shape,
 chronological order, position validation, and decode observations remain intact.
 This is batching of evaluation and live-row selection, not a change to draft numerics.
+The draft-numerics change defines `observe_many` with the same signature, guards,
+error text, eviction rule and position update but a batched projection body; when
+both land, the second rebase keeps that batched body and deletes this per-row one
+(lint flags a duplicate method definition if both survive a merge).
 
 Experiments rejected both a one-row vocabulary projection and multi-row drafter
 projection: CPU matrix kernels change their reduction rounding when batch shapes
