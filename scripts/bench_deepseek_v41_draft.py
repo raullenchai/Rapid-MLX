@@ -442,12 +442,14 @@ def _main(argv=None):
         name: encode_prompt(serving, model, tokenizer, text, raw=args.raw)
         for name, text in texts.items()
     }
-    # Warm both paths; each measured run starts with fresh target/draft caches.
-    warm = next(iter(prompts.values()))
-    plain_decode(model, warm, min(8, args.tokens))
-    speculative_decode(serving, model, tokenizer, runtime, warm, min(8, args.tokens))
     classes = []
     for name, prompt in prompts.items():
+        # Warm both paths on this prompt's shapes before measuring it; each
+        # measured run starts with fresh target/draft caches.
+        plain_decode(model, prompt, min(8, args.tokens))
+        speculative_decode(
+            serving, model, tokenizer, runtime, prompt, min(8, args.tokens)
+        )
         runs = []
         for _ in range(args.repeats):
             plain, off = plain_decode(model, prompt, args.tokens)
