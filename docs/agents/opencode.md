@@ -1,5 +1,10 @@
 # OpenCode
 
+## One-command local launch
+
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and install OpenCode. Run `rapid-mlx launch opencode`. The same command works after a restart; `rapid-mlx launch opencode --remove` deletes only Rapid's private profile. Existing OpenCode settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
+
+
 [OpenCode](https://github.com/anomalyco/opencode) can use a local rapid-mlx
 model through its OpenAI-compatible chat completions endpoint. OpenCode 1.x
 and 2.x use different custom-provider config keys. `rapid-mlx agents

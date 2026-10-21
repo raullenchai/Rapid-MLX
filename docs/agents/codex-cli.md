@@ -1,5 +1,10 @@
 # Codex CLI
 
+## One-command local launch
+
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and install Codex CLI. Run `rapid-mlx launch codex`. The same command works after a restart; `rapid-mlx launch codex --remove` deletes only Rapid's private profile. Existing Codex CLI settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
+
+
 Point [OpenAI's Codex CLI](https://github.com/openai/codex) at a local
 rapid-mlx server. Codex is a Rust-based coding agent that talks to the
 OpenAI **Responses API** (`POST /v1/responses`); rapid-mlx implements that

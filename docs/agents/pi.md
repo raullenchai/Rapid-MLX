@@ -1,5 +1,10 @@
 # Pi Coding Agent
 
+## One-command local launch
+
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and install Pi. Run `rapid-mlx launch pi`. The same command works after a restart; `rapid-mlx launch pi --remove` deletes only Rapid's private profile. Existing Pi settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
+
+
 [Pi 1.1.0](https://github.com/earendil-works/pi/releases/tag/v1.1.0)
 uses an OpenAI-compatible custom provider in `~/.pi/agent/models.json`.
 `PI_CODING_AGENT_DIR` can move this config directory. Pi sends tool calls

@@ -4,6 +4,11 @@
 
 <h1 align="center">Rapid-MLX</h1>
 
+<p align="center"><strong>Run Codex, Claude Code, OpenCode, Pi, Hermes or Crush with a local model on Mac:</strong><br><code>rapid-mlx launch &lt;agent&gt;</code></p>
+
+Install on a stock Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash`, then install your chosen coding agent and run, for example, `rapid-mlx launch codex`. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
+
+
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
   <br>
@@ -205,7 +210,7 @@ print(client.chat.completions.create(
 rapid-mlx launch claude-code
 ```
 
-This saves a private Claude Code profile, starts a local server if needed, and launches Claude Code without editing `~/.claude/settings.json`. The same command works after a restart. Swap in `codex`, `pi`, or another supported coding agent. For the original config-writing behavior, use `--legacy-config`; `cline` and `continue-dev` keep their existing setup flow.
+This saves a private Claude Code profile, starts a local server if needed, and launches Claude Code without editing `~/.claude/settings.json`. The same command works after a restart. Swap in `codex`, `opencode`, `pi`, `hermes`, or `crush`. For the original config-writing behavior, use `--legacy-config`; `cline` and `continue-dev` keep their existing setup flow.
 
 [Agent setup details](docs/guides/ai-clients.md#coding-agents).
 

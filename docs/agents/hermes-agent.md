@@ -1,5 +1,10 @@
 # Hermes Agent
 
+## One-command local launch
+
+Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and install Hermes Agent. Run `rapid-mlx launch hermes`. The same command works after a restart; `rapid-mlx launch hermes --remove` deletes only Rapid's private profile. Existing Hermes Agent settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
+
+
 Point [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent)
 at a local rapid-mlx server. Hermes is a tool-heavy CLI agent (it injects up
 to 62 tools per request) that speaks the **OpenAI-compatible chat completions

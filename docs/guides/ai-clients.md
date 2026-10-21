@@ -70,7 +70,7 @@ These clients have been verified through automated integration tests
 
 ### Coding Agents
 
-For a connection that still works after restarting Rapid, use **Launch → Coding
+To run Codex, Claude Code, OpenCode, Pi, Hermes or Crush with a local Mac model, install Rapid-MLX with `curl -fsSL https://rapidmlx.com/install.sh | bash`, install the agent, then run `rapid-mlx launch <agent>`. For a connection that still works after restarting Rapid, use **Launch → Coding
 agents → Launch** in Desktop. The app saves a private profile for the selected
 agent and opens it in Terminal. On later days, use the short command shown
 beside that agent, such as `rapid-mlx launch codex`. It reuses the saved model,
