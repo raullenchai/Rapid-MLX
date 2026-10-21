@@ -8,7 +8,11 @@ curl -fsSL https://rapidmlx.com/install.sh | bash
 rapid-mlx serve qwen-image-2.1
 ```
 
-The server prints its local address. Send a prompt to `/v1/images/generations` or select the model in the Mac app. Run `rapid-mlx info qwen-image-2.1` to inspect the current checkpoint and download size before starting it; `rapid-mlx recipe` helps choose a model for your Mac.
+The server prints its local address and may choose a free port if 8000 is busy.
+Send a prompt to that address's `/v1/images/generations` route or select the
+model in the Mac app. Run `rapid-mlx info qwen-image-2.1` to inspect the current
+checkpoint and download size before starting it; `rapid-mlx recipe` helps choose
+a model for your Mac.
 
 ## Other catalog choices
 
