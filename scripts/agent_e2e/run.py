@@ -428,21 +428,22 @@ def session(
 ) -> dict:
     marker = uuid.uuid4().hex[:12]
     target = workspace / "hello.txt"
-    challenge1 = f"verify-{uuid.uuid4().hex[:12]}"
-    challenge2 = f"verify-{uuid.uuid4().hex[:12]}"
-    (workspace / "challenge.txt").write_text(challenge1 + "\n")
+    nonce1 = f"nonce-{uuid.uuid4().hex[:12]}"
+    nonce2 = f"nonce-{uuid.uuid4().hex[:12]}"
+    nonce_file = workspace / "nonce.txt"
+    nonce_file.write_text(nonce1 + "\n")
     if target.exists():
         target.unlink()
     first_prompt = (
         f"Create hello.txt containing exactly hi-{marker}. Use a tool to read "
-        "both hello.txt and challenge.txt. Quote each file's exact line in "
-        "your reply; challenge.txt begins with verify-."
+        "both hello.txt and nonce.txt. Quote each file's exact line in your "
+        "reply. nonce.txt is independent of hello.txt; do not edit it."
     )
     second_prompt = (
         f"Use a tool to replace hello.txt with exactly hi-{marker}-second "
-        "(one trailing newline is okay). Read both hello.txt and challenge.txt "
-        "again with a tool. Quote each file's exact line in your reply; "
-        "challenge.txt begins with verify-."
+        "(one trailing newline is okay). Read both hello.txt and nonce.txt "
+        "again with a tool. Quote each file's exact line in your reply. "
+        "nonce.txt is independent of hello.txt; do not edit it."
     )
     master, slave = open_terminal()
     started = time.monotonic()
@@ -498,7 +499,9 @@ def session(
                 stop_when=lambda output: (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}"
-                    and challenge1 in output
+                    and nonce_file.is_file()
+                    and nonce_file.read_text().strip() == nonce1
+                    and nonce1 in output
                     and reply_finished(command[2], output)
                 ),
                 on_output=approve,
@@ -506,7 +509,9 @@ def session(
             answer["tool_ok"] = (
                 target.is_file()
                 and target.read_text().strip() == f"hi-{marker}"
-                and challenge1 in output
+                and nonce_file.is_file()
+                and nonce_file.read_text().strip() == nonce1
+                and nonce1 in output
                 and reply_finished(command[2], output)
             )
             if answer["tool_ok"]:
@@ -514,7 +519,7 @@ def session(
                 # reliable upper bound for a reply that used a tool.
                 answer["first_reply_s"] = round(time.monotonic() - sent, 2)
             if proc.poll() is None:
-                (workspace / "challenge.txt").write_text(challenge2 + "\n")
+                nonce_file.write_text(nonce2 + "\n")
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
                 approve = approval_handler(command[2], master)
@@ -527,7 +532,9 @@ def session(
                     stop_when=lambda output: (
                         target.is_file()
                         and target.read_text().strip() == f"hi-{marker}-second"
-                        and challenge2 in output
+                        and nonce_file.is_file()
+                        and nonce_file.read_text().strip() == nonce2
+                        and nonce2 in output
                         and reply_finished(command[2], output)
                     ),
                     on_output=approve,
@@ -535,7 +542,9 @@ def session(
                 answer["second_ok"] = (
                     target.is_file()
                     and target.read_text().strip() == f"hi-{marker}-second"
-                    and challenge2 in output2
+                    and nonce_file.is_file()
+                    and nonce_file.read_text().strip() == nonce2
+                    and nonce2 in output2
                     and reply_finished(command[2], output2)
                 )
                 if answer["second_ok"]:
