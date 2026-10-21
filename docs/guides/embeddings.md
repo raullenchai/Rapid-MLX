@@ -3,12 +3,22 @@
 rapid-mlx provides an OpenAI-compatible `/v1/embeddings` endpoint with a native
 EmbeddingGemma 2 text/code encoder and the existing optional embedding backend.
 
+## Start an embeddings server
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve --embedding-model embeddinggemma-2-4bit
+```
+
+The server prints its address. Send an embeddings request to `/v1/embeddings` as shown below. This model uses the base install's native runtime.
+
 ## Installation
 
 The `/v1/embeddings` surface ships behind the `[embeddings]` extra (mirrors how `[audio]` is packaged) — base installs of rapid-mlx do **not** bundle `mlx-embeddings`. Install the extra alongside the base package:
 
 ```bash
-pip install 'rapid-mlx[embeddings]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[embeddings]'
 ```
 
 If you boot `rapid-mlx serve --embedding-model …` without the extra installed, the CLI exits cleanly with the same install hint (no `ModuleNotFoundError` traceback).
@@ -25,15 +35,13 @@ vision runtime with an unvalidated upstream development build.
 `mlx-community/embeddinggemma-2-bf16` and
 `mlx-community/embeddinggemma-2-4bit`. The native loader also accepts the
 official `google/embeddinggemma-2` checkpoint or a local directory with
-`model_type: embedding_gemma2`. This is a new bidirectional encoder with its
-trained projection and normalized 768-dimensional output; it is separate
-from the older 300M model.
+`model_type: embedding_gemma2`. This bidirectional encoder has a trained projection and normalized 768-dimensional output.
 
 ```bash
 rapid-mlx serve <your-chat-model> --embedding-model embeddinggemma-2-4bit
 ```
 
-This release serves **text/code only**. Images, audio, video and interleaved
+The endpoint serves **text/code only**. Images, audio, video and interleaved
 media are not accepted by this endpoint. Media objects/fields are rejected by
 the request schema; media control tokens in text or token-ID inputs return
 400 with `unsupported_embedding_modality`. The vision/audio towers are not
@@ -189,7 +197,7 @@ print(f"Token count: {tokens}")
 ### mlx-embeddings not installed
 
 ```
-pip install mlx-embeddings>=0.0.5
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[embeddings]'
 ```
 
 ### Model not found

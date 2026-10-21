@@ -1,5 +1,15 @@
 # System One decision server
 
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a typed decision service:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx system-one decider-2b --port 8700
+```
+
+The first run downloads the model. The service accepts decision requests at `http://127.0.0.1:8700/v1/systemone`.
+
 Rapid-MLX can serve typed, low-latency decisions through a
 [TypeSafe](https://typesafe-jev.com/en/guides/api/)-compatible API. The service
 supports `noul`, `choice`, and `score` questions at `POST /v1/systemone`, plus
@@ -14,7 +24,7 @@ Laya is the fastest and smallest supported backend. Install the optional
 runtime and start the service:
 
 ```bash
-pip install 'rapid-mlx[system-one]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[system-one]'
 rapid-mlx system-one convaiinnovations/laya --port 8700
 ```
 
@@ -72,11 +82,6 @@ directory must be a prepared checkpoint: its root `config.json` says
 `decision_config`. Decider is text-only; requests with `images` or `videos`
 are rejected.
 
-On one M3 Ultra Mac the server was ready 5 seconds after launch with the
-weights cached, and held about 4.3 GB of memory. Four questions over the same
-state took 0.2 s at 200 input tokens, 1.1 s at 1,300, 4.9 s at 5,200 and 22 s
-at 21,000. Other Mac sizes are unmeasured.
-
 ## OpenJev
 
 OpenJev is a 27B Qwen3.8 chat model fine-tuned for typed decisions. For each
@@ -121,7 +126,7 @@ generate chat text. Rapid uses the official Apache-2.0 head implementation
 with Torch on Apple Metal/MPS for this backend; Laya and CLM remain native MLX.
 
 ```bash
-pip install 'rapid-mlx[clef]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[clef]'
 rapid-mlx system-one clef-flash --port 8700
 # Larger model on a high-memory Mac:
 rapid-mlx system-one clef --port 8700

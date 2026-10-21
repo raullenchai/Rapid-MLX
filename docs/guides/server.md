@@ -1,6 +1,16 @@
 # OpenAI-Compatible Server
 
-rapid-mlx provides a FastAPI server with full OpenAI API compatibility.
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, then start a local API:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve qwen3.5-4b-4bit
+```
+
+The server prints its address. Send clients to the printed `/v1` endpoint.
+
+Rapid-MLX provides OpenAI-compatible API endpoints.
 Continuous batching is always on.
 
 ## Starting the Server
@@ -313,7 +323,7 @@ Python installs that use local macOS Computer Use should install the matching
 extra:
 
 ```bash
-pip install 'rapid-mlx[computer-use]'
+~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[computer-use]'
 ```
 
 The extra is Darwin-only. Remote or Linux servers remain import-safe and report

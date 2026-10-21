@@ -4,9 +4,11 @@ Claude Desktop can connect to Rapid-MLX through its official in-app third-party
 inference settings. Rapid-MLX does not edit Claude Desktop configuration or
 launch the app.
 
-1. Start a tool-capable local model and run `rapid-mlx launch claude-desktop
-   --model <served-model>`. Use `--opus-model`, `--sonnet-model`, and
-   `--haiku-model` to assign different served models to the three tiers.
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+```
+
+1. Install Rapid-MLX and restart Terminal. Start a tool-capable local model with `rapid-mlx serve qwen3.5-9b-4bit`. In another terminal, run `rapid-mlx launch claude-desktop --model qwen3.5-9b-4bit`. Use `--opus-model`, `--sonnet-model`, and `--haiku-model` to assign different served models to the three tiers.
 2. In Claude Desktop, choose Help → Troubleshooting → Enable Developer Mode.
 3. Choose Developer → Configure Third-Party Inference → Gateway. Paste the
    Gateway URL and API key printed by the command (also shown on Rapid's Launch

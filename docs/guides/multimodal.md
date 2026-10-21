@@ -1,5 +1,15 @@
 # Multimodal Models (Images & Video)
 
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a vision model:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve qwen3-vl-4b-4bit
+```
+
+The server prints the local endpoint. Send an image with the request format below.
+
 rapid-mlx supports vision-language models for image and video understanding.
 
 ## Supported Models
@@ -338,4 +348,4 @@ resolution policy unchanged. `--vision-min-pixels` is available for operators
 who also need to preserve a minimum amount of visual detail.
 
 The shipped `rapid-mlx chat` REPL is text-only. The optional Gradio web UI
-(`pip install 'rapid-mlx[chat]'`) supports image / video uploads.
+(`~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[chat]'`) supports image / video uploads.

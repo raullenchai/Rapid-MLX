@@ -1,9 +1,19 @@
 # Video generation
 
+Install Rapid-MLX on an Apple Silicon Mac, restart Terminal, and start a video model:
+
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+# Restart Terminal, then:
+rapid-mlx serve ltx-2.3-mlx-q4
+```
+
+The server prints the local endpoint. Submit a video request as shown below.
+
 Rapid-MLX exposes LTX-2.3, LTX-2.5, CogVideoX-Fun and Wan through the asynchronous
 OpenAI-compatible Videos API.
 
-The video runtime ships with the base `pip install rapid-mlx` on Python 3.11 or
+The video runtime ships with the official installer on Python 3.11 or
 newer; the upstream `mlx-video-with-audio` runtime does not support Python 3.10.
 Rapid-MLX's core text and audio features continue to support Python 3.10.
 
