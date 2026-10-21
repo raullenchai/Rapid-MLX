@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from hashlib import sha1
 from types import SimpleNamespace
 
 import pytest
@@ -272,6 +274,121 @@ def test_shipped_layouts_rows_1_to_8_against_single_row_stock(bits, name, n, k, 
             assert equal(gemv.project(layer, x, name), stock)
             # Stock multi-row QMM uses different arithmetic; it is not the
             # bit reference for sequential-decode parity.
+
+
+@needs_metal
+@pytest.mark.parametrize("prefix", [[1, 2, 3, 4], [7, 5], [9, 2, 6, 1, 8, 3, 4]])
+def test_greedy_speculative_tokens_equal_plain_with_multi_row_gemv(monkeypatch, prefix):
+    """Bit-identical verify rows preserve spec-off greedy tokens, including rollback."""
+    from rapid_mlx.models.deepseek_v41_native import serving
+    from rapid_mlx.models.deepseek_v41_native.model import Model
+    from scripts import bench_deepseek_v41_draft as bench
+
+    monkeypatch.setenv("RAPID_MLX_DSV41_DRAFT_DEPTH", "4")
+    monkeypatch.setenv("RAPID_MLX_DSV41_FUSED", "1")
+    monkeypatch.setattr(gemv, "ENABLED", True)
+    previous = mx.default_device()
+    mx.set_default_device(mx.gpu)
+    try:
+        tiny, draft = bench.tiny_setup()
+        # All five reductions must exceed 128 and consist of whole 64-wide
+        # affine groups; wo_a reduces n_heads * head_dim / o_groups, and
+        # wo_b reduces o_groups * o_lora_rank. Keep tiny_setup's defaults intact.
+        model = Model(
+            replace(tiny.args, dim=256, q_lora_rank=256, head_dim=256, o_lora_rank=128)
+        )
+        projections = {}
+        for index, block in enumerate(model.layers):
+            for name, bits in (
+                ("wq_a", 4),
+                ("wq_b", 8),
+                ("wkv", 4),
+                ("wo_a", 8),
+                ("wo_b", 4),
+            ):
+                layer = getattr(block.attn, name).to_quantized(group_size=64, bits=bits)
+                setattr(block.attn, name, layer)
+                projections[id(layer)] = (index, name)
+                shape = (1, 5, 2, 1, 256) if name == "wo_a" else (1, 5, 256)
+                assert gemv.supports(layer, mx.zeros(shape)), (index, name)
+
+        plain, _ = bench.plain_decode(model, prefix, 18)
+        rounds = 0
+
+        def observe(hidden, position, **kwargs):
+            # The oracle needs only committed positions, not the original tiny
+            # draft's 32-wide hidden projections, since the target is enlarged.
+            assert position == draft.position + 1
+            draft.position = position + hidden.shape[1] - 1
+
+        def propose(seed, **kwargs):
+            nonlocal rounds
+            position = draft.position + 1 - len(prefix)
+            candidates = [int(seed.item())] + plain[position + 1 : position + 5]
+            # Alternate a perfect depth-four round with one wrong proposal.
+            # Changing index 2 exercises partial acceptance and ring rollback.
+            if rounds % 2 and len(candidates) > 2:
+                candidates[2] = (candidates[2] + 1) % model.args.vocab_size
+            rounds += 1
+            return mx.array(candidates[: kwargs["depth"] + 1]), mx.array(True)
+
+        monkeypatch.setattr(draft, "observe_many", observe)
+        monkeypatch.setattr(draft, "propose", propose)
+        verifying = False
+        launches = []
+        original_launch = gemv._launch
+
+        def launch(layer, x):
+            result = original_launch(layer, x)
+            cached = getattr(layer, gemv._CHECK_ATTR, None)
+            # Qualification itself launches probes, even when it later falls
+            # back. Count only qualified production calls inside verification.
+            if verifying and cached and cached[2].get((x.dtype, tuple(x.shape))):
+                rows = gemv._layout(layer, x)[0]
+                if rows > 1:
+                    launches.append(
+                        (projections[id(layer)], equal(result, per_row_stock(layer, x)))
+                    )
+            return result
+
+        monkeypatch.setattr(gemv, "_launch", launch)
+
+        class VerifyTarget:
+            def make_cache(self, **kwargs):
+                return model.make_cache(**kwargs)
+
+            def __call__(self, *args, **kwargs):
+                nonlocal verifying
+                verifying = kwargs.get("enable_rollback", False)
+                try:
+                    return model(*args, **kwargs)
+                finally:
+                    verifying = False
+
+        runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")
+        output, stats = bench.speculative_decode(
+            serving, VerifyTarget(), bench.TinyTokenizer(), runtime, prefix, 18
+        )
+        plain_sha1 = sha1(bytes(plain)).hexdigest()
+        output_sha1 = sha1(bytes(output)).hexdigest()
+        message = (
+            f"prefix={prefix}: spec-on sha1={output_sha1}, spec-off sha1={plain_sha1}"
+        )
+        assert output == plain, message
+        assert output_sha1 == plain_sha1, message
+        assert {name for name, _exact in launches} == set(projections.values()), (
+            "every attention projection must use multi-row GEMV during verify"
+        )
+        assert all(exact for _name, exact in launches), (
+            "each multi-row verify projection must be bit-identical to single-row stock"
+        )
+        histogram = stats["acceptance_histogram"]
+        assert histogram.get(4, 0) > 0, "must exercise full depth-four acceptance"
+        assert histogram.get(1, 0) > 0, (
+            "must exercise rollback at the deliberate mismatch"
+        )
+    finally:
+        mx.set_default_device(previous)
 
 
 @needs_metal

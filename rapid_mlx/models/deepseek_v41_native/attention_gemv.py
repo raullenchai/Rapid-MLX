@@ -7,6 +7,8 @@ stock projection. Speculative verify and batched lanes therefore get the same
 per-row arithmetic as sequential decode. Larger batches stay on the stock path.
 Stock multi-row calls can dispatch a different quantized-matmul algorithm and
 are not the bit reference.
+With the kernel active, greedy spec-on output equals spec-off output because
+each verify row is bit-identical to the single-row computation.
 
 The first call for each weight, dtype and shape checks seeded probes covering
 the full row count against concatenated single-row stock projections, retaining
