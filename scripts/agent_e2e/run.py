@@ -236,6 +236,11 @@ def handle_first_run_menus(
                 and "docs" not in answered
             ):
                 answered.add("docs")
+            elif (
+                "Would you like to see what's new in this version?" in screen
+                and "news" not in answered
+            ):
+                answered.add("news")
             else:
                 break
             os.write(master, b"n\r")
@@ -282,12 +287,15 @@ def approval_handler(agent: str, master: int):
     """Accept an explicit local tool approval, as a user at the terminal would."""
     if agent == "aider":
         answered = False
+        answered_news = False
 
         def answer_aider(output: str) -> None:
-            nonlocal answered
-            if not answered and "Create new file? (Y)es/(N)o" in _ANSI.sub(
-                "", output[-1200:]
-            ):
+            nonlocal answered, answered_news
+            tail = _ANSI.sub("", output[-1200:])
+            if not answered_news and "Would you like to see what's new" in tail:
+                os.write(master, b"n\r")
+                answered_news = True
+            elif not answered and "Create new file? (Y)es/(N)o" in tail:
                 os.write(master, b"y\r")
                 answered = True
 
