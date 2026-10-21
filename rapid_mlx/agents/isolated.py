@@ -268,18 +268,21 @@ def running_model(port: int, key: str) -> str | None:
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
         raise ValueError("local server returned an invalid model list")
-    names = [
-        entry["id"]
-        for entry in models
-        if isinstance(entry, dict)
-        and isinstance(entry.get("id"), str)
-        and entry["id"]
-        and not entry.get("anthropic_family_tier")
-        and (
-            not isinstance(entry.get("capabilities"), list)
-            or "text" in entry["capabilities"]
-        )
-    ]
+    names: list[str] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("id")
+        if (
+            isinstance(name, str)
+            and name
+            and not entry.get("anthropic_family_tier")
+            and (
+                not isinstance(entry.get("capabilities"), list)
+                or "text" in entry["capabilities"]
+            )
+        ):
+            names.append(name)
     if not names:
         raise ValueError("local server did not advertise a text model")
     try:

@@ -781,7 +781,7 @@ def test_running_model_reuses_single_checkpoint_with_two_advertised_ids():
     with patch(
         "rapid_mlx.agents.isolated.urllib.request.urlopen",
         return_value=Reply(
-            b'{"data":[{"id":"mlx-community/Qwen3.5-9B-4bit"},{"id":"qwen3.5-9b-4bit"},{"id":"audio","capabilities":["audio"]},{"id":"tier","anthropic_family_tier":"opus"}]}'
+            b'{"data":[null,{"id":"mlx-community/Qwen3.5-9B-4bit"},{"id":"qwen3.5-9b-4bit"},{"id":"audio","capabilities":["audio"]},{"id":"tier","anthropic_family_tier":"opus"}]}'
         ),
     ) as get:
         assert isolated.running_model(7660, "secret") == "qwen3.5-9b-4bit"
