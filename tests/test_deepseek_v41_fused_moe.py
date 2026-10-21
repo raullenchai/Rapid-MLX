@@ -16,7 +16,11 @@ DIM, INTER, EXPERTS, TOPK = 512, 256, 64, 6
 
 
 def _moe(
-    *, routed_bits: int = 2, shared_bits: int = 8, limit: float = 10.0, seed: int = 0
+    *,
+    routed_bits: int | tuple[int, int, int] = 2,
+    shared_bits: int = 8,
+    limit: float = 10.0,
+    seed: int = 0,
 ) -> MoE:
     mx.random.seed(seed)
     layer = MoE(
@@ -39,9 +43,22 @@ def _moe(
     nn.quantize(
         layer,
         group_size=64,
-        bits=routed_bits,
+        bits=2,
         class_predicate=lambda path, m: (
-            path.startswith("experts.") and hasattr(m, "to_quantized")
+            {
+                "bits": dict(
+                    zip(
+                        ("gate_proj", "up_proj", "down_proj"),
+                        routed_bits
+                        if isinstance(routed_bits, tuple)
+                        else (routed_bits,) * 3,
+                        strict=True,
+                    )
+                )[path.split(".")[-1]],
+                "group_size": 64,
+            }
+            if path.startswith("experts.") and hasattr(m, "to_quantized")
+            else False
         ),
     )
     nn.quantize(
@@ -75,7 +92,7 @@ def test_fused_rows_equal_single_row_stock(gpu, rows: int, dtype) -> None:
     # the product layout: exact direct down projection on the stock side
     layer.experts.__class__ = ExactDirectDownSwitchGLU
     layout = moe_decode._layout(layer)
-    assert layout == (DIM, INTER, 8)
+    assert layout == (DIM, INTER, 8, 2, 2, 2)
     x = mx.random.normal((rows, DIM)).astype(dtype)
     actual = moe_decode._fused(layer, layout, x)
     expected = mx.concatenate([layer._stock(x[r : r + 1]) for r in range(rows)])
@@ -97,7 +114,14 @@ def test_moe_call_takes_the_qualified_kernels(gpu, monkeypatch, limit) -> None:
     monkeypatch.setattr(moe_decode, "_experts", spy)
     x = mx.random.normal((1, 3, DIM)).astype(mx.bfloat16) * 4
     actual = layer(x)
-    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] == (DIM, INTER, 2)
+    assert getattr(layer, moe_decode._CHECK_ATTR)[2][mx.bfloat16] == (
+        DIM,
+        INTER,
+        2,
+        2,
+        2,
+        2,
+    )
     assert moe_decode._CHECK_ATTR not in layer.parameters()
     assert calls[-1] == (3, DIM)
     monkeypatch.setattr(moe_decode, "ENABLED", False)
@@ -149,9 +173,9 @@ def test_supports_declines_off_the_decode_shape(monkeypatch) -> None:
 
 
 def test_layout_declines_unsupported_weights() -> None:
-    assert moe_decode._layout(_moe()) == (DIM, INTER, 8)
-    assert moe_decode._layout(_moe(routed_bits=4)) is None
-    assert moe_decode._layout(_moe(shared_bits=4)) is None
+    assert moe_decode._layout(_moe()) == (DIM, INTER, 8, 2, 2, 2)
+    assert moe_decode._layout(_moe(routed_bits=8)) is None
+    assert moe_decode._layout(_moe(shared_bits=3)) is None
     unquantized = MoE(
         ModelArgs(
             dim=DIM, moe_inter_dim=INTER, n_routed_experts=8, n_activated_experts=2
@@ -197,6 +221,7 @@ def test_dispatch_geometry(monkeypatch) -> None:
     monkeypatch.setattr(moe_decode, "_up_kernel", lambda limit: fake_kernel("up"))
     monkeypatch.setattr(moe_decode, "_down_kernel", lambda: fake_kernel("down"))
     monkeypatch.setattr(moe_decode, "supports", lambda x: True)
+    monkeypatch.setattr(moe_decode, "_router_rows_exact", lambda gate, x: True)
     layer = _moe()
     layer.gate.scores = lambda x: mx.zeros((x.shape[0], EXPERTS))
     rows = 3
@@ -205,7 +230,7 @@ def test_dispatch_geometry(monkeypatch) -> None:
     )
     assert out is None  # the zero kernels fail the self-check
     monkeypatch.setattr(
-        moe_decode, "_qualified", lambda moe, stock, dtype: (DIM, INTER, 8)
+        moe_decode, "_qualified", lambda moe, stock, dtype: (DIM, INTER, 8, 2, 2, 2)
     )
     out = moe_decode.moe_forward(
         layer, mx.zeros((rows, 1, DIM), dtype=mx.bfloat16), lambda x: x
@@ -223,7 +248,7 @@ def test_dispatch_geometry(monkeypatch) -> None:
     assert ("ROWS", rows) in launches["down"]["template"]
     # wrong width: stock path
     monkeypatch.setattr(
-        moe_decode, "_qualified", lambda moe, stock, dtype: (DIM * 2, INTER, 8)
+        moe_decode, "_qualified", lambda moe, stock, dtype: (DIM * 2, INTER, 8, 2, 2, 2)
     )
     assert moe_decode.moe_forward(layer, mx.zeros((1, DIM)), lambda x: x) is None
     monkeypatch.setattr(moe_decode, "supports", lambda x: False)
@@ -416,3 +441,90 @@ def test_unquantized_layer_stays_stock(gpu) -> None:
     )
     x = mx.random.normal((1, DIM)).astype(mx.bfloat16)
     assert moe_decode.moe_forward(layer, x, layer._stock) is None
+
+
+ROUTED_LAYOUTS = [
+    (2, 2, 2),
+    (2, 2, 3),
+    (3, 3, 3),
+    (4, 4, 3),
+    (2, 2, 4),
+    (4, 4, 4),
+    (2, 3, 4),
+]
+
+
+@pytest.mark.parametrize("routed", ROUTED_LAYOUTS)
+@pytest.mark.parametrize("shared", [2, 4, 8])
+def test_mixed_layout_acceptance(routed, shared) -> None:
+    layer = _moe(routed_bits=routed, shared_bits=shared)
+    assert moe_decode._layout(layer) == (DIM, INTER, shared, *routed)
+    # Check every packed projection, including the formerly unchecked up/w3.
+    for projection in (
+        layer.experts.gate_proj,
+        layer.experts.up_proj,
+        layer.experts.down_proj,
+        layer.shared_experts.w1,
+        layer.shared_experts.w2,
+        layer.shared_experts.w3,
+    ):
+        original = projection.weight
+        projection.weight = original[..., :-1]
+        assert moe_decode._layout(layer) is None
+        projection.weight = original
+    layer.experts.down_proj.group_size = 32
+    assert moe_decode._layout(layer) is None
+
+
+@pytest.mark.parametrize("routed", ROUTED_LAYOUTS)
+@pytest.mark.parametrize("shared", [2, 4, 8])
+def test_mixed_rows_equal_single_row_stock(gpu, routed, shared) -> None:
+    layer = _moe(routed_bits=routed, shared_bits=shared, seed=41)
+    layer.experts.__class__ = ExactDirectDownSwitchGLU
+    layout = moe_decode._layout(layer)
+    assert layout is not None
+    for rows in range(1, moe_decode.MAX_ROWS + 1):
+        x = mx.random.normal((rows, DIM)).astype(mx.bfloat16)
+        actual = moe_decode._fused(layer, layout, x)
+        expected = mx.concatenate([layer._stock(x[r : r + 1]) for r in range(rows)])
+        mx.eval(actual, expected)
+        assert mx.array_equal(actual, expected).item(), (routed, shared, rows)
+
+
+def test_coverage_summary_once_per_model(caplog) -> None:
+    from types import SimpleNamespace
+
+    layers = [_moe(), _moe(routed_bits=(4, 4, 3))]
+    model = SimpleNamespace(layers=[SimpleNamespace(ffn=m) for m in layers])
+    with caplog.at_level("INFO", logger=moe_decode.__name__):
+        moe_decode.log_coverage(SimpleNamespace(layers=[]), mx.bfloat16)
+        moe_decode.log_coverage(model, mx.bfloat16)
+        assert not caplog.records
+        object.__setattr__(
+            layers[0],
+            moe_decode._CHECK_ATTR,
+            (None, None, {mx.bfloat16: moe_decode._layout(layers[0])}),
+        )
+        moe_decode.log_coverage(model, mx.bfloat16)
+        assert not caplog.records
+        object.__setattr__(
+            layers[1], moe_decode._CHECK_ATTR, (None, None, {mx.bfloat16: None})
+        )
+        moe_decode.log_coverage(model, mx.bfloat16)
+        moe_decode.log_coverage(model, mx.bfloat16)
+        assert len(caplog.records) == 1
+        assert caplog.messages == [
+            "fused V4.1 MoE: 1/2 layers; fallback: layer 1 (4,4,3|8)"
+        ]
+        model2 = SimpleNamespace(layers=[SimpleNamespace(ffn=layers[0])])
+        moe_decode.log_coverage(model2, mx.bfloat16)
+        assert caplog.messages[-1] == "fused V4.1 MoE: 1/1 layers; fallback: none"
+
+
+@pytest.mark.parametrize(
+    "bits,fast,general", [(2, 16, 16), (3, 16, 8), (4, 16, 8), (8, 8, 4)]
+)
+def test_mixed_qmv_geometry(bits, fast, general) -> None:
+    assert moe_decode._qmv_vpt(bits, 512, 256) == fast
+    assert moe_decode._qmv_vpt(bits, 320, 256) == general
+    assert moe_decode._packed_width(512, bits) == 512 * bits // 32

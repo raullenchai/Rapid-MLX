@@ -39,6 +39,7 @@ from .hyper_connections import (
 )
 from .layers import RMSNorm
 from .moe import MoE
+from .moe_decode import log_coverage
 
 
 class SharedState:
@@ -253,6 +254,7 @@ class Model(nn.Module):
                 # host builds the next layers' graph. Values are unchanged.
                 mx.async_eval(h, pre_mix)
 
+        log_coverage(self, h.dtype)
         h = hc_pre_norm(
             h, pre_mix, self.norm.weight, self.norm.eps
         )  # collapse with the last ffn_pre

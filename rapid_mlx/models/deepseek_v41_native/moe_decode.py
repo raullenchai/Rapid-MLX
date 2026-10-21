@@ -1,5 +1,6 @@
 # The affine QMV helpers in ``_HEADER`` (``load_x``, ``qdot_w`` and the row
-# loops) and ``sigmoid_ref`` adapt MLX's Metal quantized and unary kernels,
+# loops, including mixed-width packing) and ``sigmoid_ref`` adapt MLX's
+# Metal quantized and unary kernels,
 # which carry this notice:
 #
 # MIT License
@@ -33,7 +34,7 @@ launches although its weight traffic is a few megabytes. Here it is three:
 
 * ``route`` — score function, selection bias, top-k, normalization and scale
   for every row in one threadgroup per row;
-* ``up`` — routed (2-bit) and shared (8-bit) gate/up projections for every
+* ``up`` — routed (2/3/4-bit) and shared (2/4/8-bit) gate/up projections for every
   route of every row, with the clamped SwiGLU in the epilogue;
 * ``down`` — routed and shared down projections plus the weighted combine.
 
@@ -50,6 +51,7 @@ from __future__ import annotations
 import logging
 import weakref
 from functools import lru_cache
+from typing import NamedTuple
 
 import mlx.core as mx
 
@@ -75,6 +77,27 @@ inline float load_x(const device T* x, thread float* xt) {
       xt[i + 2] = x[i + 2] / 16.0f;
       xt[i + 3] = x[i + 3] / 64.0f;
     }
+  } else if (BITS == 3) {
+    for (int i = 0; i < VPT; i += 8) {
+      sum += float(x[i]) + float(x[i+1]) + float(x[i+2]) + float(x[i+3])
+          + float(x[i+4]) + float(x[i+5]) + float(x[i+6]) + float(x[i+7]);
+      xt[i] = x[i];
+      xt[i+1] = x[i+1] / 8.0f;
+      xt[i+2] = x[i+2] / 64.0f;
+      xt[i+3] = x[i+3] / 2.0f;
+      xt[i+4] = x[i+4] / 16.0f;
+      xt[i+5] = x[i+5] / 128.0f;
+      xt[i+6] = x[i+6] / 4.0f;
+      xt[i+7] = x[i+7] / 32.0f;
+    }
+  } else if (BITS == 4) {
+    for (int i = 0; i < VPT; i += 4) {
+      sum += float(x[i]) + float(x[i+1]) + float(x[i+2]) + float(x[i+3]);
+      xt[i] = x[i];
+      xt[i+1] = x[i+1] / 16.0f;
+      xt[i+2] = x[i+2] / 256.0f;
+      xt[i+3] = x[i+3] / 4096.0f;
+    }
   } else {
     for (int i = 0; i < VPT; i++) {
       sum += x[i];
@@ -93,6 +116,27 @@ inline float qdot_w(
       accum +=
           (xt[4 * i] * (w[i] & 0x03) + xt[4 * i + 1] * (w[i] & 0x0c) +
            xt[4 * i + 2] * (w[i] & 0x30) + xt[4 * i + 3] * (w[i] & 0xc0));
+    }
+  } else if (BITS == 3) {
+    for (int i = 0; i < VPT / 8; i++) {
+      const thread float* x = xt + 8 * i;
+      const device uint8_t* p = w + 3 * i;
+      accum += (p[0] & 0x07) * x[0];
+      accum += (p[0] & 0x38) * x[1];
+      accum += (p[0] & 0xc0) * x[2];
+      accum += (p[1] & 0x01) * (x[2] * 256.0f);
+      accum += (p[1] & 0x0e) * x[3];
+      accum += (p[1] & 0x70) * x[4];
+      accum += (p[1] & 0x80) * x[5];
+      accum += (p[2] & 0x03) * (x[5] * 256.0f);
+      accum += (p[2] & 0x1c) * x[6];
+      accum += (p[2] & 0xe0) * x[7];
+    }
+  } else if (BITS == 4) {
+    const device uint16_t* ws = reinterpret_cast<const device uint16_t*>(w);
+    for (int i = 0; i < VPT / 4; i++) {
+      accum += (xt[4*i] * (ws[i] & 0x000f) + xt[4*i+1] * (ws[i] & 0x00f0)
+          + xt[4*i+2] * (ws[i] & 0x0f00) + xt[4*i+3] * (ws[i] & 0xf000));
     }
   } else {
     for (int i = 0; i < VPT; i++) {
@@ -264,8 +308,15 @@ _UP = r"""
           x, sgw, sgs, sgb, suw, sus, sub, size_t(col), lane, g, u);
     } else {
       const size_t base = size_t(indices[slot]) * N + col;
-      rows_partial<T, Q, 2, 16, K, 4, true>(
-          x + (slot / TOPK) * K, gw, gs, gb, uw, us, ub, base, lane, g[0], u[0]);
+      if (GBITS == UBITS && GVPT == UVPT) {
+        rows_partial<T, Q, GBITS, GVPT, K, 4, true>(
+            x + (slot / TOPK) * K, gw, gs, gb, uw, us, ub, base, lane, g[0], u[0]);
+      } else {
+        rows_partial<T, Q, GBITS, GVPT, K, 4, false>(
+            x + (slot / TOPK) * K, gw, gs, gb, gw, gs, gb, base, lane, g[0], g[0]);
+        rows_partial<T, Q, UBITS, UVPT, K, 4, false>(
+            x + (slot / TOPK) * K, uw, us, ub, uw, us, ub, base, lane, u[0], u[0]);
+      }
     }
     const int tokens = shared_slot ? ROWS : 1;
     for (int t = 0; t < tokens; t++) {
@@ -303,7 +354,7 @@ _DOWN = r"""
       for (int t = 0; t < ROWS; t++) {
         const int slot = t * TOPK + sg;
         const size_t base = size_t(indices[slot]) * D + col;
-        rows_partial<float, Q, 2, 16, N, 4, false>(
+        rows_partial<float, Q, DBITS, DVPT, N, 4, false>(
             act + slot * N, dw, ds, db, dw, ds, db, base, lane, acc[t], acc[t]);
       }
     } else {
@@ -409,7 +460,7 @@ def _qmv_vpt(bits: int, k: int, n: int) -> int:
     """Values per lane of the stock single-row affine QMV for this shape."""
     # The fast kernel covers whole blocks and 8-row tiles and loads two packs
     # per lane above two bits; the general kernel loads one.
-    pack = 32 // bits
+    pack = 8 if bits == 3 else 32 // bits
     fast = pack * (2 if bits > 2 else 1)
     return fast if k % (32 * fast) == 0 and n % 8 == 0 else pack
 
@@ -430,8 +481,26 @@ def _affine(module, bits: int, ndim: int) -> bool:
     )
 
 
-def _layout(moe) -> tuple[int, int, int] | None:
-    """(dim, inter, shared bits) when ``moe`` matches the fused kernels."""
+class Layout(NamedTuple):
+    dim: int
+    inter: int
+    sbits: int
+    gbits: int
+    ubits: int
+    dbits: int
+
+
+def _packed_width(k: int, bits: int) -> int:
+    """Number of uint32 columns; 3-bit stores eight values in three bytes."""
+    return k * bits // 32
+
+
+def _projection_shape(module, n: tuple[int, ...], k: int) -> bool:
+    return tuple(module.weight.shape) == (*n, _packed_width(k, module.bits))
+
+
+def _layout(moe) -> Layout | None:
+    """Dimensions and per-projection bits when ``moe`` matches the fused kernels."""
     experts, shared, gate = moe.experts, moe.shared_experts, moe.gate
     gp, up, dp = experts.gate_proj, experts.up_proj, experts.down_proj
     w1, w2, w3 = shared.w1, shared.w2, shared.w3
@@ -440,11 +509,14 @@ def _layout(moe) -> tuple[int, int, int] | None:
         or "bias" in up
         or "bias" in dp
         or hasattr(experts, "gate_up_proj")
-        or not all(_affine(m, 2, 3) for m in (gp, up, dp))
+        or not all(
+            getattr(m, "bits", None) in (2, 3, 4) and _affine(m, m.bits, 3)
+            for m in (gp, up, dp)
+        )
     ):
         return None
     sbits = getattr(w1, "bits", None)
-    if sbits not in (2, 8) or not all(_affine(m, sbits, 2) for m in (w1, w2, w3)):
+    if sbits not in (2, 4, 8) or not all(_affine(m, sbits, 2) for m in (w1, w2, w3)):
         return None
     if any("bias" in m for m in (w1, w2, w3)):
         return None
@@ -457,10 +529,12 @@ def _layout(moe) -> tuple[int, int, int] | None:
         and tuple(dp.scales.shape) == (experts_n, dim, inter // 64)
         and tuple(w1.scales.shape) == tuple(w3.scales.shape) == (inter, dim // 64)
         and tuple(w2.scales.shape) == (dim, inter // 64)
-        and int(gp.weight.shape[2]) * 16 == dim
-        and int(dp.weight.shape[2]) * 16 == inter
-        and int(w1.weight.shape[1]) * 32 // sbits == dim
-        and int(w2.weight.shape[1]) * 32 // sbits == inter
+        and _projection_shape(gp, (experts_n, inter), dim)
+        and _projection_shape(up, (experts_n, inter), dim)
+        and _projection_shape(dp, (experts_n, dim), inter)
+        and _projection_shape(w1, (inter,), dim)
+        and _projection_shape(w3, (inter,), dim)
+        and _projection_shape(w2, (dim,), inter)
         and dim % 512 == 0
         # a 64- or 128-wide reduction takes the stock quad QMV kernel
         and inter % 64 == 0
@@ -479,7 +553,7 @@ def _layout(moe) -> tuple[int, int, int] | None:
         and dim < 16 * experts_n
     ):
         return None
-    return dim, inter, sbits
+    return Layout(dim, inter, sbits, gp.bits, up.bits, dp.bits)
 
 
 def supports(x: mx.array) -> bool:
@@ -515,7 +589,7 @@ def _route(moe, scores: mx.array) -> tuple[mx.array, mx.array]:
 def _experts(
     moe, layout, xf: mx.array, weights: mx.array, indices: mx.array
 ) -> mx.array:
-    dim, inter, sbits = layout
+    dim, inter, sbits, gbits, ubits, dbits = layout
     rows = int(xf.shape[0])
     topk = int(moe.gate.topk)
     experts, shared = moe.experts, moe.shared_experts
@@ -546,6 +620,10 @@ def _experts(
             ("N", inter),
             ("SBITS", sbits),
             ("SVPT", _qmv_vpt(sbits, dim, inter)),
+            ("GBITS", gbits),
+            ("UBITS", ubits),
+            ("GVPT", _qmv_vpt(gbits, dim, inter)),
+            ("UVPT", _qmv_vpt(ubits, dim, inter)),
         ],
         grid=(32, inter // 4, rows * topk + 1),
         threadgroup=(32, 2, 1),
@@ -570,6 +648,8 @@ def _experts(
             ("D", dim),
             ("SBITS", sbits),
             ("SDVPT", _qmv_vpt(sbits, inter, dim)),
+            ("DBITS", dbits),
+            ("DVPT", _qmv_vpt(dbits, inter, dim)),
         ],
         grid=(32, (topk + 1) * dim // 4, 1),
         threadgroup=(32, topk + 1, 1),
@@ -604,6 +684,14 @@ def _signature(moe) -> tuple[list, tuple]:
     arrays += [getattr(gate, "weight", None), getattr(gate, "bias", None)]
     settings = (
         tuple("bias" in m for m in modules),
+        tuple(
+            (
+                getattr(m, "bits", None),
+                getattr(m, "group_size", None),
+                getattr(m, "mode", "affine"),
+            )
+            for m in modules
+        ),
         gate.score_func,
         gate.topk,
         bool(gate.norm_topk_prob),
@@ -613,7 +701,7 @@ def _signature(moe) -> tuple[list, tuple]:
     return arrays, settings
 
 
-def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
+def _qualified(moe, stock, dtype) -> Layout | None:
     """This layer's layout once each fused row equals its single-row stock."""
     arrays, settings = _signature(moe)
     cached: tuple | None = getattr(moe, _CHECK_ATTR, None)
@@ -653,7 +741,7 @@ def _qualified(moe, stock, dtype) -> tuple[int, int, int] | None:
         # replaced weights without keeping the old arrays alive.
         refs = tuple(None if a is None else weakref.ref(a) for a in arrays)
         object.__setattr__(moe, _CHECK_ATTR, (refs, settings, verdicts))
-    verdict: tuple[int, int, int] | None = verdicts[dtype]
+    verdict: Layout | None = verdicts[dtype]
     return verdict
 
 
@@ -684,3 +772,35 @@ def _router_rows_exact(gate, x: mx.array) -> bool:
     return head_gemv._supports_weight(gate.weight, probe) and head_gemv._matches_stock(
         gate
     )
+
+
+def log_coverage(model, dtype) -> None:
+    """Report actual lazy qualification results once every layer has a verdict."""
+    if getattr(model, "_rapid_moe_summary_logged", False):
+        return
+    verdicts: list[dict] = [
+        getattr(layer.ffn, _CHECK_ATTR, (None, None, {}))[2] for layer in model.layers
+    ]
+    if not verdicts or any(dtype not in verdict for verdict in verdicts):
+        return
+    fallback = []
+    for i, (layer, verdict) in enumerate(zip(model.layers, verdicts, strict=True)):
+        if verdict[dtype] is None:
+            moe = layer.ffn
+            bits = [
+                getattr(m, "bits", "dense")
+                for m in (
+                    moe.experts.gate_proj,
+                    moe.experts.up_proj,
+                    moe.experts.down_proj,
+                    moe.shared_experts.w1,
+                )
+            ]
+            fallback.append(f"layer {i} ({bits[0]},{bits[1]},{bits[2]}|{bits[3]})")
+    logger.info(
+        "fused V4.1 MoE: %d/%d layers; fallback: %s",
+        len(verdicts) - len(fallback),
+        len(verdicts),
+        ", ".join(fallback) or "none",
+    )
+    object.__setattr__(model, "_rapid_moe_summary_logged", True)

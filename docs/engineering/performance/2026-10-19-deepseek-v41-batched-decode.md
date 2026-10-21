@@ -164,3 +164,27 @@ baseline CPU limitations listed above. The focused scheduler/cache/concurrency
 run passed **182 tests**, including **33 scheduler/server tests**. Ruff check and
 format checks passed for all changed Python files.
 The environment-policy guard plus scheduler rerun passed **47 tests**.
+
+
+## Fused MoE coverage with mixed bit widths
+
+The three-dispatch decode MoE previously accepted only 2-bit routed gate/up/down
+weights and 2- or 8-bit shared weights. Mixed checkpoints consequently qualified
+only 22/40 layers in build A and 0/40 in build B by layout; the other layers used
+the stock graph (roughly forty dispatches).
+
+Each routed projection now specializes independently for affine 2/3/4-bit weights;
+shared projections accept 2/4/8-bit weights, all with group size 64. The 3-bit
+format packs eight values into three bytes. Each projection retains the stock
+single-row QMV lane geometry, block order and epilogue. The verify down-route
+QMV accepts the same routed widths. First-use qualification still requires every
+row count from 1 through 8 to match single-row stock outputs bit for bit. A single
+INFO summary after all layers qualify reports actual fused and fallback counts,
+including fallback layer indices and bit layouts.
+
+Build A, build B, and uniform 2-bit routed / 8-bit shared layouts are now eligible
+on all 40 layers. Eligibility is not a GPU qualification result. Attention,
+cache, scheduling, and draft logic are unchanged.
+
+Measurements on the same hardware and workload: **TODO** (decode throughput,
+verify latency, dispatch counts, and confirmed fused-layer counts).

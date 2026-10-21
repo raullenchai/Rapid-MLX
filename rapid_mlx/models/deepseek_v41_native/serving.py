@@ -30,6 +30,7 @@ from .dspark import (
 from .kernels import custom_kernels_enabled
 from .load import load, supports_engram_ssd_offload
 from .moe import ClampedSwiGLU
+from .moe_decode import _packed_width
 
 MAX_INPUT_TOKENS = 8192
 TARGET_EVAL_INTERVAL = 2
@@ -65,7 +66,7 @@ class DSparkRuntime:
 
 
 class ExactDirectDownSwitchGLU(SwitchGLU):
-    """Stock gate/up numerics plus the qualified exact 2-bit down QMV."""
+    """Stock gate/up numerics plus the qualified exact 2/3/4-bit down QMV."""
 
     def __call__(self, x, indices):
         if (
@@ -90,7 +91,7 @@ def supports_target_qmv(experts: Any) -> bool:
     down = experts.down_proj
     return (
         custom_kernels_enabled()
-        and getattr(down, "bits", None) == 2
+        and getattr(down, "bits", None) in (2, 3, 4)
         and getattr(down, "group_size", None) == 64
         and getattr(down, "mode", "affine") == "affine"
         and getattr(down, "scales", None) is not None
@@ -100,7 +101,8 @@ def supports_target_qmv(experts: Any) -> bool:
         and down.weight.ndim == down.scales.ndim == down.biases.ndim == 3
         and down.scales.shape == down.biases.shape
         and down.weight.shape[:2] == down.scales.shape[:2]
-        and down.weight.shape[2] * 16 == down.scales.shape[2] * 64
+        and down.weight.shape[2]
+        == _packed_width(int(down.scales.shape[2]) * 64, down.bits)
         and down.scales.shape[1] % 8 == 0
         and not hasattr(experts, "gate_up_proj")
     )

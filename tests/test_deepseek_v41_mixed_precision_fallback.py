@@ -1,4 +1,4 @@
-"""Mixed-precision checkpoints keep each fused decode lever on its stock path.
+"""Mixed-precision checkpoints qualify each fused decode lever per layer.
 
 Later checkpoints quantize the routed gate/up projections of some layers to
 3 bits (down stays 2-bit) and change which dense projections are 8-bit. Every
@@ -70,14 +70,25 @@ def gpu():
     mx.set_default_device(previous)
 
 
-def test_three_bit_gate_up_layers_are_not_fusable() -> None:
-    assert moe_decode._layout(_layer(2)) == (DIM, INTER, 8)
-    assert moe_decode._layout(_layer(3)) is None
-    assert moe_decode._layout(_layer(2, down_bits=3)) is None
-    assert moe_decode._layout(_layer(4)) is None
-    # dense/shared projections may move between 2 and 8 bits per layer
-    assert moe_decode._layout(_layer(2, shared_bits=2)) == (DIM, INTER, 2)
-    assert moe_decode._layout(_layer(2, shared_bits=4)) is None
+@pytest.mark.parametrize("bits", [2, 3, 4])
+@pytest.mark.parametrize("shared", [2, 4, 8])
+def test_mixed_gate_up_layers_are_fusable(bits, shared) -> None:
+    assert moe_decode._layout(_layer(bits, shared_bits=shared)) == (
+        DIM,
+        INTER,
+        shared,
+        bits,
+        bits,
+        2,
+    )
+    assert moe_decode._layout(_layer(bits, down_bits=3, shared_bits=shared)) == (
+        DIM,
+        INTER,
+        shared,
+        bits,
+        bits,
+        3,
+    )
 
 
 @pytest.mark.parametrize("rows", [1, 3, 8])
@@ -102,8 +113,7 @@ def test_mixed_2bit_3bit_stack_fuses_per_layer(gpu, rows: int) -> None:
             x = out
     finally:
         moe_decode._experts = original
-    fused = {id(layers[0]), id(layers[2])}
-    assert id(layers[1]) not in calls
+    fused = {id(layer) for layer in layers}
     assert fused <= set(calls)
 
 
