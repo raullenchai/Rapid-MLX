@@ -7,6 +7,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
@@ -1297,3 +1298,73 @@ def test_aider_requires_git_for_private_home_shim(private_home, monkeypatch):
     monkeypatch.setattr("rapid_mlx.agents.isolated.shutil.which", lambda name: None)
     with pytest.raises(ValueError, match="requires git"):
         isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+
+
+@pytest.mark.parametrize(
+    ("agent", "project_config"),
+    [("crush", ".crush.json"), ("aider", ".aider.conf.yml")],
+)
+def test_saved_runner_checks_new_working_directory_before_agent_starts(
+    private_home, monkeypatch, agent, project_config
+):
+    monkeypatch.setenv("HOME", str(private_home))
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "if '--check' not in sys.argv:\n"
+        "    from rapid_mlx.agents import isolated\n"
+        "    isolated.configure(sys.argv[2], 'qwen3.5-9b-4bit', port=7660)\n"
+    )
+    rapid.chmod(0o700)
+    marker = private_home / "agent-started"
+    client = commands / agent
+    client.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+    client.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    first = private_home / "first"
+    second = private_home / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure(agent, "qwen3.5-9b-4bit", port=7660)
+    runner = isolated.connection_dir() / "agents" / agent / "run"
+    unsafe = second / project_config
+    unsafe.write_text("cloud override\n")
+    result = subprocess.run(
+        [shutil.which("zsh") or "/bin/bash", str(runner)],
+        cwd=second,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert unsafe.read_text() == "cloud override\n"
+    if agent == "crush":
+        unsafe.unlink()
+        project_id = hashlib.sha256(str(second.resolve()).encode()).hexdigest()[:24]
+        saved = (
+            isolated.connection_dir()
+            / "agents"
+            / "crush"
+            / "data"
+            / project_id
+            / "crush.json"
+        )
+        saved.parent.mkdir(parents=True)
+        saved.write_text('{"models":{"large":{"model":"cloud","provider":"cloud"}}}')
+        result = subprocess.run(
+            [shutil.which("zsh") or "/bin/bash", str(runner)],
+            cwd=second,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert marker.exists()
+        assert json.loads(saved.read_text())["models"]["large"] == {
+            "provider": "rapid-mlx",
+            "model": "qwen3.5-9b-4bit",
+        }

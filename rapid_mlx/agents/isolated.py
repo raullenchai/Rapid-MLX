@@ -566,8 +566,10 @@ def configure(
     command = _command(name, root, model, port)
     cli = _cli_invocation()
     runner = root / "run"
-    # A different Desktop session may have chosen a new free port or rotated
-    # the key. Refresh the private config only after the shared route validates.
+    # Reconfigure in the runner's execution directory before starting the
+    # agent. This repeats project-config guards and sanitizes that project's
+    # saved state, including when a saved runner is reused in another project.
+    # A different Desktop session may also have chosen a new port or key.
     refresh = (
         ""
         if name == "hermes"
