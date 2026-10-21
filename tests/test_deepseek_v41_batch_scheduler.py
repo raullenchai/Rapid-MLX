@@ -641,7 +641,8 @@ def test_decode_failure_also_fails_the_partial_prefill():
         backend.close()
 
 
-def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch):
+@pytest.mark.parametrize("failure", ["app", "policy"])
+def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch, failure):
     from pathlib import Path
 
     from rapid_mlx.models.deepseek_v41_native import batch_scheduler, server
@@ -666,10 +667,14 @@ def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch):
 
     monkeypatch.setattr(batch_scheduler, "BatchBackend", build_backend)
 
-    def broken_app(**kwargs):
+    def broken_app(*args, **kwargs):
         raise RuntimeError("injected app failure")
 
-    monkeypatch.setattr(serial, "_build_app", broken_app)
+    if failure == "app":
+        monkeypatch.setattr(serial, "_build_app", broken_app)
+    else:
+        # setup between backend construction and app construction
+        monkeypatch.setattr(serial, "BackendExecutionPolicy", broken_app)
     with pytest.raises(RuntimeError, match="injected app failure"):
         server.run_server(
             host="127.0.0.1",

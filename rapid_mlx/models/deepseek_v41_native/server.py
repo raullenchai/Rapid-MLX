@@ -113,26 +113,30 @@ def run_server(
             from .batch_scheduler import BatchBackend
 
             backend = BatchBackend(lanes=lanes, load_fn=_load_batch)
-            model, tokenizer = backend.model, backend.tokenizer
-            runtime = SimpleNamespace(
-                algorithm="greedy-batched",
-                drafter_repo=None,
-                target_revision=backend.runtime.target_revision,
-                drafter_revision=None,
-            )
-            # Construction loads the paired checkpoint once, but this lane
-            # performs target-only decoding and retains no draft runtime.
-            del backend.runtime
-            batch_options = {
-                "execution_policy": BackendExecutionPolicy(lanes, backend.executor),
-                "generate_fn_accepts_cancel_event": True,
-                "speculative_info": SpeculativeDecodingInfo(
-                    configured=False,
-                    method=None,
-                    runtime_state="unavailable",
-                ),
-                "runtime_status_extra": {"mode": "batched", "lanes": lanes},
-            }
+            try:
+                model, tokenizer = backend.model, backend.tokenizer
+                runtime = SimpleNamespace(
+                    algorithm="greedy-batched",
+                    drafter_repo=None,
+                    target_revision=backend.runtime.target_revision,
+                    drafter_revision=None,
+                )
+                # Construction loads the paired checkpoint once, but this lane
+                # performs target-only decoding and retains no draft runtime.
+                del backend.runtime
+                batch_options = {
+                    "execution_policy": BackendExecutionPolicy(lanes, backend.executor),
+                    "generate_fn_accepts_cancel_event": True,
+                    "speculative_info": SpeculativeDecodingInfo(
+                        configured=False,
+                        method=None,
+                        runtime_state="unavailable",
+                    ),
+                    "runtime_status_extra": {"mode": "batched", "lanes": lanes},
+                }
+            except BaseException:
+                backend.close()
+                raise
     try:
         app = _build_app(
             model=model,
