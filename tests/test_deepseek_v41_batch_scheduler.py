@@ -197,6 +197,39 @@ def test_cancel_frees_lane(phase):
         backend.close()
 
 
+def test_cancel_during_final_prefill_chunk_emits_no_token():
+    model = CountingModel()
+    entered, release = threading.Event(), threading.Event()
+    cancel = threading.Event()
+    blocked = False
+
+    def hook(ids, cache):
+        nonlocal blocked
+        if not blocked and not isinstance(cache, BatchModelCache):
+            blocked = True
+            entered.set()
+            wait(release)
+
+    model.hook = hook
+    backend = BatchBackend(model, Tokenizer(), lanes=1)
+    try:
+        # one-chunk prompt: the cancel lands while its only prefill step runs
+        stream = backend.submit([1, 2], max_tokens=8, cancel_event=cancel)
+        wait(entered)
+        cancel.set()
+        release.set()
+        cancelled = collect(stream)
+        assert [chunk.token for chunk in cancelled if chunk.token is not None] == []
+        # the lane is free and no decode step ran for the cancelled row
+        assert not any(batch for shape, batch in model.calls)
+        assert [
+            chunk.token for chunk in collect(backend.submit([1, 2], max_tokens=2))
+        ] == [3, 3]
+    finally:
+        release.set()
+        backend.close()
+
+
 @pytest.mark.parametrize("prefill_failure", [False, True])
 def test_step_error_is_delivered_and_backend_recovers(prefill_failure, caplog):
     model = CountingModel()
