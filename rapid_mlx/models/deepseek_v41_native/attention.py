@@ -35,6 +35,7 @@ _mlx_compat.install()
 
 from mlx_lm.models.mla import MultiLinear  # noqa: E402
 
+from . import decode_attention
 from .compressor import Compressor
 from .config import ModelArgs
 from .indexer import Indexer
@@ -94,6 +95,7 @@ class Attention(nn.Module):
         self.ratio = args.compress_ratio(layer_id)
         self.eps = args.norm_eps
         self.softmax_scale = args.head_dim**-0.5
+        self.index_topk = args.index_topk
 
         self.attn_sink = mx.zeros((self.n_heads,), dtype=mx.float32)
         self.wq_a = nn.Linear(self.dim, self.q_lora_rank, bias=False)
@@ -164,23 +166,43 @@ class Attention(nn.Module):
         cos, sin = self._freqs(end_pos)
         c_q, s_q = cos[start_pos:end_pos], sin[start_pos:end_pos]
 
-        # --- queries ---
-        qr = self.q_norm(self.wq_a(x))
-        q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
-        q = rope_tail(q, rd, c_q, s_q)
-
-        # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
-        kv = self.kv_norm(self.wkv(x))
-        kv = rope_fake_quant(kv, rd, c_q, s_q, "fp8_ue8m0")
-
         lc = cache.layers[self.layer_id]
-        prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
-        wp = prev.shape[1]
-        kv_all = mx.concatenate([prev.astype(kv.dtype), kv], axis=1) if wp else kv
-        idxs = mx.broadcast_to(
-            window_idx_matrix(wp, n, self.window_size)[None],
-            (bsz, n, min(self.window_size, wp + n)),
+        fused = not self._break_rope_inverse and decode_attention.supports(
+            x, lc.win_kv, self.n_heads, self.head_dim, rd
         )
+        if fused:
+            # one decode token: q_norm, kv_norm, the KV rope tail and its FP8
+            # fake-quant in one kernel; the query rope runs inside attention
+            qr, kv = decode_attention.norms(
+                self.wq_a(x),
+                self.wkv(x),
+                self.q_norm.weight,
+                self.kv_norm.weight,
+                self.eps,
+                c_q,
+                s_q,
+                rd,
+                lc.dtype,
+            )
+            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
+            wp = min(start_pos, self.window_size)
+        else:
+            # --- queries ---
+            qr = self.q_norm(self.wq_a(x))
+            q = self.wq_b(qr).reshape(bsz, n, self.n_heads, self.head_dim)
+            q = rope_tail(q, rd, c_q, s_q)
+
+            # --- window KV: rope tail, FP8 fake-quant over the whole vector ---
+            kv = self.kv_norm(self.wkv(x))
+            kv = rope_fake_quant(kv, rd, c_q, s_q, "fp8_ue8m0")
+
+            prev = lc.window_chrono(start_pos)  # [b, Wp, hd]
+            wp = prev.shape[1]
+            kv_all = mx.concatenate([prev.astype(kv.dtype), kv], axis=1) if wp else kv
+            idxs = mx.broadcast_to(
+                window_idx_matrix(wp, n, self.window_size)[None],
+                (bsz, n, min(self.window_size, wp + n)),
+            )
         lc.write_window(start_pos, kv)
         offset = wp + n  # compressed entries follow
 
@@ -218,7 +240,7 @@ class Attention(nn.Module):
                     latents, rd, cos[pos], sin[pos], "fp4_e4m3", lc.dtype
                 )
 
-            if compress_len:
+            if compress_len and not fused:
                 k = cidx.shape[-1]
                 if GATHER_DECODE_ROWS and n == 1 and k < compress_len:
                     # Decode reads only the k selected rows: gather them from
@@ -236,11 +258,29 @@ class Attention(nn.Module):
                 idxs = mx.concatenate([idxs, local], axis=-1)
 
         sink = mx.zeros_like(self.attn_sink) if self._break_sink else self.attn_sink
-        o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
+        if fused:
+            # the kernels read the ring and the selected compressed rows in place
+            selected = (None, None, 0)
+            if self.ratio and compress_len:
+                selected = (src.comp_kv, cidx, offset)
+            o = decode_attention.attend(
+                q,
+                lc.win_kv,
+                start_pos,
+                *selected,
+                sink,
+                c_q,
+                s_q,
+                self.softmax_scale,
+                rd,
+            )
+        else:
+            o = sparse_attn(q, kv_all, sink, idxs, self.softmax_scale)
+            # --- inverse rope ---
+            if not self._break_rope_inverse:
+                o = rope_tail(o, rd, c_q, s_q, inverse=True)
 
-        # --- inverse rope, grouped block-diagonal output LoRA ---
-        if not self._break_rope_inverse:
-            o = rope_tail(o, rd, c_q, s_q, inverse=True)
+        # --- grouped block-diagonal output LoRA ---
         o = o.reshape(bsz, n, self.n_groups, -1)
         # QuantizedMultiLinear treats the penultimate axis as matrix rows;
         # retain a singleton row so the group axis broadcasts against the

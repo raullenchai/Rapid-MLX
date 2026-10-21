@@ -69,6 +69,10 @@ class LayerCache:
     def write_window(self, pos: int, kv: mx.array):
         """Write chunk KV at positions [pos, pos+n) into the ring."""
         n = kv.shape[1]
+        if n == 1:  # decode: one slice update, no index arrays
+            slot = pos % self.window
+            self.win_kv[:, slot : slot + 1] = kv.astype(self.dtype)
+            return
         keep = min(n, self.window)
         tail = kv[:, n - keep :]
         slots = (pos + n - keep + mx.arange(keep)) % self.window

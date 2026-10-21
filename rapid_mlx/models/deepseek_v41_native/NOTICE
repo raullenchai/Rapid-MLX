@@ -15,3 +15,7 @@ The hyper-connection Metal kernels in hyper_connections.py include modified
 MIT-licensed code from jundot/omlx revision
 75466d33a3f9e1bf4b8257738bcadd4658526bcb. See LICENSE-DSPARK in this
 directory for the MIT license text.
+
+The fused decode attention Metal kernels in decode_attention.py adapt the
+design of MIT-licensed third-party code (Copyright (c) 2023 DeepSeek). The
+full MIT license text is reproduced in the header of decode_attention.py.
