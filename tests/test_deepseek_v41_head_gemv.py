@@ -265,3 +265,32 @@ def test_launch_failure_after_qualification_falls_back(monkeypatch) -> None:
     assert mx.array_equal(head_logits(head, x), head(x)).item()
     cached = getattr(head, head_gemv._CHECK_ATTR)
     assert cached[0]() is head.weight and cached[1] is False
+
+
+def test_self_check_compiles_the_hot_path_specialization(monkeypatch) -> None:
+    """Every later launch reuses the template the self-check evaluated."""
+    templates = []
+    real = head_gemv._kernel
+
+    def spy():
+        kernel = real()
+
+        def call(**kwargs):
+            templates.append(tuple(kwargs["template"]))
+            return kernel(**kwargs)
+
+        return call
+
+    monkeypatch.setattr(head_gemv, "_kernel", spy)
+    monkeypatch.setattr(head_gemv, "supports", lambda head, x: True)
+    monkeypatch.setattr(head_gemv, "_matches_stock", lambda head: True)
+    head = _head()
+    for rows in (1, 3, 8):
+        head_gemv._launch(head.weight, mx.zeros((rows, 512)))
+    head_logits(head, mx.zeros((2, 512)))
+    probe = (
+        ("K", 512),
+        ("N", head.weight.shape[0]),
+        ("OUTPUTS", head_gemv._OUTPUTS_PER_THREADGROUP),
+    )
+    assert set(templates) == {probe}
