@@ -283,9 +283,13 @@ Every avatar here shipped something in Rapid-MLX — model support, tool-call pa
 
 ## Acknowledgements
 
-Rapid-MLX builds on open-source work by [Wayner Barrios](https://github.com/waybarrios)
-and other contributors. The [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE)
-records the project's third-party credits and licenses.
+Rapid-MLX began as **[vLLM-MLX](https://github.com/waybarrios/vllm-mlx)** by
+[Wayner Barrios](https://github.com/waybarrios), which is where this repository's
+history starts and where the engine's paged KV cache, prefix cache, and
+continuous batching were first built. It was renamed to Rapid-MLX on 2026-03-13,
+now ships as the `rapid-mlx` package (import name `rapid_mlx`), and has been
+extensively modified and in large part rewritten since (see [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE)).
+Thank you.
 
 It stands on Apple's MLX stack and the runtimes built around it:
 

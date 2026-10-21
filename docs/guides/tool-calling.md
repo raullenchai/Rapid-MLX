@@ -47,6 +47,49 @@ if response.choices[0].message.tool_calls:
         print(f"Arguments: {tc.function.arguments}")
 ```
 
+## Supported Parsers
+
+Use `--tool-call-parser` to select a parser for your model family:
+
+| Parser | Aliases | Models | Format |
+|--------|---------|--------|--------|
+| `auto` | `generic` | Any model | Auto-detects format (tries all parsers) |
+| `deepseek` | `deepseek_r1` | DeepSeek V2, R1 distills (non-0528) | Unicode-delimiter token envelope (legacy V2/R1 format) |
+| `deepseek_v3` | `deepseek_r1_0528` | DeepSeek V3, R1-0528 distills | Unicode-delimiter token envelope with fenced JSON arguments |
+| `deepseek_v31` | | DeepSeek V3.1 | Unicode-delimiter token envelope, inline JSON (thinking channel) |
+| `deepseek_v4_0731` | | DeepSeek-V4-Flash-0731 | DSML |
+| `functionary` | `meetkai` | MeetKai Functionary | Multiple function blocks |
+| `gemma4` | `gemma_4` | Gemma 4 | `<\|tool_call>call:name{...}<tool_call\|>` |
+| `glm47` | `glm4` | GLM-4.7, GLM-4.7-Flash | `<tool_call>` with `<arg_key>`/`<arg_value>` XML |
+| `granite` | `granite3` | IBM Granite 3.x, 4.x | `<\|tool_call\|>` or `<tool_call>` |
+| `harmony` | `gpt-oss` | GPT-OSS (Harmony) | Channel tokens: `<\|channel\|>commentary to=functions.name` |
+| `hermes` | `nous`, `qwen3_coder` | Hermes, NousResearch, Qwen3-Coder | `<tool_call>` JSON in XML |
+| `hy_v3` | `hy3` | Tencent Hunyuan 3 | `<tool_call:opensource>name<tool_sep:opensource>{...}` tokens |
+| `k2_horizon` | | K2 Horizon | `<ifm|tool_calls>` with JSON, XML, or typed XML arguments |
+| `kimi` | `kimi_k2`, `moonshot` | Kimi K2, Moonshot | `<\|tool_call_begin\|>` tokens |
+| `lfm` | `liquid` | Liquid LFM | `[func(arg=val)]` pythonic or `[Calling tool:]` |
+| `llama` | `llama3`, `llama4` | Llama 3.x, 4.x | `<function=name>` tags |
+| `minicpm` | | MiniCPM | `<function name=...><param name=...>` XML |
+| `minimax` | `minimax_m2` | MiniMax-M2 | `<minimax:tool_call>` with `<invoke>`/`<parameter>` XML |
+| `mistral` | | Mistral, Devstral | `[TOOL_CALLS]` JSON array |
+| `muse` | | Muse Glimmer | `<atem:function_calls>` blocks in channel messages |
+| `nemotron` | `nemotron3` | NVIDIA Nemotron | `<tool_call><function=...><parameter=...>` |
+| `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call>` XML or `[Calling tool:]` |
+| `qwen3_coder_xml` | | Qwen3-Coder (XML function blocks) | `<function=name><parameter=key>` XML |
+| `seed_oss` | `seed`, `gpt_oss` | Seed-OSS, GPT-OSS | `<seed:tool_call><function=name><parameter=key>` |
+| `ui_tars` | `ui-tars`, `uitars` | UI-TARS GUI-agent VLMs | `Action: verb(args)` computer-use lines |
+| `xlam` | | Salesforce xLAM | JSON with `tool_calls` array |
+
+Two easy mix-ups to watch for:
+
+- `deepseek` and `deepseek_v3` are **different parsers**. `deepseek` is the
+  legacy parser for DeepSeek V2 / R1 (non-0528) distills; `deepseek_v3`
+  handles the DeepSeek V3 wire shape (fenced JSON arguments) and is also
+  the right parser for R1-0528 distills. Use `deepseek_v3` for V3 models.
+- `gpt-oss` (hyphen) selects the Harmony parser, while `gpt_oss`
+  (underscore) selects the Seed-OSS parser. Prefer the primary names
+  `harmony` and `seed_oss` to avoid ambiguity.
+
 ## Parser selection
 
 A catalog alias can supply its parser. For another checkpoint, inspect its model card and select a parser with `--tool-call-parser` if needed. Run `rapid-mlx serve --help` for the current flags. The [model catalog](https://rapidmlx.com/docs/aliases.html) lists supported aliases.
