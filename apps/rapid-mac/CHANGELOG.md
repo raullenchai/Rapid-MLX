@@ -17,6 +17,14 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.16.8] — 2026-10-22
+
+Desktop shows model loading inside the chat composer, keeping startup status where you write your message.
+
+### Desktop
+
+- **Model loading appears in the composer**: download progress, loading and warmup phases, and startup recovery appear beside Send. Managed downloads offer Stop and Resume while preserving your draft; background tasks remain available globally. ([#5056](https://github.com/raullenchai/Rapid-MLX/pull/5056))
+
 ## [0.16.7] — 2026-10-21
 
 DeepSeek V4.1 Flash 1017 on the GPTQ v2 checkpoint (introduced in 0.16.6) decodes up to about 1.9x faster on one stream. Desktop discovers updates while it stays open, and dependency repair commands now target the Python environment running Rapid-MLX.
@@ -4496,7 +4504,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...HEAD
+[0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
 [0.16.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.6...rapid-mac-v0.16.7
 [0.16.6]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.5...rapid-mac-v0.16.6
 [0.16.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.4...rapid-mac-v0.16.5
