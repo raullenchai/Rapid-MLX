@@ -10673,7 +10673,8 @@ def _active_hf_snapshot_path(repo_id: str):
 
     revision = resolve_revision(repo_id)
     if revision is not None:
-        return root / "snapshots" / revision
+        snapshot = root / "snapshots" / revision
+        return snapshot if snapshot.is_dir() else root
     try:
         revision = (root / "refs" / "main").read_text().strip()
         snapshot = root / "snapshots" / revision

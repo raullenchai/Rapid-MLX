@@ -80,7 +80,13 @@ def snapshot_download(repo_id: str, **kwargs: Any) -> str:
 
     from .model_aliases import resolve_revision
 
-    if kwargs.get("revision") is None and (revision := resolve_revision(repo_id)):
+    if (revision := resolve_revision(repo_id)) is not None:
+        requested = kwargs.get("revision")
+        if requested is not None and requested != revision:
+            raise ValueError(
+                f"{repo_id} is pinned to revision {revision}; "
+                f"cannot download conflicting revision {requested}"
+            )
         kwargs["revision"] = revision
     if not disabled():
         return str(hub_snapshot_download(repo_id, **kwargs))
@@ -99,7 +105,13 @@ def hf_hub_download(repo_id: str, filename: str, **kwargs: Any) -> str:
 
     from .model_aliases import resolve_revision
 
-    if kwargs.get("revision") is None and (revision := resolve_revision(repo_id)):
+    if (revision := resolve_revision(repo_id)) is not None:
+        requested = kwargs.get("revision")
+        if requested is not None and requested != revision:
+            raise ValueError(
+                f"{repo_id} is pinned to revision {revision}; "
+                f"cannot download conflicting revision {requested}"
+            )
         kwargs["revision"] = revision
     if not disabled():
         return str(hub_file_download(repo_id, filename, **kwargs))

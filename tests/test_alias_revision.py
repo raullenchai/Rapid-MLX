@@ -174,9 +174,7 @@ def test_exact_cache_readiness_metadata_and_offline(cache, monkeypatch):
 
 @pytest.mark.parametrize("method", ["snapshot_download", "hf_hub_download"])
 @pytest.mark.parametrize("disabled", [False, True])
-def test_shared_download_wrappers_pin_only_catalog_default(
-    monkeypatch, method, disabled
-):
+def test_shared_download_wrappers_enforce_catalog_pin(monkeypatch, method, disabled):
     import huggingface_hub
 
     download = Mock(return_value="/snapshot")
@@ -186,13 +184,20 @@ def test_shared_download_wrappers_pin_only_catalog_default(
     rest = () if method == "snapshot_download" else ("config.json",)
     for repo, kwargs, expected in [
         (REPO, {}, PIN),
-        (REPO, {"revision": OTHER}, OTHER),
+        (REPO, {"revision": None}, PIN),
+        (REPO, {"revision": PIN}, PIN),
         (UNPINNED, {}, None),
+        (UNPINNED, {"revision": OTHER}, OTHER),
     ]:
         assert fn(repo, *rest, **kwargs) == "/snapshot"
         actual = download.call_args.kwargs
         assert actual.get("revision") == expected
         assert actual.get("local_files_only", False) == disabled
+
+    download.reset_mock()
+    with pytest.raises(ValueError, match=rf"{REPO}.*{PIN}"):
+        fn(REPO, *rest, revision=OTHER)
+    download.assert_not_called()
 
 
 @pytest.mark.parametrize("subfolder", [None, "4bit"])
@@ -421,3 +426,29 @@ def test_pinned_alias_subfolder_inventory_uses_pin(cache, monkeypatch):
     assert cli._cached_subfolder_size(REPO, "4bit") == sum(
         path.stat().st_size for path in pinned.iterdir()
     )
+
+
+def test_revision_resolution_matches_local_model_precedence(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ALIAS
+    local.mkdir()
+    (local / "benchmark.txt").write_text("stray output")
+    assert aliases.resolve_model(ALIAS) == REPO
+    assert aliases.resolve_revision(ALIAS) == PIN
+    for explicit in (f"./{ALIAS}", str(local)):
+        assert aliases.resolve_model(explicit) == explicit
+        assert aliases.resolve_revision(explicit) is None
+    (local / "config.json").write_text("{}")
+    assert aliases.resolve_model(ALIAS) == ALIAS
+    assert aliases.resolve_revision(ALIAS) is None
+
+
+def test_active_pinned_snapshot_falls_back_to_root(cache):
+    snapshot(cache, OTHER)
+    assert cli._active_hf_snapshot_path(REPO) == cache
+    pinned = cache / "snapshots" / PIN
+    pinned.write_text("not a directory")
+    assert cli._active_hf_snapshot_path(REPO) == cache
+    pinned.unlink()
+    pinned.mkdir()
+    assert cli._active_hf_snapshot_path(REPO) == pinned
