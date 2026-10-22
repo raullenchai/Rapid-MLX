@@ -952,11 +952,21 @@ def resolve_subfolder(name: str) -> str | None:
 def resolve_revision(name: str) -> str | None:
     """Catalog commit for an alias/repo/user alias; explicit paths stay local.
 
-    Registry validation errors propagate: an invalid pin must never select HEAD.
+    Profile lookup is best-effort, but registry validation errors propagate:
+    an invalid or known pin must never select HEAD.
     """
     if os.path.exists(name) and not local_dir_shadows_alias(name):
         return None
-    profile = resolve_profile(name)
+    try:
+        profile = resolve_profile(name)
+    except Exception:
+        # Preserve implicit downloads' tolerance of profile lookup failures.
+        # Consult the validated catalog independently before treating the pin
+        # as unknown; never discard a known pin along with optional metadata.
+        profiles = _load()
+        repo = resolve_hub_model(name)
+        canonical = _alias_for_hf_path(repo)
+        profile = profiles[canonical] if canonical is not None else None
     return profile.revision if profile is not None else None
 
 

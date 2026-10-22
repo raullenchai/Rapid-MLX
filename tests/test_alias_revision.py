@@ -497,3 +497,44 @@ def test_cached_file_resolves_pinned_alias(monkeypatch, pinned_name):
         "/snapshot/config.json"
     )
     cached.assert_called_once_with(REPO, "config.json", revision=PIN)
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [(ALIAS, PIN), (REPO, PIN), (UNPINNED, None), ("owner/model", None)],
+)
+def test_profile_lookup_failure_preserves_catalog_revision(monkeypatch, name, expected):
+    def broken_profile(_name):
+        raise RuntimeError("bad catalog")
+
+    monkeypatch.setattr(aliases, "resolve_profile", broken_profile)
+    assert aliases.resolve_revision(name) == expected
+
+
+@pytest.mark.parametrize("method", ["snapshot_download", "hf_hub_download"])
+def test_profile_lookup_failure_does_not_unpin_download(monkeypatch, method):
+    import huggingface_hub
+
+    def broken_profile(_name):
+        raise RuntimeError("bad catalog")
+
+    download = Mock(return_value="/snapshot")
+    monkeypatch.setattr(aliases, "resolve_profile", broken_profile)
+    monkeypatch.setattr(huggingface_hub, method, download)
+    rest = () if method == "snapshot_download" else ("config.json",)
+    getattr(model_downloads, method)(ALIAS, *rest)
+    assert download.call_args.args == (REPO, *rest)
+    assert download.call_args.kwargs["revision"] == PIN
+    download.reset_mock()
+    with pytest.raises(ValueError, match="conflicting revision"):
+        getattr(model_downloads, method)(ALIAS, *rest, revision=OTHER)
+    download.assert_not_called()
+
+
+def test_revision_lookup_does_not_swallow_registry_validation_failure(monkeypatch):
+    def invalid_registry():
+        raise ValueError("revision must be a full commit")
+
+    monkeypatch.setattr(aliases, "_load", invalid_registry)
+    with pytest.raises(ValueError, match="revision must"):
+        aliases.resolve_revision("owner/model")

@@ -426,6 +426,7 @@ def _install_submit_flow_stubs(monkeypatch, cli, *, alias: str, hf_path: str):
     class _Profile:
         def __init__(self, hf_path):
             self.hf_path = hf_path
+            self.revision = None
 
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_profile",

@@ -153,6 +153,7 @@ def test_flint_alias_contract():
     alias = json.loads((root / "aliases.json").read_text())["flint-40b-a2.5b-4bit"]
     assert alias == dict(
         hf_path="RecursiveSI/flint-int4",
+        revision="3b93f9053b530488405ae9fca51d4900d6ce21f0",
         tool_call_parser="glm47",
         reasoning_parser="qwen3",
         is_moe=True,

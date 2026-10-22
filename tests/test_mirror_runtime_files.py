@@ -442,7 +442,7 @@ def test_audit_uses_supplied_catalog_pin_instead_of_head(monkeypatch, tmp_path):
 def test_uploader_defaults_to_catalog_and_rejects_conflict(
     monkeypatch, tmp_path, explicit
 ):
-    monkeypatch.setattr(runtime, "catalog_revision", lambda _: PIN)
+    monkeypatch.setattr(mirror.mirror_runtime_files, "catalog_revision", lambda _: PIN)
     listed = []
     monkeypatch.setattr(mirror, "_r2_client", lambda *a: object())
     monkeypatch.setattr(
@@ -504,6 +504,8 @@ def test_audit_rejects_a_catalog_runtime_pin_conflict(monkeypatch, tmp_path):
     audio.write_text("{}")
     monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
     monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
-    monkeypatch.setattr(runtime, "pinned_revision", lambda repo, **kw: "b" * 40)
+    monkeypatch.setattr(
+        drift.mirror_runtime_files, "pinned_revision", lambda repo, **kw: "b" * 40
+    )
     with pytest.raises(ValueError, match="conflicts with runtime pin"):
         drift.audit(main, audio, unmirrored_path=None)
