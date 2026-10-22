@@ -1369,7 +1369,40 @@ class TestLaunchCommand:
         assert _cline_settings(data)["model"] == "qwen3.5-4b-4bit"
         out = capsys.readouterr().out
         assert "Patched cline" in out
-        assert "Now ready" in out
+        assert "Configured: cline." in out
+        assert "Now ready" not in out
+
+    @pytest.mark.parametrize("client", ["cline", "continue-dev"])
+    @pytest.mark.parametrize("start_server", [False, True])
+    def test_legacy_configuration_does_not_claim_readiness(
+        self, fake_home, capsys, client, start_server
+    ):
+        _install_cline(fake_home)
+        (fake_home / ".continue").mkdir()
+        with patch.object(
+            launch_cli, "_start_server_background", return_value=99999
+        ) as start:
+            launch_cli.launch_command(
+                _make_args(
+                    client=client,
+                    model="qwen3.5-4b-4bit",
+                    server_url="http://127.0.0.1:18409",
+                    port=18409,
+                    start_server=start_server,
+                )
+            )
+        out = capsys.readouterr().out
+        assert f"Configured: {client}. No client was opened." in out
+        assert "Now ready" not in out
+        assert "then open the client" in out
+        assert "configured endpoint" in out
+        if start_server:
+            start.assert_called_once()
+            assert "Wait for the server to finish loading" in out
+            assert "No server was started" not in out
+        else:
+            start.assert_not_called()
+            assert "No server was started. Start Rapid-MLX" in out
 
     def test_not_detected_client_fails_with_hint(self, fake_home, capsys):
         # cline is NOT detected (no CLI, data dir or extension). The command

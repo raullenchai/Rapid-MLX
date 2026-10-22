@@ -690,11 +690,17 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"  PID file: {PID_FILE}")
 
     if succeeded:
-        print(
-            "\nNow ready: open "
-            + " / ".join(succeeded)
-            + " and it'll route through rapid-mlx."
-        )
+        print("\nConfigured: " + " / ".join(succeeded) + ". No client was opened.")
+        if args.start_server:
+            print(
+                "Wait for the server to finish loading and confirm it is reachable "
+                "at the configured endpoint, then open the client."
+            )
+        else:
+            print(
+                "No server was started. Start Rapid-MLX at the configured endpoint "
+                "(or confirm an existing server is ready), then open the client."
+            )
     if failures:
         sys.exit(1)
 
