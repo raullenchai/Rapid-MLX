@@ -45,6 +45,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .. import _mlx_compat
+from ..quantized_sink_attention import quantized_sink_attention
 
 _mlx_compat.install()
 
@@ -56,6 +57,8 @@ from mlx_lm.models.base import (  # noqa: E402
 )
 from mlx_lm.models.cache import KVCache, RotatingKVCache  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
+
+from ..quantized_sink_cache import SinkQuantizableKVCache  # noqa: E402
 
 
 @dataclass
@@ -105,6 +108,9 @@ class ModelArgs(BaseModelArgs):
 
 
 class Attention(nn.Module):
+    supports_quantized_kv_sinks = True
+    quantized_kv_sink_bits = (8,)
+
     def __init__(self, args: ModelArgs, layer_idx: int):
         super().__init__()
         dim = args.hidden_size
@@ -153,15 +159,27 @@ class Attention(nn.Module):
         if cache is not None:
             keys, values = cache.update_and_fetch(keys, values)
 
-        output = scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            cache=cache,
-            scale=self.scale,
-            mask=mask,
-            sinks=self.softmax_offset,
-        )
+        if cache is not None and hasattr(cache, "bits"):
+            output = quantized_sink_attention(
+                queries,
+                keys,
+                values,
+                scale=self.scale,
+                mask=mask,
+                sinks=self.softmax_offset,
+                group_size=cache.group_size,
+                bits=cache.bits,
+            )
+        else:
+            output = scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                cache=cache,
+                scale=self.scale,
+                mask=mask,
+                sinks=self.softmax_offset,
+            )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
         return cast(mx.array, self.o_proj(output))
 
@@ -287,6 +305,8 @@ class FlintModel(nn.Module):
 
 
 class Model(nn.Module):
+    quantized_kv_cache_type = SinkQuantizableKVCache
+
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args

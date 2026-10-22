@@ -673,7 +673,7 @@ def _install_batched_mask_safe_quantized_sdpa() -> None:
 
 
 def install_quantized_batch_cache(
-    batch_gen: Any, group_size: int = 64, bits: int = 8
+    batch_gen: Any, group_size: int = 64, bits: int = 8, cache_type=None
 ) -> bool:
     """Wire ``batch_gen``'s continuous batching to a quantized live KV cache.
 
@@ -683,6 +683,9 @@ def install_quantized_batch_cache(
     :class:`_QuantizableKVCache` (whose ``merge`` yields a
     :class:`QuantizedBatchKVCache`) is therefore a single, minimal instance-level
     hook — no mlx-lm internals are patched.
+
+    ``cache_type`` optionally selects a model-qualified single-sequence cache
+    whose merge preserves packed prefix state. The default is unchanged.
 
     Only exact top-level ``KVCache`` layers are swapped. This deliberately
     supports hybrid per-layer layouts: full-attention layers use packed KV while
@@ -719,9 +722,11 @@ def install_quantized_batch_cache(
 
     plain_kv_types, _ = supported_kv_cache_types()
 
+    cache_type = cache_type or _QuantizableKVCache
+
     def _quantized_make_new_cache():
         return [
-            _QuantizableKVCache(group_size, bits) if type(c) in plain_kv_types else c
+            cache_type(group_size, bits) if type(c) in plain_kv_types else c
             for c in orig_make_new_cache()
         ]
 
@@ -898,7 +903,9 @@ def resolve_kv_quantization(
     return gs, False
 
 
-def normalize_caches_for_quantization(caches: list, group_size: int, bits: int) -> list:
+def normalize_caches_for_quantization(
+    caches: list, group_size: int, bits: int, cache_type=None
+) -> list:
     """Convert plain ``KVCache`` layers into :class:`_QuantizableKVCache`.
 
     A prefix-cache HIT hands mlx-lm a restored ``KVCache`` list; without this it
@@ -914,10 +921,11 @@ def normalize_caches_for_quantization(caches: list, group_size: int, bits: int) 
     """
     plain_kv_types, _ = supported_kv_cache_types()
 
+    cache_type = cache_type or _QuantizableKVCache
     out = []
     for c in caches:
         if type(c) in plain_kv_types:
-            q = _QuantizableKVCache(group_size, bits)
+            q = cache_type(group_size, bits)
             q.keys, q.values, q.offset = c.keys, c.values, c.offset
             out.append(q)
         else:

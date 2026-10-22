@@ -764,6 +764,10 @@ class SchedulerConfig:
     # last chunk before a grid position can still be shorter.
     decode_stall_min_chunk_size: int = 64
 
+    # Original operator dtype, before profiles override the effective dtype.
+    # Loaded sink-capability checks must still reject an explicit int4 request.
+    kv_cache_dtype_requested: str | None = None
+
     def __post_init__(self) -> None:
         if (
             isinstance(self.shared_prefix_wait_tokens, bool)
@@ -5137,7 +5141,9 @@ class Scheduler:
         recurrent_layers: int = 0
 
     @staticmethod
-    def _quantized_attention_incompatibility(model) -> str | None:
+    def _quantized_attention_incompatibility(
+        model, bits: int = 8, explicit: bool = True
+    ) -> str | None:
         """Return a structural attention feature unsupported by fused QSDPA."""
         layer_owners = [
             model,
@@ -5160,6 +5166,14 @@ class Scheduler:
                     or getattr(attention, "attn_sink", None) is not None
                     or getattr(attention, "softmax_offset", None) is not None
                 ):
+                    if getattr(attention, "supports_quantized_kv_sinks", False):
+                        if bits not in attention.quantized_kv_sink_bits:
+                            return "attention sinks support only int8 KV cache"
+                        if not explicit:
+                            return (
+                                "attention sinks require explicit --kv-cache-dtype int8"
+                            )
+                        continue
                     return (
                         "attention sinks require a fused quantized-attention "
                         "kernel that is unavailable in this MLX runtime"
@@ -5168,7 +5182,7 @@ class Scheduler:
 
     @classmethod
     def _quantized_live_cache_probe(
-        cls, model
+        cls, model, bits: int = 8, explicit: bool = True
     ) -> tuple[str | None, "Scheduler._QuantizedLiveCacheLayout | None"]:
         """Probe incompatibility and layout from one cache construction (#78).
 
@@ -5189,7 +5203,9 @@ class Scheduler:
             return cls._KV_CACHE_UNPROBEABLE, None
         if not caches:
             return cls._KV_CACHE_UNPROBEABLE, None
-        attention_reason = cls._quantized_attention_incompatibility(model)
+        attention_reason = cls._quantized_attention_incompatibility(
+            model, bits, explicit
+        )
         if attention_reason is not None:
             return attention_reason, None
         from .quantized_batch_cache import (
@@ -5299,18 +5315,32 @@ class Scheduler:
             return
 
         incompatible_cache, self._kv_quant_layout = self._quantized_live_cache_probe(
-            model
+            model,
+            bits=self.config.kv_cache_quantization_bits,
+            explicit=getattr(self.config, "kv_cache_dtype_explicit", False),
         )
+        requested = getattr(self.config, "kv_cache_dtype_requested", None)
+        if requested == "int4" and getattr(
+            self.config, "kv_cache_dtype_explicit", False
+        ):
+            incompatible_cache = (
+                self._quantized_attention_incompatibility(model, bits=4)
+                or incompatible_cache
+            )
         if incompatible_cache is not None:
             unprobeable = incompatible_cache == self._KV_CACHE_UNPROBEABLE
-            if getattr(self.config, "kv_cache_dtype_explicit", False):
+            if getattr(self.config, "kv_cache_dtype_explicit", False) or (
+                incompatible_cache
+                == "attention sinks require explicit --kv-cache-dtype int8"
+            ):
                 # Fail closed (#78): an explicit quantized request must not
                 # report ready and gamble on the first request — neither on
                 # a known-incompatible layout nor on an unverifiable one.
                 from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
 
                 raise KVCacheQuantizationUnsupportedError(
-                    requested=getattr(self.config, "kv_cache_dtype", "int8"),
+                    requested=requested
+                    or getattr(self.config, "kv_cache_dtype", "int8"),
                     model_name=getattr(self.config, "model_name", None)
                     or type(model).__name__,
                     family_reason=(
@@ -5452,7 +5482,12 @@ class Scheduler:
 
             bits = getattr(self.config, "kv_cache_quantization_bits", 8)
             eff_gs = getattr(self, "_kv_quant_group_size", 64)
-            if install_quantized_batch_cache(bg, group_size=eff_gs, bits=bits):
+            if install_quantized_batch_cache(
+                bg,
+                group_size=eff_gs,
+                bits=bits,
+                cache_type=getattr(self.model, "quantized_kv_cache_type", None),
+            ):
                 # Remember the effective params so prefix-cache HITS get
                 # normalized to the same quantized type as MISSES (#1197).
                 self._live_kv_quant = (eff_gs, bits)
@@ -6678,7 +6713,11 @@ class Scheduler:
                         QuantizedBatchKVCache as _QuantizedBatchKVCache,
                     )
 
-                    if cache_cls is _QuantizedBatchKVCache:
+                    from .quantized_sink_cache import SinkQuantizedBatchKVCache
+
+                    if cache_cls is SinkQuantizedBatchKVCache:
+                        cache = cache_cls.from_state(state, meta_state).extract(0)
+                    elif cache_cls is _QuantizedBatchKVCache:
                         # state = (k_triple, v_triple, offset, left_padding).
                         # Mid-prefill save is always batch_size=1, so dequantize
                         # the quantized triples to a plain bf16 KVCache (#1197).
@@ -10320,7 +10359,10 @@ class Scheduler:
                 )
 
                 cache_to_use = normalize_caches_for_quantization(
-                    cache_to_use, _lq[0], _lq[1]
+                    cache_to_use,
+                    _lq[0],
+                    _lq[1],
+                    cache_type=getattr(self.model, "quantized_kv_cache_type", None),
                 )
 
             # Insert into BatchGenerator with optional cache.

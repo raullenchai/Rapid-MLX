@@ -35,8 +35,11 @@ It uses dense and sparse expert layers, sliding-window 513 + full no-RoPE
 layers, learned attention sinks, and an 8-bit embedding, BF16 routers, and 4-bit
 attention/expert/output projections.
 48 GB unified memory is recommended (weights: 22.6 GB); it runs on 36 GB,
-but concurrent ~8k prefills are admitted one at a time. KV cache stays bf16:
-quantized KV is refused because the quantized attention path does not support sinks.
+but concurrent ~8k prefills with the default cache are admitted one at a time.
+KV cache defaults to bf16. Explicit `--kv-cache-dtype int8` quantizes the 14
+full-attention layers with sink-aware attention; the 35 bounded sliding-window
+layers remain bf16. int4 KV and TurboQuant remain unsupported.
+<!-- A/B numbers pending -->
 Speculative decoding and MTP are not enabled for this alias.
 
 Measured single-stream on M5 Max 36 GB (mlx 0.32.4, mlx-lm 0.31.3, greedy, 256 output tokens, streaming, defaults): ~1k TTFT 0.35–0.38 s / 131 tok/s / 23.6 GiB peak; ~8k TTFT 2.17–2.18 s / 118.5 tok/s / 24.9 GiB peak. See the [release notes](../release-notes/unreleased.md#highlights) for the server command and concurrency results.

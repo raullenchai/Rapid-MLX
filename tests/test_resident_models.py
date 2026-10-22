@@ -34,6 +34,7 @@ def test_resident_performance_maps_to_the_scheduler_contract():
         "kv_cache_dtype": "int4",
         "kv_cache_quantization": True,
         "kv_cache_quantization_bits": 4,
+        "kv_cache_dtype_explicit": True,
         "enable_prefix_cache": False,
         "cache_memory_mb": 4096,
     }

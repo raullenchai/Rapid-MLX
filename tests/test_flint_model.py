@@ -317,16 +317,19 @@ def test_sink_quantized_kv_admission_before_ready(dtype, explicit):
         kv_cache_quantization_group_size=64,
         model_name="tiny-flint",
     )
-    model = tiny_model()
-    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
-    if explicit:
+    model = tiny_model(head_dim=64)
+    assert Scheduler._quantized_attention_incompatibility(model) is None
+    if (explicit and dtype == "int4") or (not explicit and dtype == "int8"):
         with pytest.raises(
             KVCacheQuantizationUnsupportedError, match="attention sinks"
         ):
             scheduler._init_kv_quantization(model)
     else:
         scheduler._init_kv_quantization(model)
-        assert scheduler._kv_quant_live_disabled
+        assert scheduler._kv_quant_live_disabled == (not explicit)
+        if explicit:
+            assert scheduler._kv_quant_layout.quantizable_layers == 2
+            assert scheduler._kv_quant_layout.rotating_layers == 2
 
 
 def test_registration_always_overrides_native(monkeypatch):

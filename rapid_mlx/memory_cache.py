@@ -114,8 +114,10 @@ def _vendored_cache_registry() -> dict[str, type]:
         PoolingCache,
     )
     from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache, Qwen4ExpStateCache
+    from rapid_mlx.quantized_sink_cache import SinkQuantizedKVCache
 
     classes = (
+        SinkQuantizedKVCache,
         PoolingCache,
         BatchPoolingCache,
         DeepseekV4PoolingCache,
@@ -201,6 +203,7 @@ def _vendored_cache_class_names(cache: list[Any]) -> set[str]:
         if type(item).__module__ in {
             "rapid_mlx.models.deepseek_v4_cache",
             "rapid_mlx.models.qwen4_exp_cache",
+            "rapid_mlx.quantized_sink_cache",
         }:
             found.add(type(item).__name__)
         pending.extend(getattr(item, "caches", ()))
@@ -1010,7 +1013,10 @@ def _cache_classes_compatible(
         # Always compatible.
         return True, ""
     for cn in class_names:
-        if cn == "QuantizedKVCache" and not config.kv_quantize:
+        if (
+            cn in {"QuantizedKVCache", "SinkQuantizedKVCache"}
+            and not config.kv_quantize
+        ):
             return (
                 False,
                 f"persisted {cn} requires --kv-cache-quantization "
@@ -1740,7 +1746,7 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any] | None:
             trimmed.append(layer_cache)
             continue
         if QuantizedKVCache is not None and isinstance(layer_cache, QuantizedKVCache):
-            tc = QuantizedKVCache.__new__(QuantizedKVCache)
+            tc = type(layer_cache).__new__(type(layer_cache))
             tc.keys = layer_cache.keys
             tc.values = layer_cache.values
             tc.offset = max(layer_cache.offset - trim_by, 0)
@@ -2138,7 +2144,7 @@ def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> li
 
 
 def _dequantize_cache(cache: list[Any]) -> list[Any]:
-    """Dequantize QuantizedKVCache layers back to regular KVCache."""
+    """Restore dense caches, retaining explicitly lossless packed cache types."""
     import mlx.core as mx
     from mlx_lm.models.cache import KVCache, QuantizedKVCache
 
@@ -2147,7 +2153,9 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
         if layer is None:
             result.append(layer)
             continue
-        if isinstance(layer, QuantizedKVCache) and layer.keys is not None:
+        if getattr(layer, "preserve_quantized", False):
+            result.append(layer)
+        elif isinstance(layer, QuantizedKVCache) and layer.keys is not None:
             kv = KVCache()
             kv.keys = mx.dequantize(
                 *layer.keys, group_size=layer.group_size, bits=layer.bits
@@ -2372,7 +2380,34 @@ class MemoryAwarePrefixCache:
         tokens_key = tuple(tokens)
 
         with self._lock:
-            return self._fetch_locked(tokens, tokens_key)
+            cache, remaining = self._fetch_locked(tokens, tokens_key)
+            if cache is not None and not self._packed_geometry_compatible(cache):
+                self._stats.hits -= 1
+                self._stats.tokens_saved -= len(tokens) - len(remaining)
+                self._stats.misses += 1
+                self._last_match_type = "miss"
+                return None, tokens
+            return cache, remaining
+
+    def _packed_geometry_compatible(self, cache: list[Any]) -> bool:
+        """Packed sink prefixes must match cold-prefill quantization exactly."""
+        for layer in cache:
+            if not getattr(layer, "preserve_quantized", False):
+                continue
+            from .quantized_batch_cache import supported_group_size
+
+            # Infer dense head dimensions without unpacking or requantizing.
+            group_size = self._config.kv_group_size
+            for triple in (layer.keys, layer.values):
+                if triple is not None:
+                    head_dim = triple[1].shape[-1] * layer.group_size
+                    group_size = supported_group_size(head_dim, group_size or 0)
+            if not self._config.kv_quantize or (layer.group_size, layer.bits) != (
+                group_size,
+                self._config.kv_bits,
+            ):
+                return False
+        return True
 
     def shared_prefix_length(self, tokens: list[int]) -> int:
         """Most leading tokens ``tokens`` shares with any stored entry.
@@ -3566,10 +3601,8 @@ class MemoryAwarePrefixCache:
             entry_path, tokens_path = _entry_paths(i)
             entry_t0 = _time.monotonic()
             try:
-                # Dequantize QuantizedKVCache layers before saving.
-                # save_prompt_cache requires .state and .meta_state which
-                # the wrapper does not provide; dequantizing restores the
-                # original cache types that do.
+                # Preserve explicitly lossless packed state; other quantized
+                # layers retain the existing dense persistence representation.
                 from mlx_lm.models.cache import QuantizedKVCache
 
                 persist_cache = (
@@ -4494,6 +4527,9 @@ class MemoryAwarePrefixCache:
 
                 # Load KV cache (header completeness already validated above).
                 cache = _load_prompt_cache_compat(entry_path)
+                if not self._packed_geometry_compatible(cache):
+                    incompatible_skipped += 1
+                    continue
 
                 # Invariant: a well-formed entry has cache.offset == len(tokens).
                 # Any deviation means BUG A poisoning slipped through earlier

@@ -291,6 +291,7 @@ def resident_scheduler_kwargs(
             kv_cache_dtype=performance.kv_cache_dtype,
             kv_cache_quantization=quantized,
             kv_cache_quantization_bits=bits,
+            kv_cache_dtype_explicit=True,
         )
     if performance.kv_cache_turboquant is not None:
         result.update(

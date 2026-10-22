@@ -7622,6 +7622,9 @@ def serve_command(args):
         # Lane-level gates (MLLM engine, live-cache probe) hard-fail
         # explicit requests they cannot honor (#78).
         kv_cache_dtype_explicit=_kv_quant_explicit,
+        kv_cache_dtype_requested=kv_cache_decision.requested
+        if kv_cache_decision is not None
+        else None,
         # TurboQuant compression (R15 Phase 4: mode-aware). Shared
         # helper (#969) — ``python -m rapid_mlx.server`` calls the same
         # ``turboquant_scheduler_kwargs`` so both entrypoints stay in

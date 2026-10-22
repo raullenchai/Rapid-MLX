@@ -615,6 +615,7 @@ jobs:
             tests/test_muse_glimmer_model.py \
             tests/test_g9v3_model.py \
             tests/test_flint_model.py \
+            tests/test_quantized_sink_attention.py \
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_nemotron_h_puzzle_vendored.py \

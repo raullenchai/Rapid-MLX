@@ -218,6 +218,7 @@ def _supports_hybrid_partial_quantization(
     before the server reports ready.
     """
     if not isinstance(hf_config, dict) or hf_config.get("model_type") not in {
+        "flint",
         "gemma4",
         "gemma4_assistant",
         "gemma4_unified",
@@ -383,7 +384,12 @@ def resolve_kv_cache_dtype(
     # ``--kv-cache-dtype int4`` should yield int8. (Setting the dtype
     # flag to bf16 alongside --reasoning would be silently overridden;
     # we log "reasoning profile" so the operator sees what happened.)
-    if reasoning:
+    # Sink-cache qualification stays operator opt-in even under a profile.
+    # If preflight cannot identify the model, retain ``requested`` in the
+    # decision so the loaded-model sink gate can reconcile the original intent.
+    if reasoning and not any(
+        cfg.get("model_type") == "flint" for cfg in _candidate_configs(hf_config)
+    ):
         if requested == REASONING_KV_CACHE_DTYPE:
             reason = (
                 f"reasoning profile (--reasoning) pins to "
@@ -416,6 +422,11 @@ def resolve_kv_cache_dtype(
             hf_config=hf_config,
             alias_metadata=alias_metadata,
         )
+        if any(
+            cfg.get("model_type") == "flint" for cfg in _candidate_configs(hf_config)
+        ):
+            if requested != "int8" or not explicit:
+                family_reason = "Flint supports quantized KV only with explicit --kv-cache-dtype int8"
         if family_reason is not None:
             if explicit:
                 raise KVCacheQuantizationUnsupportedError(

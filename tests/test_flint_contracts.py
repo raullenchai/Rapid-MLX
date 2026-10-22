@@ -133,18 +133,37 @@ def test_flint_template_replays_string_arguments_and_reasoning():
     assert not rendered.endswith("<think>")
 
 
-@pytest.mark.parametrize("dtype", ["int4", "int8"])
-def test_flint_config_kv_policy(dtype):
+@pytest.mark.parametrize("dtype", ["bf16", "int4", "int8"])
+@pytest.mark.parametrize("reasoning", [False, True])
+def test_flint_config_kv_policy(dtype, reasoning):
     config = {
         "model_type": "flint",
         "sliding_window": 513,
         "layer_types": ["full_attention", "sliding_attention"],
     }
-    with pytest.raises(KVCacheQuantizationUnsupportedError):
-        resolve_kv_cache_dtype(
-            dtype, explicit=True, model_name="flint", hf_config=config
+    if dtype == "int4":
+        with pytest.raises(KVCacheQuantizationUnsupportedError):
+            resolve_kv_cache_dtype(
+                dtype,
+                reasoning=reasoning,
+                explicit=True,
+                model_name="flint",
+                hf_config=config,
+            )
+    elif dtype == "int8":
+        assert (
+            resolve_kv_cache_dtype(
+                dtype,
+                reasoning=reasoning,
+                explicit=True,
+                model_name="flint",
+                hf_config=config,
+            ).dtype
+            == "int8"
         )
-    decision = resolve_kv_cache_dtype(dtype, model_name="flint", hf_config=config)
+    decision = resolve_kv_cache_dtype(
+        dtype, reasoning=reasoning, model_name="flint", hf_config=config
+    )
     assert decision.dtype == "bf16"
 
 
