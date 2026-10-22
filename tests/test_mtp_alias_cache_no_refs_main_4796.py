@@ -49,7 +49,7 @@ def test_main_ref_remains_authoritative(cache):
     path = _snapshot(cache)
     _snapshot(cache, SHA_B, {"model_type": "other"})
     _main(cache)
-    assert cli._resolve_cached_hf_config(REPO, SHA_B) == (str(path), None)
+    assert cli._resolve_cached_hf_config(REPO, None) == (str(path), None)
     assert cli._gather_kv_cache_dtype_inputs(ALIAS)[0] == CONFIG
 
 
@@ -58,7 +58,7 @@ def test_missing_main_config_does_not_mask_with_other_snapshot(cache):
     _snapshot(cache, SHA_B)
     _main(cache)
     assert cli._gather_kv_cache_dtype_inputs(ALIAS)[0] is None
-    assert cli._resolve_cached_hf_config(REPO, SHA_B) == (
+    assert cli._resolve_cached_hf_config(REPO, None) == (
         None,
         f"local cache for {REPO} has no config.json at refs/main",
     )

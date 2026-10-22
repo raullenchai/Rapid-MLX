@@ -1578,6 +1578,7 @@ def test_alias_profile_str_fields_are_explicitly_listed():
     ALLOWED_STR_FIELDS: frozenset[str] = frozenset(
         {
             "hf_path",  # HF repo path, open-ended URL-like string
+            "revision",  # Immutable checkpoint identity, not a routing switch.
             # In-repo directory holding this alias's checkpoint, for
             # publishers who ship one folder per quantization in a single
             # repo (LiquidAI/LFM2.5-2.6B-MLX). NOT a routing switch: it

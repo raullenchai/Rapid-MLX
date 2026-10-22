@@ -114,6 +114,7 @@ class AliasSpec:
     hf_path: str
     subfolder: str | None
     source: str
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -565,6 +566,13 @@ def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
             repo_id = profile.get(key)
             if not isinstance(repo_id, str) or not _valid_repo_id(repo_id):
                 continue
+            revision = profile.get("revision")
+            if revision is not None and (
+                not isinstance(revision, str)
+                or len(revision) != 40
+                or any(c not in "0123456789abcdef" for c in revision)
+            ):
+                raise ValueError(f"alias {alias!r}: invalid revision")
             subfolder = profile.get("subfolder")
             specs.append(
                 AliasSpec(
@@ -572,8 +580,14 @@ def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
                     hf_path=repo_id,
                     subfolder=subfolder if isinstance(subfolder, str) else None,
                     source=source,
+                    revision=revision,
                 )
             )
+    by_repo: dict[str, set[str | None]] = {}
+    for spec in specs:
+        by_repo.setdefault(spec.hf_path.lower(), set()).add(spec.revision)
+    if any(len(revisions) > 1 for revisions in by_repo.values()):
+        raise ValueError("aliases sharing a repo declare different revisions")
     return specs
 
 
@@ -1066,9 +1080,23 @@ def audit(
     pinned_revisions = {
         repo_id: revision
         for repo_id in unique_repos
-        if (revision := mirror_runtime_files.pinned_revision(repo_id)) is not None
+        if (
+            revision := mirror_runtime_files.pinned_revision(
+                repo_id, include_catalog=False
+            )
+        )
+        is not None
     }
     pinned_revisions.update({repo_id: pin[0] for repo_id, pin in runtime_pins.items()})
+    # Generic pins come from the supplied catalog, including alternate fixtures.
+    for spec in selected:
+        if spec.revision is not None:
+            runtime_revision = pinned_revisions.get(spec.hf_path)
+            if runtime_revision is not None and runtime_revision != spec.revision:
+                raise ValueError(
+                    f"catalog revision conflicts with runtime pin for {spec.hf_path}"
+                )
+            pinned_revisions[spec.hf_path] = spec.revision
     if progress is not None:
         progress.repos_total = len(unique_repos)
         progress.emit("catalog-listed")

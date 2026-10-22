@@ -6,6 +6,10 @@ capability gates. Code that just needs ``alias → hf_path`` calls
 ``resolve_model``; code that needs the full profile (parser, hybrid
 flag, spec-decode gate, …) calls ``resolve_profile``.
 
+Optional ``revision`` is a full lowercase 40-hex checkpoint SHA (null means
+absent). Aliases sharing a case-insensitive repo must agree on it. Parser and
+catalog are bundled together; user alias files persist only string targets.
+
 The legacy short form (``"alias": "hf_path"``) is still accepted for
 backward compatibility with any external tool that hand-edits the file —
 that entry just gets default capability flags.
@@ -162,6 +166,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     _ALLOWED_PROFILE_KEYS = frozenset(
         {
             "hf_path",
+            "revision",  # Immutable artifact identity, never a routing switch.
             # Directory inside ``hf_path`` holding this alias's checkpoint.
             # For publishers who ship every quantization as a sibling
             # folder of ONE repo (LiquidAI/LFM2.5-2.6B-MLX → ``4bit/``,
@@ -474,6 +479,21 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"alias {alias!r}: {key} must be a full lowercase 40-character "
                 "Hub commit SHA"
             )
+    checkpoint_revision = value.get("revision")
+    if checkpoint_revision is not None:
+        if (
+            not isinstance(checkpoint_revision, str)
+            or len(checkpoint_revision) != 40
+            or any(c not in "0123456789abcdef" for c in checkpoint_revision)
+        ):
+            raise ValueError(
+                f"alias {alias!r}: revision must be a full lowercase 40-hex commit SHA"
+            )
+        for target in (dflash_target_revision, tensorfold_target_revision):
+            if target is not None and target != checkpoint_revision:
+                raise ValueError(
+                    f"alias {alias!r}: revision disagrees with target revision"
+                )
     supports_ddtree = _strict_bool("supports_ddtree", False)
     ddtree_draft_model = value.get("ddtree_draft_model")
     if supports_ddtree and not ddtree_draft_model:
@@ -754,6 +774,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
 
     return AliasProfile(
         hf_path=hf_path,
+        revision=checkpoint_revision,
         subfolder=subfolder,
         modality=modality,
         video_modes=video_modes,
@@ -815,6 +836,7 @@ def _load() -> dict[str, AliasProfile]:
         # the registry this check just rejected — failing open exactly once
         # and then silently forever.
         _assert_subfolder_is_unambiguous(parsed)
+        _assert_revision_is_unambiguous(parsed)
         # Build reverse index in JSON-insertion order so the "first alias
         # wins" rule is deterministic.
         index: dict[str, str] = {}
@@ -871,6 +893,18 @@ def _assert_subfolder_is_unambiguous(profiles: dict[str, AliasProfile]) -> None:
             )
 
 
+def _assert_revision_is_unambiguous(profiles: dict[str, AliasProfile]) -> None:
+    """Repo reverse lookup must recover the same pin for every spelling."""
+    by_repo: dict[str, set[str | None]] = {}
+    for profile in profiles.values():
+        by_repo.setdefault(profile.hf_path.lower(), set()).add(profile.revision)
+    for repo, revisions in by_repo.items():
+        if len(revisions) > 1:
+            raise ValueError(
+                f"aliases sharing {repo!r} declare different revision values"
+            )
+
+
 def checkpoint_prefix(name: str) -> str:
     """``"4bit/"`` when ``name``'s checkpoint lives in a repo subfolder.
 
@@ -913,6 +947,17 @@ def resolve_subfolder(name: str) -> str | None:
     """
     profile = resolve_profile(name)
     return profile.subfolder if profile is not None else None
+
+
+def resolve_revision(name: str) -> str | None:
+    """Catalog commit for an alias/repo/user alias; explicit paths stay local.
+
+    Registry validation errors propagate: an invalid pin must never select HEAD.
+    """
+    if os.path.exists(name) and not local_dir_shadows_alias(name):
+        return None
+    profile = resolve_profile(name)
+    return profile.revision if profile is not None else None
 
 
 # Files whose presence makes a directory a model checkpoint the user may mean
@@ -1081,11 +1126,19 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
         name
     ):
         profile = _load().get(target)
+        if profile is None:
+            curated = resolve_profile(target)
+            if curated is not None and curated.revision is not None:
+                profile = curated
         return profile.hf_path if profile is not None else target
     # Preserve the historical resolver hot path exactly unless the external
     # roots are available. In particular, ordinary chat/serve resolution
     # must not introduce a cache/download-gate probe.
-    if not include_external_roots or not external_model_root_paths():
+    if (
+        not include_external_roots
+        or not external_model_root_paths()
+        or resolve_revision(name)
+    ):
         if "/" in name:
             canonical = _alias_for_hf_path(name)
             if canonical is not None:

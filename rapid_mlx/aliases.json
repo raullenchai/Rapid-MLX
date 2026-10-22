@@ -1605,6 +1605,7 @@
     "min_memory_gb": 192
   },
   "flint-40b-a2.5b-4bit": {
+    "revision": "3b93f9053b530488405ae9fca51d4900d6ce21f0",
     "hf_path": "RecursiveSI/flint-int4",
     "tool_call_parser": "glm47",
     "reasoning_parser": "qwen3",

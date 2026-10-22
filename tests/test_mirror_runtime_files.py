@@ -102,7 +102,7 @@ def _audit(monkeypatch, tmp_path, listing, present, runtime_list=LIST, hf_error=
     monkeypatch.setattr(
         drift.mirror_runtime_files,
         "pinned_revision",
-        lambda repo: PIN if repo == REPO else None,
+        lambda repo, **kw: PIN if repo == REPO else None,
     )
     [report] = drift.audit(main, audio, unmirrored_path=None)
     return report, listed_at, probed
@@ -365,3 +365,145 @@ def test_pinned_runtime_list_overrides_an_alias_subfolder(monkeypatch, tmp_path)
     [report] = drift.audit(main, audio, unmirrored_path=None)
     assert report.findings == []
     assert report.checked_files == len(LIST)
+
+
+def test_generic_catalog_pin_is_shared_by_tools():
+    assert (
+        runtime.pinned_revision("RecursiveSI/flint-int4")
+        == "3b93f9053b530488405ae9fca51d4900d6ce21f0"
+    )
+
+
+@pytest.mark.parametrize("revision", ["main", "A" * 40, "abc", 12])
+def test_audit_rejects_invalid_catalog_pin(tmp_path, revision):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"example": {"hf_path": REPO, "revision": revision}}))
+    audio.write_text("{}")
+    with pytest.raises(ValueError, match="invalid revision"):
+        drift._load_aliases(main, audio)
+
+
+@pytest.mark.parametrize("other", [None, "b" * 40])
+def test_audit_rejects_disagreeing_catalog_pins(tmp_path, other):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps(
+            {
+                "one": {"hf_path": REPO, "revision": PIN},
+                "two": {"hf_path": REPO.upper(), "revision": other},
+            }
+        )
+    )
+    audio.write_text("{}")
+    with pytest.raises(ValueError, match="different revisions"):
+        drift._load_aliases(main, audio)
+
+
+def test_audit_uses_supplied_catalog_pin_instead_of_head(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"example": {"hf_path": REPO, "revision": PIN}}))
+    audio.write_text("{}")
+    assert drift._load_aliases(main, audio)[0].revision == PIN
+    listed = []
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "example", "hf_path": REPO, "status": "mirrored"}],
+    )
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift.mirror_runtime_files, "pinned_revision", lambda _, **kw: None
+    )
+    monkeypatch.setattr(
+        drift.mirror_runtime_files, "pinned_runtime_files", lambda _: None
+    )
+    monkeypatch.setattr(
+        drift,
+        "_hf_repo",
+        lambda repo, revision: (
+            listed.append((repo, revision))
+            or drift.HfRepo(revision, [drift.HfFile("config.json", 3, "c" * 64)])
+        ),
+    )
+    monkeypatch.setattr(
+        drift,
+        "_public_probe",
+        lambda *a: drift.MirrorProbe(200, 3, '"' + "c" * 64 + '"', None),
+    )
+    [report] = drift.audit(main, audio, unmirrored_path=None)
+    assert listed == [(REPO, PIN)]
+    assert report.findings == []
+
+
+@pytest.mark.parametrize("explicit", [None, PIN, "b" * 40])
+def test_uploader_defaults_to_catalog_and_rejects_conflict(
+    monkeypatch, tmp_path, explicit
+):
+    monkeypatch.setattr(runtime, "catalog_revision", lambda _: PIN)
+    listed = []
+    monkeypatch.setattr(mirror, "_r2_client", lambda *a: object())
+    monkeypatch.setattr(
+        mirror, "_hf_files", lambda repo, revision: listed.append(revision) or []
+    )
+    if explicit and explicit != PIN:
+        with pytest.raises(ValueError, match="conflicts with catalog pin"):
+            mirror.mirror_repo(REPO, tmp_dir=tmp_path, revision=explicit, dry_run=True)
+        assert listed == []
+    else:
+        mirror.mirror_repo(REPO, tmp_dir=tmp_path, revision=explicit, dry_run=True)
+        assert listed == [PIN]
+
+
+@pytest.mark.parametrize("explicit", [None, PIN])
+def test_uploader_ignores_image_runtime_pin(monkeypatch, tmp_path, explicit):
+    assert runtime.pinned_revision(SDXL_REPO) == IMAGE_MODEL_REVISIONS[SDXL_REPO]
+    assert runtime.catalog_revision(SDXL_REPO) is None
+    assert IMAGE_MODEL_REVISIONS[SDXL_REPO] != PIN
+    listed = []
+    monkeypatch.setattr(mirror, "_r2_client", lambda *a: object())
+    monkeypatch.setattr(mirror, "_hf_files", lambda *args: listed.append(args) or [])
+    assert (
+        mirror.mirror_repo(SDXL_REPO, tmp_dir=tmp_path, revision=explicit, dry_run=True)
+        == 0
+    )
+    assert listed == [(SDXL_REPO,) if explicit is None else (SDXL_REPO, explicit)]
+
+
+@pytest.mark.parametrize("catalog_revision", [None, PIN])
+def test_alternate_audit_catalog_is_authoritative(
+    monkeypatch, tmp_path, catalog_revision
+):
+    repo = "RecursiveSI/flint-int4"
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(
+        json.dumps({"example": {"hf_path": repo, "revision": catalog_revision}})
+    )
+    audio.write_text("{}")
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    listed = []
+    monkeypatch.setattr(
+        drift,
+        "_hf_repo",
+        lambda repo, revision=None: (
+            listed.append(revision) or drift.HfRepo(revision, [])
+        ),
+    )
+    drift.audit(main, audio, unmirrored_path=None)
+    assert listed == [catalog_revision]
+
+
+def test_audit_rejects_a_catalog_runtime_pin_conflict(monkeypatch, tmp_path):
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"example": {"hf_path": REPO, "revision": PIN}}))
+    audio.write_text("{}")
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(runtime, "pinned_revision", lambda repo, **kw: "b" * 40)
+    with pytest.raises(ValueError, match="conflicts with runtime pin"):
+        drift.audit(main, audio, unmirrored_path=None)

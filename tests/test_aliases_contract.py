@@ -47,6 +47,7 @@ from rapid_mlx.tool_parsers import ToolParserManager
 ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
     {
         "hf_path",
+        "revision",  # Immutable checkpoint identity.
         # In-repo directory holding this alias's checkpoint, for
         # publishers who ship every quantization as a sibling folder of
         # ONE repo (LiquidAI/LFM2.5-2.6B-MLX). Applied at load and at

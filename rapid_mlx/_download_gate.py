@@ -531,7 +531,14 @@ def _model_info_with_timeout(repo_id: str, timeout: float):
 
     def _call() -> None:
         try:
-            result["info"] = HfApi().model_info(repo_id, files_metadata=True)
+            from .model_aliases import resolve_revision
+
+            revision = resolve_revision(repo_id)
+            result["info"] = HfApi().model_info(
+                repo_id,
+                files_metadata=True,
+                **({"revision": revision} if revision else {}),
+            )
         except Exception as exc:  # pragma: no cover - defensive
             result["error"] = exc
 
@@ -1131,6 +1138,11 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
+        from .model_aliases import resolve_hub_model, resolve_revision
+
+        revision = resolve_revision(repo_id)
+        if revision is not None:
+            repo_id = resolve_hub_model(repo_id)
         repo_root = os.path.join(
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
@@ -1144,7 +1156,8 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
         # snapshot ``snapshot_download(repo_id)`` will actually use".
         # Without ``refs/main``, we don't know which sha will resolve,
         # so we must re-prompt and let the next run populate refs/.
-        resolved_sha = _resolved_snapshot_sha(
+        # A catalog pin is authoritative even if main selects another snapshot.
+        resolved_sha = revision or _resolved_snapshot_sha(
             repo_root, raise_on_timeout=raise_on_probe_timeout
         )
         if resolved_sha is None:

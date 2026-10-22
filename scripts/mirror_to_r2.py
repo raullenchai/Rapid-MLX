@@ -70,8 +70,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from . import mirror_unmirrored
+    from . import mirror_runtime_files, mirror_unmirrored
 else:
+    import mirror_runtime_files
     import mirror_unmirrored
 
 load_unmirrored = mirror_unmirrored.load_unmirrored
@@ -682,6 +683,13 @@ def mirror_repo(
             flush=True,
         )
 
+    catalog_revision = mirror_runtime_files.catalog_revision(repo_id)
+    if catalog_revision is not None:
+        if revision is not None and revision != catalog_revision:
+            raise ValueError(
+                f"--revision conflicts with catalog pin {catalog_revision}"
+            )
+        revision = catalog_revision
     if revision is not None:
         # Only an immutable commit: a branch or tag could move between the
         # listing and the downloads and publish a mixed set of files.

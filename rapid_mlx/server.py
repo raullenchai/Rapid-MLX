@@ -2005,9 +2005,10 @@ def _prefetch_routing_metadata(model_name: str) -> str:
         call_with_deadline,
         pulled_variant,
     )
-    from .model_aliases import resolve_model, resolve_subfolder
+    from .model_aliases import resolve_model, resolve_revision, resolve_subfolder
 
     repo_id = resolve_model(model_name)
+    catalog_revision = resolve_revision(model_name)
     # External-model roots resolve a Hub-shaped display name to a local path.
     # Preserve that supported in-place load instead of handing the path back to
     # huggingface_hub as though it were a repository identifier.
@@ -2032,6 +2033,7 @@ def _prefetch_routing_metadata(model_name: str) -> str:
             model_info,
             _HF_RESOLVE_TIMEOUT_SECONDS,
             repo_id,
+            **({"revision": catalog_revision} if catalog_revision else {}),
         )
     except Exception as exc:  # noqa: BLE001 - canonical mirror path owns recovery
         # A configured R2/custom mirror can be healthy while Hugging Face is
@@ -2052,7 +2054,7 @@ def _prefetch_routing_metadata(model_name: str) -> str:
     from .telemetry.model_id import note_hub_fetch
 
     note_hub_fetch(repo_id)
-    revision = getattr(info, "sha", None)
+    revision = catalog_revision or getattr(info, "sha", None)
     if not revision:
         raise RuntimeError("HuggingFace metadata did not include a revision")
     try:

@@ -89,7 +89,9 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     )
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_profile",
-        lambda _alias: SimpleNamespace(hf_path="org/gemma-4-test", is_text_only=False),
+        lambda _alias: SimpleNamespace(
+            hf_path="org/gemma-4-test", is_text_only=False, revision=None
+        ),
     )
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_args, **_kwargs: None)

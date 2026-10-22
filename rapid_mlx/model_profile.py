@@ -108,6 +108,8 @@ class ModelProfile:
     """
 
     hf_path: str = ""
+    # Optional immutable checkpoint; lowercase full 40-hex Hub commit SHA.
+    revision: str | None = None
     # Directory INSIDE ``hf_path`` that holds this alias's weights, for
     # publishers who ship every quantization of one model as sibling
     # folders of a single repo instead of one repo per quant. Liquid AI

@@ -50,7 +50,7 @@ branch can leave the alias unchanged but change the weights.
 | Current alias field | Target | Rule |
 | --- | --- | --- |
 | alias key | `ModelAlias.alias` | Stable product name; excluded from identity. |
-| `hf_path`, `subfolder` | registry resolver input | Resolve to component source + immutable revision; do not retain as an alias-owned identity fact. |
+| `hf_path`, `subfolder`, optional `revision` | registry resolver input | Resolve to component source + immutable revision; do not retain as an alias-owned identity fact. |
 | `modality`, `video_modes`, `supports_image_input`, `is_text_only` | `ModelAlias.capabilities` | Normalize explicit product tasks/modes independently from the runtime lane; validate against the resolved pipeline. |
 | tool/reasoning parser, chat template | alias capabilities | Product routing/rendering metadata. |
 | architecture/MoE/hybrid flags | discovered registry metadata | Verify from pinned config; capability gates may reference it but alias text is not authoritative. |
@@ -223,3 +223,9 @@ introduced after Phase 3 before each release advances phases.
   flags;
 - shadow mismatch telemetry is local/redacted and cannot alter routing;
 - fallback and rollback work with a deliberately corrupt/missing registry.
+
+The legacy alias adapter now accepts an optional full lowercase 40-hex commit
+constraint (`revision`). Legacy Python resolution enforces it. The read-only
+atomic shadow remains unresolved and its strict source schema is unchanged;
+Atlas owns revision-aware resolver inputs before that shadow becomes launch
+authoritative. This field does not complete the atomic migration.

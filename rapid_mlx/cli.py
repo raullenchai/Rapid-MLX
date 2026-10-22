@@ -1600,6 +1600,9 @@ def _check_disk_space(
     if os.path.exists(model_name):
         return
 
+    from rapid_mlx.model_aliases import resolve_revision
+
+    revision_override = revision_override or resolve_revision(model_name)
     # Image loaders consume their verified local snapshot directly once every
     # runtime-required file is present.  Check that contract before comparing
     # against the Hub's *current* revision: a repo can advance after the local
@@ -1751,7 +1754,11 @@ def _resolve_cached_hf_config(
         from huggingface_hub.constants import HF_HUB_CACHE
         from huggingface_hub.file_download import repo_folder_name
 
-        cached = try_to_load_from_cache(repo_id=repo_id, filename="config.json")
+        cached = try_to_load_from_cache(
+            repo_id=repo_id,
+            filename="config.json",
+            **({"revision": pinned_revision} if pinned_revision else {}),
+        )
         if isinstance(cached, str) and os.path.isfile(cached):
             return cached, None
         repo_root = os.path.join(
@@ -1759,7 +1766,9 @@ def _resolve_cached_hf_config(
         )
         if not os.path.isdir(repo_root):
             return None, f"{repo_id} is not in the local cache"
-        if os.path.lexists(os.path.join(repo_root, "refs", "main")):
+        if not pinned_revision and os.path.lexists(
+            os.path.join(repo_root, "refs", "main")
+        ):
             return None, f"local cache for {repo_id} has no config.json at refs/main"
         revision = pinned_revision
         if not revision:
@@ -1818,9 +1827,11 @@ def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | 
 
         profile = resolve_profile(model_name)
         if profile is not None:
-            pinned_revision = getattr(
-                profile, "tensorfold_target_revision", None
-            ) or getattr(profile, "dflash_target_revision", None)
+            pinned_revision = (
+                profile.revision
+                or getattr(profile, "tensorfold_target_revision", None)
+                or getattr(profile, "dflash_target_revision", None)
+            )
             alias_meta = {
                 "hf_path": getattr(profile, "hf_path", None),
                 # AliasProfile doesn't have ``sliding_window`` / ``is_mla``
@@ -2167,14 +2178,18 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
         else:
             from huggingface_hub import model_info, try_to_load_from_cache
 
-            from rapid_mlx.model_aliases import checkpoint_prefix
+            from rapid_mlx.model_aliases import checkpoint_prefix, resolve_revision
 
             # One repo, one folder per quantization: the working set is
             # this alias's folder, not the eight-checkpoint repo. Sizing
             # the whole repo made a 1.6 GB model project a 28 GB working
             # set and fire the kernel-panic warning on a 32 GB Mac.
             prefix = checkpoint_prefix(model_name)
-            cached = try_to_load_from_cache(model_name, f"{prefix}config.json")
+            revision = resolve_revision(model_name)
+            revision_kwargs = {"revision": revision} if revision else {}
+            cached = try_to_load_from_cache(
+                model_name, f"{prefix}config.json", **revision_kwargs
+            )
             if isinstance(cached, str) and os.path.exists(cached):
                 # Already-downloaded model: walk the checkpoint directory.
                 snapshot_dir = os.path.dirname(cached)
@@ -2185,7 +2200,7 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
                         except OSError:
                             continue
             else:
-                info = model_info(model_name, files_metadata=True)
+                info = model_info(model_name, files_metadata=True, **revision_kwargs)
                 model_size_bytes = sum(
                     (s.size or 0)
                     for s in (getattr(info, "siblings", None) or [])
@@ -2808,8 +2823,13 @@ def _ensure_model_downloaded(
     # pinned image repo specially and must not let a complete moving ``main``
     # snapshot hide a missing pinned snapshot.
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
+    catalog_revision = resolve_revision(model_name)
+    if catalog_revision is not None:
+        model_name = resolve_hub_model(model_name)
     pinned_image_revision = IMAGE_MODEL_REVISIONS.get(model_name)
+    pinned_revision = catalog_revision or pinned_image_revision
     # Reuse the cache inventory's single runnability probe core
     # (``_cache_runnability``, the same source ``models --cached`` uses) so
     # what counts as "already cached" is identical everywhere and spans every
@@ -2870,7 +2890,11 @@ def _ensure_model_downloaded(
         # HF cache filesystem. Clear the spinner first on that fatal path so
         # the abort message and the shell prompt after it land on clean lines.
         try:
-            _check_disk_space(model_name, force=force_disk_check)
+            _check_disk_space(
+                model_name,
+                force=force_disk_check,
+                **({"revision_override": catalog_revision} if catalog_revision else {}),
+            )
         except SystemExit:
             spinner.stop()
             raise
@@ -2885,7 +2909,7 @@ def _ensure_model_downloaded(
                 model_name,
                 on_pull_start=spinner.stop,
                 out=mirror_out,
-                revision=pinned_image_revision,
+                revision=pinned_revision,
             )
         except Exception as exc:
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
@@ -2947,8 +2971,8 @@ def _ensure_model_downloaded(
         resolved_sha: str | None = None
         try:
             metadata_kwargs: dict[str, object] = {"files_metadata": True}
-            if pinned_image_revision is not None:
-                metadata_kwargs["revision"] = pinned_image_revision
+            if pinned_revision is not None:
+                metadata_kwargs["revision"] = pinned_revision
             info = _retry_hub_download(
                 lambda: call_with_deadline(
                     model_info,
@@ -3010,7 +3034,7 @@ def _ensure_model_downloaded(
                 f"fetching {model_name} from HuggingFace ..."
             )
 
-        download_revision = pinned_image_revision or resolved_sha
+        download_revision = pinned_revision or resolved_sha
         before = _model_pull_blob_identifier(model_name)
         download_kwargs: dict[str, object] = {"revision": download_revision}
         if allow_patterns:
@@ -3019,7 +3043,7 @@ def _ensure_model_downloaded(
             lambda: snapshot_download(model_name, **download_kwargs), model_name
         )
         after = _model_pull_blob_identifier(model_name)
-        if download_revision:
+        if download_revision and catalog_revision is None:
             pin_main_ref(model_name, download_revision)
         transferred = mirror_out.get("network_fetch") is True or (
             before is not None
@@ -9452,12 +9476,15 @@ def _cache_runnability(repo: str) -> bool | None:
             is_repo_cached,
         )
         from rapid_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.model_aliases import resolve_revision
         from rapid_mlx.model_metadata import (
             resolve_offline_cached_snapshot,
             resolve_unreferenced_cached_snapshot,
         )
         from rapid_mlx.video.wan import WAN_REVISIONS
 
+        if resolve_revision(repo) is not None:
+            return is_repo_cached(repo)
         audio_entry = resolve_audio_alias(repo)
         if audio_entry is not None and audio_entry.family in ("whisper", "kokoro"):
             # Audio repos don't share the text ``model*.safetensors`` layout;
@@ -9828,7 +9855,9 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
         HF_HUB_CACHE,
         f"models--{repo_id.replace('/', '--')}",
     )
-    sha = _resolved_snapshot_sha(repo_root)
+    from rapid_mlx.model_aliases import resolve_revision
+
+    sha = resolve_revision(repo_id) or _resolved_snapshot_sha(repo_root)
     if sha is not None:
         snapshot = os.path.join(repo_root, "snapshots", sha)
         checkpoint = os.path.join(snapshot, *subfolder.split("/"))
@@ -9968,6 +9997,7 @@ def _available_models_json_payload() -> dict:
         return {
             "alias": alias,
             "hf_path": p.hf_path,
+            **({"revision": p.revision} if p.revision is not None else {}),
             "size_bytes": int(raw) if isinstance(raw, int) and raw > 0 else None,
             "tool_call_parser": p.tool_call_parser,
             "reasoning_parser": p.reasoning_parser,
@@ -10639,6 +10669,11 @@ def _active_hf_snapshot_path(repo_id: str):
     root = _hf_cache_root(repo_id)
     if root is None:
         return None
+    from rapid_mlx.model_aliases import resolve_revision
+
+    revision = resolve_revision(repo_id)
+    if revision is not None:
+        return root / "snapshots" / revision
     try:
         revision = (root / "refs" / "main").read_text().strip()
         snapshot = root / "snapshots" / revision
@@ -10795,7 +10830,7 @@ def _escape_glob_literal(name: str) -> str:
 
 
 def _resolve_variant_allow_patterns(
-    repo_id: str, bits: str | None, fmt: str | None
+    repo_id: str, bits: str | None, fmt: str | None, revision: str | None = None
 ) -> list[str] | None:
     """Map ``--bits``/``--format`` to ``snapshot_download`` patterns.
 
@@ -10839,7 +10874,11 @@ def _resolve_variant_allow_patterns(
     # a real folder name string.
     requested = f"{bits}bit" if bits else (fmt or "")
     try:
-        tree = list(HfApi().list_repo_tree(repo_id, recursive=False))
+        tree = list(
+            HfApi().list_repo_tree(
+                repo_id, recursive=False, **({"revision": revision} if revision else {})
+            )
+        )
     except RepositoryNotFoundError:
         raise
     folders = sorted(e.path for e in tree if isinstance(e, RepoFolder))
@@ -10948,7 +10987,12 @@ def _pull_repository(
             list(allow_patterns_override)
             if allow_patterns_override is not None
             else _retry_hub_download(
-                lambda: _resolve_variant_allow_patterns(repo_id, _bits, _fmt),
+                lambda: _resolve_variant_allow_patterns(
+                    repo_id,
+                    _bits,
+                    _fmt,
+                    **({"revision": revision_override} if revision_override else {}),
+                ),
                 repo_id,
             )
         )
@@ -11230,11 +11274,16 @@ def _pull_repository(
 
 
 def _pinned_checkpoint_revision(repo_id: str) -> str | None:
-    """Commit an image/video checkpoint is served from, or ``None``."""
+    """Catalog or image/video checkpoint commit, or ``None``."""
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx.model_aliases import resolve_revision
     from rapid_mlx.video.wan import WAN_REVISIONS
 
-    return IMAGE_MODEL_REVISIONS.get(repo_id) or WAN_REVISIONS.get(repo_id)
+    return (
+        resolve_revision(repo_id)
+        or IMAGE_MODEL_REVISIONS.get(repo_id)
+        or WAN_REVISIONS.get(repo_id)
+    )
 
 
 # Commands that download into or delete from the Hugging Face cache. They
@@ -11267,10 +11316,13 @@ def pull_command(args):
     primary_args = args
     # ``main()`` normally resolves aliases before dispatch, but keep this
     # data-only security boundary fail-closed for direct/internal calls too.
-    from rapid_mlx.model_aliases import resolve_hub_model
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
     resolved_primary = resolve_hub_model(primary_repo)
-    if resolved_primary in IMAGE_MODEL_DATA_FILES and resolved_primary != primary_repo:
+    if resolved_primary != primary_repo and (
+        resolved_primary in IMAGE_MODEL_DATA_FILES
+        or resolve_revision(primary_repo) is not None
+    ):
         primary_args = copy.copy(args)
         primary_args._original_alias = (
             getattr(args, "_original_alias", None) or primary_repo

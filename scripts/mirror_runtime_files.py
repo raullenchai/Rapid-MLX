@@ -36,8 +36,16 @@ def pinned_runtime_files(repo_id: str) -> tuple[str, frozenset[str]] | None:
     return revision, frozenset(files)
 
 
-def pinned_revision(repo_id: str) -> str | None:
-    """Commit a pull of an image checkpoint is pinned to, or ``None``."""
+def catalog_revision(repo_id: str) -> str | None:
+    """Generic catalog alias checkpoint commit, excluding image runtime pins."""
+    from rapid_mlx.model_aliases import resolve_revision
+
+    return resolve_revision(repo_id)
+
+
+def pinned_revision(repo_id: str, *, include_catalog: bool = True) -> str | None:
+    """Catalog or image checkpoint commit used by pull, or ``None``."""
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
-    return IMAGE_MODEL_REVISIONS.get(repo_id)
+    revision = catalog_revision(repo_id) if include_catalog else None
+    return revision or IMAGE_MODEL_REVISIONS.get(repo_id)

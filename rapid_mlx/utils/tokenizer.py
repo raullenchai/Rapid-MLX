@@ -1180,8 +1180,11 @@ def _local_snapshot_if_cached(model_name: str) -> str:
 
 
 def _resolve_subfolder_checkpoint(model_name: str) -> str:
-    """Turn ``org/repo`` into ``…/snapshots/<sha>/<subfolder>`` when the
-    alias for that repo pins one; otherwise return ``model_name`` as-is.
+    """Resolve a catalog revision or subfolder to an exact local checkpoint.
+
+    A revision selects ``snapshots/<sha>`` even for a root checkpoint. Cold
+    pins reuse the mirror-first downloader; failure never returns a bare repo.
+    Without either constraint, return ``model_name`` as-is.
 
     Only the declared subfolder is fetched — ``allow_patterns`` keeps a
     ``rapid-mlx serve lfm2.5-2.6b-4bit`` from pulling the repo's other
@@ -1189,7 +1192,7 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
 
     A local path is passed through untouched — it is already a checkpoint
     directory, and re-deriving a subfolder from a reverse alias lookup on a
-    local path would be wrong. So is a repo with no declared subfolder.
+    local path would be wrong. Unpinned repos without a subfolder pass through.
 
     Once a subfolder IS declared this must not fall back to the bare repo
     id. Handing an unresolved remote id to ``mlx_lm.load`` sends it to its
@@ -1217,9 +1220,25 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
         _snapshot_is_complete,
         pulled_variant,
     )
-    from ..model_aliases import resolve_model, resolve_subfolder
+    from ..model_aliases import resolve_model, resolve_revision, resolve_subfolder
 
     repo_id = resolve_model(model_name)
+    revision = resolve_revision(model_name)
+    if revision is not None:
+        from .._mirror import pinned_snapshot_download
+        from ..model_aliases import subfolder_allow_patterns
+        from ..model_metadata import resolve_pinned_cached_snapshot
+
+        cached = resolve_pinned_cached_snapshot(model_name)
+        if cached is not None:
+            return str(cached)
+        local = pinned_snapshot_download(
+            repo_id, revision, allow_patterns=subfolder_allow_patterns(model_name)
+        )
+        checkpoint = os.path.join(local, resolve_subfolder(model_name) or "")
+        if not _snapshot_is_complete(checkpoint):
+            raise RuntimeError(f"Pinned checkpoint {repo_id}@{revision} is incomplete")
+        return checkpoint
 
     # #2340 precedence is intentional:
     #

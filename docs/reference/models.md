@@ -26,11 +26,30 @@ rapid-mlx serve deepseek-v41-flash-1017
 
 The default serves one request at a time. For concurrent requests, set `RAPID_MLX_DSV41_LANES=2`, `4`, or `8` before starting the server; this turns drafting off. See the [0.16.6 release notes](../release-notes/v0.16.6.md) for the pinned weights and runtime details.
 
+## Optional checkpoint revision
+
+A bundled `aliases.json` profile may declare `"revision": "<40 lowercase hex characters>"`.
+Omitting it or using JSON `null` preserves default-branch behavior. A pin applies
+to weights, config, tokenizer, cache readiness, pull, serve/chat, and mirror
+fallback. Only `snapshots/<revision>` satisfies readiness; another complete
+snapshot does not. A missing pin fails without switching revisions. Aliases
+sharing a repository (case-insensitive) must agree, including pinned versus
+unpinned entries; target qualification pins must also agree on that profile.
+Pinned aliases keep their Hub identity instead of selecting an unversioned
+external model directory. An explicitly selected local path remains local.
+
+Catalog and parser ship together in each Python release. Replacing a bundled
+catalog with one from a newer release is unsupported: older parsers reject
+unknown fields. User aliases remain version-1 string targets and never persist
+catalog revision metadata. Desktop's selected-key JSON reader ignores the
+optional `models --json` field; unpinned rows omit it. The atomic catalog shadow
+remains unresolved and is not the authority for checkpoint selection.
+
 ## Flint
 
 `flint-40b-a2.5b-4bit` serves Recursive's Flint (40B total / ~2.5B active MoE)
 from the official MLX INT4 checkpoint with `glm47` tool calls and `qwen3`
-reasoning. Validated revision: `RecursiveSI/flint-int4@3b93f9053b530488405ae9fca51d4900d6ce21f0`.
+reasoning. Enforced catalog revision: `RecursiveSI/flint-int4@3b93f9053b530488405ae9fca51d4900d6ce21f0`.
 It uses dense and sparse expert layers, sliding-window 513 + full no-RoPE
 layers, learned attention sinks, and an 8-bit embedding, BF16 routers, and 4-bit
 attention/expert/output projections.
