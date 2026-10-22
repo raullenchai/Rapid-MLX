@@ -1271,7 +1271,7 @@ def test_short_launch_rejects_unusable_saved_running_model(
         patch(
             "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-4b-4bit"
         ),
-        patch("rapid_mlx.run.cli._select_model", return_value="qwen3.5-4b-4bit"),
+        patch("rapid_mlx.model_auto_config.detect_model_config", return_value=None),
         patch("rapid_mlx.launch.cli.subprocess.call") as call,
         pytest.raises(SystemExit, match="1"),
     ):
@@ -1280,6 +1280,67 @@ def test_short_launch_rejects_unusable_saved_running_model(
         )
     call.assert_not_called()
     assert "does not meet" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("repeat_explicit", [False, True])
+@pytest.mark.parametrize("active", ["qwen3.5-4b-8bit", "mlx-community/Qwen3.5-4B-8bit"])
+def test_small_selected_model_first_launch_then_repeat(
+    private_home, capsys, repeat_explicit, active
+):
+    from rapid_mlx.launch.cli import launch_command
+
+    model = "qwen3.5-4b-8bit"
+    with (
+        patch("rapid_mlx.agents.isolated.running_model", return_value=active),
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", "ready", "ready"],
+        ),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.cli._ensure_model_downloaded") as download,
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.run.cli._confirm_download", return_value=True),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+    ):
+        # No key/server on first launch; configure persists the user's choice.
+        with pytest.raises(SystemExit) as first:
+            launch_command(_launch_args("codex", "--model", model))
+        assert first.value.code == 0
+        assert isolated.saved_model("codex") == model
+        assert "recommended size" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as repeat:
+            launch_command(
+                _launch_args("codex", *(["--model", model] if repeat_explicit else []))
+            )
+        assert repeat.value.code == 0
+    start.assert_called_once()
+    download.assert_called_once()
+    assert call.call_count == 2
+    assert "recommended size" in capsys.readouterr().err
+
+
+def test_small_running_model_without_user_choice_is_not_automatically_reused(
+    private_home, capsys
+):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-4b-8bit"
+        ),
+        patch(
+            "rapid_mlx.run.cli._select_model", return_value="qwen3.5-9b-4bit"
+        ) as select,
+        patch("rapid_mlx.launch.cli.subprocess.call") as call,
+        pytest.raises(SystemExit) as result,
+    ):
+        launch_command(_launch_args("codex"))
+    assert result.value.code == 1
+    assert select.call_args.kwargs["explicit"] is None
+    call.assert_not_called()
+    assert "stop it before launching" in capsys.readouterr().err
 
 
 def test_short_launch_reuses_saved_model_and_starts_stopped_server(

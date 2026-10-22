@@ -149,8 +149,10 @@ def _stop_failed_start(pid: int | None) -> None:
         pass
 
 
-def _usable_running_model(model: str, profile: AgentProfile) -> bool:
-    """Check tool support and the documented floor for a coding agent."""
+def _usable_running_model(
+    model: str, profile: AgentProfile, *, automatic: bool = True
+) -> bool:
+    """Check compatibility, applying the size recommendation only automatically."""
     from rapid_mlx.model_auto_config import detect_model_config
 
     config = detect_model_config(model)
@@ -160,7 +162,7 @@ def _usable_running_model(model: str, profile: AgentProfile) -> bool:
         return False
     if profile.needs_function_calling and "gemma-4-12b-it" in model.lower():
         return False
-    if profile.name == "codex":
+    if automatic and profile.name == "codex":
         identity = (
             model
             if re.search(r"\d+(?:\.\d+)?b(?=[^a-z0-9]|$)", model.lower())
@@ -380,14 +382,22 @@ def launch_command(args: argparse.Namespace) -> None:
                 else None
             )
             explicit = getattr(args, "_original_alias", None) or args.model
-            active_usable = bool(active and _usable_running_model(active, profile))
+            chosen = explicit or saved_model(args.client)
+            active_usable = bool(
+                active
+                and _usable_running_model(
+                    active,
+                    profile,
+                    automatic=not (chosen and _same_checkpoint(active, chosen)),
+                )
+            )
             reuse = bool(active_usable and not explicit)
             model = (
                 active
                 if reuse
                 else explicit
                 or _select_model(
-                    explicit=saved_model(args.client),
+                    explicit=chosen,
                     profile=profile,
                     no_download=False,
                 )
@@ -404,6 +414,16 @@ def launch_command(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
+            if (
+                chosen
+                and _usable_running_model(model, profile, automatic=False)
+                and not _usable_running_model(model, profile)
+            ):
+                print(
+                    f"  Warning: {model} is below this agent's recommended size "
+                    "(9B or larger); honoring your selected model.",
+                    file=sys.stderr,
+                )
             if args.model:
                 from rapid_mlx.recommendations import physical_ram_gb
                 from rapid_mlx.run.cli import _fits_host
