@@ -1064,8 +1064,8 @@ class TestLaunchCommand:
         assert excinfo.value.code == 0
         targets = json.loads(capsys.readouterr().out)
         ids = [target["id"] for target in targets]
-        assert len(ids) == len(set(ids)) == 19
-        assert "deepseek-harness" in ids
+        assert len(ids) == len(set(ids)) == 13
+        assert "deepseek-harness" not in ids
         # Claude Desktop uses the in-app gateway flow and never writes its config.
         assert ids[:6] == [
             "claude-desktop",
@@ -1082,6 +1082,55 @@ class TestLaunchCommand:
         writer = next(t for t in targets if t["id"] == "claude-code")
         assert writer["config_path"].startswith("~/")
         assert next(t for t in targets if t["id"] == "codex")["config_path"] is None
+
+    def test_discovery_capabilities_match_dispatch(
+        self, fake_home, capsys, monkeypatch
+    ):
+        from rapid_mlx.agents.isolated import SUPPORTED
+        from rapid_mlx.integrations import integration_targets_json
+
+        # Exercise both detection labels without depending on installed clients.
+        monkeypatch.setattr(cline, "detect", lambda: True)
+        monkeypatch.setattr(cursor, "detect", lambda: False)
+        assert launch_cli._print_list(as_json=True) == 0
+        targets = json.loads(capsys.readouterr().out)
+        capabilities = {t["id"]: t["capability"] for t in targets}
+        assert {n for n, c in capabilities.items() if c == "launchable"} == SUPPORTED
+        assert {n for n, c in capabilities.items() if c == "config-only"} == {
+            "cline",
+            "continue-dev",
+            "cursor",
+        }
+        assert {n for n, c in capabilities.items() if c == "manual"} == {
+            "claude-desktop"
+        }
+        assert launch_cli._print_list() == 0
+        output = capsys.readouterr().out
+        rows = [line.split() for line in output.splitlines() if line.startswith("  ")]
+        assert [(r[0], r[1]) for r in rows] == list(capabilities.items())
+        assert "config-only — detected" in output
+        assert "config-only — not detected" in output
+        assert "public HTTPS" in output
+        assert "start the server and client separately" in output
+        # Unsupported SDK/test profiles remain discoverable outside launch.
+        excluded = {t["id"] for t in integration_targets_json()} - capabilities.keys()
+        assert excluded == {
+            "langchain",
+            "openhands",
+            "kilo-code",
+            "pydanticai",
+            "smolagents",
+            "deepseek-harness",
+        }
+        for name in ["unknown-client", *sorted(excluded)]:
+            with pytest.raises(SystemExit) as excinfo:
+                launch_cli.launch_command(_make_args(client=name))
+            assert excinfo.value.code == 2
+            error = capsys.readouterr().err
+            supported = error.split("Supported: ", 1)[1]
+            assert supported.strip().removesuffix(".") == ", ".join(
+                f"{n} ({c})" for n, c in capabilities.items()
+            )
 
     def test_unknown_client_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:

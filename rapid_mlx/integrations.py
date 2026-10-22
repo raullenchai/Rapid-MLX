@@ -74,3 +74,25 @@ def list_integration_targets() -> list[IntegrationTarget]:
 
 def integration_targets_json() -> list[dict[str, str | None]]:
     return [asdict(target) for target in list_integration_targets()]
+
+
+def launch_targets_json() -> list[dict[str, str | None]]:
+    """Describe only routes accepted by ``launch``, with their default action.
+
+    Keep the broader integration catalog for SDK/test profile consumers. The
+    isolated dispatch set takes precedence over legacy configuration writers.
+    """
+    from rapid_mlx.agents.isolated import SUPPORTED
+
+    targets = []
+    for target in list_integration_targets():
+        if target.id in SUPPORTED:
+            capability = "launchable"
+        elif target.id in ADAPTERS:
+            capability = "config-only"
+        elif target.id == "claude-desktop":
+            capability = "manual"
+        else:
+            continue
+        targets.append({**asdict(target), "capability": capability})
+    return targets
