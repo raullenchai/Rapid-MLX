@@ -35,6 +35,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -52,20 +53,20 @@ PID_FILE = Path.home() / ".rapid-mlx" / "launch.pid"
 
 def _print_list(*, as_json: bool = False) -> int:
     """Print supported launch routes and their capabilities without mutation."""
-    from rapid_mlx.integrations import launch_targets_json
+    from rapid_mlx.integrations import list_launch_targets
 
-    targets = launch_targets_json()
+    targets = list_launch_targets()
     if as_json:
-        print(json.dumps(targets, ensure_ascii=False))
+        print(json.dumps([asdict(target) for target in targets], ensure_ascii=False))
         return 0
-    width = max(len(target["id"]) for target in targets) + 2
+    width = max(len(target.id) for target in targets) + 2
     print("Supported clients (default action):")
     for target in targets:
-        name = target["id"]
+        name = target.id
         status = ""
         if name in ADAPTERS:
             status = " — detected" if ADAPTERS[name].detect() else " — not detected"
-        print(f"  {name.ljust(width)}{target['capability']}{status}")
+        print(f"  {name.ljust(width)}{target.capability}{status}")
     print(
         "\nconfig-only: writes configuration; start the server and client separately."
     )
@@ -571,11 +572,10 @@ def launch_command(args: argparse.Namespace) -> None:
                 )
                 sys.exit(2)
         if args.client not in ADAPTERS:
-            from rapid_mlx.integrations import launch_targets_json
+            from rapid_mlx.integrations import list_launch_targets
 
             supported = ", ".join(
-                f"{target['id']} ({target['capability']})"
-                for target in launch_targets_json()
+                f"{target.id} ({target.capability})" for target in list_launch_targets()
             )
             print(
                 f"launch: unknown client {args.client!r}. Supported: {supported}.",

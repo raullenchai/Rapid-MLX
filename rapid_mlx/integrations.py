@@ -76,7 +76,12 @@ def integration_targets_json() -> list[dict[str, str | None]]:
     return [asdict(target) for target in list_integration_targets()]
 
 
-def launch_targets_json() -> list[dict[str, str | None]]:
+@dataclass(frozen=True)
+class LaunchTarget(IntegrationTarget):
+    capability: str
+
+
+def list_launch_targets() -> list[LaunchTarget]:
     """Describe only routes accepted by ``launch``, with their default action.
 
     Keep the broader integration catalog for SDK/test profile consumers. The
@@ -94,5 +99,5 @@ def launch_targets_json() -> list[dict[str, str | None]]:
             capability = "manual"
         else:
             continue
-        targets.append({**asdict(target), "capability": capability})
+        targets.append(LaunchTarget(**asdict(target), capability=capability))
     return targets
