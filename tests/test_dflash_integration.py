@@ -3357,7 +3357,10 @@ def test_dflash_stream_backpressure_delivers_terminal_notice(monkeypatch) -> Non
     import types
 
     from rapid_mlx.api.models import ChatCompletionRequest, Message
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
     from rapid_mlx.speculative.dflash import server as srv
+
+    model_name = "backpressure-cancellation-test"
 
     # Tiny queue + tiny backpressure window so the test triggers the cap fast.
     monkeypatch.setattr(srv, "_STREAM_QUEUE_MAXSIZE", 2)
@@ -3400,7 +3403,7 @@ def test_dflash_stream_backpressure_delivers_terminal_notice(monkeypatch) -> Non
         stream = srv._stream_completion(
             prompt="p",
             request=request,
-            served_model_name="qwen3.5-27b-8bit",
+            served_model_name=model_name,
             gen_kwargs={"max_tokens": 100},
             model=MagicMock(),
             processor=MagicMock(),
@@ -3443,6 +3446,10 @@ def test_dflash_stream_backpressure_delivers_terminal_notice(monkeypatch) -> Non
             await asyncio.sleep(0.01)
         assert not srv._dflash_lock.locked()
         assert admission._reservations == 0
+        snapshot = get_model_performance_ledger(model_name).snapshot()
+        assert snapshot.requests_cancelled == 1
+        assert snapshot.requests_failed == 0
+        assert snapshot.requests_succeeded == 0
 
     srv._dflash_lock = asyncio.Lock()
     try:

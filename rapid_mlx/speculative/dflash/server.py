@@ -1710,6 +1710,7 @@ async def _stream_completion(
     first_token_at = None
     last_token_at = None
     error_message = None
+    client_gone = False
 
     async def _produce() -> None:
         """Own the lease, generate, and push SSE chunks onto the queue.
@@ -1721,7 +1722,7 @@ async def _stream_completion(
         the moment generation finishes, regardless of consumer speed.
         """
         nonlocal total_completion_tokens, prompt_tokens, first_token_at, last_token_at
-        nonlocal error_message
+        nonlocal error_message, client_gone
         finish_reason = "stop"
         # Track the last token id to disambiguate "hit max_tokens but the
         # final token was actually EOS" — without this we'd falsely flag a
@@ -2038,6 +2039,7 @@ async def _stream_completion(
                     finish_reason = "length"
                     break
                 except _DFlashClientGoneError:
+                    client_gone = True
                     error_message = (
                         f"{backend_name} stream aborted: the client did not read "
                         "buffered output within "
@@ -2175,7 +2177,7 @@ async def _stream_completion(
                 pending_terminal.append(frame)
 
     async def _drive_producer() -> None:
-        """Run ``_produce``; swallow the client-gone abort.
+        """Run ``_produce`` and record its request outcome.
 
         codex round-3 #1: this NO LONGER relies on pushing a queue sentinel
         to terminate the consumer (a full bounded queue could drop it, hanging
@@ -2191,20 +2193,11 @@ async def _stream_completion(
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
-        except _DFlashClientGoneError:
-            # codex round-2 #1/#3: the client stopped reading (bounded queue
-            # stayed full past the backpressure / deadline bound). ``_produce``
-            # already unwound ``async with lease`` (generator closed, lock +
-            # slot released or deferred). Nothing more to emit.
-            logger.debug(
-                "DFlash stream aborted: client stopped reading within the "
-                "backpressure/deadline bound"
-            )
         finally:
             ledger = get_model_performance_ledger(served_model_name)
             record = (
                 ledger.record_cancelled
-                if outcome == "cancelled"
+                if outcome == "cancelled" or client_gone
                 else ledger.record_failure
                 if outcome == "failed" or error_message is not None
                 else ledger.record_success
