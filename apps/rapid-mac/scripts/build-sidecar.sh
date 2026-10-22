@@ -965,9 +965,15 @@ if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
     # EXCLUSIONS: transformers/models/ needs its source registry. TensorFold
     # also loads its vendored drafter by an explicit model_mlx.py path and
     # fingerprints Python kernel sources; a .pyc-only package cannot load.
+    # The vendored LTX-2.5 packages keep their sources because the runtime
+    # reads ``_vendored.py`` provenance from disk to decide whether the
+    # bundled runtime is intact; a .pyc-only copy would be rejected as
+    # damaged at preflight and on every generation request.
     find "$STAGE/site-packages" -type d -name __pycache__ \
         -not -path "*/transformers/models/*" \
         -not -path "*/site-packages/tensorfold/*" \
+        -not -path "*/site-packages/ltx_core_mlx/*" \
+        -not -path "*/site-packages/ltx_pipelines_mlx/*" \
         -not -path "*/site-packages/torch/*" \
         -not -path "*/site-packages/torchvision/*" \
         -not -path "*/site-packages/cv2/*" -print | \

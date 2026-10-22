@@ -325,6 +325,20 @@ def test_vendor_script_is_self_contained() -> None:
     assert "from .video" not in source
 
 
+def test_sidecar_build_keeps_the_vendored_provenance_sources() -> None:
+    """The Desktop source-drop must not strip ``_vendored.py``.
+
+    ``ltx25_runtime()`` reads the provenance file from disk; a .pyc-only
+    vendored package is reported as damaged, so the sidecar build has to
+    keep these two package trees as sources.
+    """
+    script = (
+        REPO_ROOT / "apps" / "rapid-mac" / "scripts" / "build-sidecar.sh"
+    ).read_text(encoding="utf-8")
+    assert '-not -path "*/site-packages/ltx_core_mlx/*"' in script
+    assert '-not -path "*/site-packages/ltx_pipelines_mlx/*"' in script
+
+
 def test_apple_lane_runs_the_runtime_and_packaged_artifact_tests() -> None:
     """The bundled runtime's unit and artifact-install tests must reach CI."""
     import yaml
