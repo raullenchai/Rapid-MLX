@@ -12,6 +12,22 @@ from unittest import mock
 import pytest
 
 
+@pytest.fixture
+def cached_mtp_sidecar(tmp_path, monkeypatch):
+    """Provision the sidecar required by automatic MTP cache-policy tests."""
+    from huggingface_hub import constants
+
+    from rapid_mlx.model_aliases import resolve_profile
+    from tests.test_mtp_cached_sidecar_4973 import snapshot
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+
+    def cache(alias):
+        return str(snapshot(tmp_path, resolve_profile(alias).mtp_draft_model))
+
+    return cache
+
+
 class _StopServeError(Exception):
     """Stop the real serve path immediately after scheduler construction."""
 
@@ -135,7 +151,9 @@ def test_alias_qualification_fails_closed_when_registry_raises(monkeypatch) -> N
     assert cli._alias_continuous_mtp_tier("qwen3.5-9b-4bit") == "unknown"
 
 
-def test_qwen36_35b_qualified_mtp_is_the_text_server_default(monkeypatch) -> None:
+def test_qwen36_35b_qualified_mtp_is_the_text_server_default(
+    monkeypatch, cached_mtp_sidecar
+) -> None:
     from rapid_mlx import cli
 
     monkeypatch.setattr(
@@ -146,6 +164,7 @@ def test_qwen36_35b_qualified_mtp_is_the_text_server_default(monkeypatch) -> Non
             None,
         ),
     )
+    sidecar = cached_mtp_sidecar("qwen3.6-35b-4bit")
     args = _args("qwen3.6-35b-4bit", None)
     args.mllm = False
     cli._normalize_speculative_config_or_exit(args)
@@ -155,7 +174,7 @@ def test_qwen36_35b_qualified_mtp_is_the_text_server_default(monkeypatch) -> Non
     # keeps its unquantized cache contract.
     assert args.mtp_continuous_batching is False
     assert args.mtp_unquantized_cache is True
-    assert args.mtp_sidecar == "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"
+    assert args.mtp_sidecar == sidecar
 
 
 def test_qwen36_35b_explicit_vision_lane_suppresses_only_auto_mtp() -> None:
@@ -194,12 +213,13 @@ def test_serve_rejects_continuous_mtp_cache_conflict_before_scheduler(
 
 
 def test_reasoning_continuous_mtp_logs_bf16_cache_policy(
-    scheduler_config_stub, caplog
+    scheduler_config_stub, caplog, cached_mtp_sidecar
 ) -> None:
     import logging
 
     from rapid_mlx import cli
 
+    cached_mtp_sidecar("qwen3.5-9b-4bit")
     args = _parsed_serve_args("qwen3.5-9b-4bit", "--reasoning")
     caplog.set_level(logging.INFO, logger="rapid_mlx.cli")
     with (
@@ -349,7 +369,7 @@ def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
     ],
 )
 def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
-    alias: str, monkeypatch
+    alias: str, monkeypatch, cached_mtp_sidecar
 ) -> None:
     from rapid_mlx import cli
 
@@ -360,6 +380,7 @@ def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
         lambda _model: ({"model_type": model_type, "mtp_num_hidden_layers": 1}, None),
     )
 
+    sidecar = cached_mtp_sidecar(alias)
     args = _args(alias, None)
     cli._normalize_speculative_config_or_exit(args)
 
@@ -368,6 +389,7 @@ def test_verified_alias_defaults_mtp_on_without_any_speculative_flag(
     assert args.mtp_unquantized_cache is True
     assert args.mtp_continuous_batching_tier == "verified"
     assert args._speculative_config.method == "mtp"
+    assert args.mtp_sidecar == sidecar
 
 
 def test_no_spec_decode_remains_an_explicit_default_off_override() -> None:
