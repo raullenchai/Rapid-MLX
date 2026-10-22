@@ -108,8 +108,6 @@ class ModelProfile:
     """
 
     hf_path: str = ""
-    # Optional immutable checkpoint; lowercase full 40-hex Hub commit SHA.
-    revision: str | None = None
     # Directory INSIDE ``hf_path`` that holds this alias's weights, for
     # publishers who ship every quantization of one model as sibling
     # folders of a single repo instead of one repo per quant. Liquid AI
@@ -369,6 +367,8 @@ class ModelProfile:
     # agentic sampling; literal false records a measured model-side inability.
     # This is harness metadata only and does not alter serving or parser routing.
     agentic_coverage: bool = True
+    # Optional immutable checkpoint; lowercase full 40-hex Hub commit SHA.
+    revision: str | None = None
 
     @property
     def speedup_dict(self) -> dict[str, float]:
