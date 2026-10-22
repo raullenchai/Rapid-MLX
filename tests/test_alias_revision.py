@@ -538,3 +538,64 @@ def test_revision_lookup_does_not_swallow_registry_validation_failure(monkeypatc
     monkeypatch.setattr(aliases, "_load", invalid_registry)
     with pytest.raises(ValueError, match="revision must"):
         aliases.resolve_revision("owner/model")
+
+
+@pytest.mark.parametrize("name", [ALIAS, REPO])
+def test_launch_warm_pinned_cache_has_no_download_label(
+    cache, monkeypatch, tmp_path, capsys, name
+):
+    import socket
+    from argparse import ArgumentParser
+
+    from rapid_mlx.agents import cli_preflight, isolated
+    from rapid_mlx.launch import cli as launch_cli
+
+    snapshot(cache, PIN)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(cli_preflight, "agent_cli_found", lambda _: True)
+    monkeypatch.setattr(isolated, "configure", lambda *a, **kw: "agent-command")
+    monkeypatch.setattr(isolated, "stable_key", lambda **kw: "test-key")
+    monkeypatch.setattr(isolated, "running_model", lambda *a: None)
+    status = Mock(side_effect=["stopped", "ready"])
+    monkeypatch.setattr(isolated, "connection_status", status)
+    monkeypatch.setattr("rapid_mlx.run.cli._fits_host", lambda *a: True)
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a: None)
+    start = Mock(return_value=12345)
+    monkeypatch.setattr(launch_cli, "_start_server_background", start)
+    run = Mock(return_value=0)
+    monkeypatch.setattr(launch_cli.subprocess, "call", run)
+    forbidden = Mock(side_effect=AssertionError("warm cache must not download"))
+    monkeypatch.setattr(cli, "_check_disk_space", forbidden)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", forbidden)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", forbidden)
+    monkeypatch.setattr("rapid_mlx._mirror.download_with_mirror_fallback", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+
+    # Exercise real confirmation, pin resolution and ensure-download against a
+    # complete pinned snapshot while refs/main points at a different commit.
+    assert cli._cache_runnability(REPO) is True
+    parser = ArgumentParser()
+    launch_cli.register(parser.add_subparsers())
+    args = parser.parse_args(
+        [
+            "launch",
+            "goose",
+            "--isolated",
+            "--run",
+            "--start-server",
+            "--model",
+            name,
+            "--port",
+            "18742",
+        ]
+    )
+    with pytest.raises(SystemExit) as exc:
+        launch_cli.launch_command(args)
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert f"Preparing {name}…" in output
+    assert "download" not in output.lower()
+    forbidden.assert_not_called()
+    start.assert_called_once_with(name, 18742, api_key="test-key")
+    run.assert_called_once()

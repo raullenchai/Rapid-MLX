@@ -445,7 +445,7 @@ def launch_command(args: argparse.Namespace) -> None:
 
                 if not _confirm_download(model, no_download=False, yes=False):
                     raise SystemExit(1)
-                print(f"  Downloading {model}…", flush=True)
+                print(f"  Preparing {model}…", flush=True)
                 from rapid_mlx.cli import _ensure_model_downloaded
                 from rapid_mlx.model_aliases import resolve_model
 
