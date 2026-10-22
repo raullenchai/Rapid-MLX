@@ -477,12 +477,12 @@ def test_revision_resolution_matches_local_model_precedence(monkeypatch, tmp_pat
     assert aliases.resolve_revision(ALIAS) is None
 
 
-def test_active_pinned_snapshot_falls_back_to_root(cache):
+def test_active_pinned_snapshot_requires_directory(cache):
     snapshot(cache, OTHER)
-    assert cli._active_hf_snapshot_path(REPO) == cache
+    assert cli._active_hf_snapshot_path(REPO) is None
     pinned = cache / "snapshots" / PIN
     pinned.write_text("not a directory")
-    assert cli._active_hf_snapshot_path(REPO) == cache
+    assert cli._active_hf_snapshot_path(REPO) is None
     pinned.unlink()
     pinned.mkdir()
     assert cli._active_hf_snapshot_path(REPO) == pinned

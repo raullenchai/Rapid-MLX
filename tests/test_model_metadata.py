@@ -224,6 +224,25 @@ def test_cached_file_handles_missing_huggingface_hub_dependency(monkeypatch):
     assert metadata._cached_file("publisher/model", "config.json") is None
 
 
+def test_cached_file_propagates_invalid_registry_error(monkeypatch):
+    from rapid_mlx import model_aliases
+
+    def invalid_revision(_model_name):
+        raise ValueError("invalid registry revision")
+
+    monkeypatch.setattr(model_aliases, "resolve_revision", invalid_revision)
+
+    with pytest.raises(ValueError, match="invalid registry revision"):
+        metadata._cached_file("publisher/model", "config.json")
+
+
+@pytest.mark.parametrize(
+    "model_name", ["not-a-repo", "/local/model", "./local/model", "../model", "~/model"]
+)
+def test_cached_file_ignores_local_paths_and_non_hub_names(model_name):
+    assert metadata._cached_file(model_name, "config.json") is None
+
+
 def test_cached_metadata_reads_standalone_template_and_tokenizer_fallback(
     monkeypatch, tmp_path
 ):

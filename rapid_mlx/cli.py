@@ -10688,7 +10688,7 @@ def _active_hf_snapshot_path(repo_id: str):
         return None
     if revision is not None:
         snapshot = root / "snapshots" / revision
-        return snapshot if snapshot.is_dir() else root
+        return snapshot if snapshot.is_dir() else None
     try:
         revision = (root / "refs" / "main").read_text().strip()
         snapshot = root / "snapshots" / revision
