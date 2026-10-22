@@ -2193,6 +2193,8 @@ async def _stream_completion(
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
+        except _DFlashClientGoneError:
+            outcome = "cancelled"
         finally:
             ledger = get_model_performance_ledger(served_model_name)
             record = (

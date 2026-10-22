@@ -4278,3 +4278,33 @@ async def test_serial_lane_nonstream_cancellation_metrics(monkeypatch):
         # Drain deferred cleanup while this event loop is still alive.
         await asyncio.wait_for(srv._dflash_lock.acquire(), 2)
         srv._dflash_lock.release()
+
+
+async def test_serial_lane_escaped_client_abort_is_cancelled(monkeypatch):
+    """An abort escaping the producer is suppressed and recorded exactly once."""
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.runtime.model_performance import get_model_performance_ledger
+    from rapid_mlx.speculative.dflash import server as srv
+
+    async def abort_on_enter(self):
+        raise srv._DFlashClientGoneError
+
+    monkeypatch.setattr(srv._DFlashStreamLease, "__aenter__", abort_on_enter)
+    model_name = "escaped-client-abort-test"
+    stream = srv._stream_completion(
+        prompt="prompt",
+        request=ChatCompletionRequest(
+            model=model_name, messages=[{"role": "user", "content": "hi"}], stream=True
+        ),
+        served_model_name=model_name,
+        gen_kwargs={},
+        model=None,
+        processor=None,
+        stream_generate_fn=lambda **kwargs: iter(()),
+    )
+    frames = [frame async for frame in stream]
+    assert len(frames) == 1  # The role marker precedes producer startup.
+    snapshot = get_model_performance_ledger(model_name).snapshot()
+    assert snapshot.requests_cancelled == 1
+    assert snapshot.requests_failed == 0
+    assert snapshot.requests_succeeded == 0
