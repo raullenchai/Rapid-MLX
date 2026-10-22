@@ -420,6 +420,8 @@ def _main(argv=None):
     args = parser.parse_args(argv)
     if args.tokens < 1 or args.repeats < 1:
         parser.error("tokens and repeats must be positive")
+    if args.raw and args.prompt == "":
+        parser.error("raw prompt must not be empty")
     serving = importlib.import_module(args.runtime_module)
     if args.model:
         model, tokenizer, runtime = serving.load_product_runtime(

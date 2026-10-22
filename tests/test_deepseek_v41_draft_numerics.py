@@ -441,6 +441,17 @@ def test_benchmark_main_tiny_and_checkpoint_provider(
         bench.main(["--prompt", "hi", "--prompt-class", "qa"])
 
 
+def test_benchmark_rejects_empty_raw_prompt_before_loading(monkeypatch, capsys):
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("empty raw prompt must be rejected before loading a model")
+
+    monkeypatch.setattr(serving, "load_product_runtime", unexpected_load)
+    with pytest.raises(SystemExit) as error:
+        bench.main(["--model", "checkpoint", "--raw", "--prompt", ""])
+    assert error.value.code == 2
+    assert "raw prompt must not be empty" in capsys.readouterr().err
+
+
 class RecordingTokenizer(bench.TinyTokenizer):
     def __init__(self):
         self.encoded = []
@@ -468,12 +479,11 @@ def test_benchmark_renders_chat_prompts_per_class_unless_raw(monkeypatch, capsys
         # every generated token is emitted by exactly one round
         assert on["tokens_per_round"] * on["rounds"] == 2
         assert row["prompt_tokens"] == 4
-    measured = [t for t in tokenizer.encoded if bench.PROMPT_CLASSES["qa"] in t]
-    rendered = (
-        "<bos><｜User｜>" + bench.PROMPT_CLASSES["qa"] + "<｜Assistant｜></think>"
-    )
-    assert (measured[-1] == bench.PROMPT_CLASSES["qa"]) is raw
-    assert (measured[-1] == rendered) is not raw
+    for text in bench.PROMPT_CLASSES.values():
+        measured = [t for t in tokenizer.encoded if text in t]
+        rendered = "<bos><｜User｜>" + text + "<｜Assistant｜></think>"
+        assert (measured[-1] == text) is raw
+        assert (measured[-1] == rendered) is not raw
 
     assert bench.main(argv + ["--prompt", "Say hi."]) == 0
     result = json.loads(capsys.readouterr().out)
