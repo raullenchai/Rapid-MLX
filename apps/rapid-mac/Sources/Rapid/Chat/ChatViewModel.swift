@@ -1488,6 +1488,15 @@ final class ChatViewModel {
         }
     }
 
+    /// Startup and tool rounds can change the live lane after attachment admission.
+    /// Keep the server's catalog/launch fallback for missing or legacy profiles.
+    internal func imageInputCapabilityForWire(
+        alias: String,
+        submittedCapability: Bool
+    ) -> Bool {
+        server?.supportsImageInput(forAlias: alias) ?? submittedCapability
+    }
+
     struct GroundingSource: Equatable, Sendable {
         let title: String
         let url: String
@@ -2805,6 +2814,10 @@ final class ChatViewModel {
             // caption.
             let wireCarriesAttachmentGrounding =
                 ChatViewModel.historyCarriesAttachmentGrounding(history)
+            let wireSupportsImageInput = imageInputCapabilityForWire(
+                alias: wireAlias,
+                submittedCapability: supportsImageInput
+            )
             let request: ChatStreamClient.Request
             let isEarlyEmptyRetryRound = retryingEarlyEmptyToolRequest
             retryingEarlyEmptyToolRequest = false
@@ -2822,7 +2835,7 @@ final class ChatViewModel {
                         resolved.repetitionPenaltyIsImplicitDefault,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: resolved.enableThinking,
-                    supportsImageInput: supportsImageInput
+                    supportsImageInput: wireSupportsImageInput
                 )
             } else {
                 request = ChatStreamClient.Request(
@@ -2831,7 +2844,7 @@ final class ChatViewModel {
                     maxTokens: isEarlyEmptyRetryRound ? 2048 : 4096,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: false,
-                    supportsImageInput: supportsImageInput
+                    supportsImageInput: wireSupportsImageInput
                 )
             }
             // Classify the delivered value from the authoritative wire
