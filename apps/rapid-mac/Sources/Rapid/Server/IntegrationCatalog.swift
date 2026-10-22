@@ -63,6 +63,12 @@ enum IntegrationCatalog {
             .map(\.element)
     }
 
+    /// The Gateway has its own section; it must not consume a coding-agent slot
+    /// or reappear among the disclosed editor and adapter rows.
+    static func agentPageOrdered(_ targets: [IntegrationTarget]) -> [IntegrationTarget] {
+        displayOrdered(targets.filter { $0.id != "claude-desktop" })
+    }
+
     static func load(binary: URL? = ServerLocator.find()) async -> [IntegrationTarget] {
         guard let binary else { return [] }
         return await Task.detached(priority: .utility) {

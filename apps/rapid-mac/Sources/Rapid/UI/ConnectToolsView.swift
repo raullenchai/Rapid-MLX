@@ -528,20 +528,7 @@ struct ConnectToolsView: View {
 
     private var tools: [ConnectTool] {
         guard !integrationTargets.isEmpty else { return legacyTools }
-        return IntegrationCatalog.displayOrdered(integrationTargets).map { target in
-            if target.id == "claude-desktop" {
-                let command = "\(cliCommand) launch claude-desktop --model \(IntegrationLaunchCommand.shellQuote(snippetModel))"
-                return ConnectTool(
-                    id: target.id,
-                    name: target.name,
-                    symbol: "desktopcomputer",
-                    blurb: "Enable local tier mapping, then paste the Gateway URL and API key into Claude Desktop.",
-                    snippet: command,
-                    displaySnippet: command,
-                    action: .guide,
-                    persistent: true
-                )
-            }
+        return IntegrationCatalog.agentPageOrdered(integrationTargets).map { target in
             if IntegrationCatalog.isolatedAgentIDs.contains(target.id) {
                 let command = IntegrationLaunchCommand.isolated(
                     id: target.id, model: snippetModel, cli: cliCommand, run: true

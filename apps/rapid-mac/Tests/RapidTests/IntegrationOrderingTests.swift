@@ -29,6 +29,36 @@ struct IntegrationOrderingTests {
         ]
     }
 
+    @Test("The real-size fixture keeps all nine coding agents ahead of editors")
+    func agentPageUsesEveryCodingAgentSlot() async throws {
+        let binary = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/fake-rapid-mlx.sh")
+        let registry = await IntegrationCatalog.load(binary: binary)
+        #expect(registry.count == 19)
+        #expect(registry.contains { $0.id == "claude-desktop" })
+        let ordered = IntegrationCatalog.agentPageOrdered(registry).map(\.id)
+        #expect(Array(ordered.prefix(9)) == [
+            "claude-code", "codex", "pi", "opencode", "hermes",
+            "goose", "qwen-code", "crush", "aider"
+        ])
+        #expect(!ordered.contains("claude-desktop"))
+        #expect(ordered.count == registry.count - 1)
+        #expect(Set(ordered.dropFirst(9)).isDisjoint(with: IntegrationCatalog.isolatedAgentIDs))
+        let unpinned = registry.filter {
+            $0.id != "claude-desktop" && !IntegrationCatalog.isolatedAgentIDs.contains($0.id)
+        }.map(\.id)
+        #expect(Array(ordered.dropFirst(9)) == unpinned)
+    }
+
+    @Test("Agent page handles missing Gateway and coding-agent entries")
+    func agentPageHandlesPartialRegistry() {
+        #expect(IntegrationCatalog.agentPageOrdered([]).isEmpty)
+        let partial = [target("cursor", .configWriter), target("aider", .adapterProfile)]
+        #expect(IntegrationCatalog.agentPageOrdered(partial).map(\.id) == ["aider", "cursor"])
+        #expect(IntegrationCatalog.agentPageOrdered([target("claude-desktop", .adapterProfile)]).isEmpty)
+    }
+
     @Test("Claude Desktop leads, then Claude Code and Codex")
     func leadingRowsArePinned() {
         let ordered = IntegrationCatalog.displayOrdered(registryOrder).map(\.id)

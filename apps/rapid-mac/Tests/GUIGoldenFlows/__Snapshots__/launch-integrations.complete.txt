@@ -64,6 +64,13 @@ AXApplication title="Rapid-MLX"
             AXLink id="Launch.Integration.DayTwoCopy.codex" desc="Copy" enabled=true
             AXLink id="Launch.Integration.SessionCopy.codex" desc="Copy one-session command" enabled=false
             AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.pi" desc="Copy Pi Coding Agent launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.pi" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.pi" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.pi" desc="Copy" enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode launch command" help="Start a model to generate a valid key and launch command." enabled=false
             AXButton id="Launch.Integration.Run.opencode" desc="Launch" enabled=false
             AXStaticText value=text enabled=true
@@ -79,6 +86,13 @@ AXApplication title="Rapid-MLX"
             AXLink id="Launch.Integration.DayTwoCopy.hermes" desc="Copy" enabled=true
             AXLink id="Launch.Integration.SessionCopy.hermes" desc="Copy one-session command" enabled=false
             AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.goose" desc="Copy Goose launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.goose" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.goose" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.goose" desc="Copy" enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code launch command" help="Start a model to generate a valid key and launch command." enabled=false
             AXButton id="Launch.Integration.Run.qwen-code" desc="Launch" enabled=false
             AXStaticText value=text enabled=true
@@ -86,25 +100,20 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXLink id="Launch.Integration.DayTwoCopy.qwen-code" desc="Copy" enabled=true
             AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.crush" desc="Copy Crush launch command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Run.crush" desc="Launch" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Command.crush" desc="Show command" enabled=true
+            AXStaticText value=text enabled=true
+            AXLink id="Launch.Integration.DayTwoCopy.crush" desc="Copy" enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider launch command" help="Start a model to generate a valid key and launch command." enabled=false
             AXButton id="Launch.Integration.Run.aider" desc="Launch" enabled=false
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Command.aider" desc="Show command" enabled=true
             AXStaticText value=text enabled=true
             AXLink id="Launch.Integration.DayTwoCopy.aider" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline setup command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.cline" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev setup command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.continue-dev" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor setup command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.cursor" desc="Show command" enabled=true
-            AXButton id="ConnectTools.MoreIntegrations" desc="Editors and more (5)" enabled=true
+            AXButton id="ConnectTools.MoreIntegrations" desc="Editors and more (9)" enabled=true
             AXButton id="ConnectTools.ServerSettings" desc="Server settings" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true

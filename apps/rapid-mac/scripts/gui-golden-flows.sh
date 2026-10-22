@@ -5138,11 +5138,11 @@ flow_launch_integrations() {
                       | (.identifier // "")
                       | select(startswith("Launch.Integration.Copy."))]
                      | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 14 ]] && break
+        [[ "$count" == 18 ]] && break
         sleep 0.1
     done
-    [[ "$count" == 14 ]] \
-        || die "Cold Agent page omitted registry integrations (got $count of 14)"
+    [[ "$count" == 18 ]] \
+        || die "Cold Agent page omitted registry integrations (got $count of 18)"
     enabled_count="$(jq '[.data.ui_elements[]? | select(((.identifier // "") | startswith("Launch.Integration.Copy.")) and .enabled == true)] | length' "$OUT/launch.json")"
     [[ "$enabled_count" == 0 ]] \
         || die "Cold Agent page enabled $enabled_count placeholder commands after expansion"
@@ -5158,6 +5158,11 @@ flow_launch_integrations() {
         sleep 0.1
     done
     [[ "$count" == 9 ]] || die "Cold Agent page did not return to 9 primary integrations (got $count)"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.aider")' "$OUT/launch.json" >/dev/null \
+        || die "Agent page hid the ninth coding agent behind the disclosure"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.claude-desktop")' "$OUT/launch.json" >/dev/null; then
+        die "Agent page duplicated the dedicated Gateway integration"
+    fi
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -5209,11 +5214,11 @@ flow_launch_integrations() {
                                         | startswith("Launch.Integration.Copy."))
                                        and .enabled == true)]
                              | length' "$OUT/launch-ready.json")"
-        [[ "$ready_copies" == 14 ]] && break
+        [[ "$ready_copies" == 18 ]] && break
         sleep 0.1
     done
-    [[ "$ready_copies" == 14 ]] \
-        || die "Launch enabled $ready_copies of 14 copy commands after the chat model was ready"
+    [[ "$ready_copies" == 18 ]] \
+        || die "Launch enabled $ready_copies of 18 copy commands after the chat model was ready"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch-ready.json" >/dev/null \
         || die "Expanded Launch omitted config-writing target Cline"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch-ready.json" >/dev/null \
@@ -5244,7 +5249,7 @@ flow_launch_integrations() {
                                 | startswith("Launch.Integration.Copy."))
                                and .enabled == true)
                       | .identifier] | unique[]' "$OUT/launch-ready.json")
-    log "  all 14 integration buttons copied a non-empty ready command"
+    log "  all 18 integration buttons copied a non-empty ready command"
     log "  launch-integrations OK"
     cleanup_persona
 }
