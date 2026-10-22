@@ -1111,3 +1111,11 @@ def _telemetry_tests_run_off_the_build_machine(request, monkeypatch):
 def isolate_default_external_model_roots(monkeypatch):
     """Never discover the host's model folders in tests."""
     monkeypatch.setattr("rapid_mlx.model_aliases.DEFAULT_EXTERNAL_MODEL_ROOTS", ())
+
+
+@pytest.fixture(autouse=True)
+def _disable_update_refresh_threads(request, monkeypatch):
+    if not request.node.module.__name__.endswith("test_update_refresh"):
+        from rapid_mlx import update_refresh
+
+        monkeypatch.setattr(update_refresh, "start", lambda **_kwargs: False)

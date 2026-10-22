@@ -337,8 +337,13 @@ def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
     if latest <= installed:
         return None
 
+    return format_staleness_warning(installed_str, latest_str)
+
+
+def format_staleness_warning(installed: str, latest: str) -> str:
+    """Format the shared one-line CLI and server update notice."""
     return (
-        f"⚠ rapid-mlx {installed_str} is behind latest {latest_str} — "
+        f"⚠ rapid-mlx {installed} is behind latest {latest} — "
         f"run `rapid-mlx upgrade` to pick up new model aliases / flags."
     )
 

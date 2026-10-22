@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+from .. import update_refresh
 from ..config import get_config
 from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
 from ..runtime.model_switching import ModelSwitchingError, primary_switching
@@ -125,6 +126,7 @@ async def health():
         model_type = "llm"
 
     return {
+        **update_refresh.snapshot(),
         "status": "healthy",
         "ready": cfg.ready and not switching,
         "state": (

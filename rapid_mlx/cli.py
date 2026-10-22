@@ -1321,6 +1321,9 @@ def _serve_audio_mode(args, entry) -> None:
     # Audio servers are often launched by launchd or another supervisor. Keep
     # the passive update notice in stderr startup logs even without a TTY.
     print_staleness_warning_if_any(allow_non_tty=True)
+    from rapid_mlx import update_refresh
+
+    update_refresh.start()
     print()
 
     _cfg = get_config()
@@ -7990,6 +7993,9 @@ def serve_command(args):
     # Long-lived launchd/daemon servers have no interactive prompt. Preserve
     # the explicit opt-outs, but leave the passive notice in startup logs.
     print_staleness_warning_if_any(allow_non_tty=True)
+    from rapid_mlx import update_refresh
+
+    update_refresh.start()
     print()
 
     # Stash the source of truth for the post-bind "Ready:" banner —

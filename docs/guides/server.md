@@ -554,7 +554,11 @@ See [Rerank Guide](rerank.md) for details.
 GET /health
 ```
 
-Returns server status.
+Returns server status, including read-only `latest_version` (string or null) and
+`update_available` (boolean). While text or audio serve runs, release checks repeat
+every 24 hours and print the existing notice once per newly seen newer version.
+These fields are null/false when checks are disabled via `--disable-version-check`,
+`RAPID_MLX_DISABLE_VERSION_CHECK=1`, or `CI=1`.
 
 ### Anthropic Messages API
 
