@@ -1767,6 +1767,11 @@ def _install_mtp_vendored(
     _nominal_completion_batch_size = getattr(batch_gen, "completion_batch_size", None)
     _admission_owner_uid: int | None = None
 
+    def _others_waiting() -> bool:
+        queue = getattr(batch_gen, "_unprocessed_sequences", None)
+        prompt_batch = getattr(batch_gen, "_prompt_batch", None)
+        return bool(queue) or bool(getattr(prompt_batch, "uids", None))
+
     def _lock_singleton_admission(uid: int) -> None:
         nonlocal _admission_owner_uid
         if _nominal_completion_batch_size is None:
@@ -1788,6 +1793,7 @@ def _install_mtp_vendored(
         "vendored_steps": 0,
         "fallthrough_steps": 0,
         "ft_batch_size": 0,
+        "ft_others_waiting": 0,
         "ft_non_greedy": 0,
         "ft_logits_processors": 0,
         "ft_disabled": 0,
@@ -2283,6 +2289,12 @@ def _install_mtp_vendored(
                 state = None
 
         if state is None:
+            # No speculative output exists yet, so ordinary decode is safe.
+            # Keep admission open until waiting prompt work can join this row.
+            if _others_waiting():
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_others_waiting"] += 1
+                return _orig_step()
             # --- FIRST call for this uid ---
             # mlx-lm's fresh ``GenerationBatch.__init__`` ran its
             # ORIGINAL ``_step`` once (before our patch took effect on
@@ -2841,11 +2853,6 @@ def _install_mtp_vendored(
             remaining,
         )
         return True
-
-    def _others_waiting() -> bool:
-        queue = getattr(batch_gen, "_unprocessed_sequences", None)
-        prompt_batch = getattr(batch_gen, "_prompt_batch", None)
-        return bool(queue) or bool(getattr(prompt_batch, "uids", None))
 
     _base_next = getattr(batch_gen, "next", None)
 
@@ -10077,7 +10084,13 @@ class Scheduler:
         # Decide this before reclaiming so a sealed cohort never evicts
         # reusable prefixes for a request it is going to defer anyway.
         sealed = bool(rows) and (
-            not getattr(self, "_prefill_workspace_calibrated", False)
+            (
+                not getattr(self, "_prefill_workspace_calibrated", False)
+                and any(
+                    _prompt_len(r) >= self._prefill_memory_sample_minimum()
+                    for r, _ in selected
+                )
+            )
             or any(processed > 0 for _, processed in rows)
         )
         fits = False
@@ -10114,6 +10127,9 @@ class Scheduler:
             )
         return False
 
+    def _prefill_memory_sample_minimum(self) -> int:
+        return min(256, self.config.prefill_step_size)
+
     def _begin_prefill_memory_sample(
         self,
     ) -> tuple[int, list[tuple[Request, int, int]], int] | None:
@@ -10138,7 +10154,7 @@ class Scheduler:
             for r, processed in self._prefill_memory_rows()
             for chunk in [min(int(bg.prefill_step_size), len(segments[r.batch_uid][0]))]
         ]
-        minimum = min(256, self.config.prefill_step_size)
+        minimum = self._prefill_memory_sample_minimum()
         if not rows or max(chunk for _, chunk, _ in rows) < minimum:
             return None
         active = self._current_metal_active_bytes()
@@ -10162,7 +10178,7 @@ class Scheduler:
                 for r, chunk, context in rows
                 if r.batch_uid in dispatched
             ]
-        minimum = min(256, self.config.prefill_step_size)
+        minimum = self._prefill_memory_sample_minimum()
         if not rows or max(chunk for _, chunk, _ in rows) < minimum:
             return
         units = sum(chunk * max(1, _prompt_len(r)) for r, chunk, _ in rows)

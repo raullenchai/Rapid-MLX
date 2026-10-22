@@ -2272,6 +2272,102 @@ def _emit(batch_gen, gb):
     gb._num_tokens[0] += 1
 
 
+@pytest.mark.parametrize("waiting", ["queued", "prefilling"])
+@pytest.mark.parametrize("seeded", [False, True])
+def test_singleton_first_call_waits_without_disabling_or_locking(
+    monkeypatch, waiting, seeded
+):
+    from rapid_mlx._seeded_sampler import make_seeded_sampler
+
+    batch_gen, gb, requests, fake = _yielding_setup(monkeypatch)
+    lane_rng = None
+    if seeded:
+        sampler = make_seeded_sampler(seed=1234, temperature=0.7)
+        requests["req-7"]._request_sampler = sampler
+        requests["req-7"].sampling_params = SimpleNamespace(
+            temperature=0.7, seed=1234, top_p=0.0, top_k=0, min_p=0.0
+        )
+        lane_rng = sampler.lane_rng
+        draws = lane_rng.draws
+    if waiting == "queued":
+        batch_gen._unprocessed_sequences.append(("waiting",))
+    else:
+        batch_gen._prompt_batch.uids = [8]
+
+    _emit(batch_gen, gb)
+
+    assert gb.orig_step_calls == 1
+    assert gb.tokens == [[500]]
+    assert int(gb._next_tokens[0].item()) == 999
+    assert batch_gen.completion_batch_size == 4
+    assert batch_gen._mtp_vendored_admission_owner is None
+    assert gb._mtp_vendored_state == {}
+    assert gb._mtp_vendored_disabled_uids == {}
+    assert gb._mtp_vendored_terminal_uids == {}
+    assert fake.kwargs == {}  # no generator construction
+    assert batch_gen._mtp_vendored_stats["fallthrough_steps"] == 1
+    assert batch_gen._mtp_vendored_stats["ft_others_waiting"] == 1
+    if seeded:
+        assert lane_rng.draws == draws
+
+    batch_gen._unprocessed_sequences.clear()
+    batch_gen._prompt_batch.uids = []
+    _emit(batch_gen, gb)
+
+    assert gb.orig_step_calls == 1
+    assert gb.tokens == [[500, 999]]  # continue from the plain step's next token
+    assert set(gb._mtp_vendored_state) == {7}
+    assert batch_gen._mtp_vendored_admission_owner == 7
+    assert batch_gen.completion_batch_size == 1
+    assert gb._mtp_vendored_disabled_uids == {}
+    assert gb._mtp_vendored_terminal_uids == {}
+    if seeded:
+        assert fake.kwargs["lane_rng"] is lane_rng
+        assert lane_rng.draws == draws
+
+
+def test_singleton_yielded_owner_does_not_relock_while_peer_prefills(monkeypatch):
+    import mlx.core as mx
+
+    batch_gen, gb, _requests, fake = _yielding_setup(monkeypatch)
+    _emit(batch_gen, gb)
+    batch_gen._unprocessed_sequences.append(("waiting",))
+    gb.cache = [SimpleNamespace(offset=10)]
+    batch_gen.next()  # requeue owner ahead of the waiting prompt
+    assert fake.closed
+    resumed = batch_gen._unprocessed_sequences.popleft()
+    assert resumed[:3] == (7, [[500]], 15)
+    batch_gen._unprocessed_sequences.clear()
+
+    # Prompt processing splits the owner's one-token suffix into generation
+    # before its peer finishes prefill. The resumed row's count starts at zero.
+    gb.uids = [7]
+    gb.max_tokens = [resumed[2]]
+    gb._num_tokens = [0]
+    gb.tokens = [list(resumed[4])]
+    gb._next_tokens = mx.array([501], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    batch_gen._prompt_batch.uids = [8]
+    for _ in range(2):
+        _emit(batch_gen, gb)
+        assert batch_gen.completion_batch_size == 4
+        assert batch_gen._mtp_vendored_admission_owner is None
+        assert gb._mtp_vendored_state == {}
+    assert gb.orig_step_calls == 3  # includes the empty step after yielding
+    assert gb.tokens == [[501, 999]]
+
+    # The peer can now join generation; both rows use ordinary batched decode.
+    batch_gen._prompt_batch.uids = []
+    gb.uids.append(8)
+    gb.tokens.append([])
+    gb._next_tokens = mx.array([999, 600], dtype=mx.uint32)
+    tokens, _ = gb._step()
+    assert tokens == [999, 600]
+    assert batch_gen.completion_batch_size == 4
+    assert gb._mtp_vendored_disabled_uids == {}
+    assert gb._mtp_vendored_terminal_uids == {}
+
+
 def test_singleton_yields_at_a_token_boundary_to_a_waiting_request(monkeypatch):
     batch_gen, gb, _requests, fake = _yielding_setup(monkeypatch)
     _emit(batch_gen, gb)  # primed token 500 (boundary)

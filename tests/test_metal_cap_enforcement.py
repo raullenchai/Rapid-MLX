@@ -1632,6 +1632,51 @@ def test_prefill_memory_sample_skips_without_generator():
     assert sched._begin_prefill_memory_sample() is None
 
 
+def test_issue5021_cold_short_cohort_admits_four_without_calibration():
+    sched = _cohort_scheduler()
+    sched._prefill_workspace_calibrated = False
+    requests = [_make_request(str(i), 3) for i in range(4)]
+    sched.waiting.extend(requests)
+
+    assert sched._schedule_waiting() == requests
+    assert len(sched.running) == 4
+    assert not sched._prefill_workspace_calibrated
+    assert sched._begin_prefill_memory_sample() is None
+
+
+@pytest.mark.parametrize("step_size", [10, 512])
+@pytest.mark.parametrize(
+    "case", ["short", "long_row", "cached_context", "boundary", "progressed", "cap"]
+)
+def test_issue5021_cold_short_exemption_preserves_seals_and_cap(step_size, case):
+    sched = _cohort_scheduler()
+    sched.config.prefill_step_size = step_size
+    sched._prefill_workspace_calibrated = False
+    minimum = min(256, step_size)
+    row = _make_request("existing", minimum + 1 if case == "long_row" else 3)
+    candidate = _make_request(
+        "candidate",
+        minimum + 1
+        if case == "cached_context"
+        else minimum
+        if case == "boundary"
+        else 3,
+    )
+    if case == "cached_context":
+        candidate.cached_tokens = minimum  # one uncached token, long attention context
+    sched.running[row.request_id] = row
+    sched._prefill_memory_rows = lambda: [(row, 1 if case == "progressed" else 0)]
+    sched._resolve_metal_cap_bytes = lambda: 1 if case == "cap" else 10**9
+    sched._reclaim_prefix_cache_for_prefill = MagicMock()
+
+    assert sched._prefill_cohort_fits(candidate) == (case == "short")
+    assert not sched._prefill_workspace_calibrated
+    if case in {"long_row", "cached_context", "boundary", "progressed"}:
+        sched._reclaim_prefix_cache_for_prefill.assert_not_called()
+    else:
+        sched._reclaim_prefix_cache_for_prefill.assert_called_once()
+
+
 def test_prefill_uncalibrated_cohort_is_narrow_and_high_water_only_rises():
     sched = _cohort_scheduler()
     del sched._prefill_workspace_high_water
