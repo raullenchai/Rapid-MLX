@@ -185,28 +185,40 @@ struct SidecarBuildScriptTests {
     func videoRuntimeIsBoundedAndAudited() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
+        let vendor = try String(contentsOf: Self.vendorScriptURL, encoding: .utf8)
 
         #expect(constraints.contains("mlx-video-with-audio==0.1.36"))
         #expect(constraints.contains("mlx-arsenal==0.12.1"))
-        #expect(script.contains("LTX25_RUNTIME_VERSION=\"0.14.15\""))
-        #expect(script.contains("57952288076766abe27dda3a774b2c24f7346977"))
-        #expect(script.contains("fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"))
-        #expect(script.contains(#"LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)""#),
-                "The audited archive must be downloaded and extracted in a private directory.")
-        #expect(script.contains(#"trap 'rm -rf "$LTX25_SOURCE_DIR"' EXIT INT TERM"#),
-                "The private LTX source directory must be cleaned on every exit path.")
-        #expect(!script.contains(#"LTX25_TAR="/tmp/rapid-ltx25-"#),
-                "A shared predictable archive path permits local replacement races.")
+        #expect(vendor.contains("LTX25_RUNTIME_COMMIT = \"57952288076766abe27dda3a774b2c24f7346977\""))
+        #expect(vendor.contains("LTX25_RUNTIME_VERSION = \"0.14.15\""))
+        #expect(vendor.contains("fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"))
+        #expect(script.contains(#"LTX25_PACKAGES="ltx_core_mlx ltx_pipelines_mlx""#),
+                "The sidecar must embed both vendored LTX packages.")
+        #expect(script.contains(#""$RAPID_MLX_SOURCE/scripts/vendor_ltx25.py""#),
+                "The sidecar build must verify the vendored runtime through the vendoring script.")
+        #expect(script.contains(#"--check --root "$RAPID_MLX_SOURCE""#),
+                "The sidecar must fail closed when the vendored tree drifts from the pin.")
+        #expect(!script.contains("packages/ltx-core-mlx"),
+                "LTX is vendored with the wheel; the sidecar must not install it separately.")
+        #expect(!script.contains("packages/ltx-pipelines-mlx"),
+                "LTX is vendored with the wheel; the sidecar must not install it separately.")
+        #expect(!script.contains("RAPID_LTX25_PROVENANCE"),
+                "Provenance now travels inside each vendored package, not a dist-info stamp.")
+        #expect(script.contains(#"cp -R "$LTX25_PACKAGE_DIR" "$STAGE/site-packages/$LTX25_PACKAGE""#),
+                "The audited packages must be copied into the staged site-packages.")
+        #expect(script.contains(#"cp "$LTX25_PACKAGE_DIR/LICENSE""#),
+                "The upstream license must travel with the embedded runtime.")
+        #expect(script.contains(#"cp "$LTX25_PACKAGE_DIR/NOTICE""#),
+                "The attribution notice must travel with the embedded runtime.")
         #expect(script.contains("import importlib.metadata\nimport importlib.util\nimport inspect"),
                 "The video smoke's version asserts rely on an explicit importlib.metadata import, not a side effect.")
-        #expect(script.contains(#"importlib.metadata.version("ltx-core-mlx") == "0.14.15""#))
-        #expect(script.contains(#"importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15""#))
-        #expect(script.contains(#"printf '%s\n' "$LTX25_RUNTIME_COMMIT""#),
-                "Each embedded LTX distribution must be stamped with the audited source commit.")
-        #expect(script.contains("RAPID_LTX25_PROVENANCE"),
-                "A version match alone must never qualify the embedded LTX runtime.")
+        #expect(script.contains(#"from ltx_core_mlx._vendored import COMMIT as ltx_core_commit"#),
+                "The smoke must verify the embedded provenance commit, not a package version alone.")
+        #expect(script.contains(#"from ltx_pipelines_mlx._vendored import COMMIT as ltx_pipelines_commit"#))
+        #expect(script.contains(#"assert ltx_core_version == "0.14.15""#))
+        #expect(script.contains(#"assert ltx_pipelines_version == "0.14.15""#))
         #expect(script.contains("assert embedded_ltx25_interpreter() is not None"),
-                "The build smoke must prove the runtime accepts the stamped provenance.")
+                "The build smoke must prove the runtime accepts the embedded provenance.")
         #expect(script.contains("from videox_fun_mlx.models.cogvideox_transformer3d import"))
         #expect(script.contains("from videox_fun_mlx.models.t5_encoder import T5Encoder"))
         #expect(script.contains("from videox_fun_mlx.models.tokenizer import T5Tokenizer"))
@@ -215,8 +227,6 @@ struct SidecarBuildScriptTests {
                 "The signed runtime smoke must verify every Wan loader seam used by the adapter.")
         #expect(script.contains("WanModelConfig.wan21_t2v_1_3b()"),
                 "The signed runtime smoke must verify its pinned Wan 2.1 architecture preset.")
-        #expect(script.contains(#"cp "$LTX25_TAR" \"#),
-                "The complete corresponding LTX source must travel with the runtime.")
         #expect(script.contains("re-audit the OpenCV-free encoder patch"),
                 "Pinned upstream encoder patches must fail closed on source drift.")
         #expect(script.contains("FFMPEG_VERSION=\"7.1.5\""))
@@ -268,6 +278,15 @@ struct SidecarBuildScriptTests {
 
     private static var constraintsURL: URL {
         scriptURL.deletingLastPathComponent().appendingPathComponent("sidecar-constraints.txt")
+    }
+
+    private static var vendorScriptURL: URL {
+        scriptURL
+            .deletingLastPathComponent() // scripts
+            .deletingLastPathComponent() // rapid-mac
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repository root
+            .appendingPathComponent("scripts/vendor_ltx25.py")
     }
 
     private static var pyprojectURL: URL {
