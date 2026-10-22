@@ -9,6 +9,7 @@ from . import _version_check as vc
 
 _lock = threading.Lock()
 _latest: str | None = None
+_seen_versions: set[str] = set()
 _available = False
 _thread: threading.Thread | None = None
 
@@ -52,9 +53,10 @@ def _refresh(*, announce: bool):
     current, candidate = vc._parse_version(installed), vc._parse_version(latest)
     available = current is not None and candidate is not None and candidate > current
     with _lock:
-        previous = _latest
+        unseen = latest not in _seen_versions
+        _seen_versions.add(latest)
         _latest, _available = latest, available
-    if announce and available and latest != previous:
+    if announce and available and unseen:
         print(vc.format_staleness_warning(installed, latest), file=sys.stderr)
 
 

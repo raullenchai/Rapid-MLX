@@ -17,6 +17,7 @@ def isolated(monkeypatch):
     for name in ("CI", "RAPID_MLX_DISABLE_VERSION_CHECK"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(refresh, "_latest", None)
+    monkeypatch.setattr(refresh, "_seen_versions", set())
     monkeypatch.setattr(refresh, "_available", False)
     monkeypatch.setattr(refresh, "_thread", None)
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
@@ -44,7 +45,7 @@ def test_seed_then_announce_each_new_version_once(capsys):
     refresh._refresh(announce=False)
     assert refresh.snapshot() == {"latest_version": "1.1.0", "update_available": True}
     assert capsys.readouterr().err == ""
-    for version in ("1.1.0", "1.2.0", "1.2.0", "1.3.0", "1.3.0"):
+    for version in ("1.1.0", "1.2.0", "1.1.0", "1.2.0", "1.3.0", "1.3.0"):
         vc.get_latest_version.return_value = version
         refresh._refresh(announce=True)
     assert capsys.readouterr().err == "".join(
