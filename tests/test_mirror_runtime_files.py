@@ -175,6 +175,39 @@ def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
     assert report.findings == []
 
 
+def test_audit_checks_an_image_alias_at_its_loader_pin(monkeypatch, tmp_path):
+    """A catalog alias without ``revision`` still resolves to the loader pin."""
+    repo = "mlx-community/Qwen-Image-2.1-mflux-q4"
+    pin = IMAGE_MODEL_REVISIONS[repo]
+    main = tmp_path / "main.json"
+    audio = tmp_path / "audio.json"
+    main.write_text(json.dumps({"qwen-image": {"hf_path": repo}}))
+    audio.write_text("{}")
+    listed = []
+    probed = []
+
+    def hf_repo(repo_id, revision=None):
+        listed.append((repo_id, revision))
+        return drift.HfRepo(revision, LISTING)
+
+    def public_probe(_repo, item):
+        probed.append(item.path)
+        return drift.MirrorProbe(200, item.size, f'"{item.sha256}"', item.oid)
+
+    monkeypatch.setattr(drift, "_hf_repo", hf_repo)
+    monkeypatch.setattr(drift, "_public_probe", public_probe)
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(
+        drift,
+        "_catalog_entries",
+        lambda: [{"alias": "qwen-image", "hf_path": repo, "status": "mirrored"}],
+    )
+    [report] = drift.audit(main, audio, unmirrored_path=None)
+    assert listed == [(repo, pin)]
+    assert sorted(probed) == sorted(item.path for item in LISTING)
+    assert report.findings == []
+
+
 def _revision_not_found(message: str) -> Exception:
     import httpx
     from huggingface_hub.errors import RevisionNotFoundError
@@ -449,7 +482,7 @@ def test_uploader_defaults_to_catalog_and_rejects_conflict(
         mirror, "_hf_files", lambda repo, revision: listed.append(revision) or []
     )
     if explicit and explicit != PIN:
-        with pytest.raises(ValueError, match="conflicts with catalog pin"):
+        with pytest.raises(ValueError, match="conflicts with pinned revision"):
             mirror.mirror_repo(REPO, tmp_dir=tmp_path, revision=explicit, dry_run=True)
         assert listed == []
     else:
@@ -457,19 +490,86 @@ def test_uploader_defaults_to_catalog_and_rejects_conflict(
         assert listed == [PIN]
 
 
-@pytest.mark.parametrize("explicit", [None, PIN])
-def test_uploader_ignores_image_runtime_pin(monkeypatch, tmp_path, explicit):
-    assert runtime.pinned_revision(SDXL_REPO) == IMAGE_MODEL_REVISIONS[SDXL_REPO]
-    assert runtime.catalog_revision(SDXL_REPO) is None
-    assert IMAGE_MODEL_REVISIONS[SDXL_REPO] != PIN
-    listed = []
-    monkeypatch.setattr(mirror, "_r2_client", lambda *a: object())
-    monkeypatch.setattr(mirror, "_hf_files", lambda *args: listed.append(args) or [])
-    assert (
-        mirror.mirror_repo(SDXL_REPO, tmp_dir=tmp_path, revision=explicit, dry_run=True)
-        == 0
+IMAGE_PIN_REPO = "mlx-community/Qwen-Image-2.1-mflux-q4"
+IMAGE_PIN = IMAGE_MODEL_REVISIONS[IMAGE_PIN_REPO]
+
+
+def _run_uploader(monkeypatch, tmp_path, repo, *, revision=None, files=FILES):
+    """Run the uploader against mocked HF and R2; return listings/downloads."""
+    listed: list[tuple] = []
+    downloaded: list[tuple[str, tuple]] = []
+    local = tmp_path / "blob"
+    local.write_bytes(b"x" * 10)
+    monkeypatch.setattr(
+        mirror,
+        "_hf_files",
+        lambda repo_id, *rest: listed.append(rest) or list(files),
     )
-    assert listed == [(SDXL_REPO,) if explicit is None else (SDXL_REPO, explicit)]
+    monkeypatch.setattr(
+        mirror,
+        "_download_one_hf",
+        lambda repo_id, relpath, tmp, *rest: (
+            downloaded.append((relpath, rest)) or local
+        ),
+    )
+    monkeypatch.setattr(mirror, "_r2_client", lambda *_a: object())
+    monkeypatch.setattr(mirror, "_r2_head", lambda *_a: None)
+    monkeypatch.setattr(mirror, "_upload_one", lambda *_a, **_k: None)
+    monkeypatch.setattr(mirror, "_r2_head_size", lambda *_a: 10)
+    monkeypatch.setattr(mirror, "_http_range_get_status", lambda _url: 200)
+    monkeypatch.setattr(mirror, "_http_head_status", lambda _url: 200)
+    code = mirror.mirror_repo(repo, tmp_dir=tmp_path, revision=revision)
+    return code, listed, downloaded
+
+
+def test_uploader_mirrors_an_image_repo_at_its_loader_pin(monkeypatch, tmp_path):
+    """Only the loader pins this repository; ``main`` may move under it."""
+    assert runtime.catalog_revision(IMAGE_PIN_REPO) is None
+    assert runtime.pinned_revision(IMAGE_PIN_REPO) == IMAGE_PIN
+    code, listed, downloaded = _run_uploader(monkeypatch, tmp_path, IMAGE_PIN_REPO)
+    assert code == 0
+    assert listed == [(IMAGE_PIN,)]
+    assert downloaded == [(f.relpath, (IMAGE_PIN,)) for f in FILES]
+
+
+def test_uploader_accepts_an_explicit_revision_at_the_loader_pin(monkeypatch, tmp_path):
+    code, listed, downloaded = _run_uploader(
+        monkeypatch, tmp_path, IMAGE_PIN_REPO, revision=IMAGE_PIN
+    )
+    assert code == 0
+    assert listed == [(IMAGE_PIN,)]
+    assert {rest for _, rest in downloaded} == {(IMAGE_PIN,)}
+
+
+def test_uploader_rejects_an_explicit_revision_off_the_loader_pin(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(mirror, "_hf_files", lambda *_a: pytest.fail("listed"))
+    with pytest.raises(ValueError, match="conflicts with pinned revision"):
+        mirror.mirror_repo(IMAGE_PIN_REPO, tmp_dir=tmp_path, revision="b" * 40)
+
+
+def test_uploader_keeps_a_revision_pinned_alias_at_its_catalog_pin(
+    monkeypatch, tmp_path
+):
+    repo = "RecursiveSI/flint-int4"
+    pin = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
+    assert runtime.pinned_revision(repo) == pin
+    code, listed, downloaded = _run_uploader(monkeypatch, tmp_path, repo)
+    assert code == 0
+    assert listed == [(pin,)]
+    assert {rest for _, rest in downloaded} == {(pin,)}
+
+
+def test_uploader_explicit_revision_still_selects_an_unpinned_repo(
+    monkeypatch, tmp_path
+):
+    repo = "mlx-community/Qwen3-0.6B-4bit"
+    assert runtime.pinned_revision(repo) is None
+    code, listed, downloaded = _run_uploader(monkeypatch, tmp_path, repo, revision=PIN)
+    assert code == 0
+    assert listed == [(PIN,)]
+    assert {rest for _, rest in downloaded} == {(PIN,)}
 
 
 @pytest.mark.parametrize("catalog_revision", [None, PIN])

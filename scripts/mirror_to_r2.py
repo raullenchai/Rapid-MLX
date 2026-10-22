@@ -649,9 +649,12 @@ def mirror_repo(
     correct for the one-quantisation-per-repo layout every other upstream
     we mirror uses.
 
-    ``revision`` mirrors the files of that exact commit (a pinned catalog
-    download proves every mirror object against HF's metadata at its pin, so
-    the mirror must hold the pinned bytes). ``include`` keeps only files
+    ``revision`` mirrors the files of that exact commit. Omitted, the commit a
+    pinned client pulls is used: the catalog alias revision, or the image
+    loader pin. A pinned download proves every mirror object against HF's
+    metadata at its pin, so the mirror must hold the pinned bytes; an explicit
+    conflicting revision fails closed before anything is listed. ``include``
+    keeps only files
     matching one of its globs, plus repo-root licence/readme files: a pinned
     download that fetches a declared file list needs nothing else.
     """
@@ -683,13 +686,17 @@ def mirror_repo(
             flush=True,
         )
 
-    catalog_revision = mirror_runtime_files.catalog_revision(repo_id)
-    if catalog_revision is not None:
-        if revision is not None and revision != catalog_revision:
+    # Mirror the commit a pinned client pulls: the catalog alias revision, or
+    # the image loader pin when the alias has no revision. Uploading the
+    # moving default branch would publish another build under the same keys,
+    # and a pinned client rejects those bytes file by file.
+    pinned_revision = mirror_runtime_files.pinned_revision(repo_id)
+    if pinned_revision is not None:
+        if revision is not None and revision != pinned_revision:
             raise ValueError(
-                f"--revision conflicts with catalog pin {catalog_revision}"
+                f"--revision conflicts with pinned revision {pinned_revision}"
             )
-        revision = catalog_revision
+        revision = pinned_revision
     if revision is not None:
         # Only an immutable commit: a branch or tag could move between the
         # listing and the downloads and publish a mixed set of files.
@@ -986,7 +993,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--revision",
         default=None,
-        help="Mirror the files of this exact commit instead of the default branch.",
+        help=(
+            "Mirror the files of this exact commit instead of the pinned "
+            "revision or default branch."
+        ),
     )
     p.add_argument(
         "--include",

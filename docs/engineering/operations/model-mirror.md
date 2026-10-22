@@ -37,11 +37,13 @@ audit rerun. Mirroring writes production data, so it requires explicit human
 authorization and valid R2 credentials. If restoration fails, leave the entry
 in place; the uploader is resumable and a retry skips already verified objects.
 
-### Catalog checkpoint pins
+### Checkpoint pins
 
 The drift audit compares a revision-pinned alias with that exact commit, so a
 moving upstream default branch does not create drift. `mirror_to_r2.py` uses
-the catalog pin when `--revision` is omitted and rejects an explicit conflicting
-revision before listing or uploading files. The existing per-file mirror layout
-and verification remain unchanged. Recovery after upstream deletes the commit
-is separate work (#4994); an unavailable pin still fails closed.
+the commit a pinned client pulls — the catalog alias pin, or the image loader
+pin in `IMAGE_MODEL_REVISIONS` when the alias has none — when `--revision` is
+omitted, and rejects an explicit conflicting revision before listing or
+uploading files. The existing per-file mirror layout and verification remain
+unchanged. Recovery after upstream deletes the commit is separate work (#4994);
+an unavailable pin still fails closed.
