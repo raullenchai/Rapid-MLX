@@ -3169,8 +3169,11 @@ def _cached_mtp_sidecar(sidecar: str) -> str | None:
     complete target-checkpoint contract. Require the weight file consumed
     by the injector, and pass the directory to prevent a later Hub lookup.
     """
+    from pathlib import Path
+
     from .model_aliases import checkpoint_prefix
     from .model_metadata import _cached_file, resolve_unreferenced_cached_snapshot
+    from .spec_decode.mtp.qwen3_5_inject import _find_mtp_weights_file
 
     names = (
         "mtp.safetensors",
@@ -3180,22 +3183,29 @@ def _cached_mtp_sidecar(sidecar: str) -> str | None:
     )
     try:
         prefix = checkpoint_prefix(sidecar)
+        root: Path | None = None
         for name in names:
             weight = _cached_file(sidecar, f"{prefix}{name}")
-            if weight is not None and weight.is_file():
+            if weight is not None:
                 root = (
                     weight.parent.parent if name.startswith("mtp/") else weight.parent
                 )
-                return str(root) if weight.stat().st_size > 0 else None
-        # Immutable pulls need not publish refs/main. Keep the existing
-        # single-complete-snapshot fallback, which also enforces catalog pins.
-        unreferenced = resolve_unreferenced_cached_snapshot(sidecar)
-        if unreferenced is not None:
-            for name in names:
-                weight = unreferenced / name
-                if weight.is_file():
-                    return str(unreferenced) if weight.stat().st_size > 0 else None
+                break
+        if root is None:
+            # This resolver already returns the checkpoint subfolder, and
+            # enforces catalog pins without requiring refs/main.
+            root = resolve_unreferenced_cached_snapshot(sidecar)
+        if root is None:
+            return None
+        # Use exactly the injector's first existing candidate. Skipping an
+        # empty/unreadable head could select trunk weights instead, and the
+        # injector would still open the unusable higher-priority head.
+        selected = _find_mtp_weights_file(root)
+        if selected is not None and selected.is_file() and selected.stat().st_size > 0:
+            return str(root)
     except OSError:
+        # The injector would fail on this same probe; automatic MTP must yield
+        # to plain decode rather than mask the failure with a later candidate.
         return None
     return None
 

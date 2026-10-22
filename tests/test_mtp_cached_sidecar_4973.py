@@ -144,16 +144,22 @@ def test_missing_target_catalog_pin_explains_skip(cached_target, monkeypatch, ca
 def test_sidecar_probe_io_failure_falls_back(cached_target, monkeypatch):
     cache, profile = cached_target
     local = snapshot(cache, profile.mtp_draft_model)
+    bad = local / "mtp.safetensors"
+    bad.write_bytes(b"head")
     original_stat = Path.stat
 
     def fail(path, *args, **kwargs):
-        if path == local / "model.safetensors":
+        if path == bad:
             raise OSError("unreadable cache")
         return original_stat(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "stat", fail)
         assert cli._cached_mtp_sidecar(profile.mtp_draft_model) is None
+        from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _find_mtp_weights_file
+
+        with pytest.raises(OSError, match="unreadable cache"):
+            _find_mtp_weights_file(local)
 
 
 def test_embedded_mtp_needs_no_sidecar(cached_target, monkeypatch):
@@ -194,3 +200,45 @@ def test_unreferenced_zero_weight_is_not_ready(cached_target):
     (local.parent.parent / "refs" / "main").unlink()
     (local / "model.safetensors").write_bytes(b"")
     assert cli._cached_mtp_sidecar(profile.mtp_draft_model) is None
+
+
+@pytest.mark.parametrize("kind", ["empty", "directory"])
+def test_unusable_priority_head_does_not_select_later_trunk_weights(
+    cached_target, kind
+):
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _find_mtp_weights_file
+
+    cache, profile = cached_target
+    local = snapshot(cache, profile.mtp_draft_model)
+    bad = local / "mtp.safetensors"
+    if kind == "empty":
+        bad.touch()
+    else:
+        bad.mkdir()
+    assert _find_mtp_weights_file(local) == bad
+    assert cli._cached_mtp_sidecar(profile.mtp_draft_model) is None
+
+
+@pytest.mark.parametrize("no_ref", [True, False])
+@pytest.mark.parametrize("pinned", [True, False])
+def test_sidecar_subfolder_is_applied_once(cached_target, monkeypatch, no_ref, pinned):
+    cache, profile = cached_target
+    sidecar_profile = replace(
+        profile,
+        hf_path=profile.mtp_draft_model,
+        subfolder="4bit",
+        revision=SHA if pinned else None,
+    )
+    resolve = model_aliases.resolve_profile
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda name: (
+            sidecar_profile if name == profile.mtp_draft_model else resolve(name)
+        ),
+    )
+    local = snapshot(cache, profile.mtp_draft_model, weight="4bit/model.safetensors")
+    (local / "4bit" / "config.json").write_text(json.dumps(CONFIG))
+    if no_ref:
+        (local.parent.parent / "refs" / "main").unlink()
+    assert cli._cached_mtp_sidecar(profile.mtp_draft_model) == str(local / "4bit")
