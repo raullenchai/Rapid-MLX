@@ -86,7 +86,9 @@ def test_missing_sidecar_starts_plain_decode_without_fetch(
     assert args.spec_decode == "none"
     assert args._speculative_config is None
     assert args.mtp_sidecar is None
-    assert f"rapid-mlx pull {ALIAS}" in capsys.readouterr().err
+    guidance = capsys.readouterr().err
+    assert f"rapid-mlx pull {ALIAS}" in guidance
+    assert f"rapid-mlx pull {profile.mtp_draft_model}" in guidance
 
 
 @pytest.mark.parametrize("payload", ['{"method":"mtp"}', None])

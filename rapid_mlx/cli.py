@@ -3766,7 +3766,8 @@ def _normalize_speculative_config_or_exit(args):
                 if sidecar and cached_sidecar is None:
                     print(
                         "Automatic MTP skipped: sidecar is not cached; "
-                        f"run `rapid-mlx pull {args.model}` to add it; "
+                        f"run `rapid-mlx pull {args.model}` and "
+                        f"`rapid-mlx pull {sidecar}` to cache both; "
                         "using plain decode.",
                         file=sys.stderr,
                     )
