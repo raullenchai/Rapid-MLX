@@ -444,6 +444,8 @@ ci-apple = [
     "pytest-xdist>=3.8.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    # The serial-lane metrics contracts parse exposition with the official parser.
+    "prometheus_client>=0.16.0",
 ]
 dev = [
     # Test runtime (must mirror the `test` extras above; a unit test in
