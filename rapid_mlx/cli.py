@@ -2899,11 +2899,14 @@ def _ensure_model_downloaded(
         # HF cache filesystem. Clear the spinner first on that fatal path so
         # the abort message and the shell prompt after it land on clean lines.
         try:
-            _check_disk_space(
-                model_name,
-                force=force_disk_check,
-                **({"revision_override": catalog_revision} if catalog_revision else {}),
-            )
+            if catalog_revision:
+                _check_disk_space(
+                    model_name,
+                    force=force_disk_check,
+                    revision_override=catalog_revision,
+                )
+            else:
+                _check_disk_space(model_name, force=force_disk_check)
         except SystemExit:
             spinner.stop()
             raise
