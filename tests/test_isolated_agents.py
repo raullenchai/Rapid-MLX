@@ -2053,7 +2053,11 @@ def test_opencode_unknown_version_launches_v1_without_unsupported_flags(
     command = (root / "command").read_text()
     assert command.rstrip().endswith(shlex.quote(str(binary)))
     assert "--standalone" not in command
-    subprocess.run(["/bin/zsh", shlex.split(runner)[0]], check=True, timeout=10)
+    subprocess.run(
+        [shutil.which("zsh") or "/bin/bash", shlex.split(runner)[0]],
+        check=True,
+        timeout=10,
+    )
 
 
 def test_opencode_refresh_uses_new_executable_and_argv_without_rewriting_runner(
@@ -2093,7 +2097,9 @@ def test_opencode_refresh_uses_new_executable_and_argv_without_rewriting_runner(
     assert f"{first} --standalone" in command.read_text()
     before = runner.stat().st_mtime_ns
     monkeypatch.setenv("PATH", f"{second.parent}:/usr/bin:/bin")
-    subprocess.run(["/bin/zsh", str(runner)], check=True, timeout=10)
+    subprocess.run(
+        [shutil.which("zsh") or "/bin/bash", str(runner)], check=True, timeout=10
+    )
     assert record.read_text() == str(second)
     assert "--standalone" not in command.read_text()
     assert runner.stat().st_mtime_ns == before

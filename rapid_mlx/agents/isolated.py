@@ -819,7 +819,7 @@ def configure(
         # running shell script, which may already have buffered its contents.
         launch = root / "command"
         _private_write(launch, command + "\n")
-        command = f"exec /bin/zsh {shlex.quote(str(launch))}"
+        command = f"exec /bin/sh {shlex.quote(str(launch))}"
     cli = _cli_invocation()
     runner = root / "run"
     # Reconfigure in the runner's execution directory before starting the
