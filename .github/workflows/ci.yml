@@ -714,12 +714,26 @@ jobs:
             tests/test_module_import_smoke.py \
             tests/test_dflash_integration.py \
             tests/test_ddtree_error_hints.py \
+            tests/test_ltx25_video.py \
+            tests/test_ltx25_extension.py \
+            tests/test_video_runtime_preflight.py \
+            tests/test_ltx25_vendor_contract.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration or serial_lane or explicit_context" \
             --cov=rapid_mlx \
             --cov-append \
             --cov-report=term-missing
+
+      - name: Run LTX-2.5 packaged-artifact install test
+        # Builds the wheel and sdist, installs the wheel into a fresh 3.12
+        # venv outside the checkout, and proves the installed distribution's
+        # own LTX-2.5 preflight resolves the vendored runtime as trusted.
+        run: |
+          python -m pip install --upgrade uv
+          pytest tests/test_ltx25_packaged_artifact.py \
+            --run-slow -m slow \
+            -v --tb=short
 
       - name: Upload Apple Silicon coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
