@@ -23,7 +23,7 @@ def test_normalize_urls_accepts_conventional_trailing_slash():
     )
 
 
-def test_summary_reports_ttft_and_total_p50_p95():
+def test_summary_reports_ttft_and_total_percentiles():
     rows = [
         {"ttft_ms": 10, "total_ms": 20},
         {"ttft_ms": 30, "total_ms": 40},
@@ -32,8 +32,10 @@ def test_summary_reports_ttft_and_total_p50_p95():
     assert summarize(rows) == {
         "ttft_p50_ms": 20.0,
         "ttft_p95_ms": 29.0,
+        "ttft_p99_ms": 29.8,
         "total_p50_ms": 30.0,
         "total_p95_ms": 39.0,
+        "total_p99_ms": 39.8,
     }
 
 
@@ -117,3 +119,29 @@ def test_stream_request_accepts_omitted_zero_cache_details(monkeypatch):
     result = bench.stream_request(client, "http://rapid/v1", "model", [], 1)
 
     assert result["cached_tokens"] == 0
+    assert result["server_ttft_ms"] is None
+    assert result["server_mean_itl_ms"] is None
+
+
+def test_stream_request_records_terminal_server_timing(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.iter_lines.return_value = [
+        'data: {"choices":[{"delta":{"content":"done"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+        '"metrics":{"time_to_first_token_ms":125.0,"mean_itl_ms":12.5}}',
+        'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1}}',
+        "data: [DONE]",
+    ]
+    client = MagicMock()
+    client.stream.return_value = response
+    monkeypatch.setattr(
+        bench.time, "perf_counter", MagicMock(side_effect=[1.0, 1.25, 1.5])
+    )
+
+    result = bench.stream_request(client, "http://rapid/v1", "model", [], 1)
+
+    assert result["server_ttft_ms"] == 125.0
+    assert result["server_mean_itl_ms"] == 12.5
+    assert result["ttft_ms"] == 250.0
+    assert result["total_ms"] == 500.0

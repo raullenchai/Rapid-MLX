@@ -63,8 +63,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, float]:
     return {
         "ttft_p50_ms": round(statistics.median(ttfts), 2),
         "ttft_p95_ms": round(percentile(ttfts, 0.95), 2),
+        "ttft_p99_ms": round(percentile(ttfts, 0.99), 2),
         "total_p50_ms": round(statistics.median(totals), 2),
         "total_p95_ms": round(percentile(totals, 0.95), 2),
+        "total_p99_ms": round(percentile(totals, 0.99), 2),
     }
 
 
@@ -121,6 +123,7 @@ def stream_request(
     started = time.perf_counter()
     first_visible: float | None = None
     usage: dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
     finish_reason = None
     visible_chunks = 0
     with client.stream(
@@ -131,6 +134,8 @@ def stream_request(
             if not line.startswith("data: ") or line == "data: [DONE]":
                 continue
             chunk = json.loads(line[6:])
+            if chunk.get("metrics"):
+                metrics = chunk["metrics"]
             if chunk.get("usage"):
                 usage = chunk["usage"]
             choices = chunk.get("choices") or []
@@ -176,6 +181,8 @@ def stream_request(
         "completion_tokens": required_usage["completion_tokens"],
         "visible_chunks": visible_chunks,
         "finish_reason": finish_reason,
+        "server_ttft_ms": metrics.get("time_to_first_token_ms"),
+        "server_mean_itl_ms": metrics.get("mean_itl_ms"),
     }
 
 
