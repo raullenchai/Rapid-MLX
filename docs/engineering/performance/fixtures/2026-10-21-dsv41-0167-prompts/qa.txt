@@ -1,0 +1,27 @@
+The Water System of Bellmere
+
+Bellmere is a fictional hillside city with 84,600 residents and 31,200 metered water accounts. Its utility serves five districts: Harbor, Old Market, Ridge, Orchard, and Foundry. The city owns its water infrastructure; a seven-member water board approves rates and capital projects.
+
+The principal source is Lake Sable, an artificial reservoir twelve kilometers north of town. Its usable storage is 9.6 million cubic meters. A second source, the Alder Wellfield, contains six wells beside the eastern railway. Under normal summer conditions the lake provides 72 percent of raw water and the wells provide 28 percent. A separate emergency connection to the town of Venn can deliver up to 2,000 cubic meters per day, but it is normally closed and is not included in those percentages.
+
+Lake water travels through a gravity main to Northbank Treatment Works. Northbank can treat 24,000 cubic meters daily using screening, coagulation, sand filtration, and ultraviolet disinfection, followed by a small chlorine dose that protects water in the pipes. Well water goes to Eastgate Station, where iron is removed before chlorination. Eastgate has a daily capacity of 9,000 cubic meters.
+
+Average city demand is 19,800 cubic meters per day in winter and 27,400 in summer. The highest recorded day was 31,100 cubic meters on August 14 of the previous year. Those figures include billed use, authorized unbilled use, and estimated leakage. Annual leakage is estimated at 11 percent of treated water entering the network.
+
+Three covered tanks buffer daily changes. Beacon Tank holds 8,000 cubic meters and serves Ridge. Orchard Tank holds 5,500 and serves Orchard and Foundry. Lowgate Tank holds 6,500 and serves Harbor and Old Market. Two electric pumps lift water to Beacon; one can meet ordinary Ridge demand while the other is available as a spare. A diesel generator can run one Beacon pump for eighteen hours on a full fuel tank.
+
+A summer inspection found that pressure in upper Ridge fell below the city's target of 250 kilopascals between 6 and 8 in the morning. The lowest observed pressure was 218 kilopascals. Investigators found no treatment failure. They traced the pressure drop to simultaneous garden watering and a partly closed valve on Summit Road. The valve was reopened on June 11. The board also restricted automatic irrigation in Ridge to alternate evenings, beginning June 15, while staff collected another month of pressure readings.
+
+
+
+Households pay a fixed monthly service charge of $12 plus $1.40 per cubic meter for their first 15 cubic meters. Additional use costs $2.10 per cubic meter. A council-funded assistance program pays the fixed charge for 640 qualifying households. Assistance does not change the price of water consumed, and commercial accounts are outside this program.
+
+For next year the board approved $1.8 million to replace 2.4 kilometers of cast-iron main in Old Market. Construction begins March 3 and ends September 30. The project manager is engineer Lina Vos. Work proceeds one block at a time, with temporary above-ground pipes maintaining service. A proposed seventh Alder well was deferred until the city completes a groundwater study. The study is due November 20, and deferral does not reduce the six existing wells' approved capacity.
+
+Answer each of the following six questions in 2-3 complete sentences. Include relevant figures and explain distinctions where needed.
+1. What are Bellmere's normal raw-water sources, their summer shares, and the role of the Venn connection?
+2. How do Northbank and Eastgate differ in treatment process and daily capacity?
+3. Which tanks serve which districts, and what backup arrangements protect Ridge's pumped supply?
+4. What caused upper Ridge's pressure problem, and what corrective measures and dates are stated?
+5. How does the household tariff work, and exactly what does the assistance program cover?
+6. What main-replacement project was approved, who owns its delivery, and why was the additional well deferred?

@@ -1,0 +1,123 @@
+"""An in-memory store with lazy TTL expiration and LRU capacity control.
+
+Keys are strings; values may be any Python object. Capacity counts entries,
+not bytes. The clock returns monotonic seconds and can be replaced in tests.
+TTL is measured from put(), and successful reads change recency without
+extending expiry. This module is intentionally single-threaded.
+"""
+
+from collections import OrderedDict
+from dataclasses import dataclass
+from time import monotonic
+from typing import Any, Callable, Optional
+
+
+@dataclass
+class Entry:
+    value: Any
+    expires_at: Optional[float]
+
+
+class MemoryStore:
+    """Maintain entries from least recently used to most recently used.
+
+    A TTL of zero or less removes the named key without
+    inserting a replacement. Updating a live key makes it most recent.
+    Expired entries must be removed before a live entry is evicted.
+    """
+
+    def __init__(self, capacity: int, clock: Callable[[], float] = monotonic):
+        if capacity < 1:
+            raise ValueError("capacity must be positive")
+        self.capacity = capacity
+        self._clock = clock
+        self._items: OrderedDict[str, Entry] = OrderedDict()
+
+    @staticmethod
+    def _expired(entry: Entry, now: float) -> bool:
+        return entry.expires_at is not None and entry.expires_at <= now
+
+    def _purge(self, now: float) -> int:
+        # Expiry order is independent of recency, so scan the whole mapping.
+        stale = [key for key, entry in self._items.items()
+                 if self._expired(entry, now)]
+        for key in stale:
+            del self._items[key]
+        return len(stale)
+
+    def _evict(self) -> None:
+        """Reduce the mapping to capacity by removing the least recent key."""
+        while len(self._items) > self.capacity:
+            self._items.popitem(last=True)
+
+    def put(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
+        now = self._clock()
+        self._purge(now)
+        if ttl is not None and ttl <= 0:
+            self._items.pop(key, None)
+            return
+        deadline = None if ttl is None else now + ttl
+        self._items[key] = Entry(value, deadline)
+        self._items.move_to_end(key)
+        self._evict()
+
+    def get(self, key: str) -> Any:
+        now = self._clock()
+        entry = self._items.get(key)
+        if entry is None:
+            raise KeyError(key)
+        if self._expired(entry, now):
+            del self._items[key]
+            raise KeyError(key)
+        self._items.move_to_end(key)
+        return entry.value
+
+    def peek(self, key: str) -> Any:
+        """Read without changing recency; still enforce expiration."""
+        now = self._clock()
+        entry = self._items.get(key)
+        if entry is None:
+            raise KeyError(key)
+        if self._expired(entry, now):
+            del self._items[key]
+            raise KeyError(key)
+        return entry.value
+
+    def delete(self, key: str) -> bool:
+        now = self._clock()
+        self._purge(now)
+        if key not in self._items:
+            return False
+        del self._items[key]
+        return True
+
+    def keys(self) -> list[str]:
+        """Return a snapshot in eviction order, oldest first."""
+        self._purge(self._clock())
+        return list(self._items)
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    def __len__(self) -> int:
+        self._purge(self._clock())
+        return len(self._items)
+
+
+def example() -> tuple[list[str], list[str]]:
+    """Illustrate independent expiration and recency using a manual clock.
+
+    """
+    tick = [100.0]
+    store = MemoryStore(capacity=2, clock=lambda: tick[0])
+    store.put("map", {"scale": 5})
+    store.put("route", ["north", "east"], ttl=10.0)
+    store.get("map")
+    store.put("ticket", "adult", ttl=3.0)
+    first = store.keys()
+    tick[0] += 4.0
+    store.put("guide", "museum")
+    second = store.keys()
+    return first, second
+
+Find the bug, explain it briefly, and output the corrected full module.

@@ -1,0 +1,29 @@
+Field & Shelf: Autumn Catalogue
+
+This catalogue describes twelve individual products. Dollar amounts are unit prices in US dollars, stock figures count units currently available to sell, and ratings use a five-point scale. Category names are the exact labels used by our warehouse.
+
+For a work surface with little spare space, consider the Alder Task Lamp. Its articulated neck directs light toward a notebook without illuminating the whole room, and a weighted base keeps it steady. We classify it under Lighting. Customers have rated it 4.7, and the current shelf count is 28 units. The lamp costs $46.00; its warm bulb is included, while the pictured desk is simply a display prop.
+
+The Kestrel Notebook belongs to Stationery and sells for $12.50. Its 160 ruled pages use cream paper, with a stitched binding that opens flat. A pocket inside the back cover holds loose receipts. There are 145 units ready to ship, and the customer rating is 4.5.
+
+Our Cedar Travel Mug has a rating of 4.8 after customers praised its secure lid. Listed in Drinkware, it holds 350 milliliters and fits the narrow cup holder in our delivery van. The unit price is $24.00. We have 63 in stock, all with the same matte green finish. Hand washing is recommended to preserve the exterior coating and the printed measurement guide.
+
+At $79.95, the Bracken Daypack is the largest item in the Bags category featured here. It offers an 18-liter main compartment, a padded sleeve, and a small external pocket. Its stock count is zero, although the listing remains visible for comparison. The rating is 4.6.
+
+In Kitchen, the Flint Measuring Set groups four stainless measuring cups as one retail product. Its single unit price is $18.75, and 87 complete sets are in stock. Reviewers give it 4.4. The handles nest together on a removable ring, with both metric and customary measurements engraved on the metal.
+
+The Lark Wall Clock costs $32.00 and appears under Home Decor. A silent movement suits reading rooms, while broad hands remain visible across a small office. Its diameter is 26 centimeters. We currently hold 19 units; the customer rating is 4.2. One standard battery is required and is not included.
+
+For outdoor errands, the Moss Pocket Umbrella packs into its own sleeve. We have 42 units available at $21.50 each, with a rating of 4.3. Accessories is its category. The canopy opens manually, and the folded length is 24 centimeters.
+
+The Rowan Cable Pouch is categorized as Bags, despite its small size. Elastic loops keep charging leads apart, and a mesh pocket holds adapters. Its rating stands at 4.9, and each pouch is priced at $16.00. Stock is 76 units.
+
+A quiet corner benefits from the Fern Reading Cushion, priced at $38.25. This Home Decor item has a removable cotton cover and a firm insert suitable for upright reading. Only 11 units remain in stock. Its customer rating is 4.1.
+
+The Ember Tea Tin sits in Pantry. Each tin contains 80 grams of loose black tea, with a simple brewing guide beneath the lid. The price per tin is $14.80 and the rating is 4.6. There are zero units available at present.
+
+For drawing on location, choose the Wren Sketch Roll from Stationery. Twelve fabric slots keep pencils accessible, and the tie wraps around the closed roll. The pencils are not supplied. We list a price of $27.00, a rating of 4.7, and an inventory of 34 units. Its natural canvas can be spot cleaned and should be allowed to dry fully before storage.
+
+Finally, the Slate Plant Pot belongs to Garden and carries a unit price of $29.50. A drainage hole and removable saucer make it useful on a sheltered balcony. There are 56 pots in stock, with a rating of 4.0. The pot's 20-centimeter height excludes any plant; the catalogue sells the pot and saucer together without soil or greenery.
+
+Extract all products as a JSON array of objects with keys name, price_usd, category, in_stock (int), rating. Output only JSON.

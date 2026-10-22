@@ -1,0 +1,23 @@
+Package Managers as Machines for Remembering Decisions
+
+A package manager seems to perform a simple task: fetch a named program and put it where other programs can find it. Its deeper purpose is to remember decisions that would otherwise be repeated by every operator. Which version works with this interpreter? Which library supplies a missing symbol? Who installed this file, and may it be removed? A useful package manager turns these questions into explicit records rather than leaving the answers in a person's memory.
+
+Imagine an early research lab sharing programs on removable disks. Each program arrives with a page of installation notes. One researcher copies a library into a common directory; another replaces it with a newer build. The first program breaks, although neither researcher changed its source. The difficulty is not downloading software. It is coordinating changes to shared state when the participants have incomplete knowledge of one another's requirements.
+
+The first improvement is an inventory. A package contains files plus metadata describing its name, version, dependencies, and installation locations. The manager records ownership so that uninstalling a drawing tool does not accidentally remove a library still used by a statistics tool. Checksums help distinguish an intact installed file from a locally modified configuration file. These records make maintenance repeatable, but they do not yet decide which combinations of packages can coexist.
+
+Dependency resolution adds that second layer. Suppose Cedar requires Grove version 3 or later, while an old plotting extension accepts only Grove version 2. A resolver must reject the combination, select a different extension, or create separate environments. Choosing the newest version of every package is insufficient because compatibility constraints describe relationships. A successful resolution is a consistent set of choices, not a collection of individually attractive releases.
+
+Version identifiers make these relationships easier to express, but they cannot prove compatibility.
+
+Reproducibility introduces another distinction: a range of permitted versions is not a complete installation recipe. An application manifest might allow several releases, while a lockfile records the exact dependency graph selected on a particular day. Stronger records also include content hashes and platform information.
+
+Installation itself should be treated as a transaction. If a network failure interrupts an update after half the files have been replaced, the system may contain a combination that was never tested. One approach stages new files in a separate location and switches a reference only after validation. Another records enough information to roll back. Both approaches require a clear boundary between preparing a change and making that change visible to running software.
+
+Security complicates every stage. A signed repository index can establish who published a package, yet a trusted publisher may still ship a vulnerable release. A checksum detects unexpected bytes but says nothing about whether the intended bytes are safe. Good tools separate identity, integrity, and policy instead of presenting one green checkmark as a universal guarantee.
+
+Modern designs differ over how much state to share. Global installations save disk space and simplify command discovery. Isolated environments allow conflicting versions and make experiments easier to discard. Content-addressed storage can share identical files without forcing applications to share dependency choices.
+
+The best interface explains those tradeoffs before changing anything. A preview should show additions, removals, version changes, and the reasons for them. Package management succeeds when routine installation becomes unremarkable while exceptional decisions remain visible, reviewable, and reversible. Its lasting achievement is making a complicated agreement between programs understandable to the people responsible for them.
+
+Summarise the article above in about 200 words.
