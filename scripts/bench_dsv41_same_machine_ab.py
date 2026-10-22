@@ -84,9 +84,8 @@ def run(args, prompt):
     if first is None or not done:
         raise ValueError("stream must contain content or reasoning and end with [DONE]")
     tokens = (usage or {}).get("completion_tokens")
-    source = "usage.completion_tokens"
     if tokens is None:
-        tokens, source = delta_count, "delta_count"
+        raise ValueError("server did not report usage.completion_tokens")
     interval = last - first
     rate = (tokens - 1) / interval if tokens > 1 and interval > 0 else None
     return {
@@ -94,7 +93,7 @@ def run(args, prompt):
         "decode_tokens_per_s": rate,
         "total_wall_s": elapsed,
         "completion_tokens": tokens,
-        "token_count_source": source,
+        "token_count_source": "usage.completion_tokens",
         "delta_count": delta_count,
         "decode_interval_s": interval,
         "content_length": content_length,
@@ -159,14 +158,17 @@ def main():
             run(args, prompt)
         for round_number in range(1, args.rounds + 1):
             metrics, text = run(args, prompt)
+            if metrics["decode_tokens_per_s"] is None:
+                raise ValueError(
+                    f"measured round {round_number} has unmeasurable decode throughput"
+                )
             if round_number == 1:
                 with open(
                     args.prompt_file + ".out.txt", "w", encoding="utf-8"
                 ) as output:
                     output.write(text)
             measured += 1
-            if metrics["decode_tokens_per_s"] is not None:
-                rates.append(metrics["decode_tokens_per_s"])
+            rates.append(metrics["decode_tokens_per_s"])
             print(
                 json.dumps(
                     {

@@ -20,8 +20,9 @@ arrival times. Decode tok/s is `(completion_tokens - 1) / (t_last - t_first)`,
 using server-reported completion usage and the first/last nonempty content or
 reasoning delta. TTFT runs from request start to the first such delta. The table
 reports the arithmetic mean of the two per-request decode rates, excluding
-warm-up, prefill and model loading. Reject comparisons whose JSON reports
-`token_count_source=delta_count`: chunk counts are only a fallback, not token counts.
+warm-up, prefill and model loading. The harness fails with a nonzero exit if
+server-reported completion usage is missing or any measured round has
+unmeasurable decode throughput; it never averages fewer rounds than requested.
 
 ## Results
 
