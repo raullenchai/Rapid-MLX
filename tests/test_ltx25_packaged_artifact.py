@@ -154,7 +154,9 @@ def test_wheel_ships_a_trusted_ltx25_runtime(tmp_path: Path) -> None:
     with tarfile.open(sdist) as archive:
         # The sdist records directory entries; compare files only, like the
         # wheel's namelist.
-        sdist_names = [member.name for member in archive.getmembers() if member.isfile()]
+        sdist_names = [
+            member.name for member in archive.getmembers() if member.isfile()
+        ]
     _assert_no_binaries(sdist_names)
     sdist_ltx = {
         name.split("/", 1)[1]

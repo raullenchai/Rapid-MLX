@@ -255,6 +255,10 @@ def test_ltx25_runtime_find_spec_failure_is_absent(
     assert "missing vendored package(s)" in (runtime.detail or "")
 
 
+def test_ltx25_submodule_probe_handles_missing_parent() -> None:
+    assert ltx25._submodule_spec_exists("no_such_ltx_parent_package", "cli") is False
+
+
 def test_ltx25_runtime_explicit_override_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1081,6 +1085,31 @@ def test_ltx25_generation_uses_cache_without_rechecking_checkout(
         seed=7,
         image=None,
     )
+
+
+def test_ltx25_generation_rejects_untrusted_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ltx25, "_prepared_ltx25_runtime", lambda: None)
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="corrupt", source="vendored", detail="provenance mismatch"
+        ),
+    )
+
+    with pytest.raises(ltx25.LTX25BackendError, match="Reinstall rapid-mlx"):
+        ltx25.LTX25VideoEngine("MrMofer/ltx-2.5-mlx-q8").generate(
+            prompt="fox",
+            output_path=tmp_path / "result.mp4",
+            width=704,
+            height=480,
+            num_frames=97,
+            fps=24,
+            seed=7,
+            image=None,
+        )
 
 
 def test_serve_routes_ltx25_model_to_specific_preflight(
