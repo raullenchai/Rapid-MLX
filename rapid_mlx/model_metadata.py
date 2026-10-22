@@ -201,16 +201,16 @@ def _looks_like_hub_repo_id(model_name: str) -> bool:
 
 def _cached_file(model_name: str, filename: str) -> Path | None:
     """Resolve a cache file through huggingface_hub without network access."""
-    if not _looks_like_hub_repo_id(model_name):
-        return None
     try:
-        from huggingface_hub import _CACHED_NO_EXIST, try_to_load_from_cache
-    except ImportError:
-        return None
-    try:
-        from .model_aliases import resolve_revision
+        from .model_aliases import resolve_hub_model, resolve_revision
 
         revision = resolve_revision(model_name)
+        if revision is not None:
+            model_name = resolve_hub_model(model_name)
+        if not _looks_like_hub_repo_id(model_name):
+            return None
+        from huggingface_hub import _CACHED_NO_EXIST, try_to_load_from_cache
+
         cached = try_to_load_from_cache(
             model_name, filename, **({"revision": revision} if revision else {})
         )

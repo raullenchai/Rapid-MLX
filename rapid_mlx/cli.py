@@ -1600,9 +1600,12 @@ def _check_disk_space(
     if os.path.exists(model_name):
         return
 
-    from rapid_mlx.model_aliases import resolve_revision
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
-    revision_override = revision_override or resolve_revision(model_name)
+    catalog_revision = resolve_revision(model_name)
+    if catalog_revision is not None:
+        model_name = resolve_hub_model(model_name)
+    revision_override = revision_override or catalog_revision
     # Image loaders consume their verified local snapshot directly once every
     # runtime-required file is present.  Check that contract before comparing
     # against the Hub's *current* revision: a repo can advance after the local
@@ -2178,7 +2181,11 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
         else:
             from huggingface_hub import model_info, try_to_load_from_cache
 
-            from rapid_mlx.model_aliases import checkpoint_prefix, resolve_revision
+            from rapid_mlx.model_aliases import (
+                checkpoint_prefix,
+                resolve_hub_model,
+                resolve_revision,
+            )
 
             # One repo, one folder per quantization: the working set is
             # this alias's folder, not the eight-checkpoint repo. Sizing
@@ -2186,6 +2193,8 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
             # set and fire the kernel-panic warning on a 32 GB Mac.
             prefix = checkpoint_prefix(model_name)
             revision = resolve_revision(model_name)
+            if revision is not None:
+                model_name = resolve_hub_model(model_name)
             revision_kwargs = {"revision": revision} if revision else {}
             cached = try_to_load_from_cache(
                 model_name, f"{prefix}config.json", **revision_kwargs
@@ -9851,13 +9860,16 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
 
     if not _valid_variant_subfolder(subfolder):
         return None
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
+
+    revision = resolve_revision(repo_id)
+    if revision is not None:
+        repo_id = resolve_hub_model(repo_id)
     repo_root = os.path.join(
         HF_HUB_CACHE,
         f"models--{repo_id.replace('/', '--')}",
     )
-    from rapid_mlx.model_aliases import resolve_revision
-
-    sha = resolve_revision(repo_id) or _resolved_snapshot_sha(repo_root)
+    sha = revision or _resolved_snapshot_sha(repo_root)
     if sha is not None:
         snapshot = os.path.join(repo_root, "snapshots", sha)
         checkpoint = os.path.join(snapshot, *subfolder.split("/"))
@@ -10666,12 +10678,14 @@ def _hf_cache_root(repo_id: str):
 
 def _active_hf_snapshot_path(repo_id: str):
     """Resolve the active local snapshot written by the mirror, if readable."""
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
+
+    revision = resolve_revision(repo_id)
+    if revision is not None:
+        repo_id = resolve_hub_model(repo_id)
     root = _hf_cache_root(repo_id)
     if root is None:
         return None
-    from rapid_mlx.model_aliases import resolve_revision
-
-    revision = resolve_revision(repo_id)
     if revision is not None:
         snapshot = root / "snapshots" / revision
         return snapshot if snapshot.is_dir() else root

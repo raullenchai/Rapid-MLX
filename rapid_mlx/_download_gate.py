@@ -531,11 +531,11 @@ def _model_info_with_timeout(repo_id: str, timeout: float):
 
     def _call() -> None:
         try:
-            from .model_aliases import resolve_revision
+            from .model_aliases import resolve_hub_model, resolve_revision
 
             revision = resolve_revision(repo_id)
             result["info"] = HfApi().model_info(
-                repo_id,
+                resolve_hub_model(repo_id) if revision is not None else repo_id,
                 files_metadata=True,
                 **({"revision": revision} if revision else {}),
             )

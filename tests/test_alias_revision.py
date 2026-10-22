@@ -20,6 +20,17 @@ REPO = "RecursiveSI/flint-int4"
 UNPINNED = "mlx-community/Qwen3-0.6B-4bit"
 
 
+@pytest.fixture(params=[REPO, ALIAS, "my-flint"])
+def pinned_name(request, monkeypatch, tmp_path):
+    from rapid_mlx import user_aliases
+
+    monkeypatch.setenv(
+        "RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "user-aliases.json")
+    )
+    user_aliases.set_user_alias("my-flint", ALIAS, aliases.list_aliases())
+    return request.param
+
+
 @pytest.mark.parametrize(
     "extra,expected", [({}, None), ({"revision": None}, None), ({"revision": PIN}, PIN)]
 )
@@ -174,7 +185,9 @@ def test_exact_cache_readiness_metadata_and_offline(cache, monkeypatch):
 
 @pytest.mark.parametrize("method", ["snapshot_download", "hf_hub_download"])
 @pytest.mark.parametrize("disabled", [False, True])
-def test_shared_download_wrappers_enforce_catalog_pin(monkeypatch, method, disabled):
+def test_shared_download_wrappers_enforce_catalog_pin(
+    monkeypatch, method, disabled, pinned_name
+):
     import huggingface_hub
 
     download = Mock(return_value="/snapshot")
@@ -183,20 +196,21 @@ def test_shared_download_wrappers_enforce_catalog_pin(monkeypatch, method, disab
     fn = getattr(model_downloads, method)
     rest = () if method == "snapshot_download" else ("config.json",)
     for repo, kwargs, expected in [
-        (REPO, {}, PIN),
-        (REPO, {"revision": None}, PIN),
-        (REPO, {"revision": PIN}, PIN),
+        (pinned_name, {}, PIN),
+        (pinned_name, {"revision": None}, PIN),
+        (pinned_name, {"revision": PIN}, PIN),
         (UNPINNED, {}, None),
         (UNPINNED, {"revision": OTHER}, OTHER),
     ]:
         assert fn(repo, *rest, **kwargs) == "/snapshot"
+        assert download.call_args.args == (REPO if expected == PIN else repo, *rest)
         actual = download.call_args.kwargs
         assert actual.get("revision") == expected
         assert actual.get("local_files_only", False) == disabled
 
     download.reset_mock()
-    with pytest.raises(ValueError, match=rf"{REPO}.*{PIN}"):
-        fn(REPO, *rest, revision=OTHER)
+    with pytest.raises(ValueError, match=rf"{pinned_name}.*{PIN}"):
+        fn(pinned_name, *rest, revision=OTHER)
     download.assert_not_called()
 
 
@@ -318,7 +332,7 @@ def test_pull_uses_revision_override_in_existing_pipeline(
     assert (tmp_path / "refs" / "main").exists() is False
 
 
-def test_metadata_and_variant_probes_use_pin(monkeypatch, cache):
+def test_metadata_and_variant_probes_use_pin(monkeypatch, cache, pinned_name):
     import huggingface_hub
 
     from rapid_mlx import server
@@ -327,16 +341,18 @@ def test_metadata_and_variant_probes_use_pin(monkeypatch, cache):
     monkeypatch.setattr(
         huggingface_hub, "HfApi", lambda: SimpleNamespace(model_info=info)
     )
-    gate._model_info_with_timeout(REPO, 1)
-    assert info.call_args.kwargs["revision"] == PIN
+    gate._model_info_with_timeout(pinned_name, 1)
+    info.assert_called_once_with(REPO, files_metadata=True, revision=PIN)
     hf = Mock(return_value="/snapshot")
     monkeypatch.setattr(huggingface_hub, "model_info", info)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", hf)
-    assert server._prefetch_routing_metadata(REPO).startswith("/snapshot")
+    assert server._prefetch_routing_metadata(pinned_name).startswith("/snapshot")
     assert info.call_args.kwargs["revision"] == PIN
     assert hf.call_args.kwargs["revision"] == PIN
-    cli._check_disk_space(REPO)
-    assert info.call_args.kwargs["revision"] == PIN
+    assert info.call_args.args == (REPO,)
+    assert hf.call_args.args == (REPO,)
+    cli._check_disk_space(pinned_name)
+    info.assert_called_with(REPO, revision=PIN, files_metadata=True)
     tree = Mock(return_value=[huggingface_hub.RepoFolder(path="8bit", oid="tree")])
     monkeypatch.setattr(
         huggingface_hub, "HfApi", lambda: SimpleNamespace(list_repo_tree=tree)
@@ -384,7 +400,9 @@ def test_models_json_unpinned_rows_and_swift_compatibility():
     assert "JSONSerialization.jsonObject" in reader
 
 
-def test_kv_and_memory_config_reads_use_the_catalog_pin(cache, monkeypatch):
+def test_kv_and_memory_config_reads_use_the_catalog_pin(
+    cache, monkeypatch, pinned_name
+):
     import huggingface_hub
 
     from rapid_mlx.byom import preflight
@@ -394,15 +412,15 @@ def test_kv_and_memory_config_reads_use_the_catalog_pin(cache, monkeypatch):
     (pinned / "config.json").write_text(
         json.dumps({"model_type": "qwen3", "pinned": True})
     )
-    config, profile = cli._gather_kv_cache_dtype_inputs(ALIAS)
+    config, profile = cli._gather_kv_cache_dtype_inputs(pinned_name)
     assert config == {"model_type": "qwen3", "pinned": True}
     assert profile["hf_path"] == REPO
-    cli._check_memory_capacity(REPO)
+    cli._check_memory_capacity(pinned_name)
     (pinned / "config.json").unlink()
     info = Mock(return_value=SimpleNamespace(siblings=[]))
     monkeypatch.setattr(huggingface_hub, "model_info", info)
-    cli._check_memory_capacity(REPO)
-    assert info.call_args.kwargs["revision"] == PIN
+    cli._check_memory_capacity(pinned_name)
+    info.assert_called_with(REPO, files_metadata=True, revision=PIN)
     (pinned / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     monkeypatch.setattr(
         preflight, "supported_model_types", lambda: frozenset({"qwen3"})
@@ -411,19 +429,19 @@ def test_kv_and_memory_config_reads_use_the_catalog_pin(cache, monkeypatch):
     from rapid_mlx.local_models import catalog_model_ready
 
     assert catalog_model_ready(ALIAS)
-    assert cli._active_hf_snapshot_path(REPO) == pinned
+    assert cli._active_hf_snapshot_path(pinned_name) == pinned
     (cache / "refs" / "main").unlink()
     assert gate.is_repo_cached(REPO)
     assert model_metadata.resolve_pinned_cached_snapshot(REPO) == pinned
 
 
-def test_pinned_alias_subfolder_inventory_uses_pin(cache, monkeypatch):
+def test_pinned_alias_subfolder_inventory_uses_pin(cache, monkeypatch, pinned_name):
     profile = aliases.AliasProfile(hf_path=REPO, revision=PIN, subfolder="4bit")
     monkeypatch.setattr(aliases, "resolve_profile", lambda _: profile)
     snapshot(cache, OTHER, subfolder="4bit")
-    assert cli._cached_subfolder_size(REPO, "4bit") is None
+    assert cli._cached_subfolder_size(pinned_name, "4bit") is None
     pinned = snapshot(cache, PIN, subfolder="4bit")
-    assert cli._cached_subfolder_size(REPO, "4bit") == sum(
+    assert cli._cached_subfolder_size(pinned_name, "4bit") == sum(
         path.stat().st_size for path in pinned.iterdir()
     )
 
@@ -452,3 +470,14 @@ def test_active_pinned_snapshot_falls_back_to_root(cache):
     pinned.unlink()
     pinned.mkdir()
     assert cli._active_hf_snapshot_path(REPO) == pinned
+
+
+def test_cached_file_resolves_pinned_alias(monkeypatch, pinned_name):
+    import huggingface_hub
+
+    cached = Mock(return_value="/snapshot/config.json")
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", cached)
+    assert model_metadata._cached_file(pinned_name, "config.json") == Path(
+        "/snapshot/config.json"
+    )
+    cached.assert_called_once_with(REPO, "config.json", revision=PIN)
