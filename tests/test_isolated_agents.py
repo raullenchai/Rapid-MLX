@@ -1228,6 +1228,40 @@ def test_short_launch_reuses_compatible_running_model(private_home, capsys):
     assert "Using running model" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_short_launch_preserves_saved_quantization(private_home, capsys, explicit):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.configure("goose", "qwen3.5-9b-8bit")
+    profile_dir = isolated.connection_dir() / "agents" / "goose"
+    before = {p: p.read_bytes() for p in profile_dir.rglob("*") if p.is_file()}
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-9b-4bit"
+        ),
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.run.cli._select_model") as select,
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        launch_command(
+            _launch_args("goose", *(["--model", "qwen3.5-9b-4bit"] if explicit else []))
+        )
+    select.assert_not_called()
+    if explicit:
+        assert exit_info.value.code == 0
+        assert isolated.saved_model("goose") == "qwen3.5-9b-4bit"
+        call.assert_called_once()
+    else:
+        assert exit_info.value.code == 1
+        assert isolated.saved_model("goose") == "qwen3.5-9b-8bit"
+        assert {
+            p: p.read_bytes() for p in profile_dir.rglob("*") if p.is_file()
+        } == before
+        call.assert_not_called()
+        assert "stop it before launching qwen3.5-9b-8bit" in capsys.readouterr().err
+
+
 def test_short_launch_refuses_explicit_different_running_model(private_home, capsys):
     from rapid_mlx.launch.cli import launch_command
 

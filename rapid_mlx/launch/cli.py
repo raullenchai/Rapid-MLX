@@ -380,6 +380,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 else None
             )
             explicit = getattr(args, "_original_alias", None) or args.model
+            # A repeat launch retains the saved choice, including quantization.
+            # Only a first launch may adopt a different running checkpoint.
             chosen = explicit or saved_model(args.client)
             active_usable = bool(
                 active
@@ -389,13 +391,13 @@ def launch_command(args: argparse.Namespace) -> None:
                     automatic=not (chosen and _same_checkpoint(active, chosen)),
                 )
             )
-            reuse = bool(active_usable and not explicit)
+            reuse = bool(active_usable and not chosen)
             model = (
                 active
                 if reuse
-                else explicit
+                else chosen
                 or _select_model(
-                    explicit=chosen,
+                    explicit=None,
                     profile=profile,
                     no_download=False,
                 )
