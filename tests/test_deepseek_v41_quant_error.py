@@ -400,6 +400,58 @@ def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
     assert not list(tmp_path.glob("build.partial-*"))
 
 
+def test_shared_identity_distinguishes_tensor_offsets(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_rd_build as rd_build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    (source / "config.json").write_text(json.dumps(config))
+    allocation = {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}}}
+
+    def simulate_write_group(path, entries, *_args, **_kwargs):
+        raw = rd_build.header(entries)
+        path.write_bytes(
+            struct.pack("<Q", len(raw))
+            + raw
+            + bytes(sum(entry.nbytes for entry in entries))
+        )
+
+    monkeypatch.setattr(rd_build, "write_group", simulate_write_group)
+    first = tmp_path / "first"
+    shared = tmp_path / "shared"
+    rd_build.build(source, first, shared, allocation)
+
+    # Exchange equal-size tensors in a real shard, preserving names, dtypes,
+    # shapes, shard filename and config. Only their storage offsets change.
+    shard = source / "tiny.safetensors"
+    data = shard.read_bytes()
+    header_size = struct.unpack("<Q", data[:8])[0]
+    header = json.loads(data[8 : 8 + header_size])
+    left = header["layers.0.ffn.experts.0.w1.weight"]
+    right = header["layers.0.ffn.experts.1.w1.weight"]
+    left["data_offsets"], right["data_offsets"] = (
+        right["data_offsets"],
+        left["data_offsets"],
+    )
+    raw = json.dumps(header).encode().ljust(header_size, b" ")
+    assert len(raw) == header_size
+    shard.write_bytes(data[:8] + raw + data[8 + header_size :])
+
+    second = tmp_path / "second"
+    rd_build.build(source, second, shared, allocation)
+    identities = [
+        json.loads((build / "config.json").read_text())["rapid_quantization"][
+            "shared_engram_identity"
+        ]
+        for build in (first, second)
+    ]
+    assert identities[0] != identities[1]
+    assert {p.name for p in shared.iterdir()} == set(identities)
+    with pytest.raises(ValueError, match="reuse build source identity mismatch"):
+        rd_build.build(source, tmp_path / "reuse", shared, allocation, reuse_from=first)
+
+
 def test_fp8_expert_stream_uses_native_decoder(tmp_path):
     import mlx.core as mx
 

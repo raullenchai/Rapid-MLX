@@ -537,7 +537,7 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
             {
                 "config": config,
                 "tensors": [
-                    (n, t.shape, t.dtype, t.nbytes, t.path.name)
+                    (n, t.shape, t.dtype, t.nbytes, t.path.name, t.offset)
                     for n, t in sorted(index.tensors.items())
                 ],
             },
