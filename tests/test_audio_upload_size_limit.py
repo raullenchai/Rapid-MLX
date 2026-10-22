@@ -144,7 +144,7 @@ def test_oversized_audio_upload_returns_413(audio_client, monkeypatch):
     assert audio_route._stt_engine is None
 
 
-def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
+def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch, tmp_path):
     """Direct unit test of the streaming cap — covers the chunked/no-
     Content-Length / understated-Content-Length attack vector that the
     TestClient-level test cannot exercise (TestClient always sets a
@@ -155,7 +155,7 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
       * no STTEngine was ever constructed (no model load on the DoS path)
       * the temp file written so far was cleaned up
     """
-    import os
+    import tempfile
 
     from fastapi import HTTPException
 
@@ -196,10 +196,9 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
 
     fake_upload = _LyingChunkedUpload(total_bytes=8192)  # 8 KB > 1 KB cap
 
-    # Snapshot temp dir so we can assert no temp file leaked.
-    import tempfile as _tf
-
-    before = set(os.listdir(_tf.gettempdir()))
+    # Keep both the handler and the leak assertion isolated from concurrent
+    # uploads in other tests or processes (issue #5039).
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
     import asyncio
 
@@ -240,8 +239,7 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
     assert audio_route._stt_engine is None
 
     # No leaked .wav temp file — the finally-block cleaned up.
-    after = set(os.listdir(_tf.gettempdir()))
-    leaked = [n for n in (after - before) if n.endswith(".wav")]
+    leaked = list(tmp_path.glob("*.wav"))
     assert leaked == [], f"temp .wav files leaked on rejection path: {leaked}"
 
 
