@@ -1264,7 +1264,12 @@ def audit(
     for report, _spec, entry, files, in_progress in report_context:
         if report.intentionally_unmirrored:
             continue
-        required = _required_files(files, None)
+        pin = runtime_pins.get(_spec.hf_path)
+        required = (
+            files
+            if pin is not None and pin[1] is None
+            else _required_files(files, None)
+        )
         missing_required = missing_required_by_report.get(id(report), 0)
         if (
             entry

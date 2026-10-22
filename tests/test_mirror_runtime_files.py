@@ -170,6 +170,24 @@ def test_pinned_whole_repo_missing_readme_fails(monkeypatch, tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    ("present", "false_mirrored"),
+    [({"model.safetensors"}, False), (set(), True)],
+)
+def test_pinned_whole_repo_false_mirrored_counts_all_required_files(
+    monkeypatch, tmp_path, present, false_mirrored
+):
+    listing = [
+        drift.HfFile("model.safetensors", 3, "b" * 64),
+        drift.HfFile("README.md", 3, None, "a" * 40),
+    ]
+    report, _, _ = _audit(monkeypatch, tmp_path, listing, present, None)
+    assert any(f.kind == "false_mirrored" for f in report.findings) == false_mirrored
+    assert {f.path for f in report.findings if f.kind == "missing_file"} == (
+        {item.path for item in listing} - present
+    )
+
+
 LISTING = [
     drift.HfFile("model_index.json", 2, None, "x" * 40),
     drift.HfFile("unet/model.fp16.safetensors", 3, "b" * 64),
