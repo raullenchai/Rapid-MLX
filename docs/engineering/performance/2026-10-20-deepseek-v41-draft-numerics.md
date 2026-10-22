@@ -162,7 +162,11 @@ python -m scripts.bench_deepseek_v41_draft \
 
 Prompts are rendered through the serving chat template and every built-in
 class (QA, code, structured output, summarization) is reported separately with
-tokens per round (accepted draft tokens + 1). Add `--mixed-target-precision`
+tokens actually emitted per round (normally accepted draft tokens + 1, fewer
+when a token limit cuts the round short). Runs live under `classes[i].runs`.
+`--component-timers` adds synchronized draft-component timings to each run's
+`draft_on.mean_round_ms`; these diagnostic boundaries perturb latency.
+Add `--mixed-target-precision`
 for checkpoints the server loads that way. `--raw` encodes text without the
 chat template; its output is labelled `"prompt_format": "raw"` and must not be
 quoted as a chat result, because repetitive raw text accepts nearly every draft

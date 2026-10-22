@@ -333,7 +333,6 @@ def speculative_decode(
                     rounds[-1]["emitted"] += 1
             close_round()
             elapsed = time.perf_counter() - start
-
     finally:
         runtime.drafter.propose = original_propose
         serving._match = original_match
@@ -457,7 +456,12 @@ def _main(argv=None):
         for _ in range(args.repeats):
             plain, off = plain_decode(model, prompt, args.tokens)
             speculative, on = speculative_decode(
-                serving, model, tokenizer, runtime, prompt, args.tokens,
+                serving,
+                model,
+                tokenizer,
+                runtime,
+                prompt,
+                args.tokens,
                 component_timers=args.component_timers,
             )
             runs.append(
