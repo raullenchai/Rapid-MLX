@@ -15,6 +15,19 @@ def _workflow() -> tuple[str, dict]:
     return text, parsed
 
 
+def _apple_mlx_test_run(workflow: dict) -> str:
+    """The Apple lane's MLX-dependent pytest step.
+
+    Later steps (the packaged-artifact install test, coverage upload) follow
+    it, so locating it by name keeps these contracts independent of ordering.
+    """
+    return next(
+        step["run"]
+        for step in workflow["jobs"]["test-apple-silicon"]["steps"]
+        if step.get("name") == "Run MLX-dependent tests"
+    )
+
+
 def _ci_linux_extra() -> list[str]:
     """Parse the canonical ``[ci-linux]`` test-dependency list from pyproject.
 
@@ -35,14 +48,13 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
     jobs = workflow["jobs"]
 
     linux = jobs["test-matrix"]
-    apple = jobs["test-apple-silicon"]
     gate = jobs["changed-lines-coverage"]
 
     assert (
         "coverage-linux-${{ matrix.python-version }}-${{ matrix.shard }}.data" in text
     )
     assert "coverage-apple.data" in text
-    assert "--cov=rapid_mlx" in apple["steps"][-2]["run"]
+    assert "--cov=rapid_mlx" in _apple_mlx_test_run(workflow)
     assert any("--cov=rapid_mlx" in step.get("run", "") for step in linux["steps"])
     assert set(gate["needs"]) == {
         "changes",
@@ -153,7 +165,7 @@ def test_linux_shard_planner_failure_cannot_fall_back_to_full_suite() -> None:
 
 def test_apple_coverage_roster_contains_only_tracked_tests() -> None:
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
     test_paths = [
         token.rstrip(" \\")
         for token in apple_run.splitlines()
@@ -168,7 +180,7 @@ def test_apple_coverage_roster_contains_only_tracked_tests() -> None:
 def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     """Qwen-family Metal fast paths must contribute to changed-lines coverage."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_qwen4_fused_gdn_decode.py" in apple_run
     assert "tests/test_qwen35_moe_router.py" in apple_run
@@ -180,14 +192,14 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
 
 def test_embedding_gemma2_native_contracts_run_on_apple_silicon() -> None:
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
     assert "tests/test_embedding_gemma2.py" in apple_run
 
 
 def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:
     """Qwen3.6 routing and disconnect ownership must reach the MLX lane."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_qwen36_native_text_cache.py" in apple_run
     assert "tests/test_disconnect_counter_prod_shape.py" in apple_run
@@ -196,7 +208,7 @@ def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:
 def test_mla_absorbed_verify_coverage_runs_on_apple_silicon() -> None:
     """MLX-only absorbed-MLA paths must contribute to changed-line coverage."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_mla_absorbed_verify.py" in apple_run
 
@@ -204,7 +216,7 @@ def test_mla_absorbed_verify_coverage_runs_on_apple_silicon() -> None:
 def test_deepseek_v41_product_coverage_runs_on_apple_silicon() -> None:
     """The installed MLX-only V4.1 runtime must contribute to the union."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_deepseek_v41_artifacts.py" in apple_run
     assert "tests/test_deepseek_v41_affine_route_qmv.py" in apple_run
@@ -216,7 +228,7 @@ def test_deepseek_v41_product_coverage_runs_on_apple_silicon() -> None:
 def test_hidream_runtime_coverage_runs_on_apple_silicon() -> None:
     """The MLX-only image runtime must contribute to the coverage union."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_hidream_o1_alias.py" in apple_run
 
@@ -224,7 +236,7 @@ def test_hidream_runtime_coverage_runs_on_apple_silicon() -> None:
 def test_sdxl_runtime_coverage_runs_on_apple_silicon() -> None:
     """The vendored MLX-only SDXL runtime must contribute to coverage."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_sdxl_alias.py" in apple_run
 
@@ -233,7 +245,7 @@ def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
     """The MLX-only product adapter and dependency must reach the Apple lane."""
     _, workflow = _workflow()
     steps = workflow["jobs"]["test-apple-silicon"]["steps"]
-    apple_run = steps[-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
     install = next(
         step["run"]
         for step in steps
@@ -247,7 +259,7 @@ def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
 def test_vendored_mllm_namespace_coverage_runs_on_apple_silicon() -> None:
     """MLX-bound namespace branches must contribute to the coverage union."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    apple_run = _apple_mlx_test_run(workflow)
 
     assert "tests/test_mllm_cache_namespace_compat.py" in apple_run
     assert "tests/test_mlx_vlm_vendored_generate.py" in apple_run

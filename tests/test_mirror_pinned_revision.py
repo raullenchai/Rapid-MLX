@@ -517,6 +517,12 @@ def test_pull_fetches_the_commit_serve_uses(monkeypatch, repo, source):
     monkeypatch.setattr(
         cli, "_pull_repository", lambda args, **kw: calls.append((args.model, kw))
     )
+    # The video runtime preflight is covered separately; this test pins the
+    # revision-resolution contract and must stay host-independent (Linux CI
+    # has no MLX).
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.video_lane.video_runtime_issue", lambda *a, **kw: None
+    )
     cli.pull_command(SimpleNamespace(model=repo))
     pin = (IMAGE_MODEL_REVISIONS if source == "image" else WAN_REVISIONS)[repo]
     assert calls == [(repo, {"revision_override": pin})]

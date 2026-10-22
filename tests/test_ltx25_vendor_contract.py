@@ -323,3 +323,30 @@ def test_vendor_script_is_self_contained() -> None:
     assert "import rapid_mlx" not in source
     assert "from rapid_mlx" not in source
     assert "from .video" not in source
+
+
+def test_apple_lane_runs_the_runtime_and_packaged_artifact_tests() -> None:
+    """The bundled runtime's unit and artifact-install tests must reach CI."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test-apple-silicon"]["steps"]
+    runtime_run = next(
+        step["run"] for step in steps if step.get("name") == "Run MLX-dependent tests"
+    )
+    artifact_run = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Run LTX-2.5 packaged-artifact install test"
+    )
+
+    for path in (
+        "tests/test_ltx25_video.py",
+        "tests/test_video_runtime_preflight.py",
+        "tests/test_ltx25_vendor_contract.py",
+    ):
+        assert path in runtime_run
+    assert "tests/test_ltx25_packaged_artifact.py" in artifact_run
+    assert "--run-slow -m slow" in artifact_run
