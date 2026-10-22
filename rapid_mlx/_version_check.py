@@ -307,6 +307,11 @@ def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
     the latest release by ANY amount (patch, minor, or major). Returns
     None when no warning is warranted (current/ahead, or check disabled).
     """
+    versions = _staleness_warning_versions(allow_non_tty=allow_non_tty)
+    return format_staleness_warning(*versions) if versions else None
+
+
+def _staleness_warning_versions(*, allow_non_tty: bool) -> tuple[str, str] | None:
     disabled = _explicitly_disabled() if allow_non_tty else _disabled()
     if disabled:
         return None
@@ -337,7 +342,7 @@ def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
     if latest <= installed:
         return None
 
-    return format_staleness_warning(installed_str, latest_str)
+    return installed_str, latest_str
 
 
 def format_staleness_warning(installed: str, latest: str) -> str:
@@ -348,18 +353,22 @@ def format_staleness_warning(installed: str, latest: str) -> str:
     )
 
 
-def print_staleness_warning_if_any(*, allow_non_tty: bool = False) -> None:
-    """Best-effort: fetches + prints to stderr. Always silent on errors.
+def print_staleness_warning_if_any(*, allow_non_tty: bool = False) -> str | None:
+    """Best-effort: print to stderr and return the announced version, else None.
+
+    Always silent on errors.
 
     ``allow_non_tty`` is reserved for ``serve`` startup logs. It keeps the
     explicit environment/CI opt-outs but does not require stderr to be a TTY.
     """
     try:
-        msg = staleness_warning(allow_non_tty=allow_non_tty)
-        if msg:
-            print(msg, file=sys.stderr)
+        versions = _staleness_warning_versions(allow_non_tty=allow_non_tty)
+        if versions:
+            print(format_staleness_warning(*versions), file=sys.stderr)
+            return versions[1]
     except Exception:  # noqa: BLE001 — never break the CLI
         pass
+    return None
 
 
 def prompt_upgrade_if_available() -> bool:

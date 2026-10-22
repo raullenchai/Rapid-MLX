@@ -547,17 +547,15 @@ def test_non_tty_serve_warning_respects_explicit_opt_out(monkeypatch, env_name):
 def test_non_tty_serve_warning_prints_only_to_stderr(monkeypatch, capsys):
     monkeypatch.setattr(
         vc,
-        "staleness_warning",
-        lambda *, allow_non_tty=False: (
-            "daemon update notice" if allow_non_tty else None
-        ),
+        "_staleness_warning_versions",
+        lambda *, allow_non_tty=False: ("1.0.0", "1.1.0") if allow_non_tty else None,
     )
 
-    vc.print_staleness_warning_if_any(allow_non_tty=True)
+    assert vc.print_staleness_warning_if_any(allow_non_tty=True) == "1.1.0"
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.strip() == "daemon update notice"
+    assert captured.err.strip() == vc.format_staleness_warning("1.0.0", "1.1.0")
 
 
 def test_only_audio_and_text_serve_opt_into_non_tty_warning():
@@ -579,10 +577,10 @@ def test_print_helper_swallows_all_exceptions(monkeypatch, capsys):
     def boom(**_kwargs):
         raise RuntimeError("simulated GitHub outage")
 
-    monkeypatch.setattr(vc, "staleness_warning", boom)
+    monkeypatch.setattr(vc, "_staleness_warning_versions", boom)
     # Must not raise — the CLI must never break because of a staleness
     # check. capsys just makes sure we don't pollute stdout either.
-    vc.print_staleness_warning_if_any()
+    assert vc.print_staleness_warning_if_any() is None
     captured = capsys.readouterr()
     assert captured.out == ""
 
@@ -1348,3 +1346,21 @@ def test_prompt_returns_false_on_keyboard_interrupt(monkeypatch, interactive):
     ):
         assert vc.prompt_upgrade_if_available() is False
         run.assert_not_called()
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_print_helper_returns_none_without_notice(monkeypatch, disabled):
+    monkeypatch.setattr(vc, "_explicitly_disabled", lambda: disabled)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.0")
+    assert vc.print_staleness_warning_if_any(allow_non_tty=True) is None
+
+
+def test_print_helper_returns_none_on_print_error(monkeypatch):
+    monkeypatch.setattr(
+        vc, "_staleness_warning_versions", lambda **kw: ("1.0.0", "1.1.0")
+    )
+    monkeypatch.setattr(
+        "builtins.print", MagicMock(side_effect=OSError("closed stderr"))
+    )
+    assert vc.print_staleness_warning_if_any(allow_non_tty=True) is None

@@ -20,6 +20,7 @@ def isolated(monkeypatch):
     monkeypatch.setattr(refresh, "_seen_versions", set())
     monkeypatch.setattr(refresh, "_available", False)
     monkeypatch.setattr(refresh, "_thread", None)
+    monkeypatch.setattr(refresh, "_pid", None)
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
     monkeypatch.setattr(vc, "get_latest_version", Mock(return_value="1.1.0"))
     monkeypatch.setattr(refresh.threading, "Thread", Mock())
@@ -40,14 +41,17 @@ def test_start_is_idempotent_and_does_no_io():
     vc.get_latest_version.assert_not_called()
 
 
-def test_seed_then_announce_each_new_version_once(capsys):
-    refresh.start()
-    refresh._refresh(announce=False)
+@pytest.mark.parametrize("announced", [None, "1.1.0"])
+def test_announce_each_new_version_once(capsys, announced):
+    refresh.start(announced=announced)
+    refresh._refresh()
     assert refresh.snapshot() == {"latest_version": "1.1.0", "update_available": True}
-    assert capsys.readouterr().err == ""
+    assert capsys.readouterr().err == (
+        "" if announced else vc.format_staleness_warning("1.0.0", "1.1.0") + "\n"
+    )
     for version in ("1.1.0", "1.2.0", "1.1.0", "1.2.0", "1.3.0", "1.3.0"):
         vc.get_latest_version.return_value = version
-        refresh._refresh(announce=True)
+        refresh._refresh()
     assert capsys.readouterr().err == "".join(
         vc.format_staleness_warning("1.0.0", version) + "\n"
         for version in ("1.2.0", "1.3.0")
@@ -68,7 +72,7 @@ def test_not_newer_or_unparseable(monkeypatch, installed, latest, capsys):
     refresh.start()
     monkeypatch.setattr(vc, "_installed_version", lambda: installed)
     vc.get_latest_version.return_value = latest
-    refresh._refresh(announce=True)
+    refresh._refresh()
     assert refresh.snapshot() == {"latest_version": latest, "update_available": False}
     assert capsys.readouterr().err == ""
 
@@ -114,10 +118,10 @@ def test_opt_out_before_and_after_start(monkeypatch, env):
     refresh.threading.Thread.assert_not_called()
     monkeypatch.delenv(env)
     assert refresh.start() is True
-    refresh._refresh(announce=False)
+    refresh._refresh()
     monkeypatch.setenv(env, "1")
     assert refresh.snapshot() == EMPTY
-    refresh._refresh(announce=True)
+    refresh._refresh()
     monkeypatch.delenv(env)
     assert refresh.snapshot() == EMPTY
     assert refresh.start() is False
@@ -131,7 +135,7 @@ def test_health_reads_snapshot_without_fetching(monkeypatch):
     result = asyncio.run(health.health())
     assert {key: result[key] for key in EMPTY} == EMPTY
     refresh.start()
-    refresh._refresh(announce=False)
+    refresh._refresh()
     vc.get_latest_version.reset_mock()
     result = asyncio.run(health.health())
     assert result["latest_version"] == "1.1.0"
@@ -144,3 +148,65 @@ def test_notice_text_is_unchanged():
         "⚠ rapid-mlx 1.0.0 is behind latest 1.1.0 — "
         "run `rapid-mlx upgrade` to pick up new model aliases / flags."
     )
+
+
+def test_thread_start_failure_can_retry():
+    refresh.threading.Thread.return_value.start.side_effect = RuntimeError("no thread")
+    assert refresh.start(announced="1.1.0") is False
+    assert refresh.snapshot() == EMPTY
+    assert refresh._thread is None
+    assert refresh._pid is None
+    assert refresh._seen_versions == set()
+    refresh.threading.Thread.return_value.start.side_effect = None
+    assert refresh.start() is True
+
+
+def test_child_ignores_parent_state_and_can_start(monkeypatch, capsys):
+    monkeypatch.setattr(refresh.os, "getpid", lambda: 100)
+    assert refresh.start(announced="1.1.0") is True
+    refresh._refresh()
+    monkeypatch.setattr(refresh.os, "getpid", lambda: 101)
+    assert refresh.snapshot() == EMPTY
+    assert refresh.start() is True
+    assert refresh.snapshot() == EMPTY
+    refresh._refresh()
+    assert (
+        capsys.readouterr().err == vc.format_staleness_warning("1.0.0", "1.1.0") + "\n"
+    )
+    assert refresh.start() is False
+
+
+def test_audio_serve_passes_announced_version(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import rapid_mlx
+    from rapid_mlx import cli
+
+    class StopServe(BaseException):
+        pass
+
+    server = SimpleNamespace(
+        app=object(),
+        configure_logging=lambda level: level,
+        _sync_config=lambda: None,
+        register_audio_routes_if_enabled=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.server", server)
+    monkeypatch.setattr(rapid_mlx, "server", server, raising=False)
+    monkeypatch.setattr(
+        cli, "_configure_engineless_server_security", lambda *args: None
+    )
+    monkeypatch.setattr(
+        vc, "print_staleness_warning_if_any", Mock(return_value="1.1.0")
+    )
+    start = Mock(side_effect=StopServe)
+    monkeypatch.setattr(refresh, "start", start)
+    args = cli.build_parser().parse_args(["serve", "audio-model"])
+    entry = SimpleNamespace(
+        alias="audio-model", hf_id="org/audio-model", type="stt", languages=None
+    )
+    with pytest.raises(StopServe):
+        cli._serve_audio_mode(args, entry)
+    vc.print_staleness_warning_if_any.assert_called_once_with(allow_non_tty=True)
+    start.assert_called_once_with(announced="1.1.0")
