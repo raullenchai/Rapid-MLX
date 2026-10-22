@@ -95,7 +95,9 @@ RAPID_MLX_DSV41_DRAFT_DEPTH=0 lockf -k "$GPU_LOCK" \
 In terminal B, define this function from the same repository root. It copies
 prompts into each result directory because the benchmark saves the first
 measured output beside its input. JSON lines retain per-round TTFT, usage,
-decode interval and throughput. A failed request returns a nonzero status.
+decode interval and throughput. Each round, error and summary line also includes
+`_schema_version` and `_methodology_hash` (SHA-256 of the benchmark script).
+A failed request returns a nonzero status.
 
 ```sh
 bench() {

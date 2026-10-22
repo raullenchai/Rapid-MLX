@@ -14,6 +14,11 @@ import time
 import urllib.error
 import urllib.request
 
+try:
+    from scripts.bench_metadata import format_bench_json
+except ImportError:  # direct `python scripts/bench_*.py` execution
+    from bench_metadata import format_bench_json
+
 
 def events(response):
     parts = []
@@ -170,25 +175,31 @@ def main():
             measured += 1
             rates.append(metrics["decode_tokens_per_s"])
             print(
-                json.dumps(
+                format_bench_json(
                     {
                         "type": "round",
                         "label": args.label,
                         "model": args.model,
                         "round": round_number,
                         **metrics,
-                    }
+                    },
+                    __file__,
+                    indent=None,
                 ),
                 flush=True,
             )
     except Exception as exc:
         print(
-            json.dumps({"type": "error", "label": args.label, "error": str(exc)}),
+            format_bench_json(
+                {"type": "error", "label": args.label, "error": str(exc)},
+                __file__,
+                indent=None,
+            ),
             flush=True,
         )
         return 1
     print(
-        json.dumps(
+        format_bench_json(
             {
                 "type": "summary",
                 "label": args.label,
@@ -196,7 +207,9 @@ def main():
                 "rounds": measured,
                 "valid_decode_rounds": len(rates),
                 "mean_decode_tokens_per_s": sum(rates) / len(rates) if rates else None,
-            }
+            },
+            __file__,
+            indent=None,
         )
     )
     return 0
