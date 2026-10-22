@@ -211,9 +211,11 @@ Environment: main at `aba78efd2`, Apple M3 Ultra, the product runtime loader
 (async eval every 2 layers), real checkpoint, 1003-token context, plain target
 step (1 row) and verify(5) step, greedy.
 
-Bandwidth floors: target 12.2 ms (6 distinct routed experts/layer, 12.53 MB per
-expert, 40 layers, ~3.1 GB routed); verify(5) ~21.2 ms at 819 GB/s
-(20.15 distinct experts/layer, ~10.5 GB routed).
+Bandwidth floors at 819 GB/s over all weights read per step: target 12.2 ms
+(~10.0 GB: ~3.1 GB routed experts, 6 distinct/layer at 12.53 MB each over
+40 layers, plus ~0.94 GB shared experts and the dense attention/projection/head
+weights); verify(5) ~21.2 ms (~17.4 GB: the extra ~7.4 GB of routed experts
+from 20.15 distinct/layer, ~10.5 GB routed in total).
 
 ### Methodology and structural ablation
 
@@ -235,13 +237,17 @@ are graph primitive nodes.
 A baseline repeat gave 36.7 / 79.1 ms. The 41.2 ms target result is a run-order
 artefact, not a regression. With hc + norms removed, verify distinct
 experts/layer drops to 17.43 because routing changes. Removing ~1,480
-elementwise nodes saves ~4 ms, ~3.8 us per node. This is below the 4 ms
-target-only threshold set for this lever, so fusion work on these ops stopped.
+elementwise nodes saves ~4.1 ms target (35.5 -> 31.4) and ~4.0 ms verify
+(78.6 -> 74.6), about 2.7–2.8 us per node. This is the removal upper bound
+and only at the 4 ms target-only stop threshold. A fusion would recover only
+part of it, so this lever was stopped.
 
 The first ablation run was invalid: its hc-post stand-in returned only the
 residual and dropped the block output. Lazy evaluation pruned the whole
-attention and MoE computation, and verify(5) measured ~12 ms, below the ~21 ms
-bandwidth floor, which is physically impossible. The corrected stand-in adds
+attention and MoE computation, and verify(5) measured ~12 ms. The verify(5)
+expert weights alone (routed + shared, ~11.4 GB) need at least ~14 ms at
+819 GB/s, so ~12 ms is physically impossible (the full floor is ~21 ms).
+The corrected stand-in adds
 the block output back to the residual so the graph stays live. Any ablation
 result below the bandwidth floor is a pruned graph, not a speedup; sanity-check
 against the floor.
