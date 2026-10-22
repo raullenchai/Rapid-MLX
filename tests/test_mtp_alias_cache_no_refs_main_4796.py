@@ -20,6 +20,10 @@ CONFIG = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    sidecar = tmp_path / "models--mlx-community--Qwen3.5-9B-MTP-4bit"
+    _snapshot(sidecar)
+    (sidecar / "snapshots" / SHA_A / "model.safetensors").write_bytes(b"weights")
+    _main(sidecar)
     return tmp_path / "models--mlx-community--Qwen3.5-9B-4bit"
 
 

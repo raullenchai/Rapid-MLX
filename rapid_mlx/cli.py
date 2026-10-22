@@ -3162,6 +3162,44 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     return sidecar, depth
 
 
+def _cached_mtp_sidecar(sidecar: str) -> str | None:
+    """Resolve an automatic sidecar locally, honoring its catalog revision.
+
+    A sidecar can contain only the MTP head, so it need not satisfy the
+    complete target-checkpoint contract. Require the weight file consumed
+    by the injector, and pass the directory to prevent a later Hub lookup.
+    """
+    from .model_aliases import checkpoint_prefix
+    from .model_metadata import _cached_file, resolve_unreferenced_cached_snapshot
+
+    names = (
+        "mtp.safetensors",
+        "model-mtp.safetensors",
+        "mtp/model.safetensors",
+        "model.safetensors",
+    )
+    try:
+        prefix = checkpoint_prefix(sidecar)
+        for name in names:
+            weight = _cached_file(sidecar, f"{prefix}{name}")
+            if weight is not None and weight.is_file():
+                root = (
+                    weight.parent.parent if name.startswith("mtp/") else weight.parent
+                )
+                return str(root) if weight.stat().st_size > 0 else None
+        # Immutable pulls need not publish refs/main. Keep the existing
+        # single-complete-snapshot fallback, which also enforces catalog pins.
+        root = resolve_unreferenced_cached_snapshot(sidecar)
+        if root is not None:
+            for name in names:
+                weight = root / name
+                if weight.is_file():
+                    return str(root) if weight.stat().st_size > 0 else None
+    except OSError:
+        return None
+    return None
+
+
 def _alias_continuous_mtp_tier(model_name) -> str:
     """Return the alias's measured continuous-MTP qualification tier.
 
@@ -3707,9 +3745,11 @@ def _normalize_speculative_config_or_exit(args):
             ):
                 if hf_cfg is None:
                     profile = resolve_profile(args.model)
-                    pin = getattr(
-                        profile, "tensorfold_target_revision", None
-                    ) or getattr(profile, "dflash_target_revision", None)
+                    pin = (
+                        profile.revision
+                        or getattr(profile, "tensorfold_target_revision", None)
+                        or getattr(profile, "dflash_target_revision", None)
+                    )
                     _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
                     reason = reason or "cached target config could not be read"
                 else:
@@ -3721,8 +3761,18 @@ def _normalize_speculative_config_or_exit(args):
                     file=sys.stderr,
                 )
             else:
-                raw_config = '{"method":"mtp"}'
-                args.speculative_config = raw_config
+                sidecar, _ = _alias_mtp_declaration(args.model)
+                cached_sidecar = _cached_mtp_sidecar(sidecar) if sidecar else None
+                if sidecar and cached_sidecar is None:
+                    print(
+                        "Automatic MTP skipped: sidecar is not cached; "
+                        f"run `rapid-mlx pull {args.model}` to add it; "
+                        "using plain decode.",
+                        file=sys.stderr,
+                    )
+                else:
+                    raw_config = json.dumps({"method": "mtp", "model": cached_sidecar})
+                    args.speculative_config = raw_config
 
     if raw_config is None:
         _fill_runtime_defaults(overwrite=False)

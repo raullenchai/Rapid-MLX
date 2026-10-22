@@ -45,6 +45,12 @@ def _args(model: str, payload: str | None = None, **overrides) -> SimpleNamespac
     return SimpleNamespace(**base)
 
 
+@pytest.fixture(autouse=True)
+def cached_sidecar(monkeypatch):
+    # These tests exercise catalog defaults independently of cache inventory.
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda _: "/cached/mtp")
+
+
 # --- catalog -----------------------------------------------------------------
 
 
