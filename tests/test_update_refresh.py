@@ -20,7 +20,7 @@ def isolated(monkeypatch):
     monkeypatch.setattr(refresh, "_seen_versions", set())
     monkeypatch.setattr(refresh, "_available", False)
     monkeypatch.setattr(refresh, "_thread", None)
-    monkeypatch.setattr(refresh, "_pid", None)
+    monkeypatch.setattr(refresh, "_lock", refresh.threading.Lock())
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
     monkeypatch.setattr(vc, "get_latest_version", Mock(return_value="1.1.0"))
     monkeypatch.setattr(refresh.threading, "Thread", Mock())
@@ -43,6 +43,11 @@ def test_start_is_idempotent_and_does_no_io():
 
 @pytest.mark.parametrize("announced", [None, "1.1.0"])
 def test_announce_each_new_version_once(capsys, announced):
+    def check_announced():
+        if announced is not None:
+            assert announced in refresh._seen_versions
+
+    refresh.threading.Thread.return_value.start.side_effect = check_announced
     refresh.start(announced=announced)
     refresh._refresh()
     assert refresh.snapshot() == {"latest_version": "1.1.0", "update_available": True}
@@ -150,22 +155,35 @@ def test_notice_text_is_unchanged():
     )
 
 
-def test_thread_start_failure_can_retry():
+@pytest.mark.parametrize("already_seen", [False, True])
+def test_thread_start_failure_can_retry(already_seen):
+    if already_seen:
+        refresh._seen_versions.add("1.1.0")
     refresh.threading.Thread.return_value.start.side_effect = RuntimeError("no thread")
     assert refresh.start(announced="1.1.0") is False
     assert refresh.snapshot() == EMPTY
     assert refresh._thread is None
-    assert refresh._pid is None
-    assert refresh._seen_versions == set()
+    assert refresh._seen_versions == ({"1.1.0"} if already_seen else set())
     refresh.threading.Thread.return_value.start.side_effect = None
     assert refresh.start() is True
 
 
-def test_child_ignores_parent_state_and_can_start(monkeypatch, capsys):
-    monkeypatch.setattr(refresh.os, "getpid", lambda: 100)
+def test_child_ignores_parent_state_and_can_start(capsys):
     assert refresh.start(announced="1.1.0") is True
     refresh._refresh()
-    monkeypatch.setattr(refresh.os, "getpid", lambda: 101)
+    parent_lock = refresh._lock
+    parent_seen_versions = refresh._seen_versions
+    with parent_lock:
+        refresh._reset_after_fork()
+        assert parent_lock.locked()
+        assert refresh._lock is not parent_lock
+        assert not refresh._lock.locked()
+        assert refresh._thread is None
+        assert refresh._latest is None
+        assert refresh._available is False
+        assert refresh._seen_versions == set()
+        assert refresh._seen_versions is not parent_seen_versions
+        assert parent_seen_versions == {"1.1.0"}
     assert refresh.snapshot() == EMPTY
     assert refresh.start() is True
     assert refresh.snapshot() == EMPTY
