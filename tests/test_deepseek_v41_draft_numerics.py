@@ -385,6 +385,7 @@ def test_benchmark_main_tiny_and_checkpoint_provider(
                 else:
                     assert key not in means
     assert result["_schema_version"] == 1
+    assert result["output_format_version"] == 2
     assert len(result["_methodology_hash"]) == 64
     model, draft = bench.tiny_setup()
     runtime = serving.DSparkRuntime(draft, "synthetic", "synthetic", "synthetic")

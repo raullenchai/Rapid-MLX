@@ -22,6 +22,9 @@ import mlx.core as mx
 
 from scripts.bench_metadata import format_bench_json
 
+# Version 2 moves flat runs into classes[i].runs and adds prompt_format.
+OUTPUT_FORMAT_VERSION = 2
+
 
 def tiny_setup(seed=7):
     """Deterministic real target and three-stage draft with synthetic weights."""
@@ -496,6 +499,7 @@ def _main(argv=None):
                 "seed": args.seed,
                 # "raw" numbers are not chat numbers; never quote them as such.
                 "prompt_format": "raw" if args.raw else "chat",
+                "output_format_version": OUTPUT_FORMAT_VERSION,
                 "generated_tokens": args.tokens,
                 "classes": classes,
             },

@@ -164,6 +164,7 @@ Prompts are rendered through the serving chat template and every built-in
 class (QA, code, structured output, summarization) is reported separately with
 tokens actually emitted per round (normally accepted draft tokens + 1, fewer
 when a token limit cuts the round short). Runs live under `classes[i].runs`.
+The top-level `output_format_version` is 2 for this per-class layout; version 1 used flat `runs`.
 `--component-timers` adds synchronized draft-component timings to each run's
 `draft_on.mean_round_ms`; these diagnostic boundaries perturb latency.
 Add `--mixed-target-precision`
