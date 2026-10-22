@@ -214,6 +214,22 @@ def test_shared_download_wrappers_enforce_catalog_pin(
     download.assert_not_called()
 
 
+@pytest.mark.parametrize("name", [ALIAS, REPO])
+def test_warm_pinned_subfolder_checkpoint_uses_cache(cache, monkeypatch, name):
+    from rapid_mlx import _mirror
+    from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+
+    profile = aliases.AliasProfile(hf_path=REPO, revision=PIN, subfolder="4bit")
+    monkeypatch.setattr(aliases, "_aliases", {ALIAS: profile})
+    monkeypatch.setattr(aliases, "_hf_to_alias", {REPO.lower(): ALIAS})
+    pinned = snapshot(cache, PIN, subfolder="4bit")
+    fetch = Mock(side_effect=AssertionError("warm cache must not download"))
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", fetch)
+
+    assert _resolve_subfolder_checkpoint(name) == str(pinned)
+    fetch.assert_not_called()
+
+
 @pytest.mark.parametrize("subfolder", [None, "4bit"])
 def test_cold_checkpoint_and_server_use_pinned_snapshot(
     monkeypatch, tmp_path, subfolder
