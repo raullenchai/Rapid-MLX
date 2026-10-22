@@ -3189,12 +3189,12 @@ def _cached_mtp_sidecar(sidecar: str) -> str | None:
                 return str(root) if weight.stat().st_size > 0 else None
         # Immutable pulls need not publish refs/main. Keep the existing
         # single-complete-snapshot fallback, which also enforces catalog pins.
-        root = resolve_unreferenced_cached_snapshot(sidecar)
-        if root is not None:
+        unreferenced = resolve_unreferenced_cached_snapshot(sidecar)
+        if unreferenced is not None:
             for name in names:
-                weight = root / name
+                weight = unreferenced / name
                 if weight.is_file():
-                    return str(root) if weight.stat().st_size > 0 else None
+                    return str(unreferenced) if weight.stat().st_size > 0 else None
     except OSError:
         return None
     return None
