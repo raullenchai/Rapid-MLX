@@ -373,6 +373,7 @@ def _command(
     *,
     version: str | None = None,
     opencode_run: bool = False,
+    executable: str | None = None,
 ) -> str:
     quote = shlex.quote
     key = quote(str(key_path()))
@@ -397,8 +398,8 @@ def _command(
         # OpenCode 2.x otherwise joins its shared background service on a
         # fixed port. That service may belong to the user's normal OpenCode
         # session and does not inherit this private profile or Rapid key.
-        standalone = " --standalone" if not (version or "").startswith("1.") else ""
-        invocation = "opencode run" if opencode_run else "opencode"
+        standalone = " --standalone" if (version or "").startswith("2.") else ""
+        invocation = quote(executable or "opencode") + (" run" if opencode_run else "")
         return (
             f'{credential} OPENCODE_CONFIG_CONTENT="$(cat {config})" '
             "env -u OPENCODE_CONFIG_DIR "
@@ -600,11 +601,21 @@ def configure(
     os.environ["RAPID_MLX_API_KEY"] = key
     try:
         version = None
+        executable = None
         context_length = None
         if name == "opencode":
-            from rapid_mlx.agents.opencode_version import installed_version
+            from rapid_mlx.agents.opencode_version import (
+                installed_version,
+                resolve_executable,
+            )
 
-            version = installed_version()
+            executable = resolve_executable()
+            version = installed_version(binary=executable)
+            if version is None:
+                print(
+                    "OpenCode version unknown; omitting version-specific flags.",
+                    file=sys.stderr,
+                )
         if name == "hermes":
             context_length = hermes_context_length(
                 port, key, model, require_live=require_live_context
@@ -802,7 +813,13 @@ def configure(
             "        environment[name] = value\n"
             "os.execvpe('crush', ['crush', '--data-dir', str(data_root / project_id)], environment)\n",
         )
-    command = _command(name, root, model, port, version=version)
+    command = _command(name, root, model, port, version=version, executable=executable)
+    if name == "opencode":
+        # Refresh can change the executable and flags. Keep them out of the
+        # running shell script, which may already have buffered its contents.
+        launch = root / "command"
+        _private_write(launch, command + "\n")
+        command = f"exec /bin/zsh {shlex.quote(str(launch))}"
     cli = _cli_invocation()
     runner = root / "run"
     # Reconfigure in the runner's execution directory before starting the

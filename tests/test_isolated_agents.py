@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -209,7 +210,7 @@ def test_old_opencode_shape_and_hermes_auth(private_home):
     )
     assert "providers" not in config
     assert config["model"] == "rapid-mlx/qwen3.5-9b-4bit"
-    runner = (isolated.connection_dir() / "agents" / "opencode" / "run").read_text()
+    runner = (isolated.connection_dir() / "agents" / "opencode" / "command").read_text()
     assert "OPENCODE_CONFIG=" in runner
     assert (
         f"HOME={isolated.connection_dir() / 'agents' / 'opencode' / 'home'}" in runner
@@ -337,7 +338,7 @@ def test_opencode_shell_falls_back_from_unsupported_login_shell(
     )
     assert "SHELL=/bin/sh; export SHELL" in wrapper
     assert wrapper.endswith('exec /bin/sh "$@"\n')
-    assert f"SHELL={root / 'shell' / 'sh'} " in (root / "run").read_text()
+    assert f"SHELL={root / 'shell' / 'sh'} " in (root / "command").read_text()
 
 
 def test_opencode_runner_home_exists_and_survives_refresh(private_home):
@@ -711,7 +712,7 @@ def test_new_opencode_model_comes_from_private_config(private_home):
     config = json.loads((root / "opencode.json").read_text())
     assert config["model"] == "rapid-mlx/qwen3.5-9b-4bit"
     assert "rapid-mlx" in config["providers"]
-    runner = (root / "run").read_text()
+    runner = (root / "command").read_text()
     assert "OPENCODE_CONFIG=" in runner
     assert "OPENCODE_CONFIG_CONTENT=" in runner
     assert "opencode --standalone" in runner
@@ -727,7 +728,7 @@ def test_old_opencode_runner_keeps_v1_cli_flags(private_home):
         "rapid_mlx.agents.opencode_version.installed_version", return_value="1.0.0"
     ):
         isolated.configure("opencode", "qwen3.5-9b-4bit")
-    runner = (isolated.connection_dir() / "agents" / "opencode" / "run").read_text()
+    runner = (isolated.connection_dir() / "agents" / "opencode" / "command").read_text()
     assert "opencode --standalone" not in runner
     smoke = isolated._command(
         "opencode",
@@ -2018,3 +2019,91 @@ def test_saved_runner_checks_new_working_directory_before_agent_starts(
             "provider": "rapid-mlx",
             "model": "qwen3.5-9b-4bit",
         }
+
+
+@pytest.mark.parametrize("probe_failure", ["unknown", "timeout"])
+def test_opencode_unknown_version_launches_v1_without_unsupported_flags(
+    private_home, monkeypatch, capsys, probe_failure
+):
+    from rapid_mlx.agents import opencode_version
+
+    binary = private_home / ".opencode" / "bin" / "opencode"
+    binary.parent.mkdir(parents=True)
+    # Model a 1.x executable that rejects the 2.x flag, even when its version
+    # cannot be identified. Its installation directory is absent from PATH.
+    binary.write_text('#!/bin/sh\n[ "$#" -eq 0 ] || exit 1\n')
+    binary.chmod(0o700)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(isolated, "_cli_invocation", lambda: "/usr/bin/true")
+    if probe_failure == "timeout":
+        result = subprocess.TimeoutExpired([str(binary), "--version"], 5)
+        probe = patch.object(opencode_version.subprocess, "run", side_effect=result)
+    else:
+        probe = patch.object(
+            opencode_version.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "unknown"),
+        )
+    with probe as run:
+        runner = isolated.configure("opencode", "model", port=7660)
+    assert run.call_args.args[0] == [str(binary), "--version"]
+    assert run.call_args.kwargs["timeout"] == 5
+    assert "version unknown" in capsys.readouterr().err
+    root = isolated.connection_dir() / "agents" / "opencode"
+    command = (root / "command").read_text()
+    assert command.rstrip().endswith(shlex.quote(str(binary)))
+    assert "--standalone" not in command
+    subprocess.run(["/bin/zsh", shlex.split(runner)[0]], check=True, timeout=10)
+
+
+def test_opencode_refresh_uses_new_executable_and_argv_without_rewriting_runner(
+    private_home, monkeypatch
+):
+    # The first configuration runs without the per-user install on PATH.
+    first = private_home / ".opencode" / "bin" / "opencode"
+    first.parent.mkdir(parents=True)
+    first.write_text('#!/bin/sh\nprintf "2.0.26\\n"\n')
+    first.chmod(0o700)
+    second = private_home / "new bin" / "opencode"
+    second.parent.mkdir()
+    record = private_home / "executed"
+    second.write_text(
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.19.4; exit 0; fi\n'
+        '[ "$#" -eq 0 ] || exit 1\n'
+        f'printf "%s" "$0" > {shlex.quote(str(record))}\n'
+    )
+    second.chmod(0o700)
+    # A real subprocess refreshes configuration, just as the CLI does after
+    # checking the endpoint. The fake endpoint check requires no live server.
+    refresh = private_home / "refresh.py"
+    cli = f"{shlex.quote(sys.executable)} {shlex.quote(str(refresh))}"
+    refresh.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from rapid_mlx.agents import isolated\n"
+        "if '--check' not in sys.argv:\n"
+        f"    isolated._cli_invocation = lambda: {cli!r}\n"
+        "    isolated.configure('opencode', 'model', port=7660)\n"
+    )
+    monkeypatch.setenv("HOME", str(private_home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(isolated, "_cli_invocation", lambda: cli)
+    runner = Path(shlex.split(isolated.configure("opencode", "model", port=7660))[0])
+    command = runner.parent / "command"
+    assert f"{first} --standalone" in command.read_text()
+    before = runner.stat().st_mtime_ns
+    monkeypatch.setenv("PATH", f"{second.parent}:/usr/bin:/bin")
+    subprocess.run(["/bin/zsh", str(runner)], check=True, timeout=10)
+    assert record.read_text() == str(second)
+    assert "--standalone" not in command.read_text()
+    assert runner.stat().st_mtime_ns == before
+    config = json.loads((runner.parent / "opencode.json").read_text())
+    assert "provider" in config and "providers" not in config
+
+
+@pytest.mark.parametrize("version", [None, "", "1.19.4", "3.0.0"])
+def test_opencode_only_known_supported_major_gets_standalone(private_home, version):
+    command = isolated._command(
+        "opencode", private_home, "model", 7660, version=version
+    )
+    assert "--standalone" not in command

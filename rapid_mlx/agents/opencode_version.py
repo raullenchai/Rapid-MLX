@@ -6,14 +6,23 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
+
+
+def resolve_executable() -> str:
+    """Use the current launch PATH, then the standard per-user installation."""
+    binary = shutil.which("opencode")
+    return str(
+        Path(binary).absolute() if binary else Path.home() / ".opencode/bin/opencode"
+    )
 
 
 def installed_version(
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    *,
+    binary: str | None = None,
 ) -> str | None:
-    binary = shutil.which("opencode")
-    if not binary:
-        return None
+    binary = binary or resolve_executable()
     try:
         output = (runner or subprocess.run)(
             [binary, "--version"],
