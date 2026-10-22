@@ -240,8 +240,8 @@ def test_component_timer_cli_and_stats(capsys):
     assert bench.main(["--tokens", "2", "--repeats", "1", "--component-timers"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["component_timers"] is True
-    assert result["runs"][0]["greedy_equal"]
-    means = result["runs"][0]["draft_on"]["mean_round_ms"]
+    assert result["classes"][0]["runs"][0]["greedy_equal"]
+    means = result["classes"][0]["runs"][0]["draft_on"]["mean_round_ms"]
     for name in ("attention", "moe", "head", "markov"):
         assert means[f"draft_{name}_ms"] >= 0
 
