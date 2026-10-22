@@ -204,3 +204,79 @@ first divergence was token 38 (`p1008`), 63 (`qa`), and 237 (`code`); plain-deco
 token hashes were unchanged by the candidate. This is expected numerics, not a
 correctness bug; token identity is not a product invariant. Every emitted token
 is still the target model's greedy choice under the verify computation.
+
+## Decode-step cost attribution: ablation and GPU trace (line closed)
+
+Environment: main at `aba78efd2`, Apple M3 Ultra, the product runtime loader
+(async eval every 2 layers), real checkpoint, 1003-token context, plain target
+step (1 row) and verify(5) step, greedy.
+
+Bandwidth floors: target 12.2 ms (6 distinct routed experts/layer, 12.53 MB per
+expert, 40 layers, ~3.1 GB routed); verify(5) ~21.2 ms at 819 GB/s
+(20.15 distinct experts/layer, ~10.5 GB routed).
+
+### Methodology and structural ablation
+
+The first per-op attribution synchronized after each op and was invalid. Each
+synchronization costs ~0.2 ms, inflating and reordering small ops; this pointed
+at elementwise work. Use structural ablation (remove an op class and compare
+plain unsynchronized step totals) plus a hardware trace instead.
+
+Hyper-connection (hc) mixing and RMSNorm ablations use stand-ins that keep
+shapes and all downstream work live. Times below are milliseconds; node counts
+are graph primitive nodes.
+
+| Ablation | Target ms | Verify(5) ms | Nodes: target | Nodes: verify |
+| --- | --- | --- | --- | --- |
+| Baseline | 35.5 | 78.6 | 3939 | 10245 |
+| hc removed | 41.2 | 75.1 | 3694 | 10000 |
+| hc + norms removed | 31.4 | 74.6 | 2462 | 8768 |
+
+A baseline repeat gave 36.7 / 79.1 ms. The 41.2 ms target result is a run-order
+artefact, not a regression. With hc + norms removed, verify distinct
+experts/layer drops to 17.43 because routing changes. Removing ~1,480
+elementwise nodes saves ~4 ms, ~3.8 us per node. This is below the 4 ms
+target-only threshold set for this lever, so fusion work on these ops stopped.
+
+The first ablation run was invalid: its hc-post stand-in returned only the
+residual and dropped the block output. Lazy evaluation pruned the whole
+attention and MoE computation, and verify(5) measured ~12 ms, below the ~21 ms
+bandwidth floor, which is physically impossible. The corrected stand-in adds
+the block output back to the residual so the graph stays live. Any ablation
+result below the bandwidth floor is a pruned graph, not a speedup; sanity-check
+against the floor.
+
+### GPU trace
+
+Metal System Trace captured 3 target + 3 verify(5) steps separated by idle.
+
+| Step | Span ms | GPU busy ms | GPU idle ms | Busy % | Command buffers | CPU encode (% of span) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Target | 38.8–42.9 | 33.0–37.6 | 5.3–6.5 | 85–88% | 115–118 | 26–29% |
+| Verify(5) | 84.6–95.6 | 75.0–82.8 | 9.6–12.8 | 87–89% | 205 | 27–32% |
+
+Steady-state idle attribution:
+
+| Cause | Cost per step |
+| --- | --- |
+| Inter-encoder / small-kernel launch gaps | ~112–192 gaps, all <5 us; ~0.1–0.2 ms total (negligible) |
+| Host graph build before the first commit | ~3.0–4.4 ms |
+| One mid-step stall awaiting the host's next async-eval span commit | ~1.8–2.4 ms |
+| Verify tail: host-side sampling/acceptance | ~1.5–2 ms |
+| Other commit/sync stalls | 0–0.9 ms |
+
+GPU busy time is ~2.7x the bandwidth floor for target (33–35 ms vs 12.2 ms)
+and ~3.5x for verify (75 ms vs ~21 ms). Per-2-layer async-eval spans take
+~0.6–0.77 + 0.09 ms (target) and ~1.7 ms (verify); the final head/logits
+command buffer takes 1.8 ms target / 2.6 ms verify. The trace has generic
+encoder labels and no shader-profiler samples, so it cannot attribute time
+to individual kernels.
+
+### Decision
+
+The decode-speed line is closed for now. The only host-side lever, cross-step
+graph prebuild plus removing the mid-step stall, is worth at most ~2–3 ms
+target / ~3–4 ms verify (5–8%). It needs the speculative loop restructured
+because each step depends on the accepted tokens. The remaining gap is
+in-kernel GPU time. Reopen only with a per-kernel GPU frame capture
+(counter-level) that names the kernels responsible.
