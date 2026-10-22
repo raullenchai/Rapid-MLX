@@ -1308,7 +1308,7 @@ def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     assert call.call_args.args[0][:2] == ["/bin/zsh", "-lc"]
     output = capsys.readouterr().out
     assert "launch codex" in output
-    assert "Downloading qwen3.5-9b-4bit" in output
+    assert "Preparing qwen3.5-9b-4bit" in output
     assert "Loading qwen3.5-9b-4bit" in output
 
 
