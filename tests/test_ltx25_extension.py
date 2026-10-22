@@ -28,7 +28,13 @@ class Upload:
 def test_extension_runtime_uses_video_context_and_latent_frame_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/embedded/python"
+        ),
+    )
     captured: dict = {}
 
     class Process:

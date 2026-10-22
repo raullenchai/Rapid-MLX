@@ -21,7 +21,13 @@ else:  # pragma: no cover - exercised only on the 3.10 floor
     import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("rapid_mlx", "vllm_mlx", "videox_fun_mlx")
+PACKAGES = (
+    "rapid_mlx",
+    "vllm_mlx",
+    "videox_fun_mlx",
+    "ltx_core_mlx",
+    "ltx_pipelines_mlx",
+)
 
 if (
     shutil.which("git") is None

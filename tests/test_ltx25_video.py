@@ -45,81 +45,322 @@ def test_ltx25_capabilities_match_distilled_controls() -> None:
     }
 
 
-def _fake_embedded_distributions(
-    monkeypatch: pytest.MonkeyPatch, distributions: dict[str, tuple[str, str | None]]
-) -> None:
-    """Fake installed (version, provenance-stamp) pairs for the embedded check."""
-
-    def distribution(name: str) -> SimpleNamespace:
-        if name not in distributions:
-            raise ltx25.importlib.metadata.PackageNotFoundError(name)
-        version, provenance = distributions[name]
-        return SimpleNamespace(
-            version=version,
-            read_text=lambda filename: (
-                provenance if filename == ltx25.LTX25_PROVENANCE_FILE else None
-            ),
-        )
-
-    monkeypatch.setattr(ltx25.importlib.metadata, "distribution", distribution)
-    monkeypatch.setattr(ltx25.importlib.util, "find_spec", lambda _: object())
+@pytest.fixture(autouse=True)
+def _reset_ltx25_runtime_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the process-private provisioning workspace out of other tests."""
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
 
 
-def test_ltx25_embedded_runtime_requires_both_exact_distributions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stamp = ltx25.LTX25_RUNTIME_COMMIT + "\n"
-    distributions = {
-        "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
-        "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+def _provenance_text(package: str, **overrides: str) -> str:
+    values = {
+        "REPOSITORY": ltx25.LTX25_RUNTIME_REPOSITORY,
+        "COMMIT": ltx25.LTX25_RUNTIME_COMMIT,
+        "VERSION": ltx25.LTX25_RUNTIME_VERSION,
+        "PACKAGE": package,
+        "TREE_SHA256": "0" * 64,
     }
-    _fake_embedded_distributions(monkeypatch, distributions)
+    values.update(overrides)
+    body = "".join(f"{name} = {value!r}\n" for name, value in values.items())
+    return '"""Provenance for the vendored LTX-2.5 runtime package."""\n\n' + body
+
+
+def _vendored_tree(
+    root: Path,
+    *,
+    packages: tuple[str, ...] = ltx25.LTX25_VENDORED_PACKAGES,
+    provenance: dict[str, dict[str, str]] | None = None,
+    omit_provenance: frozenset[str] = frozenset(),
+    with_cli: bool = True,
+) -> dict[str, Path]:
+    """Create fake vendored package directories with provenance metadata."""
+    directories: dict[str, Path] = {}
+    for package in packages:
+        directory = root / package
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").write_text("")
+        if package not in omit_provenance:
+            overrides = (provenance or {}).get(package, {})
+            (directory / ltx25.LTX25_PROVENANCE_FILE).write_text(
+                _provenance_text(package, **overrides)
+            )
+        if package == "ltx_pipelines_mlx" and with_cli:
+            (directory / "cli.py").write_text("")
+        directories[package] = directory
+    return directories
+
+
+def _fake_package_specs(
+    monkeypatch: pytest.MonkeyPatch,
+    directories: dict[str, Path],
+    *,
+    install_root: Path,
+) -> None:
+    """Resolve the vendored packages from *directories* inside *install_root*."""
+
+    def find_spec(name: str, *_args: object, **_kwargs: object) -> object:
+        directory = directories.get(name)
+        if directory is None:
+            return None
+        return SimpleNamespace(submodule_search_locations=[str(directory)])
+
+    monkeypatch.setattr(ltx25.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(ltx25, "_install_root", lambda: install_root)
+
+
+def test_ltx25_runtime_trusted_vendored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root)
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "trusted"
+    assert runtime.source == "vendored"
+    assert runtime.executable == ltx25.sys.executable
+    assert runtime.detail is None
     assert ltx25.embedded_ltx25_interpreter() == ltx25.sys.executable
 
-    distributions["ltx-pipelines-mlx"] = ("0.14.16", stamp)
-    assert ltx25.embedded_ltx25_interpreter() is None
 
-    del distributions["ltx-pipelines-mlx"]
-    assert ltx25.embedded_ltx25_interpreter() is None
-
-
-def test_ltx25_embedded_runtime_rejects_same_version_without_provenance(
-    monkeypatch: pytest.MonkeyPatch,
+def test_ltx25_runtime_absent_when_no_vendored_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A same-version install from a package index carries no build stamp."""
-    stamp = ltx25.LTX25_RUNTIME_COMMIT
-    _fake_embedded_distributions(
-        monkeypatch,
-        {
-            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
-            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, None),
-        },
+    root = tmp_path / "site-packages"
+    root.mkdir()
+    _fake_package_specs(monkeypatch, {}, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "absent"
+    assert runtime.source == "vendored"
+    assert runtime.executable is None
+    assert "ltx_core_mlx" in (runtime.detail or "")
+    assert "ltx_pipelines_mlx" in (runtime.detail or "")
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_runtime_partially_missing_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root, packages=("ltx_core_mlx",))
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert runtime.detail == "missing vendored package(s): ltx_pipelines_mlx"
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_runtime_shadowed_copy_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_root = tmp_path / "site-packages"
+    install_root.mkdir()
+    shadow = tmp_path / "elsewhere"
+    directories = _vendored_tree(shadow)
+    _fake_package_specs(monkeypatch, directories, install_root=install_root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert "resolves outside this rapid-mlx installation" in (runtime.detail or "")
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_runtime_missing_provenance_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root, omit_provenance=frozenset({"ltx_core_mlx"}))
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert "no usable _vendored.py provenance" in (runtime.detail or "")
+
+
+def test_ltx25_runtime_malformed_provenance_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root)
+    (directories["ltx_pipelines_mlx"] / ltx25.LTX25_PROVENANCE_FILE).write_text(
+        f"COMMIT = {ltx25.LTX25_RUNTIME_COMMIT!r}\n"
     )
-    assert ltx25.embedded_ltx25_interpreter() is None
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert "no usable _vendored.py provenance" in (runtime.detail or "")
 
 
-def test_ltx25_embedded_runtime_rejects_mismatched_provenance(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"REPOSITORY": "https://example.invalid/other.git"},
+        {"COMMIT": "0" * 40},
+        {"VERSION": "0.14.16"},
+        {"PACKAGE": "ltx_pipelines_mlx"},
+    ],
+)
+def test_ltx25_runtime_mismatched_provenance_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: dict[str, str]
 ) -> None:
-    _fake_embedded_distributions(
-        monkeypatch,
-        {
-            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
-            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
-        },
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root, provenance={"ltx_core_mlx": override})
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    ((name, value),) = override.items()
+    assert f"provenance {name} is {value!r}" in (runtime.detail or "")
+
+
+def test_ltx25_runtime_missing_cli_entry_point_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root, with_cli=False)
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert (
+        runtime.detail == "ltx_pipelines_mlx.cli is missing from the vendored package."
     )
-    assert ltx25.embedded_ltx25_interpreter() is None
 
 
-def test_ltx25_embedded_runtime_preflight_needs_no_checkout_or_uv(
+def test_ltx25_runtime_find_spec_failure_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "site-packages"
+    root.mkdir()
+
+    def broken_find_spec(*_args: object, **_kwargs: object) -> object:
+        raise ImportError("broken metadata")
+
+    monkeypatch.setattr(ltx25.importlib.util, "find_spec", broken_find_spec)
+    monkeypatch.setattr(ltx25, "_install_root", lambda: root)
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "absent"
+    assert "missing vendored package(s)" in (runtime.detail or "")
+
+
+def test_ltx25_runtime_explicit_override_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_path = tmp_path / "ltx-2-mlx"
+    runtime_path.write_text("#!/bin/sh\n")
+    runtime_path.chmod(0o755)
+    monkeypatch.setenv("RAPID_MLX_LTX25_RUNTIME", str(runtime_path))
+    monkeypatch.setattr(
+        ltx25, "_runtime_revision", lambda _: ltx25.LTX25_RUNTIME_COMMIT
+    )
+    monkeypatch.setattr(
+        ltx25,
+        "_vendored_runtime",
+        lambda: pytest.fail("an explicit override must not consult the bundled copy"),
+    )
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "trusted"
+    assert runtime.source == "override"
+    assert runtime.executable == str(runtime_path)
+
+
+def test_ltx25_runtime_invalid_override_never_falls_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_LTX25_RUNTIME", str(tmp_path / "missing"))
+    monkeypatch.setattr(
+        ltx25,
+        "_vendored_runtime",
+        lambda: pytest.fail("a broken override must not fall through to the bundle"),
+    )
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "override_invalid"
+    assert runtime.source == "override"
+    assert ltx25.LTX25_RUNTIME_COMMIT in (runtime.detail or "")
+
+
+def test_ltx25_runtime_python_floor_precedes_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setattr(ltx25.sys, "version_info", (3, 10))
+    monkeypatch.setenv("RAPID_MLX_LTX25_RUNTIME", "/anywhere")
     monkeypatch.setattr(
         ltx25,
         "resolve_ltx25_runtime",
-        lambda: pytest.fail("embedded runtime must not inspect a checkout"),
+        lambda: pytest.fail("the Python floor must fail before resolving a runtime"),
+    )
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "python_unsupported"
+    assert runtime.source is None
+
+
+def test_ltx25_runtime_unavailable_message_for_vendored_failure() -> None:
+    for state in ("absent", "corrupt"):
+        message = ltx25.runtime_unavailable_message(
+            ltx25.LTX25Runtime(state=state, source="vendored")
+        )
+        assert "missing or damaged" in message
+        assert "Reinstall rapid-mlx" in message
+
+
+def test_ltx25_runtime_unavailable_message_for_python_floor() -> None:
+    message = ltx25.runtime_unavailable_message(
+        ltx25.LTX25Runtime(state="python_unsupported")
+    )
+    assert "Python 3.11 or newer" in message
+    assert "missing or damaged" not in message
+    assert "pip install --upgrade --force-reinstall" not in message
+
+
+def test_ltx25_runtime_unavailable_message_for_invalid_override() -> None:
+    message = ltx25.runtime_unavailable_message(
+        ltx25.LTX25Runtime(
+            state="override_invalid", source="override", detail="custom detail"
+        )
+    )
+    assert "custom detail" in message
+    assert "unset RAPID_MLX_LTX25_RUNTIME" in message
+    assert "Reinstall rapid-mlx" not in message
+
+    fallback = ltx25.runtime_unavailable_message(
+        ltx25.LTX25Runtime(state="override_invalid", source="override")
+    )
+    assert "The LTX-2.5 runtime override is invalid." in fallback
+
+
+def test_ltx25_runtime_preflight_needs_no_checkout_or_uv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/embedded/python"
+        ),
+    )
+    monkeypatch.setattr(
+        ltx25,
+        "resolve_ltx25_runtime",
+        lambda: pytest.fail("the bundled runtime must not inspect a checkout"),
     )
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/sidecar/ffmpeg")
     monkeypatch.setattr(video_lane.shutil, "which", lambda _: None)
@@ -129,7 +370,13 @@ def test_ltx25_embedded_runtime_preflight_needs_no_checkout_or_uv(
 def test_ltx25_embedded_generation_preserves_sidecar_python_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/embedded/python"
+        ),
+    )
     monkeypatch.setenv("PYTHONHOME", "/signed-sidecar/python")
     monkeypatch.setenv("PYTHONPATH", "/signed-sidecar/site-packages")
     captured: dict = {}
@@ -184,11 +431,22 @@ def test_ltx25_direct_engine_rejects_conditioning_without_image() -> None:
         )
 
 
-def test_ltx25_runtime_preflight_fails_before_download(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def _runtime(
+    state: str,
+    source: str | None = None,
+    executable: str | None = None,
+    detail: str | None = None,
+) -> ltx25.LTX25Runtime:
+    return ltx25.LTX25Runtime(
+        state=state, source=source, executable=executable, detail=detail
+    )
+
+
+def test_ltx25_runtime_preflight_absent_uses_reinstall_hint(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
+    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
     monkeypatch.setattr(
         video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
     )
@@ -198,15 +456,91 @@ def test_ltx25_runtime_preflight_fails_before_download(
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
     error = exc.value.format_user_message()
-    assert ltx25.LTX25_RUNTIME_COMMIT in error
-    assert "video generation guide" in error
+    assert "ships with rapid-mlx but is missing or damaged" in error
+    assert "git clone" not in error
+    assert exc.value.status == "broken"
+    assert exc.value.marker_reason == "runtime_dependency_missing"
 
 
-def test_ltx25_runtime_preflight_requires_uv(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_ltx25_runtime_preflight_corrupt_uses_reinstall_hint(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime(
+            "corrupt", "vendored", detail="ltx_core_mlx provenance COMMIT is wrong"
+        ),
+    )
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+
+    with pytest.raises(OptionalRuntimeMissing) as exc:
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = exc.value.format_user_message()
+    assert "the LTX-2.5 runtime shipped with rapid-mlx" in error
+    assert "ships with rapid-mlx but is missing or damaged" in error
+    assert exc.value.status == "broken"
+
+
+def test_ltx25_runtime_preflight_invalid_override_points_at_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime(
+            "override_invalid",
+            "override",
+            detail="RAPID_MLX_LTX25_RUNTIME does not point at the pinned revision.",
+        ),
+    )
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+
+    with pytest.raises(OptionalRuntimeMissing) as exc:
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = exc.value.format_user_message()
+    assert "RAPID_MLX_LTX25_RUNTIME" in error
+    assert ltx25.LTX25_RUNTIME_COMMIT in error
+    assert "docs/guides/video-generation.md" in error
+    assert "ships with rapid-mlx" not in error
+    assert exc.value.status == "broken"
+
+
+def test_ltx25_runtime_preflight_python_floor_uses_upgrade_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections import namedtuple
+
+    Version = namedtuple("Version", "major minor")
+    monkeypatch.setattr(video_lane.sys, "version_info", Version(3, 10))
+    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("python_unsupported"))
+
+    with pytest.raises(OptionalRuntimeMissing) as exc:
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = exc.value.format_user_message()
+    assert "Python 3.11 or newer" in error
+    assert "uv tool install --force --python 3.12" in error
+    assert "pip install --upgrade --force-reinstall" not in error
+    assert "ships with rapid-mlx" not in error
+    assert exc.value.status == "incompatible"
+    assert exc.value.marker_reason == "python_version_unsupported"
+
+
+def test_ltx25_runtime_preflight_requires_uv_for_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime("trusted", "override", executable="/runtime/ltx-2-mlx"),
+    )
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: None)
 
@@ -219,47 +553,87 @@ def test_ltx25_runtime_preflight_requires_uv(
     assert "git clone" not in error
 
 
-def test_ltx25_missing_runtime_prints_setup_walkthrough(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_ltx25_runtime_preflight_ffmpeg_only_uses_ffmpeg_hint(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
     monkeypatch.setattr(
-        video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime("trusted", "vendored", executable="/embedded/python"),
     )
-    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: None)
 
     with pytest.raises(OptionalRuntimeMissing) as exc:
-        # A path-qualified name passes _is_ltx25_name; the walkthrough must
-        # not interpolate this user-controlled string into shell commands.
-        video_lane.require_video_runtime_or_exit("$(uname)/ltx-2.5-mlx-q8")
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
     error = exc.value.format_user_message()
-    assert "docs/guides/video-generation.md" in error
-    # Conditional clone (gated on a real Git checkout, not a bare
-    # directory) + unconditional fetch: the same block repairs an
-    # existing checkout pinned to a stale revision (plain clone would fail).
-    assert (
-        f"[ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
-        f"{ltx25.LTX25_RUNTIME_REPOSITORY}" in error
+    assert "ffmpeg (`brew install ffmpeg`)" in error
+    assert "Install ffmpeg so LTX-2.5 can encode" in error
+    # The bundled runtime is present; reinstall guidance would be a lie.
+    assert "ships with rapid-mlx" not in error
+    assert "Reinstall rapid-mlx" not in error
+
+
+def test_ltx25_runtime_preflight_runtime_blocker_dominates_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: None)
+
+    with pytest.raises(OptionalRuntimeMissing) as exc:
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = exc.value.format_user_message()
+    assert "the LTX-2.5 runtime shipped with rapid-mlx" in error
+    assert "ffmpeg (`brew install ffmpeg`)" in error
+    assert "ships with rapid-mlx but is missing or damaged" in error
+
+
+def test_ltx25_runtime_preflight_catalog_is_side_effect_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime("trusted", "override", executable="/runtime/ltx-2-mlx"),
     )
-    assert "git -C ltx-2-mlx fetch --quiet origin" in error
-    assert f"git -C ltx-2-mlx checkout {ltx25.LTX25_RUNTIME_COMMIT}" in error
-    assert "uv sync --project ltx-2-mlx" in error
-    # Canonical alias only — the raw model_name must not appear in the
-    # copy-pastable command.
-    assert (
-        'RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
-        "rapid-mlx serve ltx-2.5-mlx-q8" in error
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        ltx25,
+        "prepare_ltx25_runtime",
+        lambda _: pytest.fail("the model catalog must not provision a runtime"),
     )
-    assert "$(uname)" not in error
+
+    assert (
+        video_lane.video_runtime_issue("MrMofer/ltx-2.5-mlx-q8", provision=False)
+        is None
+    )
+    assert video_lane.video_alias_runtime_ready("ltx-2.5-mlx-q8") is True
+
+
+def test_ltx25_runtime_preflight_catalog_marks_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+
+    assert video_lane.video_alias_runtime_ready("ltx-2.5-mlx-q8") is False
 
 
 def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime("trusted", "override", executable="/runtime/ltx-2-mlx"),
+    )
 
     def boom(executable: str) -> None:
         # Mirrors the message prepare_ltx25_runtime() actually raises for a
@@ -683,7 +1057,7 @@ def test_ltx25_generation_uses_cache_without_rechecking_checkout(
     )
     monkeypatch.setattr(
         ltx25,
-        "resolve_ltx25_runtime",
+        "ltx25_runtime",
         lambda: pytest.fail("a prepared runtime must not recheck the checkout"),
     )
 
@@ -744,7 +1118,13 @@ def test_ltx25_engine_invokes_pinned_runtime_contract(
     runtime_python = runtime.with_name("python")
     runtime_python.write_text("#!/bin/sh\n")
     runtime_python.chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     runtime_cache = tmp_path / "runtime-cache"
     monkeypatch.setattr(ltx25, "prepare_ltx25_runtime", lambda _: runtime_cache)
 
@@ -811,7 +1191,13 @@ def test_ltx25_engine_reports_subprocess_failure_without_leaking_details(
     runtime.chmod(0o755)
     runtime.with_name("python").write_text("#!/bin/sh\n")
     runtime.with_name("python").chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     monkeypatch.setattr(
         ltx25, "prepare_ltx25_runtime", lambda _: tmp_path / "runtime-cache"
     )
@@ -862,7 +1248,13 @@ def test_ltx25_zero_exit_cannot_reuse_stale_output(
     runtime.parent.mkdir(parents=True)
     runtime.write_text("#!/bin/sh\n")
     runtime.chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     monkeypatch.setattr(
         ltx25, "prepare_ltx25_runtime", lambda _: tmp_path / "runtime-cache"
     )
@@ -910,7 +1302,13 @@ def test_ltx25_timeout_terminates_process(
     runtime.chmod(0o755)
     runtime.with_name("python").write_text("#!/bin/sh\n")
     runtime.with_name("python").chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     monkeypatch.setattr(
         ltx25, "prepare_ltx25_runtime", lambda _: tmp_path / "runtime-cache"
     )
@@ -1005,7 +1403,13 @@ def test_ltx25_unexpected_communication_error_terminates_process(
     runtime.parent.mkdir(parents=True)
     runtime.write_text("#!/bin/sh\n")
     runtime.chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     monkeypatch.setattr(
         ltx25, "prepare_ltx25_runtime", lambda _: tmp_path / "runtime-cache"
     )
@@ -1048,7 +1452,13 @@ def test_ltx25_unexpected_communication_error_terminates_process(
 def test_ltx25_spawn_failure_closes_readiness_pipe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/python"
+        ),
+    )
     opened: list[int] = []
     closed: list[int] = []
     original_pipe = ltx25.os.pipe
@@ -1095,7 +1505,13 @@ def test_ltx25_invalid_timeout_does_not_spawn(
     runtime.chmod(0o755)
     runtime.with_name("python").write_text("#!/bin/sh\n")
     runtime.with_name("python").chmod(0o755)
-    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: str(runtime))
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="override", executable=str(runtime)
+        ),
+    )
     monkeypatch.setattr(ltx25.shutil, "which", lambda _: "/trusted/uv")
     monkeypatch.setenv("RAPID_MLX_LTX25_TIMEOUT_SEC", "invalid")
     monkeypatch.setattr(

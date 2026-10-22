@@ -529,7 +529,13 @@ def test_ltx25_child_failure_emits_only_after_readiness(monkeypatch, tmp_path, r
                     os.write(self.ready_fd, b"RMLX_LTX25_READY\n")
                 os.close(self.ready_fd)
 
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/python")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/python"
+        ),
+    )
     monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
     monkeypatch.setattr(ltx25.LTX25VideoEngine, "_terminate_process", lambda *_: None)
     engine = _video_engine(_VideoBackend())
