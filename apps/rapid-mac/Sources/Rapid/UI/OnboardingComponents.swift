@@ -145,6 +145,24 @@ private extension View {
     }
 }
 
+// MARK: - Spoken model details
+
+private enum OnboardingModelAccessibility {
+    /// Blurbs may already end a sentence; keep decimal points inside sizes and names.
+    static func sentences(_ parts: [String]) -> String {
+        parts.filter { !$0.isEmpty }.reduce("") { label, part in
+            guard !label.isEmpty else { return part }
+            let separator = label.last.map { ".!?".contains($0) } == true ? " " : ". "
+            return label + separator + part
+        }
+    }
+
+    /// The visual size lane can end with a capability score, not a byte count.
+    static func size(_ text: String) -> String {
+        text.hasSuffix("%") ? "\(text) capability" : text
+    }
+}
+
 // MARK: - Recommended starter
 
 /// The starter card. The only row that carries prose, attribute pills and a
@@ -224,12 +242,12 @@ struct QuickstartRecommendedCard: View {
         parts.append("recommended starter")
         parts.append(choice.blurb)
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
-            parts.append("download \(sizeText)")
+            parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
         }
         parts.append("on-device, fits this Mac")
-        return parts.joined(separator: ". ")
+        return OnboardingModelAccessibility.sentences(parts)
     }
 }
 
@@ -289,13 +307,13 @@ struct QuickstartLowMemoryCard: View {
         sizeText: String,
         isCached: Bool = false
     ) -> String {
-        var text = "\(choice.displayName). Lowest memory. \(choice.blurb)"
+        var parts = [choice.displayName, "Lowest memory", choice.blurb]
         if isCached {
-            text += sizeText.isEmpty ? " On disk" : " On disk \(sizeText)"
+            parts.append(sizeText.isEmpty ? "On disk" : "On disk \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
-            text += " Download \(sizeText)"
+            parts.append("Download \(OnboardingModelAccessibility.size(sizeText))")
         }
-        return text
+        return OnboardingModelAccessibility.sentences(parts)
     }
 }
 
@@ -348,18 +366,22 @@ struct QuickstartCompactCard: View {
         .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel(accessibilityText)
+        .accessibilityLabel(Self.accessibilityText(for: choice, sizeText: sizeText, isCached: isCached))
     }
 
-    private var accessibilityText: String {
+    static func accessibilityText(
+        for choice: QuickstartModelChoice,
+        sizeText: String,
+        isCached: Bool = false
+    ) -> String {
         var parts = [choice.displayName]
         if !choice.blurb.isEmpty { parts.append(choice.blurb) }
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
-            parts.append("download \(sizeText)")
+            parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
         }
-        return parts.joined(separator: ". ")
+        return OnboardingModelAccessibility.sentences(parts)
     }
 }
 

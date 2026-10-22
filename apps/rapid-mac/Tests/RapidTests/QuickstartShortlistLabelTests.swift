@@ -143,4 +143,52 @@ struct QuickstartShortlistLabelTests {
         ).isEmpty)
     }
 
+    @Test("Spoken model details have one sentence break and name capability",
+          arguments: ["Already downloaded and ready to start.", "A useful model", "Ready!", "Ready?", ""])
+    func spokenSentenceBreaks(blurb: String) {
+        let choice = QuickstartModelChoice(
+            alias: "test-model", displayName: "Qwen 3.8 · 27B", hfRepo: nil,
+            downloadBytes: nil, blurb: blurb, tier: .tradeUp
+        )
+        for isCached in [true, false] {
+            let labels = [
+                QuickstartRecommendedCard.accessibilityText(
+                    for: choice, sizeText: "15.2 GB · 92%", isCached: isCached),
+                QuickstartLowMemoryCard.accessibilityText(
+                    for: choice, sizeText: "15.2 GB · 92%", isCached: isCached),
+                QuickstartCompactCard.accessibilityText(
+                    for: choice, sizeText: "15.2 GB · 92%", isCached: isCached),
+            ]
+            for label in labels {
+                #expect(!label.contains(".."))
+                #expect(!label.contains("!."))
+                #expect(!label.contains("?."))
+                #expect(label.contains("15.2 GB · 92% capability"))
+                #expect(label.lowercased().contains(isCached ? "on disk" : "download"))
+                if !blurb.isEmpty {
+                    let sentence = ".!?".contains(blurb.last!) ? blurb : blurb + "."
+                    #expect(label.contains(sentence + " " + (label.contains("Lowest memory") ?
+                        (isCached ? "On disk" : "Download") : (isCached ? "on disk" : "download"))))
+                }
+            }
+        }
+    }
+
+    @Test("Cached compact labels preserve decimal names, blurbs, and missing sizes")
+    func compactCachedLabel() {
+        let choice = QuickstartModelChoice(
+            alias: "qwen3.5-4b-4bit", displayName: "qwen3.5-4b-4bit", hfRepo: nil,
+            downloadBytes: nil, blurb: "Already downloaded and ready to start.", tier: .tradeUp
+        )
+        #expect(QuickstartCompactCard.accessibilityText(
+            for: choice, sizeText: "2.85 GB", isCached: true
+        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on disk 2.85 GB")
+        #expect(QuickstartCompactCard.accessibilityText(
+            for: choice, sizeText: "", isCached: true
+        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on disk")
+        #expect(QuickstartCompactCard.accessibilityText(
+            for: choice, sizeText: ""
+        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start.")
+    }
+
 }
