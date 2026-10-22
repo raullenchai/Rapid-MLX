@@ -39,7 +39,7 @@ def start(
             target=_run, args=(interval,), daemon=True, name="rapid-mlx-update-check"
         )
         newly_announced = announced is not None and announced not in _seen_versions
-        if newly_announced:
+        if newly_announced and announced is not None:
             _seen_versions.add(announced)
         try:
             _thread.start()
