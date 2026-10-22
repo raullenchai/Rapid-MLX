@@ -4,6 +4,8 @@
 
 Install Rapid-MLX on an Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash` and restart the terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install Claude Code. Run `rapid-mlx launch claude-code`. The same command works after a restart; `rapid-mlx launch claude-code --remove` deletes only Rapid's private profile. Existing Claude Code settings are left untouched. Use `--model qwen3.5-9b-4bit` to choose that model on a Mac with enough RAM; the default recommendation follows the Mac's memory tier. The first reply may wait for a download, model load, or a long agent prompt. The manual setup steps below are for users who want to edit their regular agent configuration.
 
+The private launch exposes Claude Code's Bash, Edit, Read, Write, Glob, and Grep tools. Limiting the tool schemas keeps the first local request shorter while retaining file editing and code search. Use the manual setup below with your regular Claude Code configuration if you need its other built-in tools.
+
 
 Point [Anthropic's Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 at a local rapid-mlx server. Claude Code speaks the **Anthropic Messages

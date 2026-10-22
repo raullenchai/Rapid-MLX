@@ -434,9 +434,13 @@ def _command(
     if name == "claude-code":
         # The CLI can rewrite ~/.claude.json even with --settings. Its
         # documented config-dir override keeps that state under our profile.
+        # Limit the private local profile to core coding tools: Claude sends
+        # each enabled tool schema in the first request to the local model.
+        tools = "Bash,Edit,Read,Write,Glob,Grep"
         return (
             f"CLAUDE_CONFIG_DIR={quote(str(root / 'config'))} "
-            f"claude --settings {quote(str(root / 'settings.json'))}"
+            f"claude --settings {quote(str(root / 'settings.json'))} "
+            f"--tools {tools}"
         )
     raise ValueError(f"unsupported isolated agent: {name}")
 

@@ -121,6 +121,7 @@ def test_claude_launch_overrides_stored_subscription_without_touching_it(private
     assert settings["env"]["ANTHROPIC_API_KEY"] == ""
     runner = (isolated.connection_dir() / "agents/claude-code/run").read_text()
     assert "--settings" in runner
+    assert "--tools Bash,Edit,Read,Write,Glob,Grep" in runner
     assert (
         f"CLAUDE_CONFIG_DIR={isolated.connection_dir() / 'agents/claude-code/config'}"
         in runner
