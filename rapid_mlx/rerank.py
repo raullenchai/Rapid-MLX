@@ -375,7 +375,11 @@ def _load_cross_encoder(model_name: str, config: dict):
         ) from exc
     model.eval()
     mx.eval(model.parameters())
-    return model, AutoTokenizer.from_pretrained(str(path))
+    from .utils.model_file_guard import remote_code_enabled
+
+    return model, AutoTokenizer.from_pretrained(
+        str(path), trust_remote_code=remote_code_enabled()
+    )
 
 
 def _jina_model_classes(config: dict):
@@ -415,13 +419,20 @@ def _load_jina(model_name: str):
         path = Path(
             model_downloads.snapshot_download(model_name, allow_patterns=_JINA3_FILES)
         )
+    from .model_load_errors import load_model_checked
+
     try:
-        model, _config = load_model(path, get_model_classes=_jina_model_classes)
+        model, _config = load_model_checked(
+            load_model, path, get_model_classes=_jina_model_classes
+        )
     except ValueError as exc:
         raise UnsupportedRerankModelError(
             f"'{model_name}' does not have the JinaForRanking weight layout: {exc}"
         ) from exc
-    return model, load_tokenizer(path)
+    from .utils.tokenizer import apply_remote_code_policy
+
+    tokenizer_config, _ = apply_remote_code_policy(None)
+    return model, load_tokenizer(path, tokenizer_config=tokenizer_config)
 
 
 class RerankEngine:
@@ -501,7 +512,7 @@ class RerankEngine:
         # Untyped config.json value, validated by _resolve_max_length.
         model_max: Any
         if family.scoring == "generative":
-            from mlx_lm import load as load_lm
+            from rapid_mlx.utils.tokenizer import load_model_with_fallback as load_lm
 
             model, tokenizer = load_lm(self.model_name)
             model_max = config.get("max_position_embeddings")

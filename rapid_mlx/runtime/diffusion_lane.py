@@ -714,6 +714,8 @@ class DiffusionEngine(BaseEngine):
                 is_diffusion_model,
             )
             from mlx_vlm.utils import load
+
+            from ..utils.model_file_guard import load_vlm_with_policy
         except BaseException as e:  # noqa: BLE001 — propagate to caller
             from .optional_runtime import optional_extra_install_hint
 
@@ -727,7 +729,7 @@ class DiffusionEngine(BaseEngine):
 
         try:
             logger.info(f"Loading DiffusionEngine model: {self._model_name}")
-            model, processor = load(self._model_name)
+            model, processor = load_vlm_with_policy(self._model_name, loader=load)
             # The qualified mlx-vlm 0.7.2 routes diffusion detection through
             # ``is_diffusion_model`` (the deprecated
             # ``diffusion_generation_family`` now returns a generic

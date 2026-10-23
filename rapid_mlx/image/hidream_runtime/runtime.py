@@ -338,7 +338,9 @@ class HiDreamO1(nn.Module):
         *,
         on_step: Callable[[int, int], None] | None = None,
     ) -> None:
-        from mlx_vlm import load as mlx_vlm_load
+        from rapid_mlx.utils.model_file_guard import (
+            load_vlm_with_policy as mlx_vlm_load,
+        )
 
         super().__init__()
         backbone, self.processor = mlx_vlm_load(model_path)

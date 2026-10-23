@@ -254,7 +254,7 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
     compatibility_calls = []
 
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.load = lambda path: (target_model, processor)
+    fake_vlm.load = lambda path, trust_remote_code: (target_model, processor)
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
     fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
     fake_drafters.load_drafter = lambda path, kind=None: (drafter, "dflash")
@@ -262,6 +262,9 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
         compatibility_calls.append((model, draft_model, kind))
     )
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    fake_utils = types.ModuleType("mlx_vlm.utils")
+    fake_utils.get_model_path = lambda path, **kwargs: path
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", fake_utils)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
@@ -330,12 +333,18 @@ def test_runtime_rejects_wrong_upstream_draft_kind(monkeypatch, tmp_path) -> Non
 
     target, draft = _write_configs(tmp_path)
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.load = lambda _path: (SimpleNamespace(), SimpleNamespace())
+    fake_vlm.load = lambda _path, trust_remote_code: (
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
     fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
     fake_drafters.load_drafter = lambda _path, kind=None: (SimpleNamespace(), "mtp")
     fake_drafters.validate_drafter_compatibility = lambda *_args: None
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    fake_utils = types.ModuleType("mlx_vlm.utils")
+    fake_utils.get_model_path = lambda path, **kwargs: path
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", fake_utils)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
@@ -1808,3 +1817,24 @@ def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:
     assert response.status_code == 500
     assert "verification failed" in response.json()["error"]["message"]
     assert calls == 1
+
+
+@pytest.mark.requires_mlx
+def test_runtime_refuses_target_checkpoint_code(tmp_path, monkeypatch):
+    import mlx_vlm
+
+    from rapid_mlx.spec_decode.dspark import runtime
+    from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
+
+    target, draft = _write_configs(tmp_path)
+    config = json.loads((target / "config.json").read_text())
+    config["model_file"] = "custom.py"
+    (target / "config.json").write_text(json.dumps(config))
+    (target / "custom.py").write_text('raise AssertionError("must not import")')
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    monkeypatch.setattr(mlx_vlm, "load", lambda *a, **k: pytest.fail("unchecked load"))
+    with pytest.raises(ValueError, match="executable Python"):
+        runtime.load_runtime(
+            LFM25_VL_3B, CompanionDSparkArtifacts(str(target), str(draft))
+        )

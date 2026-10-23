@@ -450,6 +450,8 @@ vendored copy differs by exactly the deviations listed):
   while validating — pinned 0.7.2 kept the original value, so a numeric
   string reached runtime code as a ``str``; and a retained split backup
   that fails cleanup is logged instead of silently left behind. The drafter registry also
+  applies Rapid's explicit repository-code consent and path-containment
+  checks before loading a drafter with a ``model_file`` selector, and
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)

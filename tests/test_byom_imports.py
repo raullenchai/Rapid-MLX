@@ -387,7 +387,33 @@ def test_download_source_fetches_only_loadable_files(monkeypatch):
 # ---------------------------------------------------------------- worker
 
 
-def test_worker_steps_with_fake_mlx_lm(monkeypatch):
+@pytest.mark.requires_mlx
+def test_worker_conversion_rejects_repository_code_before_converter(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text('{"model_file": "custom.py"}')
+    (tmp_path / "custom.py").write_text('raise AssertionError("must not execute")')
+    import mlx_lm
+    import mlx_lm.utils
+
+    import rapid_mlx.utils.tokenizer as tokenizer
+
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(mlx_lm.utils, "_download", lambda source: tmp_path)
+    called = []
+    monkeypatch.setattr(mlx_lm, "convert", lambda **kwargs: called.append(kwargs))
+    with pytest.raises(ValueError, match="model_file"):
+        worker.convert("org/untrusted", str(tmp_path / "output"), 4, 64)
+    assert called == []
+
+
+def test_worker_steps_with_fake_mlx_lm(monkeypatch, tmp_path):
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text('{"model_type": "qwen3"}')
+    utils = types.ModuleType("mlx_lm.utils")
+    utils._download = lambda source: tmp_path
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
     registry_calls = []
     registration = types.ModuleType("rapid_mlx.utils.tokenizer")
     registration._register_vendored_archs = lambda: registry_calls.append(True)
@@ -396,17 +422,19 @@ def test_worker_steps_with_fake_mlx_lm(monkeypatch):
     fake = types.ModuleType("mlx_lm")
     fake.convert = lambda **kw: calls.append(("convert", kw))
     fake.load = lambda path: calls.append(("load", path)) or ("model", "tok")
+    registration.load_model_with_fallback = fake.load
     fake.generate = lambda model, tok, **kw: calls.append(("generate", kw)) or "Hi"
     monkeypatch.setitem(sys.modules, "mlx_lm", fake)
     assert worker.main(["convert", "/src", "/out", "4", "64"]) == 0
     assert calls[0] == (
         "convert",
         {
-            "hf_path": "/src",
+            "hf_path": str(tmp_path),
             "mlx_path": "/out",
             "quantize": True,
             "q_bits": 4,
             "q_group_size": 64,
+            "trust_remote_code": False,
         },
     )
     assert worker.main(["smoke", "/out"]) == 0

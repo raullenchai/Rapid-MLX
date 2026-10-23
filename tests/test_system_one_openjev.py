@@ -338,11 +338,13 @@ def test_scorer_built_on_one_thread_scores_on_another():
 
 
 def test_load_openjev_materializes_weights_and_bounds_the_prompt(tmp_path, monkeypatch):
-    import mlx_lm
+    from rapid_mlx.utils import tokenizer as model_loader
 
     evaluated = []
     model = SimpleNamespace(parameters=lambda: {"w": mx.ones((2,))})
-    monkeypatch.setattr(mlx_lm, "load", lambda path: (model, "tok", "extra"))
+    monkeypatch.setattr(
+        model_loader, "load_model_with_fallback", lambda path: (model, "tok", "extra")
+    )
     monkeypatch.setattr(mx, "eval", lambda *args: evaluated.append(args))
 
     assert load_openjev(str(tmp_path)) == (model, "tok", MAX_PROMPT_TOKENS)

@@ -254,6 +254,9 @@ def test_hidream_constructor_loads_only_validated_custom_heads(
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.load = lambda model_path: (backbone, f"processor:{model_path}")
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", mlx_vlm.load
+    )
     monkeypatch.setattr(runtime, "TimestepEmbedder", TinyHead)
     monkeypatch.setattr(runtime, "BottleneckPatchEmbed", TinyHead)
     monkeypatch.setattr(runtime, "FinalLayer", TinyHead)

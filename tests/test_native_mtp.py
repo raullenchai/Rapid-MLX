@@ -691,6 +691,10 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
 
     monkeypatch.setattr("rapid_mlx._uvicorn._run_server", capture_run)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
+        lambda repo, *, loader, **kwargs: loader(repo, **kwargs),
+    )
 
     bound = []
     drafter = SimpleNamespace(bind=lambda model: bound.append(model))
@@ -794,6 +798,10 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(
     monkeypatch.setattr(glm5_shardwise_load, "load_glm5_shardwise", _shardwise)
     monkeypatch.setattr(native_server.sys, "platform", platform)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
+        lambda repo, *, loader, **kwargs: loader(repo, **kwargs),
+    )
     monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: None)
 
     drafter = SimpleNamespace(bind=lambda _model: None)

@@ -401,6 +401,13 @@ def load_drafter(
 
     path = get_model_path(path_or_repo)
     config = _read_drafter_config(path)
+    from rapid_mlx.utils.model_file_guard import (
+        validate_local_model_file,
+        validate_model_code,
+    )
+
+    validate_model_code(config)
+    validate_local_model_file(path)
     peeked = _normalized_drafter_model_type(config)
     install_served_architecture_bindings(peeked)
     resolved = resolve_drafter_kind(path, kind)

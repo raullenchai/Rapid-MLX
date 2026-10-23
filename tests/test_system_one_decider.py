@@ -317,15 +317,23 @@ def test_load_decider_validates_checkpoint_metadata(tmp_path, monkeypatch):
             load_decider(tmp_path)
 
     config.write_text(
-        json.dumps({"model_type": "decider2", "decision_config": {"temperature": 1.1}})
+        json.dumps(
+            {
+                "model_type": "decider2",
+                "decision_config": {"temperature": 1.1},
+                "model_file": "custom.py",
+                "auto_map": {"AutoModel": "custom.Model"},
+            }
+        )
     )
     observed = {}
     language_model = object()
 
-    def fake_load_model(path, get_model_classes):
+    def fake_load_model(path, get_model_classes, model_config):
         from mlx_lm.models import qwen3_5
 
         observed["path"] = path
+        assert model_config == {"model_file": None, "auto_map": None}
         assert get_model_classes(config={}) == (qwen3_5.Model, qwen3_5.ModelArgs)
         return SimpleNamespace(language_model=language_model), {}
 
@@ -336,7 +344,11 @@ def test_load_decider_validates_checkpoint_metadata(tmp_path, monkeypatch):
         sys.modules,
         "transformers",
         SimpleNamespace(
-            AutoTokenizer=SimpleNamespace(from_pretrained=lambda path: ("tok", path))
+            AutoTokenizer=SimpleNamespace(
+                from_pretrained=lambda path, trust_remote_code: (
+                    ("tok", path) if trust_remote_code is False else None
+                )
+            )
         ),
     )
     model, tokenizer, settings = load_decider(tmp_path)

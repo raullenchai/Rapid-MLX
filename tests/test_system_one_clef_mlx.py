@@ -342,6 +342,7 @@ def test_load_clef_registers_the_model_type_and_materializes_weights(
     import mlx_vlm
 
     _write_config(tmp_path)
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     monkeypatch.setitem(sys.modules, "mlx_vlm.models.clef", None)
     patched = []
     monkeypatch.setattr(
@@ -353,7 +354,8 @@ def test_load_clef_registers_the_model_type_and_materializes_weights(
     # without the load-time evaluation the worker below raises.
     weight = mx.zeros((2,)) + 1
 
-    def fake_load(path):
+    def fake_load(path, *, trust_remote_code):
+        assert trust_remote_code is False
         # mlx-vlm resolves the model type through this registry entry.
         assert sys.modules["mlx_vlm.models.clef"] is clef_mlx
         assert path == str(tmp_path)
@@ -722,3 +724,40 @@ def test_adapted_code_carries_its_license_and_provenance():
     assert "Permission is hereby granted, free of charge" in header
     assert 'THE SOFTWARE IS PROVIDED "AS IS"' in header
     assert "fdd94f39552a011e298f5d4160ef001238943c1b" in header
+
+
+@pytest.mark.parametrize("trust", [None, "0"])
+def test_load_clef_rejects_repository_model_code_before_upstream(
+    tmp_path, monkeypatch, trust
+):
+    import mlx_vlm
+
+    _write_config(tmp_path, model_file="custom.py")
+    (tmp_path / "custom.py").write_text(
+        "# checkpoint-provided Python must never be imported\n"
+    )
+    if trust is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", trust)
+    monkeypatch.setattr(
+        mlx_vlm, "load", lambda *a, **k: pytest.fail("untrusted loader reached")
+    )
+    with pytest.raises(ValueError, match="executable Python"):
+        load_clef(tmp_path)
+
+
+def test_load_clef_auto_map_does_not_enable_processor_code(tmp_path, monkeypatch):
+    import mlx_vlm
+
+    _write_config(tmp_path, auto_map={"AutoProcessor": "custom.Processor"})
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    captured = {}
+
+    def fake_load(path, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(parameters=lambda: {}), "processor"
+
+    monkeypatch.setattr(mlx_vlm, "load", fake_load)
+    load_clef(tmp_path)
+    assert captured["trust_remote_code"] is False

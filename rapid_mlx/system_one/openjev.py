@@ -196,7 +196,8 @@ def openjev_answer(
 def load_openjev(path: str) -> tuple[Any, Any, int]:
     """Load an OpenJev MLX checkpoint as ``(model, tokenizer, context_limit)``."""
     import mlx.core as mx
-    from mlx_lm import load
+
+    from rapid_mlx.utils.tokenizer import load_model_with_fallback as load
 
     loaded = load(path)
     model, tokenizer = loaded[0], loaded[1]

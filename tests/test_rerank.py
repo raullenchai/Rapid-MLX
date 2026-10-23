@@ -457,9 +457,8 @@ def test_cross_encoder_rejects_request_instruction():
 def test_engine_load_applies_family_profile(
     monkeypatch, model_name, config, family_id, instruction, max_length, answers
 ):
-    import mlx_lm
-
     from rapid_mlx import rerank
+    from rapid_mlx.utils import tokenizer as model_loader
 
     class _Tokenizer(_FakeTokenizer):
         def encode(self, text, add_special_tokens=True):
@@ -471,7 +470,9 @@ def test_engine_load_applies_family_profile(
 
     monkeypatch.setattr(rerank, "_read_model_config", lambda _name: config)
     monkeypatch.setattr(
-        mlx_lm, "load", lambda _name: (_FullLogitsModel(), _Tokenizer())
+        model_loader,
+        "load_model_with_fallback",
+        lambda _name: (_FullLogitsModel(), _Tokenizer()),
     )
     engine = rerank.RerankEngine(model_name)
     engine.load()
@@ -483,15 +484,16 @@ def test_engine_load_applies_family_profile(
 
 
 def test_engine_load_applies_instruction_and_prompt_settings(monkeypatch):
-    import mlx_lm
-
     from rapid_mlx import rerank
+    from rapid_mlx.utils import tokenizer as model_loader
 
     monkeypatch.setattr(
         rerank, "_read_model_config", lambda _name: _causal("qwen3", "Qwen3ForCausalLM")
     )
     monkeypatch.setattr(
-        mlx_lm, "load", lambda _name: (_FullLogitsModel(), _FakeTokenizer())
+        model_loader,
+        "load_model_with_fallback",
+        lambda _name: (_FullLogitsModel(), _FakeTokenizer()),
     )
     engine = rerank.RerankEngine(RERANK_ID, instruction="Find code", prompt="Judge.")
     engine.load()
@@ -539,9 +541,8 @@ def test_engine_load_rejects_prompt_for_family_without_one(
 
 
 def test_engine_load_rejects_multi_answer_token(monkeypatch):
-    import mlx_lm
-
     from rapid_mlx import rerank
+    from rapid_mlx.utils import tokenizer as model_loader
 
     monkeypatch.setattr(
         rerank,
@@ -549,7 +550,9 @@ def test_engine_load_rejects_multi_answer_token(monkeypatch):
         lambda _name: _causal("gemma", "GemmaForCausalLM"),
     )
     monkeypatch.setattr(
-        mlx_lm, "load", lambda _name: (_FullLogitsModel(), _FakeTokenizer())
+        model_loader,
+        "load_model_with_fallback",
+        lambda _name: (_FullLogitsModel(), _FakeTokenizer()),
     )
     engine = rerank.RerankEngine("BAAI/bge-reranker-v2-gemma")
     with pytest.raises(rerank.UnsupportedRerankModelError, match="'Yes'"):
@@ -557,9 +560,8 @@ def test_engine_load_rejects_multi_answer_token(monkeypatch):
 
 
 def test_engine_load_rejects_qwen_without_chat_template(monkeypatch):
-    import mlx_lm
-
     from rapid_mlx import rerank
+    from rapid_mlx.utils import tokenizer as model_loader
 
     tokenizer = _FakeTokenizer()
     tokenizer.chat_template = None
@@ -568,7 +570,9 @@ def test_engine_load_rejects_qwen_without_chat_template(monkeypatch):
         "_read_model_config",
         lambda _name: _causal("qwen3", "Qwen3ForCausalLM"),
     )
-    monkeypatch.setattr(mlx_lm, "load", lambda _name: (object(), tokenizer))
+    monkeypatch.setattr(
+        model_loader, "load_model_with_fallback", lambda _name: (object(), tokenizer)
+    )
 
     with pytest.raises(rerank.UnsupportedRerankModelError, match="no chat template"):
         rerank.RerankEngine(RERANK_ID).load()
@@ -630,7 +634,9 @@ def test_cross_encoder_loads_classifier_checkpoint(monkeypatch, tmp_path):
     weights["roberta.embeddings.position_ids"] = mx.arange(20)[None]
     mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
     monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda path: ("tok", path)
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda path, **kwargs: ("tok", path),
     )
 
     model, tokenizer = rerank._load_cross_encoder(str(tmp_path), _TINY_XLMR)
@@ -716,9 +722,13 @@ def test_cross_encoder_downloads_remote_checkpoint(monkeypatch, tmp_path):
             seen.append((model, allow_patterns)) or str(tmp_path)
         ),
     )
-    monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda path: ("tokenizer", path)
-    )
+
+    def load_tokenizer(path, *, trust_remote_code):
+        assert trust_remote_code is False
+        return "tokenizer", path
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", load_tokenizer)
 
     model, tokenizer = rerank._load_cross_encoder("org/remote-xlm", _TINY_XLMR)
     assert isinstance(model, rerank._CrossEncoder)
@@ -788,7 +798,9 @@ def test_cross_encoder_loader_without_embeddings_extra(monkeypatch, tmp_path):
     weights["roberta.embeddings.position_ids"] = mx.arange(20)[None]
     mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
     monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda path: ("tok", path)
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda path, **kwargs: ("tok", path),
     )
     seen = []
     monkeypatch.setattr(
@@ -1074,7 +1086,13 @@ def test_jina_loads_transformers_projector_names(monkeypatch, tmp_path):
     }
     assert "projector.2.weight" in weights
     mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
-    monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", lambda path: ("tok", path))
+
+    def load_tokenizer(path, *, tokenizer_config):
+        assert tokenizer_config["trust_remote_code"] is False
+        return "tok", path
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", load_tokenizer)
 
     model, tokenizer = rerank._load_jina(str(tmp_path))
     assert tokenizer == ("tok", tmp_path)
@@ -1983,3 +2001,56 @@ def test_jina_near_limit_estimate_uses_exact_fitting_singleton():
     result = engine.score("qa", ["xa"])
     assert len(result.scores) == 1
     assert engine.num_truncations == 0
+
+
+@pytest.mark.requires_mlx
+def test_local_jina_refuses_checkpoint_selector_before_model_load(
+    tmp_path, monkeypatch
+):
+    import mlx_lm.utils
+
+    from rapid_mlx.rerank import UnsupportedRerankModelError, _load_jina
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"model_type":"qwen3","model_file":"custom.py"}'
+    )
+    marker = tmp_path / "executed"
+    (tmp_path / "custom.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    monkeypatch.setattr(
+        mlx_lm.utils,
+        "load_model",
+        lambda *a, **k: pytest.fail("model loader must not run"),
+    )
+    with pytest.raises(
+        UnsupportedRerankModelError, match="model_file.*executable Python"
+    ):
+        _load_jina(str(tmp_path))
+    assert not marker.exists()
+
+
+@pytest.mark.requires_mlx
+def test_local_jina_positive_checked_load(tmp_path, monkeypatch):
+    import mlx_lm.utils
+
+    from rapid_mlx.rerank import _jina_model_classes, _load_jina
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text('{"model_type":"qwen3"}')
+    model, tokenizer = object(), object()
+
+    def load(path, **kwargs):
+        assert path == tmp_path
+        assert kwargs == {"get_model_classes": _jina_model_classes}
+        return model, {}
+
+    def load_tokenizer(path, tokenizer_config):
+        assert path == tmp_path
+        assert tokenizer_config == {"trust_remote_code": False}
+        return tokenizer
+
+    monkeypatch.setattr(mlx_lm.utils, "load_model", load)
+    monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", load_tokenizer)
+    assert _load_jina(str(tmp_path)) == (model, tokenizer)

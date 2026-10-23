@@ -16,6 +16,9 @@ data, preserving text, vision, tools and thinking without checkpoint Python.
 Tool declarations use the pinned chat template's JSON format, preserving the
 original callable names and complete schemas without a TypeScript translation.
 
-This policy covers the main text and vision loaders and the PFlash benchmark.
-Auxiliary loaders are being migrated separately. It does not certify arbitrary
-checkpoint contents or change catalog revisions.
+The same policy applies to rerank (including local Jina), DFlash, DSpark, native
+MTP, drafters, HiDream, Clef, OpenJev, diffusion and model conversion. Decider
+uses its installed architecture and always disables checkpoint selectors and
+repository tokenizer code. Ordinary supported model directories keep loading
+without a prompt. This does not certify arbitrary checkpoint contents or change
+catalog revisions.
