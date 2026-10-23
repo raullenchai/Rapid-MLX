@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
 
@@ -62,13 +63,24 @@ def verify_snapshot(
     ignored = sorted(
         [ignore_patterns] if isinstance(ignore_patterns, str) else ignore_patterns or []
     )
-    exact = sorted(filenames) if filenames is not None else None
-    lock_path = Path(__file__).with_name("model_catalog_lock.json")
-    locked = (
-        json.loads(lock_path.read_text()).get("repositories", {}).get(repo_id, {})
-        if lock_path.is_file()
-        else {}
+    exact = (
+        sorted([filenames] if isinstance(filenames, str) else filenames)
+        if filenames is not None
+        else None
     )
+    lock_path = Path(__file__).with_name("model_catalog_lock.json")
+    try:
+        locked = (
+            json.loads(lock_path.read_text()).get("repositories", {}).get(repo_id, {})
+            if lock_path.is_file()
+            else {}
+        )
+        if not isinstance(locked, dict):
+            raise ValueError("Invalid packaged repository manifest")
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        raise ModelIntegrityError(
+            "Cannot read packaged integrity manifest; repair the installation and retry"
+        ) from exc
     if locked and locked.get("revision") != commit:
         raise ModelIntegrityError(
             "Downloaded snapshot differs from the catalog integrity manifest"
@@ -232,13 +244,14 @@ def verify_snapshot(
         if not allow_all and not patterns:
             return
         raise ModelIntegrityError("Integrity manifest contains no selected files")
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
     import tempfile
 
-    descriptor, temporary = tempfile.mkstemp(
-        dir=receipt_path.parent, prefix=".receipt-"
-    )
+    temporary = None
     try:
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            dir=receipt_path.parent, prefix=".receipt-"
+        )
         with os.fdopen(descriptor, "w") as handle:
             json.dump(
                 {
@@ -250,5 +263,11 @@ def verify_snapshot(
                 handle,
             )
         os.replace(temporary, receipt_path)
+    except OSError as exc:
+        raise ModelIntegrityError(
+            f"Cannot save verification receipt at {receipt_path}; check cache permissions and free space, then retry pull"
+        ) from exc
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        if temporary is not None:
+            with suppress(OSError):
+                Path(temporary).unlink(missing_ok=True)

@@ -115,6 +115,7 @@ def test_ignore_and_exact_filename_selection(snapshot):
     (path / "model.safetensors").unlink()
     verify_snapshot("test/integrity", path, ignore_patterns="*.safetensors")
     verify_snapshot("test/integrity", path, filenames=["config.json"])
+    verify_snapshot("test/integrity", path, filenames="config.json")
 
 
 def test_local_dir_verification_uses_resolved_commit(snapshot, tmp_path):
@@ -330,4 +331,48 @@ def test_unpinned_missing_revision_does_not_use_mirror(snapshot, monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.HfApi.model_info", missing)
     with pytest.raises(RevisionNotFoundError):
+        verify_snapshot("test/integrity", path)
+
+
+@pytest.mark.parametrize("stage", ["mkdir", "mkstemp", "write", "replace"])
+def test_receipt_write_errors_are_actionable(snapshot, monkeypatch, stage):
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    path, _, _ = snapshot
+
+    def fail(*args, **kwargs):
+        raise OSError("receipt operation failed")
+
+    if stage == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", fail)
+    elif stage == "mkstemp":
+        monkeypatch.setattr(tempfile, "mkstemp", fail)
+    elif stage == "write":
+        monkeypatch.setattr(json, "dump", fail)
+    else:
+        monkeypatch.setattr(os, "replace", fail)
+        monkeypatch.setattr(Path, "unlink", fail)
+    with pytest.raises(ModelIntegrityError, match="check cache permissions") as error:
+        verify_snapshot("test/integrity", path)
+    assert ".rapid-mlx-integrity" in str(error.value)
+    assert str(error.value.__cause__) == "receipt operation failed"
+
+
+@pytest.mark.parametrize(
+    "contents", ["{", "[]", '{"repositories":{"test/integrity":[]}}']
+)
+def test_invalid_packaged_manifest_has_repair_guidance(
+    snapshot, tmp_path, monkeypatch, contents
+):
+    from rapid_mlx import model_integrity
+
+    path, _, _ = snapshot
+    monkeypatch.setattr(
+        model_integrity, "__file__", str(tmp_path / "model_integrity.py")
+    )
+    (tmp_path / "model_catalog_lock.json").write_text(contents)
+    with pytest.raises(ModelIntegrityError, match="repair the installation"):
         verify_snapshot("test/integrity", path)
