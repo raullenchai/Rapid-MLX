@@ -58,6 +58,7 @@ def test_e4b_serving_contract(alias, bits, revision, size):
         ("other/model", False, False),
     ],
 )
+@pytest.mark.requires_mlx
 def test_architecture_takes_precedence_over_publisher_name(
     monkeypatch, model, gemma, expected
 ):
@@ -73,3 +74,53 @@ def test_architecture_takes_precedence_over_publisher_name(
     monkeypatch.setattr(gemma4_text, "is_gemma4_family_model", detect)
     assert _needs_tokenizer_fallback(model) is expected
     assert calls == ([] if model == "other/model" else [model])
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
+        "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
+        "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
+    ],
+)
+@pytest.mark.requires_mlx
+def test_e4b_real_config_detection(tmp_path, monkeypatch, model):
+    import json
+
+    from rapid_mlx import model_downloads
+    from rapid_mlx.models.gemma4_text import (
+        gemma4_load_plan,
+        is_gemma4_family_model,
+    )
+    from rapid_mlx.utils.tokenizer import _needs_tokenizer_fallback
+
+    # Routing-relevant fields from the pinned E4B source and both quants.
+    # Stub only transport: classification must read and interpret real JSON.
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma4ForConditionalGeneration"],
+                "model_type": "gemma4",
+                "text_config": {
+                    "model_type": "gemma4_text",
+                    "num_hidden_layers": 42,
+                    "num_kv_shared_layers": 18,
+                },
+            }
+        )
+    )
+
+    def download(*, repo_id, filename):
+        assert repo_id == model
+        assert filename == "config.json"
+        return str(config)
+
+    monkeypatch.setattr(model_downloads, "hf_hub_download", download)
+    assert is_gemma4_family_model(model) is True
+    assert gemma4_load_plan(model) == ("nonunified", True)
+    assert _needs_tokenizer_fallback(model) is False
+    # The same architecture must work after revision resolution to a snapshot.
+    assert is_gemma4_family_model(tmp_path) is True
+    assert _needs_tokenizer_fallback(str(tmp_path)) is False

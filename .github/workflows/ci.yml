@@ -620,6 +620,7 @@ jobs:
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_nemotron_h_puzzle_vendored.py \
+            tests/test_nemotron_bolt_e4b_alias.py \
             tests/test_nemotron_h_super.py \
             tests/test_nemotron_super_vl_convert.py \
             tests/test_cohere2_moe_reference_parity.py \
