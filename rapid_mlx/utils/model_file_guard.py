@@ -167,4 +167,8 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
     validate_model_code(config, trust_remote_code=trust)
     if config.get("model_file"):
         validate_local_model_file(model_path, model_config=config)
+    if config.get("model_type") == "kimi_k25" and not config.get("model_file"):
+        from ..models.kimi_vlm import load_kimi_vlm
+
+        return load_kimi_vlm(model_path, **kwargs)
     return (loader or load)(str(model_path), trust_remote_code=trust, **kwargs)

@@ -1785,6 +1785,12 @@ class MLXMultimodalLM:
                 self.model, self.processor = load_prism(model_path, self.config)
                 # Prompt helpers use the base architecture; never rewrite the pack.
                 self.config = {**self.config, "model_type": "qwen3_5"}
+            elif self.config.get("model_type") == "kimi_k25" and not self.config.get(
+                "model_file"
+            ):
+                from .kimi_vlm import load_kimi_vlm
+
+                self.model, self.processor = load_kimi_vlm(model_path)
             elif trust_remote_code:
                 # Preserve mlx-vlm's historical call shape (and compatibility
                 # with older versions/wrappers) unless the operator opts out.
