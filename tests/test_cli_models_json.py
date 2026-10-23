@@ -143,8 +143,21 @@ def test_video_entries_expose_pre_serve_modes_and_memory_floor() -> None:
     assert all(entry["video_modes"] == [] for entry in payload["image"])
 
 
-def test_cached_payload_shape() -> None:
+def test_cached_payload_shape(monkeypatch) -> None:
+    import rapid_mlx.cli as cli
+    import rapid_mlx.local_models as local_models
+
+    # An empty machine must still exercise every row-field assertion below.
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [("test/small-json-shape", 10, 0), ("test/big-json-shape", 20, 0)],
+    )
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(cli, "_cached_repository_is_runnable", lambda repo: True)
+    monkeypatch.setattr(local_models, "discover_runnable_chat_models", lambda: [])
     payload = _cached_models_json_payload()
+    assert payload["count"] == 2
     assert set(payload) == {"cached", "count", "total_bytes"}
     assert isinstance(payload["cached"], list)
     assert payload["count"] == len(payload["cached"])
