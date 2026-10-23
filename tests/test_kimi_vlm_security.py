@@ -69,7 +69,8 @@ def test_native_processor_preserves_image_tokens_tools_and_thinking(checkpoint):
     text = processor.apply_chat_template(
         [{"role": "user", "content": "Hi"}], tools=tools, thinking=False
     )
-    assert "type weather" in text
+    declaration = text.split("<|im_middle|>", 1)[1].split("<|im_end|>", 1)[0]
+    assert json.loads(declaration) == tools
     assert text.endswith("<think></think>")
     processor.detokenizer.add_token(processor.tokenizer.encode("Hi")[0])
     processor.detokenizer.finalize()

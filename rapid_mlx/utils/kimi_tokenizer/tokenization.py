@@ -14,7 +14,6 @@ from tokenizers import AddedToken
 from transformers.convert_slow_tokenizer import bytes_to_unicode
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from .tool_declaration_ts import encode_tools_to_typescript_style
 
 logger = getLogger(__name__)
 VOCAB_FILES_NAMES = {"vocab_file": "tiktoken.model"}
@@ -341,19 +340,10 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         tools = deep_sort_dict(tools)
 
-        # Convert tools to TypeScript style string if tools are provided
-        tools_ts_str = None
-        if tools:
-            try:
-                tools_ts_str = encode_tools_to_typescript_style(tools)
-
-            except Exception as e:
-                print(f"Failed to convert tools to TypeScript style: {e}")
-                tools_ts_str = None
-
-        # Store the TypeScript string in kwargs so it can be accessed by the template
-        if tools_ts_str is not None:
-            kwargs["tools_ts_str"] = tools_ts_str
+        # Use the pinned template's native JSON tool format. Keeping schemas as
+        # data preserves names, references and constraints without translating
+        # them into declarations in another language.
+        kwargs["tools_ts_str"] = None
         return super().apply_chat_template(
             conversation,
             tools=tools,

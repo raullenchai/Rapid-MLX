@@ -96,9 +96,8 @@ def test_tool_schema_rendering_and_thinking_history(tokenizer):
     result = tokenizer.apply_chat_template(
         [{"role": "user", "content": "Weather?"}], tools=tools, thinking=False
     )
-    assert result.startswith(
-        "<|im_system|>tool_declare<|im_middle|># Tools\n\n## functions\nnamespace functions {\n// Weather\ntype weather = (_: {\n  city: string\n}) => any;\n}\n<|im_end|>"
-    )
+    declaration = result.split("<|im_middle|>", 1)[1].split("<|im_end|>", 1)[0]
+    assert json.loads(declaration) == tools
     conversation = [
         {"role": "user", "content": "One"},
         {"role": "assistant", "content": "Answer", "reasoning_content": "Reason"},
@@ -108,6 +107,55 @@ def test_tool_schema_rendering_and_thinking_history(tokenizer):
     assert "Reason" in tokenizer.apply_chat_template(
         conversation, preserve_thinking=True
     )
+
+
+@pytest.mark.parametrize(
+    "name", ["weather", "get-weather", "default", 'a"\\b\nc', "天気"]
+)
+@pytest.mark.parametrize("tokenize", [False, True])
+def test_json_tool_format_preserves_complete_schemas(tokenizer, name, tokenize):
+    # Shared and nested definitions, escaped JSON Pointers, recursive roots,
+    # closed objects and scalar enums remain data.
+    schema = {
+        "type": "object",
+        "$defs": {
+            "a/b~c": {
+                "type": "object",
+                "$defs": {"Nested": {"type": "string"}},
+                "properties": {"value": {"$ref": "#/$defs/Nested"}},
+            }
+        },
+        "properties": {
+            "child": {"$ref": "#"},
+            "postal code": {"$ref": "#/$defs/a~1b~0c"},
+            "user-id": {"enum": [None, True, False, 1, 1.5, 'a"\\b\nc']},
+        },
+        "required": ["user-id"],
+        "additionalProperties": False,
+    }
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": "first\rsecond\u2028third\u2029fourth",
+                "parameters": schema,
+            },
+        }
+        for tool_name in [name, "second-tool"]
+    ]
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "Hi"}],
+        tools=tools,
+        tokenize=tokenize,
+        return_dict=False,
+        tools_ts_str="must not replace the JSON schema",
+    )
+    if tokenize:
+        rendered = tokenizer.decode(rendered)
+    declaration = rendered.split("<|im_middle|>", 1)[1].split("<|im_end|>", 1)[0]
+    assert json.loads(declaration) == tools
+    assert rendered.endswith("<think>")
 
 
 def test_vocab_refuses_url_and_invalid_ranks(tmp_path):
@@ -143,8 +191,7 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "a1e79c8652393ad06c92d5a2e53fc90d87ddc6768fd06d5ab2a20df253a4a89d",
-        "tool_declaration_ts.py": "aa464aa01e83ab9526c53971ef071c3bf5e7b182f28fb2e2e27cc13eb475619c",
+        "tokenization.py": "b90f5d676c732f5fe7fbe1fd809920deb4c6b185d0ac7ffd3eb8565bfce2be18",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 
@@ -238,7 +285,7 @@ def test_tiny_native_kimi_model_executes_with_owned_tokenizer(tokenizer, monkeyp
     assert loaded.decode(inputs[0].tolist()) == "hello"
 
 
-def test_tokenizer_utility_contract(tokenizer, tmp_path, monkeypatch):
+def test_tokenizer_utility_contract(tokenizer, tmp_path):
     from rapid_mlx.utils.kimi_tokenizer.tokenization import TikTokenTokenizer
 
     token = tokenizer.encode("a")[0]
@@ -254,13 +301,6 @@ def test_tokenizer_utility_contract(tokenizer, tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="directory"):
         tokenizer.save_vocabulary(str(target / "missing"))
-    import rapid_mlx.utils.kimi_tokenizer.tokenization as implementation
-
-    monkeypatch.setattr(
-        implementation,
-        "encode_tools_to_typescript_style",
-        lambda tools: (_ for _ in ()).throw(ValueError("invalid schema")),
-    )
     assert "Hi" in tokenizer.apply_chat_template(
         [{"role": "user", "content": "Hi"}],
         tools=[{"type": "function", "function": {"name": "bad"}}],

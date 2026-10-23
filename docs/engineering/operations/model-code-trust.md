@@ -13,6 +13,8 @@ checkpoint, except normal blob links within its configured Hub cache repository.
 Supported GLM and Kimi checkpoints use installed model implementations. Kimi's
 packaged tokenizer reads local vocabulary, token configuration and chat-template
 data, preserving text, vision, tools and thinking without checkpoint Python.
+Tool declarations use the pinned chat template's JSON format, preserving the
+original callable names and complete schemas without a TypeScript translation.
 
 This policy covers the main text and vision loaders and the PFlash benchmark.
 Auxiliary loaders are being migrated separately. It does not certify arbitrary
