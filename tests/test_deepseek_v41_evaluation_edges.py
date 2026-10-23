@@ -149,16 +149,10 @@ def test_collect_full_cache_mask_and_serving_hooks(collector, tmp_path, monkeypa
     calls = []
     serving = importlib.import_module("rapid_mlx.models.deepseek_v41_native.serving")
     monkeypatch.setattr(serving, "install_target_qmv", lambda _: calls.append("qmv"))
-    monkeypatch.setattr(
-        evaluator,
-        "install_native_masks",
-        lambda m, a, masses: masses[0].extend([0.5] * 17),
-    )
-    # collect clears routing observations before each slice; fake model emits them.
-    original = evaluator.install_native_masks
+    # Two slices must each contain exactly their own observations.
+    a.slices.write_text(json.dumps({"slices": {"a": ["a.npy"], "b": ["a.npy"]}}))
 
     def install(model, allocation, masses):
-        original(model, allocation, masses)
         call = type(model).__call__
 
         def observe(self, ids, cache):
@@ -171,6 +165,7 @@ def test_collect_full_cache_mask_and_serving_hooks(collector, tmp_path, monkeypa
     evaluator.collect(a)
     assert calls == ["qmv"]
     assert np.load(a.output / "a-mass.npy").shape == (17, 1)
+    assert np.load(a.output / "b-mass.npy").shape == (17, 1)
     assert (
         json.loads((a.output / "metadata.json").read_text())["mode"]
         == "pruning_mask_only"
