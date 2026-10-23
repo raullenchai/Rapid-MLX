@@ -31,10 +31,9 @@ from rapid_mlx.models.mlx_vlm_vendored import inputs as vendored_inputs
 _UPSTREAM_REGION_SHA256 = (
     "78bccd66a6fc5187ffd6925bff63a2e6b7a7ac14417f966eaee686111cef3e9f"
 )
-_VENDOR_DEVIATION_COUNT = 9
+_VENDOR_DEVIATION_COUNT = 11
 
 _REGION_FUNCTIONS = [
-    "load_image",
     "resize_image",
     "process_image",
     "estimate_num_image_tokens",
@@ -48,7 +47,7 @@ _REGION_FUNCTIONS = [
     "should_add_special_tokens",
 ]
 # Excluded from the probe: ``processor_video_sampling``, ``load_video``,
-# ``load_audio``, and ``prepare_inputs`` carry the documented hunks (see
+# ``load_image``, ``load_audio``, and ``prepare_inputs`` carry the documented hunks (see
 # the package inventory) and are behavior-tested below.
 
 
@@ -79,7 +78,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "21717b73c9506833d40d0e89ac76705166062630fe1ce1d3d69c46d5a17c627f"
+        "2569cc4f633d0743bea3cab9927920e07acf73bcde4a8665bc4d1720a50a2ed9"
     )
     deviation_comments = [
         token.string
@@ -89,7 +88,7 @@ def test_vendored_region_matches_reviewed_sources():
     ]
     assert len(deviation_comments) == _VENDOR_DEVIATION_COUNT
     assert sum("(redirect)" in comment for comment in deviation_comments) == 3
-    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 5
+    assert sum("(upstream-bugfix)" in comment for comment in deviation_comments) == 7
     assert sum("(dual-namespace)" in comment for comment in deviation_comments) == 1
 
 
@@ -247,46 +246,20 @@ def test_load_video_releases_capture_when_open_fails(monkeypatch):
     assert released == [True]
 
 
-def test_load_audio_closes_streamed_response(monkeypatch):
-    """The HTTP response must close after its bytes reach the audio decoder."""
+def test_load_audio_resolves_remote_source_before_decoding(monkeypatch):
     audio_io = pytest.importorskip("mlx_audio.audio_io")
-    audio_utils = pytest.importorskip("mlx_audio.utils")
-    events = []
+    from rapid_mlx.models import mllm
 
-    class _Response:
-        content = b"encoded-audio"
-
-        def __enter__(self):
-            events.append("enter")
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            events.append("exit")
-
-        def raise_for_status(self):
-            events.append("status")
-
-    monkeypatch.setattr(
-        vendored_inputs.requests,
-        "get",
-        lambda *args, **kwargs: _Response(),
-    )
+    seen = []
+    monkeypatch.setattr(mllm, "download_audio", lambda url, timeout: "/safe/audio.wav")
     monkeypatch.setattr(
         audio_io,
         "read",
-        lambda source, dtype: (np.array([[0.25], [0.5]], dtype=np.float32), 16_000),
+        lambda source, dtype: (seen.append(source) or np.array([0.25, 0.5]), 16_000),
     )
-    monkeypatch.setattr(
-        audio_utils,
-        "resample_audio",
-        lambda audio, source_rate, target_rate: pytest.fail(
-            "same-rate audio should not be resampled"
-        ),
-    )
-
     result = vendored_inputs.load_audio("https://example.invalid/audio.wav", 16_000)
     assert result.tolist() == pytest.approx([0.25, 0.5])
-    assert events == ["enter", "status", "exit"]
+    assert seen == ["/safe/audio.wav"]
 
 
 def test_prepare_inputs_decodes_bytes_video_paths(monkeypatch):

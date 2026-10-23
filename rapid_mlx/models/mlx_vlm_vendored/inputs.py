@@ -30,10 +30,10 @@ from dataclasses import dataclass, fields
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlsplit
 
 import mlx.core as mx
 import numpy as np
-import requests
 from PIL import Image, ImageOps
 from mlx_vlm.models.base import BaseImageProcessor  # VENDOR-DEVIATION(redirect)
 
@@ -65,14 +65,14 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
                     )
                 _, data = image_source.split(",", 1)
                 image_source = BytesIO(base64.b64decode(data))
-            if isinstance(image_source, str) and image_source.startswith(
-                ("http://", "https://")
+            if isinstance(image_source, str) and urlsplit(image_source).scheme in (
+                "http", "https"
             ):
-                with requests.get(
-                    image_source, stream=True, timeout=timeout
-                ) as response:
-                    response.raise_for_status()
-                    image_source = BytesIO(response.content)
+                # VENDOR-DEVIATION(upstream-bugfix): never let a decoder fetch
+                # untrusted URLs outside Rapid's DNS-pinned media transport.
+                from rapid_mlx.models.mllm import download_image
+
+                image_source = download_image(image_source, timeout=timeout)
 
             image = Image.open(image_source)
     except ValueError:
@@ -303,21 +303,13 @@ def load_audio(
 
     if isinstance(file, Path):
         file = str(file)
-    if isinstance(file, str) and file.startswith(("http://", "https://")):
-        try:
-            # VENDOR-DEVIATION(upstream-bugfix): close the streamed response
-            # on success and every decoder/error path instead of leaking it.
-            with requests.get(file, stream=True, timeout=timeout) as response:
-                response.raise_for_status()
-                audio, sample_rate = read_audio(
-                    BytesIO(response.content), dtype="float32"
-                )
-        except Exception as e:
-            raise ValueError(
-                f"Failed to load audio from URL: {file} with error {e}"
-            ) from e
-    else:
-        audio, sample_rate = read_audio(file, dtype="float32")
+    # VENDOR-DEVIATION(upstream-bugfix): resolve URLs through the shared
+    # media guard before audio decoders receive input (including redirects).
+    from rapid_mlx.models.mllm import process_audio_input
+
+    if isinstance(file, str):
+        file = process_audio_input(file, timeout=timeout)
+    audio, sample_rate = read_audio(file, dtype="float32")
 
     # Upstream 0.7.2 downmixes before resampling: ``read_audio`` returns
     # (samples, channels), while ``resample_audio`` operates on the last axis.
@@ -418,6 +410,15 @@ def load_video(
     min_frames = resolved.min_frames
     max_frames = resolved.max_frames
     frame_factor = resolved.frame_factor
+
+    # VENDOR-DEVIATION(upstream-bugfix): OpenCV must never fetch arbitrary
+    # remote URLs itself; reuse the guarded downloader before opening frames.
+    if urlsplit(video_path).scheme in ("http", "https"):
+        from rapid_mlx.models.mllm import download_video
+
+        video_path = download_video(video_path)
+    elif urlsplit(video_path).scheme and not video_path.startswith("file://"):
+        raise ValueError("Remote video URL must use http(s)")
 
     if video_path.startswith("file://"):
         video_path = video_path[7:]
