@@ -619,6 +619,8 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
             raise RuntimeError(
                 f"{plan.credentials_path} changed after preview; re-run --setup"
             )
+    # SetupPlan.changed includes credential deltas, so independent credential
+    # updates still run even when the adapter configuration itself is unchanged.
     if plan.agent in {"cline", "continue"} and not plan.changed:
         return plan.path
     try:

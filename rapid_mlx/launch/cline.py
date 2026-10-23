@@ -321,10 +321,11 @@ def remove_config() -> bool:
     path = path.resolve()
     data = load_providers(path)
     settings = data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
-    if not _ownership.remove_fields(path, settings, _OWNED_SETTINGS):
+    removed_settings = _ownership.remove_fields(path, settings, _OWNED_SETTINGS)
+    removed_selection = _ownership.remove_fields(path, data, ("lastUsedProvider",))
+    if not removed_settings and not removed_selection:
         _ownership.forget(path)
         return False
-    _ownership.remove_fields(path, data, ("lastUsedProvider",))
     _common.backup_existing(path)
     _common.atomic_write_json(path, data)
     _ownership.forget(path)

@@ -1864,8 +1864,10 @@ def test_continue_remove_preserves_yaml_specific_values(fake_home, extra):
     with path.open("a") as stream:
         stream.write(f"- name: personal\n  {extra}\n")
     data = continue_dev.load_yaml_config(path)
+    data["models"].reverse()
+    path.write_text(continue_dev.dump_yaml(data))
     assert continue_dev.remove_config()
-    assert continue_dev.load_yaml_config(path)["models"] == data["models"][1:]
+    assert continue_dev.load_yaml_config(path)["models"] == data["models"][:-1]
 
 
 @pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
@@ -1944,3 +1946,54 @@ def test_receipt_failure_rolls_back_config(fake_home, client, existing, setup):
             adapter.write_or_patch_config("https://example.com", "new-model", "key")
     assert (path.read_bytes() if path.exists() else None) == before
     assert (receipt.read_bytes() if receipt.exists() else None) == old_receipt
+
+
+@pytest.mark.parametrize("clear", [False, True])
+def test_remove_owned_selection_when_provider_settings_are_user_owned(fake_home, clear):
+    path = cline.write_or_patch_config("https://example.com", "rapid-model", "key")
+    data = cline.load_providers(path)
+    settings = data["providers"]["openai-compatible"]["settings"]
+    for key in ("apiKey", "model", "baseUrl"):
+        if clear:
+            del settings[key]
+        else:
+            settings[key] = "user-edit"
+    _common.atomic_write_json(path, data)
+    assert cline.remove_config()
+    result = cline.load_providers(path)
+    assert "lastUsedProvider" not in result
+    assert result["providers"] == data["providers"]
+
+
+def test_remove_only_one_owned_model_entry(fake_home):
+    path = continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    data = continue_dev.load_yaml_config(path)
+    data["models"].append(dict(data["models"][0]))
+    path.write_text(continue_dev.dump_yaml(data))
+    assert continue_dev.remove_config()
+    assert continue_dev.load_yaml_config(path)["models"] == data["models"][1:]
+    assert not continue_dev.remove_config()
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+def test_setup_noop_guard_still_applies_independent_credentials(fake_home, client):
+    from dataclasses import replace
+
+    import yaml
+
+    from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+
+    apply_setup_plan(build_setup_plan(client, "https://example.com", "rapid-model"))
+    plan = build_setup_plan(client, "https://example.com", "rapid-model")
+    assert not plan.changed
+    credentials = fake_home / "credential-overrides.yaml"
+    plan = replace(
+        plan,
+        credentials_path=credentials,
+        credentials_before={},
+        credentials_after={"test_key": "updated-value"},
+    )
+    assert plan.before == plan.after
+    assert plan.changed
+    apply_setup_plan(plan)
+    assert yaml.safe_load(credentials.read_text()) == {"test_key": "updated-value"}

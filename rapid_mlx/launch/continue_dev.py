@@ -449,11 +449,14 @@ def remove_config() -> bool:
     if not isinstance(models, list):
         raise ValueError(f"{path} models must contain a list")
     kept = []
+    removed = False
     for entry in models:
         candidate = {"model_entry": entry}
-        if not _ownership.remove_fields(path, candidate, ("model_entry",)):
+        if not removed and _ownership.remove_fields(path, candidate, ("model_entry",)):
+            removed = True
+        else:
             kept.append(entry)
-    if kept == models:
+    if not removed:
         _ownership.forget(path)
         return False
     data["models"] = kept
