@@ -25,7 +25,7 @@ included or executed, and caller-supplied `tools_ts_str` is ignored.
 
 Other local deviations are Ruff formatting, explicit optional/container/return
 types, indexed token lookup, compatible positional encode/decode options and
-explicit text validation. Complete special tokens are recognized before ordinary
+explicit text/local-file validation and array-like decode normalization. Complete special tokens are recognized before ordinary
 text is divided into bounded chunks. Special-token control is a keyword-only extension. Reviewed packaged SHA256:
 
-- `tokenization.py`: `5ea2bdd901cc35404add72f7d4385608f237ce914f1713e1a8261cb7214819ef`
+- `tokenization.py`: `21bfbe6f53235954c1cc17db42aa5a5de86004943fb3dffb20afc818bd656781`

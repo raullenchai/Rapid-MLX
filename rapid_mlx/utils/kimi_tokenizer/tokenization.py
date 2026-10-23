@@ -13,6 +13,7 @@ import tiktoken
 from tokenizers import AddedToken
 from transformers.convert_slow_tokenizer import bytes_to_unicode
 from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.utils import to_py_obj
 
 from .vocabulary import load_local_bpe
 
@@ -76,7 +77,8 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         added_tokens_decoder: dict | None = None,
         **kwargs,
     ):
-        assert os.path.isfile(vocab_file), vocab_file
+        if not os.path.isfile(vocab_file):
+            raise ValueError("Kimi requires a local tiktoken.model file")
 
         if additional_special_tokens is None:
             additional_special_tokens = [
@@ -249,7 +251,8 @@ class TikTokenTokenizer(PreTrainedTokenizer):
                 ),
             )
 
-        if type(token_ids) is int:
+        token_ids = to_py_obj(token_ids)
+        if isinstance(token_ids, int):
             token_ids = [token_ids]
 
         return cast(str, self.model.decode(cast(list[int], token_ids)))

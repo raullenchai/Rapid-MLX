@@ -71,6 +71,21 @@ def test_base_tokenizer_positional_and_paired_contracts(tokenizer):
     assert tokenizer.encode([97], [98], allow_special_tokens=False) == [97, 98]
 
 
+def test_decode_normalizes_numpy_inputs(tokenizer):
+    import numpy as np
+
+    assert tokenizer.decode(np.array([97, 98], dtype=np.int64)) == "ab"
+    assert tokenizer.decode(np.array(97, dtype=np.int64)) == "a"
+    assert tokenizer.decode(np.int64(97)) == "a"
+
+
+def test_constructor_requires_local_vocabulary(tmp_path):
+    from rapid_mlx.utils.kimi_tokenizer.tokenization import TikTokenTokenizer
+
+    with pytest.raises(ValueError, match="local tiktoken.model"):
+        TikTokenTokenizer(str(tmp_path / "missing"))
+
+
 @pytest.mark.parametrize("value", [None, 42, ["text"]])
 def test_raw_tokenizer_rejects_non_text_explicitly(tokenizer, value):
     with pytest.raises(TypeError, match="must be a string"):
@@ -230,7 +245,7 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "5ea2bdd901cc35404add72f7d4385608f237ce914f1713e1a8261cb7214819ef",
+        "tokenization.py": "21bfbe6f53235954c1cc17db42aa5a5de86004943fb3dffb20afc818bd656781",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 
