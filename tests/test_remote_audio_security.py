@@ -249,3 +249,23 @@ def test_remote_audio_decodes_valid_wav(inputs, transport):
     result = inputs.load_audio("https://media.example/audio.wav", 16000)
     assert result.shape == (16,)
     np.testing.assert_array_equal(result, np.zeros(16))
+
+
+def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    local = tmp_path / "source.mp4"
+    writer = cv2.VideoWriter(str(local), cv2.VideoWriter_fourcc(*"mp4v"), 2, (16, 16))
+    assert writer.isOpened()
+    try:
+        for _ in range(2):
+            writer.write(np.zeros((16, 16, 3), dtype=np.uint8))
+    finally:
+        writer.release()
+    transport["response"] = Response(local.read_bytes(), {"content-type": "video/mp4"})
+    frames, metadata = inputs.load_video(
+        "https://media.example/video.mp4",
+        inputs.VideoSampling(nframes=1, min_frames=1, max_frames=1, frame_factor=1),
+    )
+    assert len(frames) == 1
+    assert metadata.total_num_frames == 2
+    assert transport["response"].closed
