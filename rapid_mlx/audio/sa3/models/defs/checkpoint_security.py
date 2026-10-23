@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import pickle
 from pathlib import Path
 from typing import Any
 
 from rapid_mlx._env import env_truthy
+from rapid_mlx.utils.torch_checkpoint import load_tensor_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def load_torch_checkpoint(path: str | Path) -> Any:
     import torch
 
     try:
-        return torch.load(path, map_location="cpu", weights_only=True)
+        return load_tensor_checkpoint(path)
     except pickle.UnpicklingError as exc:
         allowed = env_truthy(_UNSAFE_ENV)
         if not allowed:

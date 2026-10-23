@@ -166,7 +166,9 @@ def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
         calls.append(weights_only)
         raise pickle.UnpicklingError("legacy pickle")
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=fake_load))
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(load=fake_load, __version__="2.10.0")
+    )
     monkeypatch.delenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", raising=False)
     with pytest.raises(RuntimeError, match="Refusing unsafe pickle fallback"):
         load_torch_checkpoint("model.ckpt")
@@ -186,7 +188,9 @@ def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch):
             raise pickle.UnpicklingError("legacy pickle")
         return {"state_dict": {}}
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=fake_load))
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(load=fake_load, __version__="2.10.0")
+    )
     monkeypatch.setenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", "1")
     assert load_torch_checkpoint("model.ckpt") == {"state_dict": {}}
     assert calls == [True, False]

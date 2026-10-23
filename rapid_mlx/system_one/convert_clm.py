@@ -131,9 +131,11 @@ def convert(input_path: str | Path, output_dir: str | Path) -> Path:
     source = Path(input_path).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # weights_only prevents the checkpoint pickle from constructing arbitrary
-    # Python objects. Official CLM heads contain tensors and primitive config.
-    checkpoint = torch.load(source, map_location="cpu", weights_only=True)
+    # Official CLM heads contain tensors and primitive config. Require patched
+    # restricted unpickling rather than relying on PyTorch's versioned default.
+    from rapid_mlx.utils.torch_checkpoint import load_tensor_checkpoint
+
+    checkpoint = load_tensor_checkpoint(source)
     if not isinstance(checkpoint, Mapping):
         raise ValueError("CLM checkpoint root must be a mapping")
     required = {"state_head", "action_head", "logit_scale", "cfg"}

@@ -71,6 +71,11 @@ def test_audio_runtime_package_changes_are_not_cosmetic():
         ".github/workflows/validate-community-submission.yml",
         "rapid_mlx/audio/registry.py",
         "rapid_mlx/audio/runtime_requirements.py",
+        "rapid_mlx/audio/tts.py",
+        "rapid_mlx/audio/processor.py",
+        "rapid_mlx/audio/sam_security.py",
+        "rapid_mlx/audio/sa3/models/defs/checkpoint_security.py",
+        "rapid_mlx/utils/torch_checkpoint.py",
         "rapid_mlx/catalog/schemas/model-alias.schema.json",
     ],
 )

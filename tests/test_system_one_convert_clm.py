@@ -205,6 +205,7 @@ class _FakeTensor:
 
 def _fake_torch(monkeypatch, checkpoint):
     module = SimpleNamespace(
+        __version__="2.10.0",
         Tensor=_FakeTensor,
         load=lambda *args, **kwargs: checkpoint,
         as_tensor=lambda value: _FakeTensor(value),
