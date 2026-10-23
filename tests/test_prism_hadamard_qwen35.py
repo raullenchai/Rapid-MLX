@@ -29,6 +29,8 @@ def test_mllm_dispatches_bonsai2_to_owned_loader(monkeypatch, trust_remote_code)
         "rapid_mlx.models.prism_hadamard_qwen35",
         SimpleNamespace(load=custom_load),
     )
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", lambda: None)
+    monkeypatch.setattr("rapid_mlx.models.mllm._resolve_checkpoint", lambda name: name)
     monkeypatch.setattr(mlx_vlm, "load", ordinary_load)
     monkeypatch.setattr(mlx_vlm.utils, "load_config", lambda *a, **kw: config)
     monkeypatch.setattr(

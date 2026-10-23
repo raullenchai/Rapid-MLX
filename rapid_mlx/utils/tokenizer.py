@@ -12,7 +12,6 @@ import logging
 import os
 from pathlib import Path
 
-from .._env import env_falsey
 from ..model_load_errors import (
     IncompatibleWeights,
     TokenizerLoadFailed,
@@ -22,28 +21,23 @@ from ..model_load_errors import (
     validate_model_config_file,
 )
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
-from .model_file_guard import validate_local_model_file
+from .model_file_guard import (
+    remote_code_enabled,
+    validate_local_model_file,
+    validate_model_code,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def apply_remote_code_policy(
     tokenizer_config: dict | None,
-) -> tuple[dict | None, bool]:
-    """Apply the process-wide remote-code opt-out without changing defaults.
-
-    ``None`` remains ``None`` when the environment variable is unset, which
-    preserves the loader's historical defaults for non-serve call sites.  An
-    explicit false value is authoritative across every caller of the shared
-    loader, including bench and disk-stream paths.
-    """
-    configured = tokenizer_config is not None
+) -> tuple[dict, bool]:
+    """Require explicit consent for repository Python; never inherit upstream defaults."""
     config = dict(tokenizer_config or {})
-    requested = bool(config.get("trust_remote_code", True))
-    if env_falsey("RAPID_MLX_TRUST_REMOTE_CODE"):
-        config["trust_remote_code"] = False
-        return config, False
-    return (config if configured else None), requested
+    enabled = remote_code_enabled(config.get("trust_remote_code"))
+    config["trust_remote_code"] = enabled
+    return config, enabled
 
 
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
@@ -1052,6 +1046,22 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
     if not isinstance(config, dict):
         return False
     model_type = config.get("model_type")
+    if model_type == "kimi_k25":
+        from mlx_lm.models import kimi_k25
+
+        kimi_k25.ModelArgs.from_dict(config)
+        return True
+    if model_type == "glm_moe_dsa":
+        # REAP checkpoints ship a model_file implementing indexer sharing.
+        # Our installed native GLM architecture plus owned indexer gate already
+        # implements that data contract; never execute the repository copy.
+        _install_dsv32_indexer_gate()
+        from mlx_lm.models import deepseek_v32, glm_moe_dsa
+
+        if not getattr(deepseek_v32, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+            raise RuntimeError("Native GLM indexer-sharing adapter is unavailable")
+        glm_moe_dsa.ModelArgs.from_dict(config)  # validate the REAP extension
+        return True
     if model_type not in _RAPID_OWNED_RUNTIME_MODEL_TYPES:
         return False
 
@@ -1464,14 +1474,17 @@ def load_model_with_fallback(
     _register_vendored_archs()
     rapid_owned_model_config = _rapid_owned_model_config(model_name)
     rapid_owned_runtime = rapid_owned_model_config is not None
+    tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
     if not rapid_owned_runtime:
+        # Resolution failures cannot fall through to a second unchecked remote load.
+        config = validate_model_config_file(model_name)
+        if config is None and not Path(model_name).is_dir():
+            raise ValueError("Cannot inspect model configuration before loading")
+        validate_model_code(config or {}, trust_remote_code=trust_remote_code)
         validate_local_model_file(model_name)
 
-    tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
-
-    # Security hardening: when remote-code execution is enabled (the default,
-    # for maximal community-model compatibility) and this model actually needs
-    # it (its config declares ``auto_map``), say so BEFORE any repo code is
+    # When repository code is explicitly enabled and declared by auto_map,
+    # report the trust decision BEFORE any repository code is
     # downloaded and run. This turns silent code execution into an informed
     # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
     # BatchedEngine). A probe failure is silent — never breaks loading.
@@ -1556,7 +1569,26 @@ def load_model_with_fallback(
             # security overlay only for reviewed runtimes. Rapid's supported
             # mlx-lm floor (0.31.3) exposes this keyword on both load APIs.
             lazy_load_kwargs["model_config"] = rapid_owned_model_config
-        result = _mlx_lm_load(model_name, **lazy_load_kwargs)
+        if (
+            rapid_owned_model_config is not None
+            and (_read_model_config_json(model_name) or {}).get("model_type")
+            == "kimi_k25"
+            and not (Path(model_name) / "tokenizer.json").is_file()
+        ):
+            from mlx_lm.utils import load_model
+
+            from .kimi_tokenizer import load_kimi_tokenizer
+
+            model, config = load_model_checked(
+                load_model,
+                Path(model_name),
+                lazy=True,
+                model_config=rapid_owned_model_config,
+            )
+            tokenizer = load_tokenizer_checked(load_kimi_tokenizer, Path(model_name))
+            result = (model, tokenizer, config) if return_config else (model, tokenizer)
+        else:
+            result = _mlx_lm_load(model_name, **lazy_load_kwargs)
         model, tokenizer = result[0], result[1]
 
         # The four fixups below are pure post-load tokenizer/generation-
@@ -1835,7 +1867,11 @@ def _load_model_with_fallback_impl(
         logger.info(
             f"Model {model_name} requires tokenizer fallback, loading directly..."
         )
-        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            trust_remote_code=tokenizer_config.get("trust_remote_code"),
+        )
 
     # Vendored architectures (e.g. deepseek_v4) — transformers' AutoConfig
     # doesn't know about them, so mlx-lm's high-level load() blows up
@@ -1846,7 +1882,11 @@ def _load_model_with_fallback_impl(
             f"Model {model_name} uses a vendored architecture, "
             "skipping AutoConfig path and loading directly..."
         )
-        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            trust_remote_code=tokenizer_config.get("trust_remote_code"),
+        )
 
     # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
     # for older mlx-lm versions that lack gemma4 model support. Several
@@ -1950,7 +1990,9 @@ def _load_model_with_fallback_impl(
         ):
             logger.warning(f"Standard tokenizer loading failed, using fallback: {e}")
             return _load_with_tokenizer_fallback(
-                model_name, enable_dspark=enable_dspark
+                model_name,
+                enable_dspark=enable_dspark,
+                trust_remote_code=tokenizer_config.get("trust_remote_code"),
             )
         # Fallback for models with extra/missing weights (e.g., vision tower, MTP layers).
         # Retry with strict=False to discard extra weights. The retry itself
@@ -2025,6 +2067,7 @@ def _load_strict_false(
     """
     from mlx_lm.utils import load_model, load_tokenizer
 
+    tokenizer_config, _ = apply_remote_code_policy(tokenizer_config)
     local_path = Path(model_name).expanduser()
     if local_path.is_dir():
         model_path = local_path
@@ -2039,7 +2082,12 @@ def _load_strict_false(
             f"Model has extra/missing parameters (likely VLM / MTP weights), "
             f"retrying with strict=False: {load_error}"
         )
-    model, config = load_model_checked(load_model, model_path, strict=False)
+    model, config = load_model_checked(
+        load_model,
+        model_path,
+        strict=False,
+        trust_remote_code=(tokenizer_config or {}).get("trust_remote_code"),
+    )
     tokenizer = load_tokenizer_checked(
         load_tokenizer,
         model_path,
@@ -2113,6 +2161,7 @@ def _load_with_tokenizer_fallback(
     *,
     enable_dspark: bool = False,
     model_config: dict | None = None,
+    trust_remote_code: bool | None = None,
 ):
     """Load model with fallback tokenizer for non-standard models like Nemotron."""
     from mlx_lm.utils import load_model
@@ -2162,7 +2211,12 @@ def _load_with_tokenizer_fallback(
         model = load_fp8_model_online(model_path)
     else:
         # Load model
-        model, _ = load_model_checked(load_model, model_path, model_config=model_config)
+        model, _ = load_model_checked(
+            load_model,
+            model_path,
+            model_config=model_config,
+            trust_remote_code=trust_remote_code,
+        )
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"
@@ -2238,6 +2292,14 @@ def _load_with_tokenizer_fallback(
         # repeating its answer (real-weights mini smoke, 2026-08-10).
         augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
         logger.info("Tokenizer loaded via fallback successfully")
+    elif (model_path / "tiktoken.model").is_file() and (
+        _read_model_config_json(str(model_path)) or {}
+    ).get("model_type") == "kimi_k25":
+        from .kimi_tokenizer import load_kimi_tokenizer
+
+        tokenizer = load_tokenizer_checked(load_kimi_tokenizer, model_path)
+        _apply_chat_template_sidecar(model_path, tokenizer)
+        augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
     else:
         raise ValueError(f"No tokenizer.json found in {model_path}")
     return model, tokenizer

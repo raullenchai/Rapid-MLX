@@ -802,3 +802,33 @@ def test_install_fires_on_real_serve_import_path():
         f"subprocess did not print OK marker. stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
+
+
+@pytest.mark.parametrize("trust_env", ["0", None])
+def test_reap_public_loader_uses_native_weights_and_tokenizer_without_repo_python(
+    tmp_path, monkeypatch, trust_env
+):
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    from rapid_mlx.utils.tokenizer import load_model_with_fallback
+
+    if trust_env is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", trust_env)
+    repro = _forge_repro(tmp_path, ["full", "shared", "full", "shared"])
+    config = json.loads((repro / "config.json").read_text())
+    config["model_file"] = "glm_moe_dsa.py"
+    (repro / "config.json").write_text(json.dumps(config))
+    (repro / "glm_moe_dsa.py").write_text(
+        "raise AssertionError('repository Python executed')\n"
+    )
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.save(str(repro / "tokenizer.json"))
+    (repro / "tokenizer_config.json").write_text(json.dumps({"unk_token": "[UNK]"}))
+    model, tokenizer = load_model_with_fallback(str(repro))
+    assert model.layers[0].self_attn.indexer is not None
+    assert model.layers[1].self_attn.indexer is None
+    assert tokenizer.encode("hello", add_special_tokens=False) == [1]
+    assert tokenizer.decode([1]) == "hello"

@@ -28,6 +28,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "tiktoken>=0.5.0",  # Native Kimi tokenizer
     # Core — these are all you need for `rapid-mlx serve <text-model>`
     # Floor bump to 0.31.2 (mlx) + 0.31.3 (mlx-lm) for #720 take-2 — see
     # tests/test_mllm_cross_thread_stream_contract.py for the empirical
@@ -396,6 +397,7 @@ test = [
 # pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
 # then adds test-only packages required by automatically discovered modules.
 ci-linux = [
+    "tiktoken>=0.5.0",
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
@@ -628,6 +630,8 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 [tool.setuptools.package-data]
 rapid_mlx = [
     "aliases.json",
+    "utils/kimi_tokenizer/LICENSE",
+    "utils/kimi_tokenizer/PROVENANCE.md",
     "model_recommendations.json",
     "audio/aliases.json",
     "catalog/schemas/*.json",

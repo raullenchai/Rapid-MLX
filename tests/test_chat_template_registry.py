@@ -175,6 +175,7 @@ def _stub_text_loader(monkeypatch, tokenizer):
         tokenizer_module, "_local_snapshot_if_cached", lambda name: name
     )
     monkeypatch.setattr(tokenizer_module, "_resolve_model_path", lambda name: None)
+    monkeypatch.setattr(tokenizer_module, "validate_model_config_file", lambda name: {})
     monkeypatch.setattr(
         tokenizer_module, "validate_local_model_file", lambda name: None
     )

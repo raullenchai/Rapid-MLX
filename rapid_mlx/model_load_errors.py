@@ -225,11 +225,14 @@ def typed_mlx_load_boundaries() -> Iterator[None]:
 def load_model_checked(
     loader: Callable[..., tuple[Any, dict[str, Any]]],
     model_path: str | Path,
+    trust_remote_code: bool | None = None,
     **kwargs: Any,
 ) -> tuple[Any, dict[str, Any]]:
     """Run an mlx-lm model loader and type its internal load phase."""
 
     config = validate_model_config_file(model_path)
+    if config is None and not Path(model_path).is_dir():
+        raise ValueError("Cannot inspect model configuration before loading")
     effective_config = {**(config or {}), **(kwargs.get("model_config") or {})}
     if (
         effective_config.get("model_type") == "nemotron_h"
@@ -244,6 +247,12 @@ def load_model_checked(
             "model_file": None,
             "auto_map": None,
         }
+    from .utils.model_file_guard import validate_local_model_file, validate_model_code
+
+    effective_config = {**(config or {}), **(kwargs.get("model_config") or {})}
+    validate_model_code(effective_config, trust_remote_code=trust_remote_code)
+    if effective_config.get("model_file"):
+        validate_local_model_file(model_path, model_config=effective_config)
     with typed_mlx_load_boundaries():
         return loader(model_path, **kwargs)
 
@@ -258,10 +267,16 @@ def load_mlx_lm_checked(
 
     from mlx_lm.utils import _download, load_model, load_tokenizer
 
+    from .utils.tokenizer import apply_remote_code_policy
+
+    tokenizer_config, _ = apply_remote_code_policy(tokenizer_config)
     local_path = Path(model_name).expanduser()
     model_path = local_path if local_path.exists() else _download(model_name)
     model, config = load_model_checked(
-        load_model, model_path, model_config=model_config
+        load_model,
+        model_path,
+        model_config=model_config,
+        trust_remote_code=(tokenizer_config or {}).get("trust_remote_code"),
     )
     tokenizer = load_tokenizer_checked(
         load_tokenizer,

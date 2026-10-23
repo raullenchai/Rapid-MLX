@@ -20,13 +20,13 @@ def isolated_host_snapshot(monkeypatch):
     monkeypatch.setattr(browser_security, "_configured_hosts", None)
 
 
-def test_remote_code_policy_preserves_historical_unset_default(monkeypatch):
+def test_remote_code_policy_requires_opt_in(monkeypatch):
     from rapid_mlx.utils.tokenizer import apply_remote_code_policy
 
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     config, enabled = apply_remote_code_policy(None)
-    assert config is None
-    assert enabled is True
+    assert config == {"trust_remote_code": False}
+    assert enabled is False
 
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
@@ -48,6 +48,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
 
     from rapid_mlx.models import mllm as mllm_mod
 
+    monkeypatch.setattr(mllm_mod, "_resolve_checkpoint", lambda name: name)
     calls = {}
     model = SimpleNamespace(config=SimpleNamespace())
     processor = SimpleNamespace(tokenizer=SimpleNamespace())

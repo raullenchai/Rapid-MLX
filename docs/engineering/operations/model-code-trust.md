@@ -1,0 +1,19 @@
+# Checkpoint code consent
+
+Main text and vision loading inspect the resolved local snapshot before loading
+that same snapshot. Checkpoint-bundled Python is refused by default. Ordinary
+local model directories and supported installed architectures need no prompt.
+
+After reviewing checkpoint code, callers can explicitly pass
+`trust_remote_code=True` or set `RAPID_MLX_TRUST_REMOTE_CODE=1`.
+`RAPID_MLX_TRUST_REMOTE_CODE=0` always disables repository code, including when
+an API caller requests it. Consent does not permit Python paths outside the
+checkpoint, except normal blob links within its configured Hub cache repository.
+
+Supported GLM and Kimi checkpoints use installed model implementations. Kimi's
+packaged tokenizer reads local vocabulary, token configuration and chat-template
+data, preserving text, vision, tools and thinking without checkpoint Python.
+
+This policy covers the main text and vision loaders and the PFlash benchmark.
+Auxiliary loaders are being migrated separately. It does not certify arbitrary
+checkpoint contents or change catalog revisions.

@@ -19,6 +19,7 @@
 # editable WITHOUT deps and gets only these test deps — never mlx.
 #
 # Keep this list identical to the `[ci-linux]` extra (the drift test enforces it).
+tiktoken>=0.5.0
 pytest>=7.0.0
 pytest-xdist>=3.8.0
 pytest-asyncio>=0.21.0

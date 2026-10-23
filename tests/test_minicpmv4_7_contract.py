@@ -197,7 +197,7 @@ def test_loader_binding_is_idempotent_without_mlx(isolated_loader_modules):
 @pytest.mark.parametrize("kind", ["minicpmv4_7", "other", "none", "object"])
 @pytest.mark.parametrize("trust_remote_code", [True, False])
 def test_mllm_installs_binding_before_load(
-    isolated_loader_modules, monkeypatch, kind, trust_remote_code
+    isolated_loader_modules, monkeypatch, tmp_path, kind, trust_remote_code
 ):
     import sys
     from types import SimpleNamespace
@@ -241,17 +241,23 @@ def test_mllm_installs_binding_before_load(
             assert not modules["mlx_vlm.prompt_utils"].MODEL_CONFIG
         return model, processor
 
+    modules["mlx_vlm.utils"].get_model_path = lambda name, **kwargs: tmp_path
     modules["mlx_vlm.utils"].load_config = load_config
     modules["mlx_vlm"].load = load
     wrapper = mllm.MLXMultimodalLM(
         "local-checkpoint", trust_remote_code=trust_remote_code, enable_cache=False
     )
+    if kind in {"none", "object"}:
+        with pytest.raises(ValueError, match="must contain an object"):
+            wrapper.load()
+        assert [call[0] for call in calls] == ["config"]
+        return
     wrapper.load()
     wrapper.load()
     options = {} if trust_remote_code else {"trust_remote_code": False}
     assert calls == [
-        ("config", "local-checkpoint", options),
-        ("model", "local-checkpoint", options),
+        ("config", str(tmp_path), options),
+        ("model", str(tmp_path), options),
     ]
     assert wrapper._loaded
     assert wrapper.model is model
