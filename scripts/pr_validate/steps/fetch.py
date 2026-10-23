@@ -103,7 +103,12 @@ class FetchStep(Step):
         # Always enumerate the exact local comparison used by validation.
         try:
             ctx.files_changed = _local_changed_files(ctx)
-        except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        except (
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+            ValueError,
+            UnicodeError,
+        ) as e:
             return StepResult(
                 name=self.name,
                 status="error",

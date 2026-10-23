@@ -293,14 +293,16 @@ def test_complete_inventory_with_unusual_paths(ctx, monkeypatch, capped):
     assert ctx.files_changed == sorted(names + ["renamed.py", "deleted.py"])
 
 
-@pytest.mark.parametrize("failure", ["missing", "git", "executable"])
+@pytest.mark.parametrize("failure", ["missing", "git", "executable", "encoding"])
 def test_inventory_failure_is_closed(ctx, monkeypatch, failure):
     ctx.base_override = ctx.base_sha = "a" * 40
     ctx.head_sha = "b" * 40 if failure != "missing" else ""
     mock_gh(monkeypatch, metadata(ctx))
-    if failure == "executable":
+    if failure in {"executable", "encoding"}:
 
         def unavailable(*args, **kwargs):
+            if failure == "encoding":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
             raise FileNotFoundError("git")
 
         monkeypatch.setattr(fetch_mod.subprocess, "run", unavailable)
@@ -308,3 +310,9 @@ def test_inventory_failure_is_closed(ctx, monkeypatch, failure):
     assert result.status == "error"
     assert "complete local PR file list" in result.summary
     assert ctx.files_changed == []
+
+
+def test_local_diff_failure_returns_controlled_result(ctx):
+    ctx.base_sha = "a" * 40
+    ctx.head_sha = "b" * 40
+    assert fetch_mod._local_git_diff(ctx) == (None, None)
