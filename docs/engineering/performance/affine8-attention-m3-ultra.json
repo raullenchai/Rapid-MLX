@@ -1,0 +1,285 @@
+{
+  "scope": "Qualified affine8 long-context attention, production dispatch; no default BF16 speed claim",
+  "base_commit": "4a52b5939b62e0cdf1d6e917c990b1c0a97cf927",
+  "hardware": "Apple M3 Ultra, 256 GiB",
+  "os": "macOS 26.5.2",
+  "python": "3.12.13",
+  "mlx": "0.32.3",
+  "mlx_lm": "0.31.3",
+  "model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+  "model_revision": "eb4e4dd38cf2f0a34045347e7a4cbfb60487df2a",
+  "model_settings": "affine8/group64 KV, native MTP K=3 fixed, greedy, thinking disabled, 128 output tokens",
+  "method": "One service process; one warmup per arm excluded, three alternating pairs, identical prompt and cache-hit token counts. Decode tps=(completion_tokens-1)/(end-first visible token).",
+  "median": {
+    "off": {
+      "decode_tps": 38.56274864913305,
+      "elapsed_s": 3.6180475000001024,
+      "ttft_s": 0.3247137919825036
+    },
+    "on": {
+      "decode_tps": 47.05083643784152,
+      "elapsed_s": 3.021368749992689,
+      "ttft_s": 0.31980712499353103
+    }
+  },
+  "decode_gain_percent": 22.011106796193825,
+  "elapsed_reduction_percent": 16.49173345588737,
+  "identical_output_all_measured": true,
+  "limitations": [
+    "Single model and workload; not a general quality qualification.",
+    "Warm-prefix measurements; TTFT improvement not established.",
+    "Numerically approximate attention may change wording on other prompts.",
+    "Other hardware/OS/MLX versions and unsupported geometry use stock attention.",
+    "128 generated tokens are a truncated program, not a complete-program correctness test."
+  ],
+  "reproduce": "python scripts/large-model-run.py --working-set-gb 64 -- python scripts/benchmarks/affine8_attention.py --model /path/to/pinned/model --output /private/tmp/affine8-bench",
+  "raw_requests": [
+    {
+      "mode": "on",
+      "case": "32768",
+      "repeat": 0,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.32216062501538545,
+      "elapsed_s": 3.021368749992689,
+      "decode_tps": 47.05083643784152,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    },
+    {
+      "mode": "off",
+      "case": "32768",
+      "repeat": 0,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.3247137919825036,
+      "elapsed_s": 3.6180475000001024,
+      "decode_tps": 38.56274864913305,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    },
+    {
+      "mode": "off",
+      "case": "32768",
+      "repeat": 1,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.32109504198888317,
+      "elapsed_s": 3.6065528340113815,
+      "decode_tps": 38.65519146475473,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    },
+    {
+      "mode": "on",
+      "case": "32768",
+      "repeat": 1,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.31980712499353103,
+      "elapsed_s": 3.1120997089892626,
+      "decode_tps": 45.48233975476337,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    },
+    {
+      "mode": "on",
+      "case": "32768",
+      "repeat": 2,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.3188471669855062,
+      "elapsed_s": 3.012096874997951,
+      "decode_tps": 47.154929460188455,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    },
+    {
+      "mode": "off",
+      "case": "32768",
+      "repeat": 2,
+      "warmup": false,
+      "usage": {
+        "prompt_tokens": 32695,
+        "completion_tokens": 128,
+        "total_tokens": 32823,
+        "prompt_tokens_details": {
+          "cached_tokens": 32672
+        }
+      },
+      "ttft_s": 0.32639445801032707,
+      "elapsed_s": 3.6539011250133626,
+      "decode_tps": 38.166715414693456,
+      "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+      "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+    }
+  ],
+  "independent_reproduction": {
+    "method": "Included benchmark script in a separate server process after rebasing onto main",
+    "decode_tps_median": {
+      "off": 37.68636994888774,
+      "on": 45.52386113806514
+    },
+    "gain_percent": 20.7966201037856,
+    "identical_output": true,
+    "raw_requests": [
+      {
+        "mode": "on",
+        "case": "32768",
+        "repeat": 0,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.3291601249948144,
+        "elapsed_s": 3.1189059159951285,
+        "decode_tps": 45.52386113806514,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      },
+      {
+        "mode": "off",
+        "case": "32768",
+        "repeat": 0,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.3319481250073295,
+        "elapsed_s": 3.7409851660195272,
+        "decode_tps": 37.253921993846,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      },
+      {
+        "mode": "off",
+        "case": "32768",
+        "repeat": 1,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.335112582979491,
+        "elapsed_s": 3.7050312079954892,
+        "decode_tps": 37.68636994888774,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      },
+      {
+        "mode": "on",
+        "case": "32768",
+        "repeat": 1,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.3336338750086725,
+        "elapsed_s": 3.147240874997806,
+        "decode_tps": 45.13778932185287,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      },
+      {
+        "mode": "on",
+        "case": "32768",
+        "repeat": 2,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.3260025839845184,
+        "elapsed_s": 3.074958459008485,
+        "decode_tps": 46.199359238129915,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      },
+      {
+        "mode": "off",
+        "case": "32768",
+        "repeat": 2,
+        "warmup": false,
+        "usage": {
+          "prompt_tokens": 32695,
+          "completion_tokens": 128,
+          "total_tokens": 32823,
+          "prompt_tokens_details": {
+            "cached_tokens": 32672
+          }
+        },
+        "ttft_s": 0.3193954589951318,
+        "elapsed_s": 3.646528292010771,
+        "decode_tps": 38.17100379634979,
+        "hash": "7418e1534b989b659a91ea4b5f273b947b08b0345d421610eecee04a8b901683",
+        "prompt_hash": "5a21d8cb9b0d6570be43592b8a18b02d97e674d2f5aca84a61f41af58ca4944a"
+      }
+    ],
+    "dispatch_receipt": {
+      "mode": "off",
+      "counts": {
+        "0:False": 2624,
+        "1:False": 320,
+        "1:True": 2496
+      }
+    }
+  }
+}

@@ -473,7 +473,13 @@ def fetch_catalog_with_status(
       → don't waste time on direct-layout, just use HF).
     * ``None`` on network errors / malformed JSON — treat as transient.
     """
-    url = f"{base.rstrip('/')}/api/models"
+    return _fetch_json_with_status(f"{base.rstrip('/')}/api/models", timeout)
+
+
+def _fetch_json_with_status(
+    url: str, timeout: float = _CATALOG_TIMEOUT
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Read mirror metadata using the same bounded HTTP/error handling."""
     # Codex round-11 NIT #3: ``urllib.request.Request(url)`` raises
     # ``ValueError`` for a malformed URL (e.g. a user typo in
     # ``RAPID_MLX_MODEL_MIRROR``). Construct it inside the guarded block
@@ -509,6 +515,74 @@ def fetch_catalog_with_status(
     if not isinstance(data, dict):
         return None, status
     return data, status
+
+
+def _revision_manifest_info(base: str, repo_id: str, revision: str):
+    """Adapt an exact-revision mirror manifest to the existing integrity path.
+
+    The configured mirror is the trust root when upstream has lost the pin.
+    Never infer a revision or digest from mutable catalog/object metadata.
+    """
+    from types import SimpleNamespace
+
+    error = RuntimeError(
+        f"Pinned revision {repo_id}@{revision} is unavailable upstream; "
+        "no valid exact-revision mirror manifest with per-file hashes exists."
+    )
+    if not base:
+        raise error
+    manifest, status = _fetch_json_with_status(
+        f"{base.rstrip('/')}/{repo_id}/.rapid-mlx/revisions/{revision}.json"
+    )
+    if (
+        status != 200
+        or not manifest
+        or manifest.get("repo_id") != repo_id
+        or manifest.get("revision") != revision
+        or not isinstance(manifest.get("files"), list)
+        or not manifest["files"]
+    ):
+        raise error
+    inventory = manifest.get("file_inventory")
+    if (
+        not isinstance(inventory, list)
+        or not all(isinstance(name, str) for name in inventory)
+        or len(set(inventory)) != len(inventory)
+    ):
+        raise error
+    siblings = []
+    names = set()
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict):
+            raise error
+        name, size = entry.get("path"), entry.get("size")
+        sha, oid = entry.get("sha256"), entry.get("git_oid")
+        digest = sha if sha is not None else oid
+        length = 64 if sha is not None else 40
+        if (
+            not isinstance(name, str)
+            or not _validate_relative_filename(name)
+            or name in names
+            or type(size) is not int
+            or size < 0
+            or (sha is not None and oid is not None)
+            or not isinstance(digest, str)
+            or len(digest) != length
+            or any(c not in "0123456789abcdef" for c in digest)
+        ):
+            raise error
+        names.add(name)
+        siblings.append(
+            SimpleNamespace(
+                rfilename=name,
+                size=size,
+                lfs=SimpleNamespace(sha256=sha) if sha is not None else None,
+                blob_id=oid,
+            )
+        )
+    if names != set(inventory):
+        raise error
+    return SimpleNamespace(sha=revision, siblings=siblings)
 
 
 def find_catalog_entry(catalog: dict[str, Any], hf_path: str) -> dict[str, Any] | None:
@@ -557,6 +631,17 @@ def _git_blob_oid(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _sha256_digest(path: Path) -> str:
+    """Hash installed bytes, never trusting a content-addressed filename."""
+    import hashlib
+
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_CHUNK_BYTES):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def _blob_oid_is(expected: str) -> Callable[[Path], bool]:
     """Predicate: the file at a path hashes to git blob id ``expected``."""
 
@@ -597,7 +682,7 @@ def pinned_snapshot_download(
     repo_id: str,
     revision: str,
     *,
-    allow_patterns: list[str] | None = None,
+    allow_patterns: str | list[str] | None = None,
 ) -> str:
     """``snapshot_download(repo_id, revision=revision)``, mirror first.
 
@@ -609,6 +694,8 @@ def pinned_snapshot_download(
     from . import model_downloads
     from .model_downloads import snapshot_download
 
+    if isinstance(allow_patterns, str):
+        allow_patterns = [allow_patterns]
     kwargs: dict[str, Any] = {"revision": revision}
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
@@ -721,6 +808,7 @@ def _download_one_from_r2(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -781,6 +869,7 @@ def _download_one_from_r2(
             repo_root=repo_root,
             progress_tracker=progress_tracker,
             enforce_floor=enforce_floor,
+            existing_blob_ok=existing_blob_ok,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -797,6 +886,7 @@ def _do_r2_download(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -1122,7 +1212,7 @@ def _do_r2_download(
     # git-blob-id branch above and land in ``blobs/`` the same way.)
     if expected_sha256 is not None and repo_root is not None:
         ok, reason = _install_lfs_blob_and_symlink(
-            tmp, target, repo_root, expected_sha256
+            tmp, target, repo_root, expected_sha256, existing_ok=existing_blob_ok
         )
         if not ok:
             _safe_unlink(tmp)
@@ -1664,7 +1754,7 @@ def download_with_mirror_fallback(
     *,
     revision: str | None = None,
     on_pull_start: Callable[[], None] | None = None,
-    allow_patterns: list[str] | None = None,
+    allow_patterns: str | list[str] | None = None,
     out: dict | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
@@ -1737,6 +1827,9 @@ def download_with_mirror_fallback(
     """
     from fnmatch import fnmatch
 
+    if isinstance(allow_patterns, str):
+        allow_patterns = [allow_patterns]
+
     from ._hf_logging import silence_hf_unauthenticated_warning
 
     # Whether we pull via R2 + hf_hub_download below or bail (returning
@@ -1772,11 +1865,13 @@ def download_with_mirror_fallback(
     from huggingface_hub.errors import (
         EntryNotFoundError,
         HfHubHTTPError,
+        RevisionNotFoundError,
     )
     from huggingface_hub.utils import RepositoryNotFoundError
 
     from ._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
 
+    mirror_only = False
     try:
         # Wrapped in a deadline rather than called bare: this request has no
         # timeout of its own (huggingface_hub hands httpx an explicit
@@ -1794,6 +1889,11 @@ def download_with_mirror_fallback(
             files_metadata=True,
             **({"revision": revision} if pinned else {}),
         )
+    except RevisionNotFoundError:
+        if not pinned or revision is None:
+            return False
+        info = _revision_manifest_info(base, repo_id, revision)
+        mirror_only = True
     except (
         EntryNotFoundError,
         RepositoryNotFoundError,
@@ -1854,6 +1954,8 @@ def download_with_mirror_fallback(
         oid = getattr(s, "blob_id", None)
         git_oids[rname] = oid if isinstance(oid, str) and len(oid) == 40 else None
     if not revision or not files:
+        if mirror_only:
+            raise RuntimeError("Pinned mirror manifest contains no requested files")
         return False
 
     cache_root = cache_dir if cache_dir else _hf_cache_root()
@@ -1928,6 +2030,11 @@ def download_with_mirror_fallback(
         # The PR #647 contract was ``<base>/<owner>/<repo>/<file>``.
         dub = f"/{owner}/{repo}/"
         use_r2 = True
+
+    if mirror_only and not use_r2:
+        raise RuntimeError(
+            "Pinned revision unavailable: verified mirror is not accessible"
+        )
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     BOLD = "\x1b[1m" if is_tty else ""
@@ -2190,7 +2297,7 @@ def download_with_mirror_fallback(
                                 blob_name = target.resolve(strict=False).name
                             except OSError:
                                 blob_name = ""
-                            if blob_name == expected_sha256:
+                            if blob_name == expected_sha256 and not mirror_only:
                                 return fname, "cached", cached_size
                             # Symlink name doesn't match HF's blob hash
                             # convention — fall through to a full
@@ -2259,6 +2366,11 @@ def download_with_mirror_fallback(
                 sidecar_key=_sidecar_key_for(fname),
                 repo_root=repo_root,
                 progress_tracker=progress_tracker,
+                existing_blob_ok=(
+                    (lambda path: _sha256_digest(path) == expected_sha256)
+                    if mirror_only and expected_sha256 is not None
+                    else None
+                ),
             )
             if ok:
                 try:
@@ -2266,6 +2378,9 @@ def download_with_mirror_fallback(
                 except OSError:
                     size = 0
                 return fname, "r2", size
+
+        if mirror_only:
+            return fname, "miss", 0
 
         # Either R2 not eligible or R2 missed — fall back to HF for
         # this file. Let huggingface_hub handle its own cache layout.
@@ -2494,6 +2609,11 @@ def download_with_mirror_fallback(
         out["source"] = "hf" if hf_hits or misses else "mirror"
 
     if misses:
+        if mirror_only:
+            raise RuntimeError(
+                "Pinned revision unavailable: mirror files failed integrity verification: "
+                + ", ".join(misses)
+            )
         # At least one file we couldn't get from either source. Caller
         # should fall back to ``snapshot_download`` — it has more retry
         # logic and will surface a clean error to the user.

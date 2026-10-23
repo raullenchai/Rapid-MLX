@@ -1541,6 +1541,15 @@ def _render_prometheus(cfg: Any) -> str:
     # the engine-None / get_stats-failure early returns so dashboards
     # see the series even between restarts and on cold boot.
     lines.extend(_render_ubc_evict_counters())
+    from ..tool_call_diagnostics import rejected_tool_calls_total
+
+    lines.extend(
+        [
+            "# HELP rapid_mlx_rejected_tool_calls_total Undeclared tool call observations.",
+            "# TYPE rapid_mlx_rejected_tool_calls_total counter",
+            f"rapid_mlx_rejected_tool_calls_total {rejected_tool_calls_total()}",
+        ]
+    )
 
     # R15-P1 #302 MTP spec-decode counter triplet + accept-ratio gauge.
     # Same engine-independence rationale: counters are process-local

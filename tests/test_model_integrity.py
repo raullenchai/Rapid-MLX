@@ -223,3 +223,72 @@ def test_automatic_mirror_download_propagates_integrity_failure(monkeypatch):
     monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", reject)
     with pytest.raises(ModelIntegrityError, match="tampered weights"):
         cli._ensure_model_downloaded("test/integrity")
+
+
+def test_missing_explicit_pin_uses_validated_mirror_manifest(snapshot, monkeypatch):
+    from huggingface_hub.errors import RevisionNotFoundError
+
+    from rapid_mlx import _mirror
+
+    path, info, calls = snapshot
+
+    def missing(*args, **kwargs):
+        import httpx
+
+        raise RevisionNotFoundError(
+            "removed pin",
+            response=httpx.Response(
+                404, request=httpx.Request("GET", "https://hub.invalid")
+            ),
+        )
+
+    monkeypatch.setattr("huggingface_hub.HfApi.model_info", missing)
+    manifest = {
+        "repo_id": "test/integrity",
+        "revision": path.name,
+        "file_inventory": ["model.safetensors", "config.json"],
+        "files": [
+            {
+                "path": "model.safetensors",
+                "size": info.siblings[0].size,
+                "sha256": info.siblings[0].lfs["sha256"],
+            },
+            {"path": "config.json", "size": 2, "git_oid": info.siblings[1].blob_id},
+        ],
+    }
+    requests = []
+    monkeypatch.setattr(_mirror, "_mirror_base", lambda: "https://mirror.invalid")
+    monkeypatch.setattr(
+        _mirror,
+        "_fetch_json_with_status",
+        lambda url: requests.append(url) or (manifest, 200),
+    )
+    verify_snapshot(
+        "test/integrity", path, revision=path.name, allow_patterns="*.safetensors"
+    )
+    assert requests == [
+        f"https://mirror.invalid/test/integrity/.rapid-mlx/revisions/{path.name}.json"
+    ]
+    # The untouched selected receipt remains usable offline without metadata.
+    verify_snapshot(
+        "test/integrity",
+        path,
+        revision=path.name,
+        allow_patterns="*.safetensors",
+        local_files_only=True,
+    )
+    (path / "model.safetensors").write_bytes(b"corruption!")
+    with pytest.raises(ModelIntegrityError):
+        verify_snapshot(
+            "test/integrity", path, revision=path.name, allow_patterns="*.safetensors"
+        )
+    count = len(requests)
+    with pytest.raises(ModelIntegrityError, match="Offline integrity"):
+        verify_snapshot(
+            "test/integrity", path, revision=path.name, local_files_only=True
+        )
+    assert len(requests) == count
+    # Missing inventory or wrong revision cannot authorize recovered content.
+    manifest["file_inventory"].append("missing")
+    with pytest.raises(ModelIntegrityError, match="no valid exact-revision"):
+        verify_snapshot("test/integrity", path, revision=path.name)

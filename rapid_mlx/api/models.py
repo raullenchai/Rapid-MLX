@@ -2279,6 +2279,8 @@ class ChatCompletionResponse(BaseModel):
     choices: list[ChatCompletionChoice]
     usage: Usage = Field(default_factory=Usage)
     metrics: PerRequestMetrics | None = None
+    # Diagnostic-only extension: these are NEVER executable tool_calls.
+    rejected_tool_calls: list[dict[str, str]] | None = None
 
 
 # =============================================================================
@@ -3481,6 +3483,8 @@ class ChatCompletionChunk(BaseModel):
     choices: list[ChatCompletionChunkChoice]
     usage: Usage | None = None  # Included when stream_options.include_usage=true
     metrics: PerRequestMetrics | None = None
+    # Diagnostic-only extension: these are NEVER executable tool_calls.
+    rejected_tool_calls: list[dict[str, str]] | None = None
 
 
 # Supported output dimensions: a bounded range keeps a single request from

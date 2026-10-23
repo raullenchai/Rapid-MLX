@@ -138,12 +138,27 @@ def verify_snapshot(
             raise ModelIntegrityError(
                 "Offline integrity verification requires a packaged manifest or an unchanged verified receipt; run an online pull first"
             )
-        info = call_with_deadline(
-            lambda: HfApi().model_info(
-                repo_id, revision=commit, files_metadata=True, token=token
-            ),
-            30,
-        )
+        from huggingface_hub.errors import RevisionNotFoundError
+
+        try:
+            info = call_with_deadline(
+                lambda: HfApi().model_info(
+                    repo_id, revision=commit, files_metadata=True, token=token
+                ),
+                30,
+            )
+        except RevisionNotFoundError:
+            if revision != commit:
+                raise
+            # Preserve the mirror's explicit-pin recovery trust contract when
+            # upstream has lost a commit. Reuse its strict complete-inventory
+            # validator, then independently hash the installed selected bytes.
+            from rapid_mlx._mirror import _mirror_base, _revision_manifest_info
+
+            try:
+                info = _revision_manifest_info(_mirror_base(), repo_id, commit)
+            except RuntimeError as exc:
+                raise ModelIntegrityError(str(exc)) from exc
         if _field(info, "sha") != commit:
             raise ModelIntegrityError(
                 "Hub integrity manifest does not match the downloaded commit"
@@ -156,7 +171,9 @@ def verify_snapshot(
     if not all(isinstance(name, str) for name in names):
         raise ModelIntegrityError("Invalid integrity manifest filename")
     if exact is not None and any(name not in names for name in exact):
-        raise ModelIntegrityError("Requested file is absent from the immutable integrity manifest")
+        raise ModelIntegrityError(
+            "Requested file is absent from the immutable integrity manifest"
+        )
     selected = set(
         filter_repo_objects(
             names,

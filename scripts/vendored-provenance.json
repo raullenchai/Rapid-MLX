@@ -12,7 +12,7 @@
       "origin": "reviewed-glue"
     },
     "__init__.py": {
-      "vendored_sha256": "634b6d11c0a1182bc1abc71e548df869f22875a37a802f7abed83022d455ece2",
+      "vendored_sha256": "aafb78b5e0c0c45813061e5586f8a0fd1478307beb670ca91e97368553190757",
       "origin": "reviewed-glue"
     },
     "_stream_cleanup.py": {
@@ -86,7 +86,7 @@
       "upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "models/base.py": {
-      "vendored_sha256": "30dbdf7406641748773e4ac3fb2067be24af191143a95e3769ac1c09014b5c21",
+      "vendored_sha256": "1c111ec2a91b41c6a7fa4e15c827a0bc4295336cc2716d0210450e213dec0cca",
       "wheel_path": "mlx_vlm/models/base.py",
       "upstream_sha256": "4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41"
     },

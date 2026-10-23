@@ -60,6 +60,28 @@ import rapid_mlx.models.mlx_vlm_vendored.speculative.utils as vs_utils
 # function diverges. Each hunk is inventoried in the package
 # ``__init__.py`` and behavior-tested in this module.
 _HUNK_SPECS = {
+    # Only the guarded affine8 dispatch may differ; removing this exact hunk
+    # must recover the entire pinned function. Numerical/routing contracts
+    # live in test_affine8_attention.py.
+    "quantized_scaled_dot_product_attention": (
+        (
+            "    # VENDOR-DEVIATION: qualified packed affine8 attention with stock fallback.\n"
+            "    from rapid_mlx.kernels.affine8_attention import try_affine8_attention\n"
+            "\n"
+            "    fused = try_affine8_attention(\n"
+            "        queries,\n"
+            "        q_keys,\n"
+            "        q_values,\n"
+            "        scale=scale,\n"
+            "        mask=mask,\n"
+            "        group_size=group_size,\n"
+            "        bits=bits,\n"
+            "    )\n"
+            "    if fused is not None:\n"
+            "        return fused\n",
+            "",
+        ),
+    ),
     "_RotatingCacheTransaction": (
         (
             "        # VENDOR-DEVIATION(dual-namespace): transactions may wrap caches\n"

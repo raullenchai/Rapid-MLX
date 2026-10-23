@@ -706,7 +706,10 @@ def test_provider_stream_decode_boundaries(monkeypatch, mode, error, expected) -
 
 
 @pytest.mark.parametrize("pool_worker", [False, True])
-def test_render_prompt_and_server_bootstrap(monkeypatch, pool_worker) -> None:
+@pytest.mark.parametrize("enable_prefix_cache", [None, True, False])
+def test_render_prompt_and_server_bootstrap(
+    monkeypatch, pool_worker, enable_prefix_cache
+) -> None:
     if pool_worker:
         monkeypatch.setenv("RAPID_MLX_QUICKSILVER_POOL", "1")
     else:
@@ -760,7 +763,9 @@ def test_render_prompt_and_server_bootstrap(monkeypatch, pool_worker) -> None:
         _app=SimpleNamespace(tokenizer=object()), close=lambda: closed.append(True)
     )
     monkeypatch.setattr(
-        server.TensorFoldQwen27Backend, "load", lambda *a, **k: fake_backend
+        server.TensorFoldQwen27Backend,
+        "load",
+        lambda *a, **k: (captured.update(load=k), fake_backend)[1],
     )
 
     class App:
@@ -788,7 +793,13 @@ def test_render_prompt_and_server_bootstrap(monkeypatch, pool_worker) -> None:
         cors_origins=[],
         uvicorn_log_level="info",
         max_concurrent_requests=256,
+        **(
+            {}
+            if enable_prefix_cache is None
+            else {"enable_prefix_cache": enable_prefix_cache}
+        ),
     )
+    assert captured["load"]["enable_prefix_cache"] is (enable_prefix_cache is not False)
     assert closed == [True]
     assert captured["max_concurrent_requests"] == 1
     assert captured["enforce_model_window"] is True

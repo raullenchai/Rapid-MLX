@@ -14,7 +14,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import _common
+from . import _common, _ownership
 
 _CONFIG_DIR_MAC = Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
@@ -158,12 +158,45 @@ def write_or_patch_config(
     path = config_path or current_config_path()
     assert path is not None
 
-    existing = _common.load_json_lenient(path)
-    _common.backup_existing(path)
+    path = path.resolve()
+    with _ownership.locked(path):
+        existing = _common.load_json_lenient(path)
+        updated = {
+            **existing,
+            "cursor.aiprovider.openai.baseUrl": base_url,
+            "cursor.aiprovider.openai.apiKey": api_key,
+            "cursor.aiprovider.openai.model": model,
+        }
+        if updated == existing and path.exists():
+            return path
+        _common.backup_existing(path)
+        _ownership.write(
+            path,
+            {key: updated[key] for key in _OWNED_SETTINGS},
+            lambda: _common.atomic_write_json(path, updated),
+            before_fields={
+                key: existing[key] for key in _OWNED_SETTINGS if key in existing
+            },
+        )
+        return path
 
-    existing["cursor.aiprovider.openai.baseUrl"] = base_url
-    existing["cursor.aiprovider.openai.apiKey"] = api_key
-    existing["cursor.aiprovider.openai.model"] = model
 
-    _common.atomic_write_json(path, existing)
-    return path
+_OWNED_SETTINGS = tuple(
+    f"cursor.aiprovider.openai.{key}" for key in ("baseUrl", "apiKey", "model")
+)
+
+
+def remove_config() -> bool:
+    path = current_config_path()
+    assert path is not None
+    path = path.resolve()
+    with _ownership.locked(path):
+        data = _common.load_json_lenient(path)
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+        if not _ownership.remove_fields(path, data, _OWNED_SETTINGS):
+            _ownership.forget(path)
+            return False
+        _common.backup_existing(path)
+        _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
+        return True

@@ -155,6 +155,7 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
         context_window: int = 8192,
         max_tokens: int = 4096,
         lanes: int = 1,
+        enable_prefix_cache: bool = True,
     ) -> TensorFoldGLM53Backend:
         from .tensorfold_concurrency import request_lanes
 
@@ -211,7 +212,7 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
                 default_max_tokens=int(max_tokens),
                 context_window=int(context_window),
                 enable_thinking=True,
-                checkpoint_slots=None,
+                checkpoint_slots=None if enable_prefix_cache else 0,
                 checkpoint_budget_bytes=_prompt_cache_bytes(),
                 memory_budget_bytes=memory_limit,
                 use_proposer=True,

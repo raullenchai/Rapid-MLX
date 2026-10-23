@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import _common
+from . import _common, _ownership
 
 # Continue stores its config in ``~/.continue/`` on every platform.
 _CONFIG_DIR = Path.home() / ".continue"
@@ -395,14 +395,21 @@ def write_or_patch_config(
     with owner-only permissions (it can carry ``RAPID_MLX_API_KEY``).
     ``config.json`` is never written.
     """
-    plan = build_plan(server_url, model, api_key, config_path)
-    for note in plan.notes:
-        print(f"  note: {note}", file=sys.stderr)
-    if not plan.changed and plan.path.exists():
+    logical = config_path or current_config_path()
+    assert logical is not None
+    path = logical.resolve()
+    # Reject invalid input before creating lock metadata; rebuild under the
+    # lock so the actual transaction always uses freshly loaded configuration.
+    build_plan(server_url, model, api_key, logical)
+    with _ownership.locked(path):
+        plan = build_plan(server_url, model, api_key, logical)
+        for note in plan.notes:
+            print(f"  note: {note}", file=sys.stderr)
+        if not plan.changed and plan.path.exists():
+            return plan.path
+        _common.backup_existing(plan.path)
+        write_owned_config(plan.path, plan.after)
         return plan.path
-    _common.backup_existing(plan.path)
-    _common.atomic_write_text(plan.path, dump_yaml(plan.after))
-    return plan.path
 
 
 def plan_diff(plan: ContinuePlan) -> str:
@@ -418,3 +425,59 @@ def preview(
     """``(path, redacted diff, notes)`` for ``launch --dry-run``; no writes."""
     plan = build_plan(server_url, model, api_key)
     return plan.path, plan_diff(plan) if plan.changed else "", plan.notes
+
+
+def write_owned_config(path: Path, data: dict[str, Any]) -> None:
+    with _ownership.locked(path):
+        before = load_yaml_config(path)
+        previous = next(
+            (
+                m
+                for m in (before.get("models") or [])
+                if isinstance(m, dict) and m.get("name") == _MODEL_ENTRY_NAME
+            ),
+            None,
+        )
+        entry = next(
+            m
+            for m in data["models"]
+            if isinstance(m, dict) and m.get("name") == _MODEL_ENTRY_NAME
+        )
+        _ownership.write(
+            path,
+            # Mixed entries (including migrated user customizations) are not
+            # owned as a whole, even if their extra fields are later removed.
+            {"model_entry": entry}
+            if set(entry) == {"name", "provider", "model", "apiBase", "apiKey"}
+            else {},
+            lambda: _common.atomic_write_text(path, dump_yaml(data)),
+            before_fields={} if previous is None else {"model_entry": previous},
+            claim_changes=False,
+        )
+
+
+def remove_config() -> bool:
+    path = current_config_path()
+    assert path is not None
+    path = path.resolve()
+    with _ownership.locked(path):
+        data = load_yaml_config(path)
+        models = data.get("models", [])
+        if not isinstance(models, list):
+            raise ValueError(f"{path} models must contain a list")
+        # Configuration updates the first named entry; never let a customized
+        # version of it authorize deleting a different, matching user duplicate.
+        for index, entry in enumerate(models):
+            if not isinstance(entry, dict) or entry.get("name") != _MODEL_ENTRY_NAME:
+                continue
+            candidate = {"model_entry": entry}
+            if not _ownership.remove_fields(path, candidate, ("model_entry",)):
+                break
+            data["models"] = models[:index] + models[index + 1 :]
+            _common.backup_existing(path)
+            _ownership.remove(
+                path, lambda: _common.atomic_write_text(path, dump_yaml(data))
+            )
+            return True
+        _ownership.forget(path)
+        return False

@@ -66,6 +66,11 @@ def test_audio_runtime_package_changes_are_not_cosmetic():
     "path",
     [
         "scripts/catalog_trust.py",
+        "scripts/vendor_ltx25.py",
+        "ltx_core_mlx/model/transformer/model.py",
+        "ltx_pipelines_mlx/cli.py",
+        "rapid_mlx/kernels/affine8_attention.py",
+        "rapid_mlx/kernels/affine8_attention.metal",
         "scripts/merge_on_green.py",
         "scripts/pr_validate/steps/supply_chain.py",
         ".github/workflows/validate-community-submission.yml",

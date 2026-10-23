@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from . import ADAPTERS, canonical_client, cursor
+from . import ADAPTERS, canonical_client, cline, continue_dev, cursor
 
 if TYPE_CHECKING:
     from rapid_mlx.agents.base import AgentProfile
@@ -294,6 +294,31 @@ def launch_command(args: argparse.Namespace) -> None:
         print("launch: --run and --check require --isolated", file=sys.stderr)
         sys.exit(2)
 
+    if (
+        getattr(args, "remove", False)
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "all", False)
+        and args.client in {"cline", "continue-dev", "cursor"}
+    ):
+        if args.dry_run:
+            print(f"[dry-run] Would remove Rapid-owned {args.client} settings.")
+            return
+        try:
+            removed = {
+                "cline": cline.remove_config,
+                "continue-dev": continue_dev.remove_config,
+                "cursor": cursor.remove_config,
+            }[args.client]()
+        except (OSError, ValueError) as exc:
+            print(f"launch: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        print(
+            "  Removed Rapid-owned settings."
+            if removed
+            else "  No identifiable Rapid-owned settings; existing config preserved."
+        )
+        return
+
     if getattr(args, "isolated", False) or getattr(args, "remove", False):
         from rapid_mlx.agents import get_profile
         from rapid_mlx.agents.isolated import (
@@ -380,6 +405,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 else None
             )
             explicit = getattr(args, "_original_alias", None) or args.model
+            # A repeat launch retains the saved choice, including quantization.
+            # Only a first launch may adopt a different running checkpoint.
             chosen = explicit or saved_model(args.client)
             active_usable = bool(
                 active
@@ -389,13 +416,13 @@ def launch_command(args: argparse.Namespace) -> None:
                     automatic=not (chosen and _same_checkpoint(active, chosen)),
                 )
             )
-            reuse = bool(active_usable and not explicit)
+            reuse = bool(active_usable and not chosen)
             model = (
                 active
                 if reuse
-                else explicit
+                else chosen
                 or _select_model(
-                    explicit=chosen,
+                    explicit=None,
                     profile=profile,
                     no_download=False,
                 )
@@ -688,11 +715,17 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"  PID file: {PID_FILE}")
 
     if succeeded:
-        print(
-            "\nNow ready: open "
-            + " / ".join(succeeded)
-            + " and it'll route through rapid-mlx."
-        )
+        print("\nConfigured: " + " / ".join(succeeded) + ". No client was opened.")
+        if args.start_server:
+            print(
+                "Wait for the server to finish loading and confirm it is reachable "
+                "at the configured endpoint, then open the client."
+            )
+        else:
+            print(
+                "No server was started. Start Rapid-MLX at the configured endpoint "
+                "(or confirm an existing server is ready), then open the client."
+            )
     if failures:
         sys.exit(1)
 

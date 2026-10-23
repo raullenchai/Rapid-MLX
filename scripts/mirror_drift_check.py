@@ -887,8 +887,9 @@ def _file_finding(
     detail: str,
     *,
     sync_in_progress: bool,
+    force_required: bool = False,
 ) -> Finding:
-    if _optional_asset(item.path):
+    if _optional_asset(item.path) and not force_required:
         severity = "info"
     elif sync_in_progress:
         severity = "warning"
@@ -930,6 +931,7 @@ def _apply_probe_result(
     *,
     has_r2: bool,
     sync_in_progress: bool,
+    force_required: bool = False,
 ) -> bool:
     """Apply one completed probe and return whether a required file is missing."""
     if probe.status < 200 or probe.status >= 300:
@@ -939,9 +941,10 @@ def _apply_probe_result(
                 item,
                 f"HTTP {probe.status}",
                 sync_in_progress=sync_in_progress,
+                force_required=force_required,
             )
         )
-        return not _optional_asset(item.path)
+        return force_required or not _optional_asset(item.path)
     if item.size is not None and probe.size != item.size:
         report.findings.append(
             _file_finding(
@@ -949,6 +952,7 @@ def _apply_probe_result(
                 item,
                 f"mirror={probe.size} hf={item.size} etag={probe.etag or 'missing'}",
                 sync_in_progress=sync_in_progress,
+                force_required=force_required,
             )
         )
     if item.sha256 is None and item.oid:
@@ -965,7 +969,11 @@ def _apply_probe_result(
         elif probe.blob_oid != item.oid:
             detail = f"mirror_blob={probe.blob_oid} hf_blob={item.oid}"
             finding = _file_finding(
-                "content_mismatch", item, detail, sync_in_progress=sync_in_progress
+                "content_mismatch",
+                item,
+                detail,
+                sync_in_progress=sync_in_progress,
+                force_required=force_required,
             )
             if (
                 finding.severity == "error"
@@ -996,6 +1004,7 @@ def _apply_probe_result(
                     item,
                     f"no checksum metadata; hf_sha256={item.sha256}",
                     sync_in_progress=sync_in_progress,
+                    force_required=force_required,
                 )
             )
         else:
@@ -1007,6 +1016,7 @@ def _apply_probe_result(
                         item,
                         f"mirror_sha256={actual_sha} hf_sha256={item.sha256}",
                         sync_in_progress=sync_in_progress,
+                        force_required=force_required,
                     )
                 )
     return False
@@ -1136,7 +1146,9 @@ def audit(
         tuple[AliasReport, AliasSpec, dict[str, Any] | None, list[HfFile], bool]
     ] = []
     probes: dict[tuple[str, str], HfFile] = {}
-    probe_targets: dict[tuple[str, str], list[tuple[AliasReport, HfFile, bool]]] = {}
+    probe_targets: dict[
+        tuple[str, str], list[tuple[AliasReport, HfFile, bool, bool]]
+    ] = {}
     for spec in selected:
         entry = by_alias.get(spec.alias.lower())
         intentional = unmirrored.get(spec.hf_path)
@@ -1150,7 +1162,11 @@ def audit(
         else:
             files = _selected_files(repos[spec.hf_path].files, spec.subfolder)
             pin = runtime_pins.get(spec.hf_path)
-            if pin is not None:
+            if pin is not None and pin[1] is None:
+                # The runtime downloads the entire pinned repository, even if
+                # an alias declares a subfolder for another consumer.
+                files = repos[spec.hf_path].files
+            elif pin is not None:
                 # The pinned list is exactly what a pull fetches (the pull
                 # ignores any catalog subfolder for these repositories).
                 files = [
@@ -1175,7 +1191,9 @@ def audit(
         for item in files:
             probe_key = (spec.hf_path, item.path)
             probes.setdefault(probe_key, item)
-            probe_targets.setdefault(probe_key, []).append((report, item, in_progress))
+            probe_targets.setdefault(probe_key, []).append(
+                (report, item, in_progress, pin is not None and pin[1] is None)
+            )
     if progress is not None:
         progress.reports = reports
         progress.probes_total = len(probes)
@@ -1210,7 +1228,9 @@ def audit(
                 probe_key = mirror_futures.pop(mirror_future)
                 probe, metadata = mirror_future.result()
                 completed_count += 1
-                for report, item, in_progress in probe_targets[probe_key]:
+                for report, item, in_progress, force_required in probe_targets[
+                    probe_key
+                ]:
                     missing_required_by_report[id(report)] = (
                         missing_required_by_report.get(id(report), 0)
                         + _apply_probe_result(
@@ -1220,6 +1240,7 @@ def audit(
                             metadata,
                             has_r2=r2_client is not None,
                             sync_in_progress=in_progress,
+                            force_required=force_required,
                         )
                     )
                 if progress is not None:
@@ -1243,7 +1264,12 @@ def audit(
     for report, _spec, entry, files, in_progress in report_context:
         if report.intentionally_unmirrored:
             continue
-        required = _required_files(files, None)
+        pin = runtime_pins.get(_spec.hf_path)
+        required = (
+            files
+            if pin is not None and pin[1] is None
+            else _required_files(files, None)
+        )
         missing_required = missing_required_by_report.get(id(report), 0)
         if (
             entry

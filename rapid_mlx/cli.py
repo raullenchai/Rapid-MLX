@@ -7382,7 +7382,10 @@ def serve_command(args):
             if _tf_family is not None:
                 run_tensorfold_family_server(_tf_family, **_dflash_kwargs)
             else:
-                run_tensorfold_qwen27_server(**_dflash_kwargs)
+                run_tensorfold_qwen27_server(
+                    enable_prefix_cache=not args.disable_prefix_cache,
+                    **_dflash_kwargs,
+                )
             return
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,
@@ -10088,6 +10091,13 @@ def _cached_models_json_payload() -> dict:
     return {"cached": models, "count": len(models), "total_bytes": int(total_bytes)}
 
 
+def _video_alias_runtime_ready(model_name: str) -> bool:
+    """Whether a video alias can run here, per the shared runtime preflight."""
+    from rapid_mlx.runtime.video_lane import video_alias_runtime_ready
+
+    return video_alias_runtime_ready(model_name)
+
+
 def _available_models_json_payload() -> dict:
     """Structured form of the default ``models`` view: every alias with the
     profile facts the table shows, split by modality (text / audio / video /
@@ -10149,6 +10159,17 @@ def _available_models_json_payload() -> dict:
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
             "default_steps": default_steps,
+            # Video aliases are only launchable when this host's actual video
+            # runtime preflight passes. The check is side-effect free and
+            # reuses the serve/pull gate, so there is no separate capability
+            # matrix to keep in sync. Desktop parses known keys only.
+            **(
+                {
+                    "runtime_ready": _video_alias_runtime_ready(alias),
+                }
+                if modality == "video-gen"
+                else {}
+            ),
             # Desktop consumes these as a launch-safety contract. Only
             # curated aliases may opt into eager MLLM loading, and an
             # explicit text-only pin always wins over name inference.
@@ -10545,7 +10566,8 @@ def models_command(args):
         print()
         print(f"  Video models ({len(video_profiles)} aliases)")
         video_header = (
-            f"  {'Alias':<{video_alias_width}} {'Size':<10} {'Kind':<11} {'HF id':<40}"
+            f"  {'Alias':<{video_alias_width}} {'Size':<10} {'Kind':<11} "
+            f"{'Runtime':<13} {'HF id':<40}"
         )
         video_sep = "  " + "─" * (len(video_header) - 2)
         print(video_sep)
@@ -10553,10 +10575,11 @@ def models_command(args):
         print(video_sep)
         for alias in sorted(video_profiles):
             p = video_profiles[alias]
+            runtime = "ready" if _video_alias_runtime_ready(alias) else "needs setup"
             print(
                 f"  {alias:<{video_alias_width}} "
                 f"{format_size(p.hf_path):<10} {'[video:gen]':<11} "
-                f"{p.hf_path:<40}"
+                f"{runtime:<13} {p.hf_path:<40}"
             )
         print(video_sep)
 
@@ -11450,6 +11473,7 @@ def pull_command(args):
     primary_args = args
     # ``main()`` normally resolves aliases before dispatch, but keep this
     # data-only security boundary fail-closed for direct/internal calls too.
+    from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.model_catalog import resolve_repository_identity
 
     resolved_primary, _primary_pin = resolve_repository_identity(primary_repo)
@@ -11460,6 +11484,21 @@ def pull_command(args):
         )
         primary_args.model = resolved_primary
         primary_repo = resolved_primary
+
+    # Run the same video runtime preflight as ``serve`` BEFORE downloading
+    # multi-gigabyte weights. A host that cannot run the alias must fail here,
+    # not after a long pull and a second failed launch.
+    profile = resolve_profile(primary_repo)
+    if profile is not None and (
+        (getattr(profile, "modality", "text") or "text") == "video-gen"
+    ):
+        from rapid_mlx.runtime.video_lane import video_runtime_issue
+
+        issue = video_runtime_issue(profile.hf_path, provision=True)
+        if issue is not None:
+            print(issue.detail, end="")
+            print(f"  {issue.install_hint}")
+            raise SystemExit(2)
 
     if primary_repo == SD35_REPO:
         print(

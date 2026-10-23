@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
 from rapid_mlx.launch import _common as launch_common
+from rapid_mlx.launch import _ownership as launch_ownership
 from rapid_mlx.launch import claude_code, cline, continue_dev
 
 # Agents whose ``--setup`` goes through the plan/apply flow below: an exact
@@ -580,6 +581,16 @@ def build_setup_plan(
 
 
 def apply_setup_plan(plan: SetupPlan) -> Path:
+    """Apply an owned-adapter plan under its read/compare/write operation lock."""
+    if plan.agent in {"cline", "continue"}:
+        # Generated plans already resolve paths; normalize direct callers too.
+        plan = replace(plan, path=plan.path.resolve())
+        with launch_ownership.locked(plan.path):
+            return _apply_setup_plan(plan)
+    return _apply_setup_plan(plan)
+
+
+def _apply_setup_plan(plan: SetupPlan) -> Path:
     """Back up the existing config and atomically apply an unchanged plan."""
     # Re-read to prevent overwriting an edit made between preview and consent.
     # The shape check on ``after`` picks the loader: a patch-layer plan (dsh)
@@ -619,6 +630,10 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
             raise RuntimeError(
                 f"{plan.credentials_path} changed after preview; re-run --setup"
             )
+    # SetupPlan.changed includes credential deltas, so independent credential
+    # updates still run even when the adapter configuration itself is unchanged.
+    if plan.agent in {"cline", "continue"} and not plan.changed:
+        return plan.path
     try:
         launch_common.backup_existing(plan.path)
         if plan.credentials_path is not None and plan.credentials_after is not None:
@@ -630,7 +645,18 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
                 plan.credentials_path,
                 _serialize(plan.credentials_after, "yaml") + "\n",
             )
-        if plan.format == "yaml":
+        if plan.agent == "cline" or (
+            plan.agent == "continue" and plan.format == "yaml"
+        ):
+            if plan.before != plan.after:
+                assert isinstance(plan.after, dict)
+                write_owned = (
+                    cline.write_owned_config
+                    if plan.agent == "cline"
+                    else continue_dev.write_owned_config
+                )
+                write_owned(plan.path, plan.after)
+        elif plan.format == "yaml":
             _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
         else:
             launch_common.atomic_write_json(plan.path, plan.after)

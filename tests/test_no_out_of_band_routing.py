@@ -152,6 +152,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # eligibility checks as the modules' ENABLED constants. It selects no
         # model, parser, engine, checkpoint or serving lane.
         "RAPID_MLX_DSV41_FUSED",
+        # Kill switch for qualified affine8 attention within the already-selected
+        # backend. It preserves the model, cache dtype and serving route, and
+        # only chooses stock versus fused arithmetic over the same packed KV.
+        "RAPID_MLX_AFFINE8_ATTENTION",
         # Opt-in request concurrency (1/2/4/8) for the already-selected native
         # V4.1 product backend, like RAPID_MLX_TENSORFOLD_LANES. This one is a
         # serving-lane switch inside that backend: counts above 1 replace the

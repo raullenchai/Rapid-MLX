@@ -155,32 +155,33 @@ above; `frames` must satisfy LTX's own frame-count rule.
 
 ## LTX-2.5
 
-LTX-2.5 uses a new Gemma 4 text encoder and is served through the standalone
-`ltx-2-mlx` research runtime. That runtime is not published on PyPI yet, so it
-must be installed from its audited source commit. The registered Q8 checkpoint
-is a 67.7 GB download and uses the low-RAM distilled path by default.
-The weights are distributed under the LTX-2.x Community License rather than
-an open-source license; review the checkpoint's `LICENSE.md` before use,
-especially its commercial-use and generated-content disclosure terms.
+LTX-2.5 uses a new Gemma 4 text encoder. Its runtime (`ltx_core_mlx` and
+`ltx_pipelines_mlx`) ships inside rapid-mlx, so no separate checkout is needed:
 
 ```bash
-git clone --branch ltx25 https://github.com/MrMoferFRAN/ltx-2-mlx.git
-git -C ltx-2-mlx checkout 57952288076766abe27dda3a774b2c24f7346977
-uv sync --project ltx-2-mlx
 brew install ffmpeg
-
-RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" \
-  rapid-mlx serve ltx-2.5-mlx-q8
+rapid-mlx serve ltx-2.5-mlx-q8
 ```
 
-Rapid uses the executable only to locate and verify the source checkout: it
-must be the expected workspace entry point, with a tracked lockfile and the
-exact HEAD above. For every generation, Rapid materializes only the tracked
-files from that exact commit into a process-private temporary tree and runs
-`uv sync --frozen` during startup preflight. Generations reuse that provisioned
-environment, so checkout modifications, untracked files and the mutable
-checkout `.venv` are never executed or rebuilt per request. Generations have a
-two-hour safety deadline; set
+`rapid-mlx pull ltx-2.5-mlx-q8` runs the same runtime preflight before it
+downloads the weights, and `rapid-mlx models` marks video aliases that cannot
+run on the current host.
+
+The registered Q8 checkpoint is a 67.7 GB download and uses the low-RAM
+distilled path by default. The weights are distributed under the LTX-2.x
+Community License rather than an open-source license; review the checkpoint's
+`LICENSE.md` before use, especially its commercial-use and generated-content
+disclosure terms.
+
+`RAPID_MLX_LTX25_RUNTIME` remains available for development against a pinned
+`ltx-2-mlx` checkout. When set, it must point at an executable at the audited
+revision and replaces the bundled runtime; an invalid override is reported as
+an error instead of silently falling back. The bundled runtime carries
+provenance metadata for its repository, commit and version, so a missing or
+damaged copy is reported as a broken install rather than replaced by an
+unverified copy.
+
+Generations have a two-hour safety deadline; set
 `RAPID_MLX_LTX25_TIMEOUT_SEC` to a larger value (minimum 60) for unusually
 large jobs.
 

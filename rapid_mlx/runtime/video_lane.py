@@ -12,8 +12,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+from dataclasses import dataclass
 from importlib.machinery import PathFinder
 from pathlib import Path
+from typing import Literal
 
 
 class VideoRuntimeError(RuntimeError):
@@ -156,74 +158,132 @@ def registered_wan_runtime_issue(model_name: str) -> str | None:
     return None
 
 
-def require_video_runtime_or_exit(model_name: str | None = None) -> None:
-    """Fail before model download when the optional video stack is absent."""
-    from .base_runtime import python_upgrade_hint
-    from .optional_runtime import OptionalRuntimeMissing, optional_extra_install_hint
+@dataclass(frozen=True)
+class VideoRuntimeIssue:
+    """Structured, side-effect-free result of the video runtime preflight."""
 
-    if sys.version_info < (3, 11):
-        raise OptionalRuntimeMissing(
-            extra="video",
+    detail: str
+    install_hint: str
+    status: Literal["absent", "broken", "incompatible"]
+    marker_reason: str
+
+
+_LTX25_FFMPEG_HINT = (
+    "Install ffmpeg so LTX-2.5 can encode its MP4 output: "
+    "`brew install ffmpeg`, then see docs/guides/video-generation.md."
+)
+
+
+def _ltx25_runtime_issue(*, provision: bool) -> VideoRuntimeIssue | None:
+    """Shared LTX-2.5 preflight used by serve, pull and the model catalog."""
+    from ..video import ltx25
+    from .base_runtime import python_upgrade_hint
+    from .optional_runtime import optional_extra_install_hint
+
+    runtime = ltx25.ltx25_runtime()
+    if runtime.state == "python_unsupported":
+        return VideoRuntimeIssue(
+            detail="\n  Error: " + ltx25.python_unsupported_detail() + "\n",
             install_hint=python_upgrade_hint(),
             status="incompatible",
             marker_reason="python_version_unsupported",
+        )
+
+    missing: list[str] = []
+    install_hint: str | None = None
+    if runtime.state in {"absent", "corrupt"}:
+        if runtime.reason == "shadowed":
+            missing.append(
+                "the LTX-2.5 runtime shipped with rapid-mlx "
+                "(a different copy shadows it)"
+            )
+            detail = (runtime.detail or "").rstrip(".")
+            install_hint = (
+                "Remove the conflicting LTX-2.5 copy from PYTHONPATH or run "
+                "rapid-mlx from a different working directory"
+                + (f" ({detail})" if detail else "")
+                + "; see docs/guides/video-generation.md."
+            )
+        else:
+            missing.append("the LTX-2.5 runtime shipped with rapid-mlx")
+            install_hint = optional_extra_install_hint("video", status="broken")
+    elif runtime.state == "override_invalid":
+        missing.append("the pinned LTX-2.5 runtime selected by RAPID_MLX_LTX25_RUNTIME")
+        install_hint = (
+            "Fix or unset RAPID_MLX_LTX25_RUNTIME: it must point at an "
+            "executable ltx-2-mlx checkout at the pinned revision "
+            f"({ltx25.LTX25_RUNTIME_COMMIT}). See the LTX-2.5 setup in "
+            "docs/guides/video-generation.md."
+        )
+    elif runtime.source == "override":
+        assert runtime.executable is not None
+        if shutil.which("uv") is None:
+            missing.append("uv (`brew install uv`)")
+            install_hint = (
+                "Install uv to provision the pinned LTX-2.5 checkout: "
+                "`brew install uv`, then see docs/guides/video-generation.md."
+            )
+        elif provision:
+            try:
+                ltx25.prepare_ltx25_runtime(runtime.executable)
+            except ltx25.LTX25BackendError as exc:
+                # The checkout already resolved — re-cloning is not the
+                # fix. Surface the underlying provisioning failure.
+                missing.append(
+                    f"a provisioned pinned LTX-2.5 runtime ({exc}; "
+                    "see docs/guides/video-generation.md)"
+                )
+                install_hint = (
+                    "Fix the pinned LTX-2.5 checkout or unset "
+                    "RAPID_MLX_LTX25_RUNTIME; see the LTX-2.5 setup in "
+                    "docs/guides/video-generation.md."
+                )
+    if _resolve_ffmpeg() is None:
+        missing.append("ffmpeg (`brew install ffmpeg`)")
+        if install_hint is None:
+            install_hint = _LTX25_FFMPEG_HINT
+    if not missing:
+        return None
+    assert install_hint is not None
+    detail = "\n  Error: video generation requires " + " and ".join(missing) + ".\n"
+    return VideoRuntimeIssue(
+        detail=detail,
+        install_hint=install_hint,
+        status="broken",
+        marker_reason="runtime_dependency_missing",
+    )
+
+
+def video_runtime_issue(
+    model_name: str | None, *, provision: bool = True
+) -> VideoRuntimeIssue | None:
+    """Return the actionable video runtime problem for *model_name*.
+
+    Side-effect free when ``provision`` is false: the model catalog uses that
+    form so listing aliases never installs anything. ``serve`` and ``pull``
+    provision an explicit LTX-2.5 override before they touch model weights.
+    """
+    from .base_runtime import python_upgrade_hint
+    from .optional_runtime import optional_extra_install_hint
+
+    if _is_ltx25_name(model_name):
+        return _ltx25_runtime_issue(provision=provision)
+
+    if sys.version_info < (3, 11):
+        return VideoRuntimeIssue(
             detail=(
                 "\n  Error: video generation requires Python 3.11 or newer "
                 f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
                 "Rapid-MLX core still supports Python 3.10, but the upstream "
                 "mlx-video runtime does not.\n"
             ),
+            install_hint=python_upgrade_hint(),
+            status="incompatible",
+            marker_reason="python_version_unsupported",
         )
 
-    missing = []
-    setup_hint = None
-    if _is_ltx25_name(model_name):
-        from ..video.ltx25 import (
-            LTX25_RUNTIME_COMMIT,
-            LTX25_RUNTIME_REPOSITORY,
-            LTX25BackendError,
-            embedded_ltx25_interpreter,
-            prepare_ltx25_runtime,
-            resolve_ltx25_runtime,
-        )
-
-        embedded_runtime = embedded_ltx25_interpreter()
-        runtime = None if embedded_runtime is not None else resolve_ltx25_runtime()
-        if embedded_runtime is None and runtime is None:
-            missing.append(
-                "the pinned LTX-2.5 runtime "
-                f"(commit {LTX25_RUNTIME_COMMIT}; see the video generation guide)"
-            )
-            # The checkout is absent or at the wrong revision: the full
-            # walkthrough is the actionable next step. The clone is
-            # conditional and the fetch unconditional so the same block also
-            # repairs an existing checkout pinned to a stale revision. The
-            # serve line uses the canonical alias — never the raw
-            # ``model_name``, which is user input and must not be
-            # interpolated into a copy-pastable shell command.
-            setup_hint = (
-                "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
-                f"    [ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
-                f"{LTX25_RUNTIME_REPOSITORY}\n"
-                "    git -C ltx-2-mlx fetch --quiet origin\n"
-                f"    git -C ltx-2-mlx checkout {LTX25_RUNTIME_COMMIT}\n"
-                "    uv sync --project ltx-2-mlx\n"
-                '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
-                "rapid-mlx serve ltx-2.5-mlx-q8\n"
-            )
-        if embedded_runtime is None and shutil.which("uv") is None:
-            missing.append("uv (`brew install uv`)")
-        elif embedded_runtime is None and runtime is not None:
-            try:
-                prepare_ltx25_runtime(runtime)
-            except LTX25BackendError as exc:
-                # The checkout already resolved — re-cloning is not the fix.
-                # Surface the underlying provisioning failure instead.
-                missing.append(
-                    f"a provisioned pinned LTX-2.5 runtime ({exc}; "
-                    "see docs/guides/video-generation.md)"
-                )
-    elif _is_cogvideox_name(model_name):
+    missing: list[str] = []
+    if _is_cogvideox_name(model_name):
         cogvideox_modules = {
             "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
             "mlx_arsenal": "mlx-arsenal",
@@ -240,25 +300,43 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         missing.extend(_default_video_runtime_requirements(model_name))
     if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
-    if missing:
-        message = (
-            "\n  Error: video generation requires " + " and ".join(missing) + ".\n"
-        )
-        if setup_hint is not None:
-            message += "\n" + setup_hint
-        reason = (
-            "runtime_extra_missing"
-            if _VIDEO_RUNTIME_LABEL in missing
-            else "runtime_dependency_missing"
-        )
-        status = "absent" if reason == "runtime_extra_missing" else "broken"
-        raise OptionalRuntimeMissing(
-            extra="video",
-            install_hint=optional_extra_install_hint("video", status=status),
-            detail=message,
-            status=status,
-            marker_reason=reason,
-        )
+    if not missing:
+        return None
+    reason = (
+        "runtime_extra_missing"
+        if _VIDEO_RUNTIME_LABEL in missing
+        else "runtime_dependency_missing"
+    )
+    status: Literal["absent", "broken"] = (
+        "absent" if reason == "runtime_extra_missing" else "broken"
+    )
+    return VideoRuntimeIssue(
+        detail="\n  Error: video generation requires " + " and ".join(missing) + ".\n",
+        install_hint=optional_extra_install_hint("video", status=status),
+        status=status,
+        marker_reason=reason,
+    )
+
+
+def video_alias_runtime_ready(model_name: str | None) -> bool:
+    """Whether this video alias can run here without installing anything."""
+    return video_runtime_issue(model_name, provision=False) is None
+
+
+def require_video_runtime_or_exit(model_name: str | None = None) -> None:
+    """Fail before model download when the optional video stack is absent."""
+    from .optional_runtime import OptionalRuntimeMissing
+
+    issue = video_runtime_issue(model_name, provision=True)
+    if issue is None:
+        return
+    raise OptionalRuntimeMissing(
+        extra="video",
+        install_hint=issue.install_hint,
+        detail=issue.detail,
+        status=issue.status,
+        marker_reason=issue.marker_reason,
+    )
 
 
 class VideoEngine:

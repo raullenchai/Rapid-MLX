@@ -1,0 +1,16 @@
+LTX-2.5 MLX runtime — ltx_core_mlx
+
+Vendored from https://github.com/MrMoferFRAN/ltx-2-mlx.git at commit 57952288076766abe27dda3a774b2c24f7346977 (package version 0.14.15).
+Source archive: https://github.com/MrMoferFRAN/ltx-2-mlx/archive/57952288076766abe27dda3a774b2c24f7346977.tar.gz
+Archive SHA-256: fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9
+
+Copyright (c) 2025 dgrauet. Licensed under the MIT License; the LICENSE file
+in this directory is a verbatim copy of the upstream license text.
+
+The upstream source files in this directory are unmodified. This distribution
+adds only this NOTICE, the LICENSE copy, and the generated ``_vendored.py``
+provenance metadata (repository, commit, version, package name, tree digest).
+The tree digest covers every upstream file and excludes those three files.
+
+Model weights are not distributed here — they are downloaded at runtime from
+their publishers under their own separate licenses.

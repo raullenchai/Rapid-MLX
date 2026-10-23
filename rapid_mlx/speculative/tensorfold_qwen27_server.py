@@ -580,6 +580,7 @@ def run_tensorfold_qwen27_server(
     tool_call_parser: str | None = None,
     reasoning_parser_name: str | None = "qwen3",
     default_reasoning_effort: str | None = None,
+    enable_prefix_cache: bool = True,
     backend_class: Any = TensorFoldQwen27Backend,
     profile_id: str = "qwen3.8-27b-tensorfold",
     backend_label: str = "TensorFold Qwen3.8-27B",
@@ -595,7 +596,11 @@ def run_tensorfold_qwen27_server(
     supports_reasoning_budget: bool = False,
     **_ignored: Any,
 ) -> None:
-    """Load the pinned profile; concurrency requires an explicit qualified opt-in."""
+    """Load the pinned profile; concurrency requires an explicit qualified opt-in.
+
+    Injected backend classes must implement the ``TensorFoldQwen27Backend.load``
+    keyword contract, including ``enable_prefix_cache``.
+    """
     if main_model_revision is not None or drafter_revision is not None:
         raise RuntimeError("tensorfold backend requires pinned local snapshot paths")
     if tool_call_parser is not None:
@@ -608,6 +613,7 @@ def run_tensorfold_qwen27_server(
         drafter_repo,
         served_name=served_model_name,
         max_tokens=default_max_tokens,
+        enable_prefix_cache=enable_prefix_cache,
         **({"lanes": lanes} if lanes > 1 else {}),
     )
     # Qualification-only token evidence. Unset by default so production

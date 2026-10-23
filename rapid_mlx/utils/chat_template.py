@@ -7,6 +7,7 @@ Handles enable_thinking, tools, and fallback logic for chat template rendering.
 
 import copy
 import functools
+import hashlib
 import json
 import logging
 import re
@@ -2435,6 +2436,22 @@ def apply_chat_template(
         template_applicator, tools=tools
     ):
         prompt = _retain_tool_loop_think_blocks(prompt, messages)
+    # The validated Flint checkpoint has no thinking switch. Close its
+    # reasoning block in the generation prefix only when thinking is off.
+    # Match the exact upstream template, not the model/path name: local
+    # copies work and custom or future templates keep their own semantics.
+    if enable_thinking is False and add_generation_prompt and isinstance(prompt, str):
+        template = (chat_template_kwargs or {}).get("chat_template")
+        if template is None:
+            template = getattr(template_applicator, "chat_template", None)
+        sources = _chat_template_strings(template, tools=tools)
+        if (
+            len(sources) == 1
+            and hashlib.sha256(sources[0].encode("utf-8")).hexdigest()
+            == "7940f4ffa3275c36caa4a582f845aaad79da11018b3961e8fbcad6ae29733466"
+            and prompt.endswith("<|assistant|>")
+        ):
+            prompt += "<think>\n</think>\n"
     return prompt
 
 

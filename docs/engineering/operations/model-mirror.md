@@ -47,3 +47,26 @@ omitted, and rejects an explicit conflicting revision before listing or
 uploading files. The existing per-file mirror layout and verification remain
 unchanged. Recovery after upstream deletes the commit is separate work (#4994);
 an unavailable pin still fails closed.
+
+### Missing upstream image revisions
+
+When upstream returns `RevisionNotFoundError` for an immutable pin, the client
+requires `/<owner>/<repo>/.rapid-mlx/revisions/<commit>.json` on the configured
+mirror. The manifest must identify the exact `repo_id` and `revision`, include
+`file_inventory` (the complete list of paths at that revision), and list
+`files`, each with a safe repository-relative `path`, nonnegative integer `size`,
+and either a lowercase `sha256` (file bytes) or `git_oid` (Git blob hash).
+Every inventory path must have exactly one hashed file entry, with no extras or
+duplicates; partial hash manifests are rejected even for wildcard selections.
+The configured mirror is the trust root for this recovery metadata; mutable
+catalog entries and object headers cannot substitute for it. Operators must
+preserve manifests from the original reviewed revision, never reconstruct them
+from a newer upstream revision. This change does not publish manifests or write
+to the mirror.
+
+The existing mirror downloader checks each selected file against these hashes,
+including cached files. Missing or invalid manifests, unavailable mirror files,
+and integrity mismatches fail closed. No moving upstream branch is substituted.
+The daily mirror workflow separately checks all image checkpoint and auxiliary
+runtime-asset pins upstream in the `image-pin-resolution` job; mirror availability
+cannot hide a dangling upstream pin.

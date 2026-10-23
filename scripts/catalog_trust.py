@@ -14,6 +14,11 @@ CATALOGS = frozenset({"rapid_mlx/aliases.json", "rapid_mlx/audio/aliases.json"})
 COSMETIC_FIELDS = frozenset({"notes", "description", "display_name"})
 _CONTROL_PATHS = (
     "scripts/check_vendored_provenance.py",
+    "scripts/vendor_ltx25.py",
+    "ltx_core_mlx/",
+    "ltx_pipelines_mlx/",
+    "rapid_mlx/kernels/affine8_attention.py",
+    "rapid_mlx/kernels/affine8_attention.metal",
     "scripts/vendored-provenance.json",
     "rapid_mlx/models/mlx_vlm_vendored/",
     "scripts/catalog_trust.py",

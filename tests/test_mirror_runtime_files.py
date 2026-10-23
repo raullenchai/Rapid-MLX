@@ -22,6 +22,7 @@ from rapid_mlx._download_gate import (
     IMAGE_MODEL_REVISIONS,
     SDXL_REPO,
 )
+from rapid_mlx.video.wan import WAN_REVISIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +55,11 @@ def test_pinned_runtime_files_come_from_the_download_gate():
     assert runtime.pinned_runtime_files("mlx-community/Qwen3-0.6B-4bit") is None
 
 
+def test_wan_audit_uses_pinned_revision_and_entire_repository():
+    for repo_id, revision in WAN_REVISIONS.items():
+        assert runtime.pinned_runtime_files(repo_id) == (revision, None)
+
+
 def test_direct_script_execution_resolves_the_checkout(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     namespace = runpy.run_path(str(ROOT / "scripts" / "mirror_runtime_files.py"))
@@ -66,10 +72,22 @@ def test_direct_script_execution_resolves_the_checkout(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def _audit(monkeypatch, tmp_path, listing, present, runtime_list=LIST, hf_error=None):
+NO_RUNTIME_PIN = object()
+
+
+def _audit(
+    monkeypatch,
+    tmp_path,
+    listing,
+    present,
+    runtime_list=LIST,
+    subfolder=None,
+    *,
+    hf_error=None,
+):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
-    main.write_text(json.dumps({"pinned": {"hf_path": REPO}}))
+    main.write_text(json.dumps({"pinned": {"hf_path": REPO, "subfolder": subfolder}}))
     audio.write_text("{}")
     listed_at = []
     probed = []
@@ -97,7 +115,11 @@ def _audit(monkeypatch, tmp_path, listing, present, runtime_list=LIST, hf_error=
     monkeypatch.setattr(
         drift.mirror_runtime_files,
         "pinned_runtime_files",
-        lambda repo: (PIN, runtime_list) if repo == REPO and runtime_list else None,
+        lambda repo: (
+            (PIN, runtime_list)
+            if repo == REPO and runtime_list is not NO_RUNTIME_PIN
+            else None
+        ),
     )
     monkeypatch.setattr(
         drift.mirror_runtime_files,
@@ -106,6 +128,68 @@ def _audit(monkeypatch, tmp_path, listing, present, runtime_list=LIST, hf_error=
     )
     [report] = drift.audit(main, audio, unmirrored_path=None)
     return report, listed_at, probed
+
+
+def test_pinned_whole_repo_audit_checks_every_file(monkeypatch, tmp_path):
+    report, listed_at, probed = _audit(
+        monkeypatch, tmp_path, LISTING, {item.path for item in LISTING}, None
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert set(probed) == {item.path for item in LISTING}
+    assert report.checked_files == len(LISTING)
+    assert report.findings == []
+
+
+def test_pinned_whole_repo_ignores_alias_subfolder(monkeypatch, tmp_path):
+    report, listed_at, probed = _audit(
+        monkeypatch,
+        tmp_path,
+        LISTING,
+        {"unet/model.fp16.safetensors"},
+        None,
+        "unet",
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert set(probed) == {item.path for item in LISTING}
+    assert {
+        finding.path for finding in report.findings if finding.kind == "missing_file"
+    } == {
+        "model_index.json",
+        "unet/model.safetensors",
+        "vae_decoder/model.onnx",
+    }
+
+
+def test_pinned_whole_repo_missing_readme_fails(monkeypatch, tmp_path):
+    readme = drift.HfFile("README.md", 3, None, "a" * 40)
+    report, _, _ = _audit(
+        monkeypatch,
+        tmp_path,
+        [*LISTING, readme],
+        {item.path for item in LISTING},
+        None,
+    )
+    assert ("missing_file", "error", "README.md") in {
+        (finding.kind, finding.severity, finding.path) for finding in report.findings
+    }
+
+
+@pytest.mark.parametrize(
+    ("present", "false_mirrored"),
+    [({"model.safetensors"}, False), (set(), True)],
+)
+def test_pinned_whole_repo_false_mirrored_counts_all_required_files(
+    monkeypatch, tmp_path, present, false_mirrored
+):
+    listing = [
+        drift.HfFile("model.safetensors", 3, "b" * 64),
+        drift.HfFile("README.md", 3, None, "a" * 40),
+    ]
+    report, _, _ = _audit(monkeypatch, tmp_path, listing, present, None)
+    assert any(f.kind == "false_mirrored" for f in report.findings) == false_mirrored
+    assert {f.path for f in report.findings if f.kind == "missing_file"} == (
+        {item.path for item in listing} - present
+    )
 
 
 LISTING = [
@@ -121,6 +205,17 @@ def test_audit_reads_the_pin_and_probes_only_the_runtime_list(monkeypatch, tmp_p
     assert listed_at == [(REPO, PIN)]
     assert sorted(probed) == sorted(LIST)
     assert report.findings == []
+
+
+@pytest.mark.parametrize("runtime_list", [frozenset({"model_index.json"}), frozenset()])
+def test_audit_uses_the_supplied_runtime_list(monkeypatch, tmp_path, runtime_list):
+    report, listed_at, probed = _audit(
+        monkeypatch, tmp_path, LISTING, set(runtime_list), runtime_list=runtime_list
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert set(probed) == runtime_list
+    assert report.checked_files == len(runtime_list)
+    assert not any(f.kind == "missing_file" for f in report.findings)
 
 
 def test_audit_still_fails_a_missing_runtime_object(monkeypatch, tmp_path):
@@ -168,7 +263,7 @@ def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
     # mirror size mismatches although clients never pull that branch.
     paths = {item.path for item in LISTING}
     report, listed_at, probed = _audit(
-        monkeypatch, tmp_path, LISTING, paths, runtime_list=None
+        monkeypatch, tmp_path, LISTING, paths, runtime_list=NO_RUNTIME_PIN
     )
     assert listed_at == [(REPO, PIN)]
     assert sorted(probed) == sorted(paths)
@@ -222,7 +317,7 @@ def test_audit_keeps_other_pinned_listing_errors_generic(monkeypatch, tmp_path):
         tmp_path,
         LISTING,
         set(),
-        runtime_list=None,
+        runtime_list=NO_RUNTIME_PIN,
         hf_error=TimeoutError("read timed out"),
     )
     assert probed == []
@@ -237,7 +332,7 @@ def test_audit_fails_when_the_pinned_commit_vanishes_upstream(monkeypatch, tmp_p
         tmp_path,
         LISTING,
         set(),
-        runtime_list=None,
+        runtime_list=NO_RUNTIME_PIN,
         hf_error=_revision_not_found("404 Client Error: Invalid rev id"),
     )
     assert listed_at == [(REPO, PIN)]

@@ -28,7 +28,13 @@ class Upload:
 def test_extension_runtime_uses_video_context_and_latent_frame_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="/embedded/python"
+        ),
+    )
     captured: dict = {}
 
     class Process:
@@ -56,7 +62,10 @@ def test_extension_runtime_uses_video_context_and_latent_frame_count(
     )
 
     command = captured["command"]
-    assert command[3] == "extend"
+    assert command[1] == "-P"
+    assert command[3] == ltx25._STDIN_PROMPT_RUNNER
+    assert command[4] == str(ltx25._install_root())
+    assert command[5] == "extend"
     assert command[command.index("--video") + 1] == str(source)
     assert command[command.index("--extend-frames") + 1] == "2"
     assert command[command.index("--direction") + 1] == "after"

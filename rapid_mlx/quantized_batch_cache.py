@@ -658,6 +658,19 @@ def _install_batched_mask_safe_quantized_sdpa() -> None:
             and mask.shape[1] == 1
         ):
             mask = mask[:, None]
+        from .kernels.affine8_attention import try_affine8_attention
+
+        fused = try_affine8_attention(
+            queries,
+            q_keys,
+            q_values,
+            scale=scale,
+            mask=mask,
+            group_size=group_size,
+            bits=bits,
+        )
+        if fused is not None:
+            return fused
         return _orig(
             queries,
             q_keys,
