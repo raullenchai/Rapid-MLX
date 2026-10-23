@@ -39,6 +39,10 @@ def _typescript_identifier(name: str, prefix: str) -> str:
     return prefix + name.encode("utf-8").hex()
 
 
+def _definition_name(ref: str) -> str:
+    return ref.removeprefix("#/$defs/").replace("~1", "/").replace("~0", "~")
+
+
 class _SchemaRegistry:
     """Registry for schema definitions to handle $ref resolution"""
 
@@ -59,7 +63,7 @@ class _SchemaRegistry:
             self.has_self_ref = True
             return {"$self_ref": True}
         elif ref.startswith("#/$defs/"):
-            def_name = ref.split("/")[-1]
+            def_name = _definition_name(ref)
             if def_name not in self.definitions:
                 raise ValueError(f"Reference not found: {ref}")
             return self.definitions[def_name]
@@ -338,7 +342,7 @@ class _ParameterTypeRef(_BaseType):
             self.ref_name = "parameters"
             self.is_self_ref = True
         else:
-            self.ref_name = _typescript_identifier(ref.split("/")[-1], "_schema_")
+            self.ref_name = _typescript_identifier(_definition_name(ref), "_schema_")
 
     def to_typescript_style(self, indent: str = "") -> str:
         return self.ref_name
@@ -448,11 +452,9 @@ def _openai_function_to_typescript_style(
     root_interface_name = None
     if registry.has_self_ref:
         root_interface_name = "parameters"
-        params_str = _TS_FIELD_DELIMITER.join(
-            [p.to_typescript_style(indent=_TS_INDENT) for p in parsed.properties]
+        interface_def = (
+            f"interface {root_interface_name} {parsed.to_typescript_style()}"
         )
-        params_str = f"\n{params_str}\n" if params_str else ""
-        interface_def = f"interface {root_interface_name} {{{params_str}}}"
         interfaces.append(interface_def)
 
     definitions_copy = dict(registry.definitions)

@@ -25,7 +25,8 @@ upstream thinking defaults, tool declarations, and special-token behavior.
 Local deviations also include Ruff formatting, explicit optional/container/return
 types, indexed token lookup, and JSON-safe enum literals and property names. Tool and definition identifiers are
 encoded when needed, with original callable names retained explicitly in tool
-declarations; numeric enum validation distinguishes booleans from numbers. Reviewed packaged SHA256 values:
+declarations; numeric enum validation distinguishes booleans from numbers. JSON Pointer
+escapes and recursive root index signatures retain their schema meaning. Reviewed packaged SHA256 values:
 
 - `tokenization.py`: `a1e79c8652393ad06c92d5a2e53fc90d87ddc6768fd06d5ab2a20df253a4a89d`
-- `tool_declaration_ts.py`: `ffd47398222fe166bf42da19a94fc5c2a0aacc5ed6d0e094674c3414f61990d5`
+- `tool_declaration_ts.py`: `aa464aa01e83ab9526c53971ef071c3bf5e7b182f28fb2e2e27cc13eb475619c`

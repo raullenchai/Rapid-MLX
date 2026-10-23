@@ -144,7 +144,7 @@ def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
         "tokenization.py": "a1e79c8652393ad06c92d5a2e53fc90d87ddc6768fd06d5ab2a20df253a4a89d",
-        "tool_declaration_ts.py": "ffd47398222fe166bf42da19a94fc5c2a0aacc5ed6d0e094674c3414f61990d5",
+        "tool_declaration_ts.py": "aa464aa01e83ab9526c53971ef071c3bf5e7b182f28fb2e2e27cc13eb475619c",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 

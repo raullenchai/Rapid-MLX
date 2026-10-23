@@ -123,6 +123,46 @@ def test_encoded_names_do_not_collide_with_literal_identifier_names():
     assert schema._typescript_identifier(mapped, "_schema_") != mapped
 
 
+@pytest.mark.parametrize(
+    "name,reference", [("a/b", "a~1b"), ("a~b", "a~0b"), ("a~1b", "a~01b")]
+)
+def test_definition_references_decode_json_pointer_names(name, reference):
+    rendered = schema._openai_function_to_typescript_style(
+        {
+            "name": "lookup",
+            "parameters": {
+                "$defs": {
+                    name: {"type": "object", "properties": {"x": {"type": "string"}}}
+                },
+                "properties": {"node": {"$ref": f"#/$defs/{reference}"}},
+            },
+        }
+    )
+    identifier = "_schema_" + name.encode().hex()
+    assert f"interface {identifier} " in rendered
+    assert f"node?: {identifier}" in rendered
+
+
+@pytest.mark.parametrize(
+    "additional,expected",
+    [(True, "any"), (False, "never"), ({"type": "string"}, "string")],
+)
+def test_recursive_root_preserves_additional_properties(additional, expected):
+    rendered = schema._openai_function_to_typescript_style(
+        {
+            "name": "tree",
+            "parameters": {
+                "properties": {"child": {"$ref": "#"}},
+                "additionalProperties": additional,
+            },
+        }
+    )
+    assert (
+        f"interface parameters {{\n  child?: parameters,\n  [k: string]: {expected}\n}}"
+        in rendered
+    )
+
+
 def test_registry_and_recursive_function():
     registry = schema._SchemaRegistry()
     registry.register_definitions({})
