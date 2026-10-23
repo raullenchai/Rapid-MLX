@@ -741,6 +741,22 @@ jobs:
             --run-slow -m slow \
             -v --tb=short
 
+      - name: Run optional checkpoint contracts on CPU
+        env:
+          COVERAGE_FILE: coverage-apple.data
+        run: |
+          python - <<'PYTHON'
+          import subprocess
+          import sys
+          from rapid_mlx.speculative.tensorfold_runtime import SUPPORTED_REVISION, SUPPORTED_RUNTIME_URL
+          subprocess.run([
+              sys.executable, "-m", "pip", "install", "--no-deps",
+              f"tensorfold @ git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}",
+          ], check=True)
+          PYTHON
+          pytest tests/test_tensorfold_qwen27_retention.py \
+            -q --tb=short --cov=rapid_mlx --cov-append --cov-report=
+
       - name: Upload Apple Silicon coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
