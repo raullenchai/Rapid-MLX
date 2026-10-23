@@ -848,3 +848,13 @@ while other languages returned just a string. Newer releases inside the
 supported range (`mlx-audio>=0.5.3,<0.6`) no longer contain the buggy
 unpacking. If you hit this error, upgrade `mlx-audio` within the pinned range
 instead of hand-patching the package.
+
+### Pipeline preparation
+
+Audio runtime preparation accepts only the built-in `en_core_web_sm` pipeline.
+When it is absent, stable spaCy 3.7 installs pipeline 3.7.0 and stable spaCy 3.8
+installs pipeline 3.8.0, using wheels without changing dependencies. Other spaCy
+versions fail with a supported-runtime message instead of selecting a new
+pipeline version. Already-installed supported pipeline names continue to work
+without reinstallation or additional prompts. Adding a pipeline or an automatic
+installation version requires a code review, not only an alias edit.

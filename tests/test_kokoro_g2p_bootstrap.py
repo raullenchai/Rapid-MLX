@@ -34,7 +34,8 @@ from rapid_mlx.audio.runtime_requirements import (
 
 
 @pytest.fixture(autouse=True)
-def _fresh_verdict():
+def _fresh_verdict(monkeypatch):
+    monkeypatch.setattr(runtime_requirements, "version", lambda name: "3.8.11")
     _reset_g2p_model_state()
     yield
     _reset_g2p_model_state()
@@ -154,7 +155,10 @@ def test_pull_preparer_installs_absent_pipeline_then_verifies(monkeypatch):
         "-m",
         "spacy",
         "download",
-        _KOKORO_G2P_SPACY_MODEL,
+        f"{_KOKORO_G2P_SPACY_MODEL}-3.8.0",
+        "--direct",
+        "--no-deps",
+        "--only-binary=:all:",
     ]
     assert seen["timeout"] == 300
     assert seen["env"] is not None
@@ -484,3 +488,125 @@ def test_installer_raises_on_nonzero_exit(monkeypatch):
     with pytest.raises(subprocess.CalledProcessError) as excinfo:
         runtime_requirements._run_installer(["x"], {}, timeout=1)
     assert excinfo.value.returncode == 7
+
+
+@pytest.mark.parametrize(
+    "package",
+    [
+        "attacker_package",
+        "en_core_web_trf",
+        "__import__",
+        "模型",
+        "--url",
+        "https://attacker.invalid/payload.whl",
+    ],
+)
+def test_unreviewed_pipeline_rejected_before_any_runtime_or_installer(
+    monkeypatch, package
+):
+    monkeypatch.setattr(
+        runtime_requirements,
+        "spacy_pipeline_available",
+        lambda name: pytest.fail("untrusted pipeline reached runtime inspection"),
+    )
+    monkeypatch.setattr(
+        runtime_requirements,
+        "_run_installer",
+        lambda *a, **k: pytest.fail("untrusted pipeline reached installer"),
+    )
+    with pytest.raises(AudioRuntimePreparationError, match="code-owned catalog"):
+        prepare_runtime_requirement(
+            AudioRuntimeRequirement(kind="spacy_pipeline", name=package)
+        )
+
+
+@pytest.mark.parametrize(
+    "installed_version,pinned",
+    [("3.7.0", "3.7.0"), ("3.7.5", "3.7.0"), ("3.8.11", "3.8.0")],
+)
+def test_pipeline_installer_uses_reviewed_pin_and_no_dependencies(
+    monkeypatch, installed_version, pinned
+):
+    state = {"installed": False}
+    _fake_spacy(monkeypatch, state)
+    monkeypatch.setattr(runtime_requirements, "version", lambda name: installed_version)
+    calls = []
+
+    def install(cmd, env, timeout):
+        calls.append(cmd)
+        state["installed"] = True
+
+    monkeypatch.setattr(runtime_requirements, "_run_installer", install)
+    prepare_runtime_requirement(_requirement())
+    assert calls == [
+        [
+            sys.executable,
+            "-m",
+            "spacy",
+            "download",
+            f"en_core_web_sm-{pinned}",
+            "--direct",
+            "--no-deps",
+            "--only-binary=:all:",
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "installed_version",
+    ["3.6.9", "3.9.0", "4.0.0", "3.8.0rc1", "3.8.0.dev1", "not-a-version"],
+)
+def test_unknown_spacy_runtime_cannot_select_unreviewed_pipeline(
+    monkeypatch, installed_version
+):
+    _fake_spacy(monkeypatch, {"installed": False})
+    monkeypatch.setattr(runtime_requirements, "version", lambda name: installed_version)
+    monkeypatch.setattr(
+        runtime_requirements,
+        "_run_installer",
+        lambda *a, **k: pytest.fail("unsupported runtime reached installer"),
+    )
+    with pytest.raises(
+        AudioRuntimePreparationError, match="No reviewed audio pipeline pin"
+    ):
+        prepare_runtime_requirement(_requirement())
+
+
+def test_registry_refuses_unreviewed_pipeline(monkeypatch, tmp_path):
+    import json
+
+    from rapid_mlx.audio import registry
+
+    catalog = tmp_path / "aliases.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "_runtime_requirements": {
+                    "kokoro": [
+                        {"kind": "spacy_pipeline", "name": "unreviewed_pipeline"}
+                    ]
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(registry, "_registry_path", lambda: str(catalog))
+    with pytest.raises(ValueError, match="code-owned pipeline catalog"):
+        registry._load_registry_uncached()
+
+
+def test_missing_spacy_metadata_refuses_install(monkeypatch):
+    _fake_spacy(monkeypatch, {"installed": False})
+
+    def missing(name):
+        raise runtime_requirements.PackageNotFoundError(name)
+
+    monkeypatch.setattr(runtime_requirements, "version", missing)
+    monkeypatch.setattr(
+        runtime_requirements,
+        "_run_installer",
+        lambda *a, **k: pytest.fail("unexpected install"),
+    )
+    with pytest.raises(
+        AudioRuntimePreparationError, match="No reviewed audio pipeline pin"
+    ):
+        prepare_runtime_requirement(_requirement())
