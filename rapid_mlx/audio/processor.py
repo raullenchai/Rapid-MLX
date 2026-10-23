@@ -65,15 +65,18 @@ class AudioProcessor:
         self.sample_rate = 44100  # SAM-Audio default
 
     def load(self) -> None:
-        """Load the SAM-Audio model."""
+        """Load SAM-Audio with safetensors or restricted legacy tensor weights.
+
+        Numeric checkpoint.pt / pytorch_model.bin sources remain supported
+        through the patched tensor-only loader, without unrestricted retries.
+        """
         if self._loaded:
             return
 
         try:
-            from mlx_audio.sts import SAMAudio, SAMAudioProcessor
+            from .sam_security import load_sam_audio
 
-            self.model = SAMAudio.from_pretrained(self.model_name)
-            self.processor = SAMAudioProcessor.from_pretrained(self.model_name)
+            self.model, self.processor = load_sam_audio(self.model_name)
 
             if hasattr(self.model, "sample_rate"):
                 self.sample_rate = self.model.sample_rate
