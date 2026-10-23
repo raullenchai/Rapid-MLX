@@ -267,3 +267,40 @@ def test_merge_preserves_payload_identity(tmp_path, second_hash):
         merge_calibration([a, b], output)
         with np.load(output) as merged:
             assert json.loads(str(merged["metadata"]))["checkpoint_sha256"] == "same"
+
+
+@pytest.mark.parametrize("mutation", ["unchanged", "replaced", "removed"])
+def test_merge_directory_sync_failure_rolls_back_only_own_output(
+    tmp_path, monkeypatch, mutation
+):
+    from scripts import deepseek_v41_merge_calibration as merge
+
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    output = tmp_path / "out.npz"
+    original = merge.fsync_directory
+    calls = []
+
+    def fail_first(path):
+        calls.append(path)
+        if len(calls) == 1:
+            if mutation != "unchanged":
+                output.unlink()
+            if mutation == "replaced":
+                output.write_bytes(b"other writer")
+            raise OSError("directory sync failed")
+        original(path)
+
+    monkeypatch.setattr(merge, "fsync_directory", fail_first)
+    with pytest.raises(OSError, match="directory sync failed"):
+        merge.merge_calibration([a, b], output)
+    assert calls == [tmp_path, tmp_path]
+    assert sorted(p.name for p in tmp_path.iterdir()) == (
+        ["a.npz", "b.npz", "out.npz"] if mutation == "replaced" else ["a.npz", "b.npz"]
+    )
+    if mutation == "replaced":
+        assert output.read_bytes() == b"other writer"
+    else:
+        merge.merge_calibration([a, b], output)
+        with np.load(output) as merged:
+            assert merged["tokens"].item() == 48

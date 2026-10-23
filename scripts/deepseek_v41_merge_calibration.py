@@ -225,7 +225,16 @@ def merge_calibration(pass_files, output):
         # Link publication is atomic and refuses an existing destination.
         # Closing the temporary removes its name on success and on failure.
         os.link(handle.name, output)
-        fsync_directory(output.parent)
+        try:
+            fsync_directory(output.parent)
+        except BaseException:
+            try:
+                if output.samefile(handle.name):
+                    output.unlink()
+            except FileNotFoundError:
+                pass
+            fsync_directory(output.parent)
+            raise
     return output
 
 
