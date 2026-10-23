@@ -152,8 +152,9 @@ def test_vendored_audio_rejects_private_url_before_decoder(
         audio_io, "read", lambda *a, **k: pytest.fail("decoder reached")
     )
     transport["addresses"] = ["127.0.0.1"]
-    with pytest.raises(mllm.RemoteMediaFetchError):
+    with pytest.raises(ValueError, match="Failed to load audio from URL") as exc:
         inputs.load_audio("http://localhost/audio.wav", 16000)
+    assert isinstance(exc.value.__cause__, mllm.RemoteMediaFetchError)
     assert transport["requests"] == []
 
 
@@ -175,7 +176,7 @@ def test_decoder_protocols_do_not_bypass_http_guard(inputs):
 
 def test_prepare_inputs_blocks_audio_before_processor(inputs, transport):
     transport["addresses"] = ["169.254.169.254"]
-    with pytest.raises(mllm.RemoteMediaFetchError):
+    with pytest.raises(ValueError, match="Failed to load audio from URL"):
         inputs.prepare_inputs(
             object(), audio=["http://metadata/audio.wav"], prompts="transcribe"
         )
@@ -220,7 +221,7 @@ def test_audio_extension_default_and_local_preserved(transport):
 
 def test_audio_invalid_length_closes_response(transport):
     transport["response"].headers["content-length"] = "invalid"
-    with pytest.raises(ValueError):
+    with pytest.raises(mllm.RemoteMediaFetchError, match="Content-Length"):
         mllm.download_audio("https://audio.example/clip.wav")
     assert transport["response"].closed
 
@@ -316,9 +317,10 @@ def test_local_colon_video_filename_reaches_local_decoder(
 @pytest.mark.parametrize(
     "name", ["take.wav", "http:take.wav", "http://media.example/take.wav"]
 )
-def test_audio_file_uri_resolves_to_local_path(tmp_path, monkeypatch, name):
+@pytest.mark.parametrize("scheme", ["file", "FILE"])
+def test_audio_file_uri_resolves_to_local_path(tmp_path, monkeypatch, name, scheme):
     monkeypatch.chdir(tmp_path)
-    assert mllm.process_audio_input("file://" + name) == str(
+    assert mllm.process_audio_input(scheme + "://" + name) == str(
         (tmp_path / name).resolve()
     )
 
@@ -332,3 +334,28 @@ def test_remote_audio_without_extension_preserves_bytes_and_cleans_temp(
     assert isinstance(result, BytesIO)
     assert result.getvalue() == body
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["transport", "size", "decoder"])
+def test_remote_audio_preserves_value_error_boundary(
+    inputs, transport, monkeypatch, failure
+):
+    import requests
+
+    audio_io = pytest.importorskip("mlx_audio.audio_io")
+    error = {
+        "transport": requests.ConnectionError("unavailable"),
+        "size": mllm.FileSizeExceededError("too large"),
+        "decoder": RuntimeError("bad audio"),
+    }[failure]
+
+    def fail(*args, **kwargs):
+        raise error
+
+    if failure == "decoder":
+        monkeypatch.setattr(audio_io, "read", fail)
+    else:
+        monkeypatch.setattr(mllm, "process_audio_input", fail)
+    with pytest.raises(ValueError, match="Failed to load audio from URL") as exc:
+        inputs.load_audio("https://media.example/audio.wav", 16000)
+    assert exc.value.__cause__ is error

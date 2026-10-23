@@ -1250,8 +1250,13 @@ def download_audio(url: str, timeout: int = 30, max_size: int = MAX_AUDIO_SIZE) 
     try:
         response.raise_for_status()
         length = response.headers.get("content-length")
-        if length and int(length) > max_size:
-            raise FileSizeExceededError("Remote audio exceeds maximum size")
+        if length:
+            try:
+                declared_size = int(length)
+            except ValueError as exc:
+                raise RemoteMediaFetchError("Invalid audio Content-Length") from exc
+            if declared_size > max_size:
+                raise FileSizeExceededError("Remote audio exceeds maximum size")
         # Decoders sniff the container; the suffix is only a useful hint.
         suffix = Path(urlparse(url).path).suffix.lower()
         if suffix not in {
@@ -1319,7 +1324,7 @@ def process_audio_input(audio: str, timeout: int = 30):
         if len(decoded) > MAX_AUDIO_SIZE:
             raise FileSizeExceededError("Inline audio exceeds maximum size")
         return BytesIO(decoded)
-    if audio.startswith("file://"):
+    if audio[:7].lower() == "file://":
         return str(Path(audio[7:]).resolve())
     if urlsplit(audio).scheme:
         raise RemoteMediaFetchError("Remote audio URL must use http(s)")

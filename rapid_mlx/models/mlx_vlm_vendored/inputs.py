@@ -315,9 +315,18 @@ def load_audio(
     # media guard before audio decoders receive input (including redirects).
     from rapid_mlx.models.mllm import process_audio_input
 
-    if isinstance(file, str):
-        file = process_audio_input(file, timeout=timeout)
-    audio, sample_rate = read_audio(file, dtype="float32")
+    if isinstance(file, str) and file.lower().startswith(("http://", "https://")):
+        try:
+            source = process_audio_input(file, timeout=timeout)
+            audio, sample_rate = read_audio(source, dtype="float32")
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to load audio from URL: {file} with error {exc}"
+            ) from exc
+    else:
+        if isinstance(file, str):
+            file = process_audio_input(file, timeout=timeout)
+        audio, sample_rate = read_audio(file, dtype="float32")
 
     # Upstream 0.7.2 downmixes before resampling: ``read_audio`` returns
     # (samples, channels), while ``resample_audio`` operates on the last axis.
