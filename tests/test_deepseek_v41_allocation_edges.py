@@ -93,6 +93,7 @@ def test_variant_rejects_invalid_base(bad):
         base["layers"]["0"]["bits"] = 8
     if bad == "fixed":
         base["fixed_non_expert_bytes"] = 1
+    base["provenance"] = {"costs_sha256": alloc.inventory_digest(cost)}
     with pytest.raises(ValueError):
         variant.variant_allocation(base, cost, [])
 
@@ -402,3 +403,58 @@ def test_contrastive_rejects_noninteger_route_threshold(value):
 @pytest.mark.parametrize("value", [2, 2.0, np.int64(2)])
 def test_contrastive_accepts_integer_route_threshold(value):
     assert contrastive(*slices(), min_cold_routes=value)["candidate"][0, 1]
+
+
+@pytest.mark.parametrize("change", ["missing", "revision", "config", "payload"])
+def test_variant_rejects_unbound_inventory(change):
+    cost = {"model_revision": "r", "config_sha256": "c", "expert_bytes": [1]}
+    base = {"provenance": {"costs_sha256": alloc.inventory_digest(cost)}}
+    if change == "missing":
+        base.clear()
+    elif change == "revision":
+        cost["model_revision"] = "other"
+    elif change == "config":
+        cost["config_sha256"] = "other"
+    else:
+        cost["expert_bytes"] = [2]
+    with pytest.raises(ValueError, match="base provenance"):
+        variant.variant_allocation(base, cost, [])
+
+
+def test_allocation_failed_later_budget_publishes_nothing(cli_inputs):
+    _, _, _, argv, write = cli_inputs
+    argv.extend(["--budgets-gb", "1", "0"])
+    write()
+    with pytest.raises(ValueError):
+        alloc.main()
+    assert not list(Path(argv[argv.index("--output-dir") + 1]).iterdir())
+
+
+@pytest.mark.parametrize("failure", ["existing", "fsync", "link", "nan"])
+def test_allocation_publication_failure_preserves_existing(
+    tmp_path, monkeypatch, failure
+):
+    first, second = tmp_path / "one.json", tmp_path / "two.json"
+    outputs = [(first, {"a": 1}), (second, {"b": 2})]
+    if failure == "existing":
+        second.write_text("original")
+    elif failure == "nan":
+        outputs[1][1]["b"] = float("nan")
+    else:
+        original = getattr(alloc.os, failure)
+        calls = 0
+
+        def fail_second(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("disk failure")
+            return original(*args)
+
+        monkeypatch.setattr(alloc.os, failure, fail_second)
+    with pytest.raises((OSError, ValueError)):
+        alloc.publish_allocations(outputs)
+    assert not first.exists()
+    assert list(tmp_path.iterdir()) == ([second] if failure == "existing" else [])
+    if failure == "existing":
+        assert second.read_text() == "original"

@@ -9,6 +9,7 @@ import pytest
 
 from scripts import deepseek_v41_rd_build as builder
 from scripts.deepseek_v41_expert_quant_error import inventory
+from scripts.deepseek_v41_rd_allocate import inventory_digest
 from scripts.deepseek_v41_variant_alloc import variant_allocation
 from scripts.repack_deepseek_v41_native import CheckpointIndex
 from tests.test_deepseek_v41_quant_error import tiny_source
@@ -39,6 +40,7 @@ def test_variant_accounting_matches_builder_and_cli(source, tmp_path, monkeypatc
         predicted_distortion=42,
         duality_gap=1,
     )
+    base["provenance"] = {"costs_sha256": inventory_digest(cost)}
     before = copy.deepcopy(base)
     result = variant_allocation(base, cost, ["0=3/4/2"])
     _, _, actual = builder.plan(index, config, result)
@@ -84,8 +86,10 @@ def test_variant_invalid_overrides(source, override):
     pytest.importorskip("mlx.core")
     config = json.loads((source / "config.json").read_text())
     cost = inventory(CheckpointIndex(source), config)
+    base = allocation()
+    base["provenance"] = {"costs_sha256": inventory_digest(cost)}
     with pytest.raises(ValueError):
-        variant_allocation(allocation(), cost, [override])
+        variant_allocation(base, cost, [override])
 
 
 def test_variant_multiple_layers_repeated_overrides_and_pruning():
@@ -102,6 +106,7 @@ def test_variant_multiple_layers_repeated_overrides_and_pruning():
         "fixed_non_expert_bytes": 100,
         "expert_bytes": np.broadcast_to([0, 30, 42, 54], (2, 2, 4)).tolist(),
     }
+    base["provenance"] = {"costs_sha256": inventory_digest(cost)}
     result = variant_allocation(base, cost, ["0,1=3/3/3", "1=4/3/2"])
     assert result["resident_tensor_bytes"] == 226
     assert result["variant"]["resident_byte_delta"] == 36

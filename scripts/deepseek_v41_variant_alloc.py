@@ -14,12 +14,17 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.deepseek_v41_rd_allocate import inventory_digest, publish_allocations
 from scripts.deepseek_v41_rd_layer_allocate import routed_and_router_bytes
 
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
 def variant_allocation(base, cost, overrides):
+    if base.get("provenance", {}).get("costs_sha256") != inventory_digest(cost):
+        raise ValueError(
+            "cost inventory does not match base provenance; regenerate base allocation"
+        )
     result = copy.deepcopy(base)
     costs = np.asarray(cost["expert_bytes"])
     if (
@@ -118,9 +123,9 @@ def main():
     result = variant_allocation(
         json.loads(a.base.read_text()), json.loads(a.costs.read_text()), a.set_bits
     )
-    result["variant"]["costs_sha256"] = hashlib.sha256(a.costs.read_bytes()).hexdigest()
+    result["variant"]["costs_sha256"] = result["provenance"]["costs_sha256"]
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    a.output.write_text(json.dumps(result, indent=2) + "\n")
+    publish_allocations([(a.output, result)])
     print(f"Resident GB delta: {result['variant']['resident_byte_delta'] / 1e9:+.9f}")
 
 

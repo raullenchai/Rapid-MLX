@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import heapq
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +19,49 @@ if __package__ in (None, ""):
 from scripts.deepseek_v41_contrastive import contrastive
 from scripts.deepseek_v41_rd_common import BITS, bank_plan, file_hash
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
+
+
+def inventory_digest(cost):
+    """Bind derived allocations to the exact parsed inventory, including policy."""
+    return hashlib.sha256(
+        json.dumps(
+            cost, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+def publish_allocations(outputs):
+    """Stage a validated set before no-clobber publication; roll back on failure.
+
+    Each file is atomic. Concurrent readers must wait for this command to finish
+    to consume the entire set; the directory itself is not a transaction.
+    """
+    serialized = [
+        (path, json.dumps(value, indent=2, allow_nan=False) + "\n")
+        for path, value in outputs
+    ]
+    staged, published = [], []
+    try:
+        for path, body in serialized:
+            if path.exists():
+                raise FileExistsError(path)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=path.parent, delete=False
+            ) as handle:
+                staged.append((Path(handle.name), path))
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for temporary, path in staged:
+            os.link(temporary, path)
+            published.append(path)
+    except BaseException:
+        for path in published:
+            path.unlink()
+        raise
+    finally:
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def pruning_audit(result, counts_by_slice, reap_by_slice, slice_names, roles):
@@ -331,6 +377,7 @@ def main():
         output_names = [f"allocation-{gb:g}GB.json" for gb in budgets]
         if len(set(output_names)) != len(output_names):
             raise ValueError("budgets produce duplicate allocation output paths")
+        outputs = []
         for gb in budgets:
             if selection is None:
                 if a.preset:
@@ -405,10 +452,14 @@ def main():
                     "ratio_tolerance": 0.5,
                     "slice_roles": roles,
                 }
-            result["provenance"] = {"scores": sm, "errors": qm, "score": a.score}
-            (a.output_dir / f"allocation-{gb:g}GB.json").write_text(
-                json.dumps(result, indent=2) + "\n"
-            )
+            result["provenance"] = {
+                "scores": sm,
+                "errors": qm,
+                "score": a.score,
+                "costs_sha256": inventory_digest(cost),
+            }
+            outputs.append((a.output_dir / f"allocation-{gb:g}GB.json", result))
+        publish_allocations(outputs)
 
 
 if __name__ == "__main__":
