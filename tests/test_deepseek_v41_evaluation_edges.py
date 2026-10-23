@@ -287,7 +287,28 @@ def test_conversion_record_binds_exact_candidate_payloads(tmp_path):
         checkpoint_sha256=candidate, conversion_provenance_sha256=file_hash(path)
     )
     (c / "metadata.json").write_text(json.dumps(metadata))
+    record = c / "conversion-provenance.json"
+    with pytest.raises(ValueError, match="record missing"):
+        evaluator.compare(r, c)
+    record.write_bytes(path.read_bytes())
     assert evaluator.compare(r, c)["kl_nats"] == 0
+    record.write_text(path.read_text() + " ")
+    with pytest.raises(ValueError, match="record mismatch"):
+        evaluator.compare(r, c)
+    record.write_text(
+        json.dumps(
+            dict(source_checkpoint_sha256=candidate, checkpoint_sha256=candidate)
+        )
+    )
+    metadata["conversion_provenance_sha256"] = file_hash(record)
+    (c / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="record mismatch"):
+        evaluator.compare(r, c)
+    record.write_text(
+        json.dumps(dict(source_checkpoint_sha256=source, checkpoint_sha256=source))
+    )
+    with pytest.raises(ValueError, match="candidate checkpoint mismatch"):
+        evaluator.compare(r, c)
 
 
 @pytest.mark.requires_mlx
@@ -328,3 +349,39 @@ def test_token_files_are_independently_authenticated(tmp_path, roots):
         np.save(tmp_path / name / "domain-tokens.npy", np.array([9, 9]))
     with pytest.raises(ValueError, match="token IDs hash mismatch"):
         evaluator.compare(r, c)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("changed", [False, True])
+def test_collect_retains_verified_conversion_record(
+    collector, tmp_path, monkeypatch, changed
+):
+    a = collector
+    checkpoint = checkpoint_hashes(a.model)
+    source = dict(checkpoint, **{"source.safetensors": "d" * 64})
+    record = tmp_path / "conversion.json"
+    record.write_text(
+        json.dumps(dict(checkpoint_sha256=checkpoint, source_checkpoint_sha256=source))
+    )
+    a.conversion_provenance = record
+    if changed:
+        load = importlib.import_module("rapid_mlx.models.deepseek_v41_native.load")
+        original = load.load
+
+        def mutate(*args, **kwargs):
+            record.write_text("{}")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(load, "load", mutate)
+        with pytest.raises(ValueError, match="changed during collection"):
+            evaluator.collect(a)
+        assert not (a.output / "metadata.json").exists()
+    else:
+        evaluator.collect(a)
+        assert (
+            a.output / "conversion-provenance.json"
+        ).read_bytes() == record.read_bytes()
+        metadata = json.loads((a.output / "metadata.json").read_text())
+        assert metadata["source_checkpoint_sha256"] == source
+        assert metadata["conversion_provenance_sha256"] == file_hash(record)
+        assert evaluator.compare(a.output, a.output)["kl_nats"] == 0

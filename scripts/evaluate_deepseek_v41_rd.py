@@ -8,6 +8,7 @@ expert weights unchanged and does NOT qualify mixed-bit quantization quality.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -137,8 +138,6 @@ def source_identity_for_checkpoint(checkpoint, provenance_path=None):
     provenance = json.loads(raw)
     if provenance.get("checkpoint_sha256") != checkpoint:
         raise ValueError("conversion provenance candidate checkpoint mismatch")
-    import hashlib
-
     return (
         validate_checkpoint_identity(provenance.get("source_checkpoint_sha256")),
         hashlib.sha256(raw).hexdigest(),
@@ -198,6 +197,11 @@ def collect(a):
     if allocation:
         install_native_masks(model, allocation, masses)
     a.output.mkdir(parents=True)
+    if conversion_digest is not None:
+        record = a.conversion_provenance.read_bytes()
+        if hashlib.sha256(record).hexdigest() != conversion_digest:
+            raise ValueError("conversion provenance changed during collection")
+        (a.output / "conversion-provenance.json").write_bytes(record)
     checkpoint_config = json.loads((a.model / "config.json").read_text())
     packed = checkpoint_config.get("rapid_quantization", {}).get("allocation")
     metadata = {
@@ -319,13 +323,24 @@ def compare(reference: Path, candidate: Path, subset=False):
         or not cm["slices"]
     ):
         raise ValueError("cache provenance/slice mismatch")
-    for meta in (rm, cm):
+    for root, meta in ((reference, rm), (candidate, cm)):
         checkpoint = validate_checkpoint_identity(meta.get("checkpoint_sha256"))
         source = validate_checkpoint_identity(meta.get("source_checkpoint_sha256"))
-        if checkpoint != source and not re.fullmatch(
-            r"[0-9a-f]{64}", str(meta.get("conversion_provenance_sha256", ""))
-        ):
-            raise ValueError("cache lacks conversion provenance digest")
+        digest = meta.get("conversion_provenance_sha256")
+        if checkpoint != source or digest is not None:
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ValueError("cache lacks conversion provenance digest")
+            try:
+                recorded_source, recorded_digest = source_identity_for_checkpoint(
+                    checkpoint, root / "conversion-provenance.json"
+                )
+            except OSError as exc:
+                raise ValueError("cache conversion provenance record missing") from exc
+            if recorded_digest != digest or recorded_source != source:
+                raise ValueError("cache conversion provenance record mismatch")
     if rm["source_checkpoint_sha256"] != cm["source_checkpoint_sha256"]:
         raise ValueError("cache source checkpoint identity mismatch")
     layers = cm.get("num_layers")
