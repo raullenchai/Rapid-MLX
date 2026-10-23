@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import _common
+from . import _common, _ownership
 
 # The OpenAI-compatible provider id in the Cline SDK (``cline auth -p openai``
 # stores it under this id).
@@ -275,9 +275,11 @@ def write_or_patch_config(
     existing = load_providers(path)
     updated = patched_config(existing, server_url, model, api_key)
     if updated is existing and path.exists():
+        record_ownership(path, updated)
         return path
     _common.backup_existing(path)
     _common.atomic_write_json(path, updated)
+    record_ownership(path, updated)
     return path
 
 
@@ -298,3 +300,31 @@ def preview(
         return json.dumps(_common.redact_secrets(data), indent=2)
 
     return path, _common.unified_diff(render(existing), render(updated), path), ()
+
+
+_OWNED_SETTINGS = ("apiKey", "model", "baseUrl")
+
+
+def record_ownership(path: Path, data: dict[str, Any]) -> None:
+    settings = data["providers"][_PROVIDER_ID]["settings"]
+    _ownership.record(
+        path,
+        {
+            **{key: settings[key] for key in _OWNED_SETTINGS},
+            "lastUsedProvider": data["lastUsedProvider"],
+        },
+    )
+
+
+def remove_config() -> bool:
+    path = current_config_path().resolve()
+    data = load_providers(path)
+    settings = data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
+    if not _ownership.remove_fields(path, settings, _OWNED_SETTINGS):
+        _ownership.forget(path)
+        return False
+    _ownership.remove_fields(path, data, ("lastUsedProvider",))
+    _common.backup_existing(path)
+    _common.atomic_write_json(path, data)
+    _ownership.forget(path)
+    return True

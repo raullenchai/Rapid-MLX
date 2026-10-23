@@ -14,7 +14,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import _common
+from . import _common, _ownership
 
 _CONFIG_DIR_MAC = Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
@@ -158,6 +158,7 @@ def write_or_patch_config(
     path = config_path or current_config_path()
     assert path is not None
 
+    path = path.resolve()
     existing = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
@@ -166,4 +167,24 @@ def write_or_patch_config(
     existing["cursor.aiprovider.openai.model"] = model
 
     _common.atomic_write_json(path, existing)
+    _ownership.record(path, {key: existing[key] for key in _OWNED_SETTINGS})
     return path
+
+
+_OWNED_SETTINGS = tuple(
+    f"cursor.aiprovider.openai.{key}" for key in ("baseUrl", "apiKey", "model")
+)
+
+
+def remove_config() -> bool:
+    path = current_config_path().resolve()
+    data = _common.load_json_lenient(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    if not _ownership.remove_fields(path, data, _OWNED_SETTINGS):
+        _ownership.forget(path)
+        return False
+    _common.backup_existing(path)
+    _common.atomic_write_json(path, data)
+    _ownership.forget(path)
+    return True

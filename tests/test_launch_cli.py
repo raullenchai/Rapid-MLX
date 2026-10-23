@@ -1661,3 +1661,198 @@ def test_launch_rejects_api_key_on_command_line():
     register(sub)
     with pytest.raises(SystemExit):
         parser.parse_args(["launch", "cursor", "--api-key", "leaked-secret"])
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_adapter_remove_preserves_user_config(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if client == "continue-dev":
+        path.write_text(
+            "models:\n  - name: personal\n    model: user-model\ncustom: keep\n"
+        )
+    else:
+        path.write_text(
+            json.dumps({"editor.fontSize": 15}) if client == "cursor" else "{}"
+        )
+    adapter.write_or_patch_config("https://example.com", "rapid-model", "secret-key")
+    if client == "cline":
+        data = cline.load_providers(path)
+        data["providers"]["openai-compatible"]["settings"]["customHeaders"] = {
+            "X-Test": "keep"
+        }
+        data["providers"]["personal"] = {
+            "settings": {"provider": "personal", "apiKey": "user-key"},
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }
+        _common.atomic_write_json(path, data)
+    before = path.read_bytes()
+    launch_cli.launch_command(_make_args(client=client, remove=True, dry_run=True))
+    assert path.read_bytes() == before
+    launch_cli.launch_command(_make_args(client=client, remove=True))
+    if client == "continue-dev":
+        data = continue_dev.load_yaml_config(path)
+        assert data["models"] == [{"name": "personal", "model": "user-model"}]
+        assert data["custom"] == "keep"
+    else:
+        data = json.loads(path.read_text())
+        if client == "cursor":
+            assert data == {"editor.fontSize": 15}
+        else:
+            assert "lastUsedProvider" not in data
+            assert data["providers"]["personal"]["settings"]["apiKey"] == "user-key"
+            assert data["providers"]["openai-compatible"]["settings"] == {
+                "provider": "openai-compatible",
+                "customHeaders": {"X-Test": "keep"},
+            }
+    assert any(p.read_bytes() == before for p in path.parent.glob(path.name + ".bak.*"))
+    after = path.read_bytes()
+    launch_cli.launch_command(_make_args(client=client, remove=True))
+    assert path.read_bytes() == after
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_adapter_remove_missing_and_malformed(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    assert adapter.remove_config() is False
+    assert not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[invalid")
+    with pytest.raises(SystemExit) as exc:
+        launch_cli.launch_command(_make_args(client=client, remove=True))
+    assert exc.value.code == 1
+    assert path.read_text() == "[invalid"
+
+
+@pytest.mark.parametrize("client", ["cline", "cursor"])
+def test_shared_adapter_remove_preserves_changed_and_unmarked(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config(
+        "https://example.com", "rapid-model", "secret-key"
+    )
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    assert "secret-key" not in receipt.read_text()
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    data = json.loads(path.read_text())
+    fields = (
+        data
+        if client == "cursor"
+        else data["providers"]["openai-compatible"]["settings"]
+    )
+    key = "cursor.aiprovider.openai.model" if client == "cursor" else "model"
+    fields[key] = "user-edit"
+    _common.atomic_write_json(path, data)
+    assert adapter.remove_config()
+    result = json.loads(path.read_text())
+    fields = (
+        result
+        if client == "cursor"
+        else result["providers"]["openai-compatible"]["settings"]
+    )
+    assert fields[key] == "user-edit"
+    adapter.write_or_patch_config("https://example.com", "rapid-model", "secret-key")
+    receipt.unlink()
+    before = path.read_bytes()
+    assert not adapter.remove_config()
+    assert path.read_bytes() == before
+    receipt.write_text("[]")
+    with pytest.raises(ValueError, match="receipt"):
+        adapter.remove_config()
+    assert path.read_bytes() == before
+
+
+def test_remove_rejects_unexpected_shapes(fake_home):
+    path = cursor.current_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("[]")
+    with pytest.raises(ValueError, match="object"):
+        cursor.remove_config()
+    path = continue_dev.current_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("models: invalid\n")
+    with pytest.raises(ValueError, match="list"):
+        continue_dev.remove_config()
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_adapter_remove_writes_through_symlink(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = fake_home / "real-settings"
+    path.symlink_to(target)
+    adapter.write_or_patch_config("https://example.com", "rapid-model", "secret-key")
+    assert adapter.remove_config()
+    assert path.is_symlink()
+    assert target.exists()
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_adapter_remove_retires_receipt(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    configured = path.read_bytes()
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    assert adapter.remove_config()
+    assert not receipt.exists()
+    # Recreating the same settings manually must not inherit stale ownership.
+    path.write_bytes(configured)
+    assert not adapter.remove_config()
+    assert path.read_bytes() == configured
+
+
+@pytest.mark.parametrize("change", ["model", "custom", "unmarked"])
+def test_continue_remove_preserves_customized_entry(fake_home, change):
+    path = continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    data = continue_dev.load_yaml_config(path)
+    if change == "unmarked":
+        path.with_name(path.name + ".rapid-mlx-owned.json").unlink()
+    else:
+        data["models"][0][change] = "user-value"
+        path.write_text(continue_dev.dump_yaml(data))
+    before = path.read_bytes()
+    assert not continue_dev.remove_config()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+def test_setup_plan_records_removable_ownership(fake_home, client):
+    from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+
+    plan = build_setup_plan(client, "https://example.com", "rapid-model")
+    apply_setup_plan(plan)
+    assert ADAPTERS[client].remove_config()
+
+
+def test_continue_remove_preserves_legacy_json_and_hub_models(fake_home):
+    path = continue_dev.current_config_path()
+    path.parent.mkdir(parents=True)
+    legacy = path.with_name("config.json")
+    legacy.write_text('{"models": [{"title": "personal", "model": "user-model"}]}')
+    original = legacy.read_bytes()
+    continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    data = continue_dev.load_yaml_config(path)
+    data["models"].extend([{"uses": "user/model"}, "user/reference"])
+    path.write_text(continue_dev.dump_yaml(data))
+    assert continue_dev.remove_config()
+    assert legacy.read_bytes() == original
+    assert continue_dev.load_yaml_config(path)["models"] == data["models"][1:]
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_adapter_remove_write_failure_preserves_config_and_receipt(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    before = path.read_bytes()
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    ownership = receipt.read_bytes()
+    with (
+        patch.object(_common, "atomic_write_text", side_effect=OSError("read-only")),
+        pytest.raises(SystemExit) as exc,
+    ):
+        launch_cli.launch_command(_make_args(client=client, remove=True))
+    assert exc.value.code == 1
+    assert path.read_bytes() == before
+    assert receipt.read_bytes() == ownership

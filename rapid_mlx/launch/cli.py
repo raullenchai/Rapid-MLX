@@ -294,6 +294,26 @@ def launch_command(args: argparse.Namespace) -> None:
         print("launch: --run and --check require --isolated", file=sys.stderr)
         sys.exit(2)
 
+    if getattr(args, "remove", False) and args.client in {
+        "cline",
+        "continue-dev",
+        "cursor",
+    }:
+        if args.dry_run:
+            print(f"[dry-run] Would remove Rapid-owned {args.client} settings.")
+            return
+        try:
+            removed = ADAPTERS[args.client].remove_config()
+        except (OSError, ValueError) as exc:
+            print(f"launch: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        print(
+            "  Removed Rapid-owned settings."
+            if removed
+            else "  No identifiable Rapid-owned settings; existing config preserved."
+        )
+        return
+
     if getattr(args, "isolated", False) or getattr(args, "remove", False):
         from rapid_mlx.agents import get_profile
         from rapid_mlx.agents.isolated import (

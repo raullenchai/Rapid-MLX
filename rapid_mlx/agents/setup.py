@@ -632,8 +632,12 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
             )
         if plan.format == "yaml":
             _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
+            if plan.agent == "continue":
+                continue_dev.record_ownership(plan.path, plan.after)
         else:
             launch_common.atomic_write_json(plan.path, plan.after)
+            if plan.agent == "cline":
+                cline.record_ownership(plan.path, plan.after)
     except BaseException as exc:
         if isinstance(exc, OSError):
             track_agent_configure_failed("config_write_failed", plan.agent)

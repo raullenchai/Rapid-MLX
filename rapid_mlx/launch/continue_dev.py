@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import _common
+from . import _common, _ownership
 
 # Continue stores its config in ``~/.continue/`` on every platform.
 _CONFIG_DIR = Path.home() / ".continue"
@@ -399,9 +399,11 @@ def write_or_patch_config(
     for note in plan.notes:
         print(f"  note: {note}", file=sys.stderr)
     if not plan.changed and plan.path.exists():
+        record_ownership(plan.path, plan.after)
         return plan.path
     _common.backup_existing(plan.path)
     _common.atomic_write_text(plan.path, dump_yaml(plan.after))
+    record_ownership(plan.path, plan.after)
     return plan.path
 
 
@@ -418,3 +420,43 @@ def preview(
     """``(path, redacted diff, notes)`` for ``launch --dry-run``; no writes."""
     plan = build_plan(server_url, model, api_key)
     return plan.path, plan_diff(plan) if plan.changed else "", plan.notes
+
+
+def record_ownership(path: Path, data: dict[str, Any]) -> None:
+    # Only the fields written by Rapid confer ownership. Custom fields or
+    # roles keep the entry from matching, preserving user customization.
+    entry = next(
+        m
+        for m in data["models"]
+        if isinstance(m, dict) and m.get("name") == _MODEL_ENTRY_NAME
+    )
+    _ownership.record(
+        path,
+        {
+            "model_entry": {
+                key: entry[key]
+                for key in ("name", "provider", "model", "apiBase", "apiKey")
+            }
+        },
+    )
+
+
+def remove_config() -> bool:
+    path = current_config_path().resolve()
+    data = load_yaml_config(path)
+    models = data.get("models", [])
+    if not isinstance(models, list):
+        raise ValueError(f"{path} models must contain a list")
+    kept = []
+    for entry in models:
+        candidate = {"model_entry": entry}
+        if not _ownership.remove_fields(path, candidate, ("model_entry",)):
+            kept.append(entry)
+    if kept == models:
+        _ownership.forget(path)
+        return False
+    data["models"] = kept
+    _common.backup_existing(path)
+    _common.atomic_write_text(path, dump_yaml(data))
+    _ownership.forget(path)
+    return True
