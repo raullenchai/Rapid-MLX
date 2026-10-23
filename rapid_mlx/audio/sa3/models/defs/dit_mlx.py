@@ -274,6 +274,7 @@ class DiT(nn.Module):
 def convert_weights_from_torch_ckpt(ckpt_path):
     """Load sa3-sm-music ckpt (torch.load), strip 'model.model.' prefix, remap to MLX layout."""
     import numpy as np
+    import torch
 
     raw = load_torch_checkpoint(ckpt_path)
     sd = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw

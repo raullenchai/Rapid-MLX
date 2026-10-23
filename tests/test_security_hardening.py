@@ -165,14 +165,16 @@ def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
         calls.append(weights_only)
         raise pickle.UnpicklingError("legacy pickle")
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=fake_load))
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(load=fake_load, __version__="2.10.0")
+    )
     monkeypatch.delenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", raising=False)
     with pytest.raises(RuntimeError, match="Refusing unsafe pickle fallback"):
         load_torch_checkpoint("model.ckpt")
     assert calls == [True]
 
 
-def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch):
+def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch, tmp_path):
     from rapid_mlx.audio.sa3.models.defs.checkpoint_security import (
         load_torch_checkpoint,
     )
@@ -185,9 +187,25 @@ def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch):
             raise pickle.UnpicklingError("legacy pickle")
         return {"state_dict": {}}
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=fake_load))
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(load=fake_load, __version__="2.10.0")
+    )
     monkeypatch.setenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", "1")
-    assert load_torch_checkpoint("model.ckpt") == {"state_dict": {}}
+    import hashlib
+
+    checkpoint = tmp_path / "legacy.ckpt"
+    checkpoint.write_bytes(b"reviewed legacy artifact")
+    with pytest.raises(RuntimeError, match="Refusing unsafe pickle fallback"):
+        load_torch_checkpoint(checkpoint)
+    monkeypatch.setenv("RAPID_MLX_SA3_TRUSTED_SHA256", "0" * 64)
+    with pytest.raises(RuntimeError, match="does not match"):
+        load_torch_checkpoint(checkpoint)
+    monkeypatch.setenv(
+        "RAPID_MLX_SA3_TRUSTED_SHA256",
+        hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+    )
+    calls.clear()
+    assert load_torch_checkpoint(checkpoint) == {"state_dict": {}}
     assert calls == [True, False]
 
 
