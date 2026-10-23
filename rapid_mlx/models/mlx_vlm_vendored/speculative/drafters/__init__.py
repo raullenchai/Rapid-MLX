@@ -406,7 +406,7 @@ def load_drafter(
         validate_model_code,
     )
 
-    validate_model_code(config)
+    validate_model_code(config, trust_remote_code=kwargs.get("trust_remote_code"))
     validate_local_model_file(path)
     peeked = _normalized_drafter_model_type(config)
     install_served_architecture_bindings(peeked)

@@ -747,7 +747,7 @@ def load_drafter(
         validate_model_code,
     )
 
-    validate_model_code(config)
+    validate_model_code(config, trust_remote_code=kwargs.get("trust_remote_code"))
     validate_local_model_file(path)
     peeked = _normalized_drafter_model_type(config)
     install_served_architecture_bindings(peeked)
@@ -3753,3 +3753,40 @@ def test_runtime_binds_vendored_registry(monkeypatch, tmp_path):
             block_size=8,
         )
     assert calls == ["vendored"]
+
+
+@pytest.mark.parametrize(
+    "environment,requested,allowed",
+    [(None, True, True), ("1", False, False), ("0", True, False)],
+)
+def test_drafter_explicit_consent_precedence(
+    tmp_path, monkeypatch, environment, requested, allowed
+):
+    import mlx_vlm.utils
+
+    from rapid_mlx.models.mlx_vlm_vendored.speculative.drafters import load_drafter
+
+    if environment is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", environment)
+    (tmp_path / "config.json").write_text(
+        '{"model_type":"custom_draft","model_file":"custom.py"}'
+    )
+    (tmp_path / "custom.py").write_text("# reviewed custom drafter")
+    monkeypatch.setattr(mlx_vlm.utils, "get_model_path", lambda name: tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        mlx_vlm.utils,
+        "load_model",
+        lambda path, **kwargs: calls.append((path, kwargs)) or "model",
+    )
+    if allowed:
+        assert load_drafter(
+            str(tmp_path), kind="dflash", trust_remote_code=requested
+        ) == ("model", "dflash")
+        assert calls == [(tmp_path, {"trust_remote_code": requested})]
+    else:
+        with pytest.raises(ValueError, match="executable Python"):
+            load_drafter(str(tmp_path), kind="dflash", trust_remote_code=requested)
+        assert not calls
