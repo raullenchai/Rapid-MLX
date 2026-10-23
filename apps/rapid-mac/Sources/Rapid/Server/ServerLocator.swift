@@ -1,57 +1,12 @@
 import Foundation
 
-/// Locates the `rapid-mlx` CLI binary that this desktop release owns.
-///
-/// v0.8.10 cutover: the Phase 1 legacy escape hatch (PATH / brew /
-/// pipx / uv) was removed. The slim-bootstrapper DMG (v0.8.9 ε.2) is
-/// the canonical install path; every supported install writes the
-/// sidecar to ``~/Library/Application Support/Rapid/runtime-override/``
-/// via ``BootstrapCoordinator``, or ships it inside the bundle for
-/// rare full-bundle builds. A pre-existing user-installed
-/// ``rapid-mlx`` on ``PATH`` is intentionally NOT picked up — the
-/// desktop and CLI versions would drift silently and "Rapid · up to
-/// date" would lie about whichever copy actually answered the spawn.
-/// Power users running a dev checkout of rapid-mlx set ``RAPID_BIN``
-/// to point at it explicitly; that's still honoured.
-///
-/// Threat model: `find()` trusts on-disk content. A malicious app with
-/// user-level write access can plant a binary at
-/// `~/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx`
-/// and Rapid will execute it on next launch. Mach-O signature
-/// verification at the in-app updater install step is a follow-up
-/// (same surface ``BootstrapCoordinator`` accepts today).
-///
-/// Priority chain (high → low):
-///
-/// 1. **`RAPID_BIN`** — test / dev override env var. Highest priority so
-///    integration tests can swap in a fake CLI without touching disk
-///    and dev-checkout power users can point at their local build.
-/// 2. **managed sidecars, newest version wins** — compares the
-///    runtime-override and bundled `VERSION` files whenever both binaries
-///    exist. A stale or unversioned runtime override cannot shadow a newer,
-///    versioned sidecar shipped by an app update. The runtime override still
-///    wins when it is the same version or newer, and remains the only managed
-///    candidate for slim DMGs whose bundled slot is empty.
-///
-///    **runtime-override** — `~/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx`
-///    written by ``BootstrapCoordinator`` on first launch of the slim
-///    bootstrapper DMG, or by the in-app updater when it pulls a
-///    newer sidecar from `latest.json`. The `rapid-mlx/` wrapper
-///    directory mirrors the top-level entry of the sidecar tarball
-///    (``scripts/build-sidecar-tarball.sh`` arcname ``rapid-mlx/...``)
-///    AND the bundled layout below — both slots reach the binary via
-///    the same final ``rapid-mlx/bin/rapid-mlx`` suffix, so adding a
-///    fourth lookup slot in the future stays symmetric. Survives
-///    desktop upgrades because it lives outside `Contents/`.
-///    **bundled** — `Contents/Resources/rapid-mlx/bin/rapid-mlx`
-///    shipped inside a full-bundle DMG (today the slim DMG ships
-///    empty here and relies entirely on the bootstrapper to
-///    populate the runtime-override slot).
-///
-/// Return value: ``nil`` when none of the three slots resolves —
-/// callers are expected to surface the missing-install UX (re-run
-/// the bootstrapper) rather than silently fall back to a sibling
-/// install of a different version.
+/// Resolves the engine shipped inside the current desktop app.
+/// `RAPID_BIN` remains an explicit developer/test override. Legacy writable
+/// runtime-override installations are never discovered automatically: their
+/// VERSION files do not authenticate the launcher or its Python imports.
+/// Current releases ship the engine inside the signed app's resource seal.
+/// A missing bundle requires reinstalling the full desktop app, or setting
+/// RAPID_BIN explicitly for a developer build.
 enum ServerLocator {
     struct Resolution: Equatable, Sendable {
         let binary: URL
@@ -60,7 +15,7 @@ enum ServerLocator {
     }
 
     /// Resolve the executable together with the provenance decided by the
-    /// same priority/version comparison. Callers that surface diagnostics
+    /// same resolution decision. Callers that surface diagnostics
     /// must use this instead of trying to reconstruct a winning slot from a
     /// symlink-resolved path (#1712).
     static func locate() -> Resolution? {
@@ -91,19 +46,22 @@ enum ServerLocator {
     static func find(
         environment: [String: String],
         bundleResourceURL: URL?,
-        applicationSupportURL: URL?
+        applicationSupportURL: URL?,
+        authenticateBundle: (URL) -> Bool = DesktopRuntimeTrust.authenticate
     ) -> URL? {
         locate(
             environment: environment,
             bundleResourceURL: bundleResourceURL,
-            applicationSupportURL: applicationSupportURL
+            applicationSupportURL: applicationSupportURL,
+            authenticateBundle: authenticateBundle
         )?.binary
     }
 
     static func locate(
         environment: [String: String],
         bundleResourceURL: URL?,
-        applicationSupportURL: URL?
+        applicationSupportURL: URL?,
+        authenticateBundle: (URL) -> Bool = DesktopRuntimeTrust.authenticate
     ) -> Resolution? {
         // 1. ``RAPID_BIN`` — test/dev override. TestDriver chat smoke
         // uses this to swap in ``scripts/fake-rapid-mlx.sh`` so the
@@ -119,97 +77,19 @@ enum ServerLocator {
             )
         }
 
-        // Managed sidecars. Resolve both executable slots before choosing:
-        // when both exist, VERSION decides which release the desktop owns.
-        // This prevents an override left by an older app from shadowing the
-        // newer engine that arrived inside a desktop update (#1503).
-        //
-        // 2a. runtime-override — written by ``BootstrapCoordinator``
-        // on first launch of the slim DMG, or by the in-app updater
-        // when it pulls a newer rapid-mlx than the bundled one. The
-        // ``rapid-mlx/`` wrapper directory matches the top-level entry
-        // of the sidecar tarball (preserved through extract + publish)
-        // and is symmetric with the bundled slot below — both end in
-        // ``rapid-mlx/bin/rapid-mlx``. P0 fix for #430: the path was
-        // previously ``runtime-override/bin/rapid-mlx`` (missing the
-        // wrapper), so every fresh slim-DMG install completed the
-        // bootstrap but immediately landed on the missing-overlay
-        // dialog with no recovery. Latent since PR #36 — only
-        // exposed v0.8.12 when slim DMG first went live on
-        // ``latest.json``; v0.8.10/v0.8.11 silently fell back to the
-        // canonical full DMG which hit the bundled slot instead.
-        let runtimeOverride = applicationSupportURL?
-            .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
-        let resolvedRuntimeOverride = runtimeOverride.flatMap {
-            executableURL(path: $0.path, allowRelative: false)
-        }
-
-        // 2b. bundled — shipped inside the DMG at
-        // ``Contents/Resources/rapid-mlx/bin/rapid-mlx``. The slim
-        // bootstrapper DMG (v0.8.9 ε.2) ships this slot EMPTY and
-        // relies on slot 2 (populated by ``BootstrapCoordinator`` on
-        // first launch) to satisfy the lookup. Full-bundle DMGs
-        // (developer builds, future ad-hoc artefacts) keep this slot
-        // populated as a zero-network fallback. RAPID_BIN remains an
-        // unconditional explicit choice; app-managed overrides are compared
-        // with this slot so an old bootstrap artifact cannot pin the desktop
-        // to an older engine forever.
-        let bundled = bundleResourceURL?
-            .appendingPathComponent("rapid-mlx/bin/rapid-mlx")
-        let resolvedBundled = bundled.flatMap {
-            executableURL(path: $0.path, allowRelative: false)
-        }
-
-        // There is intentionally no PATH / Homebrew / pipx / uv fallback:
-        // if both managed slots miss, callers re-run the supported bootstrap.
-        // Read metadata from the managed slots rather than the resolved
-        // executable targets. This also preserves the correct VERSION when a
-        // launcher is a symlink into a checkout.
-        let runtimeVersion = runtimeOverride.flatMap { sidecarVersion(forBinary: $0) }
-        let bundledVersion = bundled.flatMap { sidecarVersion(forBinary: $0) }
-
-        switch (resolvedRuntimeOverride, resolvedBundled) {
-        case let (runtime?, resolvedBundle?):
-            if shouldPreferBundled(
-                runtimeOverrideVersion: runtimeVersion,
-                bundledVersion: bundledVersion
-            ) {
-                return Resolution(binary: resolvedBundle, source: .bundled, version: bundledVersion)
-            }
-            return Resolution(binary: runtime, source: .runtimeOverride, version: runtimeVersion)
-        case let (runtime?, nil):
-            // Slim DMG: bootstrap owns the only populated sidecar slot.
-            return Resolution(
-                binary: runtime,
-                source: .runtimeOverride,
-                version: runtimeVersion
-            )
-        case let (nil, bundled?):
-            return Resolution(
-                binary: bundled,
-                source: .bundled,
-                version: bundledVersion
-            )
-        case (nil, nil):
+        // Only the bundled engine is app-managed. A writable VERSION file
+        // must never allow a legacy runtime-override to replace this payload.
+        guard let bundled = bundleResourceURL?
+            .appendingPathComponent("rapid-mlx/bin/rapid-mlx"),
+              let resolved = executableURL(path: bundled.path, allowRelative: false),
+              authenticateBundle(bundled) else {
             return nil
         }
-    }
-
-    /// Decide between two executable, app-managed sidecars.
-    ///
-    /// A valid bundled version is the trust anchor because it shipped with the
-    /// app. A runtime override may shadow it only when its own VERSION parses
-    /// and is equal or newer. If the bundle has no valid VERSION we preserve
-    /// the historical override-first behaviour: developer/ad-hoc bundles may
-    /// omit version metadata, and an unverifiable bundle must not displace a
-    /// working bootstrap install.
-    static func shouldPreferBundled(
-        runtimeOverrideVersion: String?,
-        bundledVersion: String?
-    ) -> Bool {
-        guard let bundled = parsedVersion(bundledVersion) else { return false }
-        guard let runtime = parsedVersion(runtimeOverrideVersion) else { return true }
-        return compareVersion(runtime, bundled) == .orderedAscending
+        return Resolution(
+            binary: resolved,
+            source: .bundled,
+            version: sidecarVersion(forBinary: bundled)
+        )
     }
 
     /// Read `<sidecar-root>/VERSION` for a `.../bin/rapid-mlx` candidate.
@@ -226,61 +106,6 @@ enum ServerLocator {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private struct ParsedVersion {
-        let parts: [Int]
-        let rc: Int?
-    }
-
-    /// Strict dotted-numeric/RC parser matching the sidecar build gate.
-    private static func parsedVersion(_ raw: String?) -> ParsedVersion? {
-        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty else { return nil }
-        if value.hasPrefix("v") || value.hasPrefix("V") {
-            value.removeFirst()
-        }
-        var rc: Int?
-        if let range = value.range(of: "-rc", options: .backwards) {
-            let suffix = value[range.upperBound...]
-            guard !suffix.isEmpty,
-                  suffix.allSatisfy({ $0 >= "0" && $0 <= "9" }),
-                  let parsedRC = Int(suffix), parsedRC >= 1 else { return nil }
-            rc = parsedRC
-            value = String(value[..<range.lowerBound])
-        }
-        let fields = value.split(separator: ".", omittingEmptySubsequences: false)
-        guard fields.count >= 2 else { return nil }
-        var parts: [Int] = []
-        parts.reserveCapacity(fields.count)
-        for field in fields {
-            guard !field.isEmpty,
-                  field.allSatisfy({ $0 >= "0" && $0 <= "9" }),
-                  let part = Int(field) else { return nil }
-            parts.append(part)
-        }
-        return ParsedVersion(parts: parts, rc: rc)
-    }
-
-    private static func compareVersion(
-        _ lhs: ParsedVersion, _ rhs: ParsedVersion
-    ) -> ComparisonResult {
-        let width = max(lhs.parts.count, rhs.parts.count)
-        for index in 0..<width {
-            let left = index < lhs.parts.count ? lhs.parts[index] : 0
-            let right = index < rhs.parts.count ? rhs.parts[index] : 0
-            if left < right { return .orderedAscending }
-            if left > right { return .orderedDescending }
-        }
-        switch (lhs.rc, rhs.rc) {
-        case (nil, nil): return .orderedSame
-        case (nil, _): return .orderedDescending
-        case (_, nil): return .orderedAscending
-        case let (left?, right?):
-            if left < right { return .orderedAscending }
-            if left > right { return .orderedDescending }
-        }
-        return .orderedSame
-    }
-
     private static func executableURL(path: String, allowRelative: Bool) -> URL? {
         guard let normalized = normalizedPath(path, allowRelative: allowRelative) else {
             return nil
@@ -295,18 +120,9 @@ enum ServerLocator {
         return URL(fileURLWithPath: normalized).resolvingSymlinksInPath()
     }
 
-    /// Reports which slot in the priority chain a resolved binary came
-    /// from. Used by the About panel to show "Bundled (0.7.3)" vs
-    /// "App-managed override" vs "RAPID_BIN override" so the user can
-    /// tell which CLI is actually running.
-    ///
-    /// v0.8.10 cutover: ``find()`` no longer walks PATH or scavenges
-    /// brew / pipx / uv installs, so those slots were removed here too.
-    /// Every path ``find()`` yields matches one of the three live slots
-    /// (``RAPID_BIN`` — even when it points at a symlinked brew / pipx
-    /// binary — resolves to ``.rapidBin``). ``.unknown`` survives only as
-    /// the terminal fallback for a directly-classified path that matches
-    /// none of them (a diagnostic / test input, never a real install).
+    /// Origin labels for current resolutions and legacy diagnostic paths.
+    /// `locate()` only returns rapidBin or bundled; runtimeOverride remains
+    /// available to classify historical paths supplied to diagnostics.
     enum ResolvedSource: String, Equatable, Sendable {
         case rapidBin
         case runtimeOverride
@@ -325,13 +141,8 @@ enum ServerLocator {
         }
     }
 
-    /// Classifies a resolved binary path by which slot it matched. Pure
-    /// function — no FS reads.
-    ///
-    /// Only the three live slots (``RAPID_BIN`` → runtime-override →
-    /// bundled) are matched; a path that resolves to none of them is
-    /// reported as ``.unknown`` (see the ``ResolvedSource`` note on the
-    /// v0.8.10 PATH / brew / pipx / uv removal).
+    /// Classifies a supplied path for diagnostics, including legacy paths.
+    /// This does not authorize execution; use locate() to choose an engine.
     static func classify(
         resolved: URL,
         environment: [String: String],

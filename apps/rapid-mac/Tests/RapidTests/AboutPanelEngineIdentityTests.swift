@@ -5,7 +5,7 @@ import Testing
 
 @Suite("About panel engine identity — #1712")
 struct AboutPanelEngineIdentityTests {
-    @Test("A winning runtime override is visible with its own version and path")
+    @Test("An ignored runtime override cannot mislabel the bundled engine")
     func runtimeOverrideIdentity() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -13,15 +13,16 @@ struct AboutPanelEngineIdentityTests {
         let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
         let identity = AboutPanel.engineIdentity(resolution: resolution)
 
-        #expect(identity?.source == .runtimeOverride)
-        #expect(identity?.version == "99.0.0")
-        #expect(identity?.summary == "Engine 99.0.0 · App-managed override")
-        #expect(identity?.isOverride == true)
-        #expect(identity?.path == fixture.runtimeBinary.path)
+        #expect(identity?.source == .bundled)
+        #expect(identity?.version == "0.12.7")
+        #expect(identity?.summary == "Engine 0.12.7 · Bundled with app")
+        #expect(identity?.isOverride == false)
+        #expect(identity?.path == fixture.bundledBinary.path)
     }
 
     @Test("A bundled engine is labelled without an override warning")
@@ -32,7 +33,8 @@ struct AboutPanelEngineIdentityTests {
         let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
         let identity = AboutPanel.engineIdentity(resolution: resolution)
 
@@ -42,7 +44,7 @@ struct AboutPanelEngineIdentityTests {
         #expect(identity?.isOverride == false)
     }
 
-    @Test("A symlinked override keeps the managed slot's identity and version")
+    @Test("A symlinked runtime override is ignored")
     func symlinkedRuntimeIdentity() throws {
         let fixture = try Fixture(symlinkRuntime: true)
         defer { fixture.remove() }
@@ -50,13 +52,14 @@ struct AboutPanelEngineIdentityTests {
         let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
         let identity = AboutPanel.engineIdentity(resolution: resolution)
-        let resolved = fixture.runtimeBinary.resolvingSymlinksInPath()
+        let resolved = fixture.bundledBinary.resolvingSymlinksInPath()
 
-        #expect(identity?.source == .runtimeOverride)
-        #expect(identity?.version == "99.0.0")
+        #expect(identity?.source == .bundled)
+        #expect(identity?.version == "0.12.7")
         #expect(identity?.path == resolved.path)
     }
 
@@ -65,7 +68,7 @@ struct AboutPanelEngineIdentityTests {
         #expect(AboutPanel.engineIdentity(resolution: nil) == nil)
     }
 
-    @Test("Shared symlink targets preserve the slot that won version selection")
+    @Test("Shared symlink targets retain bundled slot metadata")
     func sharedManagedTarget() throws {
         let fixture = try Fixture(sharedManagedTarget: true)
         defer { fixture.remove() }
@@ -73,14 +76,15 @@ struct AboutPanelEngineIdentityTests {
         let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
         let identity = AboutPanel.engineIdentity(resolution: resolution)
 
-        #expect(identity?.source == .runtimeOverride)
-        #expect(identity?.version == "99.0.0")
-        #expect(identity?.summary == "Engine 99.0.0 · App-managed override")
-        #expect(identity?.isOverride == true)
+        #expect(identity?.source == .bundled)
+        #expect(identity?.version == "0.12.7")
+        #expect(identity?.summary == "Engine 0.12.7 · Bundled with app")
+        #expect(identity?.isOverride == false)
     }
 }
 

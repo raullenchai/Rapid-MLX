@@ -258,40 +258,31 @@ its own log files. A malicious build of `rapid-mlx` could:
 1. **`RAPID_BIN`** environment variable — explicit dev/test override;
    when present in the app's launch environment it wins
    unconditionally, so power users can point the app at a checkout.
-2. **Managed sidecars — newest version wins.** The two app-managed
-   slots are compared by their `VERSION` files when both exist:
-   * **Runtime-override** —
-     `~/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx`,
-     the canonical install path: the slim-DMG bootstrapper and the
-     sidecar updater publish the engine here atomically.
-   * **Bundled sidecar** —
-     `Rapid-MLX Desktop.app/Contents/Resources/rapid-mlx/bin/rapid-mlx`,
-     shipped inside the notarised app bundle on full-bundle builds.
+2. **Bundled sidecar** —
+   `Rapid-MLX Desktop.app/Contents/Resources/rapid-mlx/bin/rapid-mlx`,
+   shipped inside the signed, notarised app. Current release artifacts include
+   this engine. Missing bundled engines require reinstalling the full app.
 
-   The runtime override wins when it is the same version or newer; a
-   stale or unversioned runtime override cannot shadow a newer,
-   versioned sidecar shipped by an app update.
+Legacy `~/Library/Application Support/Rapid/runtime-override/` engines are
+ignored, even if their writable `VERSION` claims a newer version. Older slim
+installations must upgrade to the current full desktop app. Developer builds
+without a bundled engine must explicitly configure `RAPID_BIN`.
 
 **A `rapid-mlx` on your `$PATH` (Homebrew, pipx, uv, anything else) is
 intentionally never consulted.** The PATH fallback was removed in the
 v0.8.10 cutover: the desktop and CLI versions would drift silently, and
 the app's "up to date" claim would lie about whichever copy actually
 answered. A hostile shim on `$PATH` therefore never serves your prompts.
-The honest residual risk is the runtime-override slot itself. It is an
-**executable-code trust boundary**, not ordinary app data: it lives in
-your user-writable Application Support directory, and whatever binary
-sits there is what the app launches and hands every prompt to. Malware
-that already has user-level write access could plant a binary there
-and gain code execution with your privileges the next time the app
-starts — reading every prompt and response, your files, and anything
-else your account can reach.
+Desktop verifies the bundle's outer code-signature resource seal, including
+the shipped Python payload, against the pinned release signing identity. This is not a promise of isolation from malware already running as
+your user: such a process may modify your launch environment or other writable
+files. `RAPID_BIN` deliberately remains an explicit code-execution override.
 
 ### Verifying what's actually running
 
-* The only mutable **app-managed** slot is
-  `~/Library/Application Support/Rapid/runtime-override/` — inspect it
-  (or delete it; the app re-provisions from the official channel).
-* **`RAPID_BIN` outranks both managed slots**, so also confirm it is
+* The app uses its bundled engine. Legacy `runtime-override` content is not
+  executed automatically and need not be deleted during an upgrade.
+* **`RAPID_BIN` outranks the bundle**, so confirm it is
   not set in the environment the app launches from. Anything already
   running as your user — you, a shell profile, a launch agent, or
   user-level malware via `launchctl setenv` — can set it, so treat an

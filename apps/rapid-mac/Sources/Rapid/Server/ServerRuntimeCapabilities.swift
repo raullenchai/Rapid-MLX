@@ -3,8 +3,8 @@ import Foundation
 
 /// Feature switches supported by the selected `rapid-mlx serve` binary.
 ///
-/// The desktop can run against a managed runtime override that survives app
-/// source updates. Probe the actual CLI before spawn so a stale runtime does
+/// The desktop can run against an explicit RAPID_BIN developer override.
+/// Probe the actual CLI before spawn so a stale runtime does
 /// not reject newer desktop-only flags during argument parsing.
 struct ServerRuntimeCapabilities: Equatable, Sendable {
     var supportsLocalSearch: Bool = false

@@ -1321,6 +1321,7 @@ final class ServerManager {
     internal init(
         testingState: ServerState,
         binaryPath: URL? = nil,
+        binarySource: ServerLocator.ResolvedSource = .unknown,
         residency: ModelResidencySnapshot = .empty,
         activePort: Int = PortSweep.defaultPort,
         activeBearer: String? = nil,
@@ -1343,7 +1344,7 @@ final class ServerManager {
             from: sessionDefaults ?? UserDefaults()
         )
         self.binaryResolution = binaryPath.map {
-            ServerLocator.Resolution(binary: $0, source: .unknown, version: nil)
+            ServerLocator.Resolution(binary: $0, source: binarySource, version: nil)
         }
     }
 
@@ -2649,6 +2650,15 @@ final class ServerManager {
         // even when no child exists yet, so a start suspended in any probe
         // cannot resume on the far side of application shutdown.
         guard !didSignalShutdown else { return }
+        // Resolution may predate an app update or an on-disk change. Check
+        // the seal again before any capability probe or engine execution.
+        if binaryResolution?.source == .bundled,
+           let binary = binaryPath,
+           !DesktopRuntimeTrust.authenticate(binary) {
+            binaryPath = nil
+            binaryResolution = nil
+            appendLogLines(["The bundled engine could not be verified. Reinstall the full desktop app."])
+        }
         guard let binary = binaryPath else {
             state = .missing
             DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(

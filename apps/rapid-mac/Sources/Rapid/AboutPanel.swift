@@ -130,8 +130,8 @@ enum AboutPanel {
     }
 
     /// Describe the binary the server will actually spawn, rather than the
-    /// sidecar merely shipped inside this app bundle. A runtime override can
-    /// legitimately win version selection; surfacing that fact prevents a
+    /// sidecar merely shipped inside this app bundle. An explicit RAPID_BIN
+    /// can select a different engine; surfacing that fact prevents a
     /// dogfood session from silently attributing its behaviour to the wrong
     /// engine (#1712).
     static func engineIdentity(

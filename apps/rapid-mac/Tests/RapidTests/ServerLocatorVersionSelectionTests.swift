@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-@Suite("ServerLocator managed-sidecar version selection — #1503")
+@Suite("ServerLocator bundled engine trust boundary")
 struct ServerLocatorVersionSelectionTests {
     @Test("A stale runtime override cannot shadow a newer bundled sidecar")
     func staleRuntimeUsesBundle() throws {
@@ -12,38 +12,41 @@ struct ServerLocatorVersionSelectionTests {
         let resolved = ServerLocator.find(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
         #expect(resolved == fixture.bundledBinary.resolvingSymlinksInPath())
     }
 
-    @Test("A newer runtime override still wins after an in-app engine update")
-    func newerRuntimeWins() throws {
+    @Test("A newer writable VERSION cannot replace the bundle")
+    func newerRuntimeIgnored() throws {
         let fixture = try Fixture(runtimeVersion: "0.13.0", bundledVersion: "0.12.4")
         defer { fixture.remove() }
 
         let resolved = ServerLocator.find(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
-        #expect(resolved == fixture.runtimeBinary.resolvingSymlinksInPath())
+        #expect(resolved == fixture.bundledBinary.resolvingSymlinksInPath())
     }
 
-    @Test("Equal managed versions preserve runtime-override priority")
-    func equalRuntimeWins() throws {
+    @Test("Equal managed versions cannot replace the bundle")
+    func equalRuntimeIgnored() throws {
         let fixture = try Fixture(runtimeVersion: "0.12.4", bundledVersion: "0.12.4")
         defer { fixture.remove() }
 
         let resolved = ServerLocator.find(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
-        #expect(resolved == fixture.runtimeBinary.resolvingSymlinksInPath())
+        #expect(resolved == fixture.bundledBinary.resolvingSymlinksInPath())
     }
 
     @Test("An unversioned runtime override cannot shadow a versioned bundle")
@@ -54,14 +57,15 @@ struct ServerLocatorVersionSelectionTests {
         let resolved = ServerLocator.find(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
         #expect(resolved == fixture.bundledBinary.resolvingSymlinksInPath())
     }
 
-    @Test("Slim DMG still uses runtime override when no bundled binary exists")
-    func slimDMGUsesRuntime() throws {
+    @Test("Missing bundle never falls back to writable runtime override")
+    func missingBundleFailsClosed() throws {
         let fixture = try Fixture(
             runtimeVersion: "0.12.4",
             bundledVersion: nil,
@@ -72,10 +76,11 @@ struct ServerLocatorVersionSelectionTests {
         let resolved = ServerLocator.find(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
-        #expect(resolved == fixture.runtimeBinary.resolvingSymlinksInPath())
+        #expect(resolved == nil)
     }
 
     @Test("Explicit RAPID_BIN remains higher priority than both managed slots")
@@ -88,47 +93,14 @@ struct ServerLocatorVersionSelectionTests {
         let resolved = ServerLocator.find(
             environment: ["RAPID_BIN": explicit.path],
             bundleResourceURL: fixture.bundleResources,
-            applicationSupportURL: fixture.applicationSupport
+            applicationSupportURL: fixture.applicationSupport,
+            authenticateBundle: { _ in true } // Selection only; real signatures covered by DesktopRuntimeTrustTests.
         )
 
         #expect(resolved == explicit.resolvingSymlinksInPath())
     }
 
-    @Test("Managed comparison rejects malformed versions and accepts v-prefix")
-    func comparisonGrammar() {
-        #expect(ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "not-a-version",
-            bundledVersion: "0.12.4"
-        ))
-        #expect(!ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "v0.12.5",
-            bundledVersion: "0.12.4"
-        ))
-        #expect(!ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.10.8",
-            bundledVersion: "development"
-        ))
-        #expect(!ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.12.4.0",
-            bundledVersion: "0.12.4"
-        ))
-        #expect(ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.12.18",
-            bundledVersion: "0.13.0-rc1"
-        ))
-        #expect(ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.13.0-rc1",
-            bundledVersion: "0.13.0-rc2"
-        ))
-        #expect(!ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.13.0",
-            bundledVersion: "0.13.0-rc2"
-        ))
-        #expect(ServerLocator.shouldPreferBundled(
-            runtimeOverrideVersion: "0.13.0-rc0",
-            bundledVersion: "0.13.0-rc1"
-        ))
-    }
+
 }
 
 private struct Fixture {

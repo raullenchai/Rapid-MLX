@@ -1752,9 +1752,9 @@ struct ContentView: View {
                 glyph: "exclamationmark.octagon",
                 tone: .error,
                 kicker: "SETUP COULDN'T RUN",
-                title: "Setup didn't finish",
-                message: "Rapid-MLX isn't fully set up yet. "
-                    + "Reopen Rapid-MLX to run the one-time setup again."
+                title: "The engine is unavailable",
+                message: "The bundled engine is missing or could not be verified. "
+                    + "Install the full Rapid-MLX Desktop app, then reopen it."
             ) {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
                     // Same two branches, same actions, same ordering as
@@ -1780,6 +1780,9 @@ struct ContentView: View {
                         }
                     } else {
                         OnboardingActionLane {
+                            Link("Download full app", destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/releases/latest")!)
+                                .buttonStyle(.onboardingPrimary)
+                                .accessibilityIdentifier("MissingRuntime.DownloadFullApp")
                             Button("Recheck") { recheckEngine() }
                                 .buttonStyle(.onboardingPrimary)
                                 .accessibilityIdentifier("MissingRuntime.Recheck")

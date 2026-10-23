@@ -52,10 +52,8 @@ enum AutoStartPreference {
 ///    sidecar can serve; we never auto-start something we can't
 ///    confirm.
 /// 2. **Binary reachable** — ``ServerLocator.find() != nil``. Covers
-///    the bundled-sidecar path (since v0.6.6 the .app ships
-///    ``Contents/Resources/rapid-mlx/bin/rapid-mlx``), the PATH/brew
-///    install, the runtime-override slot, and the ``RAPID_BIN`` test
-///    override.
+///    the bundled sidecar or an explicit ``RAPID_BIN`` developer/test override.
+///    PATH installs and legacy runtime-override directories are ignored.
 /// 3. **Model cached** — the alias from gate 1 has a snapshot
 ///    directory under the user's HF cache. Without this gate a "Start"
 ///    decision would silently kick off a multi-GB download with no
