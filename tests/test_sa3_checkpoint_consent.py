@@ -71,3 +71,15 @@ def test_numeric_conversion_preserves_weights(tmp_path, monkeypatch):
         1.0,
         1.0,
     ]
+
+
+def test_reviewed_legacy_object_loads_from_approved_copy(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch", minversion="2.10.0")
+    path = tmp_path / "reviewed.ckpt"
+    torch.save({"metadata": SimpleNamespace(label="legacy")}, path)
+    monkeypatch.setenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", "1")
+    monkeypatch.setenv(
+        "RAPID_MLX_SA3_TRUSTED_SHA256", hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+    monkeypatch.delenv("TORCH_FORCE_WEIGHTS_ONLY_LOAD", raising=False)
+    assert load_torch_checkpoint(path)["metadata"].label == "legacy"
