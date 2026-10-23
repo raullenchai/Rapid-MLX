@@ -237,9 +237,11 @@ def _checkpoint_headroom() -> int:
     import psutil
     from tensorfold.server.memory_budget import PROCESS_BYTES, memory_limit_bytes
 
-    return min(
-        psutil.virtual_memory().available,
-        memory_limit_bytes(mx) - PROCESS_BYTES - mx.get_active_memory(),
+    return int(
+        min(
+            psutil.virtual_memory().available,
+            memory_limit_bytes(mx) - PROCESS_BYTES - mx.get_active_memory(),
+        )
     )
 
 
