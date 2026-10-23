@@ -2441,9 +2441,9 @@ def apply_chat_template(
     # Match the exact upstream template, not the model/path name: local
     # copies work and custom or future templates keep their own semantics.
     if enable_thinking is False and add_generation_prompt and isinstance(prompt, str):
-        template = (chat_template_kwargs or {}).get(
-            "chat_template", getattr(template_applicator, "chat_template", None)
-        )
+        template = (chat_template_kwargs or {}).get("chat_template")
+        if template is None:
+            template = getattr(template_applicator, "chat_template", None)
         sources = _chat_template_strings(template, tools=tools)
         if (
             len(sources) == 1

@@ -157,3 +157,13 @@ def test_client_tokenize_override_cannot_bypass_thinking_off(tokenizer):
     )
     assert isinstance(rendered, str)
     assert rendered.endswith("<|assistant|>" + EMPTY_THINK)
+
+
+def test_null_template_override_uses_configured_flint_template(tokenizer):
+    rendered = apply_chat_template(
+        tokenizer,
+        MESSAGES,
+        enable_thinking=False,
+        chat_template_kwargs={"chat_template": None},
+    )
+    assert rendered.endswith("<|assistant|>" + EMPTY_THINK)
