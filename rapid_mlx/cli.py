@@ -720,9 +720,12 @@ def _run_uvicorn(
     if on_server_accepting is None:
         from rapid_mlx.server import print_ready_banner
 
-        on_server_accepting = functools.partial(
-            print_ready_banner, update_notice_shown=update_notice_shown
-        )
+        if update_notice_shown:
+            on_server_accepting = functools.partial(
+                print_ready_banner, update_notice_shown=True
+            )
+        else:
+            on_server_accepting = print_ready_banner
 
     listen_fd = getattr(args, "listen_fd", None)
     try:

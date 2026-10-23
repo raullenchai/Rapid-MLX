@@ -22,8 +22,10 @@ The pointer is deliberately conservative:
 
 from __future__ import annotations
 
+import fcntl
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 NEWSLETTER_URL = "https://rapidmlx.com/newsletter"
@@ -106,7 +108,8 @@ def _marker_exists() -> bool:
     try:
         return marker_path().exists()
     except Exception:
-        return False
+        # Fail closed: if the marker cannot be read, do not risk nagging.
+        return True
 
 
 def _color_enabled() -> bool:
@@ -122,6 +125,28 @@ def _claim_marker() -> None:
     marker.parent.mkdir(parents=True, exist_ok=True)
     with open(marker, "x"):
         pass
+
+
+@contextmanager
+def _hint_lock():
+    """Serialize check → print → marker across processes.
+
+    ``flock`` releases itself when the process dies, so a crash cannot leave
+    a permanent lock. Contention or any lock failure yields ``False``: the
+    hint stays silent rather than risking a second print.
+    """
+    path = marker_path().with_name(_MARKER_NAME + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
 
 
 def maybe_print_newsletter_hint(*, update_notice_shown: bool = False) -> bool:
@@ -140,12 +165,18 @@ def maybe_print_newsletter_hint(*, update_notice_shown: bool = False) -> bool:
             marker_exists=_marker_exists(),
         ):
             return False
-        print(newsletter_line(color=_color_enabled()), flush=True)
+        with _hint_lock() as locked:
+            if not locked:
+                return False
+            # Re-check under the lock: a concurrent first run may have
+            # printed and claimed between the gate above and the lock.
+            if _marker_exists():
+                return False
+            print(newsletter_line(color=_color_enabled()), flush=True)
+            try:
+                _claim_marker()
+            except Exception:
+                pass
     except Exception:
         return False
-
-    try:
-        _claim_marker()
-    except Exception:
-        pass
     return True
