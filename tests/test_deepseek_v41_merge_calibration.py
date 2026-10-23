@@ -411,3 +411,21 @@ def test_score_writer_rejects_overflow_across_slices(tmp_path):
     with pytest.raises(ValueError, match="aggregate scores are not finite"):
         write_pass(tmp_path / "overflow.npz", (reap, counts, counts, counts))
     assert not (tmp_path / "overflow.npz").exists()
+
+
+@pytest.mark.parametrize("kind", ["float", "negative", "unsigned", "sum"])
+def test_score_writer_rejects_unsafe_count_evidence(tmp_path, kind):
+    counts = np.zeros((3, 2, 2, 4), np.int64)
+    if kind == "float":
+        counts = counts.astype(float)
+    elif kind == "negative":
+        counts[0, 0, 0, 0] = -1
+    elif kind == "unsigned":
+        counts = counts.astype(np.uint64)
+        counts[0, 0, 0, 0] = np.uint64(2**63)
+    else:
+        counts[0, :, 0, 0] = 2**62
+    values = np.zeros(counts.shape)
+    with pytest.raises(ValueError, match="int64-safe total"):
+        write_pass(tmp_path / "invalid.npz", (values, values, values, counts))
+    assert not (tmp_path / "invalid.npz").exists()

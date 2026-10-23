@@ -76,6 +76,16 @@ def fsync_directory(path):
 def save_scores(path, reap, norms, squared, counts, metadata, keep, tokens):
     from scripts.calibrate_deepseek_v41_reap import _overlap
 
+    counts = np.asarray(counts)
+    if (
+        counts.dtype.kind not in "iu"
+        or np.any(counts < 0)
+        or counts.sum(dtype=object) > np.iinfo(np.int64).max
+    ):
+        raise ValueError(
+            "routing counts must be nonnegative integers with an int64-safe total"
+        )
+    counts = counts.astype(np.int64)
     with np.errstate(over="ignore", invalid="ignore"):
         scores = aggregate_scores(reap, norms, squared, counts)
         saliency = reap.sum((0, 1))
