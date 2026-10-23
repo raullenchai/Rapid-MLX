@@ -134,7 +134,7 @@ def test_attend_matches_float64_oracle_at_least_as_well_as_graph(b, start, n_com
         s,
         inverse=True,
     )
-    fused = decode_attention.attend(
+    fused = decode_attention._attend(
         q0, ring, start, comp if k else None, cidx, offset, sink, c, s, DIM**-0.5, RD
     )
     assert fused.shape == (b, 1, HEADS, DIM) and fused.dtype == mx.float32
@@ -175,10 +175,10 @@ def test_attend_reads_the_ring_in_chronological_order():
     q0, ring, comp, sink, offset, cidx, keys, idxs = _case(5, b, start, 0, 0)
     cos, sin = _rope_table()
     c, s = cos[start : start + 1], sin[start : start + 1]
-    base = decode_attention.attend(
+    base = decode_attention._attend(
         q0, ring, start, None, None, offset, sink, c, s, 0.1, RD
     )
-    shifted = decode_attention.attend(
+    shifted = decode_attention._attend(
         q0, mx.roll(ring, 1, axis=1), start + 1, None, None, offset, sink, c, s, 0.1, RD
     )
     assert np.array_equal(np.array(base), np.array(shifted))
@@ -198,7 +198,7 @@ def test_attend_masks_compressed_indices_outside_the_rows():
 
     def run(ix):
         return np.array(
-            decode_attention.attend(
+            decode_attention._attend(
                 q0, ring, start, comp, mx.array(ix), offset, sink, c, s, 0.1, RD
             )
         )
@@ -285,10 +285,10 @@ def test_model_decode_with_fused_attention_tracks_graph(
         return [np.array(o.astype(mx.float32)) for o in out]
 
     used = []
-    attend = decode_attention.attend
+    attend = decode_attention._attend
     monkeypatch.setattr(
         decode_attention,
-        "attend",
+        "_attend",
         lambda *a, **kw: used.append(a[3] is not None) or attend(*a, **kw),
     )
     fused = run(True)
@@ -377,13 +377,13 @@ def test_fused_decode_requires_lossless_q_kv_and_ring_dtypes(
     prompt = mx.random.randint(0, 64, (1, 9))
     step = mx.random.randint(0, 64, (1, 1))
     launches = []
-    attend = decode_attention.attend
+    attend = decode_attention._attend
 
     def spy(*a, **kw):
         launches.append(1)
         return attend(*a, **kw)
 
-    monkeypatch.setattr(decode_attention, "attend", spy)
+    monkeypatch.setattr(decode_attention, "_attend", spy)
 
     def run(enabled):
         monkeypatch.setattr(decode_attention, "ENABLED", enabled)
@@ -408,7 +408,7 @@ def test_negative_control_hook_still_takes_the_graph_path(monkeypatch):
     for layer in model.layers:
         layer.attn._break_rope_inverse = True
     monkeypatch.setattr(
-        decode_attention, "attend", lambda *a, **kw: pytest.fail("fused path used")
+        decode_attention, "_attend", lambda *a, **kw: pytest.fail("fused path used")
     )
     cache = model.make_cache(max_seq_len=32)
     model(mx.array([[1, 2, 3]]), cache)
@@ -467,7 +467,7 @@ def test_attend_rejects_unsupported_query_rows_before_metal(n, window, monkeypat
     sink = np.empty((8,), dtype=np.float32)
     cos = sin = np.empty((n, 32), dtype=np.float32)
     with pytest.raises(ValueError, match="query rows must be between 1 and min"):
-        decode_attention.attend(
+        decode_attention._attend(
             q, ring, 16, None, None, window + n, sink, cos, sin, 0.5, 64, old
         )
 
@@ -496,7 +496,7 @@ def test_kernel_dispatch_geometry(monkeypatch):
         q = mx.zeros((2, 1, 16, 256), dtype=mx.bfloat16)
         ring = mx.zeros((2, 8, 256))
         cos = sin = mx.zeros((1, 32))
-        out = decode_attention.attend(
+        out = decode_attention._attend(
             q, ring, 3, None, None, 4, mx.zeros((16,)), cos, sin, 0.5, 64
         )
         assert out.shape == (2, 1, 16, 256)
@@ -512,7 +512,7 @@ def test_kernel_dispatch_geometry(monkeypatch):
         launches.clear()
         comp = mx.zeros((2, 40, 256))
         cidx = mx.full((2, 1, 35), 5, dtype=mx.int32)
-        decode_attention.attend(
+        decode_attention._attend(
             q, ring, 200, comp, cidx, 9, mx.zeros((16,)), cos, sin, 0.5, 64
         )
         (attend,) = launches
@@ -523,7 +523,7 @@ def test_kernel_dispatch_geometry(monkeypatch):
         launches.clear()
         q5 = mx.zeros((2, 5, 16, 256), dtype=mx.bfloat16)
         old = mx.ones((2, 5, 256))
-        out = decode_attention.attend(
+        out = decode_attention._attend(
             q5,
             ring,
             200,
@@ -544,13 +544,13 @@ def test_kernel_dispatch_geometry(monkeypatch):
         assert attend["inputs"][4].shape == (10, 35)
         assert attend["inputs"][3] is old
         with pytest.raises(ValueError, match="overwrites"):
-            decode_attention.attend(
+            decode_attention._attend(
                 q5, ring, 200, None, None, 13, mx.zeros((16,)), cos, sin, 0.5, 64
             )
 
         launches.clear()
         q128 = mx.zeros((1, 1, 8, 128), dtype=mx.bfloat16)
-        decode_attention.attend(
+        decode_attention._attend(
             q128,
             mx.zeros((1, 8, 128)),
             3,
@@ -623,7 +623,7 @@ def test_verify_rows_equal_one_row_calls_at_their_positions(n, start, k):
         return ring
 
     old = decode_attention.overwritten_rows(ring0, start, n)
-    multi = decode_attention.attend(
+    multi = decode_attention._attend(
         q0,
         written(n),
         start,
@@ -639,7 +639,7 @@ def test_verify_rows_equal_one_row_calls_at_their_positions(n, start, k):
     )
     assert multi.shape == (b, n, HEADS, DIM)
     for i in range(n):
-        single = decode_attention.attend(
+        single = decode_attention._attend(
             q0[:, i : i + 1],
             written(i + 1),
             start + i,
@@ -666,10 +666,10 @@ def test_model_verify_chunk_with_fused_attention_tracks_graph(dtype, monkeypatch
     prompt = mx.random.randint(0, 64, (1, 21))
     chunk = mx.random.randint(0, 64, (1, 5))
     rows = []
-    attend = decode_attention.attend
+    attend = decode_attention._attend
     monkeypatch.setattr(
         decode_attention,
-        "attend",
+        "_attend",
         lambda *a, **kw: rows.append(a[0].shape[1]) or attend(*a, **kw),
     )
 

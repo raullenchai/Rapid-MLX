@@ -423,8 +423,10 @@ def _fused(
     return out.reshape(bsz, n, heads, dim)
 
 
-# Public entry point; qualification calls the raw kernel without request hooks.
-attend = _fused
+# Private primitive for the qualified branch in Attention.__call__. That
+# branch calls supports() before any request cache write and takes the stock
+# graph on a failed verdict. Probes use _fused directly, without request hooks.
+_attend = _fused
 
 
 def _probe(dtype, cache_dtype, heads, dim, rd, window):
@@ -436,6 +438,8 @@ def _probe(dtype, cache_dtype, heads, dim, rd, window):
     from .layers import rope_tail
     from .sparse_attention import sparse_attn
 
+    # One batch of the configured sliding window (normally 128), not the
+    # request context length. Keeping W exact exercises ring wrap/old-row reads.
     n = min(MAX_QUERY_ROWS, window)
     q = (
         (mx.sin(mx.arange(n * heads * dim, dtype=mx.float32)) * 0.5)

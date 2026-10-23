@@ -185,6 +185,7 @@ class Attention(nn.Module):
             not self._break_rope_inverse
             and q.dtype == kv.dtype
             and lc.win_kv.dtype in (kv.dtype, mx.float32)
+            # Qualify before any cache write: failure takes the stock graph.
             and decode_attention.supports(x, lc.win_kv, self.n_heads, self.head_dim, rd)
         )
         old_kv = None
@@ -262,7 +263,7 @@ class Attention(nn.Module):
             selected = (None, None, 0)
             if self.ratio and compress_len:
                 selected = (src.comp_kv, cidx, offset)
-            o = decode_attention.attend(
+            o = decode_attention._attend(
                 q,
                 lc.win_kv,
                 start_pos,
