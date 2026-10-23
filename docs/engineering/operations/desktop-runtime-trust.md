@@ -49,3 +49,12 @@ override. Its migration case starts with an existing slim-install directory,
 adds the full signed app payload, resolves and executes the new engine, and
 checks that the old managed engine remains unchanged. Release assembly refusal
 is exercised as a subprocess. No model or GPU is required.
+
+## Verification boundary
+
+This is static authentication of the complete installed application before
+selection and server startup. It does not provide filesystem isolation from
+other processes already running as the same user. Checking the identity of a
+running shell or Python interpreter alone would not authenticate its imported
+Python resources, so it cannot replace the resource-seal check. A separately
+isolated runtime/helper protocol is outside this change's scope.
