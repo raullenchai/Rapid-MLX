@@ -2398,3 +2398,51 @@ def test_setup_owned_receipt_and_removal_use_symlink_target(
     assert not link.with_name(link.name + ".rapid-mlx-owned.json").exists()
     assert adapter.remove_config()
     assert link.is_symlink()
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("spelling", ["list", "--list"])
+def test_launch_list_alias_is_read_only(
+    fake_home, monkeypatch, capsys, spelling, as_json
+):
+    parser = argparse.ArgumentParser()
+    launch_cli.register(parser.add_subparsers(dest="command"))
+    argv = ["launch", spelling] + (["--json"] if as_json else [])
+    monkeypatch.setenv("HOME", str(fake_home))
+    before = sorted(fake_home.rglob("*"))
+    with patch.object(launch_cli, "_start_server_background") as start:
+        with pytest.raises(SystemExit) as exc:
+            launch_cli.launch_command(parser.parse_args(argv))
+        assert exc.value.code == 0
+        start.assert_not_called()
+    assert sorted(fake_home.rglob("*")) == before
+    output = capsys.readouterr().out
+    if as_json:
+        assert len(json.loads(output)) == 13
+    else:
+        assert "Supported clients" in output
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+@pytest.mark.parametrize("port", [None, 18491])
+@pytest.mark.parametrize("explicit_url", [None, "http://127.0.0.1:18492"])
+def test_config_endpoint_uses_effective_port(
+    fake_home, capsys, client, port, explicit_url
+):
+    expected = explicit_url or f"http://127.0.0.1:{port or 8000}"
+    with patch.object(launch_cli, "_start_server_background") as start:
+        launch_cli.launch_command(
+            _make_args(
+                client=client,
+                port=port,
+                server_url=explicit_url,
+                model="local-model",
+                start_server=True,
+                dry_run=True,
+            )
+        )
+        start.assert_not_called()
+    output = capsys.readouterr().out
+    field = "baseUrl" if client == "cline" else "apiBase"
+    assert f"{field}: {expected}/v1" in output.replace('"', "")
+    assert f"--port {port or 8000}" in output

@@ -219,7 +219,7 @@ def launch_command(args: argparse.Namespace) -> None:
     # any registry lookup — see CLIENT_ALIASES and issue #2082.
     args.client = canonical_client(args.client)
 
-    if args.client == "list":
+    if args.client == "list" or getattr(args, "list", False):
         sys.exit(_print_list(as_json=args.json))
 
     if args.client == "claude-desktop":
@@ -569,7 +569,7 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    server_url = args.server_url or "http://127.0.0.1:8000"
+    server_url = args.server_url or f"http://127.0.0.1:{args.port}"
     api_key = os.environ.get("RAPID_MLX_API_KEY")
     cursor_server_url: str | None = None
     cursor_reason: str | None = None
@@ -767,6 +767,11 @@ def register(subparsers) -> None:
         ),
     )
     p.add_argument(
+        "--list",
+        action="store_true",
+        help="List supported clients (alias for launch list); accepts --json.",
+    )
+    p.add_argument(
         "--all",
         action="store_true",
         help="Patch every detected client. Mutually exclusive with a client name.",
@@ -812,7 +817,7 @@ def register(subparsers) -> None:
         "--server-url",
         type=str,
         default=None,
-        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:<port>, port 8000)",
     )
     p.add_argument(
         "--port",
