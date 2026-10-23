@@ -101,6 +101,12 @@ def _vendored_tree(
         (directory / "core.py").write_text(f"VALUE = {package!r}\n")
         if package == "ltx_pipelines_mlx" and with_cli:
             (directory / "cli.py").write_text("def main():\n    return 0\n")
+        # Byte-code caches are not part of the audited tree; writing them here
+        # proves the digest ignores both ``__pycache__`` and loose ``.pyc``
+        # files exactly as the vendoring script does.
+        (directory / "__pycache__").mkdir(exist_ok=True)
+        (directory / "__pycache__" / "stale.pyc").write_bytes(b"\0")
+        (directory / "stray.pyc").write_bytes(b"\0")
         if package not in omit_provenance:
             overrides = dict((provenance or {}).get(package, {}))
             tree_sha256 = overrides.pop("TREE_SHA256", vendor.tree_digest(directory))
