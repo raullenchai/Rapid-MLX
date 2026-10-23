@@ -31,6 +31,7 @@ def terminal(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         newsletter_hint, "detect_role", lambda: ProcessRole.INTERACTIVE_CLI
     )
+    monkeypatch.setattr(newsletter_hint, "_running_in_desktop_sidecar", lambda: False)
     return tmp_path / "state" / "newsletter_hint_shown"
 
 
@@ -110,6 +111,13 @@ def test_managed_spawn_uses_existing_role_detector(terminal, monkeypatch, env, v
     assert detect_role() is ProcessRole.SIDECAR
     monkeypatch.setattr(newsletter_hint, "detect_role", detect_role)
     maybe_print_newsletter_hint()
+    assert not terminal.exists()
+
+
+def test_desktop_app_path_is_managed(terminal, monkeypatch, capsys):
+    monkeypatch.setattr(newsletter_hint, "_running_in_desktop_sidecar", lambda: True)
+    maybe_print_newsletter_hint()
+    assert capsys.readouterr().out == ""
     assert not terminal.exists()
 
 

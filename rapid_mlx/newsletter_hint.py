@@ -6,6 +6,7 @@ import os
 import sys
 
 from rapid_mlx.first_run import _state_dir
+from rapid_mlx.runtime.optional_runtime import _running_in_desktop_sidecar
 from rapid_mlx.telemetry.consent_decision import ProcessRole
 from rapid_mlx.telemetry.consent_runtime import detect_role
 
@@ -27,6 +28,7 @@ def maybe_print_newsletter_hint(*, update_notice_shown: bool = False) -> None:
             or "CI" in os.environ
             or not _interactive_stdout()
             or detect_role() is ProcessRole.SIDECAR
+            or _running_in_desktop_sidecar()
         ):
             return
 
