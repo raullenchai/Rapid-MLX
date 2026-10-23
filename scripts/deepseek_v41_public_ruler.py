@@ -302,10 +302,12 @@ def build(a):
         save("long17k", f"long17k_{lang}", ids[:17000], len(sources) - 1, 0)
     cal_windows = set()
     cal_files = {}
-    for name, paths in read_slices(a.calibration, []).items():
+    calibration_manifest_hash = file_hash(a.calibration)
+    calibration_slices = read_slices(a.calibration, [])
+    for name, paths in calibration_slices.items():
+        cal_files[name] = [file_hash(p) for p in paths]
         ids = slice_tokens(paths, tok, 40960)
         cal_windows.update(windows(ids))
-        cal_files[name] = [file_hash(p) for p in paths]
     overlaps = {}
     for manifest in manifests.values():
         for name, paths in manifest["slices"].items():
@@ -314,7 +316,7 @@ def build(a):
         window_tokens=64,
         stride=1,
         token_hash="SHA256(little-endian uint32 IDs)",
-        calibration_manifest_sha256=file_hash(a.calibration),
+        calibration_manifest_sha256=calibration_manifest_hash,
         calibration_files=cal_files,
         calibration_unique_windows=len(cal_windows),
         shared_windows_by_slice=overlaps,
@@ -338,6 +340,11 @@ def build(a):
     (root / "overlap.json").write_text(json.dumps(audit, indent=2) + "\n")
     if audit["shared_windows_total"]:
         raise ValueError("calibration overlap; audit saved, rulers NOT qualified")
+    if file_hash(a.calibration) != calibration_manifest_hash or any(
+        [file_hash(p) for p in paths] != cal_files[name]
+        for name, paths in calibration_slices.items()
+    ):
+        raise ValueError("calibration inputs changed during overlap audit")
     for ruler, manifest in manifests.items():
         manifest["provenance_sha256"] = file_hash(root / "provenance.json")
         (root / f"{ruler}.json").write_text(json.dumps(manifest, indent=2) + "\n")

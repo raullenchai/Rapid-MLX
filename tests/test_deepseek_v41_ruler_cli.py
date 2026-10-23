@@ -272,3 +272,27 @@ def test_verify_absolute_errors_do_not_cancel(tmp_path, monkeypatch):
     trial = json.loads(output.read_text())["trials"][0]
     assert trial["mean_absolute_error"] == pytest.approx(0.1)
     assert trial["max_position_error"] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("manifest", [False, True])
+def test_build_rechecks_calibration_inputs_before_qualification(
+    tmp_path, monkeypatch, manifest
+):
+    a = build_inputs(tmp_path, monkeypatch)
+    original = ruler.slice_tokens
+
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if manifest:
+            a.calibration.write_bytes(a.calibration.read_bytes() + b" ")
+        else:
+            path = tmp_path / "cal.npy"
+            values = np.load(path)
+            np.save(path, values + 1)
+        return result
+
+    monkeypatch.setattr(ruler, "slice_tokens", mutate)
+    with pytest.raises(ValueError, match="calibration inputs changed"):
+        ruler.build(a)
+    assert not (a.output / "wiki1100.json").exists()
+    assert not (a.output / "long17k.json").exists()

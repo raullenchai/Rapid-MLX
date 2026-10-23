@@ -258,3 +258,41 @@ def test_teacher_rechecks_source_before_publication(tmp_path, monkeypatch, mode)
         teacher.main()
     assert not (output / "metadata.json").exists()
     assert not output.with_suffix(".npz").exists()
+
+
+def test_teacher_hashes_source_before_initialization(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    fixtures.write_source(source)
+    manifest = tmp_path / "slices.json"
+    manifest.write_text(json.dumps({"slices": {"a": ["unused.txt"]}}))
+    output = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "teacher",
+            "reference",
+            "--source",
+            str(source),
+            "--slices",
+            str(manifest),
+            "--output",
+            str(output),
+            "--tokens",
+            "8",
+            "--keep-experts",
+            "3",
+        ],
+    )
+    original = teacher.SourceWeights
+
+    def replace_source(*args, **kwargs):
+        weights = original(*args, **kwargs)
+        config = source / "config.json"
+        config.write_bytes(config.read_bytes() + b" ")
+        return weights
+
+    monkeypatch.setattr(teacher, "SourceWeights", replace_source)
+    with pytest.raises(ValueError, match="changed during initialization"):
+        teacher.main()
+    assert not output.exists()

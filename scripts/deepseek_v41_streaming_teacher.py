@@ -427,7 +427,10 @@ def main():
 
     if a.cpu:
         mx.set_default_device(mx.cpu)
+    source_identity = None if a.estimate_only else checkpoint_hashes(a.source)
     weights = SourceWeights(a.source)
+    if source_identity is not None and checkpoint_hashes(a.source) != source_identity:
+        raise ValueError("checkpoint changed during initialization")
     args = weights.args
     slices = read_slices(a.slices, [])
     if (
@@ -491,7 +494,6 @@ def main():
         mx.eval(matrix)
         return lambda ids: matrix[ids]
 
-    source_identity = checkpoint_hashes(a.source)
     sequences = stream_forward(
         args,
         tokens,
