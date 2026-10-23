@@ -176,7 +176,7 @@ dependencies = [
     # runtime; moving it is a gated coherence event (#1248).
     "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",
-    "torch>=2.3.0",
+    "torch>=2.10.0",
     "torchvision>=0.18.0",
     "pillow>=10.0.0,<13",
     "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
@@ -207,7 +207,7 @@ vision = [
     # lane. Updating this exact pin is a gated coherence event (#1248).
     "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",
-    "torch>=2.3.0",
+    "torch>=2.10.0",
     "torchvision>=0.18.0",
     # rapid_mlx imports PIL directly on vision paths (mllm.py, benchmark.py
     # image mode); mlx-vlm requires it too — listed for explicitness.
@@ -285,7 +285,7 @@ all = [
     # vision
     "mlx-vlm==0.7.2",
     "opencv-python>=4.8.0",
-    "torch>=2.3.0",
+    "torch>=2.10.0",
     "torchvision>=0.18.0",
     "pillow>=10.0.0,<13",
     # chat
