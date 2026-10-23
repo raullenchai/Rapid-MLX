@@ -166,6 +166,8 @@ def merge_calibration(pass_files, output):
         for key in COMPATIBILITY_FIELDS:
             if current[key] != metadata[key]:
                 raise ValueError(f"{path}: metadata mismatch: {key}")
+        if current.get("checkpoint_sha256") != metadata.get("checkpoint_sha256"):
+            raise ValueError(f"{path}: metadata mismatch: checkpoint_sha256")
         if any(a.shape != b[:, 0].shape for a, b in zip(totals, pooled)):
             raise ValueError(f"{path}: score array shape mismatch")
         if file_hash(path) != digest:

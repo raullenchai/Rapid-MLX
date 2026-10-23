@@ -247,3 +247,23 @@ def test_layer_expert_shape_mismatch_rejected(tmp_path):
     pb = write_pass(tmp_path / "b.npz", tuple(a[:, :, :1] for a in raw(2)))
     with pytest.raises(ValueError, match="shape mismatch"):
         merge_calibration([pa, pb], tmp_path / "merged.npz")
+
+
+@pytest.mark.parametrize("second_hash", [None, "different", "same"])
+def test_merge_preserves_payload_identity(tmp_path, second_hash):
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    rewrite(a, meta_update={"checkpoint_sha256": "same"})
+    if second_hash is not None:
+        rewrite(b, meta_update={"checkpoint_sha256": second_hash})
+    output = tmp_path / "out.npz"
+    if second_hash != "same":
+        with pytest.raises(ValueError, match="checkpoint_sha256"):
+            merge_calibration([a, b], output)
+        with pytest.raises(ValueError, match="checkpoint_sha256"):
+            merge_calibration([b, a], output)
+        assert not output.exists()
+    else:
+        merge_calibration([a, b], output)
+        with np.load(output) as merged:
+            assert json.loads(str(merged["metadata"]))["checkpoint_sha256"] == "same"
