@@ -249,6 +249,7 @@ class TestVoiceDesignEngine:
         # against the static per-family classifier (the shared helper) rather
         # than trying to stat a non-existent local snapshot dir.
         monkeypatch.setattr(tts_mod, "_list_snapshot_voices", lambda _n: [])
+        monkeypatch.setattr(tts_mod, "_resolve_safe_tts_checkpoint", lambda name: name)
 
         cache = "/home/u/.cache/huggingface/hub/models--mlx-community--"
         snap = "/snapshots/0123456789abcdef0123456789abcdef01234567"
@@ -635,6 +636,7 @@ class TestVoiceDesignRoute:
         monkeypatch.setattr(probe_mod, "require_mlx_audio_tts", lambda: None)
         monkeypatch.setattr(probe_mod, "require_kokoro_runtime", lambda *a, **k: None)
         monkeypatch.setattr(tts_mod, "_list_snapshot_voices", lambda _n: [])
+        monkeypatch.setattr(tts_mod, "_resolve_safe_tts_checkpoint", lambda name: name)
         monkeypatch.setattr(audio_route, "_tts_engine", None)
 
         app = FastAPI()

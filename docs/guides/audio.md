@@ -398,6 +398,13 @@ stem removed. Add `--play` to audition the result without writing files.
 > `qwen3-tts` (named Chinese speakers) instead. English output works but is
 > best-effort; report upstream if synthesis fails.
 
+VoxCPM and VoxCPM2 checkpoints must be safetensors-only with their VAE
+weights included. Rapid-MLX rejects an `audiovae.pth` sidecar before loading,
+including when the file appears unused, because the upstream fallback can
+execute pickle code. This restriction also applies when the checkpoint has a
+custom alias. Migrate trusted legacy artifacts offline; the server does not
+unpickle or automatically convert them.
+
 ### Audio Processing Models
 
 #### SAM-Audio (Voice Separation)

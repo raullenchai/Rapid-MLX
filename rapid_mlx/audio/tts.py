@@ -569,6 +569,49 @@ def is_kokoro_family_model(model_name: str) -> bool:
     return detect_tts_family(model_name) == "kokoro"
 
 
+def _resolve_safe_tts_checkpoint(model_name: str) -> Path:
+    """Inspect the exact snapshot before mlx-audio can deserialize sidecars.
+
+    VoxCPM and VoxCPM2 can fall back to an implicit torch.load of audiovae.pth.
+    Refuse that file for every generic TTS checkpoint, independent of alias or
+    model_type routing. This boundary does not depend on torch's version or
+    process-wide weights_only environment switches.
+    """
+    from rapid_mlx.model_downloads import snapshot_download
+
+    model_path = Path(model_name).expanduser()
+    if not model_path.is_dir():
+        # Match the supported mlx-audio loader's asset selection. Resolve once
+        # and pass a Path below so it cannot re-resolve mutable Hub refs.
+        model_path = Path(
+            snapshot_download(
+                model_name,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "*.model",
+                    "*.tiktoken",
+                    "*.txt",
+                    "*.jinja",
+                    "*.jsonl",
+                    "*.yaml",
+                    "*.npz",
+                    "*.pth",
+                ],
+            )
+        )
+    legacy_vae = model_path / "audiovae.pth"
+    if legacy_vae.exists() or legacy_vae.is_symlink():
+        raise ValueError(
+            "Refusing legacy audiovae.pth: this TTS runtime can deserialize it "
+            "as executable pickle. Use a safetensors-only checkpoint with its "
+            "VAE weights included; migrate trusted legacy artifacts offline. "
+            "Rapid-MLX does not automatically unpickle or convert this file."
+        )
+    return model_path
+
+
 class TTSEngine:
     """
     Text-to-Speech engine supporting multiple model families.
@@ -650,7 +693,8 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
-            self.model = load_model(self.model_name)
+            model_path = _resolve_safe_tts_checkpoint(self.model_name)
+            self.model = load_model(model_path)
             self._loaded = True
             logger.info(
                 f"TTS model loaded: {self.model_name} (family: {self._model_family})"
