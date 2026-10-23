@@ -177,7 +177,9 @@ _OWNED_SETTINGS = tuple(
 
 
 def remove_config() -> bool:
-    path = current_config_path().resolve()
+    path = current_config_path()
+    assert path is not None
+    path = path.resolve()
     data = _common.load_json_lenient(path)
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")

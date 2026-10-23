@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from . import ADAPTERS, canonical_client, cursor
+from . import ADAPTERS, canonical_client, cline, continue_dev, cursor
 
 if TYPE_CHECKING:
     from rapid_mlx.agents.base import AgentProfile
@@ -303,7 +303,11 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"[dry-run] Would remove Rapid-owned {args.client} settings.")
             return
         try:
-            removed = ADAPTERS[args.client].remove_config()
+            removed = {
+                "cline": cline.remove_config,
+                "continue-dev": continue_dev.remove_config,
+                "cursor": cursor.remove_config,
+            }[args.client]()
         except (OSError, ValueError) as exc:
             print(f"launch: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc

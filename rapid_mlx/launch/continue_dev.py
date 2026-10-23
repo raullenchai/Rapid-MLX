@@ -442,7 +442,9 @@ def record_ownership(path: Path, data: dict[str, Any]) -> None:
 
 
 def remove_config() -> bool:
-    path = current_config_path().resolve()
+    path = current_config_path()
+    assert path is not None
+    path = path.resolve()
     data = load_yaml_config(path)
     models = data.get("models", [])
     if not isinstance(models, list):

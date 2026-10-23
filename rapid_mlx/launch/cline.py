@@ -317,7 +317,9 @@ def record_ownership(path: Path, data: dict[str, Any]) -> None:
 
 
 def remove_config() -> bool:
-    path = current_config_path().resolve()
+    path = current_config_path()
+    assert path is not None
+    path = path.resolve()
     data = load_providers(path)
     settings = data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
     if not _ownership.remove_fields(path, settings, _OWNED_SETTINGS):
