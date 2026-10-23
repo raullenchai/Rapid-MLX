@@ -34,7 +34,8 @@ def terminal(monkeypatch, tmp_path, capsys):
     return tmp_path / "state" / "newsletter_hint_shown"
 
 
-def test_prints_once_across_two_serves(terminal, monkeypatch, capsys):
+@pytest.mark.parametrize("generic_banner", [False, True])
+def test_prints_once_across_two_serves(terminal, monkeypatch, capsys, generic_banner):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     cfg = get_config()
     saved = (
@@ -46,7 +47,8 @@ def test_prints_once_across_two_serves(terminal, monkeypatch, capsys):
     )
     cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd = "localhost", 8766, None
     cfg.model_alias, cfg.api_key = "lfm2.5-1b-4bit", None
-    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: logging.INFO)
+    level = logging.WARNING if generic_banner else logging.INFO
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: level)
     monkeypatch.setattr(
         "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
     )

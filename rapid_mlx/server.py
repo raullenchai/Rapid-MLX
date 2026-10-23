@@ -1221,11 +1221,11 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
                 print(f"  Images: off. {note}")
             if claim_serve_next_tip():
                 print(next_step, end="", flush=True)
-            from rapid_mlx.newsletter_hint import maybe_print_newsletter_hint
-
-            maybe_print_newsletter_hint(update_notice_shown=update_notice_shown)
         else:
             print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
+        from rapid_mlx.newsletter_hint import maybe_print_newsletter_hint
+
+        maybe_print_newsletter_hint(update_notice_shown=update_notice_shown)
 
 
 def _text_lane_image_note(cfg) -> str | None:
