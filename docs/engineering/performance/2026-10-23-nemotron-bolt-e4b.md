@@ -35,28 +35,33 @@ Multimodal inputs and streaming are not qualified by this workload.
 
 ## Throughput and memory
 
-Batch one, no draft, no prefix reuse, default cache precision; 64 output tokens.
+Batch one, no draft, no prefix reuse, default cache precision; exactly 64 output
+tokens. EOS stopping is disabled only for this synthetic throughput workload.
 Prompts repeat/token-trim `The quick brown fox jumps over the lazy dog. ` to
-exactly 1,024 or 8,192 tokens. Two sequential measurements, no discarded warmup.
+exactly 1,024 or 8,192 tokens. Two sequential measurements, no discarded warmup. The first prefill includes
+lazy weight materialization; the second is warm.
 Peak is MLX allocator GB, not total process/system memory.
 
 | Artifact | Prompt | Prefill tok/s (runs 1 / 2) | Decode tok/s (runs 1 / 2) | Peak GB |
 | --- | ---: | ---: | ---: | ---: |
-| Local GPU 4-bit | 1,024 | 2745.02 / 2737.79 | 121.44 / 122.03 | 4.767 |
-| Pinned 4-bit | 1,024 | 2750.75 / 2765.47 | 122.76 / 123.64 | 4.763 |
-| Local GPU 4-bit | 8,192 | 2653.84 / 2718.03 | 100.03 / 99.22 | 4.938 |
-| Pinned 4-bit | 8,192 | 2666.53 / 2687.52 | 100.16 / 99.92 | 4.938 |
-| Local GPU 8-bit | 1,024 | 2666.44 / 2666.44 | 90.75 / 91.08 | 8.452 |
-| Pinned 8-bit | 1,024 | 2657.93 / 2661.03 | 91.15 / 91.04 | 8.452 |
-| Local GPU 8-bit | 8,192 | 2687.00 / 2638.93 | 81.33 / 81.26 | 8.613 |
-| Pinned 8-bit | 8,192 | 2606.76 / 2681.24 | 81.26 / 81.10 | 8.613 |
+| Local GPU 4-bit | 1,024 | 1079.64 / 2748.74 | 114.59 / 114.31 | 4.763 |
+| Pinned 4-bit | 1,024 | 1129.63 / 2752.79 | 115.52 / 115.33 | 4.763 |
+| Local GPU 4-bit | 8,192 | 2755.26 / 2752.17 | 99.47 / 101.00 | 4.938 |
+| Pinned 4-bit | 8,192 | 2759.43 / 2765.59 | 100.41 / 100.60 | 4.938 |
+| Local GPU 8-bit | 1,024 | 672.18 / 2708.25 | 85.23 / 85.28 | 8.452 |
+| Pinned 8-bit | 1,024 | 694.48 / 2681.72 | 84.62 / 84.57 | 8.452 |
+| Local GPU 8-bit | 8,192 | 2731.97 / 2725.11 | 76.44 / 74.90 | 8.612 |
+| Pinned 8-bit | 8,192 | 2732.75 / 2744.57 | 76.54 / 77.43 | 8.612 |
 
-Final local and pinned weights are tensor-identical; small timing differences
-remain normal shared-host variation. The initial CPU four-bit experiment ran
-122.58 / 122.78 tok/s at 1K and 125.07 / 125.21 at 8K, but produced different
-rounded weights and output trajectories. It is not the final artifact or an
-apples-to-apples throughput improvement. CPU eight-bit ran 91.47 / 91.42 at
-1K and 81.02 / 81.16 at 8K.
+Final local and pinned weights are tensor-identical; timing differences remain
+shared-host variation. All reported runs assert 64 emitted tokens. Earlier
+EOS-enabled measurements terminated after 5–64 tokens and are superseded by
+this fixed-length table; they must not be compared as 64-token runs.
+
+The CPU conversion experiments were also rerun for exactly 64 output tokens:
+
+- 4-bit: 1,024-token prompt, 115.45 / 114.57 decode tok/s; 8,192-token prompt, 99.84 / 100.75 decode tok/s.
+- 8-bit: 1,024-token prompt, 84.08 / 85.00 decode tok/s; 8,192-token prompt, 76.38 / 75.16 decode tok/s.
 
 DFlash has no measured speedup: its available formats fail the existing loader.
 
@@ -100,10 +105,13 @@ For benchmarks, set `MODEL` to an artifact directory and run:
 
 ```python
 import os
+import mlx.core as mx
 from mlx_lm import stream_generate
 from mlx_lm.sample_utils import make_sampler
 from rapid_mlx.utils.tokenizer import load_model_with_fallback
 model, tokenizer = load_model_with_fallback(os.environ["MODEL"])
+tokenizer.eos_token_ids = set()  # Throughput only; retain EOS for real chat.
+mx.reset_peak_memory()
 seed = tokenizer.encode("The quick brown fox jumps over the lazy dog. ")
 for count in (1024, 8192):
     prompt = (seed * (count // len(seed) + 1))[:count]
@@ -111,6 +119,7 @@ for count in (1024, 8192):
         for result in stream_generate(model, tokenizer, prompt, max_tokens=64,
                                       sampler=make_sampler(0), prefill_step_size=256):
             pass
+        assert result.generation_tokens == 64
         print(count, repeat, result.prompt_tps, result.generation_tps, result.peak_memory)
 ```
 
