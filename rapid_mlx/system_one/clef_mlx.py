@@ -412,11 +412,13 @@ def load_clef(path: str | Path) -> tuple[Any, Any]:
     ):
         raise ValueError("Clef head_config values must be positive integers")
 
-    import mlx_vlm
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
 
     sys.modules[f"mlx_vlm.models.{MODEL_TYPE}"] = sys.modules[__name__]
     install_auto_processor_patch(MODEL_TYPE, Qwen3VLProcessor)
-    model, processor = mlx_vlm.load(str(root))
+    # Registering our architecture does not disable upstream model_file imports:
+    # validate the actual checkpoint and pass explicit processor trust policy.
+    model, processor = load_vlm_with_policy(root)
     # Requests run on worker threads. A lazy array stays bound to the thread
     # that built it, so materialize every weight now.
     mx.eval(model.parameters())
