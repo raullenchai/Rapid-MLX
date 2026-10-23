@@ -20,7 +20,14 @@ Content identity does not prove publisher authenticity. Cache directories and
 receipts remain locally trusted; this is not protection against a local account
 that can rewrite both payloads and receipts.
 
-This preparatory module does not change download or startup callers. Integration
-must verify before recording a successful pull, preserve selected subfolders and
-variants, and leave ordinary local directories and offline cached startup working.
-Catalog migration and broader loader enforcement remain separate changes.
+Explicit `rapid-mlx pull` now verifies the primary snapshot and declared runtime
+assets on both Hub and mirror paths before publishing completion summaries or
+variant markers. Selected subfolders and explicit quantization variants use the
+same file filters for transfer and verification. A previously verified cached
+pull works offline; an older cached pull without a receipt needs one online
+verification before it can report verified completion offline.
+
+Ordinary local-directory loading, cached serving, MTP setup and automatic startup
+are unchanged. This is an explicit-pull boundary, not universal loader enforcement.
+Full catalog pin migration, implicit download wrappers and separately downloaded
+auxiliary files remain follow-up work.

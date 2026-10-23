@@ -11118,6 +11118,8 @@ def _pull_repository(
     from huggingface_hub.errors import HFValidationError
     from huggingface_hub.utils import RepositoryNotFoundError
 
+    from rapid_mlx.model_integrity import verify_snapshot
+
     repo_id = args.model  # already alias-resolved by main()
     emit_lifecycle_event = emit_lifecycle_event and bool(
         getattr(args, "_emit_pull_lifecycle_event", True)
@@ -11256,6 +11258,19 @@ def _pull_repository(
         except OSError:
             snapshot_dir = repo_root
             print(f"  Cached at: {repo_root}")
+        from rapid_mlx.model_aliases import resolve_subfolder
+
+        integrity_allow = variant_allow
+        if integrity_allow is None:
+            subfolder = resolve_subfolder(repo_id)
+            integrity_allow = [f"{subfolder}/*"] if subfolder else None
+        verify_snapshot(
+            repo_id,
+            snapshot_dir,
+            revision=revision_override,
+            allow_patterns=integrity_allow,
+            local_files_only=_offline_hub_mode_active(),
+        )
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
         _was_cached = not _mirror_out.get("network_fetch", True)
@@ -11362,6 +11377,13 @@ def _pull_repository(
             download_kwargs["allow_patterns"] = _allow
         path = _retry_hub_download(
             lambda: snapshot_download(repo_id, **download_kwargs), repo_id
+        )
+        verify_snapshot(
+            repo_id,
+            path,
+            revision=revision_override,
+            allow_patterns=_allow,
+            local_files_only=_offline_hub_mode_active(),
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched

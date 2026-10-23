@@ -35,6 +35,7 @@ from huggingface_hub import RepoFile, RepoFolder
 
 from rapid_mlx import _download_gate
 from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
 
 # A raw multi-variant repo id with NO catalog alias — ``resolve_subfolder``
 # and ``resolve_model`` both leave it untouched, so only the marker fallback
@@ -288,7 +289,7 @@ def test_serve_escapes_format_marker_glob_metacharacters(
     from rapid_mlx import cli
 
     variant = "quant[4]*?"
-    snapshot = tmp_path / "snap" / "def"
+    snapshot = tmp_path / "snapshots" / ("d" * 40)
     (snapshot / variant).mkdir(parents=True)
     (snapshot / variant / "config.json").write_text("{}")
     (snapshot / variant / "model.safetensors").write_bytes(b"\x00" * 16)
@@ -454,7 +455,7 @@ def test_persist_read_swallows_an_unreadable_marker(monkeypatch, marker_path):
         assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
-def test_pull_persist_failure_still_completes_the_pull(capsys):
+def test_pull_persist_failure_still_completes_the_pull(capsys, tmp_path):
     """The best-effort persist in ``pull_command`` must never fail the pull."""
     import argparse
 
@@ -468,7 +469,7 @@ def test_pull_persist_failure_still_completes_the_pull(capsys):
     )
 
     def fake_snapshot(*a, **kw):
-        return "/cache/snapshot"
+        return str(snapshot_tree(tmp_path, filename="4bit/model.safetensors"))
 
     def boom_persist(repo_id, variant):
         raise OSError("cannot write marker")
@@ -490,7 +491,7 @@ def test_pull_persist_failure_still_completes_the_pull(capsys):
     assert "may select an older or default checkpoint" in out
 
 
-def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path):
+def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path, tmp_path):
     """Switching back to an ordinary pull must not leave a stale selector."""
     import argparse
 
@@ -506,14 +507,17 @@ def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path):
 
     with (
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/snapshot"),
+        patch(
+            "huggingface_hub.snapshot_download",
+            return_value=str(snapshot_tree(tmp_path)),
+        ),
     ):
         cli.pull_command(args)
 
     assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
-def test_ordinary_hf_pull_survives_marker_clear_failure(capsys):
+def test_ordinary_hf_pull_survives_marker_clear_failure(capsys, tmp_path):
     """Cleanup metadata is best-effort after a valid HF pull completes."""
     import argparse
 
@@ -528,7 +532,10 @@ def test_ordinary_hf_pull_survives_marker_clear_failure(capsys):
 
     with (
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/snapshot"),
+        patch(
+            "huggingface_hub.snapshot_download",
+            return_value=str(snapshot_tree(tmp_path)),
+        ),
         patch(
             "rapid_mlx._download_gate.clear_pulled_variant",
             side_effect=OSError("read-only cache"),
@@ -536,10 +543,14 @@ def test_ordinary_hf_pull_survives_marker_clear_failure(capsys):
     ):
         cli.pull_command(args)  # must not raise after a successful download
 
-    assert "Cached at: /cache/snapshot" in capsys.readouterr().out
+    assert (
+        f"Cached at: {tmp_path / 'snapshots' / ('a' * 40)}" in capsys.readouterr().out
+    )
 
 
-def test_successful_ordinary_mirror_pull_clears_previous_variant(marker_path):
+def test_successful_ordinary_mirror_pull_clears_previous_variant(
+    marker_path, mirror_snapshot
+):
     """The mirror-success early return applies the same marker transition."""
     import argparse
 
@@ -564,7 +575,9 @@ def test_successful_ordinary_mirror_pull_clears_previous_variant(marker_path):
     assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
-def test_successful_variant_mirror_pull_persists_serving_choice(marker_path):
+def test_successful_variant_mirror_pull_persists_serving_choice(
+    marker_path, mirror_snapshot
+):
     """The default mirror path must retain the explicit variant for serve."""
     import argparse
 
@@ -595,7 +608,9 @@ def test_successful_variant_mirror_pull_persists_serving_choice(marker_path):
     assert _download_gate.pulled_variant(RAW_REPO) == "4bit"
 
 
-def test_runtime_asset_override_does_not_touch_model_variant(capsys, marker_path):
+def test_runtime_asset_override_does_not_touch_model_variant(
+    capsys, marker_path, mirror_snapshot
+):
     """Dependency file filters neither rewrite metadata nor emit a false warning."""
     import argparse
 
@@ -622,7 +637,7 @@ def test_runtime_asset_override_does_not_touch_model_variant(capsys, marker_path
     assert "could not record that serving choice" not in capsys.readouterr().out
 
 
-def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
+def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys, mirror_snapshot):
     """Cleanup metadata is best-effort on the mirror-success early return."""
     import argparse
 
@@ -650,3 +665,17 @@ def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
         cli.pull_command(args)  # must not raise after a successful download
 
     assert "Already cached" in capsys.readouterr().out
+
+
+@pytest.fixture
+def mirror_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "hub" / "models--acme--MultiVariant-MLX"
+    for name in (
+        "model.safetensors",
+        "4bit/model.safetensors",
+        "runtime/model.safetensors",
+    ):
+        snapshot_tree(root, "c" * 40, name)
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("c" * 40)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(root.parent))

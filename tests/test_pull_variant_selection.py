@@ -33,6 +33,7 @@ import pytest
 from huggingface_hub import RepoFile, RepoFolder
 
 from rapid_mlx import cli
+from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
 
 
 class _FakeResponse:
@@ -52,7 +53,7 @@ def _multi_variant_tree():
     ]
 
 
-def _pull_capturing(**flags):
+def _pull_capturing(variant_snapshot, **flags):
     """Drive ``pull_command`` with mocked listing+mirror, returning the
     ``allow_patterns`` passed to ``snapshot_download`` and the mirror call
     count via a mutable dict ``side``."""
@@ -61,7 +62,7 @@ def _pull_capturing(**flags):
 
     def fake_snapshot(*a, **kw):
         side["allow"] = kw.get("allow_patterns")
-        return "/cache/snapshot"
+        return str(variant_snapshot)
 
     with (
         patch(
@@ -75,15 +76,15 @@ def _pull_capturing(**flags):
     return side
 
 
-def test_bits_narrows_snapshot_and_uses_mirror(capsys):
-    side = _pull_capturing(bits="4", format=None)
+def test_bits_narrows_snapshot_and_uses_mirror(capsys, variant_snapshot):
+    side = _pull_capturing(variant_snapshot, bits="4", format=None)
     assert side["allow"] == ["4bit/*"]
     assert side["mirror_calls"] == 1
 
 
-def test_format_narrows_snapshot_by_folder_name():
+def test_format_narrows_snapshot_by_folder_name(variant_snapshot):
     # "8bit" is both a valid format-style folder key here.
-    side = _pull_capturing(bits=None, format="8bit")
+    side = _pull_capturing(variant_snapshot, bits=None, format="8bit")
     assert side["allow"] == ["8bit/*"]
 
 
@@ -98,7 +99,9 @@ def test_escape_glob_literal_metachars():
     assert cli._escape_glob_literal("a*b?") == "a[*]b[?]"
 
 
-def test_variant_with_glob_metachars_escaped_in_allow_patterns(capsys):
+def test_variant_with_glob_metachars_escaped_in_allow_patterns(
+    capsys, variant_snapshot
+):
     """--format on a folder named with glob metachars pins to that folder."""
     tricky_tree = [
         RepoFolder(path="[48]bit", oid="a"),
@@ -109,7 +112,9 @@ def test_variant_with_glob_metachars_escaped_in_allow_patterns(capsys):
     with (
         patch("huggingface_hub.HfApi.list_repo_tree", return_value=tricky_tree),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
     # The pattern must not glob-broaden: the literal folder with brackets.
@@ -166,7 +171,7 @@ def test_resolve_reraise_repo_not_found():
         cli._resolve_variant_allow_patterns("nope/nope", bits="4", fmt=None)
 
 
-def test_empty_selector_errors_cleanly(capsys):
+def test_empty_selector_errors_cleanly(capsys, variant_snapshot):
     """pull --format \"\" exits with a clear message, not an unrestricted pull."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="")
     with (
@@ -181,7 +186,7 @@ def test_empty_selector_errors_cleanly(capsys):
     assert "empty" in capsys.readouterr().out
 
 
-def test_missing_variant_shows_available_folders(capsys):
+def test_missing_variant_shows_available_folders(capsys, variant_snapshot):
     """--format awq when the repo has no awq/ fails loudly, listing folders."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="awq")
     with (
@@ -199,7 +204,7 @@ def test_missing_variant_shows_available_folders(capsys):
     assert "8bit" in out
 
 
-def test_missing_variant_uses_original_alias(capsys):
+def test_missing_variant_uses_original_alias(capsys, variant_snapshot):
     """Error message names the caller-supplied alias, not the resolved repo."""
     args = argparse.Namespace(
         model="LiquidAI/LFM2.5-2.6B-MLX",
@@ -221,7 +226,7 @@ def test_missing_variant_uses_original_alias(capsys):
     assert "has no 'awq' variant" in out
 
 
-def test_missing_variant_no_folders(capsys):
+def test_missing_variant_no_folders(capsys, variant_snapshot):
     """A single-variant repo (no folders) says so instead of listing folders."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="awq")
     flat = [RepoFile(path="model.safetensors", size=100, oid="a")]
@@ -236,7 +241,7 @@ def test_missing_variant_no_folders(capsys):
     assert "single-variant repo" in out
 
 
-def test_no_selector_still_consults_mirror():
+def test_no_selector_still_consults_mirror(variant_snapshot):
     """Without --bits/--format the mirror-first behavior is unchanged."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -248,7 +253,7 @@ def test_no_selector_still_consults_mirror():
 
 
 @pytest.mark.parametrize("bits,fmt", [("4", None), (None, "4bit")])
-def test_user_variant_consults_mirror_first(bits, fmt):
+def test_user_variant_consults_mirror_first(bits, fmt, variant_snapshot):
     """Explicit bits/format selection keeps the mirror-first path enabled."""
     requested = f"{bits}bit" if bits else fmt
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=bits, format=fmt)
@@ -267,7 +272,7 @@ def test_user_variant_consults_mirror_first(bits, fmt):
     snapshot.assert_not_called()
 
 
-def test_mirror_variant_miss_falls_back_with_same_pattern(capsys):
+def test_mirror_variant_miss_falls_back_with_same_pattern(capsys, variant_snapshot):
     """A mirror miss falls back upstream with the identical allow pattern."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="4", format=None)
     with (
@@ -276,7 +281,9 @@ def test_mirror_variant_miss_falls_back_with_same_pattern(capsys):
             return_value=_multi_variant_tree(),
         ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
 
@@ -309,7 +316,7 @@ def test_mirror_prefetch_keeps_catalog_subfolder_default():
     assert download.call_args.kwargs["allow_patterns"] == ["catalog/*"]
 
 
-def test_orphan_reap_announces_cleaned_files(capsys):
+def test_orphan_reap_announces_cleaned_files(capsys, variant_snapshot):
     """Pull announces when it reclaims abandoned download scratch files."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -322,14 +329,14 @@ def test_orphan_reap_announces_cleaned_files(capsys):
             "rapid_mlx._download_gate._format_size",
             return_value="512 B",
         ),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x"),
+        patch("huggingface_hub.snapshot_download", return_value=str(variant_snapshot)),
     ):
         cli.pull_command(args)
     out = capsys.readouterr().out
     assert "Cleaned up 2 abandoned download file(s)" in out
 
 
-def test_orphan_reap_failure_does_not_block_pull():
+def test_orphan_reap_failure_does_not_block_pull(variant_snapshot):
     """Best-effort orphan cleanup cannot prevent the requested download."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -338,20 +345,24 @@ def test_orphan_reap_failure_does_not_block_pull():
             "rapid_mlx._download_gate.reap_orphan_incomplete_blobs",
             side_effect=OSError("unreadable cache"),
         ),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
 
     snap.assert_called_once()
 
 
-def test_catalog_subfolder_narrowing_when_no_selector(capsys):
+def test_catalog_subfolder_narrowing_when_no_selector(capsys, variant_snapshot):
     """No selector + a catalog subfolder narrows to it (existing behavior)."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
     # snapshot_download called with allow_patterns=["4bit/*"].
@@ -359,7 +370,7 @@ def test_catalog_subfolder_narrowing_when_no_selector(capsys):
     assert "ships one checkpoint per quantization" in capsys.readouterr().out
 
 
-def test_user_flag_overrides_catalog_subfolder(capsys):
+def test_user_flag_overrides_catalog_subfolder(capsys, variant_snapshot):
     """--bits/--format wins over catalog resolve_subfolder narrowing (said so)."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="8", format=None)
     with (
@@ -368,7 +379,9 @@ def test_user_flag_overrides_catalog_subfolder(capsys):
         ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
     assert snap.call_args.kwargs["allow_patterns"] == ["8bit/*"]
@@ -378,7 +391,7 @@ def test_user_flag_overrides_catalog_subfolder(capsys):
     assert "4bit" in out
 
 
-def test_user_flag_equal_to_catalog_subfolder_no_override(capsys):
+def test_user_flag_equal_to_catalog_subfolder_no_override(capsys, variant_snapshot):
     """When the flag matches the catalog subfolder, no override line is shown."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="4", format=None)
     with (
@@ -387,8 +400,21 @@ def test_user_flag_equal_to_catalog_subfolder_no_override(capsys):
         ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
-        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+        patch(
+            "huggingface_hub.snapshot_download", return_value=str(variant_snapshot)
+        ) as snap,
     ):
         cli.pull_command(args)
     assert snap.call_args.kwargs["allow_patterns"] == ["4bit/*"]
     assert "overrides" not in capsys.readouterr().out
+
+
+@pytest.fixture
+def variant_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "hub" / "models--LiquidAI--LFM2.5-2.6B-MLX"
+    for folder in ("4bit", "8bit", "[48]bit"):
+        snapshot = snapshot_tree(root, filename=f"{folder}/model.safetensors")
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("a" * 40)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(root.parent))
+    return snapshot

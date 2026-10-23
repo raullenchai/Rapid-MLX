@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from rapid_mlx import cli
+from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
 
 
 def test_pull_disk_full_has_retry_command(monkeypatch, tmp_path, capsys):
@@ -135,16 +136,16 @@ def test_pull_retries_mocked_snapshot_and_keeps_revision(monkeypatch, tmp_path):
         calls.append((repo, kwargs.copy()))
         if len(calls) == 1:
             raise requests.ConnectionError("dropped")
-        return str(tmp_path)
+        return str(snapshot_tree(tmp_path))
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", download)
     cli._pull_repository(
         argparse.Namespace(model="owner/repo", bits=None, format=None),
-        revision_override="fixed-sha",
+        revision_override="a" * 40,
     )
     assert calls == [
-        ("owner/repo", {"revision": "fixed-sha"}),
-        ("owner/repo", {"revision": "fixed-sha"}),
+        ("owner/repo", {"revision": "a" * 40}),
+        ("owner/repo", {"revision": "a" * 40}),
     ]
 
 
@@ -239,7 +240,7 @@ def test_serve_prefetch_retries_snapshot_with_pinned_revision(monkeypatch):
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
         lambda _func, _timeout, *_args, **_kwargs: SimpleNamespace(
-            sha="fixed-sha", siblings=[]
+            sha="a" * 40, siblings=[]
         ),
     )
     monkeypatch.setattr("rapid_mlx._download_gate.pin_main_ref", lambda *_a: None)
@@ -254,8 +255,8 @@ def test_serve_prefetch_retries_snapshot_with_pinned_revision(monkeypatch):
     monkeypatch.setattr("huggingface_hub.snapshot_download", download)
     cli._ensure_model_downloaded(repo)
     assert calls == [
-        (repo, {"revision": "fixed-sha"}),
-        (repo, {"revision": "fixed-sha"}),
+        (repo, {"revision": "a" * 40}),
+        (repo, {"revision": "a" * 40}),
     ]
 
 
@@ -301,7 +302,7 @@ def test_pull_variant_metadata_retries_before_transfer(monkeypatch, tmp_path):
 
     def download(_repo, **kwargs):
         snapshot_calls.append(kwargs)
-        return str(tmp_path)
+        return str(snapshot_tree(tmp_path, filename="4bit/model.safetensors"))
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", download)
     cli._pull_repository(
@@ -321,7 +322,9 @@ def test_transient_mirror_failure_falls_back_to_hub(monkeypatch, tmp_path, capsy
     calls = []
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
-        lambda repo, **kwargs: calls.append((repo, kwargs)) or str(tmp_path),
+        lambda repo, **kwargs: (
+            calls.append((repo, kwargs)) or str(snapshot_tree(tmp_path))
+        ),
     )
     cli._pull_repository(
         argparse.Namespace(model="owner/repo", bits=None, format=None),
@@ -344,7 +347,7 @@ def test_serve_transient_mirror_failure_falls_back_to_hub(monkeypatch, capsys):
     monkeypatch.setattr(
         "rapid_mlx._download_gate.call_with_deadline",
         lambda _func, _timeout, *_args, **_kwargs: SimpleNamespace(
-            sha="fixed-sha", siblings=[]
+            sha="a" * 40, siblings=[]
         ),
     )
     monkeypatch.setattr("rapid_mlx._download_gate.pin_main_ref", lambda *_a: None)
@@ -354,7 +357,7 @@ def test_serve_transient_mirror_failure_falls_back_to_hub(monkeypatch, capsys):
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/tmp/fake-snapshot",
     )
     cli._ensure_model_downloaded("owner/repo")
-    assert calls == [("owner/repo", {"revision": "fixed-sha"})]
+    assert calls == [("owner/repo", {"revision": "a" * 40})]
     output = capsys.readouterr().out
     assert "trying Hugging Face" in output
     assert "secret URL" not in output
