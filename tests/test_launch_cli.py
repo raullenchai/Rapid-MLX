@@ -2026,3 +2026,25 @@ def test_remove_preserves_owned_model_with_yaml_customization(fake_home, extra):
     before = path.read_bytes()
     assert not continue_dev.remove_config()
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_receipt_retirement_failure_rolls_back_removal(fake_home, client):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    before = path.read_bytes()
+    ownership = receipt.read_bytes()
+    with (
+        patch(
+            "rapid_mlx.launch._ownership.forget",
+            side_effect=OSError("cannot retire receipt"),
+        ),
+        pytest.raises(SystemExit) as exc,
+    ):
+        launch_cli.launch_command(_make_args(client=client, remove=True))
+    assert exc.value.code == 1
+    assert path.read_bytes() == before
+    assert receipt.read_bytes() == ownership
+    assert adapter.remove_config()
+    assert not receipt.exists()

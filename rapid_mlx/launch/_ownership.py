@@ -30,19 +30,34 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def write(path: Path, fields: dict[str, Any], write_config: Callable[[], None]) -> None:
-    """Publish settings and their receipt, restoring settings if the receipt fails."""
-    fingerprints = {key: _fingerprint(value) for key, value in fields.items()}
+def _commit(
+    path: Path, write_config: Callable[[], None], finish_receipt: Callable[[], None]
+) -> None:
     previous = path.read_bytes() if path.exists() else None
     write_config()
     try:
-        _common.atomic_write_json(_receipt(path), fingerprints)
+        finish_receipt()
     except BaseException:
         if previous is None:
             path.unlink()
         else:
             _common.atomic_write_text(path, previous.decode("utf-8"))
         raise
+
+
+def write(path: Path, fields: dict[str, Any], write_config: Callable[[], None]) -> None:
+    """Publish settings and their receipt, restoring settings if the receipt fails."""
+    fingerprints = {key: _fingerprint(value) for key, value in fields.items()}
+    _commit(
+        path,
+        write_config,
+        lambda: _common.atomic_write_json(_receipt(path), fingerprints),
+    )
+
+
+def remove(path: Path, write_config: Callable[[], None]) -> None:
+    """Commit removal with receipt retirement, rolling back if retirement fails."""
+    _commit(path, write_config, lambda: forget(path))
 
 
 def remove_fields(path: Path, fields: dict[str, Any], keys: tuple[str, ...]) -> bool:

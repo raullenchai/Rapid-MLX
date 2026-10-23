@@ -458,8 +458,9 @@ def remove_config() -> bool:
             break
         data["models"] = models[:index] + models[index + 1 :]
         _common.backup_existing(path)
-        _common.atomic_write_text(path, dump_yaml(data))
-        _ownership.forget(path)
+        _ownership.remove(
+            path, lambda: _common.atomic_write_text(path, dump_yaml(data))
+        )
         return True
     _ownership.forget(path)
     return False

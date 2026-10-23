@@ -327,6 +327,5 @@ def remove_config() -> bool:
         _ownership.forget(path)
         return False
     _common.backup_existing(path)
-    _common.atomic_write_json(path, data)
-    _ownership.forget(path)
+    _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
     return True
