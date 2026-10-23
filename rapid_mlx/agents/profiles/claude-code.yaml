@@ -18,6 +18,9 @@ models:
     - "qwen3.6-35b-4bit"
     - "qwen3.5-9b-4bit"
     - "qwen3-coder-30b-4bit"
+    - "qwen3.5-4b-4bit"
+    # Low-memory fallback; limited capability for complex agent tasks.
+    - "lfm2.5-2.6b-4bit"
 
 streaming:
   extra_tool_tags: []

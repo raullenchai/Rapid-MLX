@@ -65,11 +65,11 @@ def _patch_select_resources(monkeypatch, cached=None, fit=True, ram=64.0):
     """Patch the symbols ``_select_model`` imports (freshly, at call time)."""
     monkeypatch.setattr(rec, "physical_ram_gb", lambda: ram)
     if fit is True:
-        monkeypatch.setattr(rec, "is_recommended_alias", lambda alias, r: True)
+        monkeypatch.setattr(run_cli, "_fits_host", lambda alias, r: True)
     elif fit is False:
-        monkeypatch.setattr(rec, "is_recommended_alias", lambda alias, r: False)
+        monkeypatch.setattr(run_cli, "_fits_host", lambda alias, r: False)
     else:
-        monkeypatch.setattr(rec, "is_recommended_alias", fit)
+        monkeypatch.setattr(run_cli, "_fits_host", fit)
     if cached is not None:
         monkeypatch.setattr(dg, "is_repo_cached", cached)
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: a)
@@ -124,8 +124,8 @@ def test_select_nothing_fits(monkeypatch, capsys):
     assert "fit" in capsys.readouterr().out
 
 
-def test_select_cached_agent_model_with_unknown_fit_is_not_rejected(monkeypatch):
-    """Agent-only recommendations outside the global tiers remain eligible."""
+def test_select_cached_agent_model_with_known_minimum_is_eligible(monkeypatch):
+    """Agent-only recommendations with a known memory floor remain eligible."""
     alias = "qwen3-coder-30b-4bit"
     profile = _FakeProfile(recommended_models=[alias])
     _patch_select_resources(monkeypatch, cached=lambda candidate: candidate == alias)
@@ -1435,7 +1435,7 @@ def test_print_unknown_agent(monkeypatch, capsys):
 
 def test_print_nothing_cached_fit_variants(monkeypatch, capsys):
     """_print_nothing_cached with & without a fitting candidate."""
-    monkeypatch.setattr(rec, "is_recommended_alias", lambda alias, ram: False)
+    monkeypatch.setattr(run_cli, "_fits_host", lambda alias, ram: False)
     run_cli._print_nothing_cached(["qwen3.5-9b-4bit"], 64.0)
     out = capsys.readouterr().out
     assert "✗" in out
@@ -1854,3 +1854,72 @@ def test_cached_context_window_rejects_invalid_candidates(monkeypatch):
         ),
     )
     assert run_cli._cached_context_window("m") is None
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude-code", "opencode"])
+@pytest.mark.parametrize("ram", [8, 16, 18, 24, 32, 48])
+@pytest.mark.parametrize("cached", [False, True])
+def test_agent_recommendations_require_memory_fit(monkeypatch, agent, ram, cached):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.model_aliases import resolve_profile
+
+    monkeypatch.setattr(rec, "physical_ram_gb", lambda: ram)
+    monkeypatch.setattr(dg, "is_repo_cached", lambda _: cached)
+    expected = {
+        8: "lfm2.5-2.6b-4bit",
+        16: "qwen3.5-4b-4bit",
+        18: "qwen3.5-9b-4bit",
+        24: "qwen3.5-9b-4bit",
+        32: "qwen3.5-9b-4bit",
+        48: "qwen3.6-35b-4bit",
+    }[ram]
+    if agent == "opencode" and ram >= 24:
+        expected = "qwen3-coder-30b-4bit"
+    profile = get_profile(agent)
+    assert profile is not None
+    assert (
+        run_cli._select_model(explicit=None, profile=profile, no_download=cached)
+        == expected
+    )
+    for alias in profile.recommended_models:
+        assert resolve_profile(alias).min_memory_gb is not None
+    assert resolve_profile(expected).min_memory_gb <= ram
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("known_alias", [False, True])
+def test_select_rejects_unknown_minimum(monkeypatch, cached, known_alias):
+    import rapid_mlx.model_aliases as aliases
+
+    monkeypatch.setattr(rec, "physical_ram_gb", lambda: 8)
+    monkeypatch.setattr(rec, "recommendation_footprint_gb", lambda _: None)
+    monkeypatch.setattr(
+        aliases,
+        "resolve_profile",
+        lambda _: types.SimpleNamespace(min_memory_gb=None) if known_alias else None,
+    )
+    monkeypatch.setattr(dg, "is_repo_cached", lambda _: cached)
+    profile = _FakeProfile(recommended_models=["unknown-model"])
+    assert (
+        run_cli._select_model(explicit=None, profile=profile, no_download=cached)
+        is None
+    )
+    assert (
+        run_cli._select_model(
+            explicit="unknown-model", profile=profile, no_download=cached
+        )
+        == "unknown-model"
+    )
+
+
+def test_select_failed_ram_probe_uses_conservative_tier(monkeypatch):
+    from rapid_mlx.agents import get_profile
+
+    monkeypatch.setattr(rec, "physical_ram_gb", lambda: 0)
+    monkeypatch.setattr(dg, "is_repo_cached", lambda _: False)
+    assert (
+        run_cli._select_model(
+            explicit=None, profile=get_profile("opencode"), no_download=False
+        )
+        == "qwen3.5-4b-4bit"
+    )

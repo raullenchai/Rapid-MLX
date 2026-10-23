@@ -42,6 +42,7 @@
     "supports_spec_decode": false
   },
   "qwen3.5-4b-4bit": {
+    "min_memory_gb": 16,
     "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -86,6 +87,7 @@
     "recommended_prefill_step_size": 1024
   },
   "qwen3.5-9b-4bit": {
+    "min_memory_gb": 18,
     "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
     "vision_min_memory_gb": 32,
@@ -360,6 +362,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-35b-4bit": {
+    "min_memory_gb": 48,
     "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
     "vision_min_memory_gb": 32,
@@ -1718,6 +1721,7 @@
     }
   },
   "qwen3-coder-30b-4bit": {
+    "min_memory_gb": 24,
     "hf_path": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -2755,6 +2759,7 @@
     "is_moe": true
   },
   "lfm2.5-2.6b-4bit": {
+    "min_memory_gb": 8,
     "hf_path": "LiquidAI/LFM2.5-2.6B-MLX",
     "subfolder": "4bit",
     "tool_call_parser": "lfm",

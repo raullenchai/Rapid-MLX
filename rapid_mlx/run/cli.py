@@ -262,13 +262,10 @@ def _select_model(
         print("  This agent profile has no recommended models; pass --model.")
         return None
 
-    ram_gb = physical_ram_gb()
+    # Match local-model discovery when the physical RAM probe fails.
+    ram_gb = physical_ram_gb() or 16.0
     for alias in candidates:
-        # ``ram_gb and`` mirrors the pick loop below: a failed RAM probe
-        # (0) is treated as "can't judge fit" -> every candidate fits, so a
-        # cached recommended model is still returned instead of forcing a
-        # re-download of candidates[0].
-        if ram_gb and _fits_host(alias, ram_gb) is False:
+        if not _fits_host(alias, ram_gb):
             continue
         if is_repo_cached(_hf_id(alias)):
             return alias
@@ -277,12 +274,9 @@ def _select_model(
         _print_nothing_cached(candidates, ram_gb)
         return None
 
-    # Nothing cached: first recommended model that fits. If RAM is
-    # unknowable (0), skip the fit filter so a model can still be picked on
-    # machines whose memsize probe failed. The download-consent step runs
-    # next and shows the exact transfer size.
+    # Nothing cached: first recommended model with a known fit.
     for alias in candidates:
-        if ram_gb and _fits_host(alias, ram_gb) is False:
+        if not _fits_host(alias, ram_gb):
             continue
         return alias
 
@@ -290,8 +284,8 @@ def _select_model(
     return None
 
 
-def _fits_host(alias: str, ram_gb: float) -> bool | None:
-    """Return known fit, known incompatibility, or unknown for an alias."""
+def _fits_host(alias: str, ram_gb: float) -> bool:
+    """Require a known memory contract before automatically choosing an alias."""
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.recommendations import (
         is_recommended_alias,
@@ -300,14 +294,13 @@ def _fits_host(alias: str, ram_gb: float) -> bool | None:
 
     # Curated public recommendations encode their supported RAM tiers. For an
     # agent-specific recommendation outside that table, fall back to its
-    # explicit minimum-memory contract. Unknown is not the same as "does not
-    # fit": the canonical serve path remains the final capacity authority.
+    # explicit minimum-memory contract. Missing metadata cannot establish fit.
     if recommendation_footprint_gb(alias) is not None:
         return is_recommended_alias(alias, ram_gb)
     alias_profile = resolve_profile(alias)
     minimum = alias_profile.min_memory_gb if alias_profile is not None else None
     if minimum is None:
-        return None
+        return False
     return ram_gb >= minimum
 
 
