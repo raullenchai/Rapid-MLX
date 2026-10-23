@@ -65,7 +65,7 @@ def test_serve_still_uses_external_folder(external_model, monkeypatch):
 
 
 def test_pull_downloads_hub_repo_not_external_folder(
-    external_model, monkeypatch, tmp_path, capsys
+    hub_online_env, external_model, monkeypatch, tmp_path, capsys
 ):
     revision = "a" * 40
     repo_root = tmp_path / "hub" / f"models--{REPO.replace('/', '--')}"

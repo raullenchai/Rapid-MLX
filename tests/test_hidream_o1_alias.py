@@ -737,7 +737,7 @@ def test_non_hidream_pull_keeps_the_generic_download_path(
 
 
 def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    hub_online_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The lower-level pull path must enforce, not merely receive, the pin.
 
@@ -785,7 +785,7 @@ def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
 
 
 def test_pinned_pull_served_by_the_mirror_reports_the_pinned_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+    hub_online_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     from huggingface_hub import constants
 

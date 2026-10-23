@@ -17,8 +17,6 @@ def snapshot_tree(root, revision="a" * 40, filename="model.safetensors"):
 
 @pytest.fixture(autouse=True)
 def hub_integrity_metadata(tmp_path, monkeypatch):
-    from rapid_mlx import cli
-
     def metadata(_self, _repo, *, revision, files_metadata, token=None):
         assert files_metadata is True
         snapshots = [path for path in tmp_path.rglob(revision) if path.is_dir()]
@@ -38,4 +36,3 @@ def hub_integrity_metadata(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("huggingface_hub.HfApi.model_info", metadata)
-    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)

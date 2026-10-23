@@ -690,6 +690,7 @@ def test_pull_command_suppresses_mtp_runtime_asset_lifecycle(monkeypatch):
 
 
 def test_summary_printed_on_hf_success(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -729,6 +730,7 @@ def test_summary_printed_on_hf_success(
 
 
 def test_hf_cached_fallback_reports_verified(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -767,6 +769,7 @@ def test_hf_cached_fallback_reports_verified(
 
 
 def test_partial_mirror_fetch_combines_into_fallback_verdict(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -814,6 +817,7 @@ def test_partial_mirror_fetch_combines_into_fallback_verdict(
 
 
 def test_hf_fetch_zero_byte_file_counts_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -856,6 +860,7 @@ def test_hf_fetch_zero_byte_file_counts_as_download(
 
 
 def test_hf_fallback_transfers_bytes_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -886,7 +891,9 @@ def test_hf_fallback_transfers_bytes_as_download(
     assert "Already cached" not in out, out
 
 
-def test_hf_fallback_event_is_labelled_hf(monkeypatch, tmp_path) -> None:
+def test_hf_fallback_event_is_labelled_hf(
+    hub_online_env, monkeypatch, tmp_path
+) -> None:
     from rapid_mlx.telemetry import model_events
 
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
@@ -947,6 +954,7 @@ def test_runtime_asset_pull_suppresses_unpaired_failure_event(monkeypatch):
 
 
 def test_summary_printed_on_mirror_success(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -991,6 +999,7 @@ def test_summary_printed_on_mirror_success(
 
 
 def test_cached_pull_reports_verified_not_downloaded(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1035,6 +1044,7 @@ def test_cached_pull_reports_verified_not_downloaded(
 
 
 def test_moved_main_reported_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

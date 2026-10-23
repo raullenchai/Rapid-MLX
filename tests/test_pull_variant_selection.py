@@ -76,13 +76,15 @@ def _pull_capturing(variant_snapshot, **flags):
     return side
 
 
-def test_bits_narrows_snapshot_and_uses_mirror(capsys, variant_snapshot):
+def test_bits_narrows_snapshot_and_uses_mirror(
+    hub_online_env, capsys, variant_snapshot
+):
     side = _pull_capturing(variant_snapshot, bits="4", format=None)
     assert side["allow"] == ["4bit/*"]
     assert side["mirror_calls"] == 1
 
 
-def test_format_narrows_snapshot_by_folder_name(variant_snapshot):
+def test_format_narrows_snapshot_by_folder_name(hub_online_env, variant_snapshot):
     # "8bit" is both a valid format-style folder key here.
     side = _pull_capturing(variant_snapshot, bits=None, format="8bit")
     assert side["allow"] == ["8bit/*"]
@@ -100,7 +102,7 @@ def test_escape_glob_literal_metachars():
 
 
 def test_variant_with_glob_metachars_escaped_in_allow_patterns(
-    capsys, variant_snapshot
+    hub_online_env, capsys, variant_snapshot
 ):
     """--format on a folder named with glob metachars pins to that folder."""
     tricky_tree = [
@@ -241,7 +243,7 @@ def test_missing_variant_no_folders(capsys, variant_snapshot):
     assert "single-variant repo" in out
 
 
-def test_no_selector_still_consults_mirror(variant_snapshot):
+def test_no_selector_still_consults_mirror(hub_online_env, variant_snapshot):
     """Without --bits/--format the mirror-first behavior is unchanged."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -253,7 +255,9 @@ def test_no_selector_still_consults_mirror(variant_snapshot):
 
 
 @pytest.mark.parametrize("bits,fmt", [("4", None), (None, "4bit")])
-def test_user_variant_consults_mirror_first(bits, fmt, variant_snapshot):
+def test_user_variant_consults_mirror_first(
+    hub_online_env, bits, fmt, variant_snapshot
+):
     """Explicit bits/format selection keeps the mirror-first path enabled."""
     requested = f"{bits}bit" if bits else fmt
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=bits, format=fmt)
@@ -272,7 +276,9 @@ def test_user_variant_consults_mirror_first(bits, fmt, variant_snapshot):
     snapshot.assert_not_called()
 
 
-def test_mirror_variant_miss_falls_back_with_same_pattern(capsys, variant_snapshot):
+def test_mirror_variant_miss_falls_back_with_same_pattern(
+    hub_online_env, capsys, variant_snapshot
+):
     """A mirror miss falls back upstream with the identical allow pattern."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="4", format=None)
     with (
@@ -316,7 +322,7 @@ def test_mirror_prefetch_keeps_catalog_subfolder_default():
     assert download.call_args.kwargs["allow_patterns"] == ["catalog/*"]
 
 
-def test_orphan_reap_announces_cleaned_files(capsys, variant_snapshot):
+def test_orphan_reap_announces_cleaned_files(hub_online_env, capsys, variant_snapshot):
     """Pull announces when it reclaims abandoned download scratch files."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -336,7 +342,7 @@ def test_orphan_reap_announces_cleaned_files(capsys, variant_snapshot):
     assert "Cleaned up 2 abandoned download file(s)" in out
 
 
-def test_orphan_reap_failure_does_not_block_pull(variant_snapshot):
+def test_orphan_reap_failure_does_not_block_pull(hub_online_env, variant_snapshot):
     """Best-effort orphan cleanup cannot prevent the requested download."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -354,7 +360,9 @@ def test_orphan_reap_failure_does_not_block_pull(variant_snapshot):
     snap.assert_called_once()
 
 
-def test_catalog_subfolder_narrowing_when_no_selector(capsys, variant_snapshot):
+def test_catalog_subfolder_narrowing_when_no_selector(
+    hub_online_env, capsys, variant_snapshot
+):
     """No selector + a catalog subfolder narrows to it (existing behavior)."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
@@ -370,7 +378,9 @@ def test_catalog_subfolder_narrowing_when_no_selector(capsys, variant_snapshot):
     assert "ships one checkpoint per quantization" in capsys.readouterr().out
 
 
-def test_user_flag_overrides_catalog_subfolder(capsys, variant_snapshot):
+def test_user_flag_overrides_catalog_subfolder(
+    hub_online_env, capsys, variant_snapshot
+):
     """--bits/--format wins over catalog resolve_subfolder narrowing (said so)."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="8", format=None)
     with (
@@ -391,7 +401,9 @@ def test_user_flag_overrides_catalog_subfolder(capsys, variant_snapshot):
     assert "4bit" in out
 
 
-def test_user_flag_equal_to_catalog_subfolder_no_override(capsys, variant_snapshot):
+def test_user_flag_equal_to_catalog_subfolder_no_override(
+    hub_online_env, capsys, variant_snapshot
+):
     """When the flag matches the catalog subfolder, no override line is shown."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="4", format=None)
     with (

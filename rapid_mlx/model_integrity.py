@@ -285,9 +285,14 @@ def verify_snapshot(
             )
         os.replace(temporary, receipt_path)
     except OSError as exc:
-        raise ModelIntegrityError(
-            f"Cannot save verification receipt at {receipt_path}; check cache permissions and free space, then retry pull"
-        ) from exc
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Content verified, but cannot save receipt at %s: %s. "
+            "Check cache permissions and free space; future pulls may need online verification.",
+            receipt_path,
+            exc,
+        )
     finally:
         if temporary is not None:
             with suppress(OSError):

@@ -372,7 +372,9 @@ def test_unpinned_missing_revision_does_not_use_mirror(snapshot, monkeypatch):
 
 
 @pytest.mark.parametrize("stage", ["mkdir", "mkstemp", "write", "replace"])
-def test_receipt_write_errors_are_actionable(snapshot, monkeypatch, stage):
+def test_receipt_write_errors_preserve_verified_readonly_pulls(
+    snapshot, monkeypatch, caplog, stage
+):
     import json
     import os
     import tempfile
@@ -392,10 +394,13 @@ def test_receipt_write_errors_are_actionable(snapshot, monkeypatch, stage):
     else:
         monkeypatch.setattr(os, "replace", fail)
         monkeypatch.setattr(Path, "unlink", fail)
-    with pytest.raises(ModelIntegrityError, match="check cache permissions") as error:
+    verify_snapshot("test/integrity", path)
+    assert ".rapid-mlx-integrity" in caplog.text
+    assert "receipt operation failed" in caplog.text
+    assert "Content verified" in caplog.text
+    (path / "model.safetensors").write_bytes(b"corruption!")
+    with pytest.raises(ModelIntegrityError, match="mismatch"):
         verify_snapshot("test/integrity", path)
-    assert ".rapid-mlx-integrity" in str(error.value)
-    assert str(error.value.__cause__) == "receipt operation failed"
 
 
 @pytest.mark.parametrize(

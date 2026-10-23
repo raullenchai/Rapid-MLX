@@ -124,7 +124,9 @@ def test_permanent_hub_errors_are_not_retried(monkeypatch):
         assert len(calls) == 1
 
 
-def test_pull_retries_mocked_snapshot_and_keeps_revision(monkeypatch, tmp_path):
+def test_pull_retries_mocked_snapshot_and_keeps_revision(
+    hub_online_env, monkeypatch, tmp_path
+):
     import requests
 
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_a, **_kw: False)
@@ -285,7 +287,9 @@ def test_pull_protocol_disconnect_has_bounded_retry_and_safe_guidance(
     assert "private URL" not in stderr
 
 
-def test_pull_variant_metadata_retries_before_transfer(monkeypatch, tmp_path):
+def test_pull_variant_metadata_retries_before_transfer(
+    hub_online_env, monkeypatch, tmp_path
+):
     probe_calls = []
 
     def resolve_variant(*_args):
@@ -313,7 +317,9 @@ def test_pull_variant_metadata_retries_before_transfer(monkeypatch, tmp_path):
     assert snapshot_calls == [{"allow_patterns": ["4bit/*"]}]
 
 
-def test_transient_mirror_failure_falls_back_to_hub(monkeypatch, tmp_path, capsys):
+def test_transient_mirror_failure_falls_back_to_hub(
+    hub_online_env, monkeypatch, tmp_path, capsys
+):
     def mirror(*_args, **_kwargs):
         raise httpx.RemoteProtocolError("mirror peer closed with secret URL")
 

@@ -206,7 +206,7 @@ def test_main_pull_requirement_failure_is_actionable_without_traceback(
 
 
 def test_runtime_asset_uses_normal_filtered_download_pipeline(
-    monkeypatch, tmp_path, capsys
+    hub_online_env, monkeypatch, tmp_path, capsys
 ) -> None:
     seen: dict[str, object] = {}
 

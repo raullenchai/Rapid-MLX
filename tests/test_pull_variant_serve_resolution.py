@@ -281,7 +281,7 @@ def test_serve_uses_format_marker_folder(monkeypatch, tmp_path, marker_path):
 
 
 def test_serve_escapes_format_marker_glob_metacharacters(
-    monkeypatch, tmp_path, marker_path
+    hub_online_env, monkeypatch, tmp_path, marker_path
 ):
     """A literal format survives the real pull-to-serve marker transition."""
     import argparse
@@ -455,7 +455,9 @@ def test_persist_read_swallows_an_unreadable_marker(monkeypatch, marker_path):
         assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
-def test_pull_persist_failure_still_completes_the_pull(capsys, tmp_path):
+def test_pull_persist_failure_still_completes_the_pull(
+    hub_online_env, capsys, tmp_path
+):
     """The best-effort persist in ``pull_command`` must never fail the pull."""
     import argparse
 
@@ -491,7 +493,9 @@ def test_pull_persist_failure_still_completes_the_pull(capsys, tmp_path):
     assert "may select an older or default checkpoint" in out
 
 
-def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path, tmp_path):
+def test_successful_ordinary_hf_pull_clears_previous_variant(
+    hub_online_env, marker_path, tmp_path
+):
     """Switching back to an ordinary pull must not leave a stale selector."""
     import argparse
 
@@ -517,7 +521,9 @@ def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path, tmp_pa
     assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
-def test_ordinary_hf_pull_survives_marker_clear_failure(capsys, tmp_path):
+def test_ordinary_hf_pull_survives_marker_clear_failure(
+    hub_online_env, capsys, tmp_path
+):
     """Cleanup metadata is best-effort after a valid HF pull completes."""
     import argparse
 
@@ -549,7 +555,7 @@ def test_ordinary_hf_pull_survives_marker_clear_failure(capsys, tmp_path):
 
 
 def test_successful_ordinary_mirror_pull_clears_previous_variant(
-    marker_path, mirror_snapshot
+    hub_online_env, marker_path, mirror_snapshot
 ):
     """The mirror-success early return applies the same marker transition."""
     import argparse
@@ -576,7 +582,7 @@ def test_successful_ordinary_mirror_pull_clears_previous_variant(
 
 
 def test_successful_variant_mirror_pull_persists_serving_choice(
-    marker_path, mirror_snapshot
+    hub_online_env, marker_path, mirror_snapshot
 ):
     """The default mirror path must retain the explicit variant for serve."""
     import argparse
@@ -609,7 +615,7 @@ def test_successful_variant_mirror_pull_persists_serving_choice(
 
 
 def test_runtime_asset_override_does_not_touch_model_variant(
-    capsys, marker_path, mirror_snapshot
+    hub_online_env, capsys, marker_path, mirror_snapshot
 ):
     """Dependency file filters neither rewrite metadata nor emit a false warning."""
     import argparse
@@ -637,7 +643,9 @@ def test_runtime_asset_override_does_not_touch_model_variant(
     assert "could not record that serving choice" not in capsys.readouterr().out
 
 
-def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys, mirror_snapshot):
+def test_ordinary_mirror_pull_survives_marker_clear_failure(
+    hub_online_env, capsys, mirror_snapshot
+):
     """Cleanup metadata is best-effort on the mirror-success early return."""
     import argparse
 
