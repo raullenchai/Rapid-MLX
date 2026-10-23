@@ -221,7 +221,9 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(
         verify_snapshot("test/integrity", path, **commit_kwargs)
 
 
-@pytest.mark.parametrize("name", [None, "../outside", "/absolute", "folder\\file"])
+@pytest.mark.parametrize(
+    "name", [None, [], {}, "../outside", "/absolute", "folder\\file"]
+)
 def test_invalid_manifest_paths_are_refused(snapshot, name):
     path, info, _ = snapshot
     info.siblings[0].rfilename = name
@@ -274,6 +276,24 @@ def test_mismatched_receipt_is_reverified(snapshot):
     receipt.write_text(json.dumps(data))
     verify_snapshot("test/integrity", path)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("malformed", [[], ["bad"], None, 7, {"file": None}])
+def test_malformed_receipt_files_are_reverified(snapshot, malformed):
+    import json
+
+    path, _, calls = snapshot
+    verify_snapshot("test/integrity", path)
+    receipt = next((path.parent.parent / ".rapid-mlx-integrity").glob("*.json"))
+    data = json.loads(receipt.read_text())
+    data["files"] = malformed
+    receipt.write_text(json.dumps(data))
+    verify_snapshot("test/integrity", path)
+    assert len(calls) == 2
+    assert isinstance(json.loads(receipt.read_text())["files"], dict)
+    receipt.write_text("[]")
+    verify_snapshot("test/integrity", path)
+    assert len(calls) == 3
 
 
 def test_wrong_packaged_revision_is_refused(snapshot, tmp_path, monkeypatch):

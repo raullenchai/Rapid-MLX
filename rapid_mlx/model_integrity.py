@@ -106,11 +106,13 @@ def verify_snapshot(
         ):
             previous = {}
         entries = previous.get("files", {})
+        if not isinstance(entries, dict):
+            raise ValueError("Invalid receipt file inventory")
         if entries and all(
             _identity(path / name) == entry["stat"] for name, entry in entries.items()
         ):
             return
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         previous = {}
     if locked:
         # The packaged manifest is authoritative; remote omission cannot drop
@@ -164,12 +166,13 @@ def verify_snapshot(
                 "Hub integrity manifest does not match the downloaded commit"
             )
         siblings = _field(info, "siblings", [])
-    siblings = list({_field(item, "rfilename"): item for item in siblings}.values())
+    siblings = list(siblings)
     from huggingface_hub.utils import filter_repo_objects
 
     names = [_field(item, "rfilename") for item in siblings]
     if not all(isinstance(name, str) for name in names):
         raise ModelIntegrityError("Invalid integrity manifest filename")
+    siblings = list({_field(item, "rfilename"): item for item in siblings}.values())
     if exact is not None and any(name not in names for name in exact):
         raise ModelIntegrityError(
             "Requested file is absent from the immutable integrity manifest"
