@@ -1040,6 +1040,22 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
     if not isinstance(config, dict):
         return False
     model_type = config.get("model_type")
+    if model_type == "kimi_k25":
+        from mlx_lm.models import kimi_k25
+
+        kimi_k25.ModelArgs.from_dict(config)
+        return True
+    if model_type == "glm_moe_dsa":
+        # REAP checkpoints ship a model_file implementing indexer sharing.
+        # Our installed native GLM architecture plus owned indexer gate already
+        # implements that data contract; never execute the repository copy.
+        _install_dsv32_indexer_gate()
+        from mlx_lm.models import deepseek_v32, glm_moe_dsa
+
+        if not getattr(deepseek_v32, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+            raise RuntimeError("Native GLM indexer-sharing adapter is unavailable")
+        glm_moe_dsa.ModelArgs.from_dict(config)  # validate the REAP extension
+        return True
     if model_type not in _RAPID_OWNED_RUNTIME_MODEL_TYPES:
         return False
 

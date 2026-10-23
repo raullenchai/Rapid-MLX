@@ -89,6 +89,12 @@ def targets():
             add(repo, pin)
     for repo in DEFAULTS:
         add(repo)
+    lock_path = ROOT / "rapid_mlx/model_catalog_lock.json"
+    if lock_path.exists():
+        locked = json.loads(lock_path.read_text())["repositories"]
+        for repo, selection in records.items():
+            if not selection["pins"] and repo in locked:
+                selection["pins"].add(locked[repo]["revision"])
     return records
 
 

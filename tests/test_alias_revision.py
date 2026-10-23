@@ -17,7 +17,7 @@ PIN = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
 OTHER = "a" * 40
 ALIAS = "flint-40b-a2.5b-4bit"
 REPO = "RecursiveSI/flint-int4"
-UNPINNED = "mlx-community/Qwen3-0.6B-4bit"
+UNPINNED = "example/unregistered-model"
 
 
 @pytest.mark.parametrize("name", [ALIAS, REPO])
@@ -165,10 +165,12 @@ def test_resolution_and_user_store_compatibility(monkeypatch, tmp_path):
     monkeypatch.setattr(
         aliases,
         "_resolve_external_model_path",
-        lambda name: pytest.fail("pin cannot use unversioned external copy"),
+        lambda name: str(tmp_path),
     )
-    assert aliases.resolve_model(ALIAS) == REPO
-    assert aliases.resolve_model(REPO.upper()) == REPO
+    monkeypatch.setattr(aliases, "_managed_hub_model_is_runnable", lambda _: False)
+    assert aliases.resolve_model(ALIAS) == str(tmp_path)
+    assert aliases.resolve_model(REPO.upper()) == str(tmp_path)
+    assert aliases.resolve_hub_model(ALIAS) == REPO
 
 
 def snapshot(root, sha, *, subfolder=None, complete=True):
@@ -656,3 +658,10 @@ def test_launch_warm_pinned_cache_has_no_download_label(
     forbidden.assert_not_called()
     start.assert_called_once_with(name, 18742, api_key="test-key")
     run.assert_called_once()
+
+
+@pytest.fixture(autouse=True)
+def mock_integrity_boundary_for_resolution_fixtures(monkeypatch):
+    # These tests synthesize cache layouts/transport results, not valid weights.
+    # Byte verification and rejection are covered in test_model_integrity.
+    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)
