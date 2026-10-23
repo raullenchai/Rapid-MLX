@@ -348,6 +348,11 @@ def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
     from rapid_mlx.telemetry import model_events
 
     _stub_implicit_download(monkeypatch)
+    # Integrity resolution is required; isolate the deliberately broken
+    # telemetry cache inventory from that independently tested boundary.
+    monkeypatch.setattr(
+        cli, "_active_hf_snapshot_path", lambda _repo: tmp_path / "verified"
+    )
     monkeypatch.setattr(
         cli,
         "_hf_cache_root",
@@ -650,7 +655,9 @@ def test_pull_command_suppresses_audio_runtime_asset_lifecycle(monkeypatch):
     monkeypatch.setattr(
         "rapid_mlx.audio.registry.runtime_assets_for",
         lambda _repo: (
-            SimpleNamespace(repo_id="org/audio-runtime", allow_patterns=(), revision=None),
+            SimpleNamespace(
+                repo_id="org/audio-runtime", allow_patterns=(), revision=None
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -793,7 +800,9 @@ def test_partial_mirror_fetch_combines_into_fallback_verdict(
     )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    def _mirror_partial(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
+    def _mirror_partial(
+        model_name: str, *, out=None, allow_patterns=None, revision=None
+    ) -> bool:
         # Mirror fetched some blobs (network_fetch=True) but ultimately
         # returned False (a file missed both R2 and HF).
         if out is not None:
@@ -969,7 +978,9 @@ def test_summary_printed_on_mirror_success(
     cache_root = tmp_path / "hub"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
+    def _mirror_fetch(
+        model_name: str, *, out=None, allow_patterns=None, revision=None
+    ) -> bool:
         """Simulate the mirror downloading the snapshot during this pull."""
         repo_root = cache_root / "models--mlx-community--Qwen3-0.6B-4bit"
         refs_dir = repo_root / "refs"
@@ -1065,7 +1076,9 @@ def test_moved_main_reported_as_download(
     (refs_dir / "main").write_text(stale_rev)
     _make_fake_snapshot(repo_root / "snapshots" / stale_rev, total_bytes=4096)
 
-    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
+    def _mirror_fetch(
+        model_name: str, *, out=None, allow_patterns=None, revision=None
+    ) -> bool:
         # Remote main advanced mid-pull: refs/main now points at a NEWER rev
         # whose snapshot bytes were actually fetched over the wire.
         (refs_dir / "main").write_text(head_rev)
