@@ -754,7 +754,39 @@ def configure(
             f"AIDER_OPENAI_API_KEY={key}\nOPENAI_API_KEY={key}\n"
             f"AIDER_OPENAI_API_BASE={base}\nOPENAI_API_BASE={base}\n",
         )
-        _private_write(root / "aider.conf.yml", "{}\n")
+        # Unknown OpenAI-compatible models otherwise fall back to whole-file
+        # edits, which can mistake fenced command output for another file.
+        model_settings = root / "aider.model.settings.yml"
+        _private_write(
+            model_settings,
+            json.dumps(
+                [
+                    {
+                        "name": f"openai/{model}",
+                        "edit_format": "diff",
+                        "editor_edit_format": "editor-diff",
+                        "use_repo_map": True,
+                        "use_temperature": False,
+                    }
+                ],
+                indent=2,
+            )
+            + "\n",
+        )
+        _private_write(
+            root / "aider.conf.yml",
+            json.dumps(
+                {
+                    "model-settings-file": str(model_settings),
+                    "edit-format": "diff",
+                    "editor-edit-format": "editor-diff",
+                    "suggest-shell-commands": True,
+                    "auto-test": False,
+                },
+                indent=2,
+            )
+            + "\n",
+        )
         helper = root / "bin" / "aider-launch"
         _private_python_launcher(
             helper,

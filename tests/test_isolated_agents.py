@@ -1837,7 +1837,8 @@ def test_private_helper_handles_spaced_interpreter_path(
     assert capture.read_text() == "launched"
 
 
-def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
+@pytest.mark.parametrize("model", ("qwen3.5-9b-4bit", "flint-40b-a2.5b-4bit"))
+def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch, model):
     user_config = private_home / ".aider.conf.yml"
     original = b"model: openai/cloud\nopenai-api-key: fake-cloud-key\n"
     user_config.write_bytes(original)
@@ -1867,7 +1868,7 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
     monkeypatch.setenv("AIDER_OPENAI_API_BASE", "https://cloud.invalid/v1")
     monkeypatch.setenv("AIDER_MODEL_SETTINGS_FILE", "cloud-models.yml")
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
-        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+        isolated.configure("aider", model, port=7660)
     runner = isolated.connection_dir() / "agents/aider/run"
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     args = args_capture.read_text().splitlines()
@@ -1875,8 +1876,8 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
         isolated.connection_dir() / "agents/aider/aider.conf.yml"
     )
     assert args[args.index("--openai-api-base") + 1] == "http://127.0.0.1:7660/v1"
-    assert args[args.index("--weak-model") + 1] == "openai/qwen3.5-9b-4bit"
-    assert args[args.index("--editor-model") + 1] == "openai/qwen3.5-9b-4bit"
+    assert args[args.index("--weak-model") + 1] == f"openai/{model}"
+    assert args[args.index("--editor-model") + 1] == f"openai/{model}"
     assert env_capture.read_text().splitlines() == [
         isolated.key_path().read_text().strip(),
         "http://127.0.0.1:7660/v1",
@@ -1884,9 +1885,25 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch):
         "",
     ]
     assert git_capture.read_text().strip() == "Real Developer"
-    assert (
-        isolated.connection_dir() / "agents/aider/aider.conf.yml"
-    ).read_text() == "{}\n"
+    root = isolated.connection_dir() / "agents/aider"
+    config = yaml.safe_load((root / "aider.conf.yml").read_text())
+    assert config == {
+        "model-settings-file": str(root / "aider.model.settings.yml"),
+        "edit-format": "diff",
+        "editor-edit-format": "editor-diff",
+        "suggest-shell-commands": True,
+        "auto-test": False,
+    }
+    assert "--yes" not in args and "--yes-always" not in args
+    assert yaml.safe_load(Path(config["model-settings-file"]).read_text()) == [
+        {
+            "name": f"openai/{model}",
+            "edit_format": "diff",
+            "editor_edit_format": "editor-diff",
+            "use_repo_map": True,
+            "use_temperature": False,
+        }
+    ]
     private_env = (isolated.connection_dir() / "agents/aider/aider.env").read_text()
     assert (
         f"AIDER_OPENAI_API_KEY={isolated.key_path().read_text().strip()}" in private_env
