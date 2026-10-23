@@ -53,10 +53,12 @@ class Fake(m.GitHub):
 def pull():
     return dict(
         number=1,
+        changed_files=1,
+        user=dict(login="author", type="User"),
         state="open",
         draft=False,
         title="Fix behavior",
-        base=dict(ref="main", repo=dict(full_name="owner/repo")),
+        base=dict(ref="main", sha="b" * 40, repo=dict(full_name="owner/repo")),
         head=dict(sha=SHA, repo=dict(full_name="owner/repo")),
         labels=[dict(name="merge-ready")],
         mergeable=True,
@@ -78,6 +80,9 @@ def check(name, identifier=1, conclusion="success", app="github-actions"):
 def ready():
     api = Fake()
     api.data["pulls/1"] = pull()
+    api.data["pulls/1/files"] = [
+        dict(filename="rapid_mlx/server.py", status="modified")
+    ]
     api.data["pulls?state=open&base=main"] = [dict(number=1)]
     api.data[f"commits/{SHA}/check-runs?filter=all"] = [
         check(n)
@@ -387,6 +392,7 @@ def test_skip_reasons_no_label_and_refused_merge():
 def test_rechecks_and_one_at_a_time(monkeypatch, mode):
     api = ready()
     api.data["pulls?state=open&base=main"] += [dict(number=2)]
+    api.data["pulls/2/files"] = api.data["pulls/1/files"]
     api.data["pulls/2"] = pull() | dict(number=2)
     freezes = iter(
         ["", "frozen"]
@@ -564,6 +570,7 @@ def test_workflow_security_and_triggers():
 def test_multiple_merges_are_ordered_with_freeze_between(monkeypatch):
     api = ready()
     api.data["pulls?state=open&base=main"] = [dict(number=2), dict(number=1)]
+    api.data["pulls/2/files"] = api.data["pulls/1/files"]
     api.data["pulls/2"] = pull() | dict(number=2)
     api.data[("PUT", "pulls/2/merge")] = dict(merged=True)
     events = []
@@ -616,6 +623,7 @@ def test_live_head_changed_with_green_new_evidence():
 def test_head_race_does_not_block_next_pr(status):
     api = ready()
     api.data["pulls?state=open&base=main"].append(dict(number=2))
+    api.data["pulls/2/files"] = api.data["pulls/1/files"]
     api.data["pulls/2"] = pull() | dict(number=2)
     api.data[("PUT", "pulls/1/merge")] = m.APIError("race", status)
     api.data[("PUT", "pulls/2/merge")] = dict(merged=True)
@@ -809,6 +817,8 @@ def test_workflow_identity_pagination_and_ref_suffix(monkeypatch):
     workflow_path = f"actions/runs?head_sha={SHA}"
 
     def response(path):
+        if path == "pulls/1/files?per_page=100&page=1":
+            return fixtures["pulls/1/files"]
         if path == f"{workflow_path}&per_page=100&page=1":
             return dict(
                 workflow_runs=[
@@ -861,3 +871,144 @@ def test_head_binding_ignores_foreign_creators(trusted, foreign, expected):
         )
     )
     assert (m.eligibility(api, pull()) == "") is expected
+
+
+def catalog_pr(before, after):
+    import base64
+    import json
+
+    api = ready()
+    api.data["pulls/1/files"] = [
+        {"filename": "rapid_mlx/aliases.json", "status": "modified"}
+    ]
+    for ref, value in (("b" * 40, before), (SHA, after)):
+        api.data[f"contents/rapid_mlx/aliases.json?ref={ref}"] = {
+            "encoding": "base64",
+            "content": base64.b64encode(json.dumps(value).encode()).decode(),
+        }
+    api.data["pulls/1/reviews"] = []
+    api.data[f"git/trees/{SHA}?recursive=1"] = {
+        "truncated": False,
+        "tree": [{"path": "rapid_mlx/aliases.json", "mode": "100644", "type": "blob"}],
+    }
+    return api
+
+
+def approval(
+    *, state="APPROVED", commit=SHA, kind="User", login="maintainer", identifier=1
+):
+    return dict(
+        id=identifier, state=state, commit_id=commit, user=dict(login=login, type=kind)
+    )
+
+
+def test_catalog_only_malicious_source_fails_despite_green_tests():
+    api = catalog_pr({}, {"evil": {"hf_path": "attacker/model"}})
+    assert "Catalog identity policy" in m.eligibility(api, pull())
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        None,
+        approval(commit="c" * 40),
+        approval(kind="Bot"),
+        approval(login="author"),
+        approval(state="DISMISSED"),
+    ],
+)
+def test_catalog_requires_current_human_approval(review):
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data["pulls/1/reviews"] = [] if review is None else [review]
+    api.data["collaborators/maintainer/permission"] = {"permission": "write"}
+    assert "human maintainer approval" in m.eligibility(api, pull())
+
+
+@pytest.mark.parametrize(
+    "permission,allowed",
+    [("write", True), ("admin", True), ("read", False), ("triage", False)],
+)
+def test_only_authorized_human_approval_allows_catalog_merge(permission, allowed):
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data["pulls/1/reviews"] = [approval()]
+    api.data["collaborators/maintainer/permission"] = {"permission": permission}
+    assert (m.eligibility(api, pull()) == "") is allowed
+
+
+def test_later_dismissal_revokes_catalog_approval():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data["pulls/1/reviews"] = [
+        approval(),
+        approval(state="DISMISSED", identifier=2),
+    ]
+    api.data["collaborators/maintainer/permission"] = {"permission": "write"}
+    assert "human maintainer approval" in m.eligibility(api, pull())
+
+
+def test_catalog_cosmetic_edit_does_not_need_new_approval():
+    api = catalog_pr(
+        {"old": {"hf_path": "org/model", "notes": "old"}},
+        {"old": {"hf_path": "org/model", "notes": "new"}},
+    )
+    assert m.eligibility(api, pull()) == ""
+
+
+def test_gate_edit_cannot_disable_its_own_review():
+    api = ready()
+    api.data["pulls/1/files"] = [
+        {"filename": "scripts/catalog_trust.py", "status": "modified"}
+    ]
+    api.data["pulls/1/reviews"] = []
+    assert "human maintainer approval" in m.eligibility(api, pull())
+
+
+def test_missing_catalog_files_inventory_fails_closed():
+    api = ready()
+    api.data["pulls/1/files"] = []
+    assert "complete changed-file inventory" in m.eligibility(api, pull())
+
+
+def test_unavailable_review_permissions_fail_closed():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data["pulls/1/reviews"] = [approval()]
+    api.data["collaborators/maintainer/permission"] = m.APIError("unavailable")
+    assert "could not be verified" in m.eligibility(api, pull())
+
+
+def test_catalog_symlink_cannot_redirect_later_changes_outside_gate():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data[f"git/trees/{SHA}?recursive=1"]["tree"][0]["mode"] = "120000"
+    assert "regular Git blob" in m.eligibility(api, pull())
+
+
+def test_truncated_catalog_tree_fails_closed():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data[f"git/trees/{SHA}?recursive=1"]["truncated"] = True
+    assert "incomplete" in m.eligibility(api, pull())
+
+
+def test_isolated_controller_ignores_checkout_import_shadowing(tmp_path):
+    import shutil
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for filename in ("merge_on_green.py", "catalog_trust.py"):
+        shutil.copyfile(root / "scripts" / filename, scripts / filename)
+    for target in (
+        tmp_path / "base64.py",
+        tmp_path / "sitecustomize.py",
+        scripts / "__init__.py",
+    ):
+        target.write_text("raise RuntimeError('untrusted checkout code executed')\n")
+    result = subprocess.run(
+        [sys.executable, "-I", str(scripts / "merge_on_green.py"), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    workflow = (root / ".github/workflows/merge-on-green.yml").read_text()
+    assert "python -I scripts/merge_on_green.py" in workflow

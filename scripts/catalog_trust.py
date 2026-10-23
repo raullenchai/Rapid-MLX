@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Offline differential policy for reviewed catalog identities; no model downloads."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+from pathlib import Path
+
+CATALOGS = frozenset({"rapid_mlx/aliases.json", "rapid_mlx/audio/aliases.json"})
+COSMETIC_FIELDS = frozenset({"notes", "description", "display_name"})
+_CONTROL_PATHS = (
+    "scripts/catalog_trust.py",
+    "scripts/catalog_trust/",
+    "scripts/merge_on_green/",
+    "scripts/merge_on_green.py",
+    "scripts/__init__.py",
+    "sitecustomize.py",
+    "usercustomize.py",
+    "scripts/pr_validate/",
+    ".github/workflows/",
+    "rapid_mlx/catalog/",
+    "proto/model-catalog/",
+    "rapid_mlx/model_aliases.py",
+    "rapid_mlx/model_downloads.py",
+    "rapid_mlx/utils/model_file_guard.py",
+    "rapid_mlx/utils/tokenizer.py",
+    "rapid_mlx/audio/registry.py",
+    "rapid_mlx/audio/runtime_catalog.py",
+    "rapid_mlx/audio/runtime_requirements.py",
+    "rapid_mlx/model_load_errors.py",
+    "rapid_mlx/_env.py",
+    ".github/CODEOWNERS",
+    ".mergify.yml",
+    "pyproject.toml",
+    "install.sh",
+)
+SHA = re.compile(r"[0-9a-f]{40}\Z")
+
+
+def is_trust_control(path: str) -> bool:
+    return any(
+        path == prefix or (prefix.endswith("/") and path.startswith(prefix))
+        for prefix in _CONTROL_PATHS
+    )
+
+
+def parse_catalog(text: str) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate catalog key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(text, object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise ValueError("Catalog must be a JSON object")
+    return value
+
+
+def _semantic(entry):
+    if isinstance(entry, dict):
+        return {
+            key: value for key, value in entry.items() if key not in COSMETIC_FIELDS
+        }
+    return entry
+
+
+def catalog_changes(
+    before: dict, after: dict, path: str
+) -> tuple[list[str], list[str]]:
+    """Return semantic aliases and invalid new/changed text checkpoint identities.
+
+    Existing unpinned entries are grandfathered, not silently treated as reviewed.
+    Audio has a separate runtime contract: require human review without inventing
+    a revision field that its loader would ignore.
+    """
+    changed, errors = [], []
+    # Repo-id reverse lookup selects the first matching alias. Reordering
+    # existing entries can change effective behavior without any value diff.
+    old_order = [key for key in before if key in after and key != "_comment"]
+    new_order = [key for key in after if key in before and key != "_comment"]
+    if old_order != new_order:
+        changed.append("<alias-order>")
+    for alias in sorted(before.keys() | after.keys()):
+        if alias == "_comment":
+            continue
+        old, new = before.get(alias), after.get(alias)
+        if _semantic(old) == _semantic(new):
+            continue
+        changed.append(alias)
+        if path != "rapid_mlx/aliases.json" or new is None:
+            continue
+        old_source = old.get("hf_path") if isinstance(old, dict) else old
+        new_source = new.get("hf_path") if isinstance(new, dict) else new
+        old_pin = old.get("revision") if isinstance(old, dict) else None
+        new_pin = new.get("revision") if isinstance(new, dict) else None
+        identity_changed = (
+            old is None
+            or old_source != new_source
+            or old_pin != new_pin
+            or (
+                isinstance(old, dict)
+                and isinstance(new, dict)
+                and old.get("subfolder") != new.get("subfolder")
+            )
+        )
+        if identity_changed and (
+            not isinstance(new_pin, str) or not SHA.fullmatch(new_pin)
+        ):
+            errors.append(
+                f"{alias}: new/changed source requires a reviewed full 40-hex revision"
+            )
+    return changed, errors
+
+
+def read_git_catalog(root: Path, ref: str, path: str) -> dict:
+    if not SHA.fullmatch(ref):
+        raise ValueError("Catalog audit requires an exact base/head commit SHA")
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{path}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return parse_catalog(result.stdout)
+
+
+def audit_worktree(
+    root: Path, base: str, paths: list[str]
+) -> tuple[list[str], list[str]]:
+    changed, errors = [], []
+    for path in sorted(set(paths) & CATALOGS):
+        try:
+            before = read_git_catalog(root, base, path)
+            target = root / path
+            if target.is_symlink():
+                raise ValueError("Catalog must be a regular file, not a symlink")
+            after = parse_catalog(target.read_text()) if target.exists() else {}
+            aliases, invalid = catalog_changes(before, after, path)
+            changed.extend(f"{path}:{alias}" for alias in aliases)
+            errors.extend(invalid)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            errors.append(f"Cannot establish catalog trust for {path}: {exc}")
+    return changed, errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base")
+    parser.add_argument("--report-unpinned", action="store_true")
+    args = parser.parse_args()
+    root = Path.cwd()
+    if args.report_unpinned:
+        catalog = parse_catalog((root / "rapid_mlx/aliases.json").read_text())
+        print(
+            json.dumps(
+                {
+                    alias: entry.get("hf_path") if isinstance(entry, dict) else entry
+                    for alias, entry in catalog.items()
+                    if alias != "_comment"
+                    and not (isinstance(entry, dict) and entry.get("revision"))
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if not args.base:
+        parser.error("--base or --report-unpinned is required")
+    changed, errors = audit_worktree(root, args.base, list(CATALOGS))
+    print(json.dumps({"human_review_required": changed, "errors": errors}, indent=2))
+    return int(bool(errors))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

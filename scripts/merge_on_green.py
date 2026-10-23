@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import importlib.util
 import json
 import os
 import sys
@@ -14,6 +16,20 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# The privileged workflow invokes this file with Python -I. Load only the
+# adjacent reviewed policy; never import the checkout's scripts package or let
+# a root-level module shadow standard-library imports on the token-bearing job.
+_policy_spec = importlib.util.spec_from_file_location(
+    "_rapid_catalog_trust", Path(__file__).with_name("catalog_trust.py")
+)
+assert _policy_spec is not None and _policy_spec.loader is not None
+_policy = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(_policy)
+CATALOGS = _policy.CATALOGS
+catalog_changes = _policy.catalog_changes
+is_trust_control = _policy.is_trust_control
+parse_catalog = _policy.parse_catalog
 
 
 class APIError(RuntimeError):
@@ -148,6 +164,90 @@ CHECK_WORKFLOWS = {
 }
 
 
+def catalog_review_gate(api: GitHub, pr: dict) -> str:
+    """Trusted merge controller independently checks catalog identity and approval."""
+    try:
+        files = api.items(f"pulls/{pr['number']}/files")
+        if len(files) != pr.get("changed_files"):
+            return "Cannot establish complete changed-file inventory for trust review"
+        needs_review = False
+        head_tree = None
+        for entry in files:
+            path = entry["filename"]
+            previous = entry.get("previous_filename", "")
+            needs_review |= is_trust_control(path) or is_trust_control(previous)
+            if previous in CATALOGS and previous != path:
+                needs_review = True
+            if path not in CATALOGS:
+                continue
+
+            def read(ref, path=path):
+                payload = api.request(f"contents/{path}?ref={ref}")
+                if payload.get("encoding") != "base64":
+                    raise ValueError("Catalog content is unavailable")
+                return parse_catalog(
+                    base64.b64decode(payload["content"]).decode("utf-8")
+                )
+
+            # Contents API dereferences symlinks. Check immutable Git modes
+            # first so an alias cannot redirect future edits into an unguarded file.
+            if entry["status"] != "removed":
+                if head_tree is None:
+                    tree = api.request(f"git/trees/{pr['head']['sha']}?recursive=1")
+                    if tree.get("truncated") is not False:
+                        raise ValueError("Catalog Git tree is incomplete")
+                    head_tree = {item["path"]: item for item in tree["tree"]}
+                item = head_tree[path]
+                if item.get("type") != "blob" or item.get("mode") not in {
+                    "100644",
+                    "100755",
+                }:
+                    raise ValueError(
+                        "Catalog must be a regular Git blob, not a symlink"
+                    )
+            before = {} if entry["status"] == "added" else read(pr["base"]["sha"])
+            after = {} if entry["status"] == "removed" else read(pr["head"]["sha"])
+            changes, errors = catalog_changes(before, after, path)
+            if errors:
+                return "Catalog identity policy: " + "; ".join(errors)
+            needs_review |= bool(changes)
+        if not needs_review:
+            return ""
+        reviews = api.items(f"pulls/{pr['number']}/reviews")
+        latest = {}
+        for review in sorted(reviews, key=lambda item: item["id"]):
+            user = review.get("user") or {}
+            login = user.get("login")
+            if (
+                not login
+                or user.get("type") != "User"
+                or login == pr.get("user", {}).get("login")
+                or review.get("state")
+                not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+            ):
+                continue
+            latest[login] = review
+        approved = False
+        for login, review in latest.items():
+            permission = api.request(f"collaborators/{login}/permission").get(
+                "permission"
+            )
+            if permission not in {"admin", "maintain", "write"}:
+                continue
+            if review["state"] == "CHANGES_REQUESTED":
+                return "Catalog/trust change has outstanding human change requests"
+            if (
+                review["state"] == "APPROVED"
+                and review.get("commit_id") == pr["head"]["sha"]
+            ):
+                approved = True
+        if not approved:
+            return "Catalog/trust change requires human maintainer approval of the current head"
+        return ""
+    except (APIError, KeyError, TypeError, ValueError, UnicodeError) as exc:
+        return f"Catalog/trust review could not be verified: {exc}"
+
+
 def eligibility(api: GitHub, pr: dict) -> str:
     """Return the first rejection reason, or an empty string for eligible heads."""
     labels = {x["name"] for x in pr["labels"]}
@@ -175,6 +275,8 @@ def eligibility(api: GitHub, pr: dict) -> str:
         "has_hooks",
     }:
         return "Mergeability not confirmed"
+    if reason := catalog_review_gate(api, pr):
+        return reason
     sha = pr["head"]["sha"]
     workflows = {
         run["check_suite_id"]: run["path"].split("@", 1)[0]
