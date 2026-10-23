@@ -94,17 +94,17 @@ def test_module_accepted_listener_reaches_configuration(monkeypatch, options):
 
     from rapid_mlx import local_search_runtime, server
 
-    class Configured(Exception):
+    class ConfiguredError(Exception):
         pass
 
     def configured(*args):
-        raise Configured
+        raise ConfiguredError
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
     host = "0.0.0.0" if options else "localhost"
     monkeypatch.setattr(sys, "argv", ["server", "--host", host, *options])
     monkeypatch.setattr(local_search_runtime, "configure", configured)
-    with pytest.raises(Configured):
+    with pytest.raises(ConfiguredError):
         server.main.__wrapped__()
 
 
