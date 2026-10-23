@@ -450,3 +450,30 @@ async def test_async_iterator_without_aclose_preserves_completion_and_errors():
         async for _ in diagnostics._observe_stream(Events(True), {}):
             pass
     assert diagnostics._rejections.get() is None
+
+
+def test_rejected_scanner_bounds_each_observation_and_requires_outer_wrapper():
+    before = diagnostics.rejected_tool_calls_total()
+    opener = r"<function=(\w+)>"
+    # Adjacent undeclared names have separate, bounded raw arguments.
+    text = "<function=first>a</function></tool_call><function=second>b</function></tool_call>"
+    assert (
+        split_marked_calls(text, opener, "</function>", "</tool_call>", {"known"}) == []
+    )
+    assert diagnostics.rejected_tool_calls_total() == before + 2
+    assert (
+        split_marked_calls(
+            "<function=bad>x</function>",
+            opener,
+            "</function>",
+            "</tool_call>",
+            {"known"},
+        )
+        == []
+    )
+    assert diagnostics.rejected_tool_calls_total() == before + 2
+    # The last close does not turn every earlier unclosed marker into a huge
+    # overlapping rejected argument span. Only the last candidate is complete.
+    text = "<function=bad>" * 4000 + "last</function>"
+    assert split_marked_calls(text, opener, "</function>", valid_names={"known"}) == []
+    assert diagnostics.rejected_tool_calls_total() == before + 3

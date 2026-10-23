@@ -217,9 +217,19 @@ def split_marked_calls(
         if valid_names is not None and openers[i].group(1).strip() not in valid_names:
             from .tool_call_diagnostics import record_rejected_tool_call
 
-            rejected = segment_by_next_opener(text, openers, i, closer, valid_names)
-            if rejected is not None:
-                record_rejected_tool_call(openers[i].group(1).strip(), rejected[0])
+            # Diagnostics must not rescan the remaining buffer for every
+            # rejected opener. Bound each observation by the next textual
+            # opener (not the next declared sibling), keeping adversarial runs
+            # of undeclared/unclosed markers linear. Accepted-call segmentation
+            # and its literal-value disambiguation remain unchanged.
+            start = openers[i].end()
+            end = openers[i + 1].start() if i + 1 < len(openers) else len(text)
+            cut = text.rfind(closer, start, end)
+            if cut != -1 and (
+                not outer
+                or re.match(r"\s*" + re.escape(outer), text[cut + len(closer) : end])
+            ):
+                record_rejected_tool_call(openers[i].group(1).strip(), text[start:cut])
             i += 1
             continue
         segmented = segment_by_next_opener(text, openers, i, closer, valid_names)

@@ -89,7 +89,7 @@ def test_auto_hermes_native_xml_after_search_declines(build, caplog):
     with caplog.at_level("DEBUG", logger=chat.__name__):
         assert run(request()) is None
     build.assert_not_called()
-    assert caplog.text.count("Skipping auto tool grammar") == 1
+    assert caplog.text.count("admission=skipped:native_wire_mismatch") == 1
 
 
 def test_auto_json_template_builds(build):
