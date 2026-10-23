@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Moonshot AI. Modified MIT License; see LICENSE.
 # Reviewed source: see PROVENANCE.md.
 import os
+import re
 from collections import OrderedDict
 from collections.abc import Iterator
 from logging import getLogger
@@ -105,6 +106,14 @@ class TikTokenTokenizer(PreTrainedTokenizer):
                 num_base_tokens, num_base_tokens + self.num_reserved_special_tokens
             )
         }
+        self._special_token_pattern = re.compile(
+            "("
+            + "|".join(
+                re.escape(token)
+                for token in sorted(self.special_tokens, key=len, reverse=True)
+            )
+            + ")"
+        )
 
         self.model = tiktoken.Encoding(
             name=Path(vocab_file).name,
@@ -190,35 +199,25 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         texts = self.pre_tokenizer_process(text)
 
-        all_substrs: list[str] = []
-        for text in texts:
-            substrs = (
-                substr
-                for i in range(0, len(text), TIKTOKEN_MAX_ENCODE_CHARS)
-                for substr in self._split_whitespaces_or_nonwhitespaces(
-                    text[i : i + TIKTOKEN_MAX_ENCODE_CHARS], MAX_NO_WHITESPACES_CHARS
-                )
-            )
-            all_substrs.extend(substrs)
-
         t: list[int] = []
-        for substr in all_substrs:
-            if allow_special_tokens:
-                t.extend(
-                    # we should consider special token as a common token
-                    self.model.encode(
-                        substr,
-                        allowed_special="all",
-                    )
-                )
-            else:
-                t.extend(
-                    # we should consider special token as a common token
-                    self.model.encode(
-                        substr,
-                        disallowed_special=(),
-                    )
-                )
+        for text in texts:
+            # Recognize complete control tokens before either chunk limit can
+            # split them. Only ordinary text is divided into bounded pieces.
+            pieces = (
+                self._special_token_pattern.split(text)
+                if allow_special_tokens
+                else [text]
+            )
+            for piece in pieces:
+                if allow_special_tokens and piece in self.special_tokens:
+                    t.append(self.special_tokens[piece])
+                    continue
+                for i in range(0, len(piece), TIKTOKEN_MAX_ENCODE_CHARS):
+                    for substr in self._split_whitespaces_or_nonwhitespaces(
+                        piece[i : i + TIKTOKEN_MAX_ENCODE_CHARS],
+                        MAX_NO_WHITESPACES_CHARS,
+                    ):
+                        t.extend(self.model.encode(substr, disallowed_special=()))
 
         return t
 

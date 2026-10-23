@@ -77,6 +77,21 @@ def test_raw_tokenizer_rejects_non_text_explicitly(tokenizer, value):
         tokenizer._encode_text(value)
 
 
+@pytest.mark.parametrize("boundary", [25_000, 400_000])
+@pytest.mark.parametrize("padding", ["x", " "])
+def test_special_tokens_survive_long_text_chunk_boundaries(
+    tokenizer, boundary, padding
+):
+    marker = "<|im_end|>"
+    text = padding * (boundary - 5) + marker + "tail"
+    tokens = tokenizer.encode(text)
+    assert tokens.count(tokenizer.special_tokens[marker]) == 1
+    assert tokenizer.decode(tokens) == text
+    ordinary = tokenizer.encode(text, allow_special_tokens=False)
+    assert tokenizer.special_tokens[marker] not in ordinary
+    assert tokenizer.decode(ordinary) == text
+
+
 @pytest.mark.parametrize(
     "thinking,suffix", [(True, "<think>"), (False, "<think></think>")]
 )
@@ -215,7 +230,7 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "88efe12348d97f1029335d7c7f00583546bd14e65c29837e560d38417c8be3ca",
+        "tokenization.py": "5ea2bdd901cc35404add72f7d4385608f237ce914f1713e1a8261cb7214819ef",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 

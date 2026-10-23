@@ -254,7 +254,7 @@ def test_mllm_installs_binding_before_load(
         return
     wrapper.load()
     wrapper.load()
-    options = {} if trust_remote_code else {"trust_remote_code": False}
+    options = {"trust_remote_code": trust_remote_code}
     assert calls == [
         ("config", str(tmp_path), options),
         ("model", str(tmp_path), options),

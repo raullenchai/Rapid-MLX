@@ -62,10 +62,14 @@ def test_mllm_rejects_model_file_before_upstream_loader(
     assert instance._loaded is False
 
 
-def test_mllm_explicit_consent_preserves_local_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("environment,requested", [(None, True), ("1", None)])
+def test_mllm_explicit_consent_preserves_local_checkpoint(
+    tmp_path, monkeypatch, environment, requested
+):
     from types import SimpleNamespace
 
     import mlx_vlm
+    import mlx_vlm.utils
 
     from rapid_mlx.models import mllm
 
@@ -73,23 +77,37 @@ def test_mllm_explicit_consent_preserves_local_checkpoint(tmp_path, monkeypatch)
         '{"model_type":"llava","model_file":"custom.py"}'
     )
     (tmp_path / "custom.py").write_text("# reviewed implementation")
-    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    if environment is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", environment)
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     calls = []
+    original_load_config = mlx_vlm.utils.load_config
+
+    def load_config(path, *, trust_remote_code):
+        assert trust_remote_code is True
+        calls.append(("config", path))
+        return original_load_config(path, trust_remote_code=trust_remote_code)
+
+    monkeypatch.setattr(mlx_vlm.utils, "load_config", load_config)
+
+    def load(path, *, trust_remote_code):
+        assert trust_remote_code is True
+        calls.append(("model", path))
+        return (
+            SimpleNamespace(config=SimpleNamespace()),
+            SimpleNamespace(tokenizer=SimpleNamespace()),
+        )
+
     monkeypatch.setattr(
         mlx_vlm,
         "load",
-        lambda path: (
-            calls.append(path)
-            or (
-                SimpleNamespace(config=SimpleNamespace()),
-                SimpleNamespace(tokenizer=SimpleNamespace()),
-            )
-        ),
+        load,
     )
     instance = mllm.MLXMultimodalLM(
-        str(tmp_path), trust_remote_code=True, enable_cache=False
+        str(tmp_path), trust_remote_code=requested, enable_cache=False
     )
     instance.load()
     assert instance._loaded
-    assert calls == [str(tmp_path)]
+    assert calls == [("config", str(tmp_path)), ("model", str(tmp_path))]

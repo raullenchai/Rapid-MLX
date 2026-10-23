@@ -25,6 +25,7 @@ included or executed, and caller-supplied `tools_ts_str` is ignored.
 
 Other local deviations are Ruff formatting, explicit optional/container/return
 types, indexed token lookup, compatible positional encode/decode options and
-explicit text validation. Special-token control is a keyword-only extension. Reviewed packaged SHA256:
+explicit text validation. Complete special tokens are recognized before ordinary
+text is divided into bounded chunks. Special-token control is a keyword-only extension. Reviewed packaged SHA256:
 
-- `tokenization.py`: `88efe12348d97f1029335d7c7f00583546bd14e65c29837e560d38417c8be3ca`
+- `tokenization.py`: `5ea2bdd901cc35404add72f7d4385608f237ce914f1713e1a8261cb7214819ef`

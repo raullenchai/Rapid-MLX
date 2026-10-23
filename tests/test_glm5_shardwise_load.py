@@ -208,9 +208,7 @@ def test_mllm_routes_only_darwin_glm_and_preserves_remote_code_policy(
     monkeypatch.setattr(mllm.sys, "platform", platform)
     with pytest.raises(RuntimeError, match="reached loader boundary"):
         mllm.MLXMultimodalLM("local/checkpoint", trust_remote_code=trust).load()
-    assert calls == [
-        (expected, ("local/checkpoint",), {} if trust else {"trust_remote_code": False})
-    ]
+    assert calls == [(expected, ("local/checkpoint",), {"trust_remote_code": trust})]
 
 
 @pytest.mark.requires_mlx
