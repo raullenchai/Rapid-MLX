@@ -22,6 +22,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_rd_common import (
     aggregate_scores,
+    checkpoint_hashes,
     file_hash,
     masked_route,
     read_slices,
@@ -289,6 +290,7 @@ def main() -> None:
         "schema_version": 1,
         "model_revision": a.model_revision or model.name,
         "config_sha256": file_hash(model / "config.json"),
+        "checkpoint_sha256": checkpoint_hashes(model),
         "corpus": corpus_metadata,
         "slice_names": list(slices),
         "tokens_per_slice": [a.tokens] * len(slices),

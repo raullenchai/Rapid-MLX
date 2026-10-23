@@ -214,6 +214,13 @@ def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch)
         main()
     assert (tmp_path / "costs.json").read_text() == "unchanged\n"
 
+    shard = tmp_path / "source" / "tiny.safetensors"
+    payload = shard.read_bytes()
+    shard.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+    monkeypatch.setattr(sys, "argv", args + ["--resume"])
+    with pytest.raises(ValueError, match="provenance"):
+        main()
+
 
 def test_empty_expert_range_does_not_write_output_or_inventory(tmp_path, monkeypatch):
     pytest.importorskip("mlx.core")
@@ -304,7 +311,7 @@ def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch)
 
     def simulate_write_group(path, entries, *_args, **_kwargs):
         header = rd_build.header(entries)
-        with path.open("xb") as output:
+        with path.open("wb") as output:
             output.write(struct.pack("<Q", len(header)))
             output.write(header)
             output.write(bytes(sum(entry.nbytes for entry in entries)))
@@ -326,7 +333,9 @@ def test_build_failure_removes_staging_and_retry_succeeds(tmp_path, monkeypatch)
     assert not list(tmp_path.glob("build.partial-*"))
 
 
-@pytest.mark.parametrize("existing", ["race", "size mismatch", "header mismatch"])
+@pytest.mark.parametrize(
+    "existing", ["race", "payload mismatch", "size mismatch", "header mismatch"]
+)
 def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
     tmp_path, monkeypatch, existing
 ):
@@ -358,7 +367,10 @@ def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
     write_group = rd_build.write_group
 
     def preexisting_shared_group(path, entries, *args, **kwargs):
-        if kwargs.get("publish_exclusive") and existing != "race":
+        if kwargs.get("publish_exclusive") and existing not in (
+            "race",
+            "payload mismatch",
+        ):
             raw = rd_build.header(entries)
             data = (
                 struct.pack("<Q", len(raw))
@@ -375,12 +387,12 @@ def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
     monkeypatch.setattr(rd_build, "write_group", preexisting_shared_group)
 
     def competing_publish(temporary, path):
-        if path.parent.parent == shared and existing == "race":
+        if path.parent.parent == shared and existing in ("race", "payload mismatch"):
             # Our complete, fsynced temporary exists before the other builder wins.
             assert ".partial-" in temporary.name
             data = temporary.read_bytes()
-            # Distinct payload proves we keep the winner rather than overwrite it.
-            data = data[:-1] + b"\x01"
+            if existing == "payload mismatch":
+                data = data[:-1] + b"\x01"
             path.write_bytes(data)
             winners[path.name] = (path.stat().st_ino, data)
         return link(temporary, path)
@@ -390,7 +402,7 @@ def test_build_reuses_concurrent_shared_group_or_rejects_mismatch(
         rd_build.build(source, destination, shared, allocation)
         assert winners
         for name, (inode, data) in winners.items():
-            assert (destination / name).stat().st_ino == inode
+            assert (destination / name).stat().st_ino != inode
             assert (destination / name).read_bytes() == data
     else:
         with pytest.raises(ValueError, match=f"shared Engram (file )?{existing}"):
@@ -496,6 +508,10 @@ def test_native_calibration_main_saves_domain_halves_hashes_and_revision(
     model_path.mkdir()
     config = {"num_hidden_layers": 1, "n_routed_experts": 4, "num_experts_per_tok": 2}
     (model_path / "config.json").write_text(json.dumps(config))
+    (model_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "weights.safetensors"}})
+    )
+    (model_path / "weights.safetensors").write_bytes(b"fixture payload")
     for name in ("code", "math"):
         (tmp_path / f"{name}.txt").write_text(f"{name} distinct corpus")
     manifest = tmp_path / "slices.json"
@@ -569,6 +585,9 @@ def test_native_calibration_main_saves_domain_halves_hashes_and_revision(
     with np.load(tmp_path / "scores.npz") as result:
         metadata = json.loads(str(result["metadata"]))
         assert metadata["model_revision"] == "r"
+        from scripts.deepseek_v41_rd_common import checkpoint_hashes
+
+        assert metadata["checkpoint_sha256"] == checkpoint_hashes(model_path)
         assert metadata["tokens_per_slice"] == [4, 4]
         assert metadata["slice_names"] == ["code", "math"]
         assert (
@@ -589,3 +608,84 @@ def test_native_calibration_main_saves_domain_halves_hashes_and_revision(
             metadata["split_keep_overlap_by_domain"],
             result["split_keep_overlap_by_domain"],
         )
+
+
+def test_reused_payloads_are_verified_independent_copies(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_rd_build as build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    (source / "config.json").write_text(json.dumps(config))
+    allocation = {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}}}
+    monkeypatch.setattr(
+        build, "transformed", lambda _i, _c, e, *_: bytes(e.nbytes // len(e.sources))
+    )
+    first, second, shared = tmp_path / "first", tmp_path / "second", tmp_path / "shared"
+    build.build(source, first, shared, allocation)
+    build.build(source, second, shared, allocation, reuse_from=first)
+    payloads = json.loads((first / "config.json").read_text())["rapid_quantization"][
+        "payload_sha256"
+    ]
+    assert payloads
+    for name in payloads:
+        assert (first / name).stat().st_ino != (second / name).stat().st_ino
+    name = next(iter(payloads))
+    previous = (second / name).read_bytes()
+    original = first / name
+    data = original.read_bytes()
+    original.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    assert (second / name).read_bytes() == previous
+    with pytest.raises(ValueError, match="reuse payload digest mismatch"):
+        build.build(source, tmp_path / "third", shared, allocation, reuse_from=first)
+
+
+def test_shared_identity_binds_equal_layout_payload(tmp_path):
+    from scripts.deepseek_v41_rd_common import checkpoint_hashes
+
+    tiny_source(tmp_path / "a")
+    import shutil
+
+    shutil.copytree(tmp_path / "a", tmp_path / "b")
+    before = checkpoint_hashes(tmp_path / "a")
+    assert before == checkpoint_hashes(tmp_path / "b")
+    shard = tmp_path / "b" / "tiny.safetensors"
+    data = shard.read_bytes()
+    shard.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    after = checkpoint_hashes(tmp_path / "b")
+    assert before["config.json"] == after["config.json"]
+    assert (
+        before["model.safetensors.index.json"] == after["model.safetensors.index.json"]
+    )
+    assert before["tiny.safetensors"] != after["tiny.safetensors"]
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_copy_mutation_refuses_publication(tmp_path, monkeypatch, reuse):
+    from scripts import deepseek_v41_rd_build as build
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 2
+    (source / "config.json").write_text(json.dumps(config))
+    allocation = {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 4}}}
+    monkeypatch.setattr(
+        build, "transformed", lambda _i, _c, e, *_: bytes(e.nbytes // len(e.sources))
+    )
+    first, shared = tmp_path / "first", tmp_path / "shared"
+    build.build(source, first, shared, allocation)
+    copy = build.shutil.copyfile
+
+    def changed_copy(src, dst):
+        copy(src, dst)
+        data = dst.read_bytes()
+        dst.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+
+    monkeypatch.setattr(build.shutil, "copyfile", changed_copy)
+    destination = tmp_path / "failed"
+    with pytest.raises(ValueError, match="payload changed during copy"):
+        build.build(
+            source, destination, shared, allocation, reuse_from=first if reuse else None
+        )
+    assert not destination.exists()
+    assert not list(tmp_path.glob("failed.partial-*"))

@@ -4,8 +4,8 @@
 No whole-shard load. A projection/expert or Engram row chunk is the largest
 source read. The dry run imports no MLX and never creates a destination.
 
---reuse-from links unchanged shards after source identity, semantic plan, exact
-header and size checks. Inputs must be immutable: payloads are not rehashed.
+--reuse-from copies unchanged shards after source identity, semantic plan and
+payload digest checks. Inputs must remain immutable during a build.
 Reuse provenance lives in reuse-provenance.json to preserve fresh config/index bytes.
 """
 
@@ -26,7 +26,11 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.deepseek_v41_rd_common import require_all_moe_layers
+from scripts.deepseek_v41_rd_common import (
+    checkpoint_hashes,
+    file_hash,
+    require_all_moe_layers,
+)
 from scripts.repack_deepseek_v41_native import CheckpointIndex, _copy_metadata_files
 
 EXPERT = re.compile(r"layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.weight$")
@@ -443,7 +447,12 @@ def write_group(
             f.flush()
             os.fsync(f.fileno())
         if publish_exclusive:
-            os.link(temporary, path)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                validate_shared_group(path, entries)
+                if file_hash(path) != file_hash(temporary):
+                    raise ValueError("shared Engram payload mismatch")
             temporary.unlink()
         else:
             temporary.replace(path)
@@ -492,8 +501,6 @@ def reuse_plan(reuse_from, destination, index, config, identity, groups):
     previous = json.loads(config_bytes)["rapid_quantization"]
     if previous["shared_engram_identity"] != identity:
         raise ValueError("reuse build source identity mismatch")
-    if reuse_from.stat().st_dev != existing_parent(destination.parent).stat().st_dev:
-        raise ValueError("reuse build and destination must be on the same filesystem")
     old_allocation = previous["allocation"]
     result = {
         "from": str(reuse_from),
@@ -510,9 +517,11 @@ def reuse_plan(reuse_from, destination, index, config, identity, groups):
         path = reuse_from / group_path(group)
         # Entry equality covers sources, kept router rows, precision and policy.
         match = old_groups.get(group) == es and matching_file(path, es)
-        if match and path.stat().st_dev != reuse_from.stat().st_dev:
+        if match and file_hash(path) != previous.get("payload_sha256", {}).get(
+            str(group_path(group))
+        ):
             raise ValueError(
-                "reuse file and destination must be on the same filesystem"
+                "reuse payload digest mismatch; rebuild legacy or changed inputs"
             )
         result["reused" if match else "rewritten"].append(str(group_path(group)))
     return result
@@ -530,12 +539,13 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
         and report["resident_tensor_bytes"] > allocation["budget_bytes"]
     ):
         raise ValueError("allocation exceeds resident byte target")
-    # Pin immutable shared tables to source config + index/header identity.
+    # Content binding distinguishes equal-layout checkpoints with different weights.
 
     identity = hashlib.sha256(
         json.dumps(
             {
                 "config": config,
+                "checkpoint_sha256": checkpoint_hashes(source),
                 "tensors": [
                     (n, t.shape, t.dtype, t.nbytes, t.path.name, t.offset)
                     for n, t in sorted(index.tensors.items())
@@ -557,10 +567,6 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
     shared_path = shared / identity
     shared_path.mkdir(parents=True, exist_ok=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if shared_path.stat().st_dev != destination.parent.stat().st_dev:
-        raise ValueError(
-            "shared Engram and builds must be on the same filesystem for hard links"
-        )
     staging = Path(
         tempfile.mkdtemp(dir=destination.parent, prefix=destination.name + ".partial-")
     )
@@ -574,18 +580,23 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
                 (staging / "dspark").mkdir()
                 target = staging / "dspark" / filename
             if reuse is not None and str(group_path(group)) in reuse["reused"]:
-                # Recheck before linking; builds used as reuse inputs must be immutable.
+                # Verify the independent copy as well as the reuse-plan input.
                 original = reuse_from / group_path(group)
                 if not matching_file(original, es):
                     raise ValueError(f"reuse file changed during build: {original}")
-                os.link(original, target)
+                shutil.copyfile(original, target)
+                expected = json.loads((reuse_from / "config.json").read_text())[
+                    "rapid_quantization"
+                ]["payload_sha256"][str(group_path(group))]
+                if file_hash(target) != expected:
+                    raise ValueError("reuse payload changed during copy")
             elif group.startswith("engram-"):
                 common = shared_path / filename
-                try:
-                    write_group(common, es, index, config, publish_exclusive=True)
-                except FileExistsError:
-                    validate_shared_group(common, es)
-                os.link(common, target)
+                write_group(common, es, index, config, publish_exclusive=True)
+                expected = file_hash(common)
+                shutil.copyfile(common, target)
+                if file_hash(target) != expected:
+                    raise ValueError("shared Engram payload changed during copy")
             else:
                 write_group(target, es, index, config)
             (mtp_mapping if group == "mtp" else mapping).update(
@@ -625,6 +636,9 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
             "format": "native-packed-affine",
             "allocation": allocation,
             "shared_engram_identity": identity,
+            "payload_sha256": {
+                str(group_path(g)): file_hash(staging / group_path(g)) for g in groups
+            },
             "mtp": bool(mtp_mapping),
             "vision": False,
             "bytes": report,
@@ -645,7 +659,7 @@ def build(source, destination, shared, allocation, dry_run=False, reuse_from=Non
         )
         _copy_metadata_files(source, staging)
         (staging / "README.md").write_text(
-            "# Experimental pruned native build\n\nUnqualified. Vision omitted; see config for optional DSpark sidecar. Engram files are hard links to a shared immutable payload.\n"
+            "# Experimental pruned native build\n\nUnqualified. Vision omitted; see config for optional DSpark sidecar. Engram files are independent copies of verified shared payloads.\n"
         )
         if reuse is not None:
             (staging / "reuse-provenance.json").write_text(

@@ -38,6 +38,21 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def checkpoint_hashes(root: Path) -> dict[str, str]:
+    """Bind offline results to complete indexed payloads, not directory names.
+
+    Read in bounded chunks. Inputs must remain immutable during a tool run.
+    This intentionally adds one full checkpoint read on every invocation.
+    """
+    names = {"config.json", "model.safetensors.index.json"}
+    names.update(
+        json.loads((root / "model.safetensors.index.json").read_text())[
+            "weight_map"
+        ].values()
+    )
+    return {name: file_hash(root / name) for name in sorted(names)}
+
+
 def read_slices(manifest: Path | None, corpus: list[Path]) -> dict[str, list[Path]]:
     if manifest is None:
         return {"general": corpus}

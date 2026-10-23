@@ -21,6 +21,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_rd_common import (
     affine_bytes,
+    checkpoint_hashes,
     file_hash,
     require_all_moe_layers,
 )
@@ -335,6 +336,7 @@ def main():
         "projection_errors": a.projection_errors,
         "model_revision": revision,
         "config_sha256": file_hash(source / "config.json"),
+        "checkpoint_sha256": checkpoint_hashes(source),
         "index_sha256": file_hash(source / "model.safetensors.index.json"),
         "probes": a.probes,
         "seed": a.seed,
