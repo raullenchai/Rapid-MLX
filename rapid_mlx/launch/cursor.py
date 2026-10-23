@@ -159,22 +159,26 @@ def write_or_patch_config(
     assert path is not None
 
     path = path.resolve()
-    existing = _common.load_json_lenient(path)
-    updated = {
-        **existing,
-        "cursor.aiprovider.openai.baseUrl": base_url,
-        "cursor.aiprovider.openai.apiKey": api_key,
-        "cursor.aiprovider.openai.model": model,
-    }
-    if updated == existing and path.exists():
+    with _ownership.locked(path):
+        existing = _common.load_json_lenient(path)
+        updated = {
+            **existing,
+            "cursor.aiprovider.openai.baseUrl": base_url,
+            "cursor.aiprovider.openai.apiKey": api_key,
+            "cursor.aiprovider.openai.model": model,
+        }
+        if updated == existing and path.exists():
+            return path
+        _common.backup_existing(path)
+        _ownership.write(
+            path,
+            {key: updated[key] for key in _OWNED_SETTINGS},
+            lambda: _common.atomic_write_json(path, updated),
+            before_fields={
+                key: existing[key] for key in _OWNED_SETTINGS if key in existing
+            },
+        )
         return path
-    _common.backup_existing(path)
-    _ownership.write(
-        path,
-        {key: updated[key] for key in _OWNED_SETTINGS},
-        lambda: _common.atomic_write_json(path, updated),
-    )
-    return path
 
 
 _OWNED_SETTINGS = tuple(
@@ -186,12 +190,13 @@ def remove_config() -> bool:
     path = current_config_path()
     assert path is not None
     path = path.resolve()
-    data = _common.load_json_lenient(path)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    if not _ownership.remove_fields(path, data, _OWNED_SETTINGS):
-        _ownership.forget(path)
-        return False
-    _common.backup_existing(path)
-    _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
-    return True
+    with _ownership.locked(path):
+        data = _common.load_json_lenient(path)
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+        if not _ownership.remove_fields(path, data, _OWNED_SETTINGS):
+            _ownership.forget(path)
+            return False
+        _common.backup_existing(path)
+        _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
+        return True

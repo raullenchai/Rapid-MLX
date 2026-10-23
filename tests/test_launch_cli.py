@@ -2061,6 +2061,7 @@ def test_receipt_replacement_failure_restores_both_files(fake_home, existing):
             path,
             {"model": "old"},
             lambda: _common.atomic_write_json(path, {"model": "old"}),
+            before_fields={},
         )
     before = path.read_bytes() if existing else None
     prior_receipt = receipt.read_bytes() if existing else None
@@ -2079,6 +2080,7 @@ def test_receipt_replacement_failure_restores_both_files(fake_home, existing):
             path,
             {"model": "new"},
             lambda: _common.atomic_write_json(path, {"model": "new"}),
+            before_fields={},
         )
     assert (path.read_bytes() if path.exists() else None) == before
     assert (receipt.read_bytes() if receipt.exists() else None) == prior_receipt
@@ -2132,12 +2134,15 @@ def test_overlapping_configuration_failure_cannot_undo_success(fake_home):
             first_written.set()
             assert release_first.wait(5)
 
-        _ownership.write(path, {"model": "first"}, config)
+        _ownership.write(path, {"model": "first"}, config, before_fields={})
 
     def second_write():
         second_started.set()
         _ownership.write(
-            path, {"model": "second"}, lambda: original(path, {"model": "second"})
+            path,
+            {"model": "second"},
+            lambda: original(path, {"model": "second"}),
+            before_fields={},
         )
         second_finished.set()
 
@@ -2161,3 +2166,171 @@ def test_overlapping_configuration_failure_cannot_undo_success(fake_home):
     data = json.loads(path.read_text())
     assert data == {"model": "second"}
     assert _ownership.remove_fields(path, data, ("model",))
+
+
+@pytest.mark.parametrize("client", ["cline", "cursor"])
+@pytest.mark.parametrize("already_owned", [False, True])
+def test_partial_update_preserves_unchanged_user_fields(
+    fake_home, client, already_owned
+):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "old-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if not already_owned:
+        receipt.unlink()
+    adapter.write_or_patch_config("https://example.com", "new-model", "key")
+    assert adapter.remove_config()
+    data = json.loads(path.read_text())
+    if client == "cursor":
+        fields = data
+        assert "cursor.aiprovider.openai.model" not in fields
+        preserved = {
+            "cursor.aiprovider.openai.baseUrl": "https://example.com/v1",
+            "cursor.aiprovider.openai.apiKey": "key",
+        }
+    else:
+        fields = data["providers"]["openai-compatible"]["settings"]
+        assert "model" not in fields
+        preserved = {"baseUrl": "https://example.com/v1", "apiKey": "key"}
+        assert ("lastUsedProvider" in data) != already_owned
+    for key, value in preserved.items():
+        if already_owned:
+            assert key not in fields
+        else:
+            assert fields[key] == value
+
+
+@pytest.mark.parametrize("custom", [False, "extra", "model"])
+def test_reconfigured_user_model_entry_is_not_claimed(fake_home, custom):
+    import yaml
+
+    path = continue_dev.write_or_patch_config("https://example.com", "old-model")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if custom:
+        data = continue_dev.load_yaml_config(path)
+        if custom == "model":
+            data["models"][0]["model"] = yaml.safe_load("2026-10-22")
+        else:
+            data["models"][0].update(yaml.safe_load("updated: 2026-10-22"))
+        path.write_text(continue_dev.dump_yaml(data))
+    else:
+        receipt.unlink()
+    continue_dev.write_or_patch_config("https://example.com", "new-model")
+    before = path.read_bytes()
+    assert not continue_dev.remove_config()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+@pytest.mark.parametrize("no_op", [False, True])
+def test_concurrent_removal_preserves_later_configuration(fake_home, client, no_op):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, current_thread
+
+    from rapid_mlx.launch import _ownership
+
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "old-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if no_op:
+        if client == "continue-dev":
+            data = continue_dev.load_yaml_config(path)
+            data["models"][0]["custom"] = "user-owned"
+            path.write_text(continue_dev.dump_yaml(data))
+        else:
+            data = json.loads(path.read_text())
+            fields = (
+                data
+                if client == "cursor"
+                else data["providers"]["openai-compatible"]["settings"]
+            )
+            for key in adapter._OWNED_SETTINGS:
+                fields[key] = "user-owned"
+            if client == "cline":
+                data["lastUsedProvider"] = "user-provider"
+            _common.atomic_write_json(path, data)
+    paused, release, writer_started, writer_finished = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
+    removal_thread = []
+    target = "forget" if no_op else "remove_fields"
+    original = getattr(_ownership, target)
+
+    def pause_removal(*args, **kwargs):
+        if current_thread() is removal_thread[0] and not paused.is_set():
+            paused.set()
+            assert release.wait(5)
+        return original(*args, **kwargs)
+
+    def remove():
+        removal_thread.append(current_thread())
+        return adapter.remove_config()
+
+    def write():
+        writer_started.set()
+        adapter.write_or_patch_config("https://example.com", "new-model", "new-key")
+        writer_finished.set()
+
+    with (
+        patch.object(_ownership, target, side_effect=pause_removal),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        removing = pool.submit(remove)
+        try:
+            assert paused.wait(5)
+            writing = pool.submit(write)
+            assert writer_started.wait(5)
+            writer_finished.wait(0.2)
+        finally:
+            release.set()
+        assert removing.result(timeout=5) != no_op
+        writing.result(timeout=5)
+    assert receipt.exists()
+    if client == "continue-dev":
+        assert continue_dev.load_yaml_config(path)["models"][0]["model"] == "new-model"
+    else:
+        data = json.loads(path.read_text())
+        fields = (
+            data
+            if client == "cursor"
+            else data["providers"]["openai-compatible"]["settings"]
+        )
+        key = "cursor.aiprovider.openai.model" if client == "cursor" else "model"
+        assert fields[key] == "new-model"
+
+
+@pytest.mark.parametrize("strip_custom", [False, True])
+def test_migrated_user_model_entry_keeps_its_custom_fields(fake_home, strip_custom):
+    path = continue_dev.current_config_path()
+    path.parent.mkdir(parents=True)
+    legacy = path.with_name("config.json")
+    legacy.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "title": "rapid-mlx",
+                        "provider": "openai",
+                        "model": "user-model",
+                        "completionOptions": {"temperature": 0.2},
+                    }
+                ]
+            }
+        )
+    )
+    continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    if strip_custom:
+        data = continue_dev.load_yaml_config(path)
+        data["models"][0].pop("roles")
+        data["models"][0].pop("defaultCompletionOptions")
+        path.write_text(continue_dev.dump_yaml(data))
+    before = path.read_bytes()
+    assert not continue_dev.remove_config()
+    assert path.read_bytes() == before
+    if not strip_custom:
+        assert continue_dev.load_yaml_config(path)["models"][0][
+            "defaultCompletionOptions"
+        ] == {"temperature": 0.2}

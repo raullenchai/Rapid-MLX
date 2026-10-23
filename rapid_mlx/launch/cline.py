@@ -272,13 +272,14 @@ def write_or_patch_config(
     # Write through a symlinked providers.json (e.g. into a dotfiles repo)
     # instead of replacing the link with a regular file.
     path = path.resolve()
-    existing = load_providers(path)
-    updated = patched_config(existing, server_url, model, api_key)
-    if updated is existing and path.exists():
+    with _ownership.locked(path):
+        existing = load_providers(path)
+        updated = patched_config(existing, server_url, model, api_key)
+        if updated is existing and path.exists():
+            return path
+        _common.backup_existing(path)
+        write_owned_config(path, updated)
         return path
-    _common.backup_existing(path)
-    write_owned_config(path, updated)
-    return path
 
 
 def preview(
@@ -304,28 +305,42 @@ _OWNED_SETTINGS = ("apiKey", "model", "baseUrl")
 
 
 def write_owned_config(path: Path, data: dict[str, Any]) -> None:
-    settings = data["providers"][_PROVIDER_ID]["settings"]
-    _ownership.write(
-        path,
-        {
-            **{key: settings[key] for key in _OWNED_SETTINGS},
-            "lastUsedProvider": data["lastUsedProvider"],
-        },
-        lambda: _common.atomic_write_json(path, data),
-    )
+    with _ownership.locked(path):
+        before = load_providers(path)
+        previous_settings = (
+            before.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
+        )
+        before_fields = {
+            key: previous_settings[key]
+            for key in _OWNED_SETTINGS
+            if key in previous_settings
+        }
+        if "lastUsedProvider" in before:
+            before_fields["lastUsedProvider"] = before["lastUsedProvider"]
+        settings = data["providers"][_PROVIDER_ID]["settings"]
+        _ownership.write(
+            path,
+            {
+                **{key: settings[key] for key in _OWNED_SETTINGS},
+                "lastUsedProvider": data["lastUsedProvider"],
+            },
+            lambda: _common.atomic_write_json(path, data),
+            before_fields=before_fields,
+        )
 
 
 def remove_config() -> bool:
     path = current_config_path()
     assert path is not None
     path = path.resolve()
-    data = load_providers(path)
-    settings = data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
-    removed_settings = _ownership.remove_fields(path, settings, _OWNED_SETTINGS)
-    removed_selection = _ownership.remove_fields(path, data, ("lastUsedProvider",))
-    if not removed_settings and not removed_selection:
-        _ownership.forget(path)
-        return False
-    _common.backup_existing(path)
-    _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
-    return True
+    with _ownership.locked(path):
+        data = load_providers(path)
+        settings = data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {})
+        removed_settings = _ownership.remove_fields(path, settings, _OWNED_SETTINGS)
+        removed_selection = _ownership.remove_fields(path, data, ("lastUsedProvider",))
+        if not removed_settings and not removed_selection:
+            _ownership.forget(path)
+            return False
+        _common.backup_existing(path)
+        _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
+        return True

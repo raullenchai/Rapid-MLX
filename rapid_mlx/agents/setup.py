@@ -30,6 +30,7 @@ from rapid_mlx.agents.telemetry import (
     track_agent_configure_failed,
 )
 from rapid_mlx.launch import _common as launch_common
+from rapid_mlx.launch import _ownership as launch_ownership
 from rapid_mlx.launch import claude_code, cline, continue_dev
 
 # Agents whose ``--setup`` goes through the plan/apply flow below: an exact
@@ -580,6 +581,14 @@ def build_setup_plan(
 
 
 def apply_setup_plan(plan: SetupPlan) -> Path:
+    """Apply an owned-adapter plan under its read/compare/write operation lock."""
+    if plan.agent in {"cline", "continue"}:
+        with launch_ownership.locked(plan.path):
+            return _apply_setup_plan(plan)
+    return _apply_setup_plan(plan)
+
+
+def _apply_setup_plan(plan: SetupPlan) -> Path:
     """Back up the existing config and atomically apply an unchanged plan."""
     # Re-read to prevent overwriting an edit made between preview and consent.
     # The shape check on ``after`` picks the loader: a patch-layer plan (dsh)
