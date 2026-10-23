@@ -58,6 +58,8 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
     ref, cand = tmp_path / "ref", tmp_path / "cand"
     ref.mkdir()
     cand.mkdir()
+    for root in (ref, cand):
+        np.save(root / "a-tokens.npy", np.arange(11, dtype=np.int32))
     rng = np.random.default_rng(7)
     r = rng.normal(size=(11, 32)).astype(np.float32)
     c = r + rng.normal(0, 0.2, size=r.shape)
@@ -86,6 +88,7 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         slices=dict(
             a=dict(
                 tokens=11,
+                tokens_sha256=file_hash(ref / "a-tokens.npy"),
                 corpus_sha256=["text"],
                 compact_sha256=compact_hashes(ref, "a"),
             )
@@ -101,6 +104,7 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         entry = dict(logits_sha256=file_hash(cand / "a-logits.npy"))
     np.save(cand / "a-mass.npy", np.ones((11, 2)))
     entry["mass_sha256"] = file_hash(cand / "a-mass.npy")
+    entry["tokens_sha256"] = file_hash(cand / "a-tokens.npy")
     cm = dict(base, slices=dict(a=dict(tokens=11, corpus_sha256=["text"], **entry)))
     if online:
         cm["reference_metadata_sha256"] = file_hash(ref / "metadata.json")

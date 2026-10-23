@@ -587,6 +587,7 @@ def main():
         metadata["slices"][name] = dict(
             tokens=a.tokens,
             mass_sha256=file_hash(a.output / f"{name}-mass.npy"),
+            tokens_sha256=file_hash(a.output / f"{name}-tokens.npy"),
             corpus_sha256=[file_hash(p) for p in paths],
             **(
                 dict(compact_sha256=compact_hashes(a.output, name))

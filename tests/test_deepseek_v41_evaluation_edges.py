@@ -317,3 +317,14 @@ def test_collect_rejects_empty_manifest_without_output(collector):
     with pytest.raises(ValueError, match="each slice needs"):
         evaluator.collect(collector)
     assert not collector.output.exists()
+
+
+@pytest.mark.parametrize("roots", [("r",), ("c",), ("r", "c")])
+def test_token_files_are_independently_authenticated(tmp_path, roots):
+    r, c = tmp_path / "r", tmp_path / "c"
+    for root in (r, c):
+        write_cache(root, [[1.0, 2.0], [3.0, 4.0]], "unpruned_reference")
+    for name in roots:
+        np.save(tmp_path / name / "domain-tokens.npy", np.array([9, 9]))
+    with pytest.raises(ValueError, match="token IDs hash mismatch"):
+        evaluator.compare(r, c)

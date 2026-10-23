@@ -228,6 +228,8 @@ def collect(a):
         if rm and (
             compact_hashes(reference, name) != rm["slices"][name]["compact_sha256"]
             or rm["slices"][name]["corpus_sha256"] != [file_hash(p) for p in paths]
+            or file_hash(reference / f"{name}-tokens.npy")
+            != rm["slices"][name].get("tokens_sha256")
             or not np.array_equal(
                 ids, np.load(reference / f"{name}-tokens.npy", allow_pickle=False)
             )
@@ -284,6 +286,7 @@ def collect(a):
         metadata["slices"][name] = {
             "tokens": a.tokens,
             "mass_sha256": file_hash(a.output / f"{name}-mass.npy"),
+            "tokens_sha256": file_hash(a.output / f"{name}-tokens.npy"),
             "corpus_sha256": [file_hash(p) for p in paths],
             **(
                 {"scores_sha256": file_hash(a.output / f"{name}-scores.npy")}
@@ -350,6 +353,8 @@ def compare(reference: Path, candidate: Path, subset=False):
             raise ValueError("online scores belong to a different reference")
         for root, meta in ((reference, rm), (candidate, cm)):
             entry = meta["slices"][name]
+            if file_hash(root / f"{name}-tokens.npy") != entry.get("tokens_sha256"):
+                raise ValueError("cache token IDs hash mismatch")
             if "compact_sha256" in entry:
                 if compact_hashes(root, name) != entry["compact_sha256"]:
                     raise ValueError("cache compact hash mismatch")

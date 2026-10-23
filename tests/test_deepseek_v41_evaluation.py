@@ -54,6 +54,7 @@ def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
                     "domain": {
                         "corpus_sha256": [corpus],
                         "mass_sha256": file_hash(root / "domain-mass.npy"),
+                        "tokens_sha256": file_hash(root / "domain-tokens.npy"),
                         "logits_sha256": file_hash(root / "domain-logits.npy"),
                     }
                 },
@@ -71,6 +72,11 @@ def test_cache_comparison_validates_identity_and_reports_domains(tmp_path):
     assert report["slices"]["domain"]["kl_nats"] == 0
     assert report["slices"]["domain"]["mean_retained_routing_mass"] == 0.75
     np.save(c / "domain-tokens.npy", np.array([1, 3]))
+    metadata = json.loads((c / "metadata.json").read_text())
+    from scripts.deepseek_v41_rd_common import file_hash
+
+    metadata["slices"]["domain"]["tokens_sha256"] = file_hash(c / "domain-tokens.npy")
+    (c / "metadata.json").write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="token IDs"):
         compare(r, c)
 
