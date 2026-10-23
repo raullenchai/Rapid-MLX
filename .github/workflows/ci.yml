@@ -664,6 +664,12 @@ jobs:
             tests/test_deepseek_v41_prefill.py \
             tests/test_calibrate_deepseek_v41_reap.py \
             tests/test_deepseek_v41_quant_error.py \
+            tests/test_deepseek_v41_allocation_edges.py \
+            tests/test_deepseek_v41_allocation_phase2.py \
+            tests/test_deepseek_v41_allocation_phase4.py \
+            tests/test_deepseek_v41_allocation_phase5.py \
+            tests/test_deepseek_v41_allocation_rd.py \
+            tests/test_deepseek_v41_merge_calibration.py \
             tests/test_model_load_entrypoint_boundaries.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
