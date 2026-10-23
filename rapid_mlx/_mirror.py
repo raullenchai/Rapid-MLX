@@ -2343,6 +2343,8 @@ def download_with_mirror_fallback(
                 if mirror_only and expected_sha256 is not None:
                     # Installation may reuse an existing content-addressed blob.
                     # Its filename alone cannot vouch for the installed bytes.
+                    # Git blobs already pass _blob_oid_is under the install
+                    # lock in _do_r2_download; only SHA-256 needs this check.
                     import hashlib
 
                     hasher = hashlib.sha256()

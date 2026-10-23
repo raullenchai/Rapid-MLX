@@ -999,3 +999,24 @@ def test_missing_revision_rejects_corrupt_blob_reused_during_install(
     (_snap(tmp_path) / "model.safetensors").write_bytes(b"X" * len(WEIGHTS))
     with pytest.raises(RuntimeError, match="failed integrity verification"):
         _missing_pin_run(tmp_path, monkeypatch, _manifest())
+
+
+@pytest.mark.parametrize("mirror_config", [CONFIG, 404])
+def test_missing_revision_rehashes_and_repairs_git_blob(
+    tmp_path, monkeypatch, mirror_config
+):
+    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
+    target = _snap(tmp_path) / "config.json"
+    target.write_bytes(b"X" * len(CONFIG))
+    if mirror_config == CONFIG:
+        assert _missing_pin_run(
+            tmp_path, monkeypatch, _manifest(), {"config.json": mirror_config}
+        )
+        assert target.read_bytes() == CONFIG
+        assert _oid(target.read_bytes()) == _manifest()["files"][1]["git_oid"]
+    else:
+        with pytest.raises(RuntimeError, match="failed integrity verification"):
+            _missing_pin_run(
+                tmp_path, monkeypatch, _manifest(), {"config.json": mirror_config}
+            )
+        assert not target.exists()
