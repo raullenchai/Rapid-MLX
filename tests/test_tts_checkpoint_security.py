@@ -294,3 +294,31 @@ def test_native_asset_patterns_reach_the_resolved_model(tmp_path, monkeypatch):
     engine.load()
     assert engine.model is model
     assert downloads == ["org/model"]
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_native_strict_weight_validation_is_preserved(tmp_path, monkeypatch, missing):
+    import mlx.nn as nn
+    import torch
+
+    path = _checkpoint(tmp_path)
+    torch.save({"weight": torch.tensor([1.0, 2.0])}, path / "audiovae.pth")
+    base_weights = {} if missing else {"projection": mx.ones((1,))}
+    model = _native(monkeypatch, weights=base_weights)
+    native = nn.Module()
+    native["projection"] = mx.zeros((1,))
+    native["audio_vae"] = {"weight": mx.zeros((2,))}
+    model.load_weights = native.load_weights
+    model.parameters = native.parameters
+    model.eval = native.eval
+    _loader(monkeypatch, lambda *a: pytest.fail("upstream sidecar fallback"))
+    engine = TTSEngine(str(path))
+    if missing:
+        with pytest.raises(ValueError, match="Missing"):
+            engine.load()
+        assert not engine._loaded
+    else:
+        engine.load()
+        assert engine._loaded
+        assert native["projection"].tolist() == [1.0]
+        assert native["audio_vae"]["weight"].tolist() == [1.0, 2.0]

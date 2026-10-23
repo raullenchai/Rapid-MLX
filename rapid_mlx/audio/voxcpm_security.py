@@ -81,7 +81,7 @@ def load_voxcpm_checkpoint(path: Path):
     apply_quantization(
         model, config, weights, getattr(model, "model_quant_predicate", None)
     )
-    model.load_weights(list(weights.items()), strict=False)
+    model.load_weights(list(weights.items()), strict=True)
     mx.eval(model.parameters())
     model.eval()
     if hasattr(module.Model, "post_load_hook"):
