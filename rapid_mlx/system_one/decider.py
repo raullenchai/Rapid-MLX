@@ -175,10 +175,15 @@ def load_decider(path: str | Path) -> tuple[Any, Any, dict[str, Any]]:
     from mlx_lm.utils import load_model
     from transformers import AutoTokenizer
 
-    model, _ = load_model(
-        root, get_model_classes=lambda config: (qwen3_5.Model, qwen3_5.ModelArgs)
+    from ..model_load_errors import load_model_checked
+
+    model, _ = load_model_checked(
+        load_model,
+        root,
+        model_config={"model_file": None, "auto_map": None},
+        get_model_classes=lambda config: (qwen3_5.Model, qwen3_5.ModelArgs),
     )
-    tokenizer = AutoTokenizer.from_pretrained(str(root))
+    tokenizer = AutoTokenizer.from_pretrained(str(root), trust_remote_code=False)
     return model.language_model, tokenizer, settings
 
 

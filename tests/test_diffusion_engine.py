@@ -164,6 +164,13 @@ def _install_mlx_vlm_mock(
 
     mlx_vlm_utils.load = _load  # type: ignore[attr-defined]
 
+    # Lifecycle tests inject loading; the shared trust boundary is covered
+    # separately, and the rejection test below exercises this lane's wiring.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
+        lambda name, *, loader: loader(name),
+    )
+
     # mlx_vlm.generate.diffusion
     mlx_vlm_generate = types.ModuleType("mlx_vlm.generate")
     mlx_vlm_diffusion = types.ModuleType("mlx_vlm.generate.diffusion")
@@ -230,6 +237,31 @@ def _install_mlx_vlm_mock(
 
 
 class TestLoadAndIntrospection:
+    def test_load_rejects_repository_code(self, monkeypatch, tmp_path):
+        from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+        _install_mlx_vlm_mock(monkeypatch)
+        monkeypatch.setattr(
+            "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
+            load_vlm_with_policy,
+        )
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+        (tmp_path / "config.json").write_text('{"model_file": "custom.py"}')
+        (tmp_path / "custom.py").write_text('raise AssertionError("must not execute")')
+        utils = sys.modules["mlx_vlm.utils"]
+        monkeypatch.setattr(
+            utils, "get_model_path", lambda *a, **kw: tmp_path, raising=False
+        )
+        calls = []
+        monkeypatch.setattr(utils, "load", lambda *a, **kw: calls.append(a))
+        monkeypatch.setattr(sys.modules["mlx_vlm"], "load", utils.load, raising=False)
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="org/untrusted")
+        with pytest.raises(ValueError, match="model_file"):
+            engine._load_blocking()
+        assert calls == []
+
     def test_load_succeeds_for_block_family(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
