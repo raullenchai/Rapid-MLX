@@ -435,7 +435,7 @@ def load_video(
         raise ValueError("Remote video URL must use http(s)")
 
     if video_path.startswith("file://"):
-        video_path = video_path[7:]
+        video_path = str(Path(video_path[7:]).resolve())
 
     cap = cv2.VideoCapture(video_path)
     # VENDOR-DEVIATION(upstream-bugfix): the native capture handle leaked on

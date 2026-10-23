@@ -287,8 +287,9 @@ def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch):
     assert inputs.load_image(path.name).size == (2, 2)
 
 
+@pytest.mark.parametrize("file_uri", [False, True])
 def test_local_colon_video_filename_reaches_local_decoder(
-    inputs, tmp_path, monkeypatch
+    inputs, tmp_path, monkeypatch, file_uri
 ):
     cv2 = pytest.importorskip("cv2")
     monkeypatch.chdir(tmp_path)
@@ -308,5 +309,26 @@ def test_local_colon_video_filename_reaches_local_decoder(
 
     monkeypatch.setattr(cv2, "VideoCapture", Capture)
     with pytest.raises(ValueError, match="Cannot open video"):
-        inputs.load_video(path.name)
+        inputs.load_video("file://" + path.name if file_uri else path.name)
     assert seen == [str(path)]
+
+
+@pytest.mark.parametrize(
+    "name", ["take.wav", "http:take.wav", "http://media.example/take.wav"]
+)
+def test_audio_file_uri_resolves_to_local_path(tmp_path, monkeypatch, name):
+    monkeypatch.chdir(tmp_path)
+    assert mllm.process_audio_input("file://" + name) == str(
+        (tmp_path / name).resolve()
+    )
+
+
+def test_remote_audio_without_extension_preserves_bytes_and_cleans_temp(
+    transport, tmp_path
+):
+    body = b"\x1a\x45\xdf\xa3" + b"container data"
+    transport["response"] = Response(body)
+    result = mllm.process_audio_input("https://media.example/download")
+    assert isinstance(result, BytesIO)
+    assert result.getvalue() == body
+    assert not list(tmp_path.iterdir())

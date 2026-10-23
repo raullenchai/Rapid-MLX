@@ -78,7 +78,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "1d56ca30a676b40863fb072e6346fc1662be4f02baf836124fa020acd7c374ca"
+        "dc047d3811dff2ae79a071301c5a1d9a4e244a9f090834bff0fecf238be99131"
     )
     deviation_comments = [
         token.string
@@ -246,20 +246,26 @@ def test_load_video_releases_capture_when_open_fails(monkeypatch):
     assert released == [True]
 
 
-def test_load_audio_resolves_remote_source_before_decoding(monkeypatch):
+def test_load_audio_resolves_remote_source_before_decoding(monkeypatch, tmp_path):
     audio_io = pytest.importorskip("mlx_audio.audio_io")
     from rapid_mlx.models import mllm
 
     seen = []
-    monkeypatch.setattr(mllm, "download_audio", lambda url, timeout: "/safe/audio.wav")
+    downloaded = tmp_path / "audio.wav"
+    downloaded.write_bytes(b"bounded audio")
+    monkeypatch.setattr(mllm, "download_audio", lambda url, timeout: str(downloaded))
     monkeypatch.setattr(
         audio_io,
         "read",
-        lambda source, dtype: (seen.append(source) or np.array([0.25, 0.5]), 16_000),
+        lambda source, dtype: (
+            seen.append(source.getvalue()) or np.array([0.25, 0.5]),
+            16_000,
+        ),
     )
     result = vendored_inputs.load_audio("https://example.invalid/audio.wav", 16_000)
     assert result.tolist() == pytest.approx([0.25, 0.5])
-    assert seen == ["/safe/audio.wav"]
+    assert seen == [b"bounded audio"]
+    assert not downloaded.exists()
 
 
 def test_prepare_inputs_decodes_bytes_video_paths(monkeypatch):

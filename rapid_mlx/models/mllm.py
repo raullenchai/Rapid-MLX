@@ -1261,6 +1261,10 @@ def download_audio(url: str, timeout: int = 30, max_size: int = MAX_AUDIO_SIZE) 
             ".ogg",
             ".opus",
             ".m4a",
+            ".m4b",
+            ".mp4",
+            ".webm",
+            ".caf",
             ".aac",
             ".aiff",
         }:
@@ -1298,7 +1302,13 @@ def process_audio_input(audio: str, timeout: int = 30):
     ):
         return str(Path(audio).resolve())
     if is_url(audio):
-        return download_audio(audio, timeout=timeout)
+        downloaded = Path(download_audio(audio, timeout=timeout))
+        try:
+            # Preserve container sniffing for URLs without a useful extension.
+            # The downloader has already bounded these bytes.
+            return BytesIO(downloaded.read_bytes())
+        finally:
+            downloaded.unlink(missing_ok=True)
     if audio.startswith("data:audio/"):
         header, separator, payload = audio.partition(",")
         if not separator or not header.endswith(";base64"):
@@ -1309,7 +1319,9 @@ def process_audio_input(audio: str, timeout: int = 30):
         if len(decoded) > MAX_AUDIO_SIZE:
             raise FileSizeExceededError("Inline audio exceeds maximum size")
         return BytesIO(decoded)
-    if urlsplit(audio).scheme and not audio.startswith("file://"):
+    if audio.startswith("file://"):
+        return str(Path(audio[7:]).resolve())
+    if urlsplit(audio).scheme:
         raise RemoteMediaFetchError("Remote audio URL must use http(s)")
     return audio
 
