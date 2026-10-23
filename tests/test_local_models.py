@@ -903,3 +903,37 @@ def test_colliding_repository_rejects_ambiguous_catalog_artifacts(
     monkeypatch.setattr(ma, "list_profiles", lambda: profiles)
     snapshot(cache, "local-chat")
     assert ma.cached_repository_launch_path("local-chat", external=False) is None
+
+
+@pytest.mark.parametrize("nested_first", [False, True])
+@pytest.mark.parametrize("root_chat", [False, True])
+def test_cached_verdicts_do_not_borrow_nested_artifact_evidence(
+    cache, monkeypatch, nested_first, root_chat
+):
+    repo = "org/multi-chat"
+    profiles = {
+        "root-chat": ma.AliasProfile(hf_path=repo),
+        "nested-chat": ma.AliasProfile(hf_path=repo, subfolder="int4"),
+    }
+    if nested_first:
+        profiles = dict(reversed(list(profiles.items())))
+    monkeypatch.setattr(ma, "_load", lambda: profiles)
+    monkeypatch.setattr(ma, "list_profiles", lambda: profiles)
+    monkeypatch.setattr(ma, "_hf_to_alias", {repo: next(iter(profiles))})
+    root = snapshot(cache, repo, template=root_chat)
+    write_model(root / "int4")
+    found = lm.discover_runnable_chat_models()
+    expected_aliases = (
+        ["nested-chat"] if nested_first else (["root-chat"] if root_chat else [])
+    )
+    assert [model.alias for model in found] == expected_aliases
+    rows = {row["alias"]: row for row in cli._cached_models_json_payload()["cached"]}
+    # Only the representative root is judged by this producer contract.
+    # Unjudged artifacts retain catalog eligibility without being certified.
+    assert rows["root-chat"]["chat_ready"] is (None if nested_first else root_chat)
+    assert rows["nested-chat"]["chat_ready"] is None
+    assert rows["nested-chat"]["chat_fit"] is None
+    assert rows["nested-chat"]["chat_mlx_native"] is None
+    assert rows["root-chat"]["chat_fit"] == (
+        "yes" if root_chat and not nested_first else None
+    )

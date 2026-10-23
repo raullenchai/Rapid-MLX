@@ -178,7 +178,7 @@ def test_cached_payload_shape(monkeypatch) -> None:
             "chat_mlx_native",
         }
         assert m["state"] in {"ok", "unmapped", "incomplete", "external"}
-        assert isinstance(m["chat_ready"], bool)
+        assert m["chat_ready"] is None or isinstance(m["chat_ready"], bool)
         # alias is only meaningful for a runnable, registry-mapped entry.
         if m["state"] != "ok":
             assert m["alias"] is None
@@ -214,7 +214,7 @@ def test_cached_payload_reports_every_complete_alias_subfolder(monkeypatch) -> N
         ("nested-4bit", "4bit", 400),
     ]
     assert all(row["repo"] == "org/multi-quant" for row in rows)
-    assert all(row["chat_ready"] is False for row in rows)
+    assert all(row["chat_ready"] is None for row in rows)
 
 
 def test_cached_subfolder_size_accepts_one_complete_unreferenced_snapshot(

@@ -9993,7 +9993,8 @@ def _cached_models_json_payload() -> dict:
     tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
     launchable by alias). Sorted biggest-first, like the table. ``chat_ready``
     is the shared discovery verdict for a root checkpoint addressable by this
-    row's repo/alias, including memory fit; missing/false is not chat evidence.
+    row's repo/alias, including memory fit. Unjudged artifacts have a null
+    verdict; false rejects a judged root. Neither is positive chat evidence.
     The optional chat fit/native fields let Desktop rank uncataloged choices
     without repeating checkpoint inspection or guessing size from repo names.
     """
@@ -10007,7 +10008,11 @@ def _cached_models_json_payload() -> dict:
     )
 
     chat_models = {
-        (model.repo, model.external): model
+        (
+            model.repo,
+            model.external,
+            resolve_subfolder(model.alias) if model.alias else None,
+        ): model
         for model in discover_runnable_chat_models()
         # Ordinary rows launch by repo; collision rows carry an explicit path.
         # Other shadowed external copies cannot supply a repo launch verdict.
@@ -10021,8 +10026,10 @@ def _cached_models_json_payload() -> dict:
     }
 
     profiles = list_profiles()
+    representative_subfolders: dict[str, str | None] = {}
     repo_artifacts: dict[str, list[tuple[str, str | None]]] = {}
     for alias, p in profiles.items():
+        representative_subfolders.setdefault(p.hf_path, p.subfolder)
         artifact = (alias, p.subfolder)
         if artifact not in repo_artifacts.setdefault(p.hf_path, []):
             repo_artifacts[p.hf_path].append(artifact)
@@ -10030,8 +10037,8 @@ def _cached_models_json_payload() -> dict:
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
     collision_paths = {
-        key: model.model
-        for key, model in chat_models.items()
+        (model.repo, model.external): model.model
+        for model in chat_models.values()
         if model.alias is None and cached_repository_collides(model.repo)
     }
     # Completeness is an inventory property, not chat certification. A
@@ -10087,11 +10094,13 @@ def _cached_models_json_payload() -> dict:
                 artifacts = [(None, None, size, state)]
 
         for alias, subfolder, artifact_size, state in artifacts:
-            chat = chat_models.get((repo, is_external))
+            chat = chat_models.get((repo, is_external, subfolder))
             # Discovery judges repo-level resolution, not every sibling
             # checkpoint in a multi-artifact catalog repository.
             chat_ready = (
-                chat is not None and subfolder is None and state != "incomplete"
+                (chat is not None and state != "incomplete")
+                if subfolder is None and representative_subfolders.get(repo) is None
+                else None
             )
             models.append(
                 {

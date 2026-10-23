@@ -916,4 +916,35 @@ struct AtomicModelCatalogTests {
         #expect(ModelSelectionPurpose.chat.accepts(entry))
     }
 
+    @MainActor
+    @Test("Unknown subfolder verdict preserves catalog selection")
+    func unknownSubfolderVerdict() throws {
+        let rows = try #require(ModelCatalog.parseCachedJSON(#"""
+        {"cached":[
+          {"alias":"root","repo":"org/Chat","subfolder":null,"size_bytes":2048,"state":"ok","external":false,"chat_ready":false},
+          {"alias":"nested","repo":"org/Chat","subfolder":"int4","size_bytes":1024,"state":"ok","external":false,"chat_ready":null,"chat_fit":null,"chat_mlx_native":null}
+        ]}
+        """#))
+        let root = ModelEntry(alias: "root", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false)
+        let nested = ModelEntry(
+            alias: "nested", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false,
+            sourceSubfolder: "int4"
+        )
+        for entries in [
+            ModelCatalog.mergeAtomicAndCached(atomic: [root, nested], cached: rows, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(
+                available: [("root", "org/Chat"), ("nested", "org/Chat")], cached: rows, excluded: []
+            )
+        ] {
+            let selected = try #require(entries.first { $0.alias == "nested" })
+            let rejected = try #require(entries.first { $0.alias == "root" })
+            #expect(selected.cachedChatDiscovery == nil)
+            #expect(selected.sourceSubfolder == "int4")
+            #expect(ModelSelectionPurpose.chat.accepts(selected))
+            #expect(QuickstartView.quickstartCachedModels(entries).contains(selected))
+            #expect(SessionModelRestore.shouldPersistChatAlias(catalogEntry: selected))
+            #expect(!ModelSelectionPurpose.chat.accepts(rejected))
+        }
+    }
+
 }
