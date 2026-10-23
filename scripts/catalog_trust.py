@@ -13,6 +13,9 @@ from pathlib import Path
 CATALOGS = frozenset({"rapid_mlx/aliases.json", "rapid_mlx/audio/aliases.json"})
 COSMETIC_FIELDS = frozenset({"notes", "description", "display_name"})
 _CONTROL_PATHS = (
+    "scripts/check_vendored_provenance.py",
+    "scripts/vendored-provenance.json",
+    "rapid_mlx/models/mlx_vlm_vendored/",
     "scripts/catalog_trust.py",
     "scripts/catalog_trust/",
     "scripts/merge_on_green/",

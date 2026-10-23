@@ -161,6 +161,11 @@ jobs:
           # `uses` forms cannot bypass the SHA-pin gate).
           pip install ruff pyyaml
 
+      # Universal required gate: static source verification works on Linux and
+      # never imports/installs the Apple-only runtime or resolves dependencies.
+      - name: Vendored source provenance
+        run: python -S scripts/check_vendored_provenance.py
+
       - name: Run ruff lint
         run: ruff check .
 

@@ -57,3 +57,27 @@ app-anchored signed manifest covering the entire runtime tree and a verified
 publish/launch protocol. A digest stored beside a writable runtime or a version
 comparison is not an authenticity check. Pixel must keep failures recoverable
 without silently executing unverified content.
+
+## F-06 compatibility boundary
+
+Historical unsigned slim sidecars cannot be authenticated from the artifacts
+available in this repository. `build-sidecar-tarball.sh` emits an unsigned
+manifest, and the legacy `sidecar_sha256` field is parsed as optional metadata.
+A checksum beside the user-writable tree, or a signature on the interpreter
+alone, cannot authenticate the shell launcher and all Python imports. The
+Sparkle app-update public key does not provide a signed runtime-tree manifest
+for these historical installations.
+
+Automatic execution of such legacy payloads therefore remains disabled.
+Installing the current complete desktop app restores the supported engine;
+this is a migration requirement, not a promise of zero compatibility impact.
+The explicit RAPID_BIN developer override remains available and is deliberate
+operator consent to execute that path. It is not represented as a verified
+release payload. Existing full-app release and explicit developer workflows
+retain their behavior.
+
+Restoring independent managed sidecar updates requires a signed complete-tree
+manifest or a signed resource bundle with an app-anchored identity, a release
+pipeline that publishes that authenticated artifact, and validation immediately
+before launch. Pixel and Harbor must coordinate that migration with Atlas.
+No historical unsigned payload is grandfathered in by a writable trust marker.
