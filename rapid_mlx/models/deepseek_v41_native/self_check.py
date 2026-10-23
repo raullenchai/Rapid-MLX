@@ -21,11 +21,17 @@ class SelfCheck:
         with self.lock:
             if key in self.verdicts:
                 return self.verdicts[key]
+            error = None
             try:
                 verdict = bool(probe(*args))
-            except Exception:  # Includes errors surfaced by evaluating the probe.
+            except Exception as exc:  # Includes lazy probe evaluation errors.
                 verdict = False
+                error = exc
             self.verdicts[key] = verdict
             if not verdict:
-                logger.warning("%s self-check failed; using reference path", self.name)
+                logger.warning(
+                    "%s self-check failed; using reference path",
+                    self.name,
+                    exc_info=error,
+                )
             return verdict

@@ -48,6 +48,8 @@ def test_serialized_probe_is_cached_and_warns_once(result, caplog):
     assert probe.call_count == 1
     assert check.qualified((1,), probe) == (result is True)
     assert len(caplog.records) == (0 if result is True else 1)
+    if isinstance(result, Exception):
+        assert caplog.records[0].exc_info[1] is result
     check.qualified((2,), probe)
     assert probe.call_count == 2
 

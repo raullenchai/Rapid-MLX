@@ -15,11 +15,10 @@ from types import SimpleNamespace
 import mlx.core as mx
 
 from .kernels import custom_kernels_enabled
+from .moe_decode import _HEADER, _packed_width, _qmv_vpt
 from .self_check import SelfCheck
 
 _CHECK = SelfCheck("V4.1 route QMV")
-
-from .moe_decode import _HEADER, _packed_width, _qmv_vpt
 
 # The shared helpers adapt the stock kernels under the MIT notice in moe_decode.
 _SOURCE = r"""
