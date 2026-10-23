@@ -55,6 +55,15 @@ MERGE_RULE = (
 )
 
 
+def fsync_directory(path):
+    """Persist publication names in an existing output directory."""
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def save_scores(path, reap, norms, squared, counts, metadata, keep, tokens):
     from scripts.calibrate_deepseek_v41_reap import _overlap
 
@@ -216,6 +225,7 @@ def merge_calibration(pass_files, output):
         # Link publication is atomic and refuses an existing destination.
         # Closing the temporary removes its name on success and on failure.
         os.link(handle.name, output)
+        fsync_directory(output.parent)
     return output
 
 

@@ -24,6 +24,7 @@ def contrastive(
         or not np.isfinite(counts).all()
         or np.any(r < 0)
         or np.any(counts < 0)
+        or np.any(counts != np.floor(counts))
     ):
         raise ValueError("expected finite nonnegative [slice,2,layer,expert] arrays")
     if (

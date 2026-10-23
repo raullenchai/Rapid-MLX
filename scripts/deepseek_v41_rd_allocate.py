@@ -17,6 +17,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_contrastive import contrastive
+from scripts.deepseek_v41_merge_calibration import fsync_directory
 from scripts.deepseek_v41_rd_common import BITS, bank_plan, file_hash
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 
@@ -54,10 +55,18 @@ def publish_allocations(outputs):
                 os.fsync(handle.fileno())
         for temporary, path in staged:
             os.link(temporary, path)
-            published.append(path)
+            published.append((temporary, path))
+        for parent in {path.parent for _, path in published}:
+            fsync_directory(parent)
     except BaseException:
-        for path in published:
-            path.unlink()
+        for temporary, path in published:
+            try:
+                if path.samefile(temporary):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        for parent in {path.parent for _, path in published}:
+            fsync_directory(parent)
         raise
     finally:
         for temporary, _ in staged:

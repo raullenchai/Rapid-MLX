@@ -515,3 +515,77 @@ def test_unqualified_cold_slice_cannot_use_single_reference(cold_name):
     roles[cold_name] = roles.pop("cold_en")
     with pytest.raises(ValueError, match="explicit language suffix"):
         contrastive(r, counts, names, roles)
+
+
+@pytest.mark.parametrize("replacement", [True, False])
+def test_allocation_rollback_preserves_replaced_or_removed_output(
+    tmp_path, monkeypatch, replacement
+):
+    first, second = tmp_path / "one.json", tmp_path / "two.json"
+    original = alloc.os.link
+
+    def link(source, destination):
+        if destination == second:
+            first.unlink()
+            if replacement:
+                first.write_text("other writer")
+            raise OSError("second link failed")
+        original(source, destination)
+
+    monkeypatch.setattr(alloc.os, "link", link)
+    with pytest.raises(OSError, match="second link failed"):
+        alloc.publish_allocations([(first, {"a": 1}), (second, {"b": 2})])
+    assert list(tmp_path.iterdir()) == ([first] if replacement else [])
+    if replacement:
+        assert first.read_text() == "other writer"
+
+
+def test_contrastive_rejects_fractional_route_counts():
+    r, counts, names, roles = slices()
+    counts = counts.astype(float)
+    counts[2, 0, 0, 1] = 2.5
+    with pytest.raises(ValueError):
+        contrastive(r, counts, names, roles)
+    counts[2, 0, 0, 1] = 2.0
+    assert contrastive(r, counts, names, roles)["candidate"][0, 1]
+
+
+def test_directory_sync_failure_closes_descriptor(tmp_path, monkeypatch):
+    import os
+
+    from scripts import deepseek_v41_merge_calibration as merge
+
+    descriptors = []
+    original = os.fsync
+
+    def fail(descriptor):
+        descriptors.append(descriptor)
+        raise OSError("directory sync failed")
+
+    monkeypatch.setattr(merge.os, "fsync", fail)
+    with pytest.raises(OSError, match="directory sync failed"):
+        merge.fsync_directory(tmp_path)
+    monkeypatch.setattr(merge.os, "fsync", original)
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+def test_publication_syncs_directory_on_success_and_rollback(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(alloc, "fsync_directory", synced.append)
+    first, second = tmp_path / "one.json", tmp_path / "two.json"
+    alloc.publish_allocations([(first, {"a": 1})])
+    assert synced == [tmp_path]
+    first.unlink()
+    original = alloc.os.link
+
+    def fail_second(source, destination):
+        if destination == second:
+            raise OSError("link failed")
+        original(source, destination)
+
+    monkeypatch.setattr(alloc.os, "link", fail_second)
+    with pytest.raises(OSError):
+        alloc.publish_allocations([(first, {"a": 1}), (second, {"b": 2})])
+    assert synced == [tmp_path, tmp_path]
+    assert not list(tmp_path.iterdir())
