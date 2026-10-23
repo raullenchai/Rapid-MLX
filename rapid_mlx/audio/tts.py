@@ -569,6 +569,35 @@ def is_kokoro_family_model(model_name: str) -> bool:
     return detect_tts_family(model_name) == "kokoro"
 
 
+def _resolve_safe_tts_checkpoint(model_name: str) -> Path:
+    """Resolve the exact snapshot before selecting a safe sidecar loader."""
+    from rapid_mlx.model_downloads import snapshot_download
+
+    model_path = Path(model_name).expanduser()
+    if not model_path.is_dir():
+        # Match the supported mlx-audio loader's asset selection. Resolve once
+        # and pass a Path below so it cannot re-resolve mutable Hub refs.
+        model_path = Path(
+            snapshot_download(
+                model_name,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "*.model",
+                    "*.tiktoken",
+                    "*.txt",
+                    "*.jinja",
+                    "*.jsonl",
+                    "*.yaml",
+                    "*.npz",
+                    "*.pth",
+                ],
+            )
+        )
+    return model_path
+
+
 class TTSEngine:
     """
     Text-to-Speech engine supporting multiple model families.
@@ -650,7 +679,14 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
-            self.model = load_model(self.model_name)
+            model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
+            legacy_vae = model_path / "audiovae.pth"
+            if legacy_vae.exists() or legacy_vae.is_symlink():
+                from .voxcpm_security import load_voxcpm_checkpoint
+
+                self.model = load_voxcpm_checkpoint(model_path)
+            else:
+                self.model = load_model(model_path)
             self._loaded = True
             logger.info(
                 f"TTS model loaded: {self.model_name} (family: {self._model_family})"
