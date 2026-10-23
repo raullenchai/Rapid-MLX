@@ -287,7 +287,9 @@ validate_target() {
             fi
             ;;
         *)
-            if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+([ab]|rc|\.post|\.dev)?[0-9]*$ ]]; then
+            # Keep version syntax compatible; the package manager validates it.
+            # Reject whitespace and requirement/URL separators before any work.
+            if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.+_-]*$ ]]; then
                 err "Usage: install.sh [stable|latest|VERSION]"
                 return 1
             fi
