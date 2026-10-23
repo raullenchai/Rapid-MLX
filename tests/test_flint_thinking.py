@@ -145,3 +145,15 @@ def test_missing_template_and_non_generation_suffix_unchanged():
     assert apply_chat_template(stub, MESSAGES, enable_thinking=False) == "fallback"
     stub.chat_template = TEMPLATE
     assert apply_chat_template(stub, MESSAGES, enable_thinking=False) == "fallback"
+
+
+def test_client_tokenize_override_cannot_bypass_thinking_off(tokenizer):
+    # The shared renderer always returns text; encoding happens downstream.
+    rendered = apply_chat_template(
+        tokenizer,
+        MESSAGES,
+        enable_thinking=False,
+        chat_template_kwargs={"tokenize": True},
+    )
+    assert isinstance(rendered, str)
+    assert rendered.endswith("<|assistant|>" + EMPTY_THINK)
