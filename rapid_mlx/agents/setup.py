@@ -645,7 +645,9 @@ def _apply_setup_plan(plan: SetupPlan) -> Path:
                 plan.credentials_path,
                 _serialize(plan.credentials_after, "yaml") + "\n",
             )
-        if plan.agent in {"cline", "continue"}:
+        if plan.agent == "cline" or (
+            plan.agent == "continue" and plan.format == "yaml"
+        ):
             if plan.before != plan.after:
                 assert isinstance(plan.after, dict)
                 write_owned = (
