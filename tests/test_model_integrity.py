@@ -186,7 +186,19 @@ def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
 
 @pytest.mark.parametrize("commit_argument", ["revision", "resolved_revision"])
 @pytest.mark.parametrize(
-    "failure", ["missing", "timeout", "connect", 429, 500, 502, 503, 504]
+    "failure",
+    [
+        "missing",
+        "timeout",
+        "connect",
+        "requests_connect",
+        "requests_timeout",
+        429,
+        500,
+        502,
+        503,
+        504,
+    ],
 )
 def test_missing_explicit_pin_uses_validated_mirror_manifest(
     snapshot, monkeypatch, commit_argument, failure
@@ -200,12 +212,17 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(
 
     def missing(*args, **kwargs):
         import httpx
+        import requests
         from huggingface_hub.errors import HfHubHTTPError
 
         if failure == "timeout":
             raise TimeoutError("metadata deadline exceeded")
         if failure == "connect":
             raise httpx.ConnectError("metadata transport unavailable")
+        if failure == "requests_connect":
+            raise requests.ConnectionError("metadata transport unavailable")
+        if failure == "requests_timeout":
+            raise requests.Timeout("metadata transport deadline exceeded")
         if isinstance(failure, int):
             raise HfHubHTTPError(
                 "metadata temporarily unavailable",
@@ -316,6 +333,22 @@ def test_extra_selected_files_are_refused_even_with_receipt(snapshot, warm):
     assert extra.read_bytes() == b"not in the commit"
     extra.unlink()
     verify_snapshot("test/integrity", path)
+
+
+@pytest.mark.parametrize("failure", [PermissionError, FileNotFoundError])
+def test_inventory_filesystem_errors_are_actionable(snapshot, monkeypatch, failure):
+    from pathlib import Path
+
+    path, _, _ = snapshot
+
+    def unavailable(*args, **kwargs):
+        raise failure("inventory unavailable")
+
+    monkeypatch.setattr(Path, "rglob", unavailable)
+    with pytest.raises(ModelIntegrityError, match="check cache access") as error:
+        verify_snapshot("test/integrity", path)
+    assert str(path) in str(error.value)
+    assert isinstance(error.value.__cause__, failure)
 
 
 def test_unselected_files_and_local_download_metadata_do_not_break_verification(

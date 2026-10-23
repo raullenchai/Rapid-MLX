@@ -72,14 +72,19 @@ def verify_snapshot(
     )
     from huggingface_hub.utils import filter_repo_objects
 
-    local_names = [
-        file.relative_to(path).as_posix()
-        for file in path.rglob("*")
-        if file.is_file()
-        and not file.relative_to(path)
-        .as_posix()
-        .startswith((".cache/huggingface/", ".cache/rapid-mlx-integrity/"))
-    ]
+    try:
+        local_names = [
+            file.relative_to(path).as_posix()
+            for file in path.rglob("*")
+            if file.is_file()
+            and not file.relative_to(path)
+            .as_posix()
+            .startswith((".cache/huggingface/", ".cache/rapid-mlx-integrity/"))
+        ]
+    except OSError as exc:
+        raise ModelIntegrityError(
+            f"Cannot inventory downloaded snapshot at {path}; check cache access and retry pull"
+        ) from exc
     local_selected = set(
         filter_repo_objects(
             local_names,
@@ -198,6 +203,8 @@ def verify_snapshot(
             )
         from httpx import TransportError
         from huggingface_hub.errors import HfHubHTTPError, RevisionNotFoundError
+        from requests.exceptions import ConnectionError as RequestsConnectionError
+        from requests.exceptions import Timeout as RequestsTimeout
 
         try:
             info = call_with_deadline(
@@ -206,7 +213,13 @@ def verify_snapshot(
                 ),
                 30,
             )
-        except (HfHubHTTPError, TimeoutError, TransportError) as exc:
+        except (
+            HfHubHTTPError,
+            TimeoutError,
+            TransportError,
+            RequestsConnectionError,
+            RequestsTimeout,
+        ) as exc:
             if (
                 isinstance(exc, HfHubHTTPError)
                 and not isinstance(exc, RevisionNotFoundError)
