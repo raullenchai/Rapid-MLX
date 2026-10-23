@@ -15,7 +15,10 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_rd_allocate import inventory_digest, publish_allocations
-from scripts.deepseek_v41_rd_layer_allocate import routed_and_router_bytes
+from scripts.deepseek_v41_rd_layer_allocate import (
+    checked_byte_costs,
+    routed_and_router_bytes,
+)
 
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
@@ -34,10 +37,11 @@ def variant_allocation(base, cost, overrides):
         or not np.isfinite(costs).all()
         or np.any(costs != np.floor(costs))
         or np.any(costs[..., 0] != 0)
-        or np.any(np.diff(costs, axis=-1) <= 0)
+        or np.any(costs[..., 1:] <= costs[..., :-1])
         or base.get("reference")
     ):
         raise ValueError("invalid layer cost inventory or allocation")
+    costs = checked_byte_costs(costs)
     for override in overrides:
         try:
             layers, widths = override.split("=")

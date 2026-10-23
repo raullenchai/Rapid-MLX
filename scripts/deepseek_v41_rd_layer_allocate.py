@@ -20,9 +20,20 @@ PRESETS = {
 }
 
 
+def checked_byte_costs(costs):
+    """Bound NumPy byte arithmetic before casting or summing any allocation."""
+    if (
+        np.any(costs >= 2**63)
+        or sum(int(value) for value in costs[..., -1].flat) > np.iinfo(np.int64).max
+    ):
+        raise ValueError("byte costs exceed safe int64 accumulation range")
+    return costs.astype(np.int64)
+
+
 def router_row_bytes(costs):
     costs = np.asarray(costs)
-    row = int(costs[0, 1] - 5 * (costs[0, 2] - costs[0, 1]) // 2)
+    low, middle = int(costs[0, 1]), int(costs[0, 2])
+    row = low - 5 * (middle - low) // 2
     if row < 0 or not np.all(costs == costs[0]):
         raise ValueError("layer allocator requires equal-shaped expert matrices")
     return row
@@ -34,7 +45,11 @@ def routed_and_router_bytes(costs, kept, bits, row=None):
     if row is None:
         row = router_row_bytes(costs)
     return (
-        sum(int(costs[kept, b - 1].sum()) - len(kept) * row for b in bits) // 3
+        sum(
+            sum(int(value) for value in costs[kept, b - 1]) - len(kept) * row
+            for b in bits
+        )
+        // 3
         + len(kept) * row
     )
 
@@ -77,10 +92,11 @@ def layer_allocate(
         or fixed_bytes < 0
         or budget_bytes < 0
         or np.any(costs[..., 0] != 0)
-        or np.any(np.diff(costs, axis=-1) <= 0)
+        or np.any(costs[..., 1:] <= costs[..., :-1])
     ):
         raise ValueError("invalid layer RD inputs")
-    costs = costs.astype(np.int64)
+    fixed_bytes, budget_bytes = int(fixed_bytes), int(budget_bytes)
+    costs = checked_byte_costs(costs)
     for key in ("candidate", "protected"):
         if np.asarray(selection[key]).shape != s.shape:
             raise ValueError("selection masks must match sensitivity")
@@ -107,7 +123,7 @@ def layer_allocate(
             s.shape[1] - topk,
             int(candidates.sum()),
         )
-        contrastive_minimum += int((s.shape[1] - removal_cap) * costs[layer, 0, 1])
+        contrastive_minimum += (s.shape[1] - removal_cap) * int(costs[layer, 0, 1])
     # Fallback is permitted only if even all-2-bit contrastive-only choices
     # cannot meet the target. A request is not permission to prune extra hot
     # utility merely to purchase higher bit widths when contrastive fits.

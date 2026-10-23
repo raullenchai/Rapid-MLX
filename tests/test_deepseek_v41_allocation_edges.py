@@ -713,3 +713,41 @@ def test_legacy_inventory_rejects_source_changed_during_use(tmp_path, monkeypatc
     monkeypatch.setattr(quant, "inventory", changed)
     with pytest.raises(ValueError, match="source checkpoint config"):
         alloc.validate_legacy_inventory(source, cost, config_hash, metadata)
+
+
+@pytest.mark.parametrize("kind", ["unsigned", "float", "sum"])
+def test_allocators_reject_cost_overflow(kind):
+    if kind == "sum":
+        costs = np.broadcast_to([0, 2**61, 2**61 + 1, 2**61 + 2], (1, 6, 4)).copy()
+    else:
+        costs = np.broadcast_to(
+            np.array(
+                [0, 2**62, 2**63, 2**63 + 1],
+                dtype=np.uint64 if kind == "unsigned" else float,
+            ),
+            (1, 6, 4),
+        ).copy()
+        if kind == "float":
+            costs[..., 3] = float(2**64)
+    q = np.broadcast_to([1.0, 0.3, 0.1, 0.01], costs.shape)
+    with pytest.raises(ValueError, match="int64"):
+        alloc.allocate(np.ones((1, 6)), q, costs, 0, 1e20, 1, 1)
+    with pytest.raises(ValueError, match="int64"):
+        layer.layer_allocate(selection(), q, costs, 0, 1e20, topk=1)
+    cost = {"expert_bytes": costs.tolist(), "fixed_non_expert_bytes": 0}
+    base = {
+        "layers": {"0": {"kept_expert_ids": [0], "bits": 2}},
+        "provenance": {"costs_sha256": alloc.inventory_digest(cost)},
+    }
+    with pytest.raises(ValueError, match="int64|invalid layer cost"):
+        variant.variant_allocation(base, cost, [])
+
+
+def test_never_routed_detection_does_not_sum_large_counts():
+    r, counts, names, roles = slices()
+    counts = counts.astype(np.uint64)
+    counts[0, 0, 0, 3] = np.uint64(2**63)
+    counts[0, 1, 0, 3] = np.uint64(2**63)
+    assert counts.sum(axis=(0, 1))[0, 3] == 0
+    result = contrastive(r, counts, names, roles)
+    assert not result["never_routed"][0, 3]

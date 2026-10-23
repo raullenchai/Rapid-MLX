@@ -55,7 +55,7 @@ def contrastive(
     hot_halves = normalized[ids["hot"]].max(axis=0)
     hot_score = hot_halves.max(axis=0)
     protected = hot_score >= hot_threshold
-    never = counts.sum(axis=(0, 1)) == 0
+    never = (counts == 0).all(axis=(0, 1))
     references = []
     for cold in ids["cold"]:
         _, separator, language = slice_names[cold].rpartition("_")

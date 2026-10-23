@@ -19,7 +19,11 @@ if __package__ in (None, ""):
 from scripts.deepseek_v41_contrastive import contrastive
 from scripts.deepseek_v41_merge_calibration import fsync_directory
 from scripts.deepseek_v41_rd_common import BITS, bank_plan, file_hash
-from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
+from scripts.deepseek_v41_rd_layer_allocate import (
+    PRESETS,
+    checked_byte_costs,
+    layer_allocate,
+)
 
 
 def inventory_digest(cost):
@@ -202,7 +206,7 @@ def allocate(
         or np.any(c < 0)
         or not np.all(q[..., 0] == 1)
         or np.any(c[..., 0] != 0)
-        or np.any(np.diff(c, axis=-1) <= 0)
+        or np.any(c[..., 1:] <= c[..., :-1])
         or np.any(c != np.floor(c))
     ):
         raise ValueError(
@@ -218,10 +222,11 @@ def allocate(
         or budget_bytes != int(budget_bytes)
     ):
         raise ValueError("invalid layer guard or byte budget")
-    c = c.astype(np.int64)
+    fixed_bytes, budget_bytes = int(fixed_bytes), int(budget_bytes)
+    c = checked_byte_costs(c)
     d = s[..., None] * q
     remaining = int(budget_bytes) - int(fixed_bytes)
-    minimum = np.sort(c[..., 1], axis=1)[:, :min_kept].sum()
+    minimum = int(np.sort(c[..., 1], axis=1)[:, :min_kept].sum())
     if remaining < minimum:
         raise ValueError(
             f"infeasible budget: fixed + minimum experts = {fixed_bytes + minimum} bytes"
@@ -286,7 +291,7 @@ def allocate(
         "bits_order": BITS.tolist(),
         "budget_bytes": int(budget_bytes),
         "fixed_non_expert_bytes": int(fixed_bytes),
-        "resident_tensor_bytes": int(fixed_bytes + used),
+        "resident_tensor_bytes": int(fixed_bytes) + used,
         "predicted_distortion": max(0.0, float(loss)),
         "dual_lower_bound": lower,
         "duality_gap": max(0.0, float(loss - lower)),
