@@ -596,7 +596,11 @@ def run_tensorfold_qwen27_server(
     supports_reasoning_budget: bool = False,
     **_ignored: Any,
 ) -> None:
-    """Load the pinned profile; concurrency requires an explicit qualified opt-in."""
+    """Load the pinned profile; concurrency requires an explicit qualified opt-in.
+
+    Injected backend classes must implement the ``TensorFoldQwen27Backend.load``
+    keyword contract, including ``enable_prefix_cache``.
+    """
     if main_model_revision is not None or drafter_revision is not None:
         raise RuntimeError("tensorfold backend requires pinned local snapshot paths")
     if tool_call_parser is not None:
