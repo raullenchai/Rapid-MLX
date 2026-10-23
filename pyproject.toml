@@ -182,7 +182,8 @@ dependencies = [
     # >=3.11; the video-lane preflight gives 3.10 users an upgrade diagnostic.
     # imageio[ffmpeg] brings a self-contained ffmpeg wheel — no system ffmpeg.
     "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
-    "mlx-arsenal>=0.10.1; platform_system == 'Darwin' and python_version >= '3.11'",
+    # Match the release-tested sidecar; upgrades require explicit validation.
+    "mlx-arsenal==0.12.1; platform_system == 'Darwin' and python_version >= '3.11'",
     "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
@@ -567,7 +568,7 @@ video = [
     # Python range; the video startup preflight gives 3.10 users an explicit
     # upgrade diagnostic.
     "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
-    "mlx-arsenal>=0.10.1; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mlx-arsenal==0.12.1; platform_system == 'Darwin' and python_version >= '3.11'",
     "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
     "pillow>=10.0.0,<13; platform_system == 'Darwin' and python_version >= '3.11'",
     "sentencepiece>=0.2.0; platform_system == 'Darwin' and python_version >= '3.11'",

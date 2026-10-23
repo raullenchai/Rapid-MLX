@@ -554,8 +554,8 @@ fi
 #
 # SKIP_SIDECAR=1 short-circuits the 5-10 min pip install for local
 # iteration. The resulting .app has no bundled rapid-mlx, so
-# ServerLocator falls through to .userInstalled / .path / brew slots
-# — fine for dev, not for shipping.
+# developers must set RAPID_BIN explicitly to select their local engine.
+# No automatic PATH or legacy runtime-override fallback is permitted.
 #
 # Normal local builds retain the last complete sidecar stage and reuse it when
 # the rapid-mlx commit and all packaging inputs are unchanged. Set

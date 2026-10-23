@@ -36,8 +36,10 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
 
         #expect(script.contains(#"PBS_TAR_TMP="${PBS_TAR}.tmp""#))
-        #expect(script.contains(#"tar -tzf "$PBS_TAR""#),
-                "A truncated cached archive must be rejected before extraction.")
+        #expect(script.contains(#"verify_pbs_archive "$PBS_TAR""#),
+                "Cached archives must pass the digest gate before extraction.")
+        #expect(script.contains(#"verify_pbs_archive "$PBS_TAR_TMP""#),
+                "Downloaded archives must pass the same digest gate before publication.")
         #expect(script.contains("--retry-all-errors"),
                 "HTTP/2 framing and other transient transport errors must be retried.")
         #expect(script.contains(#"-o "$PBS_TAR_TMP""#),
