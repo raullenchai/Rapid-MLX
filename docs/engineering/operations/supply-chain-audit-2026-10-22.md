@@ -12,15 +12,15 @@ included in this work.
 | --- | --- | --- |
 | F-01 MLLM repository Python | Resolve and inspect the exact snapshot before the shared VLM loader; separate code consent from path containment | Main and auxiliary model loaders have refusal tests; built-in overlays remain supported |
 | F-02 text repository Python | Explicit consent independent of cache symlink layout; local paths inspected too | Cache blob links are supported after consent; external model roots retain precedence |
-| F-03 tokenizer auto-map | Default remote-code denial with explicit process/API policy | Repository code is never implicitly authorized by a catalog pin |
-| F-04 catalog identity | Immutable text/audio revisions and nested-asset identity lock with metadata evidence | Existing pins and cached revisions are retained where available; pins establish identity, not model quality |
+| F-03 tokenizer auto-map | Default remote-code denial with explicit process/API policy | Native GLM and reviewed Kimi text/vision adapters preserve shipped compatibility; a pin never implicitly authorizes repository code |
+| F-04 catalog identity | 239 text and 44 audio aliases pinned; 280 repository identities with full file metadata | Existing pins and cached revisions are retained where available; pins establish identity, not model quality |
 | F-05 installer/update | Remove mutable Git fallback and downloaded shell update; exact commit required for source installs | Stable/versioned package installs and current-environment updates retained |
 | F-06 desktop runtime | Automatic discovery uses bundled runtime; explicit developer override remains deliberate consent | Historical unsigned slim payloads need full-app migration; see desktop-runtime-trust.md |
 | F-07 Python runtime archive | Fixed SHA-256 checked for new and cached build artifacts | Existing validated archive remains reusable |
 | F-08 audio dependency bootstrap | Code-owned spaCy pipeline/version allowlist with wheel-only, no-dependency install | Arbitrary PyPI installation was not demonstrated by the original report; known pipelines preserved |
 | F-09 vendored URL loading | Shared DNS-pinned, redirect-checked, size-limited media downloads | Local data paths and decoding retained; direct library helpers covered |
 | F-10 SA3 legacy objects | Restricted loading first; unrestricted conversion needs both explicit consent and the exact file SHA-256 | A private copy is hashed and loaded to avoid path replacement; ordinary tensor checkpoints need no unsafe consent |
-| F-11 weight integrity | Verify selected checkpoint bytes before successful pull, including mirror and Hub paths | Packaged hashes support offline checks; unchanged stat-bound receipts avoid repeated full reads; failures retain resumable files |
+| F-11 weight integrity | Verify selected bytes in pull, automatic serving, shared snapshot/file downloads, routing metadata, music and import paths | Packaged hashes support offline checks; unchanged stat-bound receipts avoid repeated full reads; failures retain resumable files |
 | F-12 dependency drift | Align mlx-arsenal CLI and sidecar version at 0.12.1 | Deliberate version bumps require review |
 | F-13 catalog review gates | Identity revisions, complete file inventory, semantic catalog/control review and current-head human approval | Trusted isolated controller; stale or bot approval does not authorize automatic merge |
 | F-14 auxiliary loaders | Shared guarded loaders including Clef, rerank, DFlash, DSpark, native MTP, HiDream, OpenJev and Decider | Clef native path independently tested; no bypass through the upstream model_file selector |
@@ -65,9 +65,97 @@ Negative security tests are accompanied by positive tensor-loading, tokenizer,
 CLI, download-resume, native sanitization, and audio-route regression tests.
 Model metadata collection does not download or execute repository Python or
 model weights. Full inference for every catalog entry is not established by
-these tests. Exact test results are recorded after the final combined run.
+these tests. Kimi text tests include a real tiny native MLX model forward and
+fixed token IDs from the actual pinned vocabulary; Kimi vision tests use the
+real image processor with stub model weights. GLM REAP tests use real tiny
+safetensors and tokenizer data with a repository-code execution sentinel.
+
+An isolated validation environment uses the project-required mlx-vlm 0.7.2.
+The built wheel was inspected for the model integrity lock, native adapters,
+Kimi license/provenance, and the direct tokenizer dependency. No model weights
+were downloaded, and no installed production environment was modified.
 
 Use the final branch commit, rather than the original report's baseline, for a
 follow-up audit. Do not restore mutable references, raw URL fetches, or implicit
 pickle execution to resolve a compatibility issue; repair the affected adapter
 and retain a regression test.
+
+## Final validation checkpoint
+
+Implementation commit: `e0c294306` (subsequent audit-record edits only). On Studio,
+Python 3.12 with mlx-vlm 0.7.2 and patched PyTorch 2.10.0:
+
+- Combined integration: **2,184 passed, zero failures/skips/deselections**,
+  across the 44 files below.
+- Earlier security suite plus integrity/catalog checks: **919 passed, one
+  skipped**, zero deselections. The skip is the opt-in full-model DFlash test,
+  which requires approximately 30 GB of weights.
+- Ruff passed for all Python files changed in this audit; Git diff whitespace
+  checks passed.
+- A normal wheel build succeeded. Its packaged catalog lock, adapters,
+  tokenizer dependency and license/provenance files were inspected.
+- Three existing cached model configurations passed actual offline content
+  verification. Full-size model weights were not downloaded for this work.
+
+The following combined command assumes an environment with the project's test
+dependencies and pinned vision runtime. Put pytest scratch **outside** the
+validation virtualenv: local-search tests intentionally exclude directories
+under a `pyvenv.cfg` ancestor.
+
+```sh
+mkdir -p /private/tmp/rapid-mlx-security-integration
+HF_HUB_OFFLINE=1 RAPID_MLX_TELEMETRY=0 \
+TMPDIR=/private/tmp/rapid-mlx-security-integration \
+python -m pytest -q \
+  tests/install/test_install_security.py \
+  tests/install/test_install_stdin.py \
+  tests/test_alias_revision.py \
+  tests/test_byom_imports.py \
+  tests/test_byom_preflight.py \
+  tests/test_catalog_trust.py \
+  tests/test_cli_offline_serve.py \
+  tests/test_deepseek_v32_indexer_gate.py \
+  tests/test_disk_stream_cli_wiring.py \
+  tests/test_dspark_companion.py \
+  tests/test_f5_checkpoint_security.py \
+  tests/test_hidream_o1_alias.py \
+  tests/test_kimi_tokenizer_security.py \
+  tests/test_kimi_vlm_security.py \
+  tests/test_local_search.py \
+  tests/test_merge_on_green.py \
+  tests/test_model_catalog_lock.py \
+  tests/test_model_downloads.py \
+  tests/test_model_file_guard.py \
+  tests/test_model_integrity.py \
+  tests/test_music_engine.py \
+  tests/test_pull_audio_alias_resolution.py \
+  tests/test_pull_audio_runtime_assets.py \
+  tests/test_pull_recovery.py \
+  tests/test_pull_summary.py \
+  tests/test_pull_variant_selection.py \
+  tests/test_pull_variant_serve_resolution.py \
+  tests/test_qwen3_tts_voicedesign.py \
+  tests/test_sam_audio_security.py \
+  tests/test_security_hardening.py \
+  tests/test_sensevoice_stt.py \
+  tests/test_serve_command_characterization.py \
+  tests/test_serve_listen_fd.py \
+  tests/test_server_exposure.py \
+  tests/test_server_load_model_order.py \
+  tests/test_server_start_state.py \
+  tests/test_system_one_clef_mlx.py \
+  tests/test_system_one_cli.py \
+  tests/test_system_one_convert_clm.py \
+  tests/test_tensor_checkpoint_security.py \
+  tests/test_tts_checkpoint_security.py \
+  tests/test_upgrade_cli.py \
+  tests/test_vendored_provenance_gate.py \
+  tests/test_version_check.py
+```
+
+Atlas integration handoff: the branch is ready for code review with the
+compatibility transitions above. Harbor must retain the required provenance
+and catalog checks. Pixel owns the historical slim-to-full-app migration.
+Production merge/release/deployment is not performed by this audit. Orca role
+messaging was unavailable; implementation and independent review were
+coordinated with the three task subagents and recorded here.
