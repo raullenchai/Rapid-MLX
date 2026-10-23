@@ -95,7 +95,11 @@ def test_sam_config_redirected_text_encoder_uses_safe_lazy_route(tmp_path, monke
     assert not marker.exists()
     assert processor.model.text_encoder.model is None
     assert [repo for repo, _kwargs in downloads] == ["attacker/redirected-t5"]
-    assert "*.bin" not in downloads[0][1]["allow_patterns"]
+    assert {
+        pattern
+        for pattern in downloads[0][1]["allow_patterns"]
+        if pattern.endswith(".bin")
+    } == {"pytorch_model.bin"}
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -283,3 +287,67 @@ def test_t5_with_real_local_tokenizer(tmp_path):
     loaded, tokenizer = _load_t5(str(tmp_path))
     assert isinstance(loaded, T5Encoder)
     assert tokenizer.encode("hello") == [1]
+
+
+@pytest.mark.parametrize("explicit_activation", [False, True])
+def test_native_t5_configuration_and_output_are_preserved(
+    tmp_path, monkeypatch, explicit_activation
+):
+    from dataclasses import asdict
+
+    import huggingface_hub
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_audio.sts.models.sam_audio.text_encoder import T5Config, T5Encoder
+    from transformers import AutoTokenizer
+
+    from rapid_mlx.audio.sam_security import _load_t5
+
+    config = T5Config(
+        vocab_size=8,
+        d_model=4,
+        d_kv=2,
+        d_ff=8,
+        num_layers=1,
+        num_heads=2,
+        relative_attention_num_buckets=8,
+        relative_attention_max_distance=64,
+        dropout_rate=0.0,
+        is_gated_act=explicit_activation,
+        dense_act_fn="gelu_new" if explicit_activation else "relu",
+    )
+    data = asdict(config)
+    if not explicit_activation:
+        del data["is_gated_act"], data["dense_act_fn"]
+    # The native loader ignores these HF metadata/alias fields; retaining that
+    # behavior matters for ordinary checkpoint config files.
+    data.update(
+        architectures=["T5ForConditionalGeneration"],
+        feed_forward_proj="gated-gelu",
+        num_decoder_layers=5,
+    )
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    source = T5Encoder(config)
+    source.shared.weight = mx.full((config.vocab_size, config.d_model), 0.375)
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"), dict(tree_flatten(source.parameters()))
+    )
+    requests = []
+
+    def local_file(*, repo_id, filename):
+        requests.append((repo_id, filename))
+        assert filename in {"config.json", "model.safetensors"}
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", local_file)
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", lambda *_a, **_kw: object())
+    native = T5Encoder.from_pretrained("native-contract-probe")
+    owned, _tokenizer = _load_t5(str(tmp_path))
+    assert asdict(owned.config) == asdict(native.config) == asdict(config)
+    assert requests == [
+        ("native-contract-probe", "config.json"),
+        ("native-contract-probe", "model.safetensors"),
+    ]
+    assert mx.array_equal(owned.shared.weight, source.shared.weight).item()
+    tokens = mx.array([[1, 2]])
+    assert mx.allclose(owned(tokens), native(tokens)).item()
