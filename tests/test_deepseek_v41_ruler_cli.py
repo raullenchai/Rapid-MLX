@@ -85,7 +85,11 @@ def build_inputs(tmp_path, monkeypatch, failure=None):
     ids = np.arange(40960, dtype=np.int32) + (0 if failure == "overlap" else 100000)
     np.save(tmp_path / "cal.npy", ids)
     calibration = tmp_path / "cal.json"
-    calibration.write_text(json.dumps({"slices": {"cal": ["cal.npy"]}}))
+    calibration.write_text(
+        json.dumps(
+            {"slices": {"cal": ["cal.npy"]}, "tokenizer_sha256": ruler.TOKENIZER_HASH}
+        )
+    )
     if failure == "tokenizer":
         monkeypatch.setattr(ruler, "TOKENIZER_HASH", "bad")
     return SimpleNamespace(
@@ -363,3 +367,29 @@ def test_fetch_bounds_and_cleans_failed_transfers(tmp_path, monkeypatch, failure
         assert (tmp_path / "fixture").read_bytes() == b"preserve"
     else:
         assert not (tmp_path / "fixture").exists()
+
+
+@pytest.mark.parametrize("identity", [None, "wrong"])
+def test_calibration_tokenizer_identity_is_required(tmp_path, monkeypatch, identity):
+    a = build_inputs(tmp_path, monkeypatch)
+    manifest = json.loads(a.calibration.read_text())
+    manifest["tokenizer_sha256"] = identity
+    a.calibration.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="calibration tokenizer identity"):
+        ruler.build(a)
+    assert not (a.output / "long17k.json").exists()
+
+
+def test_ruler_tokenizer_copy_must_match_pin(tmp_path, monkeypatch):
+    a = build_inputs(tmp_path, monkeypatch)
+    original = ruler.shutil.copyfile
+
+    def mutate(source, destination):
+        result = original(source, destination)
+        destination.write_bytes(destination.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(ruler.shutil, "copyfile", mutate)
+    with pytest.raises(ValueError, match="tokenizer changed"):
+        ruler.build(a)
+    assert not (a.output / "wiki1100.json").exists()

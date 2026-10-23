@@ -173,3 +173,25 @@ def test_public_ruler_requires_bound_zero_overlap_audit(bundle, bad):
         manifest.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="overlap qualification"):
         ruler.validate_ruler_manifest(manifest)
+
+
+def test_recomputed_hashes_cannot_substitute_arbitrary_public_tokens(bundle):
+    manifest = bundle / "long17k.json"
+    path = bundle / "long17k_en.npy"
+    ids = np.load(path)
+    ids[0] += 7
+    np.save(path, ids)
+    provenance = json.loads((bundle / "provenance.json").read_text())
+    provenance["slices"]["long17k_en"]["sha256"] = ruler.file_hash(path)
+    refresh_provenance(bundle, manifest, provenance)
+    with pytest.raises(ValueError, match="pinned source recipe"):
+        ruler.validate_ruler_manifest(manifest)
+
+
+def test_pinned_tokenizer_and_book_markers_are_required(bundle):
+    (bundle / "tokenizer.json").write_text("changed")
+    with pytest.raises(ValueError, match="tokenizer file mismatch"):
+        ruler.validate_ruler_manifest(bundle / "long17k.json")
+    (bundle / "raw/pg1342.txt").write_text("missing markers")
+    with pytest.raises(ValueError, match="body markers"):
+        ruler.reconstruct_public_slices(bundle, "long17k")

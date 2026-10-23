@@ -55,6 +55,37 @@ def verify_input_hashes(hashes):
         raise ValueError("slice inputs changed during inference")
 
 
+def reconstruct_public_slices(root, name):
+    from tokenizers import Tokenizer
+
+    tokenizer = Tokenizer.from_file(str(root / "tokenizer.json"))
+    if name == "wiki1100":
+        import pyarrow.parquet as pq
+
+        rows = pq.read_table(root / "raw/wikitext2-test.parquet")["text"].to_pylist()
+        ids = tokenizer.encode("\n\n".join(rows)).ids
+        return {
+            f"wiki1100_{i:02d}": np.asarray(ids[i * 1100 : (i + 1) * 1100], np.int32)
+            for i in range(24)
+        }
+    result = {}
+    for book, language in ((1342, "en"), (23950, "zh")):
+        text = (
+            (root / "raw" / f"pg{book}.txt")
+            .read_bytes()
+            .decode("utf-8-sig")
+            .replace("\r\n", "\n")
+        )
+        start = re.search(r"\*\*\* START OF .*?\*\*\*[^\n]*\n", text)
+        end = re.search(r"\*\*\* END OF .*?\*\*\*", text)
+        if not start or not end or start.end() >= end.start():
+            raise ValueError("public ruler source body markers missing")
+        result[f"long17k_{language}"] = np.asarray(
+            tokenizer.encode(text[start.end() : end.start()]).ids[:17000], np.int32
+        )
+    return result
+
+
 def validate_ruler_manifest(path):
     """Authenticate named public rulers against their retained build provenance."""
     manifest = json.loads(path.read_bytes())
@@ -66,6 +97,8 @@ def validate_ruler_manifest(path):
     if file_hash(provenance_path) != manifest.get("provenance_sha256"):
         raise ValueError("public ruler provenance hash mismatch")
     provenance = json.loads(provenance_path.read_bytes())
+    if file_hash(root / "tokenizer.json") != TOKENIZER_HASH:
+        raise ValueError("public ruler tokenizer file mismatch")
     if (
         manifest.get("tokenizer_sha256") != TOKENIZER_HASH
         or provenance.get("tokenizer_sha256") != TOKENIZER_HASH
@@ -100,6 +133,7 @@ def validate_ruler_manifest(path):
         file_hash(root / n) != digest for n, digest in sources.items()
     ):
         raise ValueError("public ruler source provenance mismatch")
+    reconstructed = reconstruct_public_slices(root, name)
     for slice_name, count in PUBLIC_RULERS[name].items():
         filename = slice_name + ".npy"
         entry = provenance.get("slices", {}).get(slice_name, {})
@@ -115,6 +149,8 @@ def validate_ruler_manifest(path):
             or entry.get("tokens") != count
         ):
             raise ValueError("public ruler token shape mismatch")
+        if not np.array_equal(ids, reconstructed[slice_name]):
+            raise ValueError("public ruler tokens differ from pinned source recipe")
     return file_hash(path)
 
 
@@ -130,6 +166,7 @@ def retain_ruler_manifest(path, cache, expected_digest):
     for filename in [
         "provenance.json",
         "overlap.json",
+        "tokenizer.json",
         *["raw/" + n for n in SOURCE_HASHES],
         *[n + ".npy" for n in manifest["slices"]],
     ]:
@@ -341,6 +378,9 @@ def build(a):
     tokenizer_hash = file_hash(a.tokenizer)
     if tokenizer_hash != TOKENIZER_HASH:
         raise ValueError("rulers require the pinned source tokenizer")
+    shutil.copyfile(a.tokenizer, root / "tokenizer.json")
+    if file_hash(root / "tokenizer.json") != tokenizer_hash:
+        raise ValueError("tokenizer changed during ruler construction")
     wiki_url = (
         f"https://huggingface.co/datasets/Salesforce/wikitext/resolve/{WIKI_REV}/"
         "wikitext-2-raw-v1/test-00000-of-00001.parquet"
@@ -434,6 +474,8 @@ def build(a):
     cal_files = {}
     calibration_manifest_hash = file_hash(a.calibration)
     calibration_slices = read_slices(a.calibration, [])
+    if json.loads(a.calibration.read_bytes()).get("tokenizer_sha256") != TOKENIZER_HASH:
+        raise ValueError("calibration tokenizer identity mismatch")
     for name, paths in calibration_slices.items():
         cal_files[name] = [file_hash(p) for p in paths]
         ids = slice_tokens(paths, tok, 40960)
@@ -479,11 +521,18 @@ def build(a):
         for name, paths in calibration_slices.items()
     ):
         raise ValueError("calibration inputs changed during overlap audit")
+    prepared = []
     for ruler, manifest in manifests.items():
         manifest["provenance_sha256"] = file_hash(root / "provenance.json")
         manifest["overlap_sha256"] = provenance["overlap_sha256"]
         manifest["calibration_manifest_sha256"] = calibration_manifest_hash
-        (root / f"{ruler}.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        temporary = root / f".{ruler}.json"
+        temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+        validate_ruler_manifest(temporary)
+        prepared.append((temporary, root / f"{ruler}.json"))
+    for temporary, final in prepared:
+        os.link(temporary, final)
+        temporary.unlink()
     print(
         json.dumps(
             dict(
