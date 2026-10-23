@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 
 _TS_INDENT = "  "
 _TS_FIELD_DELIMITER = ",\n"
+_TS_RESERVED = frozenset(
+    "break case catch class const continue debugger default delete do else enum "
+    "export extends false finally for function if import in instanceof new null "
+    "return super switch this throw true try typeof var void while with implements "
+    "interface let package private protected public static yield any boolean "
+    "constructor declare get module namespace never number readonly require set "
+    "string symbol type undefined unique unknown abstract as asserts async await "
+    "infer is keyof of satisfies using parameters".split()
+)
+
+
+def _typescript_identifier(name: str, prefix: str) -> str:
+    # Reserve the generated prefix too, so encoded names cannot collide with
+    # an ordinary schema name. Hex encoding is reversible and collision-free.
+    if (
+        re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name)
+        and name not in _TS_RESERVED
+        and not name.startswith(prefix)
+    ):
+        return name
+    return prefix + name.encode("utf-8").hex()
 
 
 class _SchemaRegistry:
@@ -250,9 +271,13 @@ class _ParameterTypeEnum(_BaseType):
                     continue
                 if typ == "string" and not isinstance(val, str):
                     raise ValueError(f"Enum value {val} is not a string")
-                elif typ == "number" and not isinstance(val, (int, float)):
+                elif typ == "number" and (
+                    isinstance(val, bool) or not isinstance(val, (int, float))
+                ):
                     raise ValueError(f"Enum value {val} is not a number")
-                elif typ == "integer" and not isinstance(val, int):
+                elif typ == "integer" and (
+                    isinstance(val, bool) or not isinstance(val, int)
+                ):
                     raise ValueError(f"Enum value {val} is not an integer")
                 elif typ == "boolean" and not isinstance(val, bool):
                     raise ValueError(f"Enum value {val} is not a boolean")
@@ -313,7 +338,7 @@ class _ParameterTypeRef(_BaseType):
             self.ref_name = "parameters"
             self.is_self_ref = True
         else:
-            self.ref_name = ref.split("/")[-1]
+            self.ref_name = _typescript_identifier(ref.split("/")[-1], "_schema_")
 
     def to_typescript_style(self, indent: str = "") -> str:
         return self.ref_name
@@ -439,16 +464,23 @@ def _openai_function_to_typescript_style(
         if obj_description := def_schema.get("description", ""):
             description_part = _format_description(obj_description) + "\n"
 
-        interface_def = f"{description_part}interface {def_name} {params_str}"
+        identifier = _typescript_identifier(def_name, "_schema_")
+        interface_def = f"{description_part}interface {identifier} {params_str}"
         interfaces.append(interface_def)
 
     interface_str = "\n".join(interfaces)
     function_name = function.get("name", "function")
+    function_identifier = _typescript_identifier(function_name, "_tool_")
     if root_interface_name:
-        type_def = f"type {function_name} = (_: {root_interface_name}) => any;"
+        type_def = f"type {function_identifier} = (_: {root_interface_name}) => any;"
     else:
         params_str = parsed.to_typescript_style()
-        type_def = f"type {function_name} = (_: {params_str}) => any;"
+        type_def = f"type {function_identifier} = (_: {params_str}) => any;"
+    if function_identifier != function_name:
+        type_def = (
+            f"// Callable name: {json.dumps(function_name)}. "
+            "Use this exact name in tool calls.\n" + type_def
+        )
 
     description = function.get("description")
     return "\n".join(

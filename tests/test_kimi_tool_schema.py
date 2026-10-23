@@ -47,6 +47,8 @@ def test_schema_rendering(value, expected):
         {"enum": [1], "type": "string"},
         {"enum": ["x"], "type": "number"},
         {"enum": [1.5], "type": "integer"},
+        {"enum": [True], "type": "number"},
+        {"enum": [False], "type": "integer"},
         {"enum": [0], "type": "boolean"},
         {"enum": [1], "type": ["string", "number"]},
         {"enum": [1], "type": ["string", "number", "null"]},
@@ -76,6 +78,49 @@ def test_object_property_names_are_typescript_literals(name, expected):
         {"type": "object", "properties": {name: {"type": "string"}}}
     ).to_typescript_style()
     assert rendered == "{\n  " + expected + "?: string\n}"
+
+
+@pytest.mark.parametrize("name", ["get-weather", "default", "_tool_676574", 'a"\nb'])
+@pytest.mark.parametrize("recursive", [False, True])
+def test_tool_identifiers_preserve_the_original_callable_name(name, recursive):
+    import json
+
+    parameters = {"properties": {"child": {"$ref": "#"}}} if recursive else {}
+    rendered = schema.encode_tools_to_typescript_style(
+        [{"type": "function", "function": {"name": name, "parameters": parameters}}]
+    )
+    assert (
+        f"// Callable name: {json.dumps(name)}. Use this exact name in tool calls."
+        in rendered
+    )
+    assert f"type _tool_{name.encode().hex()} = (_:" in rendered
+    assert f"type {name} =" not in rendered
+
+
+@pytest.mark.parametrize("name", ["tree-node", "interface", "parameters", "_schema_78"])
+def test_definition_identifiers_match_references(name):
+    rendered = schema._openai_function_to_typescript_style(
+        {
+            "name": "tree",
+            "parameters": {
+                "$defs": {
+                    name: {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    }
+                },
+                "properties": {"node": {"$ref": f"#/$defs/{name}"}},
+            },
+        }
+    )
+    identifier = "_schema_" + name.encode().hex()
+    assert f"interface {identifier} " in rendered
+    assert f"node?: {identifier}" in rendered
+
+
+def test_encoded_names_do_not_collide_with_literal_identifier_names():
+    mapped = schema._typescript_identifier("tree-node", "_schema_")
+    assert schema._typescript_identifier(mapped, "_schema_") != mapped
 
 
 def test_registry_and_recursive_function():
