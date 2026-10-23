@@ -898,6 +898,8 @@ def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch)
     "mutation",
     [
         lambda m: None,
+        lambda m: [1],
+        lambda m: "invalid",
         lambda m: {**m, "revision": "f" * 40},
         lambda m: {**m, "repo_id": "other/repo"},
         lambda m: {**m, "files": []},

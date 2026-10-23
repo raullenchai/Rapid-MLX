@@ -1856,7 +1856,7 @@ def download_with_mirror_fallback(
             **({"revision": revision} if pinned else {}),
         )
     except RevisionNotFoundError:
-        if not pinned:
+        if not pinned or revision is None:
             return False
         info = _revision_manifest_info(base, repo_id, revision)
         mirror_only = True
@@ -2345,9 +2345,11 @@ def download_with_mirror_fallback(
                     # Its filename alone cannot vouch for the installed bytes.
                     import hashlib
 
+                    hasher = hashlib.sha256()
                     with target.open("rb") as stream:
-                        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                    if digest != expected_sha256:
+                        while chunk := stream.read(_CHUNK_BYTES):
+                            hasher.update(chunk)
+                    if hasher.hexdigest() != expected_sha256:
                         _safe_unlink(target)
                         return fname, "miss", 0
                 try:
