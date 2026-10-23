@@ -8,7 +8,9 @@ import socket
 
 def normalize_bind_host(host):
     """Keep localhost local without consulting mutable DNS/hosts configuration."""
-    return "127.0.0.1" if isinstance(host, str) and host.lower() == "localhost" else host
+    return (
+        "127.0.0.1" if isinstance(host, str) and host.lower() == "localhost" else host
+    )
 
 
 def validate_server_exposure(

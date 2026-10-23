@@ -179,7 +179,10 @@ def test_standalone_server_parser_rejects_inherited_listener(capsys):
     assert "unrecognized arguments: --listen-fd 3" in capsys.readouterr().err
 
 
-def test_standalone_server_rejects_remote_local_search_after_parse(monkeypatch, capsys):
+@pytest.mark.parametrize("extra", [[], ["--allow-unauthenticated-public"]])
+def test_standalone_server_rejects_remote_local_search_after_parse(
+    monkeypatch, capsys, extra
+):
     from rapid_mlx import server
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
@@ -193,6 +196,7 @@ def test_standalone_server_rejects_remote_local_search_after_parse(monkeypatch, 
             "--host",
             "0.0.0.0",
             "--enable-local-search",
+            *extra,
         ],
     )
 

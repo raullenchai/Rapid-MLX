@@ -4212,15 +4212,6 @@ def main():
     from .server_exposure import normalize_bind_host, validate_server_exposure
 
     args.host = normalize_bind_host(args.host)
-    try:
-        validate_server_exposure(
-            host=args.host,
-            api_key=_resolve_api_key(getattr(args, "api_key", None)),
-            allow_unauthenticated_public=args.allow_unauthenticated_public,
-            listen_fd=getattr(args, "listen_fd", None),
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
     from .local_search_runtime import (
         validate_exposure as validate_local_search_exposure,
     )
@@ -4231,6 +4222,16 @@ def main():
             host=getattr(args, "host", "127.0.0.1"),
             api_key=_resolve_api_key(getattr(args, "api_key", None)),
             inherited_listener=getattr(args, "listen_fd", None) is not None,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    try:
+        validate_server_exposure(
+            host=args.host,
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            allow_unauthenticated_public=args.allow_unauthenticated_public,
+            listen_fd=getattr(args, "listen_fd", None),
         )
     except ValueError as exc:
         parser.error(str(exc))
