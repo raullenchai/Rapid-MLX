@@ -179,7 +179,10 @@ def test_standalone_server_parser_rejects_inherited_listener(capsys):
     assert "unrecognized arguments: --listen-fd 3" in capsys.readouterr().err
 
 
-def test_standalone_server_rejects_remote_local_search_after_parse(monkeypatch, capsys):
+@pytest.mark.parametrize("extra", [[], ["--allow-unauthenticated-public"]])
+def test_standalone_server_rejects_remote_local_search_after_parse(
+    monkeypatch, capsys, extra
+):
     from rapid_mlx import server
 
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
@@ -193,6 +196,7 @@ def test_standalone_server_rejects_remote_local_search_after_parse(monkeypatch, 
             "--host",
             "0.0.0.0",
             "--enable-local-search",
+            *extra,
         ],
     )
 
@@ -2378,6 +2382,10 @@ def runnable_text_snapshot(path):
 
 @pytest.mark.parametrize("downloads_disabled", [False, True])
 def test_local_availability_never_downloads(tmp_path, monkeypatch, downloads_disabled):
+    # The fake cache below contains no real model bytes.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     import huggingface_hub
 
     from rapid_mlx import cli, model_downloads

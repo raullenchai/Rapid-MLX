@@ -5554,6 +5554,21 @@
        "type": "builtins.str"
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "allow_unauthenticated_public",
+       "help": "Explicitly allow network serving without an API key (e.g. an authenticated proxy)",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--allow-unauthenticated-public"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -6631,6 +6646,7 @@
         "vision_min_pixels",
         "vision_max_pixels",
         "mcp_config",
+        "allow_unauthenticated_public",
         "api_key",
         "cors_origins",
         "trusted_hosts",
@@ -8860,6 +8876,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "allow_unauthenticated_public",
+       "help": "Deliberately allow network access without an API key (e.g. behind external authentication).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--allow-unauthenticated-public"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "choices": [
         "DEBUG",
         "INFO",
@@ -9047,6 +9078,7 @@
         "host",
         "port",
         "api_key",
+        "allow_unauthenticated_public",
         "log_level",
         "device",
         "dtype",

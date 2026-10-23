@@ -5521,7 +5521,22 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
 
 def system_one_command(args) -> None:
     """Start the dedicated typed-decision API without a generative model."""
-    import os
+    from .server import _resolve_api_key
+    from .server_exposure import normalize_bind_host, validate_server_exposure
+
+    args.host = normalize_bind_host(args.host)
+    api_key = _resolve_api_key(args.api_key)
+    try:
+        validate_server_exposure(
+            host=args.host,
+            api_key=api_key,
+            allow_unauthenticated_public=getattr(
+                args, "allow_unauthenticated_public", False
+            ),
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.system_one.backends import (
@@ -5582,7 +5597,6 @@ def system_one_command(args) -> None:
             dtype=args.dtype,
             batch_size=args.batch_size,
         )
-    api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     app = create_app(
         backend,
         api_key=api_key,
@@ -5846,7 +5860,23 @@ def serve_command(args):
 
     flush_serve_startup_notes(args)
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
+    from .server import _resolve_api_key
+    from .server_exposure import normalize_bind_host, validate_server_exposure
+
+    args.host = normalize_bind_host(getattr(args, "host", "127.0.0.1"))
     _validate_local_search_exposure_or_exit(args)
+    try:
+        validate_server_exposure(
+            host=getattr(args, "host", "127.0.0.1"),
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            allow_unauthenticated_public=getattr(
+                args, "allow_unauthenticated_public", False
+            ),
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
     from .local_search_runtime import configure as configure_local_search
 

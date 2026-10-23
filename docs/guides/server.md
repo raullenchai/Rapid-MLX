@@ -70,11 +70,12 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--port` | Server port; when omitted, uses the first free port from 8000 through 8009; an explicit port never falls back | First free in 8000–8009 |
-| `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
+| `--host` | Server host (loopback-only by default; pass `0.0.0.0` with authentication to expose on LAN) | 127.0.0.1 |
 | `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored. Native MTP, DSpark K4, DFlash, and DDTree reject this option with rc 2 (see the socket-activation section below) | None |
 | `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |
 | `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
+| `--allow-unauthenticated-public` | Explicitly permit a non-loopback listener without an API key | false |
 | `--cors-origins` | Allowed CORS origins (also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | Disabled (explicit opt-in) |
 | `--trusted-hosts` | Host-header allowlist; non-matching requests get HTTP 400 | `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
@@ -1331,3 +1332,17 @@ local files remain supported. Remote decoder-specific protocols are not
 accepted for audio or video.
 
 Media `file:///absolute/path` URIs decode escaped path characters and ignore URI query/fragment components. Their authority must be empty or `localhost`; other authorities are refused. Use an ordinary filesystem path for relative local files.
+
+### Network listener consent
+
+Non-loopback listeners now require `--api-key` or `RAPID_MLX_API_KEY` before
+model loading begins. Loopback listeners and authenticated deployments keep
+their existing behavior. `localhost` binds directly to `127.0.0.1`. This policy
+also applies to System One, module startup, and inherited listening sockets;
+for socket activation the socket's actual address is checked.
+
+If a reverse proxy provides authentication and the backend must bind beyond
+loopback, explicitly pass `--allow-unauthenticated-public`. Container and LAN
+recipes that bind to `0.0.0.0` without a key must add a key or this opt-in. The
+flag permits unauthenticated access and does not configure proxy authentication,
+Host allowlists, or CORS. Local Search retains its stricter authentication rule.

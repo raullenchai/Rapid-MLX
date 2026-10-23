@@ -297,3 +297,36 @@ def test_main_still_dispatches_serve_after_system_one_branch(monkeypatch):
     )
     cli_module.main()
     assert captured == ["serve"]
+
+
+def test_system_one_rejects_public_before_loading_backend(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    args = build_parser().parse_args(["system-one", "--host", "0.0.0.0"])
+    with pytest.raises(SystemExit) as exc:
+        system_one_command(args)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "consent", [[], ["--api-key", "secret"], ["--allow-unauthenticated-public"]]
+)
+def test_system_one_normalizes_localhost_and_preserves_public_consent(
+    monkeypatch, consent
+):
+
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    host = "0.0.0.0" if consent else "LOCALHOST"
+    args = build_parser().parse_args(["system-one", "--host", host, *consent])
+
+    class StopBeforeModelError(Exception):
+        pass
+
+    def preflight(bound_host, *args, **kwargs):
+        assert bound_host == ("0.0.0.0" if consent else "127.0.0.1")
+        raise StopBeforeModelError
+
+    monkeypatch.setitem(
+        system_one_command.__globals__, "_port_preflight_or_die", preflight
+    )
+    with pytest.raises(StopBeforeModelError):
+        system_one_command(args)

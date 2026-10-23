@@ -387,6 +387,11 @@ def _add_system_one_parser(
     system_one_parser.add_argument("--port", type=_port_arg, default=None)
     system_one_parser.add_argument("--api-key", default=None)
     system_one_parser.add_argument(
+        "--allow-unauthenticated-public",
+        action="store_true",
+        help="Deliberately allow network access without an API key (e.g. behind external authentication).",
+    )
+    system_one_parser.add_argument(
         "--log-level",
         type=_log_level_choice,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -1371,6 +1376,11 @@ def _add_serve_parser(
     # form so the bearer key never lands in argv (visible to ``ps`` for
     # any local user). Inline value still works for backwards-compat
     # with existing scripts; if both are set, the inline value wins.
+    serve_parser.add_argument(
+        "--allow-unauthenticated-public",
+        action="store_true",
+        help="Explicitly allow network serving without an API key (e.g. an authenticated proxy)",
+    )
     serve_parser.add_argument(
         "--api-key",
         type=str,

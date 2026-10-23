@@ -162,6 +162,8 @@ def _minimal_serve_ns(**overrides):
             argv += ["--port", str(v)]
         elif k == "host":
             argv += ["--host", v]
+        elif k == "allow_unauthenticated_public" and v:
+            argv += ["--allow-unauthenticated-public"]
     with (
         patch.object(sys, "argv", argv),
         patch.object(cli, "serve_command", side_effect=captured.append),
@@ -458,7 +460,7 @@ def stub_heavy_serve_deps(monkeypatch):
 
 
 def test_serve_load_failure_emits_v2_model_failure(
-    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+    listener_fd, stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
     from rapid_mlx import server as server_mod
     from rapid_mlx.telemetry import model_events
@@ -475,7 +477,7 @@ def test_serve_load_failure_emits_v2_model_failure(
         "emit_model_serve_failed",
         lambda exc, **kwargs: calls.append((exc, kwargs)),
     )
-    ns = _minimal_serve_ns(listen_fd=7)
+    ns = _minimal_serve_ns(listen_fd=listener_fd)
     ns._telemetry_auto_selected = True
     with pytest.raises(SystemExit) as excinfo:
         cli.serve_command(ns)
@@ -529,6 +531,7 @@ def _capture_uvicorn_run(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
+    listener_fd,
     stub_heavy_serve_deps,
 ):
     """End-to-end behavioral test: with ``--listen-fd N`` set, driving
@@ -542,10 +545,10 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     to assert on the actual ``uvicorn.run`` call.
     """
     captured = _capture_uvicorn_run(stub_heavy_serve_deps)
-    ns = _minimal_serve_ns(listen_fd=7)
+    ns = _minimal_serve_ns(listen_fd=listener_fd)
     cli.serve_command(ns)
 
-    assert captured.get("fd") == 7, (
+    assert captured.get("fd") == listener_fd, (
         f"expected fd=7 in the real uvicorn.run call, got {captured!r}"
     )
     assert "host" not in captured, (
@@ -558,7 +561,7 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     from rapid_mlx.config import get_config
 
     cfg = get_config()
-    assert cfg.bind_listen_fd == 7
+    assert cfg.bind_listen_fd == listener_fd
     assert cfg.bind_host is None
     assert cfg.bind_port is None
 
@@ -1161,6 +1164,7 @@ def test_serve_command_default_max_tokens_does_not_mutate_args(
 
 @pytest.mark.requires_mlx
 def test_serve_command_skips_port_preflight_when_listen_fd_set(
+    listener_fd,
     stub_heavy_serve_deps,
 ):
     """When ``--listen-fd N`` is set, ``serve_command`` MUST skip the
@@ -1186,13 +1190,15 @@ def test_serve_command_skips_port_preflight_when_listen_fd_set(
         blocker.listen(1)
         blocked_port = blocker.getsockname()[1]
 
-        ns = _minimal_serve_ns(listen_fd=11, host="127.0.0.1", port=blocked_port)
+        ns = _minimal_serve_ns(
+            listen_fd=listener_fd, host="127.0.0.1", port=blocked_port
+        )
         # If the preflight runs, this raises SystemExit(1) before reaching
         # the uvicorn.run stub. The test passes only when the preflight
         # is correctly skipped in the listen-fd branch.
         cli.serve_command(ns)
 
-    assert captured.get("fd") == 11, (
+    assert captured.get("fd") == listener_fd, (
         f"expected uvicorn.run(fd=11, ...), got {captured!r}"
     )
     assert "host" not in captured
@@ -1201,6 +1207,7 @@ def test_serve_command_skips_port_preflight_when_listen_fd_set(
 
 @pytest.mark.requires_mlx
 def test_serve_command_resets_stale_bind_fields_between_invocations(
+    listener_fd,
     stub_heavy_serve_deps,
 ):
     """The singleton ``ServerConfig`` persists across in-process
@@ -1229,13 +1236,21 @@ def test_serve_command_resets_stale_bind_fields_between_invocations(
 
     # Second call: listen-fd. The prior host/port must be cleared.
     captured.clear()
-    cli.serve_command(_minimal_serve_ns(listen_fd=11))
-    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (None, None, 11)
+    cli.serve_command(_minimal_serve_ns(listen_fd=listener_fd))
+    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
+        None,
+        None,
+        listener_fd,
+    )
 
     # Third call: back to host/port. The prior fd must be cleared.
     captured.clear()
     port_b = _free_tcp_port("0.0.0.0")
-    cli.serve_command(_minimal_serve_ns(host="0.0.0.0", port=port_b))
+    cli.serve_command(
+        _minimal_serve_ns(
+            host="0.0.0.0", port=port_b, allow_unauthenticated_public=True
+        )
+    )
     # ``host_display`` rewrites 0.0.0.0 → "localhost" for the banner.
     assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
         "localhost",
@@ -1263,3 +1278,13 @@ def test_serve_listen_fd_help_documents_host_port_ignored(capsys):
     help_text = capsys.readouterr().out
     assert "--listen-fd" in help_text
     assert "ignored" in help_text.lower()
+
+
+@pytest.fixture
+def listener_fd():
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        yield listener.fileno()
