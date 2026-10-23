@@ -853,3 +853,72 @@ def test_layer_cli_requires_source_and_roles_after_schema_validation(cli_inputs)
     write()
     with pytest.raises(ValueError, match="needs --score reap"):
         alloc.main()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "missing",
+        "resident",
+        "layer",
+        "routed",
+        "router",
+        "fixed",
+        "breakdown_resident",
+        "payload",
+        "engram",
+        "component_type",
+    ],
+)
+def test_variant_rejects_stale_base_accounting(bad):
+    cost = {
+        "expert_bytes": np.broadcast_to([0, 30, 42, 54], (1, 2, 4)).tolist(),
+        "fixed_non_expert_bytes": 100,
+    }
+    base = {
+        "layers": {
+            "0": {"kept_expert_ids": [0, 1], "bits": 2, "routed_and_router_bytes": 60}
+        },
+        "fixed_non_expert_bytes": 100,
+        "resident_tensor_bytes": 160,
+        "provenance": {"costs_sha256": alloc.inventory_digest(cost)},
+        "byte_breakdown": {
+            "components": {
+                "routed_experts": 60,
+                "router": 0,
+                "shared": 100,
+                "engram_ssd": 10,
+            },
+            "resident_tensor_bytes": 160,
+            "total_payload_bytes": 170,
+            "shared_engram_bytes": 10,
+        },
+    }
+    assert (
+        variant.variant_allocation(base, cost, ["0=3/3/3"])["resident_tensor_bytes"]
+        == 184
+    )
+    breakdown = base["byte_breakdown"]
+    if bad == "missing":
+        del base["resident_tensor_bytes"]
+    elif bad == "resident":
+        base["resident_tensor_bytes"] += 1
+    elif bad == "layer":
+        base["layers"]["0"]["routed_and_router_bytes"] += 1
+    elif bad in ("routed", "router", "fixed", "component_type"):
+        key = {
+            "routed": "routed_experts",
+            "router": "router",
+            "fixed": "shared",
+            "component_type": "shared",
+        }[bad]
+        breakdown["components"][key] += 0.5 if bad == "component_type" else 1
+    else:
+        key = {
+            "breakdown_resident": "resident_tensor_bytes",
+            "payload": "total_payload_bytes",
+            "engram": "shared_engram_bytes",
+        }[bad]
+        breakdown[key] += 1
+    with pytest.raises(ValueError, match="base"):
+        variant.variant_allocation(base, cost, ["0=3/3/3"])

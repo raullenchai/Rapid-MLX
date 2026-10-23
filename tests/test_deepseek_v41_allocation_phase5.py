@@ -87,6 +87,12 @@ def test_variant_invalid_overrides(source, override):
     config = json.loads((source / "config.json").read_text())
     cost = inventory(CheckpointIndex(source), config)
     base = allocation()
+    base.update(
+        keep_mtp=False,
+        fixed_non_expert_bytes=cost["fixed_non_expert_bytes"],
+        resident_tensor_bytes=cost["fixed_non_expert_bytes"]
+        + sum(row[1] for row in cost["expert_bytes"][0]),
+    )
     base["provenance"] = {"costs_sha256": inventory_digest(cost)}
     with pytest.raises(ValueError):
         variant_allocation(base, cost, [override])

@@ -18,9 +18,34 @@ from scripts.deepseek_v41_rd_allocate import inventory_digest, publish_allocatio
 from scripts.deepseek_v41_rd_layer_allocate import (
     checked_byte_costs,
     routed_and_router_bytes,
+    router_row_bytes,
 )
 
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+
+
+def price_layers(layers, costs):
+    pricing = {}
+    for layer, spec in layers.items():
+        kept = spec["kept_expert_ids"]
+        if (
+            not kept
+            or kept != sorted(set(kept))
+            or any(type(i) is not int or not 0 <= i < costs.shape[1] for i in kept)
+        ):
+            raise ValueError("invalid kept expert IDs")
+        widths = spec.get(
+            "projection_bits", dict.fromkeys(PROJECTIONS, spec.get("bits"))
+        )
+        if set(widths) != set(PROJECTIONS) or any(
+            type(b) is not int or b not in (2, 3, 4) for b in widths.values()
+        ):
+            raise ValueError("invalid projection bits")
+        size = routed_and_router_bytes(
+            costs[int(layer)], kept, [widths[p] for p in PROJECTIONS]
+        )
+        pricing[layer] = (widths, size)
+    return pricing
 
 
 def variant_allocation(base, cost, overrides):
@@ -42,6 +67,50 @@ def variant_allocation(base, cost, overrides):
     ):
         raise ValueError("invalid layer cost inventory or allocation")
     costs = checked_byte_costs(costs)
+    base_pricing = price_layers(base["layers"], costs)
+    if any(
+        type(base.get(key)) is not int
+        for key in ("fixed_non_expert_bytes", "resident_tensor_bytes")
+    ) or (base.get("keep_mtp") and type(base.get("mtp_bytes")) is not int):
+        raise ValueError(
+            "base allocation requires integral fixed/resident/draft byte totals"
+        )
+    fixed = cost["fixed_non_expert_bytes"] + (
+        base["mtp_bytes"] if base.get("keep_mtp") else 0
+    )
+    if fixed != base["fixed_non_expert_bytes"]:
+        raise ValueError("base fixed bytes disagree with cost inventory/draft policy")
+    base_routed = sum(size for _, size in base_pricing.values())
+    if base["resident_tensor_bytes"] != fixed + base_routed:
+        raise ValueError("base resident bytes disagree with layer specifications")
+    for layer, (_, size) in base_pricing.items():
+        if base["layers"][layer].get("routed_and_router_bytes", size) != size:
+            raise ValueError("base layer bytes disagree with layer specifications")
+    if "byte_breakdown" in base:
+        breakdown = base["byte_breakdown"]
+        components = breakdown["components"]
+        router = sum(
+            len(spec["kept_expert_ids"]) * router_row_bytes(costs[int(layer)])
+            for layer, spec in base["layers"].items()
+        )
+        if (
+            any(type(value) is not int or value < 0 for value in components.values())
+            or components.get("router", 0) != router
+            or components.get("routed_experts", 0) != base_routed - router
+            or sum(
+                value
+                for name, value in components.items()
+                if name not in ("router", "routed_experts", "engram_ssd")
+            )
+            != fixed
+            or breakdown["resident_tensor_bytes"] != fixed + base_routed
+            or breakdown["total_payload_bytes"] != sum(components.values())
+            or breakdown.get("shared_engram_bytes", components.get("engram_ssd", 0))
+            != components.get("engram_ssd", 0)
+        ):
+            raise ValueError(
+                "base byte breakdown disagrees with allocation and inventory"
+            )
     for override in overrides:
         try:
             layers, widths = override.split("=")
@@ -57,35 +126,11 @@ def variant_allocation(base, cost, overrides):
             spec = result["layers"][str(layer)]
             spec["projection_bits"] = dict(zip(PROJECTIONS, bits))
             spec.pop("bits", None)
-    used = 0
-    for layer, spec in result["layers"].items():
-        kept = spec["kept_expert_ids"]
-        if (
-            not kept
-            or kept != sorted(set(kept))
-            or any(type(i) is not int or not 0 <= i < costs.shape[1] for i in kept)
-        ):
-            raise ValueError("invalid kept expert IDs")
-        widths = spec.get(
-            "projection_bits", dict.fromkeys(PROJECTIONS, spec.get("bits"))
-        )
-        if set(widths) != set(PROJECTIONS) or any(
-            type(b) is not int or b not in (2, 3, 4) for b in widths.values()
-        ):
-            raise ValueError("invalid projection bits")
-        spec["projection_bits"] = widths
-        size = routed_and_router_bytes(
-            costs[int(layer)], kept, [widths[p] for p in PROJECTIONS]
-        )
-        spec["routed_and_router_bytes"] = size
-        used += size
-    # The allocation's fixed total includes its selected draft precision. Older
-    # inventories price only the former draft policy, so retain the base's total.
-    fixed = cost["fixed_non_expert_bytes"] + (
-        base["mtp_bytes"] if base.get("keep_mtp") else 0
-    )
-    if fixed != base["fixed_non_expert_bytes"]:
-        raise ValueError("base fixed bytes disagree with cost inventory/draft policy")
+    pricing = price_layers(result["layers"], costs)
+    for layer, (widths, size) in pricing.items():
+        result["layers"][layer]["projection_bits"] = widths
+        result["layers"][layer]["routed_and_router_bytes"] = size
+    used = sum(size for _, size in pricing.values())
     resident = int(fixed + used)
     delta = resident - base["resident_tensor_bytes"]
     result["resident_tensor_bytes"] = resident
