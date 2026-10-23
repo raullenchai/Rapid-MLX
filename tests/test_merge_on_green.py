@@ -81,7 +81,7 @@ def ready():
     api = Fake()
     api.data["pulls/1"] = pull()
     api.data["pulls/1/files"] = [
-        dict(filename="rapid_mlx/server.py", status="modified")
+        dict(filename="docs/guides/example.md", status="modified")
     ]
     api.data["pulls?state=open&base=main"] = [dict(number=1)]
     api.data[f"commits/{SHA}/check-runs?filter=all"] = [

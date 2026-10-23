@@ -522,6 +522,10 @@ def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
 def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Synthetic transport has no real model bytes; hash rejection is tested separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)
@@ -747,6 +751,10 @@ def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
     against HF's metadata at that commit); when it cannot complete, the HF
     download is pinned to the same commit.
     """
+    # Synthetic transport has no real model bytes; hash rejection is tested separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     from rapid_mlx import cli
 
     mirror_calls = []
@@ -789,6 +797,10 @@ def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
 def test_pinned_pull_served_by_the_mirror_reports_the_pinned_snapshot(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
+    # Synthetic transport has no real model bytes; hash rejection is tested separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     from huggingface_hub import constants
 
     from rapid_mlx import cli

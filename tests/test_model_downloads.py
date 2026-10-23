@@ -341,10 +341,6 @@ def test_server_reachable_hub_boundaries_use_the_policy_resolvers():
         "_mirror.py": {"hf_hub_download"},
         # Explicit provisioning/import flows remain exempt by contract.
         "cli.py": {"snapshot_download"},
-        "byom/imports.py": {"snapshot_download"},
-        "byom/preflight.py": {"hf_hub_download"},
-        # Music performs a per-file cache proof before this call.
-        "audio/music.py": {"hf_hub_download"},
         # The server backend resolves the pinned release to a local path before
         # entering the integrity-pinned vendored loader.
         "clef/vendor/joint_schema_model.py": {"snapshot_download"},

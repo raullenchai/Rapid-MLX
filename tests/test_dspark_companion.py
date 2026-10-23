@@ -223,6 +223,10 @@ def test_artifact_abi_rejects_malformed_shapes(
 
 
 def test_artifact_downloads_pin_both_revisions(monkeypatch, tmp_path) -> None:
+    # Synthetic transport has no real model bytes; hash rejection is tested separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     from rapid_mlx.spec_decode.dspark import artifacts
 
     target, draft = _write_configs(tmp_path)
