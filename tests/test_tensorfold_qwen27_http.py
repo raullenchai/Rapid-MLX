@@ -622,7 +622,29 @@ def test_provider_timeout_worker_error_and_generate_success(
         }
         raise RuntimeError("submit failed")
 
+    # Simulate a scheduler still owning a job when its output iterator closes.
+    # The cancellation must not erase context before a delayed begin_stream.
+    held = []
     scheduler = app.scheduler
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27_server._prompt_boundaries",
+        lambda *args: (6200, (6144,)),
+    )
+
+    def retain(job):
+        held.append(job)
+        job.chunks.put([2])
+
+    app.scheduler = SimpleNamespace(submit=retain)
+    iterator = provider._outputs("x", max_tokens=1)
+    next(iterator)
+    expected_context = dict(provider.backend._checkpoint_context)
+    iterator.close()
+    assert provider.backend._checkpoint_context == expected_context
+    assert expected_context[held[0].job_id] == (6200, (6144,))
+    held.clear()
+    assert provider.backend._checkpoint_context == {}
+
     app.scheduler = SimpleNamespace(submit=reject)
     with pytest.raises(RuntimeError, match="submit failed"):
         list(provider._outputs("x", max_tokens=1))
