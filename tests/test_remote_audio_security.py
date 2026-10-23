@@ -300,7 +300,7 @@ def test_local_colon_video_filename_reaches_local_decoder(
         def __init__(self, source):
             seen.append(source)
 
-        def isOpened(self):
+        def isOpened(self):  # noqa: N802 - OpenCV capture API
             return False
 
         def release(self):
