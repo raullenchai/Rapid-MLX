@@ -1027,6 +1027,28 @@ def test_catalog_rename_requires_review():
     assert "human maintainer approval" in m.catalog_review_gate(api, pull())
 
 
+@pytest.mark.parametrize("previous", ["draft.json", "rapid_mlx/audio/aliases.json"])
+def test_rename_into_catalog_uses_prior_path_and_requires_approval(previous):
+    value = {"model": {"hf_path": "org/model", "revision": SHA}}
+    api = catalog_pr(value, value)
+    api.data["pulls/1/files"][0].update(status="renamed", previous_filename=previous)
+    old = api.data.pop(f"contents/rapid_mlx/aliases.json?ref={'b' * 40}")
+    api.data[f"contents/{previous}?ref={'b' * 40}"] = old
+    assert "human maintainer approval" in m.catalog_review_gate(api, pull())
+    api.data["pulls/1/reviews"] = [approval()]
+    api.data["collaborators/maintainer/permission"] = {"permission": "write"}
+    assert m.catalog_review_gate(api, pull()) == ""
+
+
+def test_rename_from_unprotected_file_cannot_grandfather_unpinned_identities():
+    value = {"model": {"hf_path": "org/model"}}
+    api = catalog_pr(value, value)
+    api.data["pulls/1/files"][0].update(
+        status="renamed", previous_filename="draft.json"
+    )
+    assert "Catalog identity policy" in m.catalog_review_gate(api, pull())
+
+
 def test_catalog_unavailable_encoding_fails_closed():
     api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
     api.data[f"contents/rapid_mlx/aliases.json?ref={SHA}"]["encoding"] = "none"
