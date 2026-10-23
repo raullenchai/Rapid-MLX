@@ -1223,13 +1223,16 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
         from ..model_aliases import subfolder_allow_patterns
         from ..model_metadata import resolve_pinned_cached_snapshot
 
+        catalog_subfolder = resolve_subfolder(model_name)
+        explicit_subfolder = catalog_subfolder if model_name != repo_id else None
+        subfolder = explicit_subfolder or pulled_variant(repo_id) or catalog_subfolder
         cached = resolve_pinned_cached_snapshot(model_name)
-        if cached is not None:
+        if cached is not None and subfolder == catalog_subfolder:
             return str(cached)
-        local = pinned_snapshot_download(
-            repo_id, revision, allow_patterns=subfolder_allow_patterns(model_name)
-        )
-        checkpoint = os.path.join(local, resolve_subfolder(model_name) or "")
+        patterns = ([f"{_escape_variant_glob_literal(subfolder)}/*"]
+                    if subfolder else subfolder_allow_patterns(model_name))
+        local = pinned_snapshot_download(repo_id, revision, allow_patterns=patterns)
+        checkpoint = os.path.join(local, subfolder or "")
         if not _snapshot_is_complete(checkpoint):
             raise RuntimeError(f"Pinned checkpoint {repo_id}@{revision} is incomplete")
         return checkpoint

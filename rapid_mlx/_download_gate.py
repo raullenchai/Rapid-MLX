@@ -531,11 +531,11 @@ def _model_info_with_timeout(repo_id: str, timeout: float):
 
     def _call() -> None:
         try:
-            from .model_aliases import resolve_hub_model, resolve_revision
+            from .model_catalog import resolve_repository_identity
 
-            revision = resolve_revision(repo_id)
+            canonical_repo, revision = resolve_repository_identity(repo_id)
             result["info"] = HfApi().model_info(
-                resolve_hub_model(repo_id) if revision is not None else repo_id,
+                canonical_repo,
                 files_metadata=True,
                 **({"revision": revision} if revision else {}),
             )
@@ -1138,11 +1138,9 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
-        from .model_aliases import resolve_hub_model, resolve_revision
+        from .model_catalog import resolve_repository_identity
 
-        revision = resolve_revision(repo_id)
-        if revision is not None:
-            repo_id = resolve_hub_model(repo_id)
+        repo_id, revision = resolve_repository_identity(repo_id)
         repo_root = os.path.join(
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",

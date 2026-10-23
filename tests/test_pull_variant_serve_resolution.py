@@ -650,3 +650,10 @@ def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
         cli.pull_command(args)  # must not raise after a successful download
 
     assert "Already cached" in capsys.readouterr().out
+
+
+@pytest.fixture(autouse=True)
+def _mock_integrity_for_download_orchestration(monkeypatch):
+    # These tests fake transport/snapshot bytes; real hashing and failure ordering
+    # are exercised independently in test_model_integrity.py.
+    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)

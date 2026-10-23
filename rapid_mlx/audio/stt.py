@@ -652,7 +652,10 @@ class STTEngine:
         try:
             from mlx_audio.stt.utils import load_model
 
-            self.model = load_model(self.model_name)
+            model_path = Path(self.model_name).expanduser()
+            if not model_path.is_dir():
+                model_path = Path(model_downloads.snapshot_download(self.model_name))
+            self.model = load_model(model_path)
             # Prefer the backend metadata after loading so renamed/private
             # SenseVoice repos still receive the native generate() contract.
             # The constructor's name check remains a useful pre-load fallback.
@@ -742,7 +745,12 @@ class STTEngine:
             local_only = (
                 {"local_files_only": True} if model_downloads.disabled() else {}
             )
-            processor = WhisperProcessor.from_pretrained(processor_source, **local_only)
+            from rapid_mlx.model_catalog import resolve_repository_identity
+
+            processor_source, revision = resolve_repository_identity(processor_source)
+            processor = WhisperProcessor.from_pretrained(
+                processor_source, revision=revision, **local_only
+            )
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first

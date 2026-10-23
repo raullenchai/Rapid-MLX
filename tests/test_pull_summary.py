@@ -621,7 +621,11 @@ def test_pull_command_prepares_image_runtime_assets_after_primary(
     cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
 
     assert pulls == [
-        ("tmax-9b", {}, True),
+        (
+            "mlx-community/Tmax-9B-MLX-4bit",
+            {"revision_override": "62a9063c060b0a6245449cd4b60a9bce94b135df"},
+            True,
+        ),
         (
             "org/runtime",
             {
@@ -646,7 +650,7 @@ def test_pull_command_suppresses_audio_runtime_asset_lifecycle(monkeypatch):
     monkeypatch.setattr(
         "rapid_mlx.audio.registry.runtime_assets_for",
         lambda _repo: (
-            SimpleNamespace(repo_id="org/audio-runtime", allow_patterns=()),
+            SimpleNamespace(repo_id="org/audio-runtime", allow_patterns=(), revision=None),
         ),
     )
     monkeypatch.setattr(
@@ -655,7 +659,10 @@ def test_pull_command_suppresses_audio_runtime_asset_lifecycle(monkeypatch):
 
     cli.pull_command(argparse.Namespace(model="tmax-9b", bits=None, format=None))
 
-    assert pulls == [("tmax-9b", True), ("org/audio-runtime", False)]
+    assert pulls == [
+        ("mlx-community/Tmax-9B-MLX-4bit", True),
+        ("org/audio-runtime", False),
+    ]
 
 
 def test_pull_command_suppresses_mtp_runtime_asset_lifecycle(monkeypatch):
@@ -786,7 +793,7 @@ def test_partial_mirror_fetch_combines_into_fallback_verdict(
     )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    def _mirror_partial(model_name: str, *, out=None, allow_patterns=None) -> bool:
+    def _mirror_partial(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
         # Mirror fetched some blobs (network_fetch=True) but ultimately
         # returned False (a file missed both R2 and HF).
         if out is not None:
@@ -963,7 +970,7 @@ def test_summary_printed_on_mirror_success(
     cache_root = tmp_path / "hub"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None) -> bool:
+    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
         """Simulate the mirror downloading the snapshot during this pull."""
         repo_root = cache_root / "models--mlx-community--Qwen3-0.6B-4bit"
         refs_dir = repo_root / "refs"
@@ -1017,7 +1024,7 @@ def test_cached_pull_reports_verified_not_downloaded(
     # The mirror reports it fetched ZERO bytes this pull (every file was
     # already cached) -> "verified (nothing to download)", not "Downloaded".
     def _mirror_already_cached(
-        model_name: str, *, out=None, allow_patterns=None
+        model_name: str, *, out=None, allow_patterns=None, revision=None
     ) -> bool:
         if out is not None:
             out["network_fetch"] = False
@@ -1059,7 +1066,7 @@ def test_moved_main_reported_as_download(
     (refs_dir / "main").write_text(stale_rev)
     _make_fake_snapshot(repo_root / "snapshots" / stale_rev, total_bytes=4096)
 
-    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None) -> bool:
+    def _mirror_fetch(model_name: str, *, out=None, allow_patterns=None, revision=None) -> bool:
         # Remote main advanced mid-pull: refs/main now points at a NEWER rev
         # whose snapshot bytes were actually fetched over the wire.
         (refs_dir / "main").write_text(head_rev)
@@ -1347,3 +1354,12 @@ def test_print_pull_summary_was_cached_branch(
     assert "Already cached" in out_str
     assert "Downloaded" not in out_str
     assert "verified (nothing to download)" in out_str
+
+
+@pytest.fixture(autouse=True)
+def _mock_integrity_for_download_orchestration(monkeypatch):
+    # These tests fake transport/snapshot bytes; real hashing and failure ordering
+    # are exercised independently in test_model_integrity.py.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )

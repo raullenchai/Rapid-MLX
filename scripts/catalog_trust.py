@@ -28,6 +28,9 @@ _CONTROL_PATHS = (
     "rapid_mlx/catalog/",
     "proto/model-catalog/",
     "rapid_mlx/model_aliases.py",
+    "rapid_mlx/model_catalog.py",
+    "rapid_mlx/model_catalog_lock.json",
+    "scripts/lock_model_catalog.py",
     "rapid_mlx/model_downloads.py",
     "rapid_mlx/utils/model_file_guard.py",
     "rapid_mlx/utils/torch_checkpoint.py",
@@ -38,6 +41,12 @@ _CONTROL_PATHS = (
     "rapid_mlx/audio/tts.py",
     "rapid_mlx/audio/processor.py",
     "rapid_mlx/audio/sam_security.py",
+    "rapid_mlx/audio/f5_security.py",
+    "rapid_mlx/audio/voxcpm_security.py",
+    "rapid_mlx/server_exposure.py",
+    "rapid_mlx/model_integrity.py",
+    "rapid_mlx/server.py",
+    "rapid_mlx/cli.py",
     "rapid_mlx/audio/sa3/models/defs/checkpoint_security.py",
     "rapid_mlx/model_load_errors.py",
     "rapid_mlx/_env.py",
@@ -85,8 +94,7 @@ def catalog_changes(
     """Return semantic aliases and invalid new/changed text checkpoint identities.
 
     Existing unpinned entries are grandfathered, not silently treated as reviewed.
-    Audio has a separate runtime contract: require human review without inventing
-    a revision field that its loader would ignore.
+    Audio primary and runtime-asset revisions are enforced by the shared downloader.
     """
     changed, errors = [], []
     # Repo-id reverse lookup selects the first matching alias. Reordering
@@ -102,10 +110,20 @@ def catalog_changes(
         if _semantic(old) == _semantic(new):
             continue
         changed.append(alias)
-        if path != "rapid_mlx/aliases.json" or new is None:
+        if alias == "_runtime_assets" and isinstance(new, dict):
+            for family, assets in new.items():
+                old_assets = old.get(family, []) if isinstance(old, dict) else []
+                for asset in assets:
+                    if asset in old_assets:
+                        continue
+                    pin = asset.get("revision") if isinstance(asset, dict) else None
+                    if not isinstance(pin, str) or not SHA.fullmatch(pin):
+                        errors.append(f"{alias}.{family}: changed runtime asset requires a full 40-hex revision")
+        if new is None or alias.startswith("_"):
             continue
-        old_source = old.get("hf_path") if isinstance(old, dict) else old
-        new_source = new.get("hf_path") if isinstance(new, dict) else new
+        source_field = "hf_id" if path == "rapid_mlx/audio/aliases.json" else "hf_path"
+        old_source = old.get(source_field) if isinstance(old, dict) else old
+        new_source = new.get(source_field) if isinstance(new, dict) else new
         old_pin = old.get("revision") if isinstance(old, dict) else None
         new_pin = new.get("revision") if isinstance(new, dict) else None
         identity_changed = (

@@ -91,10 +91,11 @@ def test_sensevoice_direct_translation_fails_instead_of_silently_transcribing() 
         engine.transcribe("speech.wav", task="translate")
 
 
-def test_sensevoice_backend_detection_uses_loaded_model_metadata(monkeypatch) -> None:
+def test_sensevoice_backend_detection_uses_loaded_model_metadata(monkeypatch, tmp_path) -> None:
     model = _SenseVoiceModel()
     model.config = types.SimpleNamespace(model_type="sensevoice")
     monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", lambda *a, **kw: str(tmp_path))
 
     engine = STTEngine("acme/private-asr")
     engine.load()
@@ -104,10 +105,11 @@ def test_sensevoice_backend_detection_uses_loaded_model_metadata(monkeypatch) ->
     assert model.calls == [("speech.wav", {"verbose": False, "language": "zh"})]
 
 
-def test_loaded_model_metadata_overrides_false_positive_name(monkeypatch) -> None:
+def test_loaded_model_metadata_overrides_false_positive_name(monkeypatch, tmp_path) -> None:
     model = _SenseVoiceModel()
     model.config = types.SimpleNamespace(model_type="whisper")
     monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", lambda *a, **kw: str(tmp_path))
 
     engine = STTEngine("acme/not-really-sensevoice")
     engine.load()

@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Literal
@@ -58,6 +59,7 @@ class AudioRuntimeAsset:
 
     repo_id: str
     allow_patterns: tuple[str, ...]
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,7 @@ class AudioAliasEntry:
     default_voice: str | None = None
     languages: str | None = None
     notes: str = ""
+    revision: str | None = None
 
 
 # Lazy cache. Populated on first call to :func:`_load_registry`. Reset
@@ -116,6 +119,16 @@ _HF_ID_INDEX: dict[str, str] = {}
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
 _RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
 _REGISTRY_LOCK = threading.Lock()
+
+
+def _revision(value) -> str | None:
+    if value is not None and (
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None
+    ):
+        raise ValueError(
+            "audio aliases.json: revision must be a full lowercase 40-hex commit"
+        )
+    return value
 
 
 def _registry_path() -> str:
@@ -194,7 +207,8 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
                     "allow_patterns must be an array of non-empty strings"
                 )
             seen_repos.add(repo_id)
-            parsed.append(AudioRuntimeAsset(repo_id, tuple(patterns)))
+            revision = _revision(asset.get("revision"))
+            parsed.append(AudioRuntimeAsset(repo_id, tuple(patterns), revision))
         runtime_assets[family] = tuple(parsed)
 
     runtime_requirements: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
@@ -284,6 +298,7 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
             default_voice=value.get("default_voice"),
             languages=value.get("languages"),
             notes=value.get("notes", ""),
+            revision=_revision(value.get("revision")),
         )
 
     known_families = {entry.family for entry in entries.values()}

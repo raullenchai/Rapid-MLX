@@ -1144,11 +1144,7 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     # Preserve the historical resolver hot path exactly unless the external
     # roots are available. In particular, ordinary chat/serve resolution
     # must not introduce a cache/download-gate probe.
-    if (
-        not include_external_roots
-        or not external_model_root_paths()
-        or resolve_revision(name)
-    ):
+    if not include_external_roots or not external_model_root_paths():
         if "/" in name:
             canonical = _alias_for_hf_path(name)
             if canonical is not None:

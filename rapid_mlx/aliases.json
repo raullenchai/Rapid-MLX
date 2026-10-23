@@ -11,7 +11,8 @@
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
     "min_memory_gb": 18,
-    "experimental": true
+    "experimental": true,
+    "revision": "a1d8caa7717d16f81be943ed4a1c9922a76287e2"
   },
   "k2-horizon-7b-4bit": {
     "hf_path": "abenzerps/K2-Horizon-7B-MLX-4bit",
@@ -25,21 +26,24 @@
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
     "min_memory_gb": 16,
-    "experimental": true
+    "experimental": true,
+    "revision": "871302850906f0150a5f52b3e922ea3c4133904f"
   },
   "north-mini-code-4bit": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
     "reasoning_parser": "cohere_command4",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "dfbe084dfa26e241345af99ca32848f38fd865f9"
   },
   "north-mini-code-bf16": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
     "reasoning_parser": "cohere_command4",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "f94a85ec3612b0bf6cf23a0d7ebcc9c682883a81"
   },
   "qwen3.5-4b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
@@ -54,7 +58,8 @@
     "mtp_continuous_batching_tier": "verified",
     "mtp_default_enabled": false,
     "recommended_prefill_step_size": 512,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "32f3e8ecf65426fc3306969496342d504bfa13f3"
   },
   "qwen3.5-4b-8bit": {
     "supports_image_input": true,
@@ -69,7 +74,8 @@
     "mtp_draft_model": "mlx-community/Qwen3.5-4B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "recommended_prefill_step_size": 1024,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "1704583a86670ba531b7f2c92530a2f725cfd45b"
   },
   "qwen3.5-4b-6bit": {
     "supports_image_input": true,
@@ -83,7 +89,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-4B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "recommended_prefill_step_size": 1024
+    "recommended_prefill_step_size": 1024,
+    "revision": "fbb1092aa9daef007603ea9273cd24c225a409f1"
   },
   "qwen3.5-9b-4bit": {
     "supports_image_input": true,
@@ -99,7 +106,8 @@
     "mtp_continuous_batching_tier": "verified",
     "recommended_prefill_step_size": 512,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "8b2b98c00a6b4d291155e4890773ca8f769aee53"
   },
   "qwen3.5-9b-8bit": {
     "supports_image_input": true,
@@ -120,7 +128,8 @@
     "ddtree_speculative_tokens": 16,
     "ddtree_tree_budget": 24,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "16daa4818c54ce5f5436f929d52542eb65bbed9d"
   },
   "qwen3.5-9b-6bit": {
     "supports_image_input": true,
@@ -134,7 +143,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-9B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "recommended_prefill_step_size": 1024
+    "recommended_prefill_step_size": 1024,
+    "revision": "76fe4065e622cf34990d3c13ef80ec8531c9a0f7"
   },
   "qwen3.5-27b-4bit": {
     "supports_image_input": true,
@@ -147,7 +157,8 @@
     "supports_spec_decode": false,
     "recommended_prefill_step_size": 1024,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "45797d2985a12c55e6473686e9ea91b95e959553"
   },
   "qwen3.5-35b-8bit": {
     "supports_image_input": true,
@@ -158,7 +169,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "690e046ad0a71d206b054bb63b154e5106a91132"
   },
   "qwen3.5-35b-4bit": {
     "supports_image_input": true,
@@ -169,7 +181,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "1e20fd8d42056f870933bf98ca6211024744f7ec"
   },
   "qwen3.5-35b-6bit": {
     "supports_image_input": true,
@@ -180,7 +193,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "b729d115bb2cfea696e390dd6bb898528c66b6e9"
   },
   "qwen3.5-122b-mxfp4": {
     "hf_path": "nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx",
@@ -190,7 +204,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "b308dc9fc426c6c08e6c25112ce67b9efe045b9b"
   },
   "qwen3.5-122b-8bit": {
     "supports_image_input": true,
@@ -201,7 +216,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "2a6260e0a7c3e80a1acc401999372aadeb870cff"
   },
   "qwen3.5-122b-6bit": {
     "supports_image_input": true,
@@ -211,7 +227,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "1a4943cb97f1d3ec701c3c98c7b067f71888dd71"
   },
   "tmax-9b": {
     "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
@@ -220,7 +237,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "62a9063c060b0a6245449cd4b60a9bce94b135df"
   },
   "tmax-9b-6bit": {
     "hf_path": "mlx-community/Tmax-9B-MLX-6bit",
@@ -229,7 +247,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "6ca68c6f8a3386629eaef470508dd1bce371d43f"
   },
   "tmax-9b-8bit": {
     "hf_path": "mlx-community/Tmax-9B-MLX-8bit",
@@ -238,7 +257,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "33812d6cf04f88856f25eb828de4f3144a194560"
   },
   "tmax-9b-bf16": {
     "hf_path": "mlx-community/Tmax-9B-MLX-bf16",
@@ -247,7 +267,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "bb2ea1863179e4895dba8719613918e16a3d7a3e"
   },
   "tmax-27b": {
     "hf_path": "mlx-community/Tmax-27B-MLX-4bit",
@@ -256,7 +277,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "385e4b07407e69761bb0a316805fe060ce3e61e6"
   },
   "tmax-27b-6bit": {
     "hf_path": "mlx-community/Tmax-27B-MLX-6bit",
@@ -265,7 +287,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "2a8d8f4cfcf6b4a8d536ebc080a16061f8a10b8a"
   },
   "tmax-27b-8bit": {
     "hf_path": "mlx-community/Tmax-27B-MLX-8bit",
@@ -274,7 +297,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "pflash_tier": "unknown"
+    "pflash_tier": "unknown",
+    "revision": "2f350699e318cab933c687b09e37a409b09342c3"
   },
   "qwen3.5-27b-8bit": {
     "supports_image_input": true,
@@ -292,7 +316,8 @@
     "dflash_draft_revision": "25ee0025ff950496a634e100b75c2db4515e9824",
     "dflash_algorithm": "dflash",
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "d49462a9487464de69e2240d2bd65e50bb7d1cbc"
   },
   "qwen3.5-27b-6bit": {
     "supports_image_input": true,
@@ -303,7 +328,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "028f9c54715600471948584b40cc77ea104386fd"
   },
   "qwen3.6-27b-4bit": {
     "supports_image_input": true,
@@ -317,7 +343,8 @@
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "mtp_continuous_batching_tier": "verified",
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "c000ac2c2057d94be3fa931000c31723aac53282"
   },
   "qwen3.6-27b-8bit": {
     "supports_image_input": true,
@@ -331,7 +358,8 @@
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "supports_dflash": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "78067073d2bf9795e5aabcfcd647bd36cf43c0b5"
   },
   "qwen3.6-27b-6bit": {
     "supports_image_input": true,
@@ -344,7 +372,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
-    "mtp_speculative_tokens": 2
+    "mtp_speculative_tokens": 2,
+    "revision": "dafc96bab96a89e3ea8c4b3c197e2806b8c0d595"
   },
   "qwen3.6-27b-ud": {
     "supports_image_input": true,
@@ -357,7 +386,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "7baaa18ea869b8f8bd229b82bffd0d00ce5042f3"
   },
   "qwen3.6-35b-4bit": {
     "supports_image_input": true,
@@ -373,7 +403,8 @@
     "mtp_default_enabled": true,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46"
   },
   "qwen3.6-35b-6bit": {
     "supports_image_input": true,
@@ -387,7 +418,8 @@
     "mtp_speculative_tokens": 2,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "cb7e092ef8efe540bc3672c8929c4adbe5f4f759"
   },
   "qwen3.6-35b-8bit": {
     "supports_image_input": true,
@@ -401,7 +433,8 @@
     "mtp_speculative_tokens": 2,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "e06a74e6236a60c8367e1a3214e83d8b61b637b0"
   },
   "qwen3.6-35b-ud": {
     "supports_image_input": true,
@@ -414,7 +447,8 @@
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "6700c3e5bdeb050a379c8d2a4133f43f3647f20f"
   },
   "qwen3.6-35b-dwq": {
     "supports_image_input": true,
@@ -426,7 +460,8 @@
     "supports_spec_decode": false,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "revision": "73c707af4243243b18193444467872d20cff9399"
   },
   "qwen3.6-35b-mxfp4": {
     "supports_image_input": true,
@@ -436,7 +471,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "833013b27a1f7c6dbb008b55d37c387ea22ea89d"
   },
   "qwen3.8-27b-4bit": {
     "supports_image_input": true,
@@ -451,7 +487,8 @@
     "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
     "dflash_target_revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
     "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
-    "dflash_algorithm": "dflash2"
+    "dflash_algorithm": "dflash2",
+    "revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456"
   },
   "qwen3.8-27b-tensorfold": {
     "hf_path": "Vontra/Qwen3.8-27B-MLX-4bit",
@@ -467,7 +504,8 @@
     "dflash_backend": "tensorfold",
     "min_memory_gb": 48,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "70ae7fac63274ff2eac54152031433374cb80f2f"
   },
   "qwen3.8-27b-4bit-fp16": {
     "supports_image_input": true,
@@ -478,7 +516,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
     "mtp_speculative_tokens": 3,
-    "mtp_continuous_batching_tier": "verified"
+    "mtp_continuous_batching_tier": "verified",
+    "revision": "53542c8c8c41261bfde18871197daac4e4fdb74f"
   },
   "qwen3.8-27b-abliterated-4bit": {
     "supports_image_input": true,
@@ -488,7 +527,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
-    "experimental": true
+    "experimental": true,
+    "revision": "b3ee408b27ed931a8202aabe3cd04608244e9b2f"
   },
   "qwen3.8-27b-mixed-3.5bpw": {
     "supports_image_input": true,
@@ -498,7 +538,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
-    "mtp_speculative_tokens": 3
+    "mtp_speculative_tokens": 3,
+    "revision": "b7b022a2b991304a3ba1469debdc166b3b759487"
   },
   "qwen3.8-flash-next-4bit": {
     "hf_path": "rapid-mlx/Qwen3.8-Flash-Next-4bit",
@@ -514,7 +555,8 @@
     "mtp_default_enabled": false,
     "min_memory_gb": 128,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "afeb96d530bf07aee45b2f6f428e18ba464eb88a"
   },
   "qwen3.8-flash-next-tensorfold": {
     "hf_path": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
@@ -529,7 +571,8 @@
     "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "min_memory_gb": 192,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "2b170fa6309d5d1ee380b35636075fac7945f286"
   },
   "qwen3.6-35b-nvfp4": {
     "supports_image_input": true,
@@ -539,7 +582,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "9c1a3a223ddd8a3425212cc421056614f149cf0f"
   },
   "qwen3.6-27b": {
     "supports_image_input": true,
@@ -552,7 +596,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "c000ac2c2057d94be3fa931000c31723aac53282"
   },
   "qwen3.6-35b": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
@@ -565,7 +610,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46"
   },
   "qwen3.6-27b-mtp-4bit": {
     "hf_path": "mlx-community/Qwen3.6-27B-MTP-4bit",
@@ -575,7 +621,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "83795d546e9d328160e593fb0bf10b2bf2fe637e"
   },
   "qwen3.6-35b-mtp-4bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
@@ -585,7 +632,8 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "0295b81421bf4d0fccca9a7c0fcfb1418dda3516"
   },
   "qwen3.6-27b-optiq-4bit": {
     "supports_image_input": true,
@@ -596,7 +644,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "7575c79af388aa16ce4722fe6c3fd0d3a8e964d2"
   },
   "qwen3.6-35b-optiq-4bit": {
     "supports_image_input": true,
@@ -607,7 +656,8 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "70a3aa32c7feef511182bf16aa332f37e8d82014"
   },
   "qwen3.6-27b-ud-3bit": {
     "supports_image_input": true,
@@ -618,7 +668,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "79ad070cb1196fc976b748f3810232e2eb79befd"
   },
   "qwen3.6-27b-ud-6bit": {
     "supports_image_input": true,
@@ -629,28 +680,32 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "revision": "4f42db3123306ce47b073d386c6284181c8b9e16"
   },
   "deepseek-v4-flash-2bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
     "tool_call_parser": "deepseek",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "722bf559b7de93575b2320973cf2002e05bfe6c9"
   },
   "deepseek-v4-flash-8bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-8bit",
     "tool_call_parser": "deepseek",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "faa13cb32ce28aa82c88041705f08b324fe79f45"
   },
   "deepseek-v4-flash-4bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
     "tool_call_parser": "deepseek",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936"
   },
   "deepseek-v4-flash-tensorfold": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
@@ -663,7 +718,8 @@
     "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "min_memory_gb": 256,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936"
   },
   "deepseek-v4-flash-0731-mxfp4": {
     "hf_path": "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX",
@@ -676,7 +732,8 @@
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 1.0
-    }
+    },
+    "revision": "d6be051ae238b2021de56cf098d8f0206328754a"
   },
   "deepseek-v41-flash-reap-2bit": {
     "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
@@ -694,7 +751,8 @@
     "recommended_sampling": {
       "temperature": 0.0,
       "top_p": 1.0
-    }
+    },
+    "revision": "efa9ce163d0b9dd75eacbaaeb98dc556de22cf6c"
   },
   "deepseek-v41-flash-1017": {
     "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
@@ -712,7 +770,8 @@
     "recommended_sampling": {
       "temperature": 0.0,
       "top_p": 1.0
-    }
+    },
+    "revision": "f385ddc5cd3bf11582c0c38632223d9338af672b"
   },
   "qwen3-0.6b-4bit": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",
@@ -720,7 +779,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "73e3e38d981303bc594367cd910ea6eb48349da8"
   },
   "qwen3-0.6b-8bit": {
     "hf_path": "mlx-community/Qwen3-0.6B-8bit",
@@ -728,7 +788,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "11de96878523501bcaa86104e3c186de07ff9068"
   },
   "qwen3-4b-8bit": {
     "hf_path": "mlx-community/Qwen3-4B-8bit",
@@ -736,7 +797,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "0348ad770d2ae658ca47b0579b2d2c37b20bbcac"
   },
   "qwen3-8b-8bit": {
     "hf_path": "mlx-community/Qwen3-8B-8bit",
@@ -744,7 +806,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "48a0b75b1ae72503e21e1558d040bc227510ff06"
   },
   "qwen3-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-8B-4bit",
@@ -752,7 +815,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "545dc4251c05440727734bcd94334791f6ab0192"
   },
   "llama-3.1-8b-8bit": {
     "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
@@ -760,7 +824,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "142d428004044c37c441272c91316251d9aecc58"
   },
   "llama-3.1-8b-4bit": {
     "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
@@ -768,7 +833,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "241a666dad6cb93c8ff213d39a7f34a36bf26db4"
   },
   "deepseek-coder-v2-lite-16b-4bit": {
     "hf_path": "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
@@ -776,7 +842,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "5f60ee33ba169428b5bc249b05b5b99f827d2e5e"
   },
   "qwen3-coder-4bit": {
     "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
@@ -790,7 +857,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 40
-    }
+    },
+    "revision": "03cba26036330b7553d252c1f3fb899f16cc5ea5"
   },
   "qwen3-coder-next-80b-4bit": {
     "hf_path": "mlx-community/Qwen3-Coder-Next-4bit",
@@ -804,7 +872,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 40
-    }
+    },
+    "revision": "7b9321eabb85ce79625cac3f61ea691e4ea984b5"
   },
   "qwen3-coder-next-80b-8bit": {
     "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-8bit",
@@ -818,7 +887,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 40
-    }
+    },
+    "revision": "f911d6c6cb4cf62fd3c5fd4909feb046872e0221"
   },
   "qwen3-vl-4b-4bit": {
     "supports_image_input": true,
@@ -832,7 +902,8 @@
       "chat": 1.006,
       "json_array": 1.004,
       "code_edit": 1.001
-    }
+    },
+    "revision": "2fd8dacbdb8f1e54b8c005f081ec5bf79c56376b"
   },
   "llama3-1b-4bit": {
     "hf_path": "mlx-community/Llama-3.2-1B-Instruct-4bit",
@@ -846,7 +917,8 @@
       "json_array": 1.692,
       "tool_loop": 1.888,
       "code_edit": 0.851
-    }
+    },
+    "revision": "08231374eeacb049a0eade7922910865b8fce912"
   },
   "llama3-3b-4bit": {
     "hf_path": "mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -858,7 +930,8 @@
     "suffix_bench_speedup": {
       "chat": 0.588,
       "json_array": 0.875
-    }
+    },
+    "revision": "7f0dc925e0d0afb0322d96f9255cfddf2ba5636e"
   },
   "hermes3-8b-4bit": {
     "hf_path": "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
@@ -872,7 +945,8 @@
       "json_array": 0.976,
       "tool_loop": 0.594,
       "code_edit": 0.584
-    }
+    },
+    "revision": "3fde32264814f68c3d6d71ac333adf447523288a"
   },
   "gemma-4-e2b-4bit": {
     "supports_image_input": true,
@@ -887,7 +961,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "238767527555cb75a05732a84dff5d6ba0dd6809"
   },
   "gemma-4-e4b-4bit": {
     "supports_image_input": true,
@@ -902,7 +977,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "475b9088d29754a3379866cf5aeb6b41acd313c2"
   },
   "gemma-4-12b-4bit": {
     "supports_image_input": true,
@@ -918,7 +994,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "73bcf09092aa277861d5a191b989b666f7f32e8f"
   },
   "gemma-4-12b-8bit": {
     "supports_image_input": true,
@@ -933,7 +1010,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "200bb6db075e137a4deb08838865ac4ddb86292e"
   },
   "gemma-4-26b-4bit": {
     "supports_image_input": true,
@@ -954,7 +1032,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d"
   },
   "gemma-4-31b-4bit": {
     "supports_image_input": true,
@@ -974,7 +1053,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "696d436c404745a59f30e4939a658162b0a9e57f"
   },
   "gemma-4-31b-8bit": {
     "supports_image_input": true,
@@ -989,7 +1069,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "f5f3dc92ab4af76724c36c21eb6bedadb3a851be"
   },
   "gemma-4-12b-qat-4bit": {
     "supports_image_input": true,
@@ -1004,7 +1085,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "e70c6b3ba0979b3357dcd2f223ad8bde7787a6b6"
   },
   "gemma-4-12b-qat-8bit": {
     "supports_image_input": true,
@@ -1019,7 +1101,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "eafed06893a6ee299315ebe0e0feb82f435e92fe"
   },
   "gemma-4-26b-tensorfold": {
     "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
@@ -1038,7 +1121,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d"
   },
   "gemma-4-26b-qat-4bit": {
     "supports_image_input": true,
@@ -1053,7 +1137,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "0e3cbab38ce568cf6e23543010d08d03b731910c"
   },
   "gemma-4-31b-qat-4bit": {
     "supports_image_input": true,
@@ -1068,7 +1153,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "83b1a12d1da4b07afe435bd2cc310308bfc13984"
   },
   "gemma-4-31b-qat-8bit": {
     "supports_image_input": true,
@@ -1083,7 +1169,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "44af090d716b2e759666d5ba3b8d66a08c1d2766"
   },
   "gemma-4-e2b-6bit": {
     "supports_image_input": true,
@@ -1098,7 +1185,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "ebd7756d4e55627e11ae043af9cad8ed6465a2e2"
   },
   "gemma-4-e2b-8bit": {
     "supports_image_input": true,
@@ -1113,7 +1201,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "03dcf209f3f549b4075e7191e77cf69b3d48e1b2"
   },
   "gemma-4-e4b-6bit": {
     "supports_image_input": true,
@@ -1128,7 +1217,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "7b781e6489f260b3a24ff38aebb6313b2db516d7"
   },
   "gemma-4-e4b-8bit": {
     "supports_image_input": true,
@@ -1143,7 +1233,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "4255b21bd9a9d3fc807ef7abd80373f5e3a52a73"
   },
   "gemma-4-26b-8bit": {
     "supports_image_input": true,
@@ -1158,7 +1249,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "33c6d23798a0af159529890f79329206dbfbd73c"
   },
   "gemma-4-12b-optiq-4bit": {
     "supports_image_input": true,
@@ -1173,7 +1265,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "de9e183868050b34bf6b4272518500ffcebf15b3"
   },
   "gemma-4-e4b-optiq-4bit": {
     "supports_image_input": true,
@@ -1188,7 +1281,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "b20262a0e26470de0631cb3b4655ab5db7f2e75d"
   },
   "gemma-4-e2b-assistant": {
     "supports_image_input": true,
@@ -1203,7 +1297,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "a7770799b560135ebdbfae8b7f468947415003bc"
   },
   "gemma-4-e4b-assistant": {
     "supports_image_input": true,
@@ -1218,7 +1313,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "844e008e06ef5562bdb89428d851d0634d119dcd"
   },
   "gemma-4-12b-assistant": {
     "supports_image_input": true,
@@ -1233,7 +1329,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "f36a4c8077baaeca534c5eb38a287fc3b2178ad3"
   },
   "gemma-4-26b-assistant": {
     "supports_image_input": true,
@@ -1248,7 +1345,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "cda74908f1dbe7d3dbd3030e66576a7d4094144f"
   },
   "gemma-4-31b-assistant": {
     "supports_image_input": true,
@@ -1263,7 +1361,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "28e92270316e89288579ec59c17939541d9ca433"
   },
   "gemma-4-12b-qat-assistant-4bit": {
     "supports_image_input": true,
@@ -1278,7 +1377,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "37ae18bbbc2c569d1c9ff6a5ca9359051f522df4"
   },
   "gemma3-12b-4bit": {
     "supports_image_input": true,
@@ -1291,7 +1391,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "66fc51ef25778c03d33c4c8bc446973d062e73f4"
   },
   "gemma3-4b-qat-4bit": {
     "supports_image_input": true,
@@ -1304,7 +1405,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "3d9ef289111449933c22761961f16a5df237ce2a"
   },
   "qwen2.5-14b-4bit": {
     "hf_path": "mlx-community/Qwen2.5-14B-Instruct-4bit",
@@ -1312,7 +1414,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "dad510143ae5cdb1466778bde3161460f9e9f604"
   },
   "phi-4-14b-4bit": {
     "hf_path": "mlx-community/phi-4-4bit",
@@ -1326,14 +1429,16 @@
       "json_array": 0.944,
       "tool_loop": 0.671,
       "code_edit": 0.874
-    }
+    },
+    "revision": "fc0f8f23d369dc29b55cad1d65cb5bf0dcbee910"
   },
   "mistral-24b-4bit": {
     "hf_path": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
     "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "46135ef3c556bfed61013d8789bd26af02e416c4"
   },
   "devstral-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2507-4bit",
@@ -1350,7 +1455,8 @@
     },
     "recommended_sampling": {
       "temperature": 0.15
-    }
+    },
+    "revision": "6682fbe637d71e568137b06512e5dc0fbbbd73b9"
   },
   "glm4.7-9b-4bit": {
     "hf_path": "mlx-community/GLM-4.7-Flash-4bit",
@@ -1367,7 +1473,8 @@
     },
     "recommended_sampling": {
       "top_p": 0.95
-    }
+    },
+    "revision": "1454cffb1a21737e162f508e5bc70be9def89276"
   },
   "glm5.3-flash-4bit": {
     "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
@@ -1389,7 +1496,8 @@
       "temperature": 0.0,
       "top_p": 1.0,
       "repetition_penalty": 1.0
-    }
+    },
+    "revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6"
   },
   "glm5.3-flash-tensorfold": {
     "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
@@ -1408,7 +1516,8 @@
       "temperature": 0.0,
       "top_p": 1.0,
       "repetition_penalty": 1.0
-    }
+    },
+    "revision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6"
   },
   "mimo-v2.6-flash-4bit": {
     "hf_path": "Vontra/MiMo-V2.6-Flash-RL-MLX-4bit-MTP",
@@ -1423,7 +1532,8 @@
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 0.95
-    }
+    },
+    "revision": "16bb7c7ea1064df7a1a76e8414d93fd0906747b5"
   },
   "glm4.5-air-4bit": {
     "hf_path": "mlx-community/GLM-4.5-Air-4bit",
@@ -1441,7 +1551,8 @@
     "recommended_sampling": {
       "temperature": 0.6,
       "top_p": 0.95
-    }
+    },
+    "revision": "60837794f3caafc4682dd1a9188a82c55a9100ef"
   },
   "gpt-oss-20b-mxfp4-q8": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q8",
@@ -1449,7 +1560,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "773a7da77e569019bb0fd17a554b263738d669a3"
   },
   "gpt-oss-20b": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q8",
@@ -1457,7 +1569,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "773a7da77e569019bb0fd17a554b263738d669a3"
   },
   "gpt-oss-20b-mxfp4-q4": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q4",
@@ -1465,7 +1578,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "f356f2747216d7e98fee755df25987459fc19089"
   },
   "gpt-oss-20b-4bit": {
     "hf_path": "mlx-community/gpt-oss-20b-OptiQ-4bit",
@@ -1473,7 +1587,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "01ca7c698c0108e784c891b2e5916b50ca10c5a9"
   },
   "gpt-oss-20b-8bit": {
     "hf_path": "lmstudio-community/gpt-oss-20b-MLX-8bit",
@@ -1481,7 +1596,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "d23249e3b54df6248c79b67c155bab2f836742dd"
   },
   "gpt-oss-120b": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q8",
@@ -1489,7 +1605,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "81e5ac3ad0af6efb1298a8e8c7a10ed2990c137b"
   },
   "gpt-oss-120b-mxfp4-q4": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q4",
@@ -1497,7 +1614,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "bce781bef0f2fc85ed4e575af74054f5aad73ddd"
   },
   "gpt-oss-120b-mxfp4-q8": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q8",
@@ -1505,7 +1623,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "81e5ac3ad0af6efb1298a8e8c7a10ed2990c137b"
   },
   "gpt-oss-120b-4bit": {
     "hf_path": "mlx-community/gpt-oss-120b-4bit",
@@ -1513,7 +1632,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "08e7899579b5dd5e0364e4bcd32578134072e22d"
   },
   "gpt-oss-safeguard-20b": {
     "hf_path": "lmstudio-community/gpt-oss-safeguard-20b-MLX-MXFP4",
@@ -1521,7 +1641,8 @@
     "reasoning_parser": "harmony",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "0fd3d24c72bd1df8cfcc8474cbe96fe9b0e6fa4f"
   },
   "minimax-m2.5-4bit": {
     "hf_path": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
@@ -1529,7 +1650,8 @@
     "reasoning_parser": "minimax",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "9af822e97aaa5d3d8f9a635ec2b967b0c0a9a09f"
   },
   "minimax-m2.7-mxfp4": {
     "hf_path": "mlx-community/MiniMax-M2.7-4bit-mxfp4",
@@ -1537,7 +1659,8 @@
     "reasoning_parser": "minimax",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "87a29cc530e3609a05f366d9867e50d62597c8c2"
   },
   "deepseek-r1-8b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
@@ -1551,7 +1674,8 @@
       "chat": 1.03,
       "json_array": 0.964,
       "code_edit": 0.289
-    }
+    },
+    "revision": "b9b5af4fa18feb8cdbccdadf3aad2c83d0abbe51"
   },
   "deepseek-r1-32b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
@@ -1565,21 +1689,24 @@
       "json_array": 0.986,
       "tool_loop": 0.984,
       "code_edit": 1.002
-    }
+    },
+    "revision": "4e0d3848a0ad8f9fb54638891e4928f04fcca978"
   },
   "qwopus-9b-4bit": {
     "hf_path": "Jackrong/MLX-Qwopus3.5-9B-v3-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "7f75eaf78e0da7e23ef84471aaa7331f0d8de6e2"
   },
   "qwopus-27b-4bit": {
     "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "d399209470abffa6b45678c53a910f869b18b2f2"
   },
   "hermes4-70b-4bit": {
     "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
@@ -1593,7 +1720,8 @@
       "json_array": 1.08,
       "tool_loop": 0.751,
       "code_edit": 0.679
-    }
+    },
+    "revision": "fe41732b5fcd2b53748e06b513ccc7bdd6949e8a"
   },
   "hy3-preview-4bit": {
     "hf_path": "mlx-community/Hy3-preview-4bit",
@@ -1602,7 +1730,8 @@
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true,
-    "min_memory_gb": 192
+    "min_memory_gb": 192,
+    "revision": "8e4d56f18efd912b8c7581a8ccfa8b2a79ba3469"
   },
   "flint-40b-a2.5b-4bit": {
     "revision": "3b93f9053b530488405ae9fca51d4900d6ce21f0",
@@ -1622,7 +1751,8 @@
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false,
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "6a5ec618f742d189fd1fcf3bd86aed167465aec4"
   },
   "muse-glimmer-30b-4bit": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-4bit",
@@ -1633,7 +1763,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "min_memory_gb": 24
+    "min_memory_gb": 24,
+    "revision": "3e7677d7a40d348a3daba263a2b1c0aa41910710"
   },
   "muse-glimmer-30b-8bit": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-8bit",
@@ -1649,7 +1780,8 @@
     "dflash_target_revision": "679c45e1b331a6514a6e38076a353cc5fed21bf6",
     "dflash_draft_revision": "e8192f3a8f617f74be2ce220360c89ef4789f39f",
     "dflash_algorithm": "dflash",
-    "min_memory_gb": 48
+    "min_memory_gb": 48,
+    "revision": "679c45e1b331a6514a6e38076a353cc5fed21bf6"
   },
   "muse-glimmer-30b-bf16": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
@@ -1660,7 +1792,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
-    "min_memory_gb": 96
+    "min_memory_gb": 96,
+    "revision": "904079a1a494209b7b3bbd5f9eff1f36228398df"
   },
   "ling-3.0-tiny-4bit": {
     "hf_path": "rapid-mlx/Ling-3.0-tiny-MLX-4bit",
@@ -1670,7 +1803,8 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "min_memory_gb": 8
+    "min_memory_gb": 8,
+    "revision": "328a497f3eb2cdd3d064f1da2b1084a2791387d5"
   },
   "qwen3-vl-8b-4bit": {
     "supports_image_input": true,
@@ -1684,7 +1818,8 @@
       "chat": 0.995,
       "json_array": 1.034,
       "code_edit": 1.024
-    }
+    },
+    "revision": "defcdea7cc7a4b0858fea563cbbce171d328e457"
   },
   "qwen3-vl-30b-4bit": {
     "supports_image_input": true,
@@ -1699,7 +1834,8 @@
       "json_array": 1.031,
       "code_edit": 0.993
     },
-    "is_moe": true
+    "is_moe": true,
+    "revision": "0555d34cb1ed80c0e61a5635194c70027b4c2ff3"
   },
   "devstral-v2-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
@@ -1715,7 +1851,8 @@
     },
     "recommended_sampling": {
       "temperature": 0.15
-    }
+    },
+    "revision": "97228558fcbdd1adefd39d515155db3a894b37f7"
   },
   "qwen3-coder-30b-4bit": {
     "hf_path": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
@@ -1730,7 +1867,8 @@
       "tool_loop": 1.039,
       "code_edit": 0.929
     },
-    "is_moe": true
+    "is_moe": true,
+    "revision": "6e302ea604ad9ab206367e2c501d1571023e7b6d"
   },
   "gemma3-1b-4bit": {
     "hf_path": "mlx-community/gemma-3-1b-it-4bit",
@@ -1748,7 +1886,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "2d44e83dc9e80843d22fb941d3d699a0b1351aa6"
   },
   "gemma3-1b-qat-4bit": {
     "hf_path": "mlx-community/gemma-3-1b-it-qat-4bit",
@@ -1760,7 +1899,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "15fed4eafb456c6fcb2a1165f19ac609670ed14b"
   },
   "gemma3-27b-4bit": {
     "supports_image_input": true,
@@ -1773,7 +1913,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "83acee3d10064661a7a39ead3732dddb16fe15bb"
   },
   "gemma3-27b-qat-4bit": {
     "supports_image_input": true,
@@ -1786,7 +1927,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "fc4e000f32af1b7b6779294e490a7d2a80bac611"
   },
   "nemotron-30b-4bit": {
     "hf_path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
@@ -1794,7 +1936,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "543873e66e36362182738b0d2863a766728045aa"
   },
   "nemotron-3.5-bolt": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-MLX-4bit",
@@ -1804,7 +1947,8 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "is_text_only": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "cbfda6be4e9ff9e8d3acf0c0a57c54c1a496ef81"
   },
   "nemotron-3.5-bolt-3bit": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-MLX-3bit",
@@ -1814,7 +1958,8 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "is_text_only": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "7816420d25f0c1ce2495a5a8e4dc8349f112cbce"
   },
   "nemotron-3.5-super-vl": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-4bit",
@@ -1824,7 +1969,8 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "is_text_only": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "016789035d80736393d9bfcdb63d6911002e424d"
   },
   "nemotron-3.5-super-vl-3bit": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-3bit",
@@ -1834,7 +1980,8 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "is_text_only": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "38238f61f3b8430aea2efe17cc1ea658bb40a0ed"
   },
   "nemotron-3.5-lightning-30b-4bit": {
     "hf_path": "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
@@ -1842,7 +1989,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "55ac8c89261109b36c04371cd3f479a4594208c8"
   },
   "nemotron-3.5-lightning-tensorfold": {
     "hf_path": "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit",
@@ -1857,12 +2005,14 @@
     "tensorfold_runtime_revision": "cb2ebf0540f42604e2759b2ddef497861e928248",
     "min_memory_gb": 48,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "d9d758fb83953437f7263256b0d96157e2a348b8"
   },
   "nemotron-labs-diffusion-3b-4bit": {
     "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
     "supports_spec_decode": true,
-    "is_hybrid": false
+    "is_hybrid": false,
+    "revision": "5fd1ad4bcbd02a3fd489ec6e87059e072118548c"
   },
   "bonsai-1.7b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
@@ -1870,7 +2020,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_hybrid_explicit": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "5f3e306330f636cfc6c6241b4850fae6711c5985"
   },
   "bonsai-8b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-8B-mlx-2bit",
@@ -1878,7 +2029,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "9260b24298e4211e804663e9f519962cf59f34be"
   },
   "bonsai-27b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
@@ -1889,7 +2041,8 @@
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
     "pflash_tier": "verified",
-    "pflash_keep_ratio": 0.5
+    "pflash_keep_ratio": 0.5,
+    "revision": "70f75f3ad081ab840a42f3304c02c27e7f89bfb7"
   },
   "bonsai2-2b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-2B-mlx-2bit",
@@ -1903,7 +2056,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 20
-    }
+    },
+    "revision": "1c6cbae21f8c38830ce337972b46fdae7b18eaaa"
   },
   "bonsai2-4b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-4B-mlx-2bit",
@@ -1917,7 +2071,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 20
-    }
+    },
+    "revision": "dff2caaa23fa8706164c44c10f1b58feb405f76a"
   },
   "bonsai2-9b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
@@ -1931,7 +2086,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 20
-    }
+    },
+    "revision": "f4e28a59531731c41b6dfac88cf271bd58f0a287"
   },
   "bonsai2-27b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
@@ -1945,7 +2101,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 20
-    }
+    },
+    "revision": "fcba37d2117a7077eac6b613b2668d14d9779edd"
   },
   "bonsai2-27b-tensorfold": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
@@ -1962,7 +2119,8 @@
     "dflash_backend": "tensorfold",
     "min_memory_gb": 96,
     "enforce_min_memory": true,
-    "experimental": true
+    "experimental": true,
+    "revision": "fcba37d2117a7077eac6b613b2668d14d9779edd"
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
@@ -1974,14 +2132,16 @@
     "suffix_bench_speedup": {
       "chat": 0.506,
       "tool_loop": 0.776
-    }
+    },
+    "revision": "d3a7e0594d6642dbcfb7d149bed8b0bdf49f95ce"
   },
   "granite4-tiny-4bit": {
     "hf_path": "mlx-community/granite-4.0-h-tiny-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "02c8783da0cb171942e30a7dde8acce11fe82e0d"
   },
   "phi-4-mini-4bit": {
     "hf_path": "mlx-community/phi-4-mini-instruct-4bit",
@@ -1995,7 +2155,8 @@
       "chat": 0.673,
       "json_array": 0.936,
       "tool_loop": 2.13
-    }
+    },
+    "revision": "ac1c269cb4222a4e136a3d09edad301056c1f36a"
   },
   "vibethinker-1.5b-4bit": {
     "hf_path": "mlx-community/VibeThinker-1.5B-mlx-4bit",
@@ -2007,7 +2168,8 @@
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 0.95
-    }
+    },
+    "revision": "2c092d732009cb3a2dd4871456c0f1c4e3c0ccec"
   },
   "vibethinker-3b-8bit": {
     "hf_path": "mlx-community/VibeThinker-3B-8bit",
@@ -2019,7 +2181,8 @@
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 0.95
-    }
+    },
+    "revision": "8c33007d8c61ac21aad443c4663d256ce5cca4ae"
   },
   "qwen3-4b-thinking-2507-4bit": {
     "hf_path": "mlx-community/Qwen3-4B-Thinking-2507-4bit",
@@ -2027,7 +2190,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "627b019c66f22d4de0a641d289b41497651a55c9"
   },
   "qwen3-4b-instruct-2507-4bit": {
     "hf_path": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
@@ -2035,7 +2199,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b"
   },
   "granite4-h-micro-4bit": {
     "hf_path": "mlx-community/granite-4.0-h-micro-4bit",
@@ -2043,7 +2208,8 @@
     "reasoning_parser": null,
     "is_hybrid": true,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "0a29e17503da7de371af61a0a532853810637627"
   },
   "granite-4.2-30b-4bit": {
     "hf_path": "ibm-granite/granite-4.2-30b-q4-mlx",
@@ -2051,7 +2217,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "d3f143b440062060eb05f7b8677ced5b4d9a8946"
   },
   "granite-4.2-30b-8bit": {
     "hf_path": "ibm-granite/granite-4.2-30b-q8-mlx",
@@ -2059,7 +2226,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "5fa24cd75b3aaaf5a59ef9e343f7bd4ebbf74860"
   },
   "granite-4.2-8b-4bit": {
     "hf_path": "ibm-granite/granite-4.2-8b-q4-mlx",
@@ -2067,7 +2235,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "9047f073e46c527f70dade07bb55b1700d728e36"
   },
   "granite-4.2-8b-8bit": {
     "hf_path": "ibm-granite/granite-4.2-8b-q8-mlx",
@@ -2075,7 +2244,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "a60999a162a4799c52a7bd6ec65c780d6138cfcf"
   },
   "granite-4.2-3b-4bit": {
     "hf_path": "ibm-granite/granite-4.2-3b-q4-mlx",
@@ -2083,7 +2253,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "0c6f39b1827afd5eb2c1c3b13751929857434953"
   },
   "granite-4.2-3b-8bit": {
     "hf_path": "ibm-granite/granite-4.2-3b-q8-mlx",
@@ -2091,7 +2262,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "8e19ac6574124635eb8fbd06a15d05ebbfff82dd"
   },
   "nanbeige4.1-3b-4bit": {
     "hf_path": "mlx-community/Nanbeige4.1-3B-4bit",
@@ -2099,7 +2271,8 @@
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "4d6c41d88f1416777bbda005aad92798e56e5ba9"
   },
   "phi-4-mini-reasoning-4bit": {
     "hf_path": "lmstudio-community/Phi-4-mini-reasoning-MLX-4bit",
@@ -2111,7 +2284,8 @@
     "recommended_sampling": {
       "temperature": 0.8,
       "top_p": 0.95
-    }
+    },
+    "revision": "10906e3b888052ad3c7b83ffad45ed576cacc905"
   },
   "phi-3.5-mini-4bit": {
     "hf_path": "mlx-community/Phi-3.5-mini-instruct-4bit",
@@ -2119,7 +2293,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "7b2052fd882fe017300d4d42a4eb06a27b816af4"
   },
   "qwen3-vl-2b-4bit": {
     "supports_image_input": true,
@@ -2128,7 +2303,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "9c4f5209e57b31f4b9dfba735de3fb983739c9cc"
   },
   "gemma-3n-e2b-4bit": {
     "supports_image_input": true,
@@ -2142,7 +2318,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "66e7276cfc589073b4f92ebed58c05301f990222"
   },
   "gemma-3n-e4b-4bit": {
     "supports_image_input": true,
@@ -2156,7 +2333,8 @@
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64
-    }
+    },
+    "revision": "f6432cfcd80f2b4b0940ba96da76f6e6264f762c"
   },
   "diffusion-gemma-26b-4bit": {
     "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
@@ -2167,7 +2345,8 @@
     "is_moe": true,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "a7a81407613811e8ba63af92ac0d852b809e191f"
   },
   "diffusion-gemma-26b-8bit": {
     "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-8bit",
@@ -2178,7 +2357,8 @@
     "is_moe": true,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "7b95e3887078ba56283c24f2578d6e5a06b9d7e8"
   },
   "cogvideox-fun-5b-q4": {
     "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4",
@@ -2193,7 +2373,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 24
+    "min_memory_gb": 24,
+    "revision": "701df716bb7ae620ddccd109a1fbe8bb0a2a3538"
   },
   "cogvideox-fun-5b-q8": {
     "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
@@ -2208,7 +2389,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 24
+    "min_memory_gb": 24,
+    "revision": "087fbb62e1d9949f8bd5c81f2d9f66d3638a7e24"
   },
   "cogvideox-fun-5b-bf16": {
     "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
@@ -2223,7 +2405,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "1e13912e22112cd4407b769116b39b92f424c6d5"
   },
   "wan2.1-t2v-1.3b-bf16": {
     "hf_path": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
@@ -2238,7 +2421,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 40
+    "min_memory_gb": 40,
+    "revision": "0fad780a534b6463e45facd96134c9f345acfa5b"
   },
   "wan2.2-ti2v-5b-q8": {
     "hf_path": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",
@@ -2254,7 +2438,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "9624723c94ddf509832555c45e223a035baa7d1c"
   },
   "wan2.2-ti2v-5b-bf16": {
     "hf_path": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
@@ -2270,7 +2455,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 40
+    "min_memory_gb": 40,
+    "revision": "592b2473f27cd6f466cdd9f2c0f5750a77b37b59"
   },
   "wan2.2-i2v-a14b-q8": {
     "hf_path": "Anes1032/Wan2.2-I2V-A14B-mlx-q8",
@@ -2285,7 +2471,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 64
+    "min_memory_gb": 64,
+    "revision": "633f50fc3e16e7faf76713dcf07b0bea730f02c9"
   },
   "wan2.2-t2v-a14b-bf16": {
     "hf_path": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
@@ -2300,7 +2487,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 96
+    "min_memory_gb": 96,
+    "revision": "225358452f995a6807acaebff9dfc4976c39c8c8"
   },
   "ltx-2.3-mlx-q4": {
     "hf_path": "notapalindrome/ltx23-mlx-av-q4",
@@ -2316,7 +2504,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 24
+    "min_memory_gb": 24,
+    "revision": "88b4b5b2ed7697c25f281e76e3c692f659027ab1"
   },
   "ltx-2.5-mlx-q8": {
     "hf_path": "MrMofer/ltx-2.5-mlx-q8",
@@ -2332,7 +2521,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 24
+    "min_memory_gb": 24,
+    "revision": "f1b56e7dc89f71a9af2cddac787b89ed22a8b7fc"
   },
   "flux2-klein-4b": {
     "hf_path": "Runpod/FLUX.2-klein-4B-mflux-4bit",
@@ -2344,7 +2534,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 12
+    "min_memory_gb": 12,
+    "revision": "7ee1b3aa8178a1240050490072196a57da2bf2a9"
   },
   "bonsai-image-4b-2bit": {
     "hf_path": "prism-ml/bonsai-image-ternary-4B-mlx-2bit",
@@ -2356,7 +2547,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 12
+    "min_memory_gb": 12,
+    "revision": "2c24c81b934a658ba5590cf39088ba929985b4a8"
   },
   "flux2-klein-4b-bf16": {
     "hf_path": "mflux-community/flux2-klein-4b-mflux-bf16",
@@ -2368,7 +2560,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67"
   },
   "flux-schnell": {
     "hf_path": "mflux-community/flux-1-schnell-mflux-q4",
@@ -2380,7 +2573,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 16
+    "min_memory_gb": 16,
+    "revision": "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce"
   },
   "z-image-turbo": {
     "hf_path": "filipstrand/Z-Image-Turbo-mflux-4bit",
@@ -2392,7 +2586,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 16
+    "min_memory_gb": 16,
+    "revision": "b3a8f31115a11f2f9e2fa0bfbc8d78dcc3e6568b"
   },
   "qwen-image-2.1": {
     "hf_path": "mlx-community/Qwen-Image-2.1-mflux-q4",
@@ -2404,7 +2599,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 8
+    "min_memory_gb": 8,
+    "revision": "746a58556820933a2df5c75887a2570f1ad200c0"
   },
   "qwen-image": {
     "hf_path": "mlx-community/Qwen-Image-2.1-mflux-q4",
@@ -2416,7 +2612,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 8
+    "min_memory_gb": 8,
+    "revision": "746a58556820933a2df5c75887a2570f1ad200c0"
   },
   "qwen-image-2.1-bf16": {
     "hf_path": "Qwen/Qwen-Image-2.1",
@@ -2428,7 +2625,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "790c92633540aa0cb11d9abf19eb46d861714758"
   },
   "qwen-image-2.1-turbo": {
     "hf_path": "Qwen/Qwen-Image-2.1-Turbo",
@@ -2440,7 +2638,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "fc13ba1986fcb905854dc8de2f52eee395f49b5b"
   },
   "qwen-image-edit": {
     "hf_path": "OsaurusAI/Qwen-Image-Edit-mflux-q8",
@@ -2452,7 +2651,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 96
+    "min_memory_gb": 96,
+    "revision": "a458969f2a612433cf036bfc3d8d818ceba29fab"
   },
   "hidream-o1-dev": {
     "hf_path": "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
@@ -2464,7 +2664,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "33c7a00bce8e3410304f83ec408a15a1eb6782df"
   },
   "sdxl-base": {
     "hf_path": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -2476,7 +2677,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 16
+    "min_memory_gb": 16,
+    "revision": "462165984030d82259a11f4367a4eed129e94a7b"
   },
   "sd35-large-4bit": {
     "hf_path": "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized",
@@ -2488,7 +2690,8 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown",
-    "min_memory_gb": 32
+    "min_memory_gb": 32,
+    "revision": "0f92f6c2a9f9e1abc6738209e87ac22b049a7d26"
   },
   "embeddinggemma-2-bf16": {
     "hf_path": "mlx-community/embeddinggemma-2-bf16",
@@ -2498,7 +2701,8 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "1a4ffddb7905d3f63486748deabe091a01fb6201"
   },
   "embeddinggemma-2-4bit": {
     "hf_path": "mlx-community/embeddinggemma-2-4bit",
@@ -2508,7 +2712,8 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "8ab839e127cb8cb305edd71fb7a02c82f2d49ab3"
   },
   "embeddinggemma-300m-6bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-6bit",
@@ -2518,7 +2723,8 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "e03111914aba981cacdd4a4c3a920d5064d9e33a"
   },
   "embeddinggemma-300m-8bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-8bit",
@@ -2528,7 +2734,8 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "c8316c9e35cf8830541b04d315398c67faa6e497"
   },
   "ui-tars-1.5-7b-4bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-4bit",
@@ -2538,7 +2745,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "cca0e360e25322cdf480cf841e301b6d55bce9e0"
   },
   "ui-tars-1.5-7b-6bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-6bit",
@@ -2548,7 +2756,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "8d6f3cd8ccbdbd9922c0675069f4ea871c3d73d9"
   },
   "ui-tars-1.5-7b-8bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-8bit",
@@ -2558,7 +2767,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "ac86addd9b9908d8134f11416d1de17a12f708d6"
   },
   "ui-tars-7b-dpo-4bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-4bit",
@@ -2568,7 +2778,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "11a4a389a4db746c059e9aff83b4c32fd6e88728"
   },
   "ui-tars-7b-dpo-6bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-6bit",
@@ -2578,7 +2789,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "bf64dfcb78b830eda5986fc7d2430a5e95cdf8ff"
   },
   "ui-tars-7b-dpo-8bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-8bit",
@@ -2588,7 +2800,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "5d4d06d590848fafe2192865f4d4d27b525e3842"
   },
   "ui-tars-7b-sft-4bit": {
     "hf_path": "mlx-community/UI-TARS-7B-SFT-4bit",
@@ -2598,7 +2811,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "ee15331116bc98fb75f33cd7901fa5fdb3104555"
   },
   "ui-tars-7b-sft-8bit": {
     "hf_path": "mlx-community/UI-TARS-7B-SFT-8bit",
@@ -2608,7 +2822,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "5f624ec5b26f6f2de69c874b0f48321f7c1860a8"
   },
   "ui-tars-72b-dpo-4bit": {
     "hf_path": "mlx-community/UI-TARS-72B-DPO-4bit",
@@ -2618,7 +2833,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "unknown",
+    "revision": "3bc7e51f138b02d27d49a7a0438944ca6d2cbf83"
   },
   "kimi-k2.6": {
     "hf_path": "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
@@ -2627,7 +2843,8 @@
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "9cb5961bf22facced678b894ee5e9eb1538f7cba"
   },
   "holo3.1-35b-a3b": {
     "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
@@ -2636,7 +2853,8 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "5d70beb5ba973aa56f8fdf0c260b245e70d8fd6c"
   },
   "holo3.1-35b-a3b-8bit": {
     "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
@@ -2645,7 +2863,8 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "f06241848a969d03a4e1275a64bf045eb93aa7fe"
   },
   "qwen3-0.6b": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",
@@ -2653,7 +2872,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "73e3e38d981303bc594367cd910ea6eb48349da8"
   },
   "qwen3-1.7b": {
     "hf_path": "mlx-community/Qwen3-1.7B-4bit",
@@ -2661,7 +2881,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "3b1b1768f8f8cf8351c712464f906e86c2b8269e"
   },
   "qwen3-1.7b-4bit": {
     "hf_path": "mlx-community/Qwen3-1.7B-4bit",
@@ -2669,7 +2890,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "3b1b1768f8f8cf8351c712464f906e86c2b8269e"
   },
   "mistral-small-4-119b": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
@@ -2677,7 +2899,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "87b1249207734f029ec9dcefab80eabedfa6b812"
   },
   "mistral-small-4-119b-4bit": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
@@ -2685,7 +2908,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "87b1249207734f029ec9dcefab80eabedfa6b812"
   },
   "mistral-small-4-119b-8bit": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-8bit",
@@ -2693,7 +2917,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "revision": "0c9605862bdd1b8b6e3f7d503bbf95a59b89c039"
   },
   "glm-5.2-reap50": {
     "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
@@ -2702,7 +2927,8 @@
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false,
-    "supports_dflash": false
+    "supports_dflash": false,
+    "revision": "f01c14495d9ee40922602af2d63db35c019571b9"
   },
   "lfm2-24b-a2b-4bit": {
     "hf_path": "lmstudio-community/LFM2-24B-A2B-MLX-4bit",
@@ -2710,7 +2936,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "f86ea2ca24bcee27aa23f3552f199f3f92a48560"
   },
   "lfm2.5-24b-a2b-4bit": {
     "hf_path": "LiquidAI/LFM2.5-24B-A2B-MLX-4bit",
@@ -2718,7 +2945,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "667408d494bde191c2cb9dd4f4549827816b9275"
   },
   "lfm2.5-2.6b-4bit": {
     "hf_path": "LiquidAI/LFM2.5-2.6B-MLX",
@@ -2726,7 +2954,8 @@
     "tool_call_parser": "lfm",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
   },
   "lfm2.5-8b-a1b-4bit": {
     "hf_path": "mlx-community/LFM2.5-8B-A1B-MLX-4bit",
@@ -2734,14 +2963,16 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "revision": "146590a491db88581884033023f51f6b49a27b89"
   },
   "lfm2.5-1b-4bit": {
     "hf_path": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
     "tool_call_parser": "lfm",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "dee2f8a2786e6648bb644a7ca40652842490034b"
   },
   "minicpm5-1b-4bit": {
     "hf_path": "openbmb/MiniCPM5-1B-MLX",
@@ -2749,7 +2980,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "9879b18bf2928355fcdf4287635388a3665a40cb"
   },
   "minicpm5-1b-optiq-4bit": {
     "hf_path": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
@@ -2757,7 +2989,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "935dd26f1ce9f3596d7ecd04014a704592b70dcc"
   },
   "minicpm5-2b-4bit": {
     "hf_path": "openbmb/MiniCPM5-2B-MLX",
@@ -2766,7 +2999,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "8a9ad7539ac86281d0ac2b017ba04a5de53fe9a3"
   },
   "ornith-1.5-9b-bf16": {
     "hf_path": "ornith-ai/Ornith-1.5-9B-MLX",
@@ -2775,7 +3009,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "is_moe": false,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "b6a99985f4e3abf23a5a2ae056a46359e1054f8d"
   },
   "ornith-1.5-35b-a3b-bf16": {
     "hf_path": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
@@ -2783,7 +3018,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "revision": "1713baf2e38984a3c557195caf167759144d1d7e"
   },
   "minicpm-v4.7-1b-8bit": {
     "hf_path": "mlx-community/MiniCPM-V-4.7-1B-8bit",
@@ -2795,7 +3031,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
-    "experimental": true
+    "experimental": true,
+    "revision": "90b81ccaefd20ab8d3d2495704f49e33ea919885"
   },
   "minicpm-v4.7-35b-a3b-mxfp4": {
     "hf_path": "mlx-community/MiniCPM-V-4.7-35B-A3B-mxfp4",
@@ -2807,6 +3044,7 @@
     "is_moe": true,
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
-    "experimental": true
+    "experimental": true,
+    "revision": "810419dd09762d63aad6da5b6a418c4af8946e60"
   }
 }
