@@ -1488,8 +1488,8 @@ def test_serve_routes_ltx25_model_to_specific_preflight(
 def test_ltx25_child_pin_beats_a_shadowing_working_directory(
     tmp_path: Path,
 ) -> None:
-    """The pinned child imports the audited copy even when PYTHONPATH points at
-    a fake package next to the working directory."""
+    """The pinned child resolves the audited copy even when PYTHONPATH points
+    at a fake package next to the working directory."""
     shadow = tmp_path / "shadow"
     (shadow / "ltx_pipelines_mlx").mkdir(parents=True)
     (shadow / "ltx_pipelines_mlx" / "__init__.py").write_text("FAKE = True\n")
@@ -1499,10 +1499,13 @@ def test_ltx25_child_pin_beats_a_shadowing_working_directory(
         if name not in {"PYTHONHOME", "PYTHONPATH"}
     }
     environment["PYTHONPATH"] = str(shadow)
+    # Resolve rather than import: the vendored package needs MLX at import time,
+    # and the pin is what decides which copy the import machinery would pick.
     probe = (
         ltx25._RUNNER_PIN
         + ltx25._CHILD_PROVENANCE_CHECK
-        + "import ltx_pipelines_mlx\nprint(ltx_pipelines_mlx.__file__)\n"
+        + "import importlib.util\n"
+        + "print(importlib.util.find_spec('ltx_pipelines_mlx').origin)\n"
     )
 
     # Control: without the pin, the shadowing copy wins.
