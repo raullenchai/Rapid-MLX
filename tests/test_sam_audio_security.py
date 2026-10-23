@@ -202,6 +202,7 @@ def test_non_tensor_legacy_state_refused(tmp_path):
 
 def test_sam_lazy_encoder_loaded_once(tmp_path, monkeypatch):
     import mlx.core as mx
+    import mlx.nn as nn
     import mlx_audio.sts
     from mlx_audio.sts.models.sam_audio import model as sam_model
 
@@ -210,18 +211,27 @@ def test_sam_lazy_encoder_loaded_once(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text("{}")
     mx.save_safetensors(str(tmp_path / "model.safetensors"), {"weight": mx.ones((1,))})
 
-    class Model:
+    class Model(nn.Module):
         def __init__(self, config):
+            super().__init__()
+            self.weight = mx.zeros((1,))
             self.processor = object()
 
         def post_load_hook(self, path):
             return self
 
+        def sanitize(self, weights):
+            return weights
+
     monkeypatch.setattr(mlx_audio.sts, "SAMAudio", Model)
     seen = []
-    monkeypatch.setattr(
-        sam_model, "_load_weights", lambda model, weights: seen.append(weights) or model
-    )
+    native_load_weights = sam_model._load_weights
+
+    def load_weights(model, weights):
+        seen.append(weights)
+        return native_load_weights(model, weights)
+
+    monkeypatch.setattr(sam_model, "_load_weights", load_weights)
     encoder, tokenizer = object(), object()
     calls = []
     monkeypatch.setattr(
@@ -232,6 +242,8 @@ def test_sam_lazy_encoder_loaded_once(tmp_path, monkeypatch):
     model, processor = sam_security.load_sam_audio(str(tmp_path))
     model.text_encoder._lazy_load()
     model.text_encoder._lazy_load()
+    assert model.training is False
+    assert model.weight.tolist() == [1.0]
     assert len(calls) == 1
     assert model.text_encoder.model is encoder
     assert model.text_encoder.tokenizer is tokenizer
