@@ -34,9 +34,14 @@ def _runtime(
     source: str | None = None,
     executable: str | None = None,
     detail: str | None = None,
+    reason: str | None = None,
 ) -> ltx25.LTX25Runtime:
     return ltx25.LTX25Runtime(
-        state=state, source=source, executable=executable, detail=detail
+        state=state,
+        source=source,
+        executable=executable,
+        detail=detail,
+        reason=reason,
     )
 
 
@@ -85,12 +90,51 @@ def test_pull_ltx25_absent_refuses_before_download(monkeypatch, capsys) -> None:
     assert "git clone" not in out
 
 
-def test_pull_ltx25_corrupt_uses_reinstall_hint(monkeypatch, capsys) -> None:
-    """A partially installed or shadowed copy is reported as damaged."""
+def test_pull_ltx25_shadowed_copy_uses_removal_hint(monkeypatch, capsys) -> None:
+    """A shadowing copy is fixed by removing the conflicting path.
+
+    Reinstalling rapid-mlx cannot help: the bundle is intact, another copy
+    simply wins the import path.
+    """
+    shadowed = (
+        "ltx_pipelines_mlx resolves outside this rapid-mlx installation "
+        "(/opt/other/ltx_pipelines_mlx); a shadowing copy is not trusted."
+    )
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
-        lambda: _runtime("corrupt", "vendored", detail="shadowed copy"),
+        lambda: _runtime("corrupt", "vendored", detail=shadowed, reason="shadowed"),
+    )
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        cli,
+        "_pull_repository",
+        lambda *a, **k: pytest.fail("must not download without a runtime"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        _pull(_pull_model(LTX25_ALIAS))
+
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "a different copy shadows it" in out
+    assert "Remove the conflicting LTX-2.5 copy from PYTHONPATH" in out
+    assert "/opt/other/ltx_pipelines_mlx" in out
+    assert "reinstall" not in out.lower()
+    assert "Repair the install" not in out
+
+
+def test_pull_ltx25_damaged_copy_uses_repair_hint(monkeypatch, capsys) -> None:
+    """A modified or partially installed bundle is repaired by reinstalling."""
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: _runtime(
+            "corrupt",
+            "vendored",
+            detail="ltx_core_mlx files no longer match the audited snapshot.",
+            reason="damaged",
+        ),
     )
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(
@@ -105,7 +149,8 @@ def test_pull_ltx25_corrupt_uses_reinstall_hint(monkeypatch, capsys) -> None:
     assert exc.value.code == 2
     out = capsys.readouterr().out
     assert "ships with rapid-mlx but is missing or damaged" in out
-    assert "shadowed copy" not in out  # internal detail stays internal
+    assert "Repair the install" in out
+    assert "PYTHONPATH" not in out
 
 
 def test_pull_ltx25_override_invalid_never_claims_bundled_runtime(

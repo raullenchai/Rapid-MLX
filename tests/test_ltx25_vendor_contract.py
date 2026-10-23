@@ -4,8 +4,10 @@
 The runtime is copied verbatim from a pinned upstream archive by
 ``scripts/vendor_ltx25.py``. These tests hold four things together:
 
-* the upstream dependency floors are still satisfiable by rapid-mlx's own
-  pins (a floor bump must not silently become uninstallable);
+* the upstream dependency floors and rapid-mlx's own pins still leave a
+  non-empty constraint intersection (a floor bump must not make the two
+  requirement sets mutually unsatisfiable; this is a specifier check, not a
+  resolver run);
 * the vendoring script's constants match the runtime adapter's constants;
 * the checked-in tree still matches the pin (``--check``), so a hand edit
   cannot drift silently;
@@ -99,8 +101,14 @@ def _intersection_is_nonempty(left: SpecifierSet, right: SpecifierSet) -> bool:
     )
 
 
-def test_upstream_floors_intersect_rapid_mlx_pins() -> None:
-    """Every upstream requirement must still be installable with rapid-mlx."""
+def test_upstream_floors_and_rapid_mlx_pins_intersect() -> None:
+    """The two requirement sets must share at least one viable version.
+
+    This is a constraint-intersection check over specifier sets: it proves
+    rapid-mlx's pins do not contradict an upstream floor. It does not run the
+    resolver, prove the locked environment is installable, or verify the
+    versions actually installed in any lane.
+    """
     pins = _rapid_pins()
     missing = sorted(set(UPSTREAM_REQUIREMENTS) - set(pins))
     assert not missing, f"rapid-mlx no longer declares {missing}"
@@ -166,6 +174,9 @@ def test_vendored_provenance_licenses_and_digests() -> None:
         assert provenance["VERSION"] == ltx25.LTX25_RUNTIME_VERSION
         assert provenance["PACKAGE"] == package
         assert provenance["TREE_SHA256"] == vendor.tree_digest(directory)
+        # The runtime adapter must compute the exact same digest from the same
+        # file set and ordering, or a trusted install would be rejected.
+        assert ltx25._tree_digest(directory) == provenance["TREE_SHA256"]
 
         license_text = (directory / "LICENSE").read_text(encoding="utf-8")
         assert "MIT License" in license_text

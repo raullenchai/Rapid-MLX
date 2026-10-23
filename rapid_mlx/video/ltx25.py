@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import os
@@ -16,7 +17,6 @@ import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import Literal
 
@@ -28,10 +28,14 @@ LTX25_VENDORED_PACKAGES = ("ltx_core_mlx", "ltx_pipelines_mlx")
 # the audited source commit so a same-version install from an index cannot
 # impersonate the bundled runtime.
 LTX25_PROVENANCE_FILE = "_vendored.py"
+# Files the vendor script generates next to the upstream sources; they are not
+# part of the audited tree digest (see scripts/vendor_ltx25.py).
+LTX25_GENERATED_FILES = frozenset({LTX25_PROVENANCE_FILE, "LICENSE", "NOTICE"})
 LTX25RuntimeState = Literal[
     "trusted", "absent", "corrupt", "override_invalid", "python_unsupported"
 ]
 LTX25RuntimeSource = Literal["vendored", "override"]
+LTX25RuntimeReason = Literal["missing", "damaged", "shadowed"]
 
 
 @dataclass(frozen=True)
@@ -42,18 +46,88 @@ class LTX25Runtime:
     source: LTX25RuntimeSource | None = None
     executable: str | None = None
     detail: str | None = None
+    # Structured reason for a non-trusted bundled runtime. ``shadowed`` means
+    # another copy wins the import path, which a reinstall cannot fix.
+    reason: LTX25RuntimeReason | None = None
 
 
 _DEFAULT_TIMEOUT_SECONDS = 7200
 _TERMINATE_GRACE_SECONDS = 10
 _RUNTIME_CACHE_LOCK = threading.Lock()
-_RUNTIME_CACHE: tempfile.TemporaryDirectory[str] | None = None
+# Provisioned override workspaces, keyed by the absolute runtime executable the
+# caller selected. Selection is re-evaluated on every generation, so changing
+# or unsetting RAPID_MLX_LTX25_RUNTIME cannot run a stale workspace.
+_RUNTIME_CACHE: dict[str, tempfile.TemporaryDirectory[str]] = {}
+# Tree digests computed for vendored packages, keyed by directory plus a cheap
+# stat signature (mtime/size/count). Reading ~800 KB once per process is
+# enough; any overwrite, deletion or addition changes the signature.
+_TREE_DIGEST_CACHE: dict[tuple[str, int, int, int], str] = {}
 _READINESS_TOKEN = b"RMLX_LTX25_READY\n"
 _READINESS_FD_ENV = "RAPID_MLX_LTX25_READY_FD"
-_INNER_PROMPT_RUNNER = f"""\
+# The child refuses to import LTX when the pinned packages no longer match the
+# audited provenance. stderr is discarded for privacy, so the parent maps this
+# exit code to a specific message instead of a generic "runtime exited".
+_CHILD_PROVENANCE_EXIT = 78
+# Both runner stages bind imports to the validated package directory. ``-P``
+# keeps the working directory off ``sys.path`` and the explicit pin keeps the
+# audited copy ahead of PYTHONPATH entries.
+_RUNNER_PIN = """\
+import sys
+
+pinned_root = sys.argv[1]
+if pinned_root:
+    sys.path.insert(0, pinned_root)
+"""
+_CHILD_PROVENANCE_CHECK = f"""\
+
+
+def _refuse(message):
+    sys.stderr.write(message + "\\n")
+    raise SystemExit({_CHILD_PROVENANCE_EXIT})
+
+
+def _verify_pinned_runtime():
+    import importlib.util
+    import os
+
+    root = os.path.realpath(pinned_root)
+    for _package in {LTX25_VENDORED_PACKAGES!r}:
+        try:
+            _spec = importlib.util.find_spec(_package)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            _spec = None
+        _locations = [] if _spec is None else list(_spec.submodule_search_locations or [])
+        _origin = None if _spec is None else _spec.origin
+        if len(_locations) != 1 or not _origin:
+            _refuse(f"{{_package}}: no single import location")
+        _directory = os.path.realpath(_locations[0])
+        if not _directory.startswith(root.rstrip("/") + "/"):
+            _refuse(f"{{_package}}: resolved outside the pinned runtime")
+        if not _origin.startswith(_locations[0].rstrip("/") + "/"):
+            _refuse(f"{{_package}}: unexpected module origin")
+        try:
+            with open(
+                _directory + "/{LTX25_PROVENANCE_FILE}", encoding="utf-8"
+            ) as _stream:
+                _text = _stream.read()
+        except OSError:
+            _refuse(f"{{_package}}: provenance file is missing")
+        if (
+            f"COMMIT = {LTX25_RUNTIME_COMMIT!r}" not in _text
+            or f"PACKAGE = {{_package!r}}" not in _text
+        ):
+            _refuse(f"{{_package}}: provenance does not match the audited runtime")
+
+
+if pinned_root:
+    _verify_pinned_runtime()
+"""
+_INNER_PROMPT_RUNNER = (
+    _RUNNER_PIN
+    + _CHILD_PROVENANCE_CHECK
+    + f"""\
 import os
 import signal
-import sys
 from ltx_pipelines_mlx.cli import main
 from ltx_pipelines_mlx.distilled import DistilledPipeline
 
@@ -71,7 +145,7 @@ def load_and_signal(self):
 
 DistilledPipeline.load = load_and_signal
 
-if sys.argv[1] == "extend":
+if sys.argv[2] == "extend":
     from ltx_pipelines_mlx.retake import RetakePipeline
 
     original_dev_load = RetakePipeline._load_dev_transformer
@@ -88,19 +162,28 @@ if sys.argv[1] == "extend":
     RetakePipeline._load_dev_transformer = load_dev_and_signal
 
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
-sys.argv = ["ltx-2-mlx", *sys.argv[1:], "--prompt", sys.stdin.read()]
+sys.argv = ["ltx-2-mlx", *sys.argv[2:], "--prompt", sys.stdin.read()]
 main()
 """
-_STDIN_PROMPT_RUNNER = f"""\
+)
+_STDIN_PROMPT_RUNNER = (
+    _RUNNER_PIN
+    + f"""\
 import os
 import signal
 import subprocess
-import sys
 
 prompt = sys.stdin.read()
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 child = subprocess.Popen(
-    [sys.executable, "-c", {_INNER_PROMPT_RUNNER!r}, *sys.argv[1:]],
+    [
+        sys.executable,
+        "-P",
+        "-c",
+        {_INNER_PROMPT_RUNNER!r},
+        pinned_root,
+        *sys.argv[2:],
+    ],
     stdin=subprocess.PIPE,
     pass_fds=(int(os.environ[{_READINESS_FD_ENV!r}]),),
     text=True,
@@ -114,6 +197,7 @@ finally:
         pass
 raise SystemExit(child.returncode)
 """
+)
 
 
 def _isolated_python_environment() -> dict[str, str]:
@@ -170,7 +254,7 @@ def _read_vendored_provenance(package_dir: Path) -> dict[str, str] | None:
     except OSError:
         return None
     values: dict[str, str] = {}
-    for name in ("REPOSITORY", "COMMIT", "VERSION", "PACKAGE"):
+    for name in ("REPOSITORY", "COMMIT", "VERSION", "PACKAGE", "TREE_SHA256"):
         match = re.search(rf'^{name}\s*=\s*["\']([^"\']+)["\']\s*$', text, re.MULTILINE)
         if match is None:
             return None
@@ -178,47 +262,111 @@ def _read_vendored_provenance(package_dir: Path) -> dict[str, str] | None:
     return values
 
 
-def _submodule_spec_exists(parent: str, child: str) -> bool:
-    """Find a child module without executing the parent's ``__init__``."""
-    parent_spec = importlib.util.find_spec(parent)
-    if parent_spec is None or parent_spec.submodule_search_locations is None:
-        return False
-    return (
-        PathFinder.find_spec(
-            f"{parent}.{child}", parent_spec.submodule_search_locations
-        )
-        is not None
+def _vendored_files(package_dir: Path) -> list[Path]:
+    """List the audited files exactly as ``scripts/vendor_ltx25.py`` does."""
+    files: list[Path] = []
+    for path in sorted(package_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(package_dir)
+        if relative.parts[0] == "__pycache__":
+            continue
+        if path.suffix == ".pyc":
+            continue
+        if len(relative.parts) == 1 and relative.name in LTX25_GENERATED_FILES:
+            continue
+        files.append(relative)
+    return files
+
+
+def _tree_digest(package_dir: Path) -> str:
+    """Digest the vendored tree the way the vendoring script recorded it."""
+    files = _vendored_files(package_dir)
+    stats = [(package_dir / relative).stat() for relative in files]
+    signature = (
+        sum(stat.st_mtime_ns for stat in stats),
+        sum(stat.st_size for stat in stats),
+        len(files),
     )
+    key = (str(package_dir), *signature)
+    cached = _TREE_DIGEST_CACHE.get(key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    for relative in files:
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((package_dir / relative).read_bytes())
+        digest.update(b"\0")
+    value = digest.hexdigest()
+    _TREE_DIGEST_CACHE[key] = value
+    return value
+
+
+def _resolve_vendored_package(
+    package: str, install_root: Path
+) -> tuple[Path | None, tuple[LTX25RuntimeReason, str] | None]:
+    """Return the package directory, or why it cannot be trusted.
+
+    The directory must be the top-level package inside the same install root
+    that hosts ``rapid_mlx`` (wheel ``site-packages``, an editable source tree
+    or the Desktop sidecar's ``site-packages``). ``spec.origin`` and every
+    search location are checked, so a foreign module origin or a package split
+    across locations cannot pass on labels alone.
+    """
+    try:
+        spec = importlib.util.find_spec(package)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        spec = None
+    if spec is None:
+        return None, None
+    locations = {
+        Path(location).resolve() for location in spec.submodule_search_locations or ()
+    }
+    if len(locations) != 1:
+        return None, (
+            "shadowed",
+            f"{package} resolves from {len(locations)} import locations; "
+            "only one audited copy can be trusted.",
+        )
+    directory = locations.pop()
+    origin = spec.origin
+    if origin is None or not Path(origin).resolve().is_relative_to(directory):
+        return None, (
+            "shadowed",
+            f"{package} module origin {origin!r} does not match its package "
+            f"directory {directory}.",
+        )
+    if directory.parent != install_root or directory.name != package:
+        return None, (
+            "shadowed",
+            f"{package} resolves outside this rapid-mlx installation "
+            f"({directory}); a shadowing copy is not trusted.",
+        )
+    return directory, None
 
 
 def _vendored_runtime() -> LTX25Runtime:
     """Classify the runtime vendored inside this rapid-mlx installation.
 
-    Trusted only when both packages resolve from inside this distribution's
-    install root and both carry the pinned repository, commit, version and
-    package identity. A partially installed or shadowed copy is ``corrupt``;
-    never silently fall through to another runtime.
+    Trusted only when both packages resolve from this distribution's install
+    root, carry the pinned provenance labels, and their on-disk files still
+    match the recorded tree digest. A partially installed, modified or shadowed
+    copy is ``corrupt`` with a structured reason; never silently fall through
+    to another runtime.
     """
     install_root = _install_root()
     missing: list[str] = []
     for package in LTX25_VENDORED_PACKAGES:
-        try:
-            spec = importlib.util.find_spec(package)
-        except (ImportError, ModuleNotFoundError, ValueError):
-            spec = None
-        if spec is None or spec.submodule_search_locations is None:
+        package_dir, problem = _resolve_vendored_package(package, install_root)
+        if problem is not None:
+            reason, detail = problem
+            return LTX25Runtime(
+                state="corrupt", source="vendored", detail=detail, reason=reason
+            )
+        if package_dir is None:
             missing.append(package)
             continue
-        package_dir = Path(next(iter(spec.submodule_search_locations))).resolve()
-        if not package_dir.is_relative_to(install_root):
-            return LTX25Runtime(
-                state="corrupt",
-                source="vendored",
-                detail=(
-                    f"{package} resolves outside this rapid-mlx installation "
-                    f"({package_dir}); a shadowing copy is not trusted."
-                ),
-            )
         provenance = _read_vendored_provenance(package_dir)
         if provenance is None:
             return LTX25Runtime(
@@ -228,6 +376,7 @@ def _vendored_runtime() -> LTX25Runtime:
                     f"{package} has no usable {LTX25_PROVENANCE_FILE} provenance "
                     "metadata."
                 ),
+                reason="damaged",
             )
         expected = {
             "REPOSITORY": LTX25_RUNTIME_REPOSITORY,
@@ -244,7 +393,34 @@ def _vendored_runtime() -> LTX25Runtime:
                         f"{package} provenance {name} is "
                         f"{provenance.get(name)!r}, expected {value!r}."
                     ),
+                    reason="damaged",
                 )
+        if package == "ltx_pipelines_mlx" and not (package_dir / "cli.py").is_file():
+            return LTX25Runtime(
+                state="corrupt",
+                source="vendored",
+                detail="ltx_pipelines_mlx.cli is missing from the vendored package.",
+                reason="damaged",
+            )
+        try:
+            digest = _tree_digest(package_dir)
+        except OSError:
+            return LTX25Runtime(
+                state="corrupt",
+                source="vendored",
+                detail=f"{package} files could not be read for verification.",
+                reason="damaged",
+            )
+        if digest != provenance["TREE_SHA256"]:
+            return LTX25Runtime(
+                state="corrupt",
+                source="vendored",
+                detail=(
+                    f"{package} files no longer match the audited snapshot "
+                    f"({digest} != {provenance['TREE_SHA256']})."
+                ),
+                reason="damaged",
+            )
     if missing:
         return LTX25Runtime(
             state="absent"
@@ -252,12 +428,9 @@ def _vendored_runtime() -> LTX25Runtime:
             else "corrupt",
             source="vendored",
             detail="missing vendored package(s): " + ", ".join(missing),
-        )
-    if not _submodule_spec_exists("ltx_pipelines_mlx", "cli"):
-        return LTX25Runtime(
-            state="corrupt",
-            source="vendored",
-            detail="ltx_pipelines_mlx.cli is missing from the vendored package.",
+            reason="missing"
+            if len(missing) == len(LTX25_VENDORED_PACKAGES)
+            else "damaged",
         )
     return LTX25Runtime(state="trusted", source="vendored", executable=sys.executable)
 
@@ -307,6 +480,16 @@ def runtime_unavailable_message(runtime: LTX25Runtime) -> str:
             (runtime.detail or "The LTX-2.5 runtime override is invalid.")
             + " Fix or unset RAPID_MLX_LTX25_RUNTIME; see the LTX-2.5 setup in "
             "the video generation guide."
+        )
+    if runtime.reason == "shadowed":
+        return (
+            (
+                runtime.detail
+                or "A different LTX-2.5 runtime is shadowing the bundled copy."
+            )
+            + " Remove the shadowing path from PYTHONPATH or run rapid-mlx from "
+            "a different working directory; see the LTX-2.5 setup in the video "
+            "generation guide."
         )
     return (
         "The LTX-2.5 runtime shipped with rapid-mlx is missing or damaged in "
@@ -470,12 +653,13 @@ def _provisioning_failure_detail(exc: Exception) -> str:
 
 
 def prepare_ltx25_runtime(executable: str) -> Path:
-    """Provision the pinned runtime once into a process-private workspace."""
-    global _RUNTIME_CACHE
+    """Provision the pinned runtime once per selected executable."""
+    key = os.path.abspath(executable)
 
     with _RUNTIME_CACHE_LOCK:
-        if _RUNTIME_CACHE is not None:
-            return Path(_RUNTIME_CACHE.name)
+        prepared = _RUNTIME_CACHE.get(key)
+        if prepared is not None:
+            return Path(prepared.name)
         uv = shutil.which("uv")
         if uv is None:
             raise LTX25BackendError(
@@ -531,13 +715,14 @@ def prepare_ltx25_runtime(executable: str) -> Path:
                 "The pinned LTX-2.5 runtime could not be provisioned: "
                 + _provisioning_failure_detail(exc)
             ) from exc
-        _RUNTIME_CACHE = cache
+        _RUNTIME_CACHE[key] = cache
         return workspace
 
 
-def _prepared_ltx25_runtime() -> Path | None:
+def _prepared_ltx25_runtime(executable: str) -> Path | None:
     with _RUNTIME_CACHE_LOCK:
-        return Path(_RUNTIME_CACHE.name) if _RUNTIME_CACHE is not None else None
+        prepared = _RUNTIME_CACHE.get(os.path.abspath(executable))
+        return Path(prepared.name) if prepared is not None else None
 
 
 def _generation_timeout_seconds() -> int:
@@ -700,21 +885,22 @@ class LTX25VideoEngine:
     ) -> None:
         timeout = _generation_timeout_seconds()
         environment = os.environ.copy()
+        # Selection is re-evaluated here rather than trusting a previously
+        # prepared workspace: the override may have changed or been unset.
+        runtime = ltx25_runtime()
+        pinned_root = ""
         interpreter: str | None = None
-        workspace = _prepared_ltx25_runtime()
-        if workspace is not None:
+        if runtime.state == "trusted" and runtime.source == "vendored":
+            interpreter = runtime.executable
+            pinned_root = str(_install_root())
+        elif runtime.state == "trusted" and runtime.executable is not None:
+            workspace = _prepared_ltx25_runtime(runtime.executable)
+            if workspace is None:
+                workspace = prepare_ltx25_runtime(runtime.executable)
             interpreter = str(workspace / ".venv" / "bin" / "python")
             environment = _isolated_python_environment()
         else:
-            runtime = ltx25_runtime()
-            if runtime.state == "trusted" and runtime.source == "vendored":
-                interpreter = runtime.executable
-            elif runtime.state == "trusted" and runtime.executable is not None:
-                workspace = prepare_ltx25_runtime(runtime.executable)
-                interpreter = str(workspace / ".venv" / "bin" / "python")
-                environment = _isolated_python_environment()
-            else:
-                raise LTX25BackendError(runtime_unavailable_message(runtime))
+            raise LTX25BackendError(runtime_unavailable_message(runtime))
         assert interpreter is not None
         try:
             staging = tempfile.TemporaryDirectory(
@@ -736,8 +922,10 @@ class LTX25VideoEngine:
             command = [*command, *output_option]
         command = [
             interpreter,
+            "-P",
             "-c",
             _STDIN_PROMPT_RUNNER,
+            pinned_root,
             *command,
         ]
         process: subprocess.Popen[str] | None = None
@@ -784,6 +972,12 @@ class LTX25VideoEngine:
             ready_read = None
             process.communicate(input=prompt, timeout=timeout)
             readiness_thread.join()
+            if process.returncode == _CHILD_PROVENANCE_EXIT:
+                raise LTX25BackendError(
+                    "The bundled LTX-2.5 runtime no longer matches the audited "
+                    "snapshot; refusing to run it. Reinstall rapid-mlx to restore "
+                    "the bundled runtime."
+                )
             if process.returncode:
                 raise LTX25BackendError(
                     f"LTX-2.5 runtime exited with code {process.returncode}; "

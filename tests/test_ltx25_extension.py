@@ -62,7 +62,10 @@ def test_extension_runtime_uses_video_context_and_latent_frame_count(
     )
 
     command = captured["command"]
-    assert command[3] == "extend"
+    assert command[1] == "-P"
+    assert command[3] == ltx25._STDIN_PROMPT_RUNNER
+    assert command[4] == str(ltx25._install_root())
+    assert command[5] == "extend"
     assert command[command.index("--video") + 1] == str(source)
     assert command[command.index("--extend-frames") + 1] == "2"
     assert command[command.index("--direction") + 1] == "after"

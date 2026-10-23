@@ -192,8 +192,21 @@ def _ltx25_runtime_issue(*, provision: bool) -> VideoRuntimeIssue | None:
     missing: list[str] = []
     install_hint: str | None = None
     if runtime.state in {"absent", "corrupt"}:
-        missing.append("the LTX-2.5 runtime shipped with rapid-mlx")
-        install_hint = optional_extra_install_hint("video", status="broken")
+        if runtime.reason == "shadowed":
+            missing.append(
+                "the LTX-2.5 runtime shipped with rapid-mlx "
+                "(a different copy shadows it)"
+            )
+            detail = (runtime.detail or "").rstrip(".")
+            install_hint = (
+                "Remove the conflicting LTX-2.5 copy from PYTHONPATH or run "
+                "rapid-mlx from a different working directory"
+                + (f" ({detail})" if detail else "")
+                + "; see docs/guides/video-generation.md."
+            )
+        else:
+            missing.append("the LTX-2.5 runtime shipped with rapid-mlx")
+            install_hint = optional_extra_install_hint("video", status="broken")
     elif runtime.state == "override_invalid":
         missing.append("the pinned LTX-2.5 runtime selected by RAPID_MLX_LTX25_RUNTIME")
         install_hint = (
