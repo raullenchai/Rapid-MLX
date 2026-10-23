@@ -2048,3 +2048,116 @@ def test_receipt_retirement_failure_rolls_back_removal(fake_home, client):
     assert receipt.read_bytes() == ownership
     assert adapter.remove_config()
     assert not receipt.exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_receipt_replacement_failure_restores_both_files(fake_home, existing):
+    from rapid_mlx.launch import _ownership
+
+    path = fake_home / "transaction.json"
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if existing:
+        _ownership.write(
+            path,
+            {"model": "old"},
+            lambda: _common.atomic_write_json(path, {"model": "old"}),
+        )
+    before = path.read_bytes() if existing else None
+    prior_receipt = receipt.read_bytes() if existing else None
+    original = _common.atomic_write_json
+
+    def publish_then_fail(destination, data):
+        original(destination, data)
+        if destination == receipt:
+            raise OSError("failed after receipt replacement")
+
+    with (
+        patch.object(_common, "atomic_write_json", side_effect=publish_then_fail),
+        pytest.raises(OSError, match="after receipt replacement"),
+    ):
+        _ownership.write(
+            path,
+            {"model": "new"},
+            lambda: _common.atomic_write_json(path, {"model": "new"}),
+        )
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert (receipt.read_bytes() if receipt.exists() else None) == prior_receipt
+
+
+def test_retirement_interruption_restores_receipt_and_config(fake_home):
+    from rapid_mlx.launch import _ownership
+
+    path = cline.write_or_patch_config("https://example.com", "rapid-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    before, prior_receipt = path.read_bytes(), receipt.read_bytes()
+    original = _ownership.forget
+
+    def retire_then_interrupt(target):
+        original(target)
+        raise KeyboardInterrupt
+
+    with (
+        patch.object(_ownership, "forget", side_effect=retire_then_interrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        cline.remove_config()
+    assert path.read_bytes() == before
+    assert receipt.read_bytes() == prior_receipt
+
+
+def test_overlapping_configuration_failure_cannot_undo_success(fake_home):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, current_thread
+
+    from rapid_mlx.launch import _ownership
+
+    path = fake_home / "transaction.json"
+    _common.atomic_write_json(path, {"model": "original"})
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    first_written, release_first = Event(), Event()
+    second_started, second_finished = Event(), Event()
+    original = _common.atomic_write_json
+    first_thread = []
+
+    def fail_first_receipt(destination, data):
+        if destination == receipt and current_thread() is first_thread[0]:
+            raise OSError("first receipt failed")
+        original(destination, data)
+
+    def first_write():
+        first_thread.append(current_thread())
+
+        def config():
+            original(path, {"model": "first"})
+            first_written.set()
+            assert release_first.wait(5)
+
+        _ownership.write(path, {"model": "first"}, config)
+
+    def second_write():
+        second_started.set()
+        _ownership.write(
+            path, {"model": "second"}, lambda: original(path, {"model": "second"})
+        )
+        second_finished.set()
+
+    with (
+        patch.object(_common, "atomic_write_json", side_effect=fail_first_receipt),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        first = pool.submit(first_write)
+        try:
+            assert first_written.wait(5)
+            second = pool.submit(second_write)
+            assert second_started.wait(5)
+            # Give the second writer a chance to finish if the lock is absent.
+            # Its successful write must remain after the first writer rolls back.
+            second_finished.wait(0.2)
+        finally:
+            release_first.set()
+        with pytest.raises(OSError, match="first receipt failed"):
+            first.result(timeout=5)
+        second.result(timeout=5)
+    data = json.loads(path.read_text())
+    assert data == {"model": "second"}
+    assert _ownership.remove_fields(path, data, ("model",))

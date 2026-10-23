@@ -13,8 +13,10 @@ when they no longer match the receipt.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -30,19 +32,41 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def _snapshot(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
+def _restore(path: Path, previous: bytes | None) -> None:
+    if _snapshot(path) == previous:
+        return
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        _common.atomic_write_text(path, previous.decode("utf-8"))
+
+
 def _commit(
     path: Path, write_config: Callable[[], None], finish_receipt: Callable[[], None]
 ) -> None:
-    previous = path.read_bytes() if path.exists() else None
-    write_config()
+    # Keep the lock file's inode stable across transactions. Removing it would
+    # let a new caller bypass a waiter still holding the old inode's lock.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".rapid-mlx.lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        finish_receipt()
-    except BaseException:
-        if previous is None:
-            path.unlink()
-        else:
-            _common.atomic_write_text(path, previous.decode("utf-8"))
-        raise
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        previous = _snapshot(path)
+        receipt_path = _receipt(path)
+        previous_receipt = _snapshot(receipt_path)
+        try:
+            write_config()
+            finish_receipt()
+        except BaseException:
+            _restore(path, previous)
+            _restore(receipt_path, previous_receipt)
+            raise
+    finally:
+        os.close(descriptor)
 
 
 def write(path: Path, fields: dict[str, Any], write_config: Callable[[], None]) -> None:
