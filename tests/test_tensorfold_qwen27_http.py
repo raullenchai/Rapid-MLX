@@ -799,7 +799,7 @@ def test_render_prompt_and_server_bootstrap(
             else {"enable_prefix_cache": enable_prefix_cache}
         ),
     )
-    assert captured["load"].get("enable_prefix_cache", True) is (
+    assert captured["load"]["enable_prefix_cache"] is (
         enable_prefix_cache is not False
     )
     assert closed == [True]
