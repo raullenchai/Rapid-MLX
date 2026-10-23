@@ -203,7 +203,9 @@ def test_route_launch_and_unsupported_qualification(kernels, monkeypatch):
         Module(metal_kernel=lambda **kw: built.append(kw) or run),
         raising=False,
     )
-    out = route.affine2_route_down_qmv(
+    # Tensor metadata checks the raw launch; runtime qualification is covered
+    # by test_deepseek_v41_self_check with evaluated CPU arrays and mocks.
+    out = route._fused(
         projection(3, (64, 512), 256), Tensor((3, 256), "fp32"), Tensor((3, 6))
     )
     assert out.shape == (3, 6, 512)
