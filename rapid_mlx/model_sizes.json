@@ -36,6 +36,8 @@
     "lmstudio-community/LFM2-24B-A2B-MLX-4bit": 13420011411,
     "lmstudio-community/MiniMax-M2.5-MLX-4bit": 128682605730,
     "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit": 17792584863,
+    "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit": 4231241505,
+    "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit": 7962488801,
     "lmstudio-community/Phi-4-mini-reasoning-MLX-4bit": 2179993954,
     "lmstudio-community/Qwen3-Coder-Next-MLX-4bit": 44855912113,
     "lmstudio-community/Qwen3-Coder-Next-MLX-8bit": 84667197908,

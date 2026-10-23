@@ -1816,6 +1816,40 @@
     "is_text_only": true,
     "supports_spec_decode": false
   },
+  "nemotron-3.5-bolt-e4b": {
+    "hf_path": "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
+    "revision": "4274caa99dbacb12cbbca9bd9595a5063a33880f",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_text_only": true,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "nemotron-3.5-bolt-e4b-8bit": {
+    "hf_path": "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
+    "revision": "210cb1bbd2107dc871cb3a4a23155d914077be94",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_text_only": true,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "nemotron-3.5-super-vl": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-4bit",
     "tool_call_parser": "nemotron",

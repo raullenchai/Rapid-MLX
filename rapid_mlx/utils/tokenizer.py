@@ -90,7 +90,13 @@ FALLBACK_MODELS = [
 def _needs_tokenizer_fallback(model_name: str) -> bool:
     """Check if model needs tokenizer fallback."""
     model_lower = model_name.lower()
-    return any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS)
+    if not any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS):
+        return False
+    # Nemotron E4B uses Gemma's tokenizer and shared-KV loader. A publisher
+    # name must not override the checkpoint's recognized architecture.
+    from ..models.gemma4_text import is_gemma4_family_model
+
+    return not is_gemma4_family_model(model_name)
 
 
 def _special_token_text(value, default: str | None) -> str | None:
