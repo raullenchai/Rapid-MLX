@@ -53,8 +53,12 @@ def verify_snapshot(
     SHAs, never symbolic revisions. Callers resolve branch/tag names beforehand.
     """
     path = Path(snapshot_path)
-    commit = resolved_revision or path.name
-    if not re.fullmatch(r"[0-9a-f]{40}", commit) or (revision and revision != commit):
+    commit = path.name if resolved_revision is None else resolved_revision
+    if (
+        not isinstance(commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", commit)
+        or (revision is not None and revision != commit)
+    ):
         raise ModelIntegrityError(
             "Download did not resolve to the requested immutable snapshot"
         )
@@ -243,7 +247,10 @@ def verify_snapshot(
                 "Hub integrity manifest does not match the downloaded commit"
             )
         siblings = _field(info, "siblings", [])
-    siblings = list(siblings)
+    try:
+        siblings = list(siblings)
+    except TypeError as exc:
+        raise ModelIntegrityError("Invalid integrity manifest file inventory") from exc
     names = [_field(item, "rfilename") for item in siblings]
     if not all(isinstance(name, str) for name in names):
         raise ModelIntegrityError("Invalid integrity manifest filename")
@@ -308,7 +315,7 @@ def verify_snapshot(
             "Downloaded snapshot inventory mismatch: selected local files are absent from the immutable manifest"
         )
     if not verified:
-        if not allow_all and not patterns:
+        if not allow_all and not patterns and exact is None:
             return
         raise ModelIntegrityError("Integrity manifest contains no selected files")
     import tempfile

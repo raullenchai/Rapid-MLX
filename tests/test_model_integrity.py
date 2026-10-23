@@ -61,11 +61,19 @@ def test_commit_mismatch(snapshot):
         verify_snapshot("test/integrity", path)
 
 
-@pytest.mark.parametrize("revision", ["main", "v1", "a" * 7])
+@pytest.mark.parametrize("revision", ["", "main", "v1", "a" * 7])
 def test_symbolic_revisions_must_be_resolved_by_the_caller(snapshot, revision):
     path, _, calls = snapshot
     with pytest.raises(ModelIntegrityError, match="immutable snapshot"):
         verify_snapshot("test/integrity", path, revision=revision)
+    assert calls == []
+
+
+@pytest.mark.parametrize("revision", ["", 1, []])
+def test_invalid_explicit_resolved_commit_is_refused(snapshot, revision):
+    path, _, calls = snapshot
+    with pytest.raises(ModelIntegrityError, match="immutable snapshot"):
+        verify_snapshot("test/integrity", path, resolved_revision=revision)
     assert calls == []
 
 
@@ -303,6 +311,18 @@ def test_missing_requested_file_and_empty_exact_selection(snapshot):
         verify_snapshot("test/integrity", path, filenames=["missing"])
     with pytest.raises(ModelIntegrityError, match="no selected files"):
         verify_snapshot("test/integrity", path, filenames=[])
+    with pytest.raises(ModelIntegrityError, match="no selected files"):
+        verify_snapshot(
+            "test/integrity", path, allow_patterns=[], filenames=["config.json"]
+        )
+
+
+@pytest.mark.parametrize("siblings", [None, 1])
+def test_malformed_manifest_inventory_is_refused(snapshot, siblings):
+    path, info, _ = snapshot
+    info.siblings = siblings
+    with pytest.raises(ModelIntegrityError, match="manifest file inventory"):
+        verify_snapshot("test/integrity", path)
 
 
 @pytest.mark.parametrize(
