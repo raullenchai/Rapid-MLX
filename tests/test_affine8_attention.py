@@ -61,7 +61,53 @@ def test_numerics(qualified, dtype, tq, tk, kind):
     assert float(rel) < 0.025
 
 
-def test_declines_and_switch(qualified, monkeypatch):
+@pytest.fixture
+def dispatcher(monkeypatch):
+    """Exercise host contracts on every Metal CI host without compiling MPP.
+
+    Numerical tests above still use the real kernel on the qualified host.
+    Fake split partials here have a known stable weighted mean, so this also
+    checks the host-side reduction independently of the Metal implementation.
+    """
+    if not mx.metal.is_available():
+        pytest.skip("requires MLX Metal arrays")
+    factory = attn._kernel
+    factory.cache_clear()
+    previous = mx.default_device()
+    mx.set_default_device(mx.gpu)
+    monkeypatch.setattr(attn, "_qualified_runtime", lambda: True)
+    monkeypatch.setattr(attn, "_DISABLED", False)
+    monkeypatch.setattr(attn, "_WARMED_VARIANTS", set())
+    monkeypatch.setenv("RAPID_MLX_AFFINE8_ATTENTION", "1")
+    calls = []
+
+    def execute(**kwargs):
+        calls.append(kwargs)
+        shape = kwargs["output_shapes"][0]
+        first = mx.arange(shape[1])[None, :, None] == 0
+        maxima = mx.broadcast_to(mx.where(first, 10000.693147, 10000.0), shape)
+        denominator = mx.ones(shape)
+        partial = mx.broadcast_to(
+            mx.where(first[..., None], 3.0, 1.0), kwargs["output_shapes"][2]
+        )
+        return maxima, denominator, partial
+
+    def construct(**kwargs):
+        # The shipped source must be loadable, and the wrapper must preserve
+        # cache strides rather than materializing a full contiguous history.
+        assert "MetalPerformancePrimitives" in kwargs["header"]
+        assert kwargs["ensure_row_contiguous"] is False
+        return execute
+
+    monkeypatch.setattr(mx.fast, "metal_kernel", construct)
+    try:
+        yield calls
+    finally:
+        factory.cache_clear()
+        mx.set_default_device(previous)
+
+
+def test_declines_and_switch(dispatcher, monkeypatch):
     q, k, v = inputs()
     cases = [
         dict(bits=4),
@@ -76,7 +122,7 @@ def test_declines_and_switch(qualified, monkeypatch):
     assert attn.try_affine8_attention(q, k, v, scale=0.0625, mask="causal") is None
 
 
-def test_both_dispatch_routes(qualified, monkeypatch):
+def test_both_dispatch_routes(dispatcher, monkeypatch):
     import mlx_lm.models.base as lm
 
     from rapid_mlx.models.mlx_vlm_vendored.models import base as vlm
@@ -84,6 +130,18 @@ def test_both_dispatch_routes(qualified, monkeypatch):
         _install_batched_mask_safe_quantized_sdpa,
     )
 
+    # Installation is process-global in production; restore it after this test.
+    monkeypatch.setattr(
+        lm,
+        "quantized_scaled_dot_product_attention",
+        lm.quantized_scaled_dot_product_attention,
+    )
+    monkeypatch.setattr(
+        lm,
+        "_rapid_batched_mask_safe_qsdpa",
+        getattr(lm, "_rapid_batched_mask_safe_qsdpa", False),
+        raising=False,
+    )
     _install_batched_mask_safe_quantized_sdpa()
     q, k, v = inputs()
     sentinel = mx.ones(q.shape, dtype=q.dtype)
@@ -104,7 +162,7 @@ def test_both_dispatch_routes(qualified, monkeypatch):
     assert len(calls) == 2
 
 
-def test_runtime_and_geometry_fallbacks(qualified, monkeypatch):
+def test_runtime_and_geometry_fallbacks(dispatcher, monkeypatch):
     q, k, v = inputs()
     for bad_q in (
         mx.broadcast_to(q, (2, 24, 4, 256)),
@@ -128,7 +186,7 @@ def test_runtime_and_geometry_fallbacks(qualified, monkeypatch):
     assert attn.try_affine8_attention(q, k, v, scale=0.0625, mask="causal") is None
 
 
-def test_compile_failure_falls_back_once(qualified, monkeypatch):
+def test_compile_failure_falls_back_once(dispatcher, monkeypatch):
     q, k, v = inputs()
     calls = []
 
@@ -143,7 +201,7 @@ def test_compile_failure_falls_back_once(qualified, monkeypatch):
     assert len(calls) == 1
 
 
-def test_lazy_compile_failure_falls_back(qualified, monkeypatch):
+def test_lazy_compile_failure_falls_back(dispatcher, monkeypatch):
     q, k, v = inputs()
 
     def fail_eval(*args):
@@ -154,3 +212,68 @@ def test_lazy_compile_failure_falls_back(qualified, monkeypatch):
     monkeypatch.setattr(mx, "eval", fail_eval)
     assert attn.try_affine8_attention(q, k, v, scale=0.0625, mask="causal") is None
     assert attn._DISABLED
+
+
+@pytest.mark.parametrize("boolean_mask", [False, True])
+def test_stable_split_merge_and_padded_query(dispatcher, boolean_mask):
+    q, k, v = inputs(tq=3, tk=8193)
+    mask = mx.ones((1, 1, 1, 3, 8193), dtype=mx.bool_) if boolean_mask else "causal"
+    result = attn.try_affine8_attention(q, k, v, scale=0.0625, mask=mask)
+    assert result is not None and result.shape == q.shape
+    call = dispatcher[-1]
+    splits = call["output_shapes"][0][1]
+    # One split has weight 2 and value 3; all others weight 1 and value 1.
+    # Maxima near 10000 require a stable merge, not direct exponentiation.
+    assert mx.allclose(
+        result.astype(mx.float32), mx.array((splits + 5) / (splits + 1)), atol=0.01
+    )
+    padded = call["inputs"][0]
+    assert padded.shape == (4, 24, 256)
+    assert mx.allclose(padded[:, :18], q.reshape(4, 18, 256))
+    assert bool(mx.all(padded[:, 18:] == 0))
+    assert call["inputs"][1] is k[0]
+    assert call["inputs"][4] is v[0]
+    if boolean_mask:
+        assert call["inputs"][-2].shape == (3, 8193)
+        assert call["inputs"][-1].tolist() == [True, True, True]
+    # Subsequent invocations of the same template stay lazy and reusable.
+    again = attn.try_affine8_attention(q, k, v, scale=0.0625, mask=mask)
+    assert mx.allclose(result, again)
+
+
+def test_none_mask_single_query(dispatcher):
+    q, k, v = inputs(tq=1, tk=16385)
+    assert attn.try_affine8_attention(q, k, v, scale=0.0625) is not None
+
+
+def test_malformed_cache_and_geometry_never_reach_kernel(dispatcher):
+    q, k, v = inputs()
+    cases = [
+        (q, k[:2], v, "causal"),
+        (q, (object(), *k[1:]), v, "causal"),
+        (q, tuple(a[0] for a in k), v, "causal"),
+        (q[:, :23], k, v, "causal"),
+        (q[:, :0], k, v, "causal"),
+        (q[:, :, :0], k, v, "causal"),
+        (mx.ones((1, 64, 4, 256), dtype=q.dtype), k, v, "causal"),
+        (q, (k[0].astype(mx.float32), *k[1:]), v, "causal"),
+        (q, k, v, "unsupported"),
+        (q, k, v, mx.ones((2049,), dtype=mx.bool_)),
+    ]
+    for query, keys, values, mask in cases:
+        assert (
+            attn.try_affine8_attention(query, keys, values, scale=0.0625, mask=mask)
+            is None
+        )
+    assert dispatcher == []
+
+
+def test_runtime_qualification_does_not_expand_silently(monkeypatch):
+    check = attn._qualified_runtime.__wrapped__
+    monkeypatch.setattr(mx.metal, "is_available", lambda: True)
+    monkeypatch.setattr(mx, "__version__", "0.32.3")
+    monkeypatch.setattr(attn.platform, "mac_ver", lambda: ("26.5.2", (), ""))
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
+    assert check()
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M2"})
+    assert not check()
