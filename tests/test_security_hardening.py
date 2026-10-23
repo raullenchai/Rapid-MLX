@@ -191,6 +191,7 @@ def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch, tm
         sys.modules, "torch", SimpleNamespace(load=fake_load, __version__="2.10.0")
     )
     monkeypatch.setenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", "1")
+    monkeypatch.delenv("RAPID_MLX_SA3_TRUSTED_SHA256", raising=False)
     import hashlib
 
     checkpoint = tmp_path / "legacy.ckpt"
