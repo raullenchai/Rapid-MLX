@@ -7,6 +7,14 @@ import pytest
 from rapid_mlx.speculative.tensorfold_qwen27 import _checkpoint_engine
 
 
+@pytest.fixture(autouse=True)
+def memory_headroom(monkeypatch):
+    pytest.importorskip("tensorfold.server.cancellation")
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27._checkpoint_headroom", lambda: 10_000
+    )
+
+
 class Store:
     slots = 8
 
@@ -90,6 +98,18 @@ class Engine:
             stream.history_checkpoints = []
             for at in kwargs["checkpoints_at"]:
                 if kwargs["cached_tokens"] < at < len(stream.prompt_ids):
+                    guard = getattr(self, "prefill_guard", None)
+                    if guard is not None and not guard.allow_checkpoint(
+                        [
+                            SimpleNamespace(
+                                state=SimpleNamespace(
+                                    nbytes=self.snapshot_bytes.get(at, 100)
+                                )
+                            )
+                        ]
+                    ):
+                        guard.refuse(at, [])
+                        continue
                     stream.history_checkpoints.append(
                         (stream.prompt_ids[:at], [self.snapshot_bytes.get(at, 100)])
                     )
@@ -593,3 +613,153 @@ def test_optional_resume_preserves_scheduler_selection_and_ordinary_metadata():
     assert store.peek(edited, usable=lambda n: n == 4096) is None
     assert ordinary.last_prompt == prior
     assert untouched() == before
+
+
+@pytest.mark.parametrize("headroom,expected", [(199, [7950]), (200, [6144, 7950])])
+@pytest.mark.parametrize("budget", [None, 10_000])
+def test_optional_copy_checks_live_headroom_before_allocation(
+    monkeypatch, headroom, expected, budget
+):
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27._checkpoint_headroom", lambda: headroom
+    )
+    store = Store(budget)
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
+    result = run(engine, prompt())
+    assert [len(tokens) for tokens, _ in result.history_checkpoints] == expected
+    assert engine.prefill_guard is None
+
+
+def test_native_guard_refusal_and_cancellation_are_preserved():
+    from tensorfold.server.cancellation import (
+        Cancellation,
+        PrefillGuard,
+        RequestCancelled,
+    )
+
+    store = Store()
+    engine = _checkpoint_engine(Engine, lambda: store, {})()
+    cancellation = Cancellation()
+    guard = PrefillGuard(
+        cancellation, SimpleNamespace(allow_checkpoint=lambda cache: False)
+    )
+    engine.prefill_guard = guard
+    assert run(engine, prompt()).history_checkpoints == []
+    assert engine.prefill_guard is guard
+    cancellation.cancel()
+    with pytest.raises(RequestCancelled):
+        run(engine, prompt())
+    assert engine.prefill_guard is guard
+
+
+@pytest.mark.parametrize(
+    "available,active,expected", [(300, 100, 300), (900, 800, 200)]
+)
+def test_headroom_honors_system_and_runtime_limits(
+    monkeypatch, available, active, expected
+):
+    import mlx.core as mx
+    import psutil
+    from tensorfold.server import memory_budget
+
+    monkeypatch.undo()
+    from rapid_mlx.speculative.tensorfold_qwen27 import _checkpoint_headroom
+
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=available)
+    )
+    monkeypatch.setattr(mx, "get_active_memory", lambda: active)
+    monkeypatch.setattr(
+        memory_budget,
+        "memory_limit_bytes",
+        lambda mx: memory_budget.PROCESS_BYTES + 1000,
+    )
+    assert _checkpoint_headroom() == expected
+
+
+@pytest.mark.parametrize("headroom,expected", [(199, [7950]), (200, [6144, 7950])])
+def test_native_prefill_skips_copy_before_allocation(monkeypatch, headroom, expected):
+    from tensorfold.engine.family_prefill import FamilyPrefill
+    from tensorfold.engine.prefill_plan import PrefillPlan
+    from tensorfold.server.cancellation import Cancellation, PrefillGuard
+
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27._checkpoint_headroom", lambda: headroom
+    )
+
+    class NativeEngine(Engine, FamilyPrefill):
+        prefill_plan = PrefillPlan(2048, (10,), 256, (10, 11))
+
+        def __init__(self):
+            super().__init__()
+            self.copies = []
+            self.model = SimpleNamespace(
+                make_cache=lambda: [SimpleNamespace(state=SimpleNamespace(nbytes=100))]
+            )
+
+        def prompt_chunks(self, ids):
+            return self.prefill_plan.chunks(ids)
+
+        def _family_feed_steps(self, prompt, work, chunks, *args, whole, **kwargs):
+            for start, end in chunks:
+                self.prefill_guard.before_chunk(work, end - start)
+                whole[0] = end
+                self.prefill_guard.after_chunk(work, end - start)
+            yield from ()
+
+        def copy_single_cache(self, cache):
+            self.copies.append(self.position)
+            return list(cache)
+
+        def _family_score(self, *args):
+            pass
+
+        def cache_nbytes(self, cache):
+            return cache[0].state.nbytes
+
+        def begin_stream(self, stream, **kwargs):
+            # The actual runtime makes the copy only after allow_checkpoint.
+            self.position = 0
+            original_feed = self._family_feed_steps
+
+            def feed(prompt, work, chunks, *args, **kw):
+                yield from original_feed(prompt, work, chunks, *args, **kw)
+                self.position = kw["whole"][0]
+
+            self._family_feed_steps = feed
+            return self._family_prefill_steps(stream, **kwargs)
+
+    store = Store()
+    engine = _checkpoint_engine(NativeEngine, lambda: store, {})()
+    stream = SimpleNamespace(
+        stream_id="test", prompt_ids=prompt(), label_ids=[1], history_checkpoints=[]
+    )
+    steps = engine.begin_stream(stream, checkpoints_at=(7950,))
+    # Match the scheduler: replace the cancellation guard on each advancement.
+    while True:
+        guard = PrefillGuard(Cancellation())
+        engine.prefill_guard = guard
+        try:
+            next(steps)
+        except StopIteration:
+            break
+        assert engine.prefill_guard is guard
+    assert engine.prefill_guard is guard
+    assert engine.copies == expected
+    assert [len(tokens) for tokens, _ in stream.history_checkpoints] == expected
+
+
+def test_guarded_iterator_send_delegates():
+    engine = _checkpoint_engine(Engine, lambda: Store(), {})()
+    stream = SimpleNamespace(prompt_ids=prompt(), history_checkpoints=[])
+
+    def values():
+        value = yield 1
+        return value
+
+    steps = engine._guarded_steps(values(), stream, Store(), 6144, [6144, 7950], 0)
+    assert next(steps) == 1
+    with pytest.raises(StopIteration) as done:
+        steps.send(42)
+    assert done.value.value == 42
+    assert engine.prefill_guard is None

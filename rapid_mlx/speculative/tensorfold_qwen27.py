@@ -232,6 +232,17 @@ def require_environment(
         )
 
 
+def _checkpoint_headroom() -> int:
+    import mlx.core as mx
+    import psutil
+    from tensorfold.server.memory_budget import PROCESS_BYTES, memory_limit_bytes
+
+    return min(
+        psutil.virtual_memory().available,
+        memory_limit_bytes(mx) - PROCESS_BYTES - mx.get_active_memory(),
+    )
+
+
 def _checkpoint_engine(
     engine_type: Any,
     store_getter: Callable[[], Any],
@@ -264,6 +275,71 @@ def _checkpoint_engine(
                 + sum(int(self.cache_nbytes(cache)) for _, cache in snapshots)
                 <= store.budget_bytes
             )
+
+        def _guarded_steps(self, steps, stream, store, added, selections, cached):
+            from tensorfold.server.cancellation import Cancellation, PrefillGuard
+
+            engine = self
+            boundaries = iter(
+                sorted(n for n in selections if cached < n < len(stream.prompt_ids))
+            )
+
+            class Guard:
+                def __init__(self, previous):
+                    self.previous = previous
+
+                def __getattr__(self, name):
+                    return getattr(self.previous, name)
+
+                def allow_checkpoint(self, cache):
+                    boundary = next(boundaries)
+                    if not self.previous.allow_checkpoint(cache):
+                        return False
+                    if boundary != added:
+                        return True
+                    # Size the populated cache before copy_single_cache allocates.
+                    # Reserve a full-size copy for each remaining native cut too.
+                    from tensorfold.server.memory_budget import CacheMemory
+
+                    profile = CacheMemory.from_cache(cache)
+                    required = sum(
+                        profile.cache_bytes(n) for n in selections if n >= added
+                    )
+                    pending = sum(
+                        engine.cache_nbytes(c) for _, c in stream.history_checkpoints
+                    )
+                    return (
+                        store.budget_bytes is None
+                        or store.nbytes + pending + required <= store.budget_bytes
+                    ) and required <= _checkpoint_headroom()
+
+            class Steps:
+                def __iter__(self):
+                    return self
+
+                def _call(self, method, *args):
+                    previous = getattr(engine, "prefill_guard", None)
+                    engine.prefill_guard = Guard(
+                        previous or PrefillGuard(Cancellation())
+                    )
+                    try:
+                        return getattr(steps, method)(*args)
+                    finally:
+                        engine.prefill_guard = previous
+
+                def __next__(self):
+                    return self._call("__next__")
+
+                def send(self, value):
+                    return self._call("send", value)
+
+                def throw(self, *args):
+                    return self._call("throw", *args)
+
+                def close(self):
+                    return self._call("close")
+
+            return Steps()
 
         def _native_selection_without_owned(self, store, stream, owned):
             from tensorfold.server.checkpoints import choose_checkpoints
@@ -370,6 +446,10 @@ def _checkpoint_engine(
                 cached_tokens=cached_tokens,
                 checkpoints_at=checkpoints_at,
             )
+            if added is not None:
+                steps = self._guarded_steps(
+                    steps, stream, store, added, checkpoints_at, cached_tokens
+                )
             if added is None and self.interior_tokens is None:
                 return steps
 
