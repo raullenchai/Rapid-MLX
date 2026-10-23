@@ -58,6 +58,12 @@ but concurrent ~8k prefills are admitted one at a time. KV cache stays bf16:
 quantized KV is refused because the quantized attention path does not support sinks.
 Speculative decoding and MTP are not enabled for this alias.
 
+For this pinned template, `chat_template_kwargs: {"enable_thinking": false}`
+or `rapid-mlx serve flint-40b-a2.5b-4bit --no-thinking` prefills an empty
+reasoning block before generation. Thinking-on and default prompts are unchanged.
+The compatibility adjustment matches the exact validated template; custom
+templates keep their own behavior, and cached tokenizer files are never modified.
+
 Measured single-stream on M5 Max 36 GB (mlx 0.32.4, mlx-lm 0.31.3, greedy, 256 output tokens, streaming, defaults): ~1k TTFT 0.35–0.38 s / 131 tok/s / 23.6 GiB peak; ~8k TTFT 2.17–2.18 s / 118.5 tok/s / 24.9 GiB peak. See the [release notes](../release-notes/unreleased.md#highlights) for the server command and concurrency results.
 
 ## Image, video, and audio
