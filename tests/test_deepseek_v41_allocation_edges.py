@@ -343,3 +343,34 @@ def test_allocator_rejects_same_label_different_identity(cli_inputs, key):
     write()
     with pytest.raises(ValueError, match="hashes do not match"):
         alloc.main()
+
+
+def test_allocator_rejects_colliding_budget_output_names(cli_inputs):
+    score, error, cost, argv, write = cli_inputs
+    argv.extend(["--budgets-gb", "200.00001", "200.00002"])
+    write()
+    with pytest.raises(ValueError, match="duplicate allocation output"):
+        alloc.main()
+    assert not list(Path(argv[argv.index("--output-dir") + 1]).glob("*.json"))
+
+
+def test_merge_failed_write_never_publishes_and_can_retry(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_merge_calibration as merge
+
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    out = tmp_path / "merged.npz"
+    original = merge.save_scores
+
+    def broken(handle, *args):
+        handle.write(b"partial archive")
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(merge, "save_scores", broken)
+    with pytest.raises(OSError, match="disk failure"):
+        merge.merge_calibration([a, b], out)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.npz", "b.npz"]
+    monkeypatch.setattr(merge, "save_scores", original)
+    merge.merge_calibration([a, b], out)
+    with np.load(out) as result:
+        assert result["tokens"].item() == 48

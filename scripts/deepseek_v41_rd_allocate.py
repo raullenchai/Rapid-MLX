@@ -328,6 +328,9 @@ def main():
         budgets = (
             [PRESETS[a.preset]["budget_bytes"] / 1e9] if a.preset else a.budgets_gb
         )
+        output_names = [f"allocation-{gb:g}GB.json" for gb in budgets]
+        if len(set(output_names)) != len(output_names):
+            raise ValueError("budgets produce duplicate allocation output paths")
         for gb in budgets:
             if selection is None:
                 if a.preset:

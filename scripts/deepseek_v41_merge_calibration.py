@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -199,7 +201,7 @@ def merge_calibration(pass_files, output):
         mean_reconstruction="saved MAN/MSAN half means multiplied by route counts",
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("xb") as handle:
+    with tempfile.NamedTemporaryFile(dir=output.parent) as handle:
         save_scores(
             handle,
             *pooled,
@@ -207,6 +209,11 @@ def merge_calibration(pass_files, output):
             metadata["keep_experts"],
             metadata["tokens_per_slice"][0],
         )
+        handle.flush()
+        os.fsync(handle.fileno())
+        # Link publication is atomic and refuses an existing destination.
+        # Closing the temporary removes its name on success and on failure.
+        os.link(handle.name, output)
     return output
 
 
