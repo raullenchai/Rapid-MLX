@@ -188,15 +188,18 @@ def collect(a):
     model, config = load(str(a.model), lazy=True, engram_ssd_offload=True)
     if rm and rm["vocab_size"] != config.vocab_size:
         raise ValueError("reference vocabulary mismatch")
-    allocation = json.loads(a.allocation.read_text()) if a.allocation else None
+    allocation_bytes = a.allocation.read_bytes() if a.allocation else None
+    allocation = json.loads(allocation_bytes) if allocation_bytes is not None else None
     masses = {layer_id: [] for layer_id in range(config.n_layers)}
     if getattr(a, "serving_qmv", False):
         from rapid_mlx.models.deepseek_v41_native.serving import install_target_qmv
 
         install_target_qmv(model)
-    if allocation:
+    if allocation is not None:
         install_native_masks(model, allocation, masses)
     a.output.mkdir(parents=True)
+    if allocation_bytes is not None:
+        (a.output / "allocation.json").write_bytes(allocation_bytes)
     if conversion_digest is not None:
         record = a.conversion_provenance.read_bytes()
         if hashlib.sha256(record).hexdigest() != conversion_digest:
@@ -215,11 +218,13 @@ def collect(a):
         "checkpoint_config_sha256": source_identity["config.json"],
         "tokenizer_sha256": file_hash(a.model / "tokenizer.json"),
         "mode": "pruning_mask_only"
-        if allocation
+        if allocation is not None
         else "packed_candidate"
         if packed and not packed.get("reference")
         else "unpruned_reference",
-        "allocation_sha256": file_hash(a.allocation) if allocation else None,
+        "allocation_sha256": hashlib.sha256(allocation_bytes).hexdigest()
+        if allocation_bytes is not None
+        else None,
         "slices": {},
         "ruler": json.loads(a.slices.read_text()).get("ruler"),
         "reference_metadata_sha256": file_hash(reference / "metadata.json")
@@ -282,7 +287,7 @@ def collect(a):
         if rm:
             np.save(a.output / f"{name}-scores.npy", scores)
         del logits, cache
-        if allocation:
+        if allocation is not None:
             mass = np.array([masses[layer_id] for layer_id in range(config.n_layers)]).T
         else:
             mass = np.ones((a.tokens, config.n_layers), np.float32)
@@ -298,6 +303,8 @@ def collect(a):
                 else {"logits_sha256": file_hash(a.output / f"{name}-logits.npy")}
             ),
         }
+    if checkpoint_hashes(a.model) != source_identity:
+        raise ValueError("checkpoint changed during collection")
     (a.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 

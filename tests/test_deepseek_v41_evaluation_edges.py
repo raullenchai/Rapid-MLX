@@ -385,3 +385,49 @@ def test_collect_retains_verified_conversion_record(
         assert metadata["source_checkpoint_sha256"] == source
         assert metadata["conversion_provenance_sha256"] == file_hash(record)
         assert evaluator.compare(a.output, a.output)["kl_nats"] == 0
+
+
+@pytest.mark.requires_mlx
+def test_collect_rechecks_checkpoint_before_metadata(collector, monkeypatch):
+    a = collector
+    load = importlib.import_module("rapid_mlx.models.deepseek_v41_native.load")
+    original = load.load
+
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        config = a.model / "config.json"
+        config.write_bytes(config.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(load, "load", mutate)
+    with pytest.raises(ValueError, match="checkpoint changed during collection"):
+        evaluator.collect(a)
+    assert not (a.output / "metadata.json").exists()
+
+
+@pytest.mark.requires_mlx
+def test_allocation_digest_and_mask_share_retained_bytes(
+    collector, tmp_path, monkeypatch
+):
+    a = collector
+    a.allocation = tmp_path / "allocation.json"
+    raw = b'{"layers": {"0": {"kept_expert_ids": [0]}}}'
+    a.allocation.write_bytes(raw)
+
+    def install(model, allocation, masses):
+        assert allocation == json.loads(raw)
+        a.allocation.write_text('{"changed": true}')
+        call = type(model).__call__
+
+        def observed(self, ids, cache):
+            masses[0].extend([1.0] * ids.shape[1])
+            return call(self, ids, cache)
+
+        monkeypatch.setattr(type(model), "__call__", observed)
+
+    monkeypatch.setattr(evaluator, "install_native_masks", install)
+    evaluator.collect(a)
+    assert (a.output / "allocation.json").read_bytes() == raw
+    metadata = json.loads((a.output / "metadata.json").read_text())
+    assert metadata["allocation_sha256"] == file_hash(a.output / "allocation.json")
+    assert metadata["allocation_sha256"] != file_hash(a.allocation)

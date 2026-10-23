@@ -511,7 +511,7 @@ def main():
         checkpoint_sha256=source_identity,
         source_checkpoint_sha256=source_identity,
         config_sha256=source_identity["config.json"],
-        checkpoint_config_sha256=file_hash(a.source / "config.json"),
+        checkpoint_config_sha256=source_identity["config.json"],
         tokenizer_sha256=file_hash(a.source / "tokenizer.json"),
         teacher="source_fp4_fp8_dequantized_bf16_native",
         engram="source_fp8_rowwise",
@@ -536,6 +536,8 @@ def main():
         },
     )
     if a.mode == "calibrate":
+        if checkpoint_hashes(a.source) != source_identity:
+            raise ValueError("checkpoint changed during calibration")
         save_scores(
             a.output, reap, norms, squared, counts, metadata, a.keep_experts, a.tokens
         )
@@ -595,6 +597,8 @@ def main():
                 else dict(logits_sha256=file_hash(a.output / f"{name}-logits.npy"))
             ),
         )
+    if checkpoint_hashes(a.source) != source_identity:
+        raise ValueError("checkpoint changed during reference inference")
     (a.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 

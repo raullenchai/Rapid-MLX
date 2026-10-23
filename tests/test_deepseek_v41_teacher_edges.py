@@ -212,3 +212,49 @@ def test_memory_estimate_accounts_for_three_resident_projection_banks(tmp_path):
         + report["prefill_scratch_allowance_bytes"]
         + 8 * 2**30
     )
+
+
+@pytest.mark.parametrize("mode", ["reference", "calibrate"])
+def test_teacher_rechecks_source_before_publication(tmp_path, monkeypatch, mode):
+    from tokenizers import Tokenizer, models
+
+    source = tmp_path / "source"
+    fixtures.write_source(source)
+    tok = Tokenizer(models.WordLevel({f"t{i}": i for i in range(32)}, unk_token="t0"))
+    tok.save(str(source / "tokenizer.json"))
+    np.save(tmp_path / "a.npy", np.arange(8, dtype=np.int32))
+    manifest = tmp_path / "slices.json"
+    manifest.write_text(json.dumps({"slices": {"a": ["a.npy"]}}))
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "teacher",
+            mode,
+            "--source",
+            str(source),
+            "--slices",
+            str(manifest),
+            "--output",
+            str(output),
+            "--tokens",
+            "8",
+            "--keep-experts",
+            "3",
+            "--cpu",
+        ],
+    )
+    original = teacher.stream_forward
+
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        config = source / "config.json"
+        config.write_bytes(config.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(teacher, "stream_forward", mutate)
+    with pytest.raises(ValueError, match="checkpoint changed"):
+        teacher.main()
+    assert not (output / "metadata.json").exists()
+    assert not output.with_suffix(".npz").exists()
