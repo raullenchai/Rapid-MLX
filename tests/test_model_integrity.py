@@ -371,6 +371,59 @@ def test_inventory_filesystem_errors_are_actionable(snapshot, monkeypatch, failu
     assert isinstance(error.value.__cause__, failure)
 
 
+@pytest.mark.parametrize("warm", [False, True])
+def test_concurrent_selected_file_addition_is_refused(snapshot, monkeypatch, warm):
+    from rapid_mlx import model_integrity
+
+    path, _, _ = snapshot
+    if warm:
+        verify_snapshot("test/integrity", path)
+    identity = model_integrity._identity
+
+    def add_file(file):
+        (path / "concurrent.safetensors").write_bytes(b"concurrent content")
+        return identity(file)
+
+    monkeypatch.setattr(model_integrity, "_identity", add_file)
+    with pytest.raises(ModelIntegrityError, match="changed during verification"):
+        verify_snapshot("test/integrity", path)
+
+
+def test_content_changed_during_receipt_write_is_refused(snapshot, monkeypatch):
+    import os
+
+    path, _, _ = snapshot
+    replace = os.replace
+
+    def change_file(source, destination):
+        replace(source, destination)
+        (path / "model.safetensors").write_bytes(b"concurrent content")
+
+    monkeypatch.setattr(os, "replace", change_file)
+    with pytest.raises(ModelIntegrityError, match="changed during verification"):
+        verify_snapshot("test/integrity", path)
+
+
+def test_file_disappearing_during_final_check_is_refused(snapshot, monkeypatch):
+    from rapid_mlx import model_integrity
+
+    path, _, _ = snapshot
+    identity = model_integrity._identity
+    scans = 0
+
+    def disappear(file):
+        nonlocal scans
+        if file.name == "model.safetensors":
+            scans += 1
+            if scans == 3:
+                raise FileNotFoundError("concurrent removal")
+        return identity(file)
+
+    monkeypatch.setattr(model_integrity, "_identity", disappear)
+    with pytest.raises(ModelIntegrityError, match="changed during verification"):
+        verify_snapshot("test/integrity", path)
+
+
 def test_unselected_files_and_local_download_metadata_do_not_break_verification(
     snapshot,
 ):

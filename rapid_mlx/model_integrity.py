@@ -76,28 +76,47 @@ def verify_snapshot(
     )
     from huggingface_hub.utils import filter_repo_objects
 
-    try:
-        local_names = [
-            file.relative_to(path).as_posix()
-            for file in path.rglob("*")
-            if file.is_file()
-            and not file.relative_to(path)
-            .as_posix()
-            .startswith((".cache/huggingface/", ".cache/rapid-mlx-integrity/"))
-        ]
-    except OSError as exc:
-        raise ModelIntegrityError(
-            f"Cannot inventory downloaded snapshot at {path}; check cache access and retry pull"
-        ) from exc
-    local_selected = set(
-        filter_repo_objects(
-            local_names,
-            allow_patterns=None if allow_all else patterns,
-            ignore_patterns=ignored,
+    def inventory():
+        try:
+            local_names = [
+                file.relative_to(path).as_posix()
+                for file in path.rglob("*")
+                if file.is_file()
+                and not file.relative_to(path)
+                .as_posix()
+                .startswith((".cache/huggingface/", ".cache/rapid-mlx-integrity/"))
+            ]
+        except OSError as exc:
+            raise ModelIntegrityError(
+                f"Cannot inventory downloaded snapshot at {path}; check cache access and retry pull"
+            ) from exc
+        selected_files = set(
+            filter_repo_objects(
+                local_names,
+                allow_patterns=None if allow_all else patterns,
+                ignore_patterns=ignored,
+            )
         )
-    )
-    if exact is not None:
-        local_selected.intersection_update(exact)
+        if exact is not None:
+            selected_files.intersection_update(exact)
+        return selected_files
+
+    def ensure_unchanged(entries):
+        try:
+            unchanged = inventory() == set(entries) and all(
+                _identity(path / name) == entry["stat"]
+                for name, entry in entries.items()
+            )
+        except OSError as exc:
+            raise ModelIntegrityError(
+                "Snapshot changed during verification; retry pull"
+            ) from exc
+        if not unchanged:
+            raise ModelIntegrityError(
+                "Snapshot changed during verification; retry pull"
+            )
+
+    local_selected = inventory()
     lock_path = Path(__file__).with_name("model_catalog_lock.json")
     try:
         locked = (
@@ -176,6 +195,7 @@ def verify_snapshot(
                 for name, entry in entries.items()
             )
         ):
+            ensure_unchanged(entries)
             return
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         previous = {}
@@ -318,6 +338,7 @@ def verify_snapshot(
         if not allow_all and not patterns and exact is None:
             return
         raise ModelIntegrityError("Integrity manifest contains no selected files")
+    ensure_unchanged(verified)
     import tempfile
 
     temporary = None
@@ -350,3 +371,4 @@ def verify_snapshot(
         if temporary is not None:
             with suppress(OSError):
                 Path(temporary).unlink(missing_ok=True)
+    ensure_unchanged(verified)
