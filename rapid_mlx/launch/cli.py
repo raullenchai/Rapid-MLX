@@ -294,11 +294,12 @@ def launch_command(args: argparse.Namespace) -> None:
         print("launch: --run and --check require --isolated", file=sys.stderr)
         sys.exit(2)
 
-    if getattr(args, "remove", False) and args.client in {
-        "cline",
-        "continue-dev",
-        "cursor",
-    }:
+    if (
+        getattr(args, "remove", False)
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "all", False)
+        and args.client in {"cline", "continue-dev", "cursor"}
+    ):
         if args.dry_run:
             print(f"[dry-run] Would remove Rapid-owned {args.client} settings.")
             return

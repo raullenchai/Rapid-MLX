@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -583,6 +583,8 @@ def build_setup_plan(
 def apply_setup_plan(plan: SetupPlan) -> Path:
     """Apply an owned-adapter plan under its read/compare/write operation lock."""
     if plan.agent in {"cline", "continue"}:
+        # Generated plans already resolve paths; normalize direct callers too.
+        plan = replace(plan, path=plan.path.resolve())
         with launch_ownership.locked(plan.path):
             return _apply_setup_plan(plan)
     return _apply_setup_plan(plan)

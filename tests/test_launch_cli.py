@@ -2334,3 +2334,67 @@ def test_migrated_user_model_entry_keeps_its_custom_fields(fake_home, strip_cust
         assert continue_dev.load_yaml_config(path)["models"][0][
             "defaultCompletionOptions"
         ] == {"temperature": 0.2}
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_explicit_isolated_removal_never_changes_shared_settings(
+    fake_home, client, dry_run, capsys
+):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    before, owned = path.read_bytes(), receipt.read_bytes()
+    with patch(
+        "rapid_mlx.agents.isolated.remove", return_value=False
+    ) as isolated_remove:
+        launch_cli.launch_command(
+            _make_args(client=client, isolated=True, remove=True, dry_run=dry_run)
+        )
+    if dry_run:
+        isolated_remove.assert_not_called()
+        assert "isolated" in capsys.readouterr().out
+    else:
+        isolated_remove.assert_called_once_with(client)
+    assert path.read_bytes() == before
+    assert receipt.read_bytes() == owned
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+def test_all_removal_rejects_ambiguous_scope_without_shared_writes(fake_home, client):
+    path = ADAPTERS[client].write_or_patch_config(
+        "https://example.com", "rapid-model", "key"
+    )
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    before, owned = path.read_bytes(), receipt.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        launch_cli.launch_command(_make_args(client=client, all=True, remove=True))
+    assert exc.value.code == 2
+    assert path.read_bytes() == before
+    assert receipt.read_bytes() == owned
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+@pytest.mark.parametrize("direct_plan", [False, True])
+def test_setup_owned_receipt_and_removal_use_symlink_target(
+    fake_home, client, direct_plan
+):
+    from dataclasses import replace
+
+    from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+
+    adapter = ADAPTERS[client]
+    link = adapter.current_config_path()
+    link.parent.mkdir(parents=True)
+    target = fake_home / "real-settings"
+    link.symlink_to(target)
+    plan = build_setup_plan(client, "https://example.com", "rapid-model")
+    assert plan.path == target.resolve()
+    if direct_plan:
+        plan = replace(plan, path=link)
+    assert apply_setup_plan(plan) == target.resolve()
+    assert link.is_symlink()
+    assert target.with_name(target.name + ".rapid-mlx-owned.json").exists()
+    assert not link.with_name(link.name + ".rapid-mlx-owned.json").exists()
+    assert adapter.remove_config()
+    assert link.is_symlink()
