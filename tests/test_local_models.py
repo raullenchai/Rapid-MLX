@@ -795,3 +795,21 @@ def test_repository_spelling_preserves_exact_catalog_profile(monkeypatch):
     profile = ma.AliasProfile(hf_path="Org/Chat", subfolder="nested", revision="b" * 40)
     monkeypatch.setattr(ma, "resolve_profile", lambda name: profile)
     assert not ma.cached_repository_collides("org/chat")
+
+
+def test_colliding_name_uses_only_exact_repository_revision_and_subfolder(
+    cache, monkeypatch
+):
+    unrelated = ma.AliasProfile(
+        hf_path="org/Unrelated", revision="b" * 40, subfolder="wrong"
+    )
+    exact = ma.AliasProfile(hf_path="local-chat", revision="c" * 40, subfolder="nested")
+    monkeypatch.setattr(
+        ma, "list_profiles", lambda: {"local-chat": unrelated, "actual": exact}
+    )
+    directory = write_model(
+        cache / "models--local-chat" / "snapshots" / ("c" * 40) / "nested"
+    )
+    assert ma.cached_repository_launch_path("local-chat", external=False) == str(
+        directory
+    )

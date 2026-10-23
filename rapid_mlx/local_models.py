@@ -283,7 +283,9 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
         for name, profile in list_profiles().items():
             aliases.setdefault(profile.hf_path, name)
         hub = [
-            row for row in _scan_hf_cache_models() if _cached_repository_is_runnable(row[0])
+            row
+            for row in _scan_hf_cache_models()
+            if _cached_repository_is_runnable(row[0])
         ]
         hub_repos = {row[0] for row in hub}
         rows = [(row, False) for row in hub]

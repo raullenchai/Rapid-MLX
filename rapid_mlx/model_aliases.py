@@ -1181,8 +1181,8 @@ def cached_repository_collides(repo: str) -> bool:
 def cached_repository_launch_path(repo: str, *, external: bool) -> str | None:
     """Disambiguate a colliding cached repo using the existing local-path API.
 
-    Read only this repository's root at its default revision. An unrelated
-    alias must never supply its repository, revision, or subfolder here.
+    Only an exact repository match may supply a revision or subfolder. An
+    unrelated alias never contributes checkpoint metadata.
     """
     if external:
         return _resolve_external_model_path(repo, repository_only=True)
@@ -1190,7 +1190,21 @@ def cached_repository_launch_path(repo: str, *, external: bool) -> str | None:
 
     from ._download_gate import _snapshot_is_complete
 
-    cached = try_to_load_from_cache(repo, "config.json", revision="main")
+    profile = next(
+        (
+            p
+            for p in list_profiles().values()
+            if p.hf_path.casefold() == repo.casefold()
+        ),
+        None,
+    )
+    prefix = (
+        f"{profile.subfolder}/" if profile is not None and profile.subfolder else ""
+    )
+    revision = profile.revision if profile is not None else None
+    cached = try_to_load_from_cache(
+        repo, f"{prefix}config.json", revision=revision or "main"
+    )
     if isinstance(cached, str):
         directory = os.path.dirname(cached)
         if _snapshot_is_complete(directory):

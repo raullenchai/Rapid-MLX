@@ -10023,7 +10023,7 @@ def _cached_models_json_payload() -> dict:
         collision_paths = {
             (model.repo, model.external): model.model
             for model in discover_runnable_chat_models()
-            if cached_repository_collides(model.repo)
+            if model.alias is None and cached_repository_collides(model.repo)
         }
     models = []
     total_bytes = 0
@@ -10046,7 +10046,7 @@ def _cached_models_json_payload() -> dict:
                     # subfolder must not masquerade as its root artifact.
                     artifact_size = (
                         size
-                        if resolve_subfolder(repo) is None
+                        if resolve_subfolder(alias) is None
                         and _cached_repository_is_runnable(repo)
                         else None
                     )
