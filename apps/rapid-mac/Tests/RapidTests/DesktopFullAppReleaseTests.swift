@@ -34,6 +34,8 @@ struct DesktopFullAppReleaseTests {
             .appendingPathComponent("scripts/build.sh")
         var environment = ProcessInfo.processInfo.environment
         environment["SKIP_SIDECAR"] = "1"
+        environment["RAPID_MLX_OFFICIAL_RELEASE"] = "0"
+        environment["CODESIGN_IDENTITY"] = "-"
         environment.merge(settings) { _, new in new }
         let result = try await TestSubprocess.run(
             executableURL: URL(fileURLWithPath: "/bin/bash"), arguments: [script.path],
