@@ -12,6 +12,7 @@ def load_kimi_processor(model_path):
     )
     from mlx_vlm.tokenizer_utils import NaiveStreamingDetokenizer
     from mlx_vlm.utils import StoppingCriteria
+
     from ..utils.kimi_tokenizer import load_kimi_tokenizer
     from ..utils.tokenizer import (
         _apply_chat_template_sidecar,
@@ -51,6 +52,7 @@ def load_kimi_processor(model_path):
 
 def load_kimi_vlm(model_path, *, adapter_path=None, lazy=False, strict=True, **kwargs):
     from mlx_vlm.utils import apply_lora_layers, load_model
+
     from ..utils.model_file_guard import validate_model_code
 
     path = Path(model_path)

@@ -110,15 +110,16 @@ def test_native_loader_never_accepts_custom_model_file(checkpoint):
 
 @pytest.mark.parametrize("trust", [None, "0"])
 def test_public_multimodal_entry_uses_native_processor(checkpoint, monkeypatch, trust):
+    import mlx_vlm
+    import mlx_vlm.utils
+    from PIL import Image
+
     from rapid_mlx.models import mllm
     from rapid_mlx.patches import (
         glm5_next_forget_gate_quant,
         glm5_next_processor,
         glm5_next_runtime,
     )
-    import mlx_vlm
-    import mlx_vlm.utils
-    from PIL import Image
 
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(
