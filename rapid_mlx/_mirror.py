@@ -543,6 +543,13 @@ def _revision_manifest_info(base: str, repo_id: str, revision: str):
         or not manifest["files"]
     ):
         raise error
+    inventory = manifest.get("file_inventory")
+    if (
+        not isinstance(inventory, list)
+        or not all(isinstance(name, str) for name in inventory)
+        or len(set(inventory)) != len(inventory)
+    ):
+        raise error
     siblings = []
     names = set()
     for entry in manifest["files"]:
@@ -572,6 +579,8 @@ def _revision_manifest_info(base: str, repo_id: str, revision: str):
                 blob_id=oid,
             )
         )
+    if names != set(inventory):
+        raise error
     return SimpleNamespace(sha=revision, siblings=siblings)
 
 

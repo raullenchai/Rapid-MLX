@@ -847,6 +847,7 @@ def _manifest():
     return {
         "repo_id": REPO,
         "revision": PIN,
+        "file_inventory": ["model.safetensors", "config.json"],
         "files": [
             {
                 "path": "model.safetensors",
@@ -905,6 +906,11 @@ def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch)
         lambda m: "invalid",
         lambda m: {**m, "revision": "f" * 40},
         lambda m: {**m, "repo_id": "other/repo"},
+        lambda m: {**m, "file_inventory": None},
+        lambda m: {**m, "file_inventory": [1]},
+        lambda m: {**m, "file_inventory": m["file_inventory"] * 2},
+        lambda m: {**m, "file_inventory": ["config.json"]},
+        lambda m: {**m, "files": m["files"][:1]},
         lambda m: {**m, "files": []},
         lambda m: {**m, "files": {}},
         lambda m: {**m, "files": [None]},
@@ -1050,3 +1056,12 @@ def test_resolvable_revision_accepts_a_single_pattern(tmp_path, monkeypatch):
     assert not hf_calls
     assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
     assert not (_snap(tmp_path) / "model.safetensors").exists()
+
+
+def test_missing_revision_rejects_incomplete_wildcard_inventory(tmp_path, monkeypatch):
+    manifest = _manifest()
+    manifest["file_inventory"].append("model-00002.safetensors")
+    with pytest.raises(RuntimeError, match="no valid exact-revision mirror manifest"):
+        _missing_pin_run(
+            tmp_path, monkeypatch, manifest, allow_patterns="*.safetensors"
+        )

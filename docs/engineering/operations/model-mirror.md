@@ -52,9 +52,12 @@ an unavailable pin still fails closed.
 
 When upstream returns `RevisionNotFoundError` for an immutable pin, the client
 requires `/<owner>/<repo>/.rapid-mlx/revisions/<commit>.json` on the configured
-mirror. The manifest must identify the exact `repo_id` and `revision`, and list
+mirror. The manifest must identify the exact `repo_id` and `revision`, include
+`file_inventory` (the complete list of paths at that revision), and list
 `files`, each with a safe repository-relative `path`, nonnegative integer `size`,
 and either a lowercase `sha256` (file bytes) or `git_oid` (Git blob hash).
+Every inventory path must have exactly one hashed file entry, with no extras or
+duplicates; partial hash manifests are rejected even for wildcard selections.
 The configured mirror is the trust root for this recovery metadata; mutable
 catalog entries and object headers cannot substitute for it. Operators must
 preserve manifests from the original reviewed revision, never reconstruct them
