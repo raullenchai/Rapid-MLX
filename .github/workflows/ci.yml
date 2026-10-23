@@ -616,6 +616,8 @@ jobs:
             tests/test_audio_route_registration_gate.py \
             tests/test_server_dependency_hints.py \
             tests/test_forced_alignment_route_hardening.py \
+            tests/test_sa3_checkpoint_consent.py \
+            tests/test_security_hardening.py \
             tests/test_muse_glimmer_model.py \
             tests/test_g9v3_model.py \
             tests/test_flint_model.py \
