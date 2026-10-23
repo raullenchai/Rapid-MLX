@@ -184,7 +184,8 @@ def test_dim_and_no_color(terminal, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("announced", ["0.9.0", None])
-def test_serve_threads_update_notice(stub_heavy_serve_deps, monkeypatch, announced):  # noqa: F811
+@pytest.mark.usefixtures("stub_heavy_serve_deps", "scheduler_config_stub")
+def test_serve_threads_update_notice(monkeypatch, announced):
     from rapid_mlx import _version_check
 
     monkeypatch.setattr(
