@@ -22,8 +22,9 @@ def test_attention_real_probe(dtype):
 
 @pytest.mark.parametrize("dtype", [mx.float32, mx.float16, mx.bfloat16])
 @pytest.mark.parametrize("fmt", sorted(rope_quant.FORMATS))
-def test_rope_real_probe(dtype, fmt):
-    assert rope_quant._probe((7, 2, 128), dtype, 64, fmt, dtype)
+@pytest.mark.parametrize("sequence", [1, 7, 4096])
+def test_rope_real_probe(dtype, fmt, sequence):
+    assert rope_quant._probe((sequence, 2, 128), dtype, 64, fmt, dtype)
 
 
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])

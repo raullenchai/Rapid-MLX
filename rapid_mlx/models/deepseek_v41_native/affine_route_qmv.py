@@ -151,18 +151,20 @@ def _reference(module, inputs, indices):
     ).squeeze(-2)
 
 
-def _probe(dtype, bits, routes, topk, width, out):
+def _probe(quant_dtype, bits, routes, topk, width, out):
     # Two synthetic experts retain the exact K/OUT/BITS specialization without
     # reading model weights or allocating the full expert bank.
     weights = mx.sin(mx.arange(2 * out * width, dtype=mx.float32)).reshape(
         2, out, width
     )
     weight, scales, biases = mx.quantize(
-        weights.astype(dtype), group_size=64, bits=bits
+        weights.astype(quant_dtype), group_size=64, bits=bits
     )
     module = SimpleNamespace(
         weight=weight, scales=scales, biases=biases, bits=bits, group_size=64
     )
+    # _shape rejects every activation dtype except float32, so this is the
+    # exact T specialization; quant_dtype selects the independent Q template.
     x = mx.cos(mx.arange(routes // topk * width, dtype=mx.float32)).reshape(-1, width)
     indices = (mx.arange(routes, dtype=mx.uint32) % 2).reshape(-1, topk)
     actual = _fused(module, x, indices)

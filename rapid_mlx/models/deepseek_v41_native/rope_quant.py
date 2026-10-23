@@ -211,6 +211,9 @@ def _fused(x, rd, cos, sin, fmt, out_dtype, *, sequence=None):
 
 def _probe(shape, dtype, rd, fmt, out_dtype):
     # Concrete arrays, independent of request values and compiled placeholders.
+    # The launch grid is x.size, NOT S * H * D. With one batch and at most
+    # two rows, e < rows*H*D and s=(e/(D*H))%S < rows; all x/out/cos/sin
+    # accesses remain in bounds even when the compiled S is much larger.
     sequence = shape[0]
     shape = (min(sequence, 2), *shape[1:])
     x = mx.sin(mx.arange(prod(shape), dtype=mx.float32))
