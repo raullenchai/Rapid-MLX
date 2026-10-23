@@ -447,6 +447,8 @@ ci-linux = [
 # on top of `[vision]`. Same test-infra floors as `[ci-linux]`; the lane's MLX
 # runtime comes from `[vision]` + core deps.
 ci-apple = [
+    # Exercise speech adapter contracts against the supported audio runtime.
+    "mlx-audio>=0.5.3,<0.6",
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
     "pytest-asyncio>=0.21.0",
