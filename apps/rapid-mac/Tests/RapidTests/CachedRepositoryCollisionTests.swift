@@ -8,8 +8,12 @@ struct CachedRepositoryCollisionTests {
     func collision() throws {
         for external in [false, true] {
             let path = "/models/local-chat-1b"
+            let managedRow = external ? """
+            {"alias":null,"repo":"local-chat-1b","subfolder":null,"size_bytes":1024,
+            "external":false,"state":"unmapped","launch_path":null},
+            """ : ""
             let payload = """
-            {"cached":[{"alias":null,"repo":"local-chat-1b","subfolder":null,
+            {"cached":[\(managedRow){"alias":null,"repo":"local-chat-1b","subfolder":null,
             "size_bytes":1024,"external":\(external),
             "state":"\(external ? "external" : "unmapped")","launch_path":"\(path)"}]}
             """
@@ -47,6 +51,27 @@ struct CachedRepositoryCollisionTests {
                     catalog: entries, hardware: hardware, bucketedDefault: original.alias
                 ) == path)
             }
+        }
+    }
+
+    @Test("Complete non-chat collisions remain inventory-only without a certified path")
+    func uncertifiedCollision() throws {
+        let payload = """
+        {"cached":[{"alias":null,"repo":"local-chat","subfolder":null,
+        "size_bytes":1024,"external":false,"state":"unmapped","launch_path":null}]}
+        """
+        let cached = try #require(ModelCatalog.parseCachedJSON(payload))
+        let original = ModelEntry(alias: "local-chat", hfRepo: "org/Unrelated", sizeOnDisk: nil, cached: false)
+        let variants = [
+            ModelCatalog.mergeAtomicAndCached(atomic: [original], cached: cached, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(
+                available: [(original.alias, original.hfRepo)], cached: cached, excluded: []
+            ),
+        ]
+        for entries in variants {
+            #expect(entries.count == 1)
+            #expect(entries.first?.hfRepo == "org/Unrelated")
+            #expect(entries.first?.cached == false)
         }
     }
 

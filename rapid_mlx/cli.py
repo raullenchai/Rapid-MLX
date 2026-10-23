@@ -9984,6 +9984,7 @@ def _cached_subfolder_size(
 def _cached_models_json_payload() -> dict:
     """Structured form of the ``models --cached`` view — the same rows the
     text table renders, with stable keys instead of fixed-width columns.
+    Also retain certified external collision fallbacks with explicit paths.
 
     Sizes are raw bytes; ``subfolder`` is the exact catalog checkpoint folder
     for mapped aliases (``None`` means repository root); ``state`` is one of
@@ -10005,7 +10006,6 @@ def _cached_models_json_payload() -> dict:
     runnable_hub_repos = {
         repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
     }
-    external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
 
     profiles = list_profiles()
     repo_artifacts: dict[str, list[tuple[str, str | None]]] = {}
@@ -10027,6 +10027,16 @@ def _cached_models_json_payload() -> dict:
             for model in discover_runnable_chat_models()
             if model.alias is None and cached_repository_collides(model.repo)
         }
+    # Completeness is an inventory property, not chat certification. A
+    # rejected managed collision must not hide a certified external copy:
+    # its explicit path can launch independently of the managed snapshot.
+    tagged = [
+        row
+        for row in tagged
+        if not row[3]
+        or row[0] not in runnable_hub_repos
+        or (row[0], True) in collision_paths
+    ]
     models = []
     total_bytes = 0
     for repo, size, mtime, is_external in tagged:

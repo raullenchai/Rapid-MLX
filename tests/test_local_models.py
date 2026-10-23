@@ -790,7 +790,41 @@ def test_collision_without_chat_evidence_is_not_offered(cache, monkeypatch):
     monkeypatch.setattr(ma, "list_profiles", lambda: {"local-chat": profile})
     snapshot(cache, "local-chat", template=False)
     assert lm.discover_runnable_chat_models() == []
-    assert cli._cached_models_json_payload()["cached"][0]["launch_path"] is None
+    row = cli._cached_models_json_payload()["cached"][0]
+    # Inventory completeness is not a chat verdict. Keep complete non-chat
+    # artifacts visible, but do not issue a selectable collision identity.
+    assert row["state"] == "unmapped"
+    assert row["alias"] is None
+    assert row["launch_path"] is None
+
+
+@pytest.mark.parametrize("hub_chat", [False, True])
+def test_collision_keeps_certified_external_fallback(
+    cache, tmp_path, monkeypatch, hub_chat
+):
+    repo = "local-chat"
+    profile = ma.AliasProfile(hf_path="org/Unrelated")
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == repo else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {repo: profile})
+    managed = snapshot(cache, repo, template=hub_chat)
+    root = tmp_path / "external"
+    external = write_model(root / repo)
+    monkeypatch.setattr(ma, "external_model_root_paths", lambda: [str(root)])
+    found = lm.discover_runnable_chat_models()
+    assert [m.model for m in found] == [str(managed if hub_chat else external)]
+    rows = cli._cached_models_json_payload()["cached"]
+    hub_row = next(row for row in rows if not row["external"])
+    assert hub_row["state"] == "unmapped"
+    assert hub_row["launch_path"] == (str(managed) if hub_chat else None)
+    if hub_chat:
+        assert len(rows) == 1
+    else:
+        assert len(rows) == 2
+        external_row = next(row for row in rows if row["external"])
+        assert external_row["state"] == "external"
+        assert external_row["launch_path"] == str(external)
 
 
 def test_repository_spelling_preserves_exact_catalog_profile(monkeypatch):
