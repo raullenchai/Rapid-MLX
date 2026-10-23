@@ -2446,3 +2446,100 @@ def test_config_endpoint_uses_effective_port(
     field = "baseUrl" if client == "cline" else "apiBase"
     assert f"{field}: {expected}/v1" in output.replace('"', "")
     assert f"--port {port or 8000}" in output
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+@pytest.mark.parametrize("endpoint", [False, True])
+def test_repeat_config_preserves_saved_model(fake_home, monkeypatch, client, endpoint):
+    monkeypatch.setenv("HOME", str(fake_home))
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    path.parent.mkdir(parents=True)
+    monkeypatch.setattr(launch_cli, "_resolve_default_model", lambda: "qwen3.5-4b-4bit")
+    options = {"server_url": "http://127.0.0.1:18409", "port": 18409}
+    launch_cli.launch_command(
+        _make_args(client=client, model="qwen3.5-4b-8bit", **options)
+    )
+    if client == "cline":
+        data = cline.load_providers(path)
+        data["modes"] = {"user-setting": "keep"}
+        path.write_text(json.dumps(data))
+    else:
+        data = continue_dev.load_yaml_config(path)
+        data["rules"] = ["Keep my rules"]
+        path.write_text(continue_dev.dump_yaml(data))
+    launch_cli.launch_command(
+        _make_args(client=client, **(options if endpoint else {}))
+    )
+    assert adapter.saved_model() == "qwen3.5-4b-8bit"
+    if client == "cline":
+        assert cline.load_providers(path)["modes"] == data["modes"]
+    else:
+        assert continue_dev.load_yaml_config(path)["rules"] == data["rules"]
+    before = path.read_bytes()
+    launch_cli.launch_command(_make_args(client=client, dry_run=True))
+    assert path.read_bytes() == before
+    launch_cli.launch_command(
+        _make_args(client=client, model="qwen3.5-4b-4bit", **options)
+    )
+    assert adapter.saved_model() == "qwen3.5-4b-4bit"
+
+
+@pytest.mark.parametrize("tier_overrides", [False, True])
+def test_repeat_gateway_preserves_tiers(fake_home, monkeypatch, tier_overrides):
+    from rapid_mlx.agents import isolated
+    from rapid_mlx.launch import claude_desktop
+    from rapid_mlx.run import cli as run_cli
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(isolated, "connection_status", lambda *_: "stopped")
+    monkeypatch.setattr(run_cli, "_select_model", lambda **_: "recommended-model")
+    overrides = (
+        {"opus_model": "opus-choice", "haiku_model": "haiku-choice"}
+        if tier_overrides
+        else {}
+    )
+    launch_cli.launch_command(
+        _make_args(
+            client="claude-desktop", model="qwen3.5-4b-8bit", port=18412, **overrides
+        )
+    )
+    saved = claude_desktop.mappings()
+    assert saved["sonnet"] == "qwen3.5-4b-8bit"
+    launch_cli.launch_command(_make_args(client="claude-desktop"))
+    assert claude_desktop.mappings() == saved
+    launch_cli.launch_command(
+        _make_args(client="claude-desktop", sonnet_model="new-sonnet")
+    )
+    assert claude_desktop.mappings() == {**saved, "sonnet": "new-sonnet"}
+    launch_cli.launch_command(
+        _make_args(client="claude-desktop", model="explicit-replacement")
+    )
+    assert set(claude_desktop.mappings().values()) == {"explicit-replacement"}
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+def test_saved_config_model_missing_invalid_and_first_launch(
+    fake_home, monkeypatch, client
+):
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    path.parent.mkdir(parents=True)
+    assert adapter.saved_model() is None
+    monkeypatch.setattr(launch_cli, "_resolve_default_model", lambda: "default-model")
+    launch_cli.launch_command(_make_args(client=client))
+    assert adapter.saved_model() == "default-model"
+    path.write_text("[")
+    with pytest.raises(SystemExit) as exc:
+        launch_cli.launch_command(_make_args(client=client))
+    assert exc.value.code == 1
+    assert path.read_text() == "["
+
+
+def test_continue_saved_model_from_legacy_config(fake_home):
+    path = continue_dev.legacy_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"models": [{"title": "rapid-mlx", "model": "saved-model"}]})
+    )
+    assert continue_dev.saved_model() == "saved-model"

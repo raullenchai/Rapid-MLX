@@ -119,6 +119,19 @@ def load_legacy_config(path: Path) -> dict[str, Any]:
     return value
 
 
+def saved_model() -> str | None:
+    """Read the same named entry that a repeat configuration updates."""
+    path = current_config_path()
+    data = load_yaml_config(path)
+    if not path.exists():
+        data = convert_legacy_config(load_legacy_config(legacy_config_path(path)))
+    for entry in data.get("models") or []:
+        if isinstance(entry, dict) and entry.get("name") == _MODEL_ENTRY_NAME:
+            model = entry.get("model")
+            return model if isinstance(model, str) and model.strip() else None
+    return None
+
+
 def dump_yaml(data: dict[str, Any]) -> str:
     import yaml
 

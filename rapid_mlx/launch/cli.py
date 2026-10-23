@@ -237,8 +237,14 @@ def launch_command(args: argparse.Namespace) -> None:
             claude_desktop.mapping_path().unlink(missing_ok=True)
             print("Claude Desktop tier mapping disabled in Rapid-MLX.")
             return
-        model = getattr(args, "_original_alias", None) or _select_model(
-            explicit=args.model, profile=get_profile("claude-code"), no_download=False
+        explicit = getattr(args, "_original_alias", None) or args.model
+        saved = claude_desktop.mappings() if not explicit else {}
+        model = (
+            explicit
+            or saved.get("sonnet")
+            or _select_model(
+                explicit=None, profile=get_profile("claude-code"), no_download=False
+            )
         )
         if model is None:
             print(
@@ -248,9 +254,9 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         url, gateway_key = claude_desktop.configure(
             model,
-            opus=getattr(args, "opus_model", None),
-            sonnet=getattr(args, "sonnet_model", None),
-            haiku=getattr(args, "haiku_model", None),
+            opus=getattr(args, "opus_model", None) or saved.get("opus"),
+            sonnet=getattr(args, "sonnet_model", None) or saved.get("sonnet"),
+            haiku=getattr(args, "haiku_model", None) or saved.get("haiku"),
             port=args.port,
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")
@@ -640,7 +646,14 @@ def launch_command(args: argparse.Namespace) -> None:
     # request-side resolution accepts both), so we restore it here.
     # Same pattern as ``share_command`` in ``rapid_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
-    model = original_alias or args.model or _resolve_default_model()
+    saved = None
+    if not (original_alias or args.model) and args.client in ("cline", "continue-dev"):
+        try:
+            saved = ADAPTERS[args.client].saved_model()
+        except (OSError, ValueError):
+            # The normal preview/write path reports invalid configuration.
+            pass
+    model = original_alias or args.model or saved or _resolve_default_model()
     effective_cursor_url = cursor_server_url or server_url
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
