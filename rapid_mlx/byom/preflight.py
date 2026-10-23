@@ -367,7 +367,7 @@ def _fetch_hub_config(repo_id: str, revision: str | None) -> dict[str, Any] | No
     import json
     import shutil
 
-    from huggingface_hub import hf_hub_download
+    from rapid_mlx.model_downloads import hf_hub_download
 
     def _fetch() -> Any:
         # The worker owns its temp dir end to end: on a deadline the caller

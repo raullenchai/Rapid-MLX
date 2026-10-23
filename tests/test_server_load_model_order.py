@@ -65,6 +65,15 @@ def _reset_cfg_around_each_test():
     reset_config()
 
 
+@pytest.fixture
+def _stub_checkpoint_resolution(monkeypatch):
+    # These ordering tests use a stub engine and a catalog ID only as a label.
+    # Pinning that catalog must not turn the fixture into a model download.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
+
+
 def test_load_model_rejects_context_override_above_native(monkeypatch):
     from types import SimpleNamespace
 
@@ -84,6 +93,7 @@ def test_load_model_rejects_context_override_above_native(monkeypatch):
         server.load_model("publisher/limited-model")
 
 
+@pytest.mark.usefixtures("_stub_checkpoint_resolution")
 def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypatch):
     """After load_model() returns, the engine MUST reflect the parser's
     native-format support. Pre-fix this asserted False because cfg was
@@ -131,6 +141,7 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
 
 
 @pytest.mark.parametrize("served,expected", [("studio-assistant", True), (None, False)])
+@pytest.mark.usefixtures("_stub_checkpoint_resolution")
 def test_load_model_tracks_explicit_served_model_name(monkeypatch, served, expected):
     """Issue #2353: ``load_model(..., served_model_name=...)`` must set the
     flag the readiness banner consumes, and leave it clear when no override
@@ -418,7 +429,7 @@ def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
         lambda _repo: SimpleNamespace(sha="abc123"),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/cache/snapshot",
     )
 
@@ -450,7 +461,7 @@ def test_routing_metadata_prefetch_preserves_external_local_model(
         "rapid_mlx.model_aliases.resolve_model", lambda _name: str(external)
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("local external model must not reach the Hub")
         ),
@@ -481,7 +492,7 @@ def test_routing_metadata_download_defers_to_configured_mirror(monkeypatch):
         "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("CDN blocked")),
     )
 
@@ -524,7 +535,7 @@ def test_routing_metadata_download_failure_raises_without_mirror(monkeypatch):
         "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("CDN blocked")),
     )
 
@@ -991,6 +1002,7 @@ def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
         server._ensure_routing_config("some/uncached-4bit")
 
 
+@pytest.mark.usefixtures("_stub_checkpoint_resolution")
 def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     from rapid_mlx import server
     from rapid_mlx.config import get_config, reset_config
@@ -1035,6 +1047,7 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     assert cfg.default_max_tokens_is_explicit is False
 
 
+@pytest.mark.usefixtures("_stub_checkpoint_resolution")
 def test_load_model_mtp_kwarg_translates_to_scheduler_config(
     monkeypatch, scheduler_config_stub
 ):
@@ -1115,6 +1128,7 @@ def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config(
         )
 
 
+@pytest.mark.usefixtures("_stub_checkpoint_resolution")
 def test_load_model_response_cache_reconfigure_failure_forces_disabled(monkeypatch):
     """If ``configure_response_cache`` raises during ``load_model``, the
     fail-safe must NOT leave the PREVIOUS cache live under the NEW model
@@ -1396,3 +1410,18 @@ async def test_init_mcp_syncs_config_into_cfg(monkeypatch):
     cfg = get_config()
     assert cfg.mcp_manager is mock_manager
     assert cfg.mcp_executor is mock_executor
+
+
+def test_routing_integrity_failure_never_falls_back_to_mirror(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx import server
+    from rapid_mlx.model_integrity import ModelIntegrityError
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
+    monkeypatch.setattr("huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="a" * 40))
+    def corrupt(*args, **kwargs):
+        raise ModelIntegrityError("content hash mismatch")
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", corrupt)
+    with pytest.raises(ModelIntegrityError, match="content hash mismatch"):
+        server._prefetch_routing_metadata("publisher/model")

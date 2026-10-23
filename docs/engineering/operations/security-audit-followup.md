@@ -1,5 +1,11 @@
 # Catalog and media trust follow-up
 
+This records the intermediate audit checkpoint, not the final branch state.
+The subsequent [18-finding disposition](supply-chain-audit-2026-10-22.md)
+adds the complete catalog revision migration, download integrity, legacy tensor
+compatibility, and required provenance checks. The historical unpinned counts
+and deferred migration below describe that intermediate checkpoint only.
+
 Owner: Atlas; Vector owns loading/media, Harbor owns catalog review automation.
 Branch: `atlas/security-audit`. Follow-up baseline: `4d309dff3`.
 

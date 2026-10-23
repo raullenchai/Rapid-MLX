@@ -474,7 +474,7 @@ def _run_worker(*argv: str) -> None:
 
 
 def _download_source(plan: Plan) -> str:
-    from huggingface_hub import snapshot_download
+    from rapid_mlx.model_downloads import snapshot_download
 
     path: str = snapshot_download(
         plan.source, revision=plan.revision, allow_patterns=_SOURCE_PATTERNS

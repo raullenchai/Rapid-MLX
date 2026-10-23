@@ -336,7 +336,6 @@ def test_call_with_deadline_uses_the_shared_helper(monkeypatch):
 
 def test_fetch_hub_config(monkeypatch):
     _no_deadline(monkeypatch)
-    import huggingface_hub
 
     seen = {}
 
@@ -346,7 +345,7 @@ def test_fetch_hub_config(monkeypatch):
         path.write_text(json.dumps({"model_type": "x"}))
         return str(path)
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _download)
     assert pf._fetch_hub_config("o/r", "sha1") == {"model_type": "x"}
     assert seen == {"repo": "o/r", "filename": "config.json", "revision": "sha1"}
     # The worker removes its own temp dir (a timed-out caller must not).
@@ -356,7 +355,7 @@ def test_fetch_hub_config(monkeypatch):
         dirs.append(local_dir)
         return _download(repo, filename, revision=revision, local_dir=local_dir)
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _tracking)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _tracking)
     pf._fetch_hub_config("o/r", None)
     assert dirs and not Path(dirs[0]).exists()
 
@@ -365,13 +364,13 @@ def test_fetch_hub_config(monkeypatch):
         path.write_text("[1]")
         return str(path)
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _list_download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _list_download)
     assert pf._fetch_hub_config("o/r", None) is None
 
     def _fail(*a, **kw):
         raise OSError("offline")
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fail)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _fail)
     assert pf._fetch_hub_config("o/r", None) is None
 
 

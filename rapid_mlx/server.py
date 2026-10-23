@@ -1996,7 +1996,7 @@ def _prefetch_routing_metadata(model_name: str) -> str:
     if os.path.exists(model_name):
         return model_name
 
-    from huggingface_hub import model_info, snapshot_download
+    from huggingface_hub import model_info
 
     from ._download_gate import (
         _HF_RESOLVE_TIMEOUT_SECONDS,
@@ -2006,6 +2006,8 @@ def _prefetch_routing_metadata(model_name: str) -> str:
         pulled_variant,
     )
     from .model_aliases import resolve_model, resolve_revision, resolve_subfolder
+    from .model_downloads import snapshot_download
+    from .model_integrity import ModelIntegrityError
 
     repo_id = resolve_model(model_name)
     catalog_revision = resolve_revision(model_name)
@@ -2068,6 +2070,8 @@ def _prefetch_routing_metadata(model_name: str) -> str:
                 f"{prefix}model.safetensors.index.json",
             ],
         )
+    except ModelIntegrityError:
+        raise
     except Exception as exc:  # noqa: BLE001 - mirror owns recovery, as above
         if os.environ.get(
             "RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com"

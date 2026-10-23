@@ -369,7 +369,6 @@ def test_run_worker_success_and_failure(monkeypatch):
 
 
 def test_download_source_fetches_only_loadable_files(monkeypatch):
-    import huggingface_hub
 
     seen = {}
 
@@ -377,7 +376,7 @@ def test_download_source_fetches_only_loadable_files(monkeypatch):
         seen.update(repo=repo, revision=revision, allow=allow_patterns)
         return "/snap"
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snap)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", _snap)
     assert im._download_source(_plan()) == "/snap"
     assert seen["repo"] == "o/My-FT-bf16" and seen["revision"] == "sha1"
     assert "model*.safetensors" in seen["allow"]

@@ -1516,7 +1516,7 @@ def test_definitive_download_not_found_fails_resolve_with_next_steps(
         ),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             RepositoryNotFoundError("private", response=_hub_response(404))
         ),
@@ -1549,7 +1549,7 @@ def test_gated_download_fails_fast_instead_of_printing_retry(monkeypatch, capsys
         lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             HfHubHTTPError("private", response=_hub_response(403))
         ),
@@ -1578,7 +1578,7 @@ def test_gated_metadata_fails_fast_before_download(monkeypatch, capsys):
     )
     downloaded = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: downloaded.append(True),
     )
 
@@ -1602,7 +1602,7 @@ def test_offline_metadata_warns_and_continues_to_download(monkeypatch, capsys):
     )
     downloaded = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: downloaded.append(True) or "/tmp/fake",
     )
 
@@ -1621,7 +1621,7 @@ def test_offline_download_keeps_retry_path_with_next_steps(monkeypatch, capsys):
         lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             requests.ConnectionError("private endpoint")
         ),
@@ -1643,7 +1643,7 @@ def test_url_error_download_keeps_retry_path_with_next_steps(monkeypatch, capsys
         lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             urllib.error.URLError("private endpoint")
         ),
@@ -1669,7 +1669,7 @@ def test_metadata_and_download_network_failure_prints_guidance_once(
         ),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             requests.ConnectionError("download private")
         ),
@@ -1691,7 +1691,7 @@ def test_network_guidance_is_once_per_process(monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             requests.ConnectionError("download secret")
         ),
@@ -1712,7 +1712,7 @@ def test_response_less_download_error_keeps_legacy_retry(monkeypatch, capsys):
         lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(_response_less_hf_error()),
     )
 
@@ -1730,7 +1730,7 @@ def test_unknown_download_error_keeps_legacy_message(monkeypatch, capsys):
         lambda _func, _timeout, *_a, **_kw: SimpleNamespace(sha="abc", siblings=[]),
     )
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("legacy detail")),
     )
 
