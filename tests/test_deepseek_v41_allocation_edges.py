@@ -751,3 +751,105 @@ def test_never_routed_detection_does_not_sum_large_counts():
     assert counts.sum(axis=(0, 1))[0, 3] == 0
     result = contrastive(r, counts, names, roles)
     assert not result["never_routed"][0, 3]
+
+
+@pytest.mark.parametrize("fraction", [np.nan, np.inf, -np.inf])
+def test_layer_prune_fraction_already_rejects_nonfinite_values(fraction):
+    costs = np.broadcast_to([0, 30, 42, 54], (1, 6, 4))
+    q = np.broadcast_to([1.0, 0.3, 0.1, 0.01], costs.shape)
+    with pytest.raises(ValueError, match="invalid layer RD inputs"):
+        layer.layer_allocate(
+            selection(), q, costs, 0, 1000, max_prune_fraction=fraction, topk=1
+        )
+
+
+@pytest.mark.parametrize(
+    "artifact,key",
+    [
+        ("score", "model_revision"),
+        ("score", "slice_names"),
+        ("score", "routing_topk"),
+        ("error", "group_size"),
+        ("error", "bits_order"),
+        ("error", "config_sha256"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["missing", "wrong_type"])
+def test_allocator_metadata_errors_are_actionable(cli_inputs, artifact, key, mode):
+    score, error, _, _, write = cli_inputs
+    data = score if artifact == "score" else error
+    meta = json.loads(data["metadata"])
+    if mode == "missing":
+        del meta[key]
+    else:
+        meta[key] = None
+    data["metadata"] = json.dumps(meta)
+    write()
+    with pytest.raises(ValueError, match=f"{artifact} metadata.*{key}"):
+        alloc.main()
+
+
+@pytest.mark.parametrize(
+    "artifact,value",
+    [
+        ("score", None),
+        ("error", []),
+        ("score", {"model_revision": "r", "routing_topk": 1, "slice_names": [1]}),
+        (
+            "score",
+            {"model_revision": "r", "routing_topk": 1, "slice_names": ["a", "a"]},
+        ),
+        (
+            "error",
+            {
+                "model_revision": "r",
+                "config_sha256": "c",
+                "group_size": 64,
+                "bits_order": ["0"],
+            },
+        ),
+    ],
+)
+def test_allocator_rejects_invalid_metadata_schema(cli_inputs, artifact, value):
+    score, error, _, _, write = cli_inputs
+    (score if artifact == "score" else error)["metadata"] = json.dumps(value)
+    write()
+    with pytest.raises(ValueError, match="metadata"):
+        alloc.main()
+
+
+@pytest.mark.parametrize(
+    "artifact,key", [("score", "split_keep_overlap"), ("error", "completed")]
+)
+def test_allocator_reports_missing_arrays(cli_inputs, artifact, key):
+    score, error, _, _, write = cli_inputs
+    del (score if artifact == "score" else error)[key]
+    write()
+    with pytest.raises(ValueError, match=f"{artifact} artifact missing arrays"):
+        alloc.main()
+
+
+@pytest.mark.parametrize(
+    "key,value", [("group_size", 128), ("bits_order", [0, 1, 3, 4])]
+)
+def test_allocator_rejects_well_typed_wrong_quantization_metadata(
+    cli_inputs, key, value
+):
+    _, error, _, _, write = cli_inputs
+    meta = json.loads(error["metadata"])
+    meta[key] = value
+    error["metadata"] = json.dumps(meta)
+    write()
+    with pytest.raises(ValueError, match="quantization error format"):
+        alloc.main()
+
+
+def test_layer_cli_requires_source_and_roles_after_schema_validation(cli_inputs):
+    score, _, _, argv, write = cli_inputs
+    argv[argv.index("--granularity") + 1] = "layer"
+    argv.extend(["--max-prune-fraction", "0.1"])
+    score["reap_halves"] = np.ones((1, 2, 1, 2))
+    score["counts_halves_by_slice"] = np.ones((1, 2, 1, 2), int)
+    write()
+    with pytest.raises(ValueError, match="needs --score reap"):
+        alloc.main()

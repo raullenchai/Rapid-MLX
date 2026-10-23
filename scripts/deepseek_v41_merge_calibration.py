@@ -128,6 +128,15 @@ def save_scores(path, reap, norms, squared, counts, metadata, keep, tokens):
 def _read_pass(path):
     with np.load(path, allow_pickle=False) as data:
         metadata = json.loads(str(data["metadata"]))
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{path}: metadata must be an object")
+        corpus = metadata.get("corpus")
+        if corpus is None:
+            metadata["corpus"] = {}
+        elif not isinstance(corpus, dict) or any(
+            not isinstance(records, list) for records in corpus.values()
+        ):
+            raise ValueError(f"{path}: corpus must map slice names to lists")
         for key in COMPATIBILITY_FIELDS:
             if key not in metadata:
                 raise ValueError(f"{path}: missing metadata {key}")

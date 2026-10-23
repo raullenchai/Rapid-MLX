@@ -429,3 +429,23 @@ def test_score_writer_rejects_unsafe_count_evidence(tmp_path, kind):
     with pytest.raises(ValueError, match="int64-safe total"):
         write_pass(tmp_path / "invalid.npz", (values, values, values, counts))
     assert not (tmp_path / "invalid.npz").exists()
+
+
+@pytest.mark.parametrize("corpus", [None, [], "wrong", {"hot": "wrong"}])
+def test_merge_validates_optional_corpus(tmp_path, corpus):
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    rewrite(a, meta_update={"corpus": corpus})
+    if corpus is None:
+        merge_calibration([a, b], tmp_path / "out.npz")
+    else:
+        with pytest.raises(ValueError, match="corpus must map"):
+            merge_calibration([a, b], tmp_path / "out.npz")
+
+
+def test_merge_rejects_nonobject_metadata(tmp_path):
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    rewrite(a, arrays_update={"metadata": np.array("null")})
+    with pytest.raises(ValueError, match="metadata must be an object"):
+        merge_calibration([a, b], tmp_path / "out.npz")

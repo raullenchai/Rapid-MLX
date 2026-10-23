@@ -102,6 +102,40 @@ def publish_allocations(outputs):
         raise
 
 
+def validate_artifact_metadata(scores, errors):
+    for label, metadata, fields in (
+        (
+            "score",
+            scores,
+            {"model_revision": str, "routing_topk": int, "slice_names": list},
+        ),
+        (
+            "error",
+            errors,
+            {
+                "model_revision": str,
+                "config_sha256": str,
+                "group_size": int,
+                "bits_order": list,
+            },
+        ),
+    ):
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{label} metadata must be an object")
+        for name, expected in fields.items():
+            if type(metadata.get(name)) is not expected or not metadata[name]:
+                raise ValueError(
+                    f"{label} metadata requires a nonempty {expected.__name__} field: {name}"
+                )
+    names = scores["slice_names"]
+    if any(not isinstance(name, str) or not name for name in names) or len(
+        set(names)
+    ) != len(names):
+        raise ValueError("score metadata slice_names must be unique nonempty strings")
+    if any(type(bit) is not int for bit in errors["bits_order"]):
+        raise ValueError("error metadata bits_order must contain integers")
+
+
 def verify_source_identity(source, config_hash, error_metadata):
     if file_hash(source / "config.json") != config_hash:
         raise ValueError("source checkpoint config identity does not match")
@@ -380,10 +414,27 @@ def main():
         np.load(a.scores, allow_pickle=False) as scores,
         np.load(a.errors, allow_pickle=False) as errors,
     ):
+        required_scores = {"metadata", "split_keep_overlap"}
+        required_scores.update(
+            {"robust_" + a.score}
+            if a.granularity == "legacy-expert"
+            else {"reap_halves", "counts_halves_by_slice"}
+        )
+        required_errors = {"metadata", "completed", "q", "expert_weight_bytes"}
+        if a.granularity == "projection":
+            required_errors.add("projection_q")
+        for label, artifact, required in (
+            ("score", scores, required_scores),
+            ("error", errors, required_errors),
+        ):
+            missing = required - set(artifact.files)
+            if missing:
+                raise ValueError(f"{label} artifact missing arrays: {sorted(missing)}")
         sm, qm = (
             json.loads(str(scores["metadata"])),
             json.loads(str(errors["metadata"])),
         )
+        validate_artifact_metadata(sm, qm)
         overlaps = scores["split_keep_overlap"]
         if (
             overlaps.shape != (len(sm["slice_names"]), 3)

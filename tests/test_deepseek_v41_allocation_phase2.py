@@ -48,7 +48,9 @@ def test_contrastive_needs_reference_routes_for_a_ratio():
     r, counts, names, roles = slices()
     counts = counts.copy()
     counts[3, :, 0, 1] = 0  # the matched reference never routes expert 1
-    assert not contrastive(r, counts, names, roles)["candidate"][0, 1]
+    result = contrastive(r, counts, names, roles)
+    assert not result["candidate"][0, 1]
+    assert result["cold_specificity"][0, 1] == 0
 
 
 def test_contrastive_requires_same_cold_topic_stable_in_both_halves():

@@ -82,7 +82,7 @@ def contrastive(
         "protected": protected | never,
         "never_routed": never,
         "hot_score": hot_score,
-        "cold_specificity": ratios.min(axis=1).max(axis=0),
+        "cold_specificity": np.where(enough, ratios, 0).min(axis=1).max(axis=0),
         "sensitivity": r[ids["hot"]].sum(axis=1).max(axis=0),
         "candidate_count_by_layer": candidate.sum(axis=-1).tolist(),
     }
