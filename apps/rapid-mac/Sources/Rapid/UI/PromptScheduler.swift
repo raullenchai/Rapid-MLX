@@ -57,6 +57,7 @@ final class PromptScheduler {
     @ObservationIgnored private var activationMonitor: Any?
     @ObservationIgnored private var presentationActive: Bool
     @ObservationIgnored private let requiresVisibleWindow: Bool
+    @ObservationIgnored private let windowVisible: () -> Bool
     @ObservationIgnored private var shownThisLaunch = false
 
     init(
@@ -64,6 +65,7 @@ final class PromptScheduler {
         now: @escaping () -> Date = Date.init,
         quietWindow: Duration = PromptScheduler.quietWindow,
         presentationActive: Bool = false,
+        windowVisible: @escaping () -> Bool = { NSApp.isActive && NSApp.mainWindow?.isVisible == true },
         starExecutor: @escaping @Sendable (URL) async throws -> Void = { url in
             try await GitHubStarCLI.star(url)
         },
@@ -73,11 +75,17 @@ final class PromptScheduler {
     ) {
         self.defaults = defaults
         self.effectiveUse = EffectiveUse(defaults: defaults, now: now)
+        if defaults.object(forKey: PromoKeys.lastShown) == nil,
+           let legacyDeferral = defaults.object(forKey: Keys.deferredUntil) as? Date {
+            defaults.set(legacyDeferral.addingTimeInterval(-Self.deferralInterval),
+                         forKey: PromoKeys.lastShown)
+        }
         self.now = now
         self.quietWindow = quietWindow
         self.starExecutor = starExecutor
         self.presentationActive = presentationActive
         self.requiresVisibleWindow = !presentationActive
+        self.windowVisible = windowVisible
         self.waitForQuietWindow = waitForQuietWindow
     }
 
@@ -250,7 +258,7 @@ final class PromptScheduler {
               !newsletterPresented,
               !shownThisLaunch,
               presentationActive,
-              (!requiresVisibleWindow || (NSApp.isActive && NSApp.mainWindow?.isVisible == true)),
+              (!requiresVisibleWindow || windowVisible()),
               !context.isBusy,
               !context.hasBlockingSurface else { return }
         if let lastShown = defaults.object(forKey: PromoKeys.lastShown) as? Date,

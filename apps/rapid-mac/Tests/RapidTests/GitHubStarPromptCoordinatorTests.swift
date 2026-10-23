@@ -21,13 +21,13 @@ struct PromptSchedulerTests {
 
         prompt.productValueDelivered(.generatedImage)
         #expect(prompt.isPresented)
-        #expect(defaults.integer(forKey: PromptScheduler.Keys.totalSuccessfulActions) == 9)
+        #expect(defaults.integer(forKey: EffectiveUse.Keys.total) == 10)
     }
 
     @Test("Busy work and competing surfaces preserve the invitation until quiet")
     func waitsForCalmWorkspace() {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
@@ -54,7 +54,7 @@ struct PromptSchedulerTests {
     func exponentialDeferral() {
         var currentDate = Date(timeIntervalSince1970: 1_800_000_000)
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             now: { currentDate },
@@ -85,7 +85,7 @@ struct PromptSchedulerTests {
     @Test("Opening GitHub completes the invitation without account probing")
     func completionIsDurable() {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
@@ -99,13 +99,13 @@ struct PromptSchedulerTests {
 
         for _ in 0..<500 { prompt.productValueDelivered(.generatedImage) }
         #expect(!prompt.isPresented)
-        #expect(defaults.integer(forKey: PromptScheduler.Keys.totalSuccessfulActions) == 9)
+        #expect(defaults.integer(forKey: EffectiveUse.Keys.total) == 510)
     }
 
     @Test("A successful gh CLI star completes the invitation without a browser handoff")
     func directStarCompletesLocally() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let recorder = DirectStarRecorder()
         let prompt = PromptScheduler(
             defaults: defaults,
@@ -129,7 +129,7 @@ struct PromptSchedulerTests {
     @Test("A failed direct star preserves the browser invitation")
     func directStarFailureFallsBackLater() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
@@ -152,7 +152,7 @@ struct PromptSchedulerTests {
     @Test("A direct star finishing after deferral does not override cadence")
     func deferredDirectStarDoesNotCompleteInvitation() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let promptReference = PromptReference()
         let prompt = PromptScheduler(
             defaults: defaults,
@@ -176,7 +176,7 @@ struct PromptSchedulerTests {
     @Test("A successful direct star completes after transient hiding")
     func transientlyHiddenDirectStarCompletesLocally() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let promptReference = PromptReference()
         let prompt = PromptScheduler(
             defaults: defaults,
@@ -334,7 +334,7 @@ struct PromptSchedulerTests {
     @Test("A second direct star cannot start while the first is in flight")
     func directStarReentryIsRejected() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let gate = DirectStarGate()
         let prompt = PromptScheduler(
             defaults: defaults,
@@ -360,7 +360,7 @@ struct PromptSchedulerTests {
     @Test("Cancelling a direct star does not trigger browser fallback")
     func directStarCancellationIsDistinctFromFailure() async {
         let defaults = isolatedDefaults()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
@@ -381,7 +381,7 @@ struct PromptSchedulerTests {
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()
         let quietWindow = QuietWindowGate()
-        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: EffectiveUse.Keys.total)
         let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .seconds(1),

@@ -75,5 +75,8 @@ struct TelemetryLifecycleCoordinatorTests {
         #expect(recorder.activations == [.dictationTranscript])
         #expect(ProductValueKind.chatReply.telemetryActivationKind == .firstChatReply)
         #expect(ProductValueKind.generatedImage.telemetryActivationKind == .firstImage)
+        #expect(ProductValueKind.dictationTranscript.telemetryActivationKind == .firstDictation)
+        #expect(ProductValueKind.editedImage.telemetryActivationKind == nil)
+        #expect(ProductValueKind.synthesizedSpeech.telemetryActivationKind == nil)
     }
 }

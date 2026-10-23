@@ -42,6 +42,10 @@ struct EffectiveUseTests {
         uses.record(.chatReply)
         #expect(EffectiveUse(defaults: defaults).total == 36)
         #expect(defaults.integer(forKey: PromptScheduler.Keys.totalSuccessfulActions) == 35)
+
+        let recent = self.defaults()
+        recent.set(1, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        #expect(EffectiveUse(defaults: recent).distinctDays == 1)
     }
 
     @Test("Newsletter starts at two outcomes, wins priority, and never returns")
@@ -65,7 +69,8 @@ struct EffectiveUseTests {
     func backgroundAndCooldown() {
         let defaults = defaults()
         var date = Date(timeIntervalSince1970: 1_800_000_000)
-        let prompt = PromptScheduler(defaults: defaults, now: { date }, quietWindow: .zero)
+        let prompt = PromptScheduler(defaults: defaults, now: { date }, quietWindow: .zero,
+                                     windowVisible: { true })
         prompt.productValueDelivered(.chatReply)
         prompt.productValueDelivered(.chatReply)
         #expect(!prompt.newsletterPresented)
@@ -83,5 +88,18 @@ struct EffectiveUseTests {
                                     presentationActive: true)
         later.startMonitoringUserActivity()
         #expect(later.isPresented)
+    }
+
+    @Test("A legacy star deferral also delays the newsletter")
+    func legacyCooldown() {
+        let defaults = defaults()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        defaults.set(2, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        defaults.set(date.addingTimeInterval(PromptScheduler.deferralInterval),
+                     forKey: PromptScheduler.Keys.deferredUntil)
+        let prompt = PromptScheduler(defaults: defaults, now: { date }, quietWindow: .zero,
+                                     presentationActive: true)
+        prompt.startMonitoringUserActivity()
+        #expect(!prompt.newsletterPresented)
     }
 }

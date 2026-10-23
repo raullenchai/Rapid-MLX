@@ -24,10 +24,12 @@ final class EffectiveUse {
             defaults.set(previous, forKey: Keys.total)
             if previous > 0 {
                 let today = calendar.startOfDay(for: now())
-                // The old counter has no dates. Preserve mature installs' eligibility.
-                defaults.set(calendar.date(byAdding: .day, value: -1, to: today), forKey: Keys.firstDay)
+                // The old counter has no dates. Grandfather mature installs.
+                let mature = previous >= PromptScheduler.initialWorkloadThreshold
+                defaults.set(mature ? calendar.date(byAdding: .day, value: -1, to: today) : today,
+                             forKey: Keys.firstDay)
                 defaults.set(today, forKey: Keys.lastDay)
-                defaults.set(2, forKey: Keys.distinctDays)
+                defaults.set(mature ? 2 : 1, forKey: Keys.distinctDays)
             }
         }
     }

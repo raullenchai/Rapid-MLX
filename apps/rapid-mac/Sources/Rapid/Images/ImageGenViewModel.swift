@@ -379,7 +379,8 @@ final class ImageGenViewModel {
                 prompt: trimmed, model: target.alias, size: size,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
-            if let first = images.first {
+            if !self.cancelling, !Task.isCancelled,
+               let first = images.first, !first.pngData.isEmpty {
                 self.results.insert(contentsOf: images, at: 0)
                 if self.results.count > Self.maxResults {
                     self.results.removeLast(self.results.count - Self.maxResults)
@@ -414,7 +415,8 @@ final class ImageGenViewModel {
                 imagePNG: source.pngData, prompt: trimmed, model: target.alias,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
-            if let first = images.first {
+            if !self.cancelling, !Task.isCancelled,
+               let first = images.first, !first.pngData.isEmpty {
                 self.results.insert(contentsOf: images, at: 0)
                 if self.results.count > Self.maxResults {
                     self.results.removeLast(self.results.count - Self.maxResults)

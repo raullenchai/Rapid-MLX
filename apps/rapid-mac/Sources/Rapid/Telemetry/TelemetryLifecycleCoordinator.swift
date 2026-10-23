@@ -7,7 +7,6 @@ enum ProductValueKind: Equatable, Sendable {
     case generatedImage
     case editedImage
     case synthesizedSpeech
-    case audioTranscription
 
     var storageKey: String {
         switch self {
@@ -16,7 +15,6 @@ enum ProductValueKind: Equatable, Sendable {
         case .generatedImage: "generatedImage"
         case .editedImage: "editedImage"
         case .synthesizedSpeech: "synthesizedSpeech"
-        case .audioTranscription: "audioTranscription"
         }
     }
 
@@ -25,7 +23,7 @@ enum ProductValueKind: Equatable, Sendable {
         case .chatReply: .firstChatReply
         case .dictationTranscript: .firstDictation
         case .generatedImage: .firstImage
-        case .editedImage, .synthesizedSpeech, .audioTranscription: nil
+        case .editedImage, .synthesizedSpeech: nil
         }
     }
 }

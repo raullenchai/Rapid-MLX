@@ -95,7 +95,7 @@ struct TelemetryLifecycleWiringTests {
         let generation = String(image[generateStart.lowerBound..<editStart.lowerBound])
         let editing = String(image[editStart.lowerBound...])
 
-        #expect(generation.contains("if let first = images.first"))
+        #expect(generation.contains("let first = images.first, !first.pngData.isEmpty"))
         #expect(generation.contains("onProductValueDelivered(.generatedImage)"))
         #expect(!editing.contains("onProductValueDelivered(.generatedImage)"))
         #expect(editing.contains("onProductValueDelivered(.editedImage)"))
