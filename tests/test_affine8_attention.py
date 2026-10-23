@@ -141,3 +141,16 @@ def test_compile_failure_falls_back_once(qualified, monkeypatch):
     for _ in range(2):
         assert attn.try_affine8_attention(q, k, v, scale=0.0625, mask="causal") is None
     assert len(calls) == 1
+
+
+def test_lazy_compile_failure_falls_back(qualified, monkeypatch):
+    q, k, v = inputs()
+
+    def fail_eval(*args):
+        raise RuntimeError("test lazy compiler failure")
+
+    monkeypatch.setattr(attn, "_WARMED_VARIANTS", set())
+    monkeypatch.setattr(attn, "_DISABLED", False)
+    monkeypatch.setattr(mx, "eval", fail_eval)
+    assert attn.try_affine8_attention(q, k, v, scale=0.0625, mask="causal") is None
+    assert attn._DISABLED

@@ -150,6 +150,8 @@ cmd = [
     str(MODEL),
     "--served-model-name",
     "kv-screen",
+    "--host",
+    "127.0.0.1",
     "--port",
     "18643",
     "--disable-disk-caches",

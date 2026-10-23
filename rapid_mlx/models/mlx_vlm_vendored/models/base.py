@@ -17,6 +17,7 @@ from mlx_vlm.turboquant import (  # noqa: F401  re-exported names
     TurboQuantKVCache,
 )
 from mlx_vlm.turboquant import _state_length as _turboquant_state_length
+
 # VENDOR-DEVIATION(redirect): vendored cache lives at the package root.
 from ..cache import create_causal_mask
 
@@ -320,8 +321,13 @@ def quantized_scaled_dot_product_attention(
     from rapid_mlx.kernels.affine8_attention import try_affine8_attention
 
     fused = try_affine8_attention(
-        queries, q_keys, q_values, scale=scale, mask=mask,
-        group_size=group_size, bits=bits,
+        queries,
+        q_keys,
+        q_values,
+        scale=scale,
+        mask=mask,
+        group_size=group_size,
+        bits=bits,
     )
     if fused is not None:
         return fused

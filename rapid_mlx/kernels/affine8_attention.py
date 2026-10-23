@@ -14,6 +14,7 @@ import mlx.core as mx
 
 _LOG = logging.getLogger(__name__)
 _DISABLED = False
+_WARMED_VARIANTS = set()
 
 
 @lru_cache(maxsize=1)
@@ -138,9 +139,13 @@ def try_affine8_attention(q, k, v, *, scale, mask=None, group_size=64, bits=8):
             output_shapes=[(hkv, ns, mpad), (hkv, ns, mpad), (hkv, ns, mpad, d)],
             output_dtypes=[mx.float32] * 3,
         )
-    except RuntimeError:
-        # Metal compilation is synchronous at kernel invocation. Do not force
-        # evaluation/synchronize every attention layer just to catch GPU errors.
+        variant = (q.dtype, hq // hkv, tq, mpad, mask is not None)
+        if variant not in _WARMED_VARIANTS:
+            # MLX compiles Metal lazily during evaluation. Warm each template
+            # once inside the fallback boundary; subsequent calls remain lazy.
+            mx.eval(m, denom, o)
+            _WARMED_VARIANTS.add(variant)
+    except (RuntimeError, ValueError):
         _DISABLED = True
         _LOG.warning(
             "Affine8 attention unavailable; retaining stock attention", exc_info=True
