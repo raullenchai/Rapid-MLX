@@ -14,7 +14,7 @@ import mlx.core as mx
 
 _LOG = logging.getLogger(__name__)
 _DISABLED = False
-_WARMED_VARIANTS = set()
+_WARMED_VARIANTS: set[tuple[object, int, int, int, bool]] = set()
 
 
 @lru_cache(maxsize=1)
