@@ -32,6 +32,8 @@ rapid-mlx serve --help
 
 The server listens on loopback by default and prints its selected port. An explicit `--port` does not fall back to another port. See the [server guide](../guides/server.md) for the API and network setup.
 
+In an interactive terminal, the ready banner ends with a one-time pointer to [rapidmlx.com/newsletter](https://rapidmlx.com/newsletter). It appears once per machine, is skipped when an update notice was already shown, and never appears in piped output, CI, or managed/desktop sessions.
+
 ### KV cache dtype and quantization
 
 The default BF16 KV cache favors fidelity. `--kv-cache-dtype int8` or `int4` uses less memory and can change output quality or speed. Use `rapid-mlx serve --help` for the current quantization options and defaults; the [performance flags guide](https://rapidmlx.com/docs/perf-flags.html) covers tuning.

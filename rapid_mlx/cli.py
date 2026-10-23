@@ -677,6 +677,7 @@ def _run_uvicorn(
     *,
     on_server_accepting=None,
     proxy_headers: bool = True,
+    update_notice_shown: bool = False,
 ) -> None:
     """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -719,7 +720,9 @@ def _run_uvicorn(
     if on_server_accepting is None:
         from rapid_mlx.server import print_ready_banner
 
-        on_server_accepting = print_ready_banner
+        on_server_accepting = functools.partial(
+            print_ready_banner, update_notice_shown=update_notice_shown
+        )
 
     listen_fd = getattr(args, "listen_fd", None)
     try:
@@ -8092,7 +8095,8 @@ def serve_command(args):
     from rapid_mlx import update_refresh
     from rapid_mlx._version_check import print_staleness_warning_if_any
 
-    update_refresh.start(announced=print_staleness_warning_if_any(allow_non_tty=True))
+    announced = print_staleness_warning_if_any(allow_non_tty=True)
+    update_refresh.start(announced=announced)
     print()
 
     # Stash the source of truth for the post-bind "Ready:" banner —
@@ -8124,7 +8128,9 @@ def serve_command(args):
     else:
         _cfg.bind_listen_fd = listen_fd
 
-    _run_uvicorn(app, args, uvicorn_log_level)
+    _run_uvicorn(
+        app, args, uvicorn_log_level, update_notice_shown=announced is not None
+    )
     _hard_exit_after_serve()
 
 
