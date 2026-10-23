@@ -161,26 +161,23 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         self.all_special_ids_set = set(self.all_special_ids)
 
     def encode(
-        self, text: str, allow_special_tokens: bool = True, **kwargs
+        self, text, text_pair=None, *args, allow_special_tokens: bool = True, **kwargs
     ) -> List[int]:
-        """
-        Encodes a string into a list of token IDs.
+        """Keep the base tokenizer's paired-input and positional-option contract."""
+        if not allow_special_tokens:
+            if isinstance(text, str):
+                text = self._encode_text(text, allow_special_tokens=False)
+            if isinstance(text_pair, str):
+                text_pair = self._encode_text(text_pair, allow_special_tokens=False)
+        if isinstance(text, str) and text_pair is None and not args and not kwargs:
+            return self._encode_text(text)
+        return cast(List[int], super().encode(text, text_pair, *args, **kwargs))
 
-        Args:
-            text (str): The input string to be encoded.
-
-        Returns:
-            list[int]: A list of token IDs.
-        """
-        # If there are other args, we should call super().encode because there are a lot of code
-        # to handle those args. supper().encode finally will call _tokenize and _convert_token_to_id.
-        # NOTE: our encode method is not compatible with the super().encode method,
-        #   e.g. split_special_tokens' default is True in our encode method.
-        if len(kwargs) > 0:
-            logger.warning(f"Calling super().encode with {kwargs}")
-            return cast(List[int], super().encode(text, **kwargs))
-
-        assert type(text) is str
+    def _encode_text(
+        self, text: str, *, allow_special_tokens: bool = True
+    ) -> List[int]:
+        if not isinstance(text, str):
+            raise TypeError("Tokenizer text must be a string")
 
         # The tiktoken tokenizer can handle <=400k chars without
         # pyo3_runtime.PanicException.
@@ -225,7 +222,13 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         return t
 
-    def decode(self, token_ids: Union[int, List[int]], **kwargs) -> str:
+    def decode(
+        self,
+        token_ids: Union[int, List[int]],
+        skip_special_tokens: bool = False,
+        clean_up_tokenization_spaces: bool | None = None,
+        **kwargs,
+    ) -> str:
         """
         Decodes a list of token IDs into a string.
 
@@ -237,8 +240,15 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         """
         # If there are other args, we should call super().decode because there are a lot of code
         # to handle those args. supper().encode finally will call convert_tokens_to_string and _convert_id_to_token.
-        if len(kwargs) > 0:
-            return cast(str, super().decode(token_ids, **kwargs))
+        if clean_up_tokenization_spaces is not None:
+            kwargs["clean_up_tokenization_spaces"] = clean_up_tokenization_spaces
+        if skip_special_tokens or kwargs:
+            return cast(
+                str,
+                super().decode(
+                    token_ids, skip_special_tokens=skip_special_tokens, **kwargs
+                ),
+            )
 
         if type(token_ids) is int:
             token_ids = [token_ids]
@@ -288,7 +298,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         return self.encoder
 
     def _tokenize(self, text: str, **kwargs) -> List[str]:
-        return [self.decoder[t] for t in self.encode(text)]
+        return [self.decoder[t] for t in self._encode_text(text)]
 
     def _convert_token_to_id(self, token: str) -> int:
         return self.encoder.get(token, self.unk_id)

@@ -53,6 +53,30 @@ def test_special_tokens_and_skip(tokenizer):
     assert tokenizer.encode("[BOS]", allow_special_tokens=False) == list(b"[BOS]")
 
 
+def test_base_tokenizer_positional_and_paired_contracts(tokenizer):
+    assert tokenizer.decode(tokenizer.encode("left", "right", False)) == "leftright"
+    assert tokenizer.encode(
+        "left", text_pair="right", add_special_tokens=False
+    ) == list(b"leftright")
+    assert tokenizer.encode([97, 98], [99], False) == [97, 98, 99]
+    ids = tokenizer.encode("[BOS]hello[EOS]")
+    assert tokenizer.decode(ids, True) == "hello"
+    assert tokenizer.decode(ids, False, False) == "[BOS]hello[EOS]"
+    assert (
+        tokenizer.decode(
+            tokenizer.encode("[BOS]", "[EOS]", False, allow_special_tokens=False), True
+        )
+        == "[BOS][EOS]"
+    )
+    assert tokenizer.encode([97], [98], allow_special_tokens=False) == [97, 98]
+
+
+@pytest.mark.parametrize("value", [None, 42, ["text"]])
+def test_raw_tokenizer_rejects_non_text_explicitly(tokenizer, value):
+    with pytest.raises(TypeError, match="must be a string"):
+        tokenizer._encode_text(value)
+
+
 @pytest.mark.parametrize(
     "thinking,suffix", [(True, "<think>"), (False, "<think></think>")]
 )
@@ -191,7 +215,7 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "b90f5d676c732f5fe7fbe1fd809920deb4c6b185d0ac7ffd3eb8565bfce2be18",
+        "tokenization.py": "904f89d59b07c0eeb5d33ddd71ac3a13e01bbea95136efc4f78ca78b93ba1c44",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 

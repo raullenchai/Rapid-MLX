@@ -24,6 +24,7 @@ references and constraints. The optional TypeScript-style formatter is not
 included or executed, and caller-supplied `tools_ts_str` is ignored.
 
 Other local deviations are Ruff formatting, explicit optional/container/return
-types and indexed token lookup. Reviewed packaged SHA256:
+types, indexed token lookup, compatible positional encode/decode options and
+explicit text validation. Special-token control is a keyword-only extension. Reviewed packaged SHA256:
 
-- `tokenization.py`: `b90f5d676c732f5fe7fbe1fd809920deb4c6b185d0ac7ffd3eb8565bfce2be18`
+- `tokenization.py`: `904f89d59b07c0eeb5d33ddd71ac3a13e01bbea95136efc4f78ca78b93ba1c44`
