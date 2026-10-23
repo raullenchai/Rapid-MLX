@@ -202,7 +202,8 @@ def _judge_checkpoint(
     directory = _checkpoint_dir(repo, external)
     inspection = inspect_local(directory) if directory else None
     if (
-        inspection is None
+        directory is None
+        or inspection is None
         or not inspection.config
         or inspection.weight_bytes <= 0
         or inspection.has_chat_template is not True
