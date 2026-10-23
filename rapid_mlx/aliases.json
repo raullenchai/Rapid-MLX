@@ -1817,8 +1817,8 @@
     "supports_spec_decode": false
   },
   "nemotron-3.5-bolt-e4b": {
-    "hf_path": "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
-    "revision": "4274caa99dbacb12cbbca9bd9595a5063a33880f",
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
+    "revision": "601cd937da1e168dfe0dcf184b95204344c683a9",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_text_only": true,
@@ -1834,8 +1834,8 @@
     }
   },
   "nemotron-3.5-bolt-e4b-8bit": {
-    "hf_path": "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
-    "revision": "210cb1bbd2107dc871cb3a4a23155d914077be94",
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
+    "revision": "72263b814727693c874bf765c657dfb32102e870",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_text_only": true,

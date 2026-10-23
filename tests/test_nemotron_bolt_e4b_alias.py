@@ -13,23 +13,21 @@ from rapid_mlx.model_aliases import resolve_profile
         (
             "nemotron-3.5-bolt-e4b",
             4,
-            "4274caa99dbacb12cbbca9bd9595a5063a33880f",
-            4_231_241_505,
+            "601cd937da1e168dfe0dcf184b95204344c683a9",
+            4_231_255_362,
         ),
         (
             "nemotron-3.5-bolt-e4b-8bit",
             8,
-            "210cb1bbd2107dc871cb3a4a23155d914077be94",
-            7_962_488_801,
+            "72263b814727693c874bf765c657dfb32102e870",
+            7_962_502_658,
         ),
     ],
 )
 def test_e4b_serving_contract(alias, bits, revision, size):
     profile = resolve_profile(alias)
     assert profile is not None
-    assert profile.hf_path == (
-        f"lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-{bits}bit"
-    )
+    assert profile.hf_path == (f"rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-{bits}bit")
     assert profile.revision == revision
     assert profile.is_text_only is True
     assert profile.supports_image_input is False
@@ -52,7 +50,7 @@ def test_e4b_serving_contract(alias, bits, revision, size):
 @pytest.mark.parametrize(
     "model,gemma,expected",
     [
-        ("lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit", True, False),
+        ("rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit", True, False),
         ("nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16", True, False),
         ("rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-MLX-4bit", False, True),
         ("other/model", False, False),
@@ -82,8 +80,8 @@ def test_architecture_takes_precedence_over_publisher_name(
         "nemotron-3.5-bolt-e4b",
         "nemotron-3.5-bolt-e4b-8bit",
         "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
-        "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
-        "lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
+        "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
+        "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
     ],
 )
 @pytest.mark.requires_mlx

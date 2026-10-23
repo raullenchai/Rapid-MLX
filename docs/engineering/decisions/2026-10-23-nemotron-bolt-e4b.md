@@ -30,12 +30,12 @@ IDs 1, 106, 50. Greedy qualification overrides temperature to zero.
 
 ## Catalog and local conversion
 
-| Alias | Temporary artifact | Immutable revision |
+| Alias | Published artifact | Immutable revision |
 | --- | --- | --- |
-| `nemotron-3.5-bolt-e4b` | `lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit` | `4274caa99dbacb12cbbca9bd9595a5063a33880f` |
-| `nemotron-3.5-bolt-e4b-8bit` | `lmstudio-community/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit` | `210cb1bbd2107dc871cb3a4a23155d914077be94` |
+| `nemotron-3.5-bolt-e4b` | `rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit` | `601cd937da1e168dfe0dcf184b95204344c683a9` |
+| `nemotron-3.5-bolt-e4b-8bit` | `rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit` | `72263b814727693c874bf765c657dfb32102e870` |
 
-Both temporary artifacts were created October 20. Local Rapid conversions use
+The published Rapid-MLX conversions use
 BF16 source weights, affine group-64 quantization at four/eight bits, and
 unchanged tokenizer/template/generation files. The text config carries the full
 generation EOS set (1, 106, 50) and excludes vision/audio configs. Final conversion runs on GPU using
@@ -46,7 +46,7 @@ The main shard alone matches the native text model's expected tensors exactly.
 All **1,355 tensors per quant** in the final local GPU conversions match the
 temporary artifacts byte-for-byte (dtype, shape, and SHA-256 of tensor payload).
 The tokenizer and template are preserved. This establishes equal model quality
-for the temporary aliases without requiring publication. Both artifacts match
+for the published aliases. Both artifacts match
 the independent native implementation's greedy outputs and score 12/12 on the
 exact-answer smoke set alongside BF16.
 
@@ -57,10 +57,12 @@ artifacts are retained as experiments, not the staged publication candidates.
 No broad benchmark quality equivalence to BF16 is claimed.
 See the [qualification record](../performance/2026-10-23-nemotron-bolt-e4b.md).
 
-No weights are published by this change. Uploads to model hosting or mirrors
-require separate owner approval. After publication, qualify and pin the new
-artifact revisions before changing either alias. Vision/audio support and
-broader quality evaluation remain outside this text qualification.
+Owner-approved publication on October 23 preserves both license files and the
+upstream attribution. Every published file is checked against the staged SHA-256
+manifest after download into a clean cache. The aliases pin the immutable
+publication revisions above. Rollback is a revert of this alias publication
+change; retain the published revisions for reproducibility. Vision/audio support
+and broader quality evaluation remain outside this text qualification.
 
 ## DFlash
 
