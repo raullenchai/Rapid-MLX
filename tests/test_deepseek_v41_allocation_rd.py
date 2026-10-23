@@ -57,8 +57,13 @@ def test_allocator_cli_checks_provenance_stability_and_payload_costs(
     scores = tmp_path / "scores.npz"
     errors = tmp_path / "errors.npz"
     costs = tmp_path / "costs.json"
-    sm = {"model_revision": "r", "routing_topk": 1}
-    qm = {"model_revision": "r", "group_size": 64, "bits_order": [0, 2, 3, 4]}
+    sm = {"model_revision": "r", "routing_topk": 1, "config_sha256": "config"}
+    qm = {
+        "model_revision": "r",
+        "config_sha256": "config",
+        "group_size": 64,
+        "bits_order": [0, 2, 3, 4],
+    }
     payload = fixture_costs(1, 2)
     charged = payload.copy()
     charged[..., 1:] += 1

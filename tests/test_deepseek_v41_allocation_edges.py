@@ -148,8 +148,13 @@ def test_direct_cli_help(script, monkeypatch, capsys):
 
 @pytest.fixture
 def cli_inputs(tmp_path, monkeypatch):
-    sm = {"model_revision": "r", "routing_topk": 1}
-    qm = {"model_revision": "r", "group_size": 64, "bits_order": [0, 2, 3, 4]}
+    sm = {"model_revision": "r", "routing_topk": 1, "config_sha256": "config"}
+    qm = {
+        "model_revision": "r",
+        "config_sha256": "config",
+        "group_size": 64,
+        "bits_order": [0, 2, 3, 4],
+    }
     payload = np.broadcast_to([0, 30, 42, 54], (1, 2, 4)).copy()
     score = dict(
         robust_reap=np.ones((1, 2)),
@@ -316,3 +321,25 @@ def test_merge_cli_and_invalid_counts(tmp_path, monkeypatch):
     rewrite(b, arrays_update={"counts_halves_by_slice": np.ones((3, 2, 2, 4), float)})
     with pytest.raises(ValueError, match="invalid counts"):
         merge.merge_calibration([a, b], tmp_path / "bad.npz")
+
+
+def test_single_reference_requires_matching_language():
+    r, c, names, roles = slices()
+    names = ["chat", "medical", "cold_history_zh", "general_reference_en"]
+    roles = dict(zip(names, ["hot", "hot", "cold", "reference"]))
+    with pytest.raises(ValueError, match="language-matched"):
+        contrastive(r, c, names, roles)
+    names[-1] = "general_reference_zh"
+    roles = dict(zip(names, ["hot", "hot", "cold", "reference"]))
+    assert contrastive(r, c, names, roles)["candidate"][0, 1]
+
+
+@pytest.mark.parametrize("key", ["config_sha256", "checkpoint_sha256"])
+def test_allocator_rejects_same_label_different_identity(cli_inputs, key):
+    score, error, cost, argv, write = cli_inputs
+    meta = json.loads(error["metadata"])
+    meta[key] = "different"
+    error["metadata"] = json.dumps(meta)
+    write()
+    with pytest.raises(ValueError, match="hashes do not match"):
+        alloc.main()

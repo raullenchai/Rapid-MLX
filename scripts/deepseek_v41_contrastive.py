@@ -50,7 +50,7 @@ def contrastive(
     never = counts.sum(axis=(0, 1)) == 0
     references = []
     for cold in ids["cold"]:
-        if len(ids["reference"]) == 1:
+        if len(ids["reference"]) == 1 and "_" not in slice_names[cold]:
             references.append(ids["reference"][0])
         else:
             language = slice_names[cold].rsplit("_", 1)[-1]

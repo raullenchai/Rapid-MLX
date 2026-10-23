@@ -14,7 +14,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_contrastive import contrastive
-from scripts.deepseek_v41_rd_common import BITS, bank_plan
+from scripts.deepseek_v41_rd_common import BITS, bank_plan, file_hash
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 
 
@@ -262,6 +262,14 @@ def main():
         )
         if sm["model_revision"] != qm["model_revision"]:
             raise ValueError("model revisions do not match")
+        score_config = sm.get("checkpoint_config_sha256", sm.get("config_sha256"))
+        if not score_config or score_config != qm.get("config_sha256"):
+            raise ValueError("score/error checkpoint config hashes do not match")
+        # Compare payload identities when supplied by the provenance-hardened
+        # producers. Legacy artifacts have only config/index identities.
+        if "checkpoint_sha256" in sm or "checkpoint_sha256" in qm:
+            if sm.get("checkpoint_sha256") != qm.get("checkpoint_sha256"):
+                raise ValueError("score/error checkpoint payload hashes do not match")
         if sm["routing_topk"] != a.topk:
             raise ValueError("top-k must match the calibrated model")
         if qm["group_size"] != 64 or qm["bits_order"] != BITS.tolist():
@@ -306,6 +314,12 @@ def main():
             )
             from scripts.repack_deepseek_v41_native import CheckpointIndex
 
+            if file_hash(a.source / "config.json") != score_config:
+                raise ValueError("source checkpoint config hash does not match")
+            if file_hash(a.source / "model.safetensors.index.json") != qm.get(
+                "index_sha256"
+            ):
+                raise ValueError("source checkpoint index hash does not match")
             config = json.loads((a.source / "config.json").read_text())
             index = CheckpointIndex(a.source)
             # Recompute from source headers: older inventories contain only the

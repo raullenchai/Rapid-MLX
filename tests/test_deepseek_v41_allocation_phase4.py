@@ -8,6 +8,7 @@ import pytest
 
 from scripts.deepseek_v41_rd_allocate import pruning_audit
 from scripts.deepseek_v41_rd_build import mtp_byte_costs
+from scripts.deepseek_v41_rd_common import file_hash
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 from scripts.repack_deepseek_v41_native import CheckpointIndex
 
@@ -260,7 +261,12 @@ def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
         counts_halves_by_slice=np.full(r.shape, 8),
         split_keep_overlap=np.ones((3, 3)),
         metadata=json.dumps(
-            {"model_revision": "r", "routing_topk": 1, "slice_names": list(roles)}
+            {
+                "model_revision": "r",
+                "routing_topk": 1,
+                "slice_names": list(roles),
+                "config_sha256": file_hash(source / "config.json"),
+            }
         ),
     )
     weight = np.array(cost["expert_bytes"])
@@ -272,7 +278,13 @@ def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
         expert_weight_bytes=weight,
         completed=np.ones((1, 2), bool),
         metadata=json.dumps(
-            {"model_revision": "r", "group_size": 64, "bits_order": [0, 2, 3, 4]}
+            {
+                "model_revision": "r",
+                "group_size": 64,
+                "bits_order": [0, 2, 3, 4],
+                "config_sha256": file_hash(source / "config.json"),
+                "index_sha256": file_hash(source / "model.safetensors.index.json"),
+            }
         ),
     )
     rolefile.write_text(json.dumps(roles))
@@ -330,4 +342,15 @@ def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
 
     monkeypatch.setattr(builder, "plan", inconsistent_plan)
     with pytest.raises(ValueError, match="conversion policy"):
+        allocator.main()
+    monkeypatch.setattr(builder, "plan", original_plan)
+    config_path = source / "config.json"
+    config_bytes = config_path.read_bytes()
+    config_path.write_bytes(config_bytes + b" ")
+    with pytest.raises(ValueError, match="source checkpoint config"):
+        allocator.main()
+    config_path.write_bytes(config_bytes)
+    index_path = source / "model.safetensors.index.json"
+    index_path.write_bytes(index_path.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="source checkpoint index"):
         allocator.main()
