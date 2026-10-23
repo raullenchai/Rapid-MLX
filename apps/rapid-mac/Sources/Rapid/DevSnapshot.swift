@@ -184,6 +184,29 @@ enum DevSnapshot {
             quietWindow: .zero,
             presentationActive: true
         )
+        if ProcessInfo.processInfo.environment["RAPID_DEV_PROMO_ONLY"] == "1" {
+            let newsletterDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.newsletter")!
+            newsletterDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.newsletter")
+            let newsletter = PromptScheduler(defaults: newsletterDefaults,
+                                             quietWindow: .zero, presentationActive: true)
+            newsletter.productValueDelivered(.chatReply)
+            newsletter.productValueDelivered(.generatedImage)
+            snapshotStarDefaults.set(PromptScheduler.initialWorkloadThreshold,
+                                     forKey: EffectiveUse.Keys.total)
+            snapshotStarPrompt.startMonitoringUserActivity()
+            func card(_ view: some View) -> AnyView {
+                AnyView(ZStack(alignment: .bottomTrailing) {
+                    RapidTheme.surfaceCanvas
+                    view.padding(.trailing, 16).padding(.bottom, 40)
+                }.frame(width: 720, height: 560))
+            }
+            render(card(NewsletterPromptCard().environment(newsletter)),
+                   to: "\(dir)/newsletter-value-moment.png")
+            render(card(GitHubStarPromptCard().environment(snapshotStarPrompt)),
+                   to: "\(dir)/github-star-value-moment.png")
+            NSApp.terminate(nil)
+            return
+        }
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
         let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
