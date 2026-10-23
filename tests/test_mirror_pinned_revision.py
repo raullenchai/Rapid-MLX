@@ -1002,13 +1002,11 @@ def test_default_branch_revision_error_does_not_use_manifest(tmp_path, monkeypat
         manifest.assert_not_called()
 
 
-def test_missing_revision_rejects_corrupt_blob_reused_during_install(
-    tmp_path, monkeypatch
-):
+def test_missing_revision_repairs_corrupt_blob_during_install(tmp_path, monkeypatch):
     assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
     (_snap(tmp_path) / "model.safetensors").write_bytes(b"X" * len(WEIGHTS))
-    with pytest.raises(RuntimeError, match="failed integrity verification"):
-        _missing_pin_run(tmp_path, monkeypatch, _manifest())
+    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
 
 
 @pytest.mark.parametrize("mirror_config", [CONFIG, 404])
@@ -1066,3 +1064,17 @@ def test_missing_revision_rejects_incomplete_wildcard_inventory(tmp_path, monkey
         _missing_pin_run(
             tmp_path, monkeypatch, manifest, allow_patterns="*.safetensors"
         )
+
+
+def test_missing_revision_accepts_verified_warm_bytes_when_objects_are_unavailable(
+    tmp_path, monkeypatch
+):
+    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
+    assert _missing_pin_run(
+        tmp_path,
+        monkeypatch,
+        _manifest(),
+        {"model.safetensors": 404, "config.json": 404},
+    )
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
+    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG

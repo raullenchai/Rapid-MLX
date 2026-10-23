@@ -631,6 +631,17 @@ def _git_blob_oid(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _sha256_digest(path: Path) -> str:
+    """Hash installed bytes, never trusting a content-addressed filename."""
+    import hashlib
+
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_CHUNK_BYTES):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def _blob_oid_is(expected: str) -> Callable[[Path], bool]:
     """Predicate: the file at a path hashes to git blob id ``expected``."""
 
@@ -792,6 +803,7 @@ def _download_one_from_r2(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -852,6 +864,7 @@ def _download_one_from_r2(
             repo_root=repo_root,
             progress_tracker=progress_tracker,
             enforce_floor=enforce_floor,
+            existing_blob_ok=existing_blob_ok,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -868,6 +881,7 @@ def _do_r2_download(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -1193,7 +1207,7 @@ def _do_r2_download(
     # git-blob-id branch above and land in ``blobs/`` the same way.)
     if expected_sha256 is not None and repo_root is not None:
         ok, reason = _install_lfs_blob_and_symlink(
-            tmp, target, repo_root, expected_sha256
+            tmp, target, repo_root, expected_sha256, existing_ok=existing_blob_ok
         )
         if not ok:
             _safe_unlink(tmp)
@@ -2353,22 +2367,13 @@ def download_with_mirror_fallback(
                 sidecar_key=_sidecar_key_for(fname),
                 repo_root=repo_root,
                 progress_tracker=progress_tracker,
+                existing_blob_ok=(
+                    (lambda path: _sha256_digest(path) == expected_sha256)
+                    if mirror_only and expected_sha256 is not None
+                    else None
+                ),
             )
             if ok:
-                if mirror_only and expected_sha256 is not None:
-                    # Installation may reuse an existing content-addressed blob.
-                    # Its filename alone cannot vouch for the installed bytes.
-                    # Git blobs already pass _blob_oid_is under the install
-                    # lock in _do_r2_download; only SHA-256 needs this check.
-                    import hashlib
-
-                    hasher = hashlib.sha256()
-                    with target.open("rb") as stream:
-                        while chunk := stream.read(_CHUNK_BYTES):
-                            hasher.update(chunk)
-                    if hasher.hexdigest() != expected_sha256:
-                        _safe_unlink(target)
-                        return fname, "miss", 0
                 try:
                     size = target.stat().st_size if target.exists() else 0
                 except OSError:
