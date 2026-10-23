@@ -3043,6 +3043,21 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "list",
+       "help": "List supported clients (alias for launch list); accepts --json.",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--list"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "all",
        "help": "Patch every detected client. Mutually exclusive with a client name.",
        "metavar": null,
@@ -3194,7 +3209,7 @@
        "const": null,
        "default": null,
        "dest": "server_url",
-       "help": "rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+       "help": "rapid-mlx server URL the client will route at (default: http://127.0.0.1:<port>, port 8000)",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -3282,6 +3297,7 @@
        "description": null,
        "dests": [
         "help",
+        "list",
         "all",
         "isolated",
         "legacy_config",
