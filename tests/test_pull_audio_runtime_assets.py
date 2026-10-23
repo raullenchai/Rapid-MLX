@@ -296,6 +296,10 @@ def test_runtime_asset_registry_rejects_malformed_metadata(
     "runtime_requirements_metadata,error",
     [
         ([], "_runtime_requirements must be an object"),
+        (
+            {"kokoro": [{"kind": "spacy_pipeline", "name": "attacker_package"}]},
+            "runtime requirement is not in the code-owned pipeline catalog",
+        ),
         ({"": []}, "family keys must be non-empty strings"),
         ({"kokoro": {}}, "_runtime_requirements.kokoro must be an array"),
         ({"kokoro": ["bad"]}, "_runtime_requirements.kokoro[0] must be an object"),

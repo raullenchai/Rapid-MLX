@@ -37,6 +37,8 @@ import threading
 from dataclasses import dataclass
 from typing import Literal
 
+from rapid_mlx.audio.runtime_catalog import SPACY_PIPELINE_PINS
+
 logger = logging.getLogger(__name__)
 
 AudioType = Literal["tts", "stt"]
@@ -228,6 +230,11 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
                 raise ValueError(
                     f"audio aliases.json: _runtime_requirements.{family}[{index}]."
                     "name must be a Python package identifier"
+                )
+            if name not in SPACY_PIPELINE_PINS:
+                raise ValueError(
+                    "audio aliases.json: runtime requirement is not in the "
+                    "code-owned pipeline catalog"
                 )
             key = (kind, name)
             if key in seen_requirements:

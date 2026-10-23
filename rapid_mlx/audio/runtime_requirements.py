@@ -15,9 +15,11 @@ import shutil
 import signal
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from rapid_mlx.audio.registry import AudioRuntimeRequirement
+from rapid_mlx.audio.runtime_catalog import SPACY_PIPELINE_PINS
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +100,32 @@ def _run_installer(cmd: list[str], env: dict[str, str], timeout: int) -> None:
 
 
 def _prepare_spacy_pipeline(package: str) -> None:
+    # Check before importing spaCy, inspecting the environment, or spawning a
+    # process. Callers can construct requirements without going through aliases.
+    if package not in SPACY_PIPELINE_PINS:
+        raise AudioRuntimePreparationError(
+            "Unsupported audio runtime pipeline: not in the code-owned catalog"
+        )
     try:
         if spacy_pipeline_available(package):
             return
     except Exception as exc:  # noqa: BLE001 - normalize broken environments
         raise AudioRuntimePreparationError(
             f"spaCy runtime is not importable while preparing '{package}'"
+        ) from exc
+
+    try:
+        from packaging.version import Version
+
+        spacy_version = Version(version("spacy"))
+        minor = f"{spacy_version.major}.{spacy_version.minor}"
+        pinned = SPACY_PIPELINE_PINS[package][minor]
+        if spacy_version.is_prerelease or spacy_version.is_devrelease:
+            raise ValueError("Unreviewed spaCy prerelease")
+    except (PackageNotFoundError, KeyError, ValueError) as exc:
+        raise AudioRuntimePreparationError(
+            "No reviewed audio pipeline pin for this spaCy runtime; "
+            "use a supported stable spaCy 3.7 or 3.8 runtime"
         ) from exc
 
     env = _installer_env(
@@ -113,7 +135,18 @@ def _prepare_spacy_pipeline(package: str) -> None:
     )
     try:
         _run_installer(
-            [sys.executable, "-m", "spacy", "download", package], env, timeout=300
+            [
+                sys.executable,
+                "-m",
+                "spacy",
+                "download",
+                f"{package}-{pinned}",
+                "--direct",
+                "--no-deps",
+                "--only-binary=:all:",
+            ],
+            env,
+            timeout=300,
         )
     except (
         subprocess.CalledProcessError,
