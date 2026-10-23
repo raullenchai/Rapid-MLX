@@ -1,0 +1,16 @@
+Affine8 attention includes code adapted from mlx-serve
+https://github.com/ddalcu/mlx-serve
+Copyright (c) 2026 David Dalcu. MIT License (LICENSE-AFFINE8).
+Source: src/transformer.zig, QKV_MPP_KERNEL_SOURCE, commit
+191da71de32a65f69ebceeb6cb2e91036ab50b30.
+
+Inco Splash
+https://github.com/incoai/splash
+Licensed under the Apache License, Version 2.0 (LICENSE-AFFINE8-APACHE).
+The matmul2d packed-KV attention kernel follows the structure of Splash's
+q8 attention tile (runtime/metal/kernels/common/q8_attention_tile.h):
+per-page QK and PV through MetalPerformancePrimitives with an online
+softmax and split-KV partials. Reimplemented over MLX affine group KV.
+
+Rapid modifications: Python dispatch, boolean mask handling including
+fully masked rows, arbitrary cache strides, qualification and fallback.

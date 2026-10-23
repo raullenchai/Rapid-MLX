@@ -316,6 +316,15 @@ def quantized_scaled_dot_product_attention(
     group_size: int = 64,
     bits: int = 8,
 ) -> mx.array:
+    # VENDOR-DEVIATION: qualified packed affine8 attention with stock fallback.
+    from rapid_mlx.kernels.affine8_attention import try_affine8_attention
+
+    fused = try_affine8_attention(
+        queries, q_keys, q_values, scale=scale, mask=mask,
+        group_size=group_size, bits=bits,
+    )
+    if fused is not None:
+        return fused
     B, n_q_heads, L, D = queries.shape
     n_kv_heads = q_keys[0].shape[-3]
     n_repeats = n_q_heads // n_kv_heads
