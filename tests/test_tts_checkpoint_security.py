@@ -171,3 +171,33 @@ def test_unknown_architecture_rejects_legacy_sidecar(tmp_path, monkeypatch):
     _loader(monkeypatch, lambda *a: pytest.fail("unsafe route"))
     with pytest.raises(ValueError, match="unrecognized TTS"):
         TTSEngine(str(path)).load()
+
+
+@pytest.mark.parametrize("kind", ["voxcpm", "voxcpm2"])
+def test_native_vae_sanitize_runs_once_on_legacy_tensor_weights(
+    tmp_path, monkeypatch, kind
+):
+    import importlib
+    from types import MethodType
+    from rapid_mlx.utils import torch_checkpoint
+
+    path = _checkpoint(tmp_path, kind)
+    model = _native(monkeypatch)
+    native = importlib.import_module(f"mlx_audio.tts.models.{kind}.{kind}").Model
+    counts = []
+
+    def sanitize_vae(weights):
+        counts.append(weights)
+        # A second invocation would transpose this back and fail the assertion.
+        return {key: value.transpose() for key, value in weights.items()}
+
+    model.audio_vae = types.SimpleNamespace(sanitize=sanitize_vae)
+    model.sanitize = MethodType(native.sanitize, model)
+    tensor = types.SimpleNamespace(numpy=lambda: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    monkeypatch.setattr(
+        torch_checkpoint, "load_tensor_checkpoint", lambda p: {"conv.weight": tensor}
+    )
+    _loader(monkeypatch, lambda *a: pytest.fail("upstream loader"))
+    TTSEngine(str(path)).load()
+    assert len(counts) == 1
+    assert model.weights["audio_vae.conv.weight"].shape == (3, 2)
