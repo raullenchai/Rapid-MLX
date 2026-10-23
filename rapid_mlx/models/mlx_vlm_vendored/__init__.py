@@ -524,8 +524,14 @@ vendored copy differs by exactly the deviations listed):
   ``speculative/native_mtp/glm5_compat.py`` bind this registry
   (vendored-first, pinned mlx-vlm fallback retained for the transition).
 
-- ``models/`` — verbatim model foundations (step-3b slice): ``base.py``
-  (upstream 657 lines; vendored 668 lines after documented deviations;
+- ``models/`` — model foundations (step-3b slice): ``base.py``
+  has one additional qualified affine8 attention dispatch hunk. It tries the
+  Rapid packed-KV kernel and returns to the unchanged pinned implementation
+  for unsupported runtimes, geometry or masks. The exact dispatch hunk is
+  inventoried in ``test_mlx_vlm_vendored_speculative.py``; numerical and route
+  behavior is covered by ``test_affine8_attention.py``. Other foundations are
+  verbatim except the redirects documented below. ``base.py``
+  (upstream 657 lines; vendored 683 lines after documented deviations;
   upstream digest
   ``4f915923c591faf4b25603b5b5cab4511296a37c7d141553506e6b0760a03a41``;
   redirects: ``..turboquant`` → pinned upstream (kv_quant precedent),
