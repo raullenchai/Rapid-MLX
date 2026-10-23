@@ -287,6 +287,9 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
     fake_mlx_vlm = types.ModuleType("mlx_vlm")
     fake_mlx_vlm.load = lambda _repo, **_kwargs: (MagicMock(), MagicMock())
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", fake_mlx_vlm.load
+    )
 
     monkeypatch.setattr(
         "rapid_mlx._uvicorn._run_server", lambda *_args, **_kwargs: None
@@ -657,6 +660,9 @@ def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
     fake_mlx_vlm = types.ModuleType("mlx_vlm")
     fake_mlx_vlm.load = lambda _repo: (MagicMock(), MagicMock())
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", fake_mlx_vlm.load
+    )
 
     captured: dict = {}
 
@@ -2949,9 +2955,10 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
         return MagicMock()
 
     # Patch the imports at the point of use inside ``run_dflash_server``.
-    import mlx_vlm as _mlx_vlm
 
-    monkeypatch.setattr(_mlx_vlm, "load", _fake_load)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", _fake_load
+    )
     monkeypatch.setattr(srv, "load_runtime", _fake_load_runtime)
 
     # No-op uvicorn so we don't bind a port; return immediately after load.

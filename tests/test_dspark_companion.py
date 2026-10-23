@@ -262,6 +262,9 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
         compatibility_calls.append((model, draft_model, kind))
     )
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", fake_vlm.load
+    )
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
@@ -336,6 +339,9 @@ def test_runtime_rejects_wrong_upstream_draft_kind(monkeypatch, tmp_path) -> Non
     fake_drafters.load_drafter = lambda _path, kind=None: (SimpleNamespace(), "mtp")
     fake_drafters.validate_drafter_compatibility = lambda *_args: None
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", fake_vlm.load
+    )
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", fake_speculative)
     monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", fake_drafters)
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)

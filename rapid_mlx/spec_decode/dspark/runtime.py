@@ -58,11 +58,12 @@ def load_runtime(
         drafter_path=artifacts.drafter_path,
     )
 
-    from mlx_vlm import load
     from mlx_vlm.speculative.drafters import (
         load_drafter,
         validate_drafter_compatibility,
     )
+
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy as load
 
     model, processor = load(artifacts.target_path)
     drafter, kind = load_drafter(artifacts.drafter_path, kind=None)

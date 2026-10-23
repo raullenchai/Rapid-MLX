@@ -2654,7 +2654,7 @@ def run_dflash_server(
             "drafter HF path (e.g. 'z-lab/Qwen3.5-27B-DFlash')."
         )
 
-    from mlx_vlm import load
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy as load
 
     # CRITICAL: load model + drafter on the dedicated DFlash executor
     # thread (not the main thread). mlx-lm 0.31.3+ keeps GPU streams in

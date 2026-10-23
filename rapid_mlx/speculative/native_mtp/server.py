@@ -105,8 +105,10 @@ def run_native_mtp_server(
             from rapid_mlx.models.glm5_shardwise_load import load_glm5_shardwise
 
             target_loader = load_glm5_shardwise
-        model, processor = target_loader(
-            pair.target_repo, revision=pair.target_revision
+        from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+        model, processor = load_vlm_with_policy(
+            pair.target_repo, loader=target_loader, revision=pair.target_revision
         )
         runtime = load_runtime(
             pair.drafter_repo,
