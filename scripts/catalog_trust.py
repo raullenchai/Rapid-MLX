@@ -35,6 +35,7 @@ _CONTROL_PATHS = (
     "rapid_mlx/utils/model_file_guard.py",
     "rapid_mlx/utils/torch_checkpoint.py",
     "rapid_mlx/utils/tokenizer.py",
+    "rapid_mlx/utils/kimi_tokenizer/",
     "rapid_mlx/audio/registry.py",
     "rapid_mlx/audio/runtime_catalog.py",
     "rapid_mlx/audio/runtime_requirements.py",

@@ -1,0 +1,1 @@
+Fixtures from Kimi K2.6 commit 9cb5961bf22facced678b894ee5e9eb1538f7cba. Config removes duplicated chat_template only. Copyright (c) 2026 Moonshot AI; Modified MIT license at ../../../rapid_mlx/utils/kimi_tokenizer/LICENSE. No model weights.

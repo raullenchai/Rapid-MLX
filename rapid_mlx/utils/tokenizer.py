@@ -1566,7 +1566,25 @@ def load_model_with_fallback(
             # security overlay only for reviewed runtimes. Rapid's supported
             # mlx-lm floor (0.31.3) exposes this keyword on both load APIs.
             lazy_load_kwargs["model_config"] = rapid_owned_model_config
-        result = _mlx_lm_load(model_name, **lazy_load_kwargs)
+        if (
+            rapid_owned_model_config is not None
+            and (_read_model_config_json(model_name) or {}).get("model_type") == "kimi_k25"
+            and not (Path(model_name) / "tokenizer.json").is_file()
+        ):
+            from mlx_lm.utils import load_model
+
+            from .kimi_tokenizer import load_kimi_tokenizer
+
+            model, config = load_model_checked(
+                load_model,
+                Path(model_name),
+                lazy=True,
+                model_config=rapid_owned_model_config,
+            )
+            tokenizer = load_tokenizer_checked(load_kimi_tokenizer, Path(model_name))
+            result = (model, tokenizer, config) if return_config else (model, tokenizer)
+        else:
+            result = _mlx_lm_load(model_name, **lazy_load_kwargs)
         model, tokenizer = result[0], result[1]
 
         # The four fixups below are pure post-load tokenizer/generation-
@@ -2270,6 +2288,14 @@ def _load_with_tokenizer_fallback(
         # repeating its answer (real-weights mini smoke, 2026-08-10).
         augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
         logger.info("Tokenizer loaded via fallback successfully")
+    elif (model_path / "tiktoken.model").is_file() and (
+        _read_model_config_json(str(model_path)) or {}
+    ).get("model_type") == "kimi_k25":
+        from .kimi_tokenizer import load_kimi_tokenizer
+
+        tokenizer = load_tokenizer_checked(load_kimi_tokenizer, model_path)
+        _apply_chat_template_sidecar(model_path, tokenizer)
+        augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
     else:
         raise ValueError(f"No tokenizer.json found in {model_path}")
     return model, tokenizer
