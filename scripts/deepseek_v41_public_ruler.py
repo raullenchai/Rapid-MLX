@@ -367,6 +367,14 @@ def verify(a):
     candidate = (
         np.load(a.candidate, mmap_mode="r", allow_pickle=False) if a.candidate else None
     )
+    for values in (r, candidate):
+        if values is None:
+            continue
+        if values.ndim != 2 or 0 in values.shape or values.dtype.kind not in "fiu":
+            raise ValueError("logits must be nonempty real [tokens, vocabulary] arrays")
+        for start in range(0, len(values), 8):
+            if not np.isfinite(values[start : start + 8]).all():
+                raise ValueError("logits must be finite")
     if candidate is not None and candidate.shape != r.shape:
         raise ValueError("candidate shape mismatch")
     rng = np.random.default_rng(1017)

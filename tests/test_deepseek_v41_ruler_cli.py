@@ -296,3 +296,34 @@ def test_build_rechecks_calibration_inputs_before_qualification(
         ruler.build(a)
     assert not (a.output / "wiki1100.json").exists()
     assert not (a.output / "long17k.json").exists()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        np.empty((0, 2)),
+        np.empty((2, 0)),
+        np.array([1.0, 2.0]),
+        np.array([[np.nan, 0.0]]),
+        np.array([[np.inf, 0.0]]),
+        np.array([[1j, 0j]]),
+    ],
+)
+@pytest.mark.parametrize("candidate", [False, True])
+def test_verify_rejects_empty_or_nonfinite_arrays(tmp_path, bad, candidate):
+    reference = tmp_path / "reference.npy"
+    other = tmp_path / "candidate.npy"
+    np.save(reference, np.zeros((1, 2)) if candidate else bad)
+    np.save(other, bad)
+    output = tmp_path / "report.json"
+    with pytest.raises(ValueError, match="logits must be"):
+        ruler.verify(
+            SimpleNamespace(
+                logits=reference,
+                candidate=other if candidate else None,
+                ks=[1],
+                sigma=0.25,
+                output=output,
+            )
+        )
+    assert not output.exists()
