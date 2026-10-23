@@ -58,10 +58,12 @@ _RUNTIME_CACHE_LOCK = threading.Lock()
 # caller selected. Selection is re-evaluated on every generation, so changing
 # or unsetting RAPID_MLX_LTX25_RUNTIME cannot run a stale workspace.
 _RUNTIME_CACHE: dict[str, tempfile.TemporaryDirectory[str]] = {}
-# Tree digests computed for vendored packages, keyed by directory plus a cheap
-# stat signature (mtime/size/count). Reading ~800 KB once per process is
-# enough; any overwrite, deletion or addition changes the signature.
-_TREE_DIGEST_CACHE: dict[tuple[str, int, int, int], str] = {}
+# Tree digests computed for vendored packages, keyed by directory plus one
+# stat entry per digested file (relative path, mtime, size). Reading ~800 KB
+# once per process is enough, but the key must name every file: a rename keeps
+# mtime, size and count identical while changing the digest, so a summed
+# signature would trust a stale value.
+_TREE_DIGEST_CACHE: dict[tuple[str, tuple[tuple[str, int, int], ...]], str] = {}
 _READINESS_TOKEN = b"RMLX_LTX25_READY\n"
 _READINESS_FD_ENV = "RAPID_MLX_LTX25_READY_FD"
 # The child refuses to import LTX when the pinned packages no longer match the
@@ -282,13 +284,11 @@ def _vendored_files(package_dir: Path) -> list[Path]:
 def _tree_digest(package_dir: Path) -> str:
     """Digest the vendored tree the way the vendoring script recorded it."""
     files = _vendored_files(package_dir)
-    stats = [(package_dir / relative).stat() for relative in files]
-    signature = (
-        sum(stat.st_mtime_ns for stat in stats),
-        sum(stat.st_size for stat in stats),
-        len(files),
+    stats = {relative.as_posix(): (package_dir / relative).stat() for relative in files}
+    signature = tuple(
+        sorted((name, stat.st_mtime_ns, stat.st_size) for name, stat in stats.items())
     )
-    key = (str(package_dir), *signature)
+    key = (str(package_dir), signature)
     cached = _TREE_DIGEST_CACHE.get(key)
     if cached is not None:
         return cached

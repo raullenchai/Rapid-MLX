@@ -304,6 +304,28 @@ def test_ltx25_runtime_added_vendored_file_is_corrupt(
     assert "no longer match the audited snapshot" in (runtime.detail or "")
 
 
+def test_ltx25_runtime_renamed_vendored_file_is_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename keeps mtime, size and file count, so the cache key must name files."""
+    root = tmp_path / "site-packages"
+    directories = _vendored_tree(root)
+    _fake_package_specs(monkeypatch, directories, install_root=root)
+    assert ltx25.ltx25_runtime().state == "trusted"
+
+    os.rename(
+        directories["ltx_core_mlx"] / "core.py",
+        directories["ltx_core_mlx"] / "renamed_core.py",
+    )
+
+    runtime = ltx25.ltx25_runtime()
+
+    assert runtime.state == "corrupt"
+    assert runtime.reason == "damaged"
+    assert "no longer match the audited snapshot" in (runtime.detail or "")
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
 def test_ltx25_runtime_unreadable_vendored_files_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
