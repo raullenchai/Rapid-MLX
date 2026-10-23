@@ -112,6 +112,10 @@ enum ModelSelectionPurpose: Sendable, Hashable {
     case imageToVideo
 
     func accepts(_ entry: ModelEntry) -> Bool {
+        // Inventory retains read-only external rows even when discovery cannot
+        // certify chat. Selection must honor an explicit rejection; older
+        // sidecars without this verdict retain their existing behavior.
+        if self == .chat, entry.cachedChatDiscovery?.ready == false { return false }
         if !entry.taskTypes.isEmpty {
             switch self {
             case .chat:
@@ -318,6 +322,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Authoritative alias pin. An explicit `true` always keeps the text lane.
     var isTextOnly: Bool? = nil
 
+    /// Shared engine discovery verdict. Nil preserves older sidecar behavior.
+    var cachedChatDiscovery: CachedChatDiscovery? = nil
+    var isUncataloged: Bool = false
+
     var id: String { alias }
 
     /// Whether this entry belongs on a product capability surface. Atomic
@@ -345,11 +353,19 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
 /// Structured cache inventory emitted by `rapid-mlx models --cached --json`.
 /// Subfolder is part of artifact identity; `nil` means the repository root,
 /// never "unknown or any subfolder."
+struct CachedChatDiscovery: Hashable, Sendable {
+    let ready: Bool
+    let fit: String?
+    let mlxNative: Bool
+    let modifiedEpoch: Double
+}
+
 typealias CachedModelInventoryEntry = (
     alias: String,
     hfRepo: String?,
     subfolder: String?,
     size: String?,
+    discovery: CachedChatDiscovery?,
     launchPath: String?
 )
 
@@ -674,12 +690,24 @@ enum ModelCatalog {
     /// deliberately withheld from ``models`` must NOT be re-admitted here.
     static func mergeAvailableAndCached(
         available: [(String, String?)],
+        cached: [(String, String?, String?, String?, CachedChatDiscovery?)],
+        excluded: Set<String>
+    ) -> [ModelEntry] {
+        mergeAvailableAndCached(
+            available: available,
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, $0.4, nil) },
+            excluded: excluded
+        )
+    }
+
+    static func mergeAvailableAndCached(
+        available: [(String, String?)],
         cached: [(String, String?, String?, String?)],
         excluded: Set<String>
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, nil) },
             excluded: excluded
         )
     }
@@ -692,12 +720,12 @@ enum ModelCatalog {
         var cachedIndex: [String: (
             hfRepo: String?, subfolder: String?, size: String?
         )] = [:]
-        for (alias, hf, subfolder, size, _) in cached
+        for (alias, hf, subfolder, size, _, _) in cached
         where !alias.isEmpty && !isStatusAlias(alias) {
             cachedIndex[alias] = (hf, subfolder, size)
         }
         var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, _, size, _) in cached where alias == "(external)" {
+        for (alias, hf, _, size, _, _) in cached where alias == "(external)" {
             guard let identifier = hf else { continue }
             externalIndex[identifier] = (hf, size)
         }
@@ -735,7 +763,7 @@ enum ModelCatalog {
         // cached audio or video model has no row in ``models`` for
         // exactly the reason it must stay hidden, and would be re-admitted
         // here on that basis (#1603).
-        for (alias, hf, subfolder, size, _) in cached
+        for (alias, hf, subfolder, size, _, _) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -759,7 +787,7 @@ enum ModelCatalog {
         // is deletable, which ``isExternal`` conveys to the UI. Dropping them
         // here instead would satisfy "not deletable" by making them invisible
         // — and leave the user re-downloading weights they already have.
-        for (alias, hf, _, size, _) in cached
+        for (alias, hf, _, size, _, _) in cached
         where alias == "(external)" {
             guard let repo = hf,
                   !consumedExternal.contains(repo),
@@ -774,7 +802,10 @@ enum ModelCatalog {
                 isExternal: true
             ))
         }
-        return addingUnambiguousCachedPaths(entries, cached: cached)
+        return addingDiscoveredChat(
+            entries, cached: cached, excluded: excluded,
+            catalogAliases: Set(available.map(\.0))
+        )
     }
 
     /// Compatibility seam for pure text-parser tests and older callers. Text
@@ -786,7 +817,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil) },
+            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil, nil) },
             excluded: excluded
         )
     }
@@ -1379,12 +1410,24 @@ enum ModelCatalog {
     /// non-deletable, and hidden/media aliases cannot re-enter as Chat rows.
     static func mergeAtomicAndCached(
         atomic: [ModelEntry],
+        cached: [(String, String?, String?, String?, CachedChatDiscovery?)],
+        excluded: Set<String>
+    ) -> [ModelEntry] {
+        mergeAtomicAndCached(
+            atomic: atomic,
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, $0.4, nil) },
+            excluded: excluded
+        )
+    }
+
+    static func mergeAtomicAndCached(
+        atomic: [ModelEntry],
         cached: [(String, String?, String?, String?)],
         excluded: Set<String>
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, nil) },
             excluded: excluded
         )
     }
@@ -1404,7 +1447,7 @@ enum ModelCatalog {
         var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
         var unmappedRootByRepo: [String: (size: String?, present: Bool)] = [:]
         var externalByRepo: [String: (size: String?, present: Bool)] = [:]
-        for (alias, repo, subfolder, size, _) in cached {
+        for (alias, repo, subfolder, size, _, _) in cached {
             if alias == "(external)", let repo {
                 externalByRepo[repo] = (size, true)
             } else if alias == "(unmapped)", let repo {
@@ -1484,7 +1527,7 @@ enum ModelCatalog {
             )
         }
 
-        for (alias, repo, _, size, _) in cached
+        for (alias, repo, _, size, _, _) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -1494,7 +1537,7 @@ enum ModelCatalog {
                 alias: alias, hfRepo: repo, sizeOnDisk: size, cached: true
             ))
         }
-        for (alias, repo, _, size, _) in cached where alias == "(external)" {
+        for (alias, repo, _, size, _, _) in cached where alias == "(external)" {
             guard let repo,
                   !consumedExternal.contains(repo),
                   !seenAliases.contains(repo),
@@ -1509,7 +1552,10 @@ enum ModelCatalog {
                 isExternal: true
             ))
         }
-        return addingUnambiguousCachedPaths(entries, cached: cached)
+        return addingDiscoveredChat(
+            entries, cached: cached, excluded: excluded,
+            catalogAliases: Set(atomic.map(\.alias))
+        )
     }
 
     static func mergeAtomicAndCached(
@@ -1520,7 +1566,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil) },
+            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil, nil) },
             excluded: excluded,
             speculative: speculative
         )
@@ -1540,6 +1586,42 @@ enum ModelCatalog {
                 alias: path, hfRepo: row.hfRepo, sizeOnDisk: row.size, cached: true,
                 isExternal: row.alias == "(external)"
             ))
+        }
+        return result
+    }
+
+    /// Engine discovery certifies uncataloged roots; repo spelling cannot.
+    private static func addingDiscoveredChat(
+        _ entries: [ModelEntry], cached: [CachedModelInventoryEntry], excluded: Set<String>,
+        catalogAliases: Set<String>
+    ) -> [ModelEntry] {
+        var result = addingUnambiguousCachedPaths(entries, cached: cached)
+        for row in cached {
+            guard let repo = row.hfRepo, let discovery = row.discovery else { continue }
+            // A verdict describes one exact cached artifact, including every
+            // catalog alias for that artifact. Preserve catalog provenance.
+            for index in result.indices where catalogAliases.contains(result[index].alias)
+                && result[index].hfRepo == repo
+                && result[index].sourceSubfolder == row.subfolder {
+                result[index].cachedChatDiscovery = discovery
+            }
+            // Colliding repositories use the engine-certified local path.
+            // An older sidecar without that identity cannot disambiguate them.
+            let launchIdentity = row.launchPath ?? repo
+            guard !catalogAliases.contains(launchIdentity),
+                  row.subfolder == nil,
+                  row.alias == "(unmapped)" || row.alias == "(external)" else { continue }
+            if let index = result.firstIndex(where: { $0.alias == launchIdentity && $0.hfRepo == repo }) {
+                result[index].cachedChatDiscovery = discovery
+                result[index].isUncataloged = true
+            } else if discovery.ready, !excluded.contains(launchIdentity),
+                      !result.contains(where: { $0.hfRepo == repo && $0.sourceSubfolder == nil }) {
+                result.append(ModelEntry(
+                    alias: launchIdentity, hfRepo: repo, sizeOnDisk: row.size, cached: true,
+                    isExternal: row.alias == "(external)",
+                    cachedChatDiscovery: discovery, isUncataloged: true
+                ))
+            }
         }
         return result
     }
@@ -1664,7 +1746,7 @@ enum ModelCatalog {
         )
         let cached = await cachedTask
         let cachedByRepo = Dictionary(
-            cached.compactMap { _, repo, _, size, _ -> (String, String?)? in
+            cached.compactMap { _, repo, _, size, _, _ -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1716,7 +1798,7 @@ enum ModelCatalog {
             packagedVideoAliases.contains($0.alias)
         }
         let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { _, repo, _, size, _ -> (String, String?)? in
+            (await cachedTask).compactMap { _, repo, _, size, _, _ -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1961,7 +2043,7 @@ enum ModelCatalog {
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        return parseCached(text).map { ($0.0, $0.1, nil, $0.2, nil) }
+        return parseCached(text).map { ($0.0, $0.1, nil, $0.2, nil, nil) }
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -2143,6 +2225,13 @@ enum ModelCatalog {
             } else {
                 launchPath = nil
             }
+            let discovery = (row["chat_ready"] as? Bool).map {
+                CachedChatDiscovery(
+                    ready: $0, fit: row["chat_fit"] as? String,
+                    mlxNative: row["chat_mlx_native"] as? Bool ?? false,
+                    modifiedEpoch: (row["modified_epoch"] as? Double) ?? 0
+                )
+            }
             switch state {
             case "ok":
                 guard external == false,
@@ -2158,17 +2247,17 @@ enum ModelCatalog {
                 } else {
                     return nil
                 }
-                entries.append((alias, repo, subfolder, size, nil))
+                entries.append((alias, repo, subfolder, size, discovery, nil))
             case "unmapped":
                 guard external == false, row["alias"] is NSNull,
                       row["subfolder"] is NSNull
                 else { return nil }
-                entries.append(("(unmapped)", repo, nil, size, launchPath))
+                entries.append(("(unmapped)", repo, nil, size, discovery, launchPath))
             case "external":
                 guard external == true, row["alias"] is NSNull,
                       row["subfolder"] is NSNull
                 else { return nil }
-                entries.append(("(external)", repo, nil, size, launchPath))
+                entries.append(("(external)", repo, nil, size, discovery, launchPath))
             case "incomplete":
                 guard external == false, row["alias"] is NSNull,
                       row["subfolder"] is NSNull

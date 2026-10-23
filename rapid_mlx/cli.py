@@ -9991,16 +9991,29 @@ def _cached_models_json_payload() -> dict:
     ``ok`` / ``unmapped`` /
     ``incomplete`` / ``external`` mirroring the alias column's parenthesized
     tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
-    launchable by alias). Sorted biggest-first, like the table.
+    launchable by alias). Sorted biggest-first, like the table. ``chat_ready``
+    is the shared discovery verdict for a root checkpoint addressable by this
+    row's repo/alias, including memory fit; missing/false is not chat evidence.
+    The optional chat fit/native fields let Desktop rank uncataloged choices
+    without repeating checkpoint inspection or guessing size from repo names.
     """
     import time as _time
 
+    from rapid_mlx.local_models import discover_runnable_chat_models
     from rapid_mlx.model_aliases import (
         cached_repository_collides,
         list_profiles,
         resolve_subfolder,
     )
 
+    chat_models = {
+        (model.repo, model.external): model
+        for model in discover_runnable_chat_models()
+        # Ordinary rows launch by repo; collision rows carry an explicit path.
+        # Other shadowed external copies cannot supply a repo launch verdict.
+        if model.model in (model.repo, model.alias)
+        or (model.alias is None and cached_repository_collides(model.repo))
+    }
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
     runnable_hub_repos = {
@@ -10016,17 +10029,11 @@ def _cached_models_json_payload() -> dict:
 
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
-    # Only certified chat checkpoints get an explicit collision launch path.
-    # Ordinary inventory and alias resolution retain their existing contract.
-    collision_paths = {}
-    if any(cached_repository_collides(row[0]) for row in tagged):
-        from rapid_mlx.local_models import discover_runnable_chat_models
-
-        collision_paths = {
-            (model.repo, model.external): model.model
-            for model in discover_runnable_chat_models()
-            if model.alias is None and cached_repository_collides(model.repo)
-        }
+    collision_paths = {
+        key: model.model
+        for key, model in chat_models.items()
+        if model.alias is None and cached_repository_collides(model.repo)
+    }
     # Completeness is an inventory property, not chat certification. A
     # rejected managed collision must not hide a certified external copy:
     # its explicit path can launch independently of the managed snapshot.
@@ -10080,6 +10087,12 @@ def _cached_models_json_payload() -> dict:
                 artifacts = [(None, None, size, state)]
 
         for alias, subfolder, artifact_size, state in artifacts:
+            chat = chat_models.get((repo, is_external))
+            # Discovery judges repo-level resolution, not every sibling
+            # checkpoint in a multi-artifact catalog repository.
+            chat_ready = (
+                chat is not None and subfolder is None and state != "incomplete"
+            )
             models.append(
                 {
                     "alias": alias,
@@ -10087,12 +10100,17 @@ def _cached_models_json_payload() -> dict:
                     "repo": repo,
                     "subfolder": subfolder,
                     "size_bytes": int(artifact_size),
-                    "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
                     "age_seconds": int(max(0, now - mtime))
                     if mtime and mtime > 0
                     else None,
                     "state": state,
                     "external": is_external,
+                    "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
+                    "chat_ready": chat_ready,
+                    "chat_fit": chat.fit if chat is not None and chat_ready else None,
+                    "chat_mlx_native": chat.mlx_native
+                    if chat is not None and chat_ready
+                    else None,
                 }
             )
     models.sort(key=lambda m: -m["size_bytes"])

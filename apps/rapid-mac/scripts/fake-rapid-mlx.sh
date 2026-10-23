@@ -1226,6 +1226,14 @@ def _emit_catalog(subcommand, alias):
     to fall through to the server.
     """
     if subcommand == "models":
+        if "--cached" in sys.argv and "--json" in sys.argv and _setting("FAKE_CACHED_UNCATALOGED") == "1":
+            print(json.dumps({"cached": [{
+                "alias": None, "repo": "fixture/Local-Chat", "subfolder": None,
+                "size_bytes": 1073741824, "state": "unmapped", "external": False,
+                "chat_ready": True, "chat_fit": "yes", "chat_mlx_native": True,
+                "modified_epoch": 42,
+            }]}))
+            return True
         if "--json" in sys.argv:
             aliases = []
             if _setting("FAKE_INCLUDE_STARTER") == "1":

@@ -859,6 +859,7 @@ def test_peekaboo_requirement_is_default_deny():
         "fresh-install",
         "cached-quickstart",
         "cached-curated-tradeup",
+        "cached-uncataloged-quickstart",
         "cached-variant-collapse",
         "model-switch-active-request",
         "download-progress",

@@ -565,6 +565,14 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-curated-tradeup
 
+      - name: 'Golden flow: cached-uncataloged-quickstart'
+        # The blocking "Require every named golden flow" step below checks
+        # this journey's result.json; continue here collects all diagnostics.
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow cached-uncataloged-quickstart
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-uncataloged-quickstart
+
       - name: 'Golden flow: cached-variant-collapse'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow cached-variant-collapse
@@ -776,7 +784,7 @@ jobs:
           fi
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in fresh-install settings-persistence settings-mtp chat-restore model-crash-recovery update-state update-busy campaign-banner image-generation audio-readiness launch-integrations; do
+          for flow in fresh-install cached-uncataloged-quickstart settings-persistence settings-mtp chat-restore model-crash-recovery update-state update-busy campaign-banner image-generation audio-readiness launch-integrations; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true

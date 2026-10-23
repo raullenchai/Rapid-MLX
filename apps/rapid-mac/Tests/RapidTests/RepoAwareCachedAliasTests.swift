@@ -120,7 +120,7 @@ struct RepoAwareCachedAliasTests {
     func remarkRequiresExactSubfolderIdentity() {
         let merged = ModelCatalog.mergeAvailableAndCached(
             available: [("foo", "org/foo"), ("foo-4bit", "org/foo")],
-            cached: [("foo-4bit", "org/foo", "4bit", "1 GiB")],
+            cached: [("foo-4bit", "org/foo", "4bit", "1 GiB", nil)],
             excluded: []
         )
         #expect(merged.first { $0.alias == "foo-4bit" }?.sourceSubfolder == "4bit")

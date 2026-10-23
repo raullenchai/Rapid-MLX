@@ -682,6 +682,64 @@ struct CacheAwareDefaultTests {
         ])
     }
 
+    @Test("certified uncataloged chat precedes a download without guessing parameter counts")
+    @MainActor
+    func uncatalogedFallback() {
+        let starter = entry("lfm2.5-2.6b-4bit")
+        var local = entry("org/Local-Chat", cached: true)
+        local.isUncataloged = true
+        local.cachedChatDiscovery = CachedChatDiscovery(ready: true, fit: "yes", mlxNative: true, modifiedEpoch: 10)
+        #expect(CacheAwareDefault.pick(catalog: [starter, local], hardware: host(gb: 16), bucketedDefault: starter.alias) == local.alias)
+        #expect(QuickstartCoordinator.defaultChoice(hardware: host(gb: 16), catalog: [starter, local]).alias == local.alias)
+        let known = entry("qwen3.5-4b-4bit", cached: true)
+        #expect(CacheAwareDefault.pick(catalog: [starter, local, known], hardware: host(gb: 16), bucketedDefault: starter.alias) == known.alias)
+        for verdict in [
+            CachedChatDiscovery(ready: false, fit: "yes", mlxNative: true, modifiedEpoch: 10),
+            CachedChatDiscovery(ready: true, fit: "no", mlxNative: true, modifiedEpoch: 10),
+            CachedChatDiscovery(ready: true, fit: nil, mlxNative: true, modifiedEpoch: 10)
+        ] {
+            local.cachedChatDiscovery = verdict
+            #expect(CacheAwareDefault.pick(catalog: [starter, local], hardware: host(gb: 16), bucketedDefault: starter.alias) == starter.alias)
+        }
+    }
+
+    @Test("catalog rejection cannot win cached Quickstart default", arguments: [false, true])
+    @MainActor
+    func catalogDiscoveryDefault(ready: Bool) {
+        let starter = entry("lfm2.5-2.6b-4bit")
+        let known = entry("qwen3.5-4b-4bit")
+        let rows: [CachedModelInventoryEntry] = [
+            (known.alias, known.hfRepo, nil, "2 GiB",
+             CachedChatDiscovery(ready: ready, fit: "yes", mlxNative: true, modifiedEpoch: 10), nil)
+        ]
+        let catalog = ModelCatalog.mergeAtomicAndCached(
+            atomic: [starter, known], cached: rows, excluded: []
+        )
+        let expected = ready ? known.alias : starter.alias
+        #expect(CacheAwareDefault.pick(
+            catalog: catalog, hardware: host(gb: 16), bucketedDefault: starter.alias
+        ) == expected)
+        #expect(QuickstartCoordinator.defaultChoice(hardware: host(gb: 16), catalog: catalog).alias == expected)
+    }
+
+    @Test("uncataloged order uses engine fit, native format, recency, then repo")
+    func uncatalogedRanking() {
+        func candidate(_ name: String, fit: String = "yes", native: Bool = true, modified: Double = 10) -> ModelEntry {
+            var model = entry("org/\(name)", cached: true)
+            model.isUncataloged = true
+            model.cachedChatDiscovery = CachedChatDiscovery(ready: true, fit: fit, mlxNative: native, modifiedEpoch: modified)
+            return model
+        }
+        let best = candidate("Chosen", modified: 20)
+        for other in [
+            candidate("A-tight", fit: "tight", modified: 99),
+            candidate("A-nonnative", native: false, modified: 99),
+            candidate("A-older"), candidate("Z-tied", modified: 20)
+        ] {
+            #expect(CacheAwareDefault.pick(catalog: [other, best], hardware: host(gb: 16), bucketedDefault: "missing") == best.alias)
+        }
+    }
+
     // MARK: - Headline case (issue #436 repro)
 
     @Test("256 GB Mac with retired Bonsai cached — picker chooses coherent cached LFM")

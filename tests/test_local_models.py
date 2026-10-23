@@ -90,6 +90,7 @@ def capture_cli(monkeypatch, argv, *, tty=False):
 
 def test_empty_and_catalog_cache(cache):
     assert lm.discover_runnable_chat_models() == []
+    assert cli._cached_models_json_payload()["cached"] == []
     assert lm.select_default_local_model() is None
     repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
     snapshot(cache, repo)
@@ -100,6 +101,9 @@ def test_empty_and_catalog_cache(cache):
     assert found[0].fit == "yes"
     assert lm.select_default_local_model().model == first_run.FIRST_RUN_MODEL
     assert first_run.select_chat_default() == (first_run.FIRST_RUN_MODEL, True)
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["chat_ready"] is True
+    assert row["chat_fit"] == "yes"
 
 
 def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolution):
@@ -135,6 +139,13 @@ def test_uncataloged_default_and_store_untouched_by_selection(
     chosen = lm.select_default_local_model()
     assert chosen.model == repo and not chosen.cataloged
     assert chosen.external == external
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["repo"] == repo
+    assert row["external"] is external
+    assert row["chat_ready"] is True
+    assert row["chat_fit"] == "yes"
+    assert row["chat_mlx_native"] is True
+    assert row["modified_epoch"] == int(chosen.mtime)
     if external:
         assert ma.resolve_model(repo) == str(directory)
     args = capture_cli(monkeypatch, ["serve"])
@@ -171,6 +182,10 @@ def test_nonchat_and_incomplete_never_offered(cache, repo, options):
     snapshot(cache, repo, **options)
     assert lm.discover_runnable_chat_models() == []
     assert lm.select_default_local_model() is None
+    for row in cli._cached_models_json_payload()["cached"]:
+        assert row["chat_ready"] is False
+        assert row["chat_fit"] is None
+        assert row["chat_mlx_native"] is None
 
 
 def test_mtp_primary_is_allowed(cache):
@@ -199,6 +214,8 @@ def test_fit_and_unknown_ram(cache, monkeypatch):
     assert lm.discover_runnable_chat_models(ram_bytes=0)[0].fit == "unknown"
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0)
     assert lm.select_default_local_model().fit == "unknown"
+    monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 4)
+    assert cli._cached_models_json_payload()["cached"][0]["chat_ready"] is False
 
 
 def test_policy_order(monkeypatch):
@@ -675,6 +692,11 @@ def test_valid_external_copy_backs_up_rejected_hub_copy(cache, tmp_path, monkeyp
     (found,) = lm.discover_runnable_chat_models()
     assert found.external and found.repo == repo
     assert found.model == str(directory)
+    # Desktop starts by repo ID, which resolves to the rejected Hub copy.
+    # The external path's verdict must not make that row chat-ready.
+    rows = cli._cached_models_json_payload()["cached"]
+    assert len(rows) == 1
+    assert rows[0]["chat_ready"] is False
 
 
 def test_serve_notes_wait_for_log_file(monkeypatch, capsys, tmp_path):
@@ -766,13 +788,21 @@ def test_cached_repo_alias_collision_uses_exact_checkpoint(
     assert ma.resolve_revision(found[0].model) is None
     assert ma.resolve_subfolder(found[0].model) is None
     cli._print_cached_models()
-    rows = cli._cached_models_json_payload()["cached"]
+    from unittest.mock import patch
+
+    with patch.object(
+        lm, "discover_runnable_chat_models", wraps=lm.discover_runnable_chat_models
+    ) as discovery:
+        rows = cli._cached_models_json_payload()["cached"]
+        assert discovery.call_count == 1
     assert len(rows) == 1
     assert rows[0]["alias"] is None
     assert rows[0]["repo"] == repo
     assert rows[0]["launch_path"] == str(directory)
     assert rows[0]["state"] == ("external" if external else "unmapped")
     assert rows[0]["external"] is external
+    assert rows[0]["chat_ready"] is True
+    assert rows[0]["chat_fit"] == "yes"
 
 
 def test_colliding_repository_path_rejects_missing_or_incomplete_cache(cache):

@@ -69,7 +69,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, chat-depth, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-uncataloged-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, chat-depth, launch-integrations,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
        browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, dictation-rc2-upgrade, audio-readiness, all
@@ -534,7 +534,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|chat-depth|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
+        fresh-install|cached-quickstart|cached-uncataloged-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|chat-depth|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
         model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -2411,6 +2411,36 @@ flow_cached_quickstart() {
     fi
     cleanup_persona
     cleanup_operator_server
+}
+
+flow_cached_uncataloged_quickstart() {
+    log "uncataloged cached chat is the default with zero downloads"
+    start_persona cached-uncataloged-quickstart FAKE_CACHED_UNCATALOGED=1 FAKE_INCLUDE_STARTER=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=16 \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_selected Quickstart.CachedModel.fixture/Local-Chat "$OUT/chooser.json"
+    baseline cached-uncataloged-quickstart.chooser "$OUT/chooser.json"
+    assert_tree_text "$OUT/chooser.json" "not catalog-tested"
+    assert_tree_text "$OUT/chooser.json" "Start existing model"
+    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
+    wait_fake_event_after_start \
+        '.event == "server_started" and .alias == "fixture/Local-Chat"' \
+        "uncataloged cached default did not start" uncataloged \
+        Quickstart.Memory.Load Quickstart.Memory.LoadAnyway
+    wait_fake_sidecar_health "fixture/Local-Chat" "uncataloged cached chat"
+    wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json" 240
+    press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting "$OUT/start-chatting.json"
+    wait_identifier rapid.chat.compose "$OUT/ready.json"
+    send_prompt "Hello from the cached model journey" uncataloged-first-reply
+    wait_send_idle "$OUT/answered.json"
+    assert_tree_text "$OUT/answered.json" "Hello from the fake rapid-mlx mock."
+    if jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "uncataloged cached Quickstart attempted a download"
+    fi
+    cleanup_persona
 }
 
 flow_cached_curated_tradeup() {
@@ -6042,6 +6072,7 @@ warn_global_app_defaults
 case "$FLOW" in
     fresh-install) run_journey fresh-install flow_fresh_install ;;
     cached-quickstart) run_journey cached-quickstart flow_cached_quickstart ;;
+    cached-uncataloged-quickstart) run_journey cached-uncataloged-quickstart flow_cached_uncataloged_quickstart ;;
     cached-curated-tradeup) run_journey cached-curated-tradeup flow_cached_curated_tradeup ;;
     cached-variant-collapse) run_journey cached-variant-collapse flow_cached_variant_collapse ;;
     download-progress) run_journey download-progress flow_download_progress ;;
@@ -6070,6 +6101,7 @@ case "$FLOW" in
     all)
         run_journey fresh-install flow_fresh_install
         run_journey cached-quickstart flow_cached_quickstart
+        run_journey cached-uncataloged-quickstart flow_cached_uncataloged_quickstart
         run_journey cached-curated-tradeup flow_cached_curated_tradeup
         run_journey cached-variant-collapse flow_cached_variant_collapse
         run_journey download-progress flow_download_progress

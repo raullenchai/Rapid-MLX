@@ -347,7 +347,7 @@ final class QuickstartCoordinator {
         catalog: [ModelEntry]
     ) -> QuickstartModelChoice {
         let baseline = baselineChoice(hardware: hardware)
-        let eligibleCatalog = catalog.filter { $0.supports(.chat) }
+        let eligibleCatalog = catalog.filter { ModelSelectionPurpose.chat.accepts($0) }
         var excluded = CacheAwareDefault.retiredAutomaticAliases
             .union(optionalOnlyAliases)
         if baseline.alias != lowMemoryChoice.alias {
@@ -3467,7 +3467,7 @@ struct QuickstartView: View {
     /// chosen during first-run setup. Scoped to onboarding — Settings → Models
     /// is deliberately unaffected.
     static func onboardingCatalogModels(_ entries: [ModelEntry]) -> [ModelEntry] {
-        entries.filter { $0.supports(.chat) }
+        entries.filter { ModelSelectionPurpose.chat.accepts($0) }
     }
 
     /// The catalogue as the user currently sees it: chat-only, searched,
@@ -3684,7 +3684,7 @@ struct QuickstartView: View {
     /// first-chat path. This returns the complete eligible set because lookup
     /// correctness must not depend on the UI's six-row presentation bound.
     static func quickstartCachedModels(_ entries: [ModelEntry]) -> [ModelEntry] {
-        entries.filter { $0.cached && $0.supports(.chat) }
+        entries.filter { $0.cached && ModelSelectionPurpose.chat.accepts($0) }
     }
 
     /// The quieter cached slice used only by the first-run shortlist.
@@ -3785,7 +3785,8 @@ struct QuickstartView: View {
             displayName: QuickstartCoordinator.onboardingChoices
                 .first { $0.alias == entry.alias }?.displayName ?? entry.alias,
             hfRepo: entry.hfRepo,
-            blurb: entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
+            blurb: entry.isUncataloged ? "Already on this Mac · not catalog-tested."
+                : entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
             tier: .tradeUp
         )
     }

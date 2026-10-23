@@ -142,7 +142,12 @@ class AreaMapping:
 # directions, and that every referenced journey exists in journeys.yaml.
 AREA_JOURNEYS: dict[str, AreaMapping] = {
     "First-run setup wizard": AreaMapping(
-        ("fresh-install", "cached-quickstart", "cached-curated-tradeup"),
+        (
+            "fresh-install",
+            "cached-quickstart",
+            "cached-curated-tradeup",
+            "cached-uncataloged-quickstart",
+        ),
     ),
     "Chat window (asking, answering, tools, formatting)": AreaMapping(
         (
@@ -205,6 +210,7 @@ AREA_JOURNEYS: dict[str, AreaMapping] = {
             "fresh-install",
             "cached-quickstart",
             "cached-curated-tradeup",
+            "cached-uncataloged-quickstart",
             "cached-variant-collapse",
             "download-progress",
             "model-switch-active-request",

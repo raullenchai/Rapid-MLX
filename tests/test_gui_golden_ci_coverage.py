@@ -342,6 +342,32 @@ def test_golden_job_builds_the_release_ui_surface():
     assert "gui-app-build" in workflow["jobs"]["gui-golden-flows"]["needs"]
 
 
+@pytest.mark.parametrize("status", ["pass", "fail", None])
+def test_uncataloged_journey_result_is_enforced_by_blocking_gate(tmp_path, status):
+    verdict = next(
+        step
+        for step in workflow_steps()
+        if step.get("name") == "Require every named golden flow"
+    )
+    assert verdict.get("continue-on-error", False) is False
+    if status is not None:
+        result_dir = tmp_path / "cached-uncataloged-quickstart"
+        result_dir.mkdir()
+        (result_dir / "result.json").write_text(json.dumps({"status": status}))
+    result = subprocess.run(
+        ["bash", "-e", "-c", verdict["run"]],
+        env={
+            **os.environ,
+            "GOLDEN_ROOT": str(tmp_path),
+            "EXPECTED_FLOW_COUNT": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is (status == "pass"), result.stderr
+
+
 def test_persona_update_isolation_is_applied_to_launch_and_relaunch(tmp_path):
     """Run the real launcher with a tiny owned child instead of a GUI app."""
     source = HARNESS.read_text()
