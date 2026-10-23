@@ -7,7 +7,6 @@ unchanged cache blobs repeatedly; they are invalidated by file identity/timestam
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import os
@@ -32,7 +31,18 @@ def _identity(path):
     return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
 
-def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=None):
+def verify_snapshot(
+    repo_id,
+    snapshot_path,
+    *,
+    revision=None,
+    allow_patterns=None,
+    ignore_patterns=None,
+    filenames=None,
+    resolved_revision=None,
+    local_files_only=False,
+    token=None,
+):
     """Fail before pull completion when selected files differ from HF's commit.
 
     A completed receipt also permits offline verification of unchanged files.
@@ -40,12 +50,19 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
     No files are removed: interrupted transfers retain their resume data.
     """
     path = Path(snapshot_path)
-    commit = path.name
+    commit = resolved_revision or path.name
     if not re.fullmatch(r"[0-9a-f]{40}", commit) or (revision and revision != commit):
         raise ModelIntegrityError(
             "Download did not resolve to the requested immutable snapshot"
         )
-    patterns = sorted(allow_patterns or [])
+    allow_all = allow_patterns is None
+    patterns = sorted(
+        [allow_patterns] if isinstance(allow_patterns, str) else allow_patterns or []
+    )
+    ignored = sorted(
+        [ignore_patterns] if isinstance(ignore_patterns, str) else ignore_patterns or []
+    )
+    exact = sorted(filenames) if filenames is not None else None
     lock_path = Path(__file__).with_name("model_catalog_lock.json")
     locked = (
         json.loads(lock_path.read_text()).get("repositories", {}).get(repo_id, {})
@@ -60,9 +77,25 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
         json.dumps(locked, sort_keys=True).encode()
     ).hexdigest()
     key = hashlib.sha256(
-        json.dumps([repo_id, commit, patterns, lock_identity]).encode()
+        json.dumps(
+            [
+                repo_id,
+                commit,
+                patterns,
+                allow_all,
+                ignored,
+                exact,
+                str(path.absolute()),
+                lock_identity,
+            ]
+        ).encode()
     ).hexdigest()
-    receipt_path = path.parent.parent / ".rapid-mlx-integrity" / (key + ".json")
+    receipt_root = (
+        path / ".cache" / "rapid-mlx-integrity"
+        if resolved_revision
+        else path.parent.parent / ".rapid-mlx-integrity"
+    )
+    receipt_path = receipt_root / (key + ".json")
     previous = {}
     try:
         previous = json.loads(receipt_path.read_text())
@@ -83,6 +116,9 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
         # The packaged manifest is authoritative; remote omission cannot drop
         # a reviewed weight/config from verification, and warm pulls work offline.
         siblings = [
+            {"rfilename": name, "size": entry.get("size"), "blob_id": entry["blob_id"]}
+            for name, entry in locked.get("git_files", {}).items()
+        ] + [
             {
                 "rfilename": name,
                 "size": entry.get("size"),
@@ -98,8 +134,14 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
 
         from rapid_mlx._download_gate import call_with_deadline
 
+        if local_files_only:
+            raise ModelIntegrityError(
+                "Offline integrity verification requires a packaged manifest or an unchanged verified receipt; run an online pull first"
+            )
         info = call_with_deadline(
-            lambda: HfApi().model_info(repo_id, revision=commit, files_metadata=True),
+            lambda: HfApi().model_info(
+                repo_id, revision=commit, files_metadata=True, token=token
+            ),
             30,
         )
         if _field(info, "sha") != commit:
@@ -107,12 +149,29 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
                 "Hub integrity manifest does not match the downloaded commit"
             )
         siblings = _field(info, "siblings", [])
+    siblings = list({_field(item, "rfilename"): item for item in siblings}.values())
+    from huggingface_hub.utils import filter_repo_objects
+
+    names = [_field(item, "rfilename") for item in siblings]
+    if not all(isinstance(name, str) for name in names):
+        raise ModelIntegrityError("Invalid integrity manifest filename")
+    if exact is not None and any(name not in names for name in exact):
+        raise ModelIntegrityError("Requested file is absent from the immutable integrity manifest")
+    selected = set(
+        filter_repo_objects(
+            names,
+            allow_patterns=None if allow_all else patterns,
+            ignore_patterns=ignored,
+        )
+    )
     verified = {}
     for sibling in siblings:
         name = _field(sibling, "rfilename")
         if not isinstance(name, str):
             raise ModelIntegrityError("Invalid integrity manifest filename")
-        if patterns and not any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+        if exact is not None and name not in exact:
+            continue
+        if name not in selected:
             continue
         relative = PurePosixPath(name)
         if relative.is_absolute() or ".." in relative.parts or "\\" in name:
@@ -152,6 +211,8 @@ def verify_snapshot(repo_id, snapshot_path, *, revision=None, allow_patterns=Non
         except OSError as exc:
             raise ModelIntegrityError(f"Cannot verify downloaded file: {name}") from exc
     if not verified:
+        if not selected:
+            return
         raise ModelIntegrityError("Integrity manifest contains no selected files")
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     import tempfile

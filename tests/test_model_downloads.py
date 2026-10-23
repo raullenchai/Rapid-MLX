@@ -174,7 +174,9 @@ def test_pinned_download_cache_miss_stays_failed_if_policy_changes(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", missing_then_reenable)
     monkeypatch.setattr(_mirror, "download_with_mirror_fallback", _fail)
-    with pytest.raises(LocalEntryNotFoundError):
+    with pytest.raises(
+        (LocalEntryNotFoundError, model_downloads.ModelDownloadsDisabledError)
+    ):
         _mirror.pinned_snapshot_download("acme/model", _REVISION)
 
 
@@ -336,7 +338,7 @@ def test_server_reachable_hub_boundaries_use_the_policy_resolvers():
         "model_downloads.py": {"snapshot_download", "hf_hub_download"},
         # Mirror internals are reached through pinned_snapshot_download's policy
         # guard or the explicit pull command.
-        "_mirror.py": {"snapshot_download", "hf_hub_download"},
+        "_mirror.py": {"hf_hub_download"},
         # Explicit provisioning/import flows remain exempt by contract.
         "cli.py": {"snapshot_download"},
         "byom/imports.py": {"snapshot_download"},
@@ -508,7 +510,15 @@ def test_whisper_processor_patch_forces_cache_only(monkeypatch):
     engine.model = SimpleNamespace(_processor=None)
     engine._ensure_whisper_processor()
     assert engine.model._processor == "processor"
-    assert calls == [("openai/whisper-large-v3-turbo", {"local_files_only": True})]
+    assert calls == [
+        (
+            "openai/whisper-large-v3-turbo",
+            {
+                "local_files_only": True,
+                "revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+            },
+        )
+    ]
 
 
 def test_anthropic_download_policy_error_keeps_anthropic_envelope():
@@ -645,3 +655,12 @@ def test_tokenizer_remote_boundaries_use_policy(monkeypatch, target, args):
             function(*args)
     else:
         assert function(*args) in (None, False)
+
+
+@pytest.fixture(autouse=True)
+def _fake_transport_integrity_boundary(monkeypatch):
+    # These policy tests return synthetic paths from the Hub transport.
+    # Real wrapper verification is covered by test_model_integrity.py.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )

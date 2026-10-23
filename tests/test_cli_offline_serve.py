@@ -763,3 +763,9 @@ def test_ensure_model_downloaded_does_not_refuse_offline_on_probe_fault(
     cli._ensure_model_downloaded("some/repo")
     err = capsys.readouterr().err
     assert "is not cached and the network is unavailable" not in err
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_download_integrity(monkeypatch):
+    # Offline policy tests fake successful transport without model bytes.
+    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)

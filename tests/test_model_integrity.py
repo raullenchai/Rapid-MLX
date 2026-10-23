@@ -144,3 +144,82 @@ def test_packaged_manifest_requires_selected_weights_offline(snapshot, monkeypat
     del entry["lfs_files"]["missing.safetensors"]
     verify_snapshot("test/integrity", path)
     assert calls == []
+
+
+@pytest.mark.parametrize("single_file", [False, True])
+def test_shared_download_wrappers_enforce_hash(snapshot, monkeypatch, single_file):
+    from rapid_mlx import model_downloads
+
+    path, info, calls = snapshot
+    monkeypatch.setattr("huggingface_hub.snapshot_download", lambda *a, **kw: str(path))
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **kw: str(path / "model.safetensors"),
+    )
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    (path / "model.safetensors").write_bytes(b"corruption!")
+    with pytest.raises(ModelIntegrityError):
+        if single_file:
+            model_downloads.hf_hub_download("test/integrity", "model.safetensors")
+        else:
+            model_downloads.snapshot_download("test/integrity")
+
+
+def test_ignore_and_exact_filename_selection(snapshot):
+    path, info, calls = snapshot
+    (path / "model.safetensors").unlink()
+    verify_snapshot("test/integrity", path, ignore_patterns="*.safetensors")
+    verify_snapshot("test/integrity", path, filenames=["config.json"])
+
+
+def test_local_dir_verification_uses_resolved_commit(snapshot, tmp_path):
+    path, info, calls = snapshot
+    destination = tmp_path / "local-model"
+    path.rename(destination)
+    verify_snapshot("test/integrity", destination, resolved_revision=info.sha)
+    (destination / "config.json").write_bytes(b"[]")
+    with pytest.raises(ModelIntegrityError):
+        verify_snapshot("test/integrity", destination, resolved_revision=info.sha)
+
+
+def test_directory_patterns_and_empty_allow_list(snapshot):
+    path, info, calls = snapshot
+    (path / "folder").mkdir()
+    (path / "config.json").rename(path / "folder" / "config.json")
+    info.siblings[1].rfilename = "folder/config.json"
+    (path / "model.safetensors").unlink()
+    verify_snapshot("test/integrity", path, allow_patterns=["folder/"])
+    (path / "folder" / "config.json").write_bytes(b"[]")
+    with pytest.raises(ModelIntegrityError):
+        verify_snapshot("test/integrity", path, allow_patterns=["folder/"])
+    verify_snapshot("test/integrity", path, allow_patterns=[])
+
+
+def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
+    path, info, calls = snapshot
+    with pytest.raises(ModelIntegrityError, match="Offline integrity"):
+        verify_snapshot("test/integrity", path, local_files_only=True)
+    assert calls == []
+    verify_snapshot("test/integrity", path)
+    verify_snapshot("test/integrity", path, local_files_only=True)
+    assert len(calls) == 1
+
+
+def test_automatic_mirror_download_propagates_integrity_failure(monkeypatch):
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(cli, "_cache_runnability", lambda *a, **kw: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        cli, "_active_hf_snapshot_path", lambda *a: "/tmp/snapshots/" + "a" * 40
+    )
+    monkeypatch.setattr("rapid_mlx.model_downloads.disabled", lambda: False)
+
+    def reject(*args, **kwargs):
+        raise ModelIntegrityError("tampered weights")
+
+    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", reject)
+    with pytest.raises(ModelIntegrityError, match="tampered weights"):
+        cli._ensure_model_downloaded("test/integrity")

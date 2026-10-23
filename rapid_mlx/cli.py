@@ -2935,6 +2935,15 @@ def _ensure_model_downloaded(
                 )
                 raise
     if mirror_ok:
+        from rapid_mlx.model_aliases import subfolder_allow_patterns
+        from rapid_mlx.model_integrity import verify_snapshot
+
+        verify_snapshot(
+            model_name,
+            _active_hf_snapshot_path(model_name),
+            revision=pinned_revision,
+            allow_patterns=subfolder_allow_patterns(model_name),
+        )
         if pinned_image_revision is not None:
             # Same ref transaction as the pinned HF download below: the
             # warm-cache gate reads ``refs/main``, which a SHA-addressed
@@ -2951,7 +2960,7 @@ def _ensure_model_downloaded(
         return
 
     try:
-        from huggingface_hub import model_info, snapshot_download
+        from huggingface_hub import model_info
 
         from rapid_mlx._download_gate import (
             _HF_RESOLVE_TIMEOUT_SECONDS,
@@ -2959,6 +2968,7 @@ def _ensure_model_downloaded(
             pin_main_ref,
         )
         from rapid_mlx.model_aliases import subfolder_allow_patterns
+        from rapid_mlx.model_downloads import snapshot_download
 
         # Repos that ship one folder per quantization: fetch and measure
         # ONLY this alias's folder. Without the filter a 1.6 GB 4-bit pull
@@ -3069,6 +3079,10 @@ def _ensure_model_downloaded(
         # _check_disk_space aborts via sys.exit(1) — let it through.
         raise
     except Exception as e:
+        from rapid_mlx.model_integrity import ModelIntegrityError
+
+        if isinstance(e, ModelIntegrityError):
+            raise
         # Typed permanent failures stop here; starting a loader cannot repair
         # a missing repository or grant access to a gated one. Network and
         # offline failures retain the best-effort loader retry.
@@ -5530,7 +5544,9 @@ def system_one_command(args) -> None:
         validate_server_exposure(
             host=args.host,
             api_key=api_key,
-            allow_unauthenticated_public=getattr(args, "allow_unauthenticated_public", False),
+            allow_unauthenticated_public=getattr(
+                args, "allow_unauthenticated_public", False
+            ),
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
