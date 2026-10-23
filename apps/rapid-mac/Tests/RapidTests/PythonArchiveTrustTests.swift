@@ -13,7 +13,7 @@ struct PythonArchiveTrustTests {
     }
 
     @Test("Archive verification preserves valid installs", arguments: ["fresh", "cached", "replace", "bad-download", "bad-format", "transport"])
-    func archiveGate(scenario: String) throws {
+    func archiveGate(scenario: String) async throws {
         let source = try script
         let start = try #require(source.range(of: "PBS_URL="))
         let end = try #require(source.range(of: "# ----- step 1.5:"))
@@ -55,13 +55,10 @@ struct PythonArchiveTrustTests {
         """#
         let file = root.appendingPathComponent("run.sh")
         try (harness + "\n" + section).write(to: file, atomically: true, encoding: .utf8)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [file.path, root.path, scenario]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [file.path, root.path, scenario]
+        )
         let accepted = ["fresh", "cached", "replace"].contains(scenario)
         #expect((process.terminationStatus == 0) == accepted)
         #expect(FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("stage/python/bin/python3.12").path) == accepted)
@@ -71,23 +68,21 @@ struct PythonArchiveTrustTests {
     }
 
     @Test("Version overrides require a reviewed digest", arguments: ["missing", "malformed", "reviewed", "default"])
-    func configuration(scenario: String) throws {
+    func configuration(scenario: String) async throws {
         let source = try script
         let start = try #require(source.range(of: "PBS_TAG="))
         let end = try #require(source.range(of: "# compileall uses"))
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "set -euo pipefail\n" + String(source[start.lowerBound..<end.lowerBound])]
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "PBS_SHA256")
         environment["PBS_TAG"] = scenario == "default" ? "20260610" : "custom"
         environment["PBS_VERSION"] = "3.12.13"
         if scenario == "malformed" { environment["PBS_SHA256"] = "invalid" }
         if scenario == "reviewed" { environment["PBS_SHA256"] = String(repeating: "a", count: 64) }
-        process.environment = environment
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: ["-c", "set -euo pipefail\n" + String(source[start.lowerBound..<end.lowerBound])],
+            environment: environment
+        )
         #expect((process.terminationStatus == 0) == ["reviewed", "default"].contains(scenario))
     }
 }
