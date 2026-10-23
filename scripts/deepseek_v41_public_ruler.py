@@ -193,6 +193,11 @@ def fetch(root, name, url):
 
 
 def build(a):
+    """Use a new destination; failures retain inputs/audits for diagnosis.
+
+    A directory is qualified only when its ruler manifests exist. After a failure,
+    inspect the retained overlap audit/raw inputs, then choose a fresh destination.
+    """
     import pyarrow.parquet as pq
     from tokenizers import Tokenizer
 
@@ -407,6 +412,7 @@ def verify(a):
         if x["mean_absolute_error"] < 1e-3 and x["top1_exact"]
     ]
     report["chosen_k"] = min(passed) if passed else None
+    a.output.parent.mkdir(parents=True, exist_ok=True)
     a.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     if not passed:

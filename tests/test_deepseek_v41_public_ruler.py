@@ -70,6 +70,7 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         tokenizer_sha256="tok",
         ruler="long17k",
         vocab_size=32,
+        num_layers=2,
     )
     rm = dict(
         base,
@@ -90,6 +91,8 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
     else:
         np.save(cand / "a-logits.npy", c)
         entry = dict(logits_sha256=file_hash(cand / "a-logits.npy"))
+    np.save(cand / "a-mass.npy", np.ones((11, 2)))
+    entry["mass_sha256"] = file_hash(cand / "a-mass.npy")
     cm = dict(base, slices=dict(a=dict(tokens=11, corpus_sha256=["text"], **entry)))
     if online:
         cm["reference_metadata_sha256"] = file_hash(ref / "metadata.json")

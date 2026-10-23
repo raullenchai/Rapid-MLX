@@ -502,6 +502,7 @@ def main():
     )
     metadata = dict(
         schema_version=1,
+        num_layers=args.n_layers,
         model_revision=a.model_revision or a.source.resolve().name,
         checkpoint_sha256=source_identity,
         config_sha256=source_identity["config.json"],
@@ -580,6 +581,7 @@ def main():
         )
         metadata["slices"][name] = dict(
             tokens=a.tokens,
+            mass_sha256=file_hash(a.output / f"{name}-mass.npy"),
             corpus_sha256=[file_hash(p) for p in paths],
             **(
                 dict(compact_sha256=compact_hashes(a.output, name))

@@ -217,3 +217,32 @@ def test_collect_guards(collector, tmp_path, bad):
         (a.reference / "metadata.json").write_text(json.dumps(rm))
     with pytest.raises((ValueError, FileExistsError)):
         evaluator.collect(a)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["modified", "truncated", "missing_hash", "wrong_layers", "missing_layers", "nan"],
+)
+def test_routing_mass_integrity(tmp_path, bad):
+    r, c = tmp_path / "r", tmp_path / "c"
+    for root in (r, c):
+        write_cache(root, [[1.0, 2.0], [3.0, 4.0]], "unpruned_reference")
+    path = c / "metadata.json"
+    metadata = json.loads(path.read_text())
+    mass = c / "domain-mass.npy"
+    if bad == "modified":
+        np.save(mass, np.full((2, 2), 0.5))
+    elif bad in ("truncated", "nan"):
+        np.save(
+            mass, np.ones((2, 1)) if bad == "truncated" else np.full((2, 2), np.nan)
+        )
+        metadata["slices"]["domain"]["mass_sha256"] = file_hash(mass)
+    elif bad == "missing_hash":
+        del metadata["slices"]["domain"]["mass_sha256"]
+    elif bad == "wrong_layers":
+        metadata["num_layers"] = 3
+    else:
+        del metadata["num_layers"]
+    path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="mass|layer counts"):
+        evaluator.compare(r, c)

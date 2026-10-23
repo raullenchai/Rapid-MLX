@@ -157,6 +157,7 @@ def collect(a):
     packed = checkpoint_config.get("rapid_quantization", {}).get("allocation")
     metadata = {
         "schema_version": 1,
+        "num_layers": config.n_layers,
         "serving_qmv": getattr(a, "serving_qmv", False),
         "model_revision": a.model_revision,
         "checkpoint_sha256": source_identity,
@@ -235,6 +236,7 @@ def collect(a):
         np.save(a.output / f"{name}-mass.npy", mass)
         metadata["slices"][name] = {
             "tokens": a.tokens,
+            "mass_sha256": file_hash(a.output / f"{name}-mass.npy"),
             "corpus_sha256": [file_hash(p) for p in paths],
             **(
                 {"scores_sha256": file_hash(a.output / f"{name}-scores.npy")}
@@ -267,6 +269,14 @@ def compare(reference: Path, candidate: Path, subset=False):
         or not cm["slices"]
     ):
         raise ValueError("cache provenance/slice mismatch")
+    layers = cm.get("num_layers")
+    if (
+        type(layers) is not int
+        or layers < 1
+        or type(rm.get("num_layers")) is not int
+        or rm["num_layers"] != layers
+    ):
+        raise ValueError("cache layer counts mismatch; regenerate legacy caches")
     results, all_kl, all_flips = {}, [], []
     for name in rm["slices"]:
         if name not in cm["slices"]:
@@ -341,10 +351,12 @@ def compare(reference: Path, candidate: Path, subset=False):
                 kls[start:end], flip_values[start:end] = fn(rr, c[start:end])
         all_kl.append(kls)
         all_flips.append(flip_values)
-        mass = np.load(candidate / f"{name}-mass.npy", allow_pickle=False)
+        mass_path = candidate / f"{name}-mass.npy"
+        if file_hash(mass_path) != cm["slices"][name].get("mass_sha256"):
+            raise ValueError("cache routing mass hash mismatch")
+        mass = np.load(mass_path, allow_pickle=False)
         if (
-            mass.ndim != 2
-            or mass.shape[0] != n
+            mass.shape != (n, layers)
             or not np.isfinite(mass).all()
             or np.any((mass < 0) | (mass > 1 + 1e-6))
         ):

@@ -133,7 +133,7 @@ def test_build_rejects_unqualified_inputs(tmp_path, monkeypatch, failure, match)
 def test_verify_cli_selects_exact_full_support(tmp_path, monkeypatch, candidate):
     logits = tmp_path / "logits.npy"
     np.save(logits, np.random.default_rng(8).normal(size=(11, 4)).astype(np.float32))
-    output = tmp_path / "report.json"
+    output = tmp_path / "nested" / "report.json"
     argv = [
         "ruler",
         "verify",

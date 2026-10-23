@@ -39,11 +39,13 @@ def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
         json.dumps(
             {
                 "mode": mode,
+                "num_layers": 2,
                 "model_revision": "revision",
                 "tokenizer_sha256": "tokenizer",
                 "slices": {
                     "domain": {
                         "corpus_sha256": [corpus],
+                        "mass_sha256": file_hash(root / "domain-mass.npy"),
                         "logits_sha256": file_hash(root / "domain-logits.npy"),
                     }
                 },
