@@ -374,3 +374,31 @@ def test_merge_failed_write_never_publishes_and_can_retry(tmp_path, monkeypatch)
     merge.merge_calibration([a, b], out)
     with np.load(out) as result:
         assert result["tokens"].item() == 48
+
+
+@pytest.mark.parametrize("role", ["hott", "", None, 0])
+def test_contrastive_rejects_unsupported_roles(role):
+    r, c, names, roles = slices()
+    roles["medical"] = role
+    with pytest.raises(ValueError, match="unsupported slice role"):
+        contrastive(r, c, names, roles)
+
+
+@pytest.mark.parametrize(
+    "parameter", ["hot_threshold", "cold_ratio", "min_cold_routes", "ratio_tolerance"]
+)
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_contrastive_rejects_nonfinite_thresholds(parameter, value):
+    with pytest.raises(ValueError, match="thresholds"):
+        contrastive(*slices(), **{parameter: value})
+
+
+@pytest.mark.parametrize("value", [1.5, True, np.bool_(True)])
+def test_contrastive_rejects_noninteger_route_threshold(value):
+    with pytest.raises(ValueError, match="thresholds"):
+        contrastive(*slices(), min_cold_routes=value)
+
+
+@pytest.mark.parametrize("value", [2, 2.0, np.int64(2)])
+def test_contrastive_accepts_integer_route_threshold(value):
+    assert contrastive(*slices(), min_cold_routes=value)["candidate"][0, 1]

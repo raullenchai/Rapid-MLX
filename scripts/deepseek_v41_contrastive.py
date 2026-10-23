@@ -27,12 +27,19 @@ def contrastive(
     ):
         raise ValueError("expected finite nonnegative [slice,2,layer,expert] arrays")
     if (
-        not hot_threshold > 0
+        not np.isfinite(
+            [hot_threshold, cold_ratio, min_cold_routes, ratio_tolerance]
+        ).all()
+        or min_cold_routes != int(min_cold_routes)
+        or isinstance(min_cold_routes, (bool, np.bool_))
+        or not hot_threshold > 0
         or cold_ratio <= 1
         or min_cold_routes < 1
         or not 0 <= ratio_tolerance <= 1
     ):
         raise ValueError("invalid contrastive thresholds")
+    if any(role not in ("hot", "cold", "reference") for role in roles.values()):
+        raise ValueError("unsupported slice role")
     ids = {
         role: [i for i, name in enumerate(slice_names) if roles.get(name) == role]
         for role in ("hot", "cold", "reference")
