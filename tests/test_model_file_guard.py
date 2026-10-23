@@ -158,6 +158,63 @@ def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
     assert loaded == [str(snapshot)]
 
 
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("lazy", [False, True])
+def test_text_dispatch_keeps_the_inspected_snapshot_when_remote_reference_moves(
+    monkeypatch, tmp_path, lazy
+):
+    from types import SimpleNamespace
+
+    import mlx_lm
+
+    from rapid_mlx.utils import tokenizer
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "config.json").write_text('{"model_type":"llama"}')
+    (second / "config.json").write_text(
+        '{"model_type":"llama","model_file":"custom.py"}'
+    )
+    remote_resolutions = []
+
+    def resolve(name):
+        if name == "org/moving-model":
+            remote_resolutions.append(name)
+            return first if len(remote_resolutions) == 1 else second
+        return Path(name)
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", resolve)
+    loaded = []
+    expected = (SimpleNamespace(), SimpleNamespace(chat_template="local"))
+
+    def load(name, tokenizer_config=None, **kwargs):
+        loaded.append(name)
+        assert tokenizer_config["trust_remote_code"] is False
+        return expected
+
+    monkeypatch.setattr(mlx_lm, "load", load)
+    monkeypatch.setattr(tokenizer, "_load_model_with_fallback_impl", load)
+    for helper in [
+        "_try_inject_mtp_post_load",
+        "augment_eos_token_ids_from_generation_config",
+        "repair_byte_level_decoder",
+        "_post_load_ubc_evict",
+    ]:
+        monkeypatch.setattr(tokenizer, helper, lambda *args, **kwargs: None)
+    result = tokenizer.load_model_with_fallback(
+        "org/moving-model", lazy=lazy, return_source=True
+    )
+    assert result[:2] == expected
+    assert result[2] == str(first)
+    assert loaded == [str(first)]
+    assert remote_resolutions == ["org/moving-model"]
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize("remote", [False, True])
 def test_model_file_cannot_execute_without_consent(tmp_path, monkeypatch, lazy, remote):
