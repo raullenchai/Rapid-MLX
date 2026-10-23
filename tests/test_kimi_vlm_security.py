@@ -49,10 +49,35 @@ def checkpoint(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize(
+    "extra_config,expected",
+    [
+        ({}, []),
+        ({"eos_token_id": [123]}, [123]),
+        ({"text_config": {"eos_token_id": 124}}, [124]),
+    ],
+)
+def test_native_stopping_uses_tokenizer_and_config_sources(
+    checkpoint, extra_config, expected
+):
+    path = checkpoint / "config.json"
+    path.write_text(json.dumps(json.loads(path.read_text()) | extra_config))
+    (checkpoint / "generation_config.json").write_text('{"eos_token_id": [125]}')
+    tokenizer = load_kimi_processor(checkpoint).tokenizer
+    criteria = tokenizer.stopping_criteria
+    for token in [tokenizer.eos_token_id, 125, *expected]:
+        assert criteria(token)
+    assert not criteria(97)
+    criteria.reset()
+    assert criteria(tokenizer.eos_token_id)
+    assert criteria(125)
+
+
 def test_native_processor_preserves_image_tokens_tools_and_thinking(checkpoint):
     from PIL import Image
 
     processor = load_kimi_processor(checkpoint)
+    assert processor.tokenizer.stopping_criteria(processor.tokenizer.eos_token_id)
     output = processor(images=[Image.new("RGB", (28, 28))], text="<|media_pad|>hello")
     assert output["pixel_values"].size > 0
     assert output["image_grid_hws"].shape[-1] == 2
