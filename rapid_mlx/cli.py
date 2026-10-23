@@ -9627,6 +9627,18 @@ def _cache_entry_is_runnable(repo: str) -> bool:
     return _cache_runnability(repo) is True
 
 
+def _cached_repository_is_runnable(repo: str) -> bool:
+    """Probe a scanned repository without interpreting its name as an alias."""
+    from rapid_mlx.model_aliases import (
+        cached_repository_collides,
+        cached_repository_launch_path,
+    )
+
+    if cached_repository_collides(repo):
+        return cached_repository_launch_path(repo, external=False) is not None
+    return _cache_entry_is_runnable(repo)
+
+
 def _print_cached_models() -> None:
     """Render the ``--cached`` view: locally-downloaded HF cache entries
     cross-referenced against the alias registry.
@@ -9646,7 +9658,9 @@ def _print_cached_models() -> None:
     # incomplete same-named hub row alongside the external copy: it is a real,
     # independently removable cache entry, and hiding it makes `rm <repo>` look
     # like it targets the read-only external row.
-    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
+    runnable_hub_repos = {
+        repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
+    }
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
     tagged_rows = [(*row, False) for row in rows] + [
         (*row, True) for row in external_rows
@@ -9710,7 +9724,7 @@ def _print_cached_models() -> None:
         # desktop joins those to its audio registry by HF id, so leaving a
         # partial row as `(unmapped)` gives it a green checkmark and Start.
         # The desktop deliberately rejects `(incomplete)` status rows.
-        elif not _cache_entry_is_runnable(repo):
+        elif not _cached_repository_is_runnable(repo):
             alias = "(incomplete)"
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:
@@ -9978,11 +9992,17 @@ def _cached_models_json_payload() -> dict:
     """
     import time as _time
 
-    from rapid_mlx.model_aliases import list_profiles, resolve_subfolder
+    from rapid_mlx.model_aliases import (
+        cached_repository_collides,
+        list_profiles,
+        resolve_subfolder,
+    )
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
-    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
+    runnable_hub_repos = {
+        repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
+    }
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
 
     profiles = list_profiles()
@@ -9994,6 +10014,17 @@ def _cached_models_json_payload() -> dict:
 
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
+    # Only certified chat checkpoints get an explicit collision launch path.
+    # Ordinary inventory and alias resolution retain their existing contract.
+    collision_paths = {}
+    if any(cached_repository_collides(row[0]) for row in tagged):
+        from rapid_mlx.local_models import discover_runnable_chat_models
+
+        collision_paths = {
+            (model.repo, model.external): model.model
+            for model in discover_runnable_chat_models()
+            if cached_repository_collides(model.repo)
+        }
     models = []
     total_bytes = 0
     for repo, size, mtime, is_external in tagged:
@@ -10016,7 +10047,7 @@ def _cached_models_json_payload() -> dict:
                     artifact_size = (
                         size
                         if resolve_subfolder(repo) is None
-                        and _cache_entry_is_runnable(repo)
+                        and _cached_repository_is_runnable(repo)
                         else None
                     )
                 else:
@@ -10025,13 +10056,16 @@ def _cached_models_json_payload() -> dict:
                     artifacts.append((alias, subfolder, artifact_size, "ok"))
                     seen_artifacts.add(key)
             if not artifacts:
-                state = "unmapped" if _cache_entry_is_runnable(repo) else "incomplete"
+                state = (
+                    "unmapped" if _cached_repository_is_runnable(repo) else "incomplete"
+                )
                 artifacts = [(None, None, size, state)]
 
         for alias, subfolder, artifact_size, state in artifacts:
             models.append(
                 {
                     "alias": alias,
+                    "launch_path": collision_paths.get((repo, is_external)),
                     "repo": repo,
                     "subfolder": subfolder,
                     "size_bytes": int(artifact_size),

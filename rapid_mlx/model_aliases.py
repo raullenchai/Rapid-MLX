@@ -1172,6 +1172,32 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     return profile.hf_path if profile is not None else _imported_or(name)
 
 
+def cached_repository_collides(repo: str) -> bool:
+    """A scanned repository is not an alias, even when their names coincide."""
+    profile = resolve_profile(repo)
+    return profile is not None and profile.hf_path.casefold() != repo.casefold()
+
+
+def cached_repository_launch_path(repo: str, *, external: bool) -> str | None:
+    """Disambiguate a colliding cached repo using the existing local-path API.
+
+    Read only this repository's root at its default revision. An unrelated
+    alias must never supply its repository, revision, or subfolder here.
+    """
+    if external:
+        return _resolve_external_model_path(repo, repository_only=True)
+    from huggingface_hub import try_to_load_from_cache
+
+    from ._download_gate import _snapshot_is_complete
+
+    cached = try_to_load_from_cache(repo, "config.json", revision="main")
+    if isinstance(cached, str):
+        directory = os.path.dirname(cached)
+        if _snapshot_is_complete(directory):
+            return directory
+    return None
+
+
 def resolve_hub_model(name: str) -> str:
     """Resolve ``name`` for commands that manage the Hugging Face cache.
 
@@ -1200,7 +1226,9 @@ def _managed_hub_model_is_runnable(name: str) -> bool:
         return False
 
 
-def _resolve_external_model_path(name: str) -> str | None:
+def _resolve_external_model_path(
+    name: str, *, repository_only: bool = False
+) -> str | None:
     """Resolve a discovered external repo back to its canonical directory.
 
     Discovery renders a stable ``publisher/repo`` identifier for the CLI and
@@ -1216,7 +1244,7 @@ def _resolve_external_model_path(name: str) -> str | None:
     # A root-level store may use the Rapid alias literally, while another
     # runtime may use the profile's canonical publisher/repo layout. Probe the
     # displayed identifier first, then that canonical fallback.
-    profile = _load().get(name)
+    profile = None if repository_only else _load().get(name)
     external_names = [name]
     if profile is not None and profile.hf_path != name:
         external_names.append(profile.hf_path)

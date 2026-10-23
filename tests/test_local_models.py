@@ -737,3 +737,61 @@ def test_speech_model_type_is_not_chat(cache, monkeypatch):
     monkeypatch.setattr(pf, "chat_model_types", lambda: None)
     snapshot(cache, "org/chat")
     assert lm.discover_runnable_chat_models() == []
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_cached_repo_alias_collision_uses_exact_checkpoint(
+    cache, tmp_path, monkeypatch, external
+):
+    repo = "local-chat"
+    profile = ma.AliasProfile(
+        hf_path="org/Unrelated", subfolder="nested", revision="b" * 40
+    )
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == repo else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {repo: profile})
+    if external:
+        root = tmp_path / "external"
+        directory = write_model(root / repo)
+        monkeypatch.setattr(ma, "external_model_root_paths", lambda: [str(root)])
+    else:
+        directory = snapshot(cache, repo)
+    found = lm.discover_runnable_chat_models()
+    assert len(found) == 1
+    assert found[0].repo == repo
+    assert found[0].alias is None
+    assert found[0].model == str(directory)
+    assert ma.resolve_model(found[0].model) == str(directory)
+    assert ma.resolve_revision(found[0].model) is None
+    assert ma.resolve_subfolder(found[0].model) is None
+    cli._print_cached_models()
+    rows = cli._cached_models_json_payload()["cached"]
+    assert len(rows) == 1
+    assert rows[0]["alias"] is None
+    assert rows[0]["repo"] == repo
+    assert rows[0]["launch_path"] == str(directory)
+
+
+def test_colliding_repository_path_rejects_missing_or_incomplete_cache(cache):
+    assert ma.cached_repository_launch_path("missing", external=False) is None
+    directory = snapshot(cache, "partial", weights=False)
+    assert directory.exists()
+    assert ma.cached_repository_launch_path("partial", external=False) is None
+
+
+def test_collision_without_chat_evidence_is_not_offered(cache, monkeypatch):
+    profile = ma.AliasProfile(hf_path="org/Unrelated")
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == "local-chat" else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {"local-chat": profile})
+    snapshot(cache, "local-chat", template=False)
+    assert lm.discover_runnable_chat_models() == []
+    assert cli._cached_models_json_payload()["cached"][0]["launch_path"] is None
+
+
+def test_repository_spelling_preserves_exact_catalog_profile(monkeypatch):
+    profile = ma.AliasProfile(hf_path="Org/Chat", subfolder="nested", revision="b" * 40)
+    monkeypatch.setattr(ma, "resolve_profile", lambda name: profile)
+    assert not ma.cached_repository_collides("org/chat")
