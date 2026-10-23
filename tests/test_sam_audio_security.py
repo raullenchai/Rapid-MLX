@@ -237,3 +237,35 @@ def test_sam_lazy_encoder_loaded_once(tmp_path, monkeypatch):
     assert model.text_encoder.tokenizer is tokenizer
     assert processor is model.processor
     assert seen[0]["weight"].tolist() == [1.0]
+
+
+def test_t5_with_real_local_tokenizer(tmp_path):
+    from dataclasses import asdict
+
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_audio.sts.models.sam_audio.text_encoder import T5Config, T5Encoder
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from transformers import PreTrainedTokenizerFast
+
+    from rapid_mlx.audio.sam_security import _load_t5
+
+    config = T5Config(
+        vocab_size=8, d_model=4, d_kv=2, d_ff=8, num_layers=1, num_heads=2
+    )
+    (tmp_path / "config.json").write_text(json.dumps(asdict(config)))
+    model = T5Encoder(config)
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"), dict(tree_flatten(model.parameters()))
+    )
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=Tokenizer(
+            WordLevel({"<unk>": 0, "hello": 1}, unk_token="<unk>")
+        ),
+        unk_token="<unk>",
+    )
+    tokenizer.save_pretrained(tmp_path)
+    loaded, tokenizer = _load_t5(str(tmp_path))
+    assert isinstance(loaded, T5Encoder)
+    assert tokenizer.encode("hello") == [1]
