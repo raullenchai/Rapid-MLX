@@ -128,7 +128,7 @@ def saved_model() -> str | None:
     if not path.exists():
         data = load_legacy_config(legacy_config_path(path))
         name_key = "title"
-    models = data.get("models") or []
+    models = data.get("models", [])
     if not isinstance(models, list):
         raise ValueError(f"{path} models must contain a list")
     for entry in models:

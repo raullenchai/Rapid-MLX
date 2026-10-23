@@ -2557,6 +2557,11 @@ def test_continue_saved_model_from_legacy_config(fake_home):
         ),
         ("continue-dev", "models: 1"),
         ("continue-dev", "models: wrong"),
+        ("continue-dev", "models: {}"),
+        ("continue-dev", "models: false"),
+        ("continue-dev", 'models: ""'),
+        ("continue-dev", "models: null"),
+        ("continue-dev", "models: 0"),
     ],
 )
 def test_repeat_rejects_structurally_invalid_config(
