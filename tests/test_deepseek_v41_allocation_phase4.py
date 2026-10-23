@@ -148,8 +148,13 @@ def test_hot_sensitivity_is_max_over_slices_not_average():
     sel = contrastive(
         r,
         np.where(r > 0, 8, 0),
-        ["a", "b", "cold", "ref"],
-        {"a": "hot", "b": "hot", "cold": "cold", "ref": "reference"},
+        ["a", "b", "cold_en", "general_reference_en"],
+        {
+            "a": "hot",
+            "b": "hot",
+            "cold_en": "cold",
+            "general_reference_en": "reference",
+        },
     )
     assert sel["sensitivity"].tolist() == [[2.0, 18.0, 8.0, 0.0]]
     costs = np.broadcast_to([0, 30, 42, 54], (1, 4, 4))
@@ -248,7 +253,7 @@ def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
     cost.pop("mtp_bytes_by_expert_bits")
     cost.pop("mtp_expert_bits")
     costfile.write_text(json.dumps(cost))
-    roles = {"chat": "hot", "cold": "cold", "reference": "reference"}
+    roles = {"chat": "hot", "cold_en": "cold", "general_reference_en": "reference"}
     r = np.repeat(
         np.array([[[8.0, 0.01]], [[0.1, 8.0]], [[1.0, 0.1]]])[:, None], 2, axis=1
     )

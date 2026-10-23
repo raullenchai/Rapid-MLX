@@ -57,17 +57,14 @@ def contrastive(
     never = counts.sum(axis=(0, 1)) == 0
     references = []
     for cold in ids["cold"]:
-        if len(ids["reference"]) == 1 and "_" not in slice_names[cold]:
-            references.append(ids["reference"][0])
-        else:
-            language = slice_names[cold].rsplit("_", 1)[-1]
-            expected = "general_reference_" + language
-            matches = [i for i in ids["reference"] if slice_names[i] == expected]
-            if len(matches) != 1:
-                raise ValueError(
-                    "each cold slice needs one language-matched general reference"
-                )
-            references.append(matches[0])
+        _, separator, language = slice_names[cold].rpartition("_")
+        expected = "general_reference_" + language
+        matches = [i for i in ids["reference"] if slice_names[i] == expected]
+        if not separator or not language or len(matches) != 1:
+            raise ValueError(
+                "each cold slice needs an explicit language suffix and one language-matched general reference"
+            )
+        references.append(matches[0])
     ref = r[references]
     ratios = r[ids["cold"]] / np.maximum(ref, 1e-30)
     # An expert the matched reference never routes has no ratio evidence.

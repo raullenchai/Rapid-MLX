@@ -23,8 +23,13 @@ def slices():
     return (
         r,
         np.where(r > 0, 8, 0),
-        ["chat", "medical", "cold", "reference"],
-        {"chat": "hot", "medical": "hot", "cold": "cold", "reference": "reference"},
+        ["chat", "medical", "cold_en", "general_reference_en"],
+        {
+            "chat": "hot",
+            "medical": "hot",
+            "cold_en": "cold",
+            "general_reference_en": "reference",
+        },
     )
 
 

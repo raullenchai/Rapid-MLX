@@ -22,7 +22,7 @@ def test_contrastive_invalid_policy_and_matching():
     with pytest.raises(ValueError, match="thresholds"):
         contrastive(r, c, names, roles, hot_threshold=0)
     roles["extra"] = "reference"
-    names[0] = "extra"
+    names[3] = "extra"
     with pytest.raises(ValueError, match="language-matched"):
         contrastive(r, c, names, roles)
     r, c, names, roles = slices()
@@ -506,3 +506,12 @@ def test_legacy_inventory_verifies_actual_source(tmp_path, release):
     cost["fixed_non_expert_bytes"] -= 1
     with pytest.raises(ValueError, match="fixed_non_expert_bytes mismatch"):
         alloc.validate_legacy_inventory(source, cost, config_hash, metadata)
+
+
+@pytest.mark.parametrize("cold_name", ["cold", "cold_"])
+def test_unqualified_cold_slice_cannot_use_single_reference(cold_name):
+    r, counts, names, roles = slices()
+    names[2] = cold_name
+    roles[cold_name] = roles.pop("cold_en")
+    with pytest.raises(ValueError, match="explicit language suffix"):
+        contrastive(r, counts, names, roles)

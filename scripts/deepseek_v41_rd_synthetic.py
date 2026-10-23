@@ -38,7 +38,12 @@ def main():
     # Retain cross-layer sensitivity magnitudes when choosing precision.
     r *= np.linspace(0.5, 1.5, layers)[None, None, :, None]
     counts = np.full(r.shape, 8)
-    roles = {"chat": "hot", "code": "hot", "cold": "cold", "reference": "reference"}
+    roles = {
+        "chat": "hot",
+        "code": "hot",
+        "cold_en": "cold",
+        "general_reference_en": "reference",
+    }
     selection = contrastive(r, counts, list(roles), roles)
     q = np.broadcast_to([1.0, 0.35, 0.12, 0.04], costs.shape)
     pq = np.broadcast_to(
