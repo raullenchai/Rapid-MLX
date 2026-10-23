@@ -64,6 +64,45 @@ def publish_allocations(outputs):
             temporary.unlink(missing_ok=True)
 
 
+def validate_legacy_inventory(source, cost, config_hash, error_metadata):
+    """Legacy per-expert plans also need independently verified fixed costs."""
+    from scripts.deepseek_v41_expert_quant_error import inventory
+    from scripts.deepseek_v41_rd_build import plan
+    from scripts.repack_deepseek_v41_native import CheckpointIndex
+
+    if source is None:
+        raise ValueError("legacy allocation requires --source to verify inventory")
+    if file_hash(source / "config.json") != config_hash or file_hash(
+        source / "model.safetensors.index.json"
+    ) != error_metadata.get("index_sha256"):
+        raise ValueError("source inventory identity does not match calibration")
+    config = json.loads((source / "config.json").read_text())
+    index = CheckpointIndex(source)
+    release = cost.get("policy", "").startswith("release:")
+    # The producer starts with its group-4 inventory, then replaces release fixed costs.
+    expected = inventory(index, config, 4 if release else cost["nonexpert_bits"])
+    if release:
+        c = config.get("text_config", config)
+        allocation = {
+            "layers": {
+                str(i): {
+                    "kept_expert_ids": list(range(c["n_routed_experts"])),
+                    "bits": 2,
+                }
+                for i in range(c["num_hidden_layers"])
+            }
+        }
+        _, _, report = plan(index, config, allocation)
+        expected["fixed_non_expert_bytes"] = sum(
+            v
+            for k, v in report["components"].items()
+            if k not in ("router", "routed_experts", "engram_ssd")
+        )
+    for key in ("fixed_non_expert_bytes", "expert_bytes", "router_row_bytes_by_layer"):
+        if cost[key] != expected[key]:
+            raise ValueError(f"source inventory {key} mismatch")
+
+
 def pruning_audit(result, counts_by_slice, reap_by_slice, slice_names, roles):
     """Calibration mass retained across layers and within each layer (empty = 1)."""
     counts, reap = np.asarray(counts_by_slice), np.asarray(reap_by_slice)
@@ -338,6 +377,8 @@ def main():
             if not np.array_equal(expert_costs[layer_id], expected):
                 raise ValueError("inventory costs disagree with measured MLX payloads")
         a.output_dir.mkdir(parents=True, exist_ok=True)
+        if a.granularity == "legacy-expert":
+            validate_legacy_inventory(a.source, cost, score_config, qm)
         selection = None
         if a.granularity != "legacy-expert":
             if a.score != "reap" or a.slice_roles is None or a.source is None:

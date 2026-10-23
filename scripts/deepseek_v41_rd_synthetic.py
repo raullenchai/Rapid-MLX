@@ -11,6 +11,7 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_contrastive import contrastive
+from scripts.deepseek_v41_rd_allocate import publish_allocations
 from scripts.deepseek_v41_rd_build import layout_report, mtp_byte_costs, plan
 from scripts.deepseek_v41_rd_layer_allocate import PRESETS, layer_allocate
 from scripts.repack_deepseek_v41_native import CheckpointIndex
@@ -56,9 +57,7 @@ def main():
     }
     entries, _, report = plan(index, config, reference)
     reference["byte_breakdown"] = layout_report(entries, report)
-    (a.output_dir / "reference-plan.json").write_text(
-        json.dumps(reference, indent=2) + "\n"
-    )
+    outputs = [(a.output_dir / "reference-plan.json", reference)]
     for target, preset in PRESETS.items():
         fixed = cost["fixed_non_expert_bytes"] + (
             draft_costs["4"] if target == "T256" else 0
@@ -86,9 +85,7 @@ def main():
         result["byte_breakdown"] = layout_report(entries, report)
         if report["resident_tensor_bytes"] != result["resident_tensor_bytes"]:
             raise ValueError("synthetic allocation and output bytes disagree")
-        (a.output_dir / f"{target}-synthetic.json").write_text(
-            json.dumps(result, indent=2) + "\n"
-        )
+        outputs.append((a.output_dir / f"{target}-synthetic.json", result))
         print(
             json.dumps(
                 {
@@ -102,6 +99,8 @@ def main():
                 indent=2,
             )
         )
+
+    publish_allocations(outputs)
 
 
 if __name__ == "__main__":

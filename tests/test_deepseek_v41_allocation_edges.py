@@ -149,6 +149,7 @@ def test_direct_cli_help(script, monkeypatch, capsys):
 
 @pytest.fixture
 def cli_inputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(alloc, "validate_legacy_inventory", lambda *args: None)
     sm = {"model_revision": "r", "routing_topk": 1, "config_sha256": "config"}
     qm = {
         "model_revision": "r",
@@ -295,6 +296,7 @@ def test_synthetic_plans_record_assumptions(tmp_path, monkeypatch, mismatch):
     if mismatch:
         with pytest.raises(ValueError, match="bytes disagree"):
             synth.main()
+        assert not list(out.iterdir())
     else:
         synth.main()
         for target in ("T128", "T256"):
@@ -304,6 +306,10 @@ def test_synthetic_plans_record_assumptions(tmp_path, monkeypatch, mismatch):
             assert result["keep_mtp"] == (target == "T256")
             assert result["resident_tensor_bytes"] <= result["budget_bytes"]
         assert json.loads((out / "reference-plan.json").read_text())["reference"]
+        before = {p.name: p.read_bytes() for p in out.iterdir()}
+        with pytest.raises(FileExistsError):
+            synth.main()
+        assert before == {p.name: p.read_bytes() for p in out.iterdir()}
     costs.write_text(json.dumps({"expert_bytes": [[[0, 30, 42, 54]]]}))
     with pytest.raises(ValueError, match="384 experts"):
         synth.main()
@@ -458,3 +464,45 @@ def test_allocation_publication_failure_preserves_existing(
     assert list(tmp_path.iterdir()) == ([second] if failure == "existing" else [])
     if failure == "existing":
         assert second.read_text() == "original"
+
+
+@pytest.mark.parametrize("release", [False, True])
+def test_legacy_inventory_verifies_actual_source(tmp_path, release):
+    mx = pytest.importorskip("mlx.core")
+    mx.set_default_device(mx.cpu)
+    from scripts.deepseek_v41_expert_quant_error import inventory
+    from scripts.deepseek_v41_rd_build import plan
+    from scripts.repack_deepseek_v41_native import CheckpointIndex
+    from tests.test_deepseek_v41_quant_error import tiny_source
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    config["text_config"]["num_experts_per_tok"] = 1
+    (source / "config.json").write_text(json.dumps(config))
+    index = CheckpointIndex(source)
+    cost = inventory(index, config, 4)
+    if release:
+        _, _, report = plan(
+            index, config, {"layers": {"0": {"kept_expert_ids": [0, 1], "bits": 2}}}
+        )
+        cost["fixed_non_expert_bytes"] = sum(
+            v
+            for k, v in report["components"].items()
+            if k not in ("router", "routed_experts", "engram_ssd")
+        )
+        cost["policy"] = "release: test"
+        cost["nonexpert_bits"] = 8
+    config_hash = alloc.file_hash(source / "config.json")
+    metadata = {
+        "index_sha256": alloc.file_hash(source / "model.safetensors.index.json")
+    }
+    alloc.validate_legacy_inventory(source, cost, config_hash, metadata)
+    with pytest.raises(ValueError, match="requires --source"):
+        alloc.validate_legacy_inventory(None, cost, config_hash, metadata)
+    with pytest.raises(ValueError, match="identity"):
+        alloc.validate_legacy_inventory(source, cost, "wrong", metadata)
+    with pytest.raises(ValueError, match="identity"):
+        alloc.validate_legacy_inventory(source, cost, config_hash, {})
+    cost["fixed_non_expert_bytes"] -= 1
+    with pytest.raises(ValueError, match="fixed_non_expert_bytes mismatch"):
+        alloc.validate_legacy_inventory(source, cost, config_hash, metadata)

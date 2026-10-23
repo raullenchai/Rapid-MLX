@@ -54,6 +54,8 @@ def test_allocator_cli_checks_provenance_stability_and_payload_costs(
 
     from scripts import deepseek_v41_rd_allocate as cli
 
+    monkeypatch.setattr(cli, "validate_legacy_inventory", lambda *args: None)
+
     scores = tmp_path / "scores.npz"
     errors = tmp_path / "errors.npz"
     costs = tmp_path / "costs.json"
