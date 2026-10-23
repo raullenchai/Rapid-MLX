@@ -54,7 +54,7 @@ final class PromptScheduler {
     @ObservationIgnored private var presentationPending = false
     @ObservationIgnored private var presentationTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardMonitor: Any?
-    @ObservationIgnored private var activationMonitor: Any?
+    @ObservationIgnored private var activationMonitors: [Any] = []
     @ObservationIgnored private var presentationActive: Bool
     @ObservationIgnored private let requiresVisibleWindow: Bool
     @ObservationIgnored private let windowVisible: () -> Bool
@@ -125,11 +125,13 @@ final class PromptScheduler {
 
     func startMonitoringUserActivity() {
         presentationActive = true
-        if activationMonitor == nil {
-            activationMonitor = NotificationCenter.default.addObserver(
-                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.schedulePresentationCheck() }
+        if activationMonitors.isEmpty {
+            for name in [NSApplication.didBecomeActiveNotification, NSWindow.didBecomeMainNotification] {
+                activationMonitors.append(NotificationCenter.default.addObserver(
+                    forName: name, object: nil, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.schedulePresentationCheck() }
+                })
             }
         }
         presentationPending = true
@@ -155,10 +157,8 @@ final class PromptScheduler {
             NSEvent.removeMonitor(keyboardMonitor)
             self.keyboardMonitor = nil
         }
-        if let activationMonitor {
-            NotificationCenter.default.removeObserver(activationMonitor)
-            self.activationMonitor = nil
-        }
+        for monitor in activationMonitors { NotificationCenter.default.removeObserver(monitor) }
+        activationMonitors.removeAll()
     }
 
     /// Close and Later are intentionally equivalent: both respect the user's
