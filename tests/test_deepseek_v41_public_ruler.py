@@ -71,6 +71,14 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         ruler="long17k",
         vocab_size=32,
         num_layers=2,
+        checkpoint_sha256={
+            "config.json": "a" * 64,
+            "model.safetensors.index.json": "b" * 64,
+        },
+        source_checkpoint_sha256={
+            "config.json": "a" * 64,
+            "model.safetensors.index.json": "b" * 64,
+        },
     )
     rm = dict(
         base,

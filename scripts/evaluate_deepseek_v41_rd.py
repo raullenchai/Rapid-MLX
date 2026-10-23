@@ -109,6 +109,42 @@ def install_native_masks(model, allocation, masses):
         gate.__class__ = EvaluationGate
 
 
+def validate_checkpoint_identity(identity):
+    if (
+        not isinstance(identity, dict)
+        or not {"config.json", "model.safetensors.index.json"} <= identity.keys()
+        or any(
+            not isinstance(v, str) or re.fullmatch(r"[0-9a-f]{64}", v) is None
+            for v in identity.values()
+        )
+    ):
+        raise ValueError(
+            "invalid immutable checkpoint identity; regenerate legacy caches"
+        )
+    return identity
+
+
+def source_identity_for_checkpoint(checkpoint, provenance_path=None):
+    """A conversion record binds the exact source and candidate payload sets.
+
+    The record is an operator-supplied conversion artifact, not proof of model
+    quality. Its checkpoint_sha256 must match the files actually evaluated.
+    """
+    validate_checkpoint_identity(checkpoint)
+    if provenance_path is None:
+        return checkpoint, None
+    raw = provenance_path.read_bytes()
+    provenance = json.loads(raw)
+    if provenance.get("checkpoint_sha256") != checkpoint:
+        raise ValueError("conversion provenance candidate checkpoint mismatch")
+    import hashlib
+
+    return (
+        validate_checkpoint_identity(provenance.get("source_checkpoint_sha256")),
+        hashlib.sha256(raw).hexdigest(),
+    )
+
+
 def collect(a):
     import mlx.core as mx
     from tokenizers import Tokenizer
@@ -141,6 +177,15 @@ def collect(a):
         raise ValueError("incompatible compact reference")
     # Explicit lazy avoids full materialization and automatic page-cache prewarm.
     source_identity = checkpoint_hashes(a.model)
+    origin_identity, conversion_digest = source_identity_for_checkpoint(
+        source_identity, getattr(a, "conversion_provenance", None)
+    )
+    if (
+        rm
+        and validate_checkpoint_identity(rm.get("source_checkpoint_sha256"))
+        != origin_identity
+    ):
+        raise ValueError("reference source checkpoint identity mismatch")
     model, config = load(str(a.model), lazy=True, engram_ssd_offload=True)
     if rm and rm["vocab_size"] != config.vocab_size:
         raise ValueError("reference vocabulary mismatch")
@@ -161,6 +206,8 @@ def collect(a):
         "serving_qmv": getattr(a, "serving_qmv", False),
         "model_revision": a.model_revision,
         "checkpoint_sha256": source_identity,
+        "source_checkpoint_sha256": origin_identity,
+        "conversion_provenance_sha256": conversion_digest,
         "checkpoint_config_sha256": source_identity["config.json"],
         "tokenizer_sha256": file_hash(a.model / "tokenizer.json"),
         "mode": "pruning_mask_only"
@@ -269,6 +316,15 @@ def compare(reference: Path, candidate: Path, subset=False):
         or not cm["slices"]
     ):
         raise ValueError("cache provenance/slice mismatch")
+    for meta in (rm, cm):
+        checkpoint = validate_checkpoint_identity(meta.get("checkpoint_sha256"))
+        source = validate_checkpoint_identity(meta.get("source_checkpoint_sha256"))
+        if checkpoint != source and not re.fullmatch(
+            r"[0-9a-f]{64}", str(meta.get("conversion_provenance_sha256", ""))
+        ):
+            raise ValueError("cache lacks conversion provenance digest")
+    if rm["source_checkpoint_sha256"] != cm["source_checkpoint_sha256"]:
+        raise ValueError("cache source checkpoint identity mismatch")
     layers = cm.get("num_layers")
     if (
         type(layers) is not int
@@ -450,6 +506,11 @@ def main():
         help="compact reference: score online without saving full candidate logits",
     )
     cache.add_argument("--allocation", type=Path)
+    cache.add_argument(
+        "--conversion-provenance",
+        type=Path,
+        help="JSON conversion record with source_checkpoint_sha256 and checkpoint_sha256 maps; required when source and candidate weights differ",
+    )
     cache.add_argument(
         "--serving-qmv",
         action="store_true",

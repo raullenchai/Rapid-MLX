@@ -40,6 +40,14 @@ def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
             {
                 "mode": mode,
                 "num_layers": 2,
+                "checkpoint_sha256": {
+                    "config.json": "a" * 64,
+                    "model.safetensors.index.json": "b" * 64,
+                },
+                "source_checkpoint_sha256": {
+                    "config.json": "a" * 64,
+                    "model.safetensors.index.json": "b" * 64,
+                },
                 "model_revision": "revision",
                 "tokenizer_sha256": "tokenizer",
                 "slices": {

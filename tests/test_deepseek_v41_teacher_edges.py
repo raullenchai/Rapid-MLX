@@ -195,3 +195,20 @@ def test_qualification_passes_explicit_engram_offload(tmp_path, monkeypatch):
     monkeypatch.setattr(qualify, "run_once", lambda *a, **kw: {"output_tokens": [1]})
     qualify.main()
     assert calls[0]["engram_ssd_offload"] is True
+
+
+def test_memory_estimate_accounts_for_three_resident_projection_banks(tmp_path):
+    source = tmp_path / "source"
+    args, _ = fixtures.write_source(source)
+    weights = teacher.SourceWeights(source)
+    report = teacher.memory_estimate(weights, 2, 8)
+    bank = 2 * args.n_routed_experts * args.dim * args.moe_inter_dim
+    assert report["layer_bf16_bytes"] >= 3 * bank
+    assert report["stack_transient_bytes"] == bank
+    assert report["estimated_peak_bytes"] == (
+        report["layer_bf16_bytes"]
+        + bank
+        + report["persistent_state_bytes"]
+        + report["prefill_scratch_allowance_bytes"]
+        + 8 * 2**30
+    )

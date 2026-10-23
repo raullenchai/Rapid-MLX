@@ -77,7 +77,9 @@ class SourceWeights:
             block.engram.embed = SourceEngram(self.index, layer_id)
         prefix = f"layers.{layer_id}."
         values = {}
-        # Complete one projection's stack at a time; at most one extra stack is live.
+        # Three unstacked projection banks become three stacked banks. Each
+        # collection is released before stacking the next bank: the peak is
+        # all three resident banks plus one transient stack, as budgeted below.
         parts = [[], [], []]
         for expert in range(self.args.n_routed_experts):
             ws = load_expert(self.index, layer_id, expert)
@@ -374,6 +376,8 @@ def memory_estimate(weights, slices, tokens, prefill_chunk=None):
     # Input + accumulated chunk outputs + concatenation coexist at a boundary.
     if prefill_chunk:
         states += 2 * slices * tokens * (2 * a.hc_mult * a.dim + 4 * a.hc_mult)
+    # layer_bytes already includes ALL THREE dequantized expert projections.
+    # Stacking duplicates only the current projection before collection.clear().
     peak = max(layer_bytes) + largest_stack + states + scratch + 8 * 2**30
     return dict(
         layer_bf16_bytes=max(layer_bytes),
@@ -505,6 +509,7 @@ def main():
         num_layers=args.n_layers,
         model_revision=a.model_revision or a.source.resolve().name,
         checkpoint_sha256=source_identity,
+        source_checkpoint_sha256=source_identity,
         config_sha256=source_identity["config.json"],
         checkpoint_config_sha256=file_hash(a.source / "config.json"),
         tokenizer_sha256=file_hash(a.source / "tokenizer.json"),

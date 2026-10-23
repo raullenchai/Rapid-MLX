@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from scripts import evaluate_deepseek_v41_rd as evaluator
-from scripts.deepseek_v41_rd_common import file_hash
+from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash
 from tests.test_deepseek_v41_evaluation import write_cache
 
 
@@ -203,6 +203,7 @@ def test_collect_guards(collector, tmp_path, bad):
             "model_revision": "test",
             "slices": {"a": {"compact_sha256": {}, "corpus_sha256": []}},
             "vocab_size": 2,
+            "source_checkpoint_sha256": checkpoint_hashes(a.model),
         }
         if bad == "reference":
             rm["mode"] = "candidate"
@@ -246,3 +247,70 @@ def test_routing_mass_integrity(tmp_path, bad):
     path.write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="mass|layer counts"):
         evaluator.compare(r, c)
+
+
+@pytest.mark.parametrize("bad", ["missing", "changed", "unbound_conversion"])
+def test_comparison_binds_immutable_source_identity(tmp_path, bad):
+    r, c = tmp_path / "r", tmp_path / "c"
+    for root in (r, c):
+        write_cache(root, [[1.0, 2.0], [3.0, 4.0]], "unpruned_reference")
+    path = c / "metadata.json"
+    metadata = json.loads(path.read_text())
+    if bad == "missing":
+        del metadata["source_checkpoint_sha256"]
+    elif bad == "changed":
+        metadata["source_checkpoint_sha256"]["config.json"] = "c" * 64
+        metadata["checkpoint_sha256"] = metadata["source_checkpoint_sha256"]
+    else:
+        metadata["checkpoint_sha256"]["config.json"] = "c" * 64
+    path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="identity|provenance"):
+        evaluator.compare(r, c)
+
+
+def test_conversion_record_binds_exact_candidate_payloads(tmp_path):
+    source = {"config.json": "a" * 64, "model.safetensors.index.json": "b" * 64}
+    candidate = dict(source, **{"weights.safetensors": "c" * 64})
+    path = tmp_path / "conversion.json"
+    path.write_text(
+        json.dumps(dict(source_checkpoint_sha256=source, checkpoint_sha256=candidate))
+    )
+    assert evaluator.source_identity_for_checkpoint(candidate, path) == (
+        source,
+        file_hash(path),
+    )
+    with pytest.raises(ValueError, match="candidate checkpoint mismatch"):
+        evaluator.source_identity_for_checkpoint(source, path)
+    for invalid in [None, {}, dict(source, **{"weights.safetensors": "not-a-hash"})]:
+        with pytest.raises(ValueError, match="immutable checkpoint identity"):
+            evaluator.validate_checkpoint_identity(invalid)
+    r, c = tmp_path / "r", tmp_path / "c"
+    for root in (r, c):
+        write_cache(root, [[1.0, 2.0], [3.0, 4.0]], "unpruned_reference")
+    metadata = json.loads((c / "metadata.json").read_text())
+    metadata.update(
+        checkpoint_sha256=candidate, conversion_provenance_sha256=file_hash(path)
+    )
+    (c / "metadata.json").write_text(json.dumps(metadata))
+    assert evaluator.compare(r, c)["kl_nats"] == 0
+
+
+@pytest.mark.requires_mlx
+def test_collect_rejects_different_source_reference(collector, tmp_path):
+    a = collector
+    a.reference = tmp_path / "ref"
+    a.reference.mkdir()
+    rm = dict(
+        compact_k=1,
+        mode="unpruned_reference",
+        tokenizer_sha256=file_hash(a.model / "tokenizer.json"),
+        model_revision="test",
+        slices={"a": {}},
+        source_checkpoint_sha256={
+            "config.json": "a" * 64,
+            "model.safetensors.index.json": "b" * 64,
+        },
+    )
+    (a.reference / "metadata.json").write_text(json.dumps(rm))
+    with pytest.raises(ValueError, match="reference source checkpoint"):
+        evaluator.collect(a)
