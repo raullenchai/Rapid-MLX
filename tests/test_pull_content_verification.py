@@ -94,3 +94,79 @@ def test_pull_completion_requires_verified_content(
         )
         cli._pull_repository(args, **pull_kwargs)
         assert completed == completion * 2
+
+
+@pytest.mark.parametrize("missing_revision", [False, True])
+def test_unpinned_mirror_pull_recovers_metadata_and_reuses_receipt_offline(
+    tmp_path, monkeypatch, missing_revision
+):
+    import httpx
+    from huggingface_hub.errors import RevisionNotFoundError
+
+    from tests.pull_integrity_helpers import snapshot_tree
+
+    commit = "a" * 40
+    root = tmp_path / "models--test--integrity"
+    snapshot = snapshot_tree(root, commit)
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text(commit)
+    data = (snapshot / "model.safetensors").read_bytes()
+    manifest = {
+        "repo_id": "test/integrity",
+        "revision": commit,
+        "file_inventory": ["model.safetensors"],
+        "files": [
+            {
+                "path": "model.safetensors",
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        ],
+    }
+
+    def unavailable(*args, **kwargs):
+        if missing_revision:
+            raise RevisionNotFoundError(
+                "missing",
+                response=httpx.Response(
+                    404, request=httpx.Request("GET", "https://hub.invalid")
+                ),
+            )
+        raise httpx.ConnectError("metadata unavailable")
+
+    monkeypatch.setattr("huggingface_hub.HfApi.model_info", unavailable)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._fetch_json_with_status", lambda _url: (manifest, 200)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.print_staleness_warning_if_any", lambda: None
+    )
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_subfolder", lambda _repo: None)
+    monkeypatch.setattr(
+        cli, "_resolve_variant_allow_patterns", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_sync_pulled_variant_marker", lambda *args: None)
+    completed = []
+    monkeypatch.setattr(
+        cli, "_print_pull_summary", lambda *args, **kwargs: completed.append(True)
+    )
+    args = SimpleNamespace(model="test/integrity", bits=None, format=None)
+    cli._pull_repository(args, emit_lifecycle_event=False)
+    assert completed == [True]
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *args, **kwargs: str(snapshot)
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info",
+        lambda *args, **kwargs: pytest.fail(
+            "offline verified snapshot queried metadata"
+        ),
+    )
+    cli._pull_repository(args, emit_lifecycle_event=False)
+    assert completed == [True, True]

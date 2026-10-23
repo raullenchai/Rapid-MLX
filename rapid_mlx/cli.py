@@ -11267,7 +11267,7 @@ def _pull_repository(
         verify_snapshot(
             repo_id,
             snapshot_dir,
-            revision=revision_override,
+            revision=revision_override or snapshot_dir.name,
             allow_patterns=integrity_allow,
             local_files_only=_offline_hub_mode_active(),
         )
