@@ -957,8 +957,8 @@ def test_missing_revision_hashes_warm_blob_even_with_correct_name(
         _missing_pin_run(tmp_path, monkeypatch, _manifest(), {"model.safetensors": 404})
 
 
-def test_missing_revision_requires_every_requested_file(tmp_path, monkeypatch):
-    with pytest.raises(RuntimeError, match="missing requested files"):
+def test_missing_revision_requires_a_nonempty_selection(tmp_path, monkeypatch):
+    with pytest.raises(RuntimeError, match="no requested files"):
         _missing_pin_run(
             tmp_path, monkeypatch, _manifest(), allow_patterns=["absent.json"]
         )
@@ -1078,3 +1078,11 @@ def test_missing_revision_accepts_verified_warm_bytes_when_objects_are_unavailab
     )
     assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
     assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
+
+
+def test_missing_revision_patterns_are_optional_or_filters(tmp_path, monkeypatch):
+    assert _missing_pin_run(
+        tmp_path, monkeypatch, _manifest(), allow_patterns=["*.safetensors", "*.absent"]
+    )
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
+    assert not (_snap(tmp_path) / "config.json").exists()

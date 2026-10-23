@@ -1909,12 +1909,6 @@ def download_with_mirror_fallback(
         # of its metadata can vouch for the pinned bytes.
         return False
     siblings = getattr(info, "siblings", None) or []
-    if mirror_only and allow_patterns is not None:
-        for pattern in allow_patterns:
-            if not any(fnmatch(s.rfilename, pattern) for s in siblings):
-                raise RuntimeError(
-                    f"Pinned mirror manifest is missing requested files: {pattern}"
-                )
     # Git blob ids (SHA-1 of ``blob <len>\0<bytes>``) for every listed file.
     # They prove a non-LFS mirror object is the exact file at the resolved
     # commit (pinned or the current ``main``); size alone cannot.
