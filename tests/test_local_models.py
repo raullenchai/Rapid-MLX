@@ -813,3 +813,20 @@ def test_colliding_name_uses_only_exact_repository_revision_and_subfolder(
     assert ma.cached_repository_launch_path("local-chat", external=False) == str(
         directory
     )
+
+
+@pytest.mark.parametrize("difference", ["revision", "subfolder"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_colliding_repository_rejects_ambiguous_catalog_artifacts(
+    cache, monkeypatch, difference, reverse
+):
+    first = ma.AliasProfile(hf_path="local-chat")
+    second = replace(
+        first, **{difference: "b" * 40 if difference == "revision" else "nested"}
+    )
+    profiles = {"one": first, "two": second}
+    if reverse:
+        profiles = dict(reversed(list(profiles.items())))
+    monkeypatch.setattr(ma, "list_profiles", lambda: profiles)
+    snapshot(cache, "local-chat")
+    assert ma.cached_repository_launch_path("local-chat", external=False) is None

@@ -1190,18 +1190,15 @@ def cached_repository_launch_path(repo: str, *, external: bool) -> str | None:
 
     from ._download_gate import _snapshot_is_complete
 
-    profile = next(
-        (
-            p
-            for p in list_profiles().values()
-            if p.hf_path.casefold() == repo.casefold()
-        ),
-        None,
-    )
-    prefix = (
-        f"{profile.subfolder}/" if profile is not None and profile.subfolder else ""
-    )
-    revision = profile.revision if profile is not None else None
+    identities = {
+        (p.revision, p.subfolder)
+        for p in list_profiles().values()
+        if p.hf_path.casefold() == repo.casefold()
+    }
+    if len(identities) > 1:
+        return None
+    revision, subfolder = next(iter(identities), (None, None))
+    prefix = f"{subfolder}/" if subfolder else ""
     cached = try_to_load_from_cache(
         repo, f"{prefix}config.json", revision=revision or "main"
     )
