@@ -49,6 +49,8 @@ def verify_snapshot(
     A completed receipt also permits offline verification of unchanged files.
     Cache directories are locally trusted, as with the Hugging Face cache itself.
     No files are removed: interrupted transfers retain their resume data.
+    ``revision`` and ``resolved_revision`` accept only full lowercase commit
+    SHAs, never symbolic revisions. Callers resolve branch/tag names beforehand.
     """
     path = Path(snapshot_path)
     commit = resolved_revision or path.name
@@ -170,6 +172,7 @@ def verify_snapshot(
             raise ModelIntegrityError(
                 "Offline integrity verification requires a packaged manifest or an unchanged verified receipt; run an online pull first"
             )
+        from httpx import TransportError
         from huggingface_hub.errors import RevisionNotFoundError
 
         try:
@@ -179,11 +182,11 @@ def verify_snapshot(
                 ),
                 30,
             )
-        except RevisionNotFoundError:
+        except (RevisionNotFoundError, TimeoutError, TransportError):
             if revision != commit and resolved_revision != commit:
                 raise
-            # Preserve the mirror's explicit-pin recovery trust contract when
-            # upstream has lost a commit. Reuse its strict complete-inventory
+            # Preserve explicit-pin recovery when upstream has lost a commit
+            # or its transport is unavailable. Reuse the strict complete-inventory
             # validator, then independently hash the installed selected bytes.
             from rapid_mlx._mirror import _mirror_base, _revision_manifest_info
 

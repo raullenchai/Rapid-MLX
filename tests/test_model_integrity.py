@@ -61,6 +61,38 @@ def test_commit_mismatch(snapshot):
         verify_snapshot("test/integrity", path)
 
 
+@pytest.mark.parametrize("revision", ["main", "v1", "a" * 7])
+def test_symbolic_revisions_must_be_resolved_by_the_caller(snapshot, revision):
+    path, _, calls = snapshot
+    with pytest.raises(ModelIntegrityError, match="immutable snapshot"):
+        verify_snapshot("test/integrity", path, revision=revision)
+    assert calls == []
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_errors_do_not_use_mirror_recovery(snapshot, monkeypatch, status):
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+
+    path, _, _ = snapshot
+
+    def denied(*args, **kwargs):
+        raise HfHubHTTPError(
+            "access denied",
+            response=httpx.Response(
+                status, request=httpx.Request("GET", "https://hub.invalid")
+            ),
+        )
+
+    monkeypatch.setattr("huggingface_hub.HfApi.model_info", denied)
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._revision_manifest_info",
+        lambda *args: pytest.fail("authentication failure used mirror recovery"),
+    )
+    with pytest.raises(HfHubHTTPError):
+        verify_snapshot("test/integrity", path, revision=path.name)
+
+
 def test_selection_and_git_blob_hash(snapshot):
     path, info, calls = snapshot
     (path / "model.safetensors").unlink()
@@ -152,8 +184,9 @@ def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
 
 
 @pytest.mark.parametrize("commit_argument", ["revision", "resolved_revision"])
+@pytest.mark.parametrize("failure", ["missing", "timeout", "connect"])
 def test_missing_explicit_pin_uses_validated_mirror_manifest(
-    snapshot, monkeypatch, commit_argument
+    snapshot, monkeypatch, commit_argument, failure
 ):
     from huggingface_hub.errors import RevisionNotFoundError
 
@@ -165,6 +198,10 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(
     def missing(*args, **kwargs):
         import httpx
 
+        if failure == "timeout":
+            raise TimeoutError("metadata deadline exceeded")
+        if failure == "connect":
+            raise httpx.ConnectError("metadata transport unavailable")
         raise RevisionNotFoundError(
             "removed pin",
             response=httpx.Response(

@@ -6,6 +6,10 @@ Git blob hash, including its size header. Callers may select patterns, excluded
 patterns or exact filenames. A `local_dir` destination must supply its resolved
 commit explicitly.
 
+The verifier's `revision` and `resolved_revision` arguments require full lowercase
+40-character commit SHAs. Symbolic revisions must be resolved before calling it;
+the explicit CLI pull path supplies validated catalog pins or a resolved snapshot.
+
 Successful verification writes an atomic receipt keyed by repository, commit,
 selection, destination and any packaged manifest. Unchanged verified files can be
 checked offline without another metadata request. File identity, size and timestamp
@@ -13,7 +17,8 @@ changes invalidate the receipt. An unknown offline snapshot requires a trusted
 packaged inventory or an online verification first. Cached files and partial
 transfers are retained on failure so download resume remains possible.
 
-When an explicitly requested commit is unavailable upstream, the verifier reuses
+When an explicitly requested commit is unavailable upstream or the Hub transport
+cannot be reached, the verifier reuses
 the mirror's existing complete exact-revision manifest validation, then hashes the
 selected local bytes. This preserves the existing missing-revision recovery path.
 Content identity does not prove publisher authenticity. Cache directories and
