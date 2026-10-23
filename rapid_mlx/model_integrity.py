@@ -77,6 +77,24 @@ def verify_snapshot(
         )
         if not isinstance(locked, dict):
             raise ValueError("Invalid packaged repository manifest")
+        for collection, digest_key, length in (
+            ("git_files", "blob_id", 40),
+            ("configs", "sha256", 64),
+            ("lfs_files", "sha256", 64),
+        ):
+            entries = locked.get(collection, {})
+            if not isinstance(entries, dict):
+                raise ValueError("Invalid packaged file collection")
+            for name, entry in entries.items():
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(entry, dict)
+                    or not isinstance(entry.get(digest_key), str)
+                    or not re.fullmatch(
+                        r"[0-9a-f]{" + str(length) + "}", entry[digest_key]
+                    )
+                ):
+                    raise ValueError("Invalid packaged file entry")
     except (OSError, ValueError, AttributeError, TypeError) as exc:
         raise ModelIntegrityError(
             "Cannot read packaged integrity manifest; repair the installation and retry"

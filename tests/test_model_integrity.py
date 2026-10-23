@@ -376,3 +376,38 @@ def test_invalid_packaged_manifest_has_repair_guidance(
     (tmp_path / "model_catalog_lock.json").write_text(contents)
     with pytest.raises(ModelIntegrityError, match="repair the installation"):
         verify_snapshot("test/integrity", path)
+
+
+@pytest.mark.parametrize("collection", ["git_files", "configs", "lfs_files"])
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [],
+        None,
+        {"file": None},
+        {"file": {}},
+        {"file": {"blob_id": "bad", "sha256": "bad"}},
+    ],
+)
+def test_invalid_nested_packaged_manifest_is_refused(
+    snapshot, tmp_path, monkeypatch, collection, entries
+):
+    import json
+
+    from rapid_mlx import model_integrity
+
+    path, _, _ = snapshot
+    monkeypatch.setattr(
+        model_integrity, "__file__", str(tmp_path / "model_integrity.py")
+    )
+    (tmp_path / "model_catalog_lock.json").write_text(
+        json.dumps(
+            {
+                "repositories": {
+                    "test/integrity": {"revision": path.name, collection: entries}
+                }
+            }
+        )
+    )
+    with pytest.raises(ModelIntegrityError, match="repair the installation"):
+        verify_snapshot("test/integrity", path)
