@@ -149,7 +149,7 @@ class TestRewriteSemantics:
 
         assert moe_fusion.fuse_gate_up(Dense()) == 0
 
-    def test_mllm_wrapper_applies_fusion_after_load(self, monkeypatch):
+    def test_mllm_wrapper_applies_fusion_after_load(self, monkeypatch, tmp_path):
         """The VLM lane must not leave eligible legacy projections unfused.
 
         GLM-5.3-Flash is forced through ``MLXMultimodalLM``. Before this
@@ -192,7 +192,8 @@ class TestRewriteSemantics:
             lambda *args, **kwargs: None,
         )
 
-        wrapper = mllm.MLXMultimodalLM("unit-test/glm5-next")
+        (tmp_path / "config.json").write_text('{"model_type": "glm5_next"}')
+        wrapper = mllm.MLXMultimodalLM(str(tmp_path))
         wrapper.load()
         loader.assert_called_once()
 
@@ -233,7 +234,9 @@ class TestRewriteSemantics:
 
         assert bool(mx.array_equal(before, after))
 
-    def test_non_glm_mllm_does_not_enable_unqualified_fusion(self, monkeypatch):
+    def test_non_glm_mllm_does_not_enable_unqualified_fusion(
+        self, monkeypatch, tmp_path
+    ):
         import mlx_vlm
         import mlx_vlm.utils
 
@@ -265,7 +268,8 @@ class TestRewriteSemantics:
             lambda *args, **kwargs: None,
         )
 
-        wrapper = mllm.MLXMultimodalLM("unit-test/other-vlm")
+        (tmp_path / "config.json").write_text('{"model_type": "other_vlm"}')
+        wrapper = mllm.MLXMultimodalLM(str(tmp_path))
         wrapper.load()
 
         assert hasattr(model.layers[0], "gate_proj")
