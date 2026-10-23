@@ -309,3 +309,11 @@ def test_collect_rejects_different_source_reference(collector, tmp_path):
     (a.reference / "metadata.json").write_text(json.dumps(rm))
     with pytest.raises(ValueError, match="reference source checkpoint"):
         evaluator.collect(a)
+
+
+@pytest.mark.requires_mlx
+def test_collect_rejects_empty_manifest_without_output(collector):
+    collector.slices.write_text('{"slices": {}}')
+    with pytest.raises(ValueError, match="each slice needs"):
+        evaluator.collect(collector)
+    assert not collector.output.exists()

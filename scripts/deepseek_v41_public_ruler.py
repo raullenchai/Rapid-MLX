@@ -401,8 +401,8 @@ def verify(a):
             dict(
                 k=k,
                 compact_mean_kl=float(np.mean(totals[k])),
-                mean_absolute_error=abs(float(error.mean())),
-                max_position_error=float(error.max()),
+                mean_absolute_error=float(np.mean(np.abs(error))),
+                max_position_error=float(np.max(np.abs(error))),
                 top1_exact=exact[k],
             )
         )

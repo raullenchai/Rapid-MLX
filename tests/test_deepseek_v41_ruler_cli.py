@@ -236,3 +236,39 @@ def test_build_refuses_existing_destination(tmp_path, monkeypatch):
     with pytest.raises(FileExistsError):
         ruler.build(a)
     assert old.read_text() == "preserve"
+
+
+def test_build_rejects_empty_calibration_manifest(tmp_path, monkeypatch):
+    a = build_inputs(tmp_path, monkeypatch)
+    a.calibration.write_text('{"slices": {}}')
+    with pytest.raises(ValueError, match="each slice needs"):
+        ruler.build(a)
+    assert not (a.output / "wiki1100.json").exists()
+    assert not (a.output / "long17k.json").exists()
+
+
+def test_verify_absolute_errors_do_not_cancel(tmp_path, monkeypatch):
+    from scripts import evaluate_deepseek_v41_rd as evaluator
+
+    logits = tmp_path / "logits.npy"
+    np.save(logits, np.zeros((2, 2), np.float32))
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(
+        evaluator,
+        "token_metrics",
+        lambda *args: (np.array([0.1, 0.1]), np.array([False, False])),
+    )
+    monkeypatch.setattr(
+        ruler,
+        "compact_metrics",
+        lambda *args: (np.array([0.2, 0.0]), np.array([False, False])),
+    )
+    with pytest.raises(ValueError, match="no tested k"):
+        ruler.verify(
+            SimpleNamespace(
+                logits=logits, candidate=None, ks=[1], sigma=0.25, output=output
+            )
+        )
+    trial = json.loads(output.read_text())["trials"][0]
+    assert trial["mean_absolute_error"] == pytest.approx(0.1)
+    assert trial["max_position_error"] == pytest.approx(0.1)
