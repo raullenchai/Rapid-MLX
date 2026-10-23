@@ -210,6 +210,8 @@ def collect(a):
     metadata = {
         "schema_version": 1,
         "num_layers": config.n_layers,
+        "n_routed_experts": config.n_routed_experts,
+        "routing_topk": config.n_activated_experts,
         "serving_qmv": getattr(a, "serving_qmv", False),
         "model_revision": a.model_revision,
         "checkpoint_sha256": source_identity,
@@ -358,6 +360,21 @@ def compare(reference: Path, candidate: Path, subset=False):
         or rm["num_layers"] != layers
     ):
         raise ValueError("cache layer counts mismatch; regenerate legacy caches")
+    if cm["mode"] == "pruning_mask_only":
+        try:
+            allocation_bytes = (candidate / "allocation.json").read_bytes()
+        except OSError as exc:
+            raise ValueError("cache pruning allocation missing") from exc
+        if hashlib.sha256(allocation_bytes).hexdigest() != cm.get("allocation_sha256"):
+            raise ValueError("cache pruning allocation hash mismatch")
+        experts, topk = cm.get("n_routed_experts"), cm.get("routing_topk")
+        if (
+            type(experts) is not int
+            or type(topk) is not int
+            or not 1 <= topk <= experts
+        ):
+            raise ValueError("invalid cache routing dimensions")
+        validate_allocation(json.loads(allocation_bytes), layers, experts, topk)
     results, all_kl, all_flips = {}, [], []
     for name in rm["slices"]:
         if name not in cm["slices"]:

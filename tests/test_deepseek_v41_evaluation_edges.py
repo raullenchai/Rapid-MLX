@@ -104,7 +104,9 @@ def collector(tmp_path, monkeypatch):
     np.save(tmp_path / "a.npy", np.zeros(17, np.int32))
     manifest = tmp_path / "slices.json"
     manifest.write_text(json.dumps({"slices": {"a": ["a.npy"]}}))
-    config = SimpleNamespace(n_layers=1, vocab_size=2)
+    config = SimpleNamespace(
+        n_layers=1, vocab_size=2, n_routed_experts=2, n_activated_experts=1
+    )
 
     class Model:
         def make_cache(self, **kw):
@@ -431,3 +433,35 @@ def test_allocation_digest_and_mask_share_retained_bytes(
     metadata = json.loads((a.output / "metadata.json").read_text())
     assert metadata["allocation_sha256"] == file_hash(a.output / "allocation.json")
     assert metadata["allocation_sha256"] != file_hash(a.allocation)
+
+
+@pytest.mark.parametrize(
+    "bad", ["missing", "modified", "layers", "experts", "topk", "dimensions"]
+)
+def test_pruning_allocation_is_authenticated_and_validated(tmp_path, bad):
+    r, c = tmp_path / "r", tmp_path / "c"
+    write_cache(r, [[1.0, 2.0], [3.0, 4.0]], "unpruned_reference")
+    write_cache(c, [[1.0, 2.0], [3.0, 4.0]], "pruning_mask_only")
+    assert evaluator.compare(r, c)["kl_nats"] == 0
+    allocation = c / "allocation.json"
+    metadata_path = c / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    if bad == "missing":
+        allocation.unlink()
+    elif bad == "modified":
+        allocation.write_text("{}")
+    elif bad in ("layers", "experts", "topk"):
+        value = json.loads(allocation.read_text())
+        if bad == "layers":
+            del value["layers"]["1"]
+        elif bad == "experts":
+            value["layers"]["0"]["kept_expert_ids"] = [3]
+        else:
+            value["layers"]["0"]["kept_expert_ids"] = []
+        allocation.write_text(json.dumps(value))
+        metadata["allocation_sha256"] = file_hash(allocation)
+    else:
+        metadata["routing_topk"] = 0
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError):
+        evaluator.compare(r, c)

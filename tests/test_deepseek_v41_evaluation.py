@@ -35,11 +35,22 @@ def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
     np.save(root / "domain-logits.npy", np.array(logits, np.float32))
     np.save(root / "domain-tokens.npy", np.array(ids))
     np.save(root / "domain-mass.npy", np.ones((len(ids), 2)) * 0.75)
+    allocation = {
+        "layers": {
+            str(i): {"kept_expert_ids": [0, 1], "bit_widths": [2, 2]} for i in range(2)
+        }
+    }
+    (root / "allocation.json").write_text(json.dumps(allocation))
     (root / "metadata.json").write_text(
         json.dumps(
             {
                 "mode": mode,
                 "num_layers": 2,
+                "n_routed_experts": 2,
+                "routing_topk": 1,
+                "allocation_sha256": file_hash(root / "allocation.json")
+                if mode == "pruning_mask_only"
+                else None,
                 "checkpoint_sha256": {
                     "config.json": "a" * 64,
                     "model.safetensors.index.json": "b" * 64,
