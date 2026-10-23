@@ -731,8 +731,9 @@ def test_serve_command_downloads_qualified_family_tensorfold_target(
     assert ns._tensorfold_head_path == head_path
 
 
+@pytest.mark.parametrize("disable_prefix_cache", [False, True])
 def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
-    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub, disable_prefix_cache
 ):
     """The qualified alias owns its pinned pair and dedicated server lane."""
     from types import SimpleNamespace
@@ -770,6 +771,7 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     )
 
     ns = _minimal_serve_ns()
+    ns.disable_prefix_cache = disable_prefix_cache
     ns.model = "Vontra/Qwen3.8-27B-MLX-4bit"
     ns._original_alias = "qwen3.8-27b-tensorfold"
     ns._dflash_experimental = True
@@ -791,6 +793,7 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     assert kwargs["main_model_revision"] is None
     assert kwargs["drafter_revision"] is None
     assert kwargs["experimental_opt_in"] is True
+    assert kwargs["enable_prefix_cache"] is (not disable_prefix_cache)
 
 
 def test_paired_family_alias_downloads_its_pair_and_dispatches_family_server(

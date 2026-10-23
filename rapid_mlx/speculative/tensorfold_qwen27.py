@@ -263,6 +263,7 @@ class TensorFoldQwen27Backend:
         context_window: int = 8192,
         max_tokens: int = 4096,
         lanes: int = 1,
+        enable_prefix_cache: bool = True,
     ) -> TensorFoldQwen27Backend:
         """Load the pinned family/app boundary used by the proof."""
         from .tensorfold_concurrency import request_lanes
@@ -316,6 +317,8 @@ class TensorFoldQwen27Backend:
             context_window=int(context_window),
             default_max_tokens=int(max_tokens),
             snapshot_dir=None,
+            # Disk snapshots and in-memory prompt checkpoints are independent.
+            checkpoint_slots=None if enable_prefix_cache else 0,
         )
         return cls(app)
 

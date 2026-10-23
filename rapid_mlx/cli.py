@@ -7338,7 +7338,10 @@ def serve_command(args):
             if _tf_family is not None:
                 run_tensorfold_family_server(_tf_family, **_dflash_kwargs)
             else:
-                run_tensorfold_qwen27_server(**_dflash_kwargs)
+                run_tensorfold_qwen27_server(
+                    enable_prefix_cache=not args.disable_prefix_cache,
+                    **_dflash_kwargs,
+                )
             return
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,

@@ -201,7 +201,10 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("lanes", [1, 4])
-def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> None:
+@pytest.mark.parametrize("enable_prefix_cache", [None, True, False])
+def test_backend_load_uses_qualified_family(
+    monkeypatch, tmp_path, lanes, enable_prefix_cache
+) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 
     target = tmp_path / "target"
@@ -271,6 +274,11 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
         context_window=1024,
         max_tokens=7,
         lanes=lanes,
+        **(
+            {}
+            if enable_prefix_cache is None
+            else {"enable_prefix_cache": enable_prefix_cache}
+        ),
     )
     assert loaded.get("parallel") == (lanes if lanes > 1 else None)
     assert loaded["app"]["lanes"] == lanes
@@ -281,6 +289,9 @@ def test_backend_load_uses_qualified_family(monkeypatch, tmp_path, lanes) -> Non
     assert loaded["drafter_bits"] == 4
     assert loaded["app"]["served_name"] == "served"
     assert loaded["app"]["snapshot_dir"] is None
+    assert loaded["app"]["checkpoint_slots"] == (
+        0 if enable_prefix_cache is False else None
+    )
     assert loaded["marker_tokenizer"] is loaded["tokenizer"]
     assert loaded["engine_model"] is loaded["model"]
     plan = loaded["engine_plan"]
