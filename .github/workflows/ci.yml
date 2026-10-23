@@ -658,6 +658,8 @@ jobs:
             tests/test_deepseek_v41_phase7.py \
             tests/test_deepseek_v41_ring_rollback.py \
             tests/test_deepseek_v41_rope_quant.py \
+            tests/test_deepseek_v41_self_check.py \
+            tests/test_deepseek_v41_self_check_metal.py \
             tests/test_deepseek_v41_prefill.py \
             tests/test_calibrate_deepseek_v41_reap.py \
             tests/test_deepseek_v41_quant_error.py \
