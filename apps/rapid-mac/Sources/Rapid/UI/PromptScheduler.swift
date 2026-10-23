@@ -65,7 +65,11 @@ final class PromptScheduler {
         now: @escaping () -> Date = Date.init,
         quietWindow: Duration = PromptScheduler.quietWindow,
         presentationActive: Bool = false,
-        windowVisible: @escaping () -> Bool = { NSApp.isActive && NSApp.mainWindow?.isVisible == true },
+        windowVisible: @escaping () -> Bool = {
+            guard NSApp.isActive, let window = NSApp.mainWindow else { return false }
+            return window.identifier?.rawValue == "main"
+                && window.isVisible && !window.isMiniaturized
+        },
         starExecutor: @escaping @Sendable (URL) async throws -> Void = { url in
             try await GitHubStarCLI.star(url)
         },
