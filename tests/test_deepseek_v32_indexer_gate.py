@@ -809,6 +809,7 @@ def test_reap_public_loader_uses_native_weights_and_tokenizer_without_repo_pytho
     tmp_path, monkeypatch, trust_env
 ):
     from tokenizers import Tokenizer, models, pre_tokenizers
+
     from rapid_mlx.utils.tokenizer import load_model_with_fallback
 
     if trust_env is None:

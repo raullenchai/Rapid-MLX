@@ -80,7 +80,10 @@ def targets():
         IMAGE_MODEL_REVISIONS,
         IMAGE_MODEL_RUNTIME_ASSETS,
     )
+    from rapid_mlx.audio.music import _SA3_REPO_ID, _SA3_REVISION
     from rapid_mlx.video.wan import WAN_REVISIONS
+
+    add(_SA3_REPO_ID, _SA3_REVISION)
 
     for repo, pin in (IMAGE_MODEL_REVISIONS | WAN_REVISIONS).items():
         add(repo, pin)

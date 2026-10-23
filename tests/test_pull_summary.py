@@ -965,7 +965,6 @@ def test_summary_printed_on_mirror_success(
     transferred_bytes] = 4096`` so the summary reports a real download.
     """
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
-    revision = "abc123" * 6  # 36 hex chars; shape doesn't matter for the test
 
     cache_root = tmp_path / "hub"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))

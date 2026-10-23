@@ -179,6 +179,7 @@ def test_native_vae_sanitize_runs_once_on_legacy_tensor_weights(
 ):
     import importlib
     from types import MethodType
+
     from rapid_mlx.utils import torch_checkpoint
 
     path = _checkpoint(tmp_path, kind)

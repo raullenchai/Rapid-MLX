@@ -123,6 +123,11 @@ class MusicEngine:
 
         if to_fetch:
             try:
+                # Keep the actionable optional-dependency error even though the
+                # owned downloader imports Hub lazily when called.
+                import huggingface_hub
+
+                _ = huggingface_hub.hf_hub_download
                 from rapid_mlx.model_downloads import hf_hub_download
             except ImportError as e:
                 raise RuntimeError(
