@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,8 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_rd_common import file_hash, read_slices
+
+MAX_SOURCE_BYTES = 64 * 1024 * 1024
 
 WIKI_REV = "b08601e04326c79dfdd32d625aee71d232d685c3"
 COMPACT_FIELDS = ("ids", "logprobs", "tail_mass", "logsumexp", "argmax")
@@ -238,24 +242,42 @@ def windows(ids, size=64):
 def fetch(root, name, url):
     p = root / name
     if not p.exists():
-        # The system trust store handles local certificate chains on Studio.
-        data = subprocess.run(
-            [
-                "curl",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--location",
-                "--max-time",
-                "120",
-                url,
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout
-        if hashlib.sha256(data).hexdigest() != SOURCE_HASHES[name]:
-            raise ValueError(f"source changed: {url}; restore the pinned raw bytes")
-        p.write_bytes(data)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{name}.", suffix=".partial", dir=root
+        )
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            # Bound both transfer size and duration; never buffer the response in RAM.
+            subprocess.run(
+                [
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--location",
+                    "--max-time",
+                    "120",
+                    "--max-filesize",
+                    str(MAX_SOURCE_BYTES),
+                    "--output",
+                    str(temporary),
+                    url,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=125,
+            )
+            if temporary.stat().st_size > MAX_SOURCE_BYTES:
+                raise ValueError("raw source exceeds size limit")
+            if file_hash(temporary) != SOURCE_HASHES[name]:
+                raise ValueError(f"source changed: {url}; restore the pinned raw bytes")
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.link(temporary, p)
+        finally:
+            temporary.unlink(missing_ok=True)
     if file_hash(p) != SOURCE_HASHES[name]:
         raise ValueError(f"raw source hash mismatch: {name}")
     return p

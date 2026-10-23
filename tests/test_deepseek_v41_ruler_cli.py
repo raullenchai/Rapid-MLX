@@ -22,8 +22,15 @@ def test_fetch_checks_cached_and_downloaded_bytes(tmp_path, monkeypatch):
 
     def download(args, **kwargs):
         calls.append(args)
-        assert kwargs == dict(check=True, capture_output=True)
-        return SimpleNamespace(stdout=data)
+        assert kwargs == dict(
+            check=True,
+            stdout=ruler.subprocess.DEVNULL,
+            stderr=ruler.subprocess.PIPE,
+            timeout=125,
+        )
+        assert args[args.index("--max-filesize") + 1] == str(ruler.MAX_SOURCE_BYTES)
+        Path(args[args.index("--output") + 1]).write_bytes(data)
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(ruler.subprocess, "run", download)
     p = ruler.fetch(tmp_path, "fixture", "https://example.test/data")
@@ -328,3 +335,31 @@ def test_verify_rejects_empty_or_nonfinite_arrays(tmp_path, bad, candidate):
             )
         )
     assert not output.exists()
+
+
+@pytest.mark.parametrize("failure", ["oversize", "transfer", "collision"])
+def test_fetch_bounds_and_cleans_failed_transfers(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(ruler, "MAX_SOURCE_BYTES", 4)
+    monkeypatch.setitem(
+        ruler.SOURCE_HASHES, "fixture", hashlib.sha256(b"safe").hexdigest()
+    )
+
+    def transfer(argv, **kwargs):
+        temporary = Path(argv[argv.index("--output") + 1])
+        temporary.write_bytes(b"too large" if failure == "oversize" else b"safe")
+        if failure == "transfer":
+            raise ruler.subprocess.CalledProcessError(63, argv)
+        if failure == "collision":
+            (tmp_path / "fixture").write_bytes(b"preserve")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(ruler.subprocess, "run", transfer)
+    with pytest.raises(
+        (ValueError, ruler.subprocess.CalledProcessError, FileExistsError)
+    ):
+        ruler.fetch(tmp_path, "fixture", "https://example.test/data")
+    assert not list(tmp_path.glob("*.partial"))
+    if failure == "collision":
+        assert (tmp_path / "fixture").read_bytes() == b"preserve"
+    else:
+        assert not (tmp_path / "fixture").exists()
