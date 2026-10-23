@@ -570,13 +570,7 @@ def is_kokoro_family_model(model_name: str) -> bool:
 
 
 def _resolve_safe_tts_checkpoint(model_name: str) -> Path:
-    """Inspect the exact snapshot before mlx-audio can deserialize sidecars.
-
-    VoxCPM and VoxCPM2 can fall back to an implicit torch.load of audiovae.pth.
-    Refuse that file for every generic TTS checkpoint, independent of alias or
-    model_type routing. This boundary does not depend on torch's version or
-    process-wide weights_only environment switches.
-    """
+    """Resolve the exact snapshot before selecting a safe sidecar loader."""
     from rapid_mlx.model_downloads import snapshot_download
 
     model_path = Path(model_name).expanduser()
@@ -600,14 +594,6 @@ def _resolve_safe_tts_checkpoint(model_name: str) -> Path:
                     "*.pth",
                 ],
             )
-        )
-    legacy_vae = model_path / "audiovae.pth"
-    if legacy_vae.exists() or legacy_vae.is_symlink():
-        raise ValueError(
-            "Refusing legacy audiovae.pth: this TTS runtime can deserialize it "
-            "as executable pickle. Use a safetensors-only checkpoint with its "
-            "VAE weights included; migrate trusted legacy artifacts offline. "
-            "Rapid-MLX does not automatically unpickle or convert this file."
         )
     return model_path
 
@@ -677,9 +663,9 @@ class TTSEngine:
         # the Chinese expressive/cloneable gap Qwen3-TTS (flat) and Chatterbox
         # (English-only) leave open.
         if self._model_family == "f5":
-            from f5_tts_mlx.cfm import F5TTS
+            from .f5_security import load_f5_checkpoint
 
-            self.model = F5TTS.from_pretrained(self.model_name)
+            self.model = load_f5_checkpoint(self.model_name)
             self._loaded = True
             logger.info(f"TTS model loaded (f5): {self.model_name}")
             return
@@ -693,8 +679,14 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
-            model_path = _resolve_safe_tts_checkpoint(self.model_name)
-            self.model = load_model(model_path)
+            model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
+            legacy_vae = model_path / "audiovae.pth"
+            if legacy_vae.exists() or legacy_vae.is_symlink():
+                from .voxcpm_security import load_voxcpm_checkpoint
+
+                self.model = load_voxcpm_checkpoint(model_path)
+            else:
+                self.model = load_model(model_path)
             self._loaded = True
             logger.info(
                 f"TTS model loaded: {self.model_name} (family: {self._model_family})"

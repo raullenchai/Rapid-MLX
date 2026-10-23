@@ -6,7 +6,9 @@ import os
 import socket
 
 
-def validate_server_exposure(*, host, api_key, allow_unauthenticated_public=False, listen_fd=None):
+def validate_server_exposure(
+    *, host, api_key, allow_unauthenticated_public=False, listen_fd=None
+):
     if api_key or allow_unauthenticated_public:
         return
     if listen_fd is not None:
@@ -17,7 +19,9 @@ def validate_server_exposure(*, host, api_key, allow_unauthenticated_public=Fals
                     return
                 host = listener.getsockname()[0]
         except (OSError, ValueError, TypeError) as exc:
-            raise ValueError("Cannot verify inherited listener; configure an API key") from exc
+            raise ValueError(
+                "Cannot verify inherited listener; configure an API key"
+            ) from exc
     try:
         address = ipaddress.ip_address(host)
         loopback = address.is_loopback or (

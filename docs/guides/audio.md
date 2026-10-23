@@ -398,12 +398,13 @@ stem removed. Add `--play` to audition the result without writing files.
 > `qwen3-tts` (named Chinese speakers) instead. English output works but is
 > best-effort; report upstream if synthesis fails.
 
-VoxCPM and VoxCPM2 checkpoints must be safetensors-only with their VAE
-weights included. Rapid-MLX rejects an `audiovae.pth` sidecar before loading,
-including when the file appears unused, because the upstream fallback can
-execute pickle code. This restriction also applies when the checkpoint has a
-custom alias. Migrate trusted legacy artifacts offline; the server does not
-unpickle or automatically convert them.
+VoxCPM and VoxCPM2 retain support for tensor-only `audiovae.pth` sidecars.
+Rapid-MLX loads them through explicit restricted deserialization on stable
+PyTorch >=2.10.0, then applies the native VAE weight normalization exactly once.
+Embedded VAE weights and VoxCPM2 safetensors sidecars take precedence, so unused
+pickle files are never deserialized. Arbitrary Python objects are rejected;
+there is no unrestricted pickle fallback for TTS. F5-TTS resolves both its main
+checkpoint and nested Vocos model through the catalog's immutable revisions.
 
 ### Audio Processing Models
 
