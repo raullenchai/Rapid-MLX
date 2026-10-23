@@ -215,7 +215,7 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "904f89d59b07c0eeb5d33ddd71ac3a13e01bbea95136efc4f78ca78b93ba1c44",
+        "tokenization.py": "88efe12348d97f1029335d7c7f00583546bd14e65c29837e560d38417c8be3ca",
     }.items():
         assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 

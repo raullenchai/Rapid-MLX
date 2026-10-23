@@ -1,19 +1,19 @@
 # Copyright (c) 2026 Moonshot AI. Modified MIT License; see LICENSE.
 # Reviewed source: see PROVENANCE.md.
-# ruff: noqa
 import os
 from collections import OrderedDict
+from collections.abc import Iterator
 from logging import getLogger
 from pathlib import Path
 from shutil import copyfile
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union, cast
+from typing import Any, cast
 
 import tiktoken
-from .vocabulary import load_local_bpe
 from tokenizers import AddedToken
 from transformers.convert_slow_tokenizer import bytes_to_unicode
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from .vocabulary import load_local_bpe
 
 logger = getLogger(__name__)
 VOCAB_FILES_NAMES = {"vocab_file": "tiktoken.model"}
@@ -47,7 +47,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
     model_input_names = ["input_ids", "attention_mask"]
 
-    special_tokens: Dict[str, int]
+    special_tokens: dict[str, int]
 
     num_reserved_special_tokens = 256
 
@@ -67,12 +67,12 @@ class TikTokenTokenizer(PreTrainedTokenizer):
     def __init__(
         self,
         vocab_file,
-        bos_token: Union[str, AddedToken] = "[BOS]",
-        eos_token: Union[str, AddedToken] = "[EOS]",
-        unk_token: Union[str, AddedToken, None] = None,
-        pad_token: Union[str, AddedToken, None] = None,
-        additional_special_tokens: Optional[List[str]] = None,
-        added_tokens_decoder: Optional[dict] = None,
+        bos_token: str | AddedToken = "[BOS]",
+        eos_token: str | AddedToken = "[EOS]",
+        unk_token: str | AddedToken | None = None,
+        pad_token: str | AddedToken | None = None,
+        additional_special_tokens: list[str] | None = None,
+        added_tokens_decoder: dict | None = None,
         **kwargs,
     ):
         assert os.path.isfile(vocab_file), vocab_file
@@ -162,7 +162,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
     def encode(
         self, text, text_pair=None, *args, allow_special_tokens: bool = True, **kwargs
-    ) -> List[int]:
+    ) -> list[int]:
         """Keep the base tokenizer's paired-input and positional-option contract."""
         if not allow_special_tokens:
             if isinstance(text, str):
@@ -171,11 +171,11 @@ class TikTokenTokenizer(PreTrainedTokenizer):
                 text_pair = self._encode_text(text_pair, allow_special_tokens=False)
         if isinstance(text, str) and text_pair is None and not args and not kwargs:
             return self._encode_text(text)
-        return cast(List[int], super().encode(text, text_pair, *args, **kwargs))
+        return cast(list[int], super().encode(text, text_pair, *args, **kwargs))
 
     def _encode_text(
         self, text: str, *, allow_special_tokens: bool = True
-    ) -> List[int]:
+    ) -> list[int]:
         if not isinstance(text, str):
             raise TypeError("Tokenizer text must be a string")
 
@@ -190,7 +190,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         texts = self.pre_tokenizer_process(text)
 
-        all_substrs: List[str] = []
+        all_substrs: list[str] = []
         for text in texts:
             substrs = (
                 substr
@@ -201,7 +201,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
             )
             all_substrs.extend(substrs)
 
-        t: List[int] = []
+        t: list[int] = []
         for substr in all_substrs:
             if allow_special_tokens:
                 t.extend(
@@ -224,7 +224,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
     def decode(
         self,
-        token_ids: Union[int, List[int]],
+        token_ids: int | list[int],
         skip_special_tokens: bool = False,
         clean_up_tokenization_spaces: bool | None = None,
         **kwargs,
@@ -253,7 +253,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         if type(token_ids) is int:
             token_ids = [token_ids]
 
-        return cast(str, self.model.decode(cast(List[int], token_ids)))
+        return cast(str, self.model.decode(cast(list[int], token_ids)))
 
     @staticmethod
     def _split_whitespaces_or_nonwhitespaces(
@@ -281,7 +281,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
                     current_slice_len = 1
         yield s[slice_start:]
 
-    def pre_tokenizer_process(self, text: str) -> List[str]:
+    def pre_tokenizer_process(self, text: str) -> list[str]:
         """
         pre-tokenizes the input text into a list of tokens.
         This method is used to split the input text into smaller chunks for internal processing.
@@ -294,10 +294,10 @@ class TikTokenTokenizer(PreTrainedTokenizer):
     def vocab_size(self) -> int:
         return self.n_words
 
-    def get_vocab(self) -> Dict[str, int]:
+    def get_vocab(self) -> dict[str, int]:
         return self.encoder
 
-    def _tokenize(self, text: str, **kwargs) -> List[str]:
+    def _tokenize(self, text: str, **kwargs) -> list[str]:
         return [self.decoder[t] for t in self._encode_text(text)]
 
     def _convert_token_to_id(self, token: str) -> int:
@@ -310,7 +310,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
     def clean_up_tokenization(out_string: str) -> str:
         return out_string
 
-    def convert_tokens_to_string(self, tokens: List[str]) -> str:
+    def convert_tokens_to_string(self, tokens: list[str]) -> str:
         text = "".join(tokens)
         text = bytearray([self.byte_decoder[c] for c in text]).decode(
             "utf-8", "replace"
@@ -318,8 +318,8 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         return text
 
     def save_vocabulary(
-        self, save_directory: str, filename_prefix: Optional[str] = None
-    ) -> Tuple[str]:
+        self, save_directory: str, filename_prefix: str | None = None
+    ) -> tuple[str]:
         if not os.path.isdir(save_directory):
             raise ValueError(
                 f"vocabulary path ({save_directory}) should be a directory"
@@ -340,7 +340,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
     def apply_chat_template(
         self,
         conversation,
-        tools: Optional[list[dict]] = None,
+        tools: list[dict] | None = None,
         tokenize: bool = False,
         add_generation_prompt: bool = True,
         thinking: bool = True,

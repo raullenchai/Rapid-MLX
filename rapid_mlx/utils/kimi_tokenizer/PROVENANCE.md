@@ -27,4 +27,4 @@ Other local deviations are Ruff formatting, explicit optional/container/return
 types, indexed token lookup, compatible positional encode/decode options and
 explicit text validation. Special-token control is a keyword-only extension. Reviewed packaged SHA256:
 
-- `tokenization.py`: `904f89d59b07c0eeb5d33ddd71ac3a13e01bbea95136efc4f78ca78b93ba1c44`
+- `tokenization.py`: `88efe12348d97f1029335d7c7f00583546bd14e65c29837e560d38417c8be3ca`
