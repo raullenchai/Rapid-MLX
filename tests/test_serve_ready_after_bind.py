@@ -501,6 +501,7 @@ def test_standalone_entrypoint_stashes_endpoint_and_runs_real_seam(
             "--no-mllm",
             "--host",
             "0.0.0.0",
+            "--allow-unauthenticated-public",
             "--port",
             str(unused_tcp_port),
         ],

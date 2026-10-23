@@ -2382,10 +2382,6 @@ def runnable_text_snapshot(path):
 
 @pytest.mark.parametrize("downloads_disabled", [False, True])
 def test_local_availability_never_downloads(tmp_path, monkeypatch, downloads_disabled):
-    # The fake cache below contains no real model bytes.
-    monkeypatch.setattr(
-        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
-    )
     import huggingface_hub
 
     from rapid_mlx import cli, model_downloads

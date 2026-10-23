@@ -82,7 +82,15 @@ SCENARIOS: dict[str, list[str]] = {
         "--served-model-name",
         "my-model",
     ],
-    "bind": ["--host", "0.0.0.0", "--port", "9123", "--log-level", "DEBUG"],
+    "bind": [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "9123",
+        "--log-level",
+        "DEBUG",
+        "--allow-unauthenticated-public",
+    ],
 }
 
 # name -> extra argv that ``serve_command`` must refuse before loading a model.
