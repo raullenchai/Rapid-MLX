@@ -677,7 +677,6 @@ def _run_uvicorn(
     *,
     on_server_accepting=None,
     proxy_headers: bool = True,
-    update_notice_shown: bool = False,
 ) -> None:
     """Dispatch through Rapid-MLX's Uvicorn startup seam with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -720,7 +719,7 @@ def _run_uvicorn(
     if on_server_accepting is None:
         from rapid_mlx.server import print_ready_banner
 
-        if update_notice_shown:
+        if getattr(args, "_update_notice_shown", False):
             on_server_accepting = functools.partial(
                 print_ready_banner, update_notice_shown=True
             )
@@ -8131,9 +8130,8 @@ def serve_command(args):
     else:
         _cfg.bind_listen_fd = listen_fd
 
-    _run_uvicorn(
-        app, args, uvicorn_log_level, update_notice_shown=announced is not None
-    )
+    args._update_notice_shown = announced is not None
+    _run_uvicorn(app, args, uvicorn_log_level)
     _hard_exit_after_serve()
 
 
