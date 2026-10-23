@@ -126,9 +126,9 @@ def catalog_changes(
                     errors.append(f"{alias}.{family}: runtime assets must be a list")
                     continue
                 old_assets = old.get(family, []) if isinstance(old, dict) else []
+                if not isinstance(old_assets, list):
+                    old_assets = []
                 for asset in assets:
-                    if asset in old_assets:
-                        continue
                     if (
                         not isinstance(asset, dict)
                         or not isinstance(asset.get("repo_id"), str)
@@ -137,6 +137,8 @@ def catalog_changes(
                         errors.append(
                             f"{alias}.{family}: runtime asset requires a repository"
                         )
+                    elif asset in old_assets:
+                        continue
                     pin = asset.get("revision") if isinstance(asset, dict) else None
                     if not isinstance(pin, str) or not SHA.fullmatch(pin):
                         errors.append(

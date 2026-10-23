@@ -157,6 +157,27 @@ def test_runtime_asset_positive_and_grandfathered_identity():
     assert catalog_changes(before, after, PATH) == (["_runtime_assets"], [])
 
 
+@pytest.mark.parametrize("previous", [{"repo_id": "org/model"}, "repo_id", None])
+def test_malformed_prior_runtime_assets_cannot_grandfather_new_values(previous):
+    before = {"_runtime_assets": {"family": previous}}
+    after = {"_runtime_assets": {"family": ["repo_id"]}}
+    assert catalog_changes(before, after, PATH)[1]
+    after["_runtime_assets"]["family"] = [{"repo_id": "org/model"}]
+    assert catalog_changes(before, after, PATH)[1]
+    after["_runtime_assets"]["family"][0]["revision"] = PIN
+    assert catalog_changes(before, after, PATH) == (["_runtime_assets"], [])
+
+
+def test_edited_runtime_asset_list_revalidates_existing_asset_shapes():
+    before = {"_runtime_assets": {"family": ["repo_id"]}}
+    after = {
+        "_runtime_assets": {
+            "family": ["repo_id", {"repo_id": "org/new", "revision": PIN}]
+        }
+    }
+    assert catalog_changes(before, after, PATH)[1]
+
+
 def test_audio_and_removal_identity_rules():
     path = "rapid_mlx/audio/aliases.json"
     assert catalog_changes(
