@@ -76,7 +76,18 @@ def fsync_directory(path):
 def save_scores(path, reap, norms, squared, counts, metadata, keep, tokens):
     from scripts.calibrate_deepseek_v41_reap import _overlap
 
-    scores = aggregate_scores(reap, norms, squared, counts)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scores = aggregate_scores(reap, norms, squared, counts)
+        saliency = reap.sum((0, 1))
+        saliency_halves = reap.sum(0)
+    # Preserve exact integral routing evidence across the scorer's float arithmetic.
+    scores["counts_halves_by_slice"] = counts
+    scores["counts_by_slice"] = counts.sum(1)
+    if any(
+        not np.isfinite(value).all()
+        for value in [*scores.values(), saliency, saliency_halves]
+    ):
+        raise ValueError("aggregate scores are not finite")
     overlap = np.array(
         [
             [
@@ -91,9 +102,9 @@ def save_scores(path, reap, norms, squared, counts, metadata, keep, tokens):
         path,
         **scores,
         metadata=np.array(json.dumps(metadata)),
-        saliency=reap.sum((0, 1)),
+        saliency=saliency,
         robust_saliency=scores["robust_reap"],
-        saliency_halves=reap.sum(0),
+        saliency_halves=saliency_halves,
         counts=counts.sum((0, 1)),
         counts_halves=counts.sum(0),
         tokens=np.array(tokens * len(reap)),

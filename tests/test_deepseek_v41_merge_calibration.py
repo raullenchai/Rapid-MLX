@@ -307,7 +307,16 @@ def test_merge_directory_sync_failure_rolls_back_only_own_output(
 
 
 @pytest.mark.parametrize(
-    "kind", ["unsigned", "negative", "half_sum", "merged_sum", "aggregate", "float_sum"]
+    "kind",
+    [
+        "unsigned",
+        "negative",
+        "half_sum",
+        "merged_sum",
+        "aggregate",
+        "float_sum",
+        "aggregate_float",
+    ],
 )
 def test_merge_rejects_overflowing_counts_and_scores(tmp_path, kind):
     from scripts import deepseek_v41_merge_calibration as merge
@@ -323,21 +332,24 @@ def test_merge_rejects_overflowing_counts_and_scores(tmp_path, kind):
             counts[0, 0, 0, 0] = -1
         else:
             counts.fill(0)
-            counts[0, 0, 0, 0] = 2**62
+            counts[0, 0, 0, 0] = 1 if kind == "aggregate_float" else 2**62
             if kind == "half_sum":
                 counts[0, 1, 0, 0] = 2**62
         arrays = {"counts_halves_by_slice": counts, "counts_by_slice": counts.sum(1)}
-        if kind in ("merged_sum", "aggregate", "float_sum"):
+        if kind in ("merged_sum", "aggregate", "float_sum", "aggregate_float"):
             for metric in ("reap", "man", "msan"):
                 values = np.zeros(counts.shape)
                 values[0, 0, 0, 0] = (
-                    1e308 if kind == "float_sum" and metric == "reap" else 1
+                    1e308
+                    if kind in ("float_sum", "aggregate_float") and metric == "reap"
+                    else 1
                 )
                 arrays[metric + "_halves"] = values
         rewrite(path, arrays_update=arrays)
     with pytest.raises(ValueError, match="counts|overflows|finite"):
         merge.merge_calibration(
-            paths[:2] if kind == "aggregate" else paths, tmp_path / "out.npz"
+            paths[:2] if kind in ("aggregate", "aggregate_float") else paths,
+            tmp_path / "out.npz",
         )
     assert not (tmp_path / "out.npz").exists()
 
@@ -380,3 +392,22 @@ def test_merge_rollback_attempts_sync_and_preserves_original_error(
     assert len(caught.value.failures) == 1
     assert calls == [tmp_path, tmp_path]
     assert output.exists() == (failure != "sync")
+
+
+def test_score_writer_preserves_large_integer_counts(tmp_path):
+    counts = np.zeros((3, 2, 2, 4), np.int64)
+    counts[0, 0, 0, 0] = np.iinfo(np.int64).max
+    values = np.zeros(counts.shape)
+    path = write_pass(tmp_path / "counts.npz", (values, values, values, counts))
+    with np.load(path) as data:
+        assert data["counts_halves_by_slice"][0, 0, 0, 0] == np.iinfo(np.int64).max
+        assert data["counts_by_slice"][0, 0, 0] == np.iinfo(np.int64).max
+        assert data["counts"][0, 0] == np.iinfo(np.int64).max
+
+
+def test_score_writer_rejects_overflow_across_slices(tmp_path):
+    counts = np.ones((3, 2, 2, 4), np.int64)
+    reap = np.full(counts.shape, 4e307)
+    with pytest.raises(ValueError, match="aggregate scores are not finite"):
+        write_pass(tmp_path / "overflow.npz", (reap, counts, counts, counts))
+    assert not (tmp_path / "overflow.npz").exists()
