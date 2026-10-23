@@ -1288,6 +1288,15 @@ def process_audio_input(audio: str, timeout: int = 30):
     Local paths retain the decoder's existing behavior. Remote payloads use
     the shared media guard, and data URIs become bounded in-memory bytes.
     """
+    # A colon is valid in local filenames. Make an existing scheme-like name
+    # absolute so the decoder cannot interpret it as a remote protocol.
+    if (
+        urlsplit(audio).scheme
+        and "://" not in audio
+        and not audio.startswith("data:")
+        and Path(audio).is_file()
+    ):
+        return str(Path(audio).resolve())
     if is_url(audio):
         return download_audio(audio, timeout=timeout)
     if audio.startswith("data:audio/"):

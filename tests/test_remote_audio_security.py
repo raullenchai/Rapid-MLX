@@ -269,3 +269,44 @@ def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path):
     assert len(frames) == 1
     assert metadata.total_num_frames == 2
     assert transport["response"].closed
+
+
+def test_local_colon_audio_filename_is_not_a_protocol(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "http:take.wav"
+    path.write_bytes(b"local")
+    assert mllm.process_audio_input(path.name) == str(path)
+
+
+def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "http:frame.png"
+    Image.new("RGB", (2, 2)).save(path)
+    assert inputs.load_image(path.name).size == (2, 2)
+
+
+def test_local_colon_video_filename_reaches_local_decoder(
+    inputs, tmp_path, monkeypatch
+):
+    cv2 = pytest.importorskip("cv2")
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "take:01.mp4"
+    path.write_bytes(b"local")
+    seen = []
+
+    class Capture:
+        def __init__(self, source):
+            seen.append(source)
+
+        def isOpened(self):
+            return False
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", Capture)
+    with pytest.raises(ValueError, match="Cannot open video"):
+        inputs.load_video(path.name)
+    assert seen == [str(path)]

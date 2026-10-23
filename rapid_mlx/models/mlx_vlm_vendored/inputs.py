@@ -65,6 +65,13 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
                     )
                 _, data = image_source.split(",", 1)
                 image_source = BytesIO(base64.b64decode(data))
+            if (
+                isinstance(image_source, str)
+                and urlsplit(image_source).scheme
+                and "://" not in image_source
+                and Path(image_source).is_file()
+            ):
+                image_source = str(Path(image_source).resolve())
             if isinstance(image_source, str) and urlsplit(image_source).scheme in (
                 "http",
                 "https",
@@ -414,6 +421,12 @@ def load_video(
 
     # VENDOR-DEVIATION(upstream-bugfix): OpenCV must never fetch arbitrary
     # remote URLs itself; reuse the guarded downloader before opening frames.
+    if (
+        urlsplit(video_path).scheme
+        and "://" not in video_path
+        and Path(video_path).is_file()
+    ):
+        video_path = str(Path(video_path).resolve())
     if urlsplit(video_path).scheme in ("http", "https"):
         from rapid_mlx.models.mllm import download_video
 
