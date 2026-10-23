@@ -1986,6 +1986,9 @@ def test_setup_noop_guard_still_applies_independent_credentials(fake_home, clien
     apply_setup_plan(build_setup_plan(client, "https://example.com", "rapid-model"))
     plan = build_setup_plan(client, "https://example.com", "rapid-model")
     assert not plan.changed
+    receipt = plan.path.with_name(plan.path.name + ".rapid-mlx-owned.json")
+    receipt.unlink()
+    before = plan.path.read_bytes()
     credentials = fake_home / "credential-overrides.yaml"
     plan = replace(
         plan,
@@ -1997,3 +2000,29 @@ def test_setup_noop_guard_still_applies_independent_credentials(fake_home, clien
     assert plan.changed
     apply_setup_plan(plan)
     assert yaml.safe_load(credentials.read_text()) == {"test_key": "updated-value"}
+    assert plan.path.read_bytes() == before
+    assert not receipt.exists()
+
+
+def test_customized_owned_model_does_not_authorize_deleting_duplicate(fake_home):
+    path = continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    data = continue_dev.load_yaml_config(path)
+    data["models"].append(dict(data["models"][0]))
+    data["models"][0]["custom"] = "user-value"
+    path.write_text(continue_dev.dump_yaml(data))
+    before = path.read_bytes()
+    assert not continue_dev.remove_config()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("extra", ["updated: 2026-10-22", "custom: {1: a, text: b}"])
+def test_remove_preserves_owned_model_with_yaml_customization(fake_home, extra):
+    import yaml
+
+    path = continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    data = continue_dev.load_yaml_config(path)
+    data["models"][0].update(yaml.safe_load(extra))
+    path.write_text(continue_dev.dump_yaml(data))
+    before = path.read_bytes()
+    assert not continue_dev.remove_config()
+    assert path.read_bytes() == before

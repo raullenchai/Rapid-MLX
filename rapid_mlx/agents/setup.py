@@ -635,13 +635,14 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
                 _serialize(plan.credentials_after, "yaml") + "\n",
             )
         if plan.agent in {"cline", "continue"}:
-            assert isinstance(plan.after, dict)
-            write_owned = (
-                cline.write_owned_config
-                if plan.agent == "cline"
-                else continue_dev.write_owned_config
-            )
-            write_owned(plan.path, plan.after)
+            if plan.before != plan.after:
+                assert isinstance(plan.after, dict)
+                write_owned = (
+                    cline.write_owned_config
+                    if plan.agent == "cline"
+                    else continue_dev.write_owned_config
+                )
+                write_owned(plan.path, plan.after)
         elif plan.format == "yaml":
             _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
         else:

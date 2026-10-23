@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fingerprints for removable fields in shared adapter settings.
 
-The receipt contains no credentials. Missing receipts deliberately confer no
-ownership: a provider name or a loopback URL alone is not evidence of a Rapid
-write. Reconfigured fields are retained when they no longer match the receipt.
+Receipts are private metadata: their fingerprints include credential-derived
+values. They use the same owner-only permissions as the credential-bearing
+configuration and its backups, and must not be published. Fingerprints support
+value comparison, not password storage or authentication.
+
+Missing receipts deliberately confer no ownership: a provider name or a loopback
+URL alone is not evidence of a Rapid write. Reconfigured fields are retained
+when they no longer match the receipt.
 """
 
 from __future__ import annotations

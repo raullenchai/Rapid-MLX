@@ -448,19 +448,18 @@ def remove_config() -> bool:
     models = data.get("models", [])
     if not isinstance(models, list):
         raise ValueError(f"{path} models must contain a list")
-    kept = []
-    removed = False
-    for entry in models:
+    # Configuration updates the first named entry; never let a customized
+    # version of it authorize deleting a different, matching user duplicate.
+    for index, entry in enumerate(models):
+        if not isinstance(entry, dict) or entry.get("name") != _MODEL_ENTRY_NAME:
+            continue
         candidate = {"model_entry": entry}
-        if not removed and _ownership.remove_fields(path, candidate, ("model_entry",)):
-            removed = True
-        else:
-            kept.append(entry)
-    if not removed:
+        if not _ownership.remove_fields(path, candidate, ("model_entry",)):
+            break
+        data["models"] = models[:index] + models[index + 1 :]
+        _common.backup_existing(path)
+        _common.atomic_write_text(path, dump_yaml(data))
         _ownership.forget(path)
-        return False
-    data["models"] = kept
-    _common.backup_existing(path)
-    _common.atomic_write_text(path, dump_yaml(data))
+        return True
     _ownership.forget(path)
-    return True
+    return False
