@@ -119,7 +119,7 @@ case "$*" in
     *)
         echo "package:$*" >> "$EVENTS"
         [ "$FAIL" = 0 ] || exit 7
-        case "$*" in *" -q") [ "$FALLBACK" = 0 ] || exit 7 ;; esac
+        [ "$FALLBACK" = 0 ] || exit 7
         cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
         ;;
 esac
@@ -158,6 +158,7 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 "DRAIN": drain,
                 "FAIL": str(int(fail)),
                 "FALLBACK": str(int(fallback)),
+                "RAPID_MLX_GIT_COMMIT": "a" * 40,
                 "TMPDIR": os.environ.get("TMPDIR", work),
             }
             # Newly generated executables can incur macOS first-launch validation.
@@ -188,6 +189,12 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 timeout=10,
             )
             log = events.read_text() if events.exists() else ""
+            if fallback:
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("git+", log)
+                self.assertIn("refusing", result.stderr)
+                self.assertNotIn("Rapid-MLX installed!", result.stdout)
+                return
             if fail:
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertNotIn("Rapid-MLX installed!", result.stdout)
@@ -207,15 +214,16 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
             ]
             if target == "stable":
                 self.assertIn(" --upgrade ", package_commands[0])
-                self.assertIn(" rapid-mlx -q", package_commands[0])
+                self.assertIn(" rapid-mlx", package_commands[0])
             elif target == "latest":
                 flag = "--reinstall" if uv else "--force-reinstall"
                 self.assertIn(flag, package_commands[0])
                 self.assertIn(
                     "rapid-mlx @ git+https://github.com/", package_commands[0]
                 )
+                self.assertIn("@" + "a" * 40, package_commands[0])
             else:
-                self.assertIn(f"rapid-mlx=={target} -q", package_commands[0])
+                self.assertIn(f"rapid-mlx=={target}", package_commands[0])
             self.assertNotIn("consumed:", log)
             self.assertIn(
                 "cache-json\n", log
@@ -224,13 +232,6 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
             self.assertIn("Rapid-MLX installed!", result.stdout)
             self.assertIn("Quick start:", result.stdout)
             self.assertIn("rapid-mlx chat qwen3.5-4b-4bit", result.stdout)
-            if fallback:
-                self.assertEqual(len(package_commands), 2)
-                self.assertIn(
-                    "rapid-mlx @ git+https://github.com/", package_commands[-1]
-                )
-                if target != "stable":
-                    self.assertIn(f"@v{target}", package_commands[-1])
 
     def test_streamed_bootstrap(self):
         self.run_installer()
@@ -251,7 +252,7 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
             with self.subTest(target=target):
                 self.run_installer(bootstrap=False, drain="pip-package", target=target)
 
-    def test_streamed_package_fallback(self):
+    def test_streamed_package_failure_does_not_change_sources(self):
         for target in ("stable", "0.16.1"):
             with self.subTest(target=target):
                 self.run_installer(
