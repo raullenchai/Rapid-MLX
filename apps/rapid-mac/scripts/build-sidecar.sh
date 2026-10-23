@@ -57,6 +57,17 @@ set -euo pipefail
 # in MACHO_BASELINE_COUNT below depends on this version.
 PBS_TAG="${PBS_TAG:-20260610}"
 PBS_VERSION="${PBS_VERSION:-3.12.13}"
+# Published SHA256SUMS for the exact arm64 stripped archive:
+# https://github.com/astral-sh/python-build-standalone/releases/download/20260610/SHA256SUMS
+# A version/tag override must provide its own independently reviewed digest.
+PBS_SHA256="${PBS_SHA256:-}"
+if [ -z "$PBS_SHA256" ] && [ "$PBS_TAG" = "20260610" ] && [ "$PBS_VERSION" = "3.12.13" ]; then
+    PBS_SHA256="f0a7fa7decc75df2b1a789329a44f657c4a15c0a683f197ce46a5cb621bc6ef4"
+fi
+if [[ ! "$PBS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERR: PBS_SHA256 must be a reviewed SHA-256 digest for PBS_VERSION/PBS_TAG" >&2
+    exit 1
+fi
 # compileall uses all cores by default. Restricted builders that cannot query
 # process semaphore limits can set this to 1 without changing bundle contents.
 COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
@@ -247,13 +258,18 @@ cp "$PYOBJC_LICENSE" "$STAGE/licenses/PyObjC-MIT.txt"
 # ----- step 1: embedded python interpreter -----------------------------
 
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
-PBS_TAR="/tmp/rapid-pbs-${PBS_TAG}.tar.gz"
+PBS_TAR="${OUT_DIR}/cpython-${PBS_VERSION}-${PBS_TAG}-${PBS_SHA256}.tar.gz"
 PBS_TAR_TMP="${PBS_TAR}.tmp"
 
-# Never trust a cache entry that cannot be listed as a gzip tarball. A failed
-# transfer from an older build may have written only part of the archive.
-if [ -f "$PBS_TAR" ] && ! tar -tzf "$PBS_TAR" > /dev/null 2>&1; then
-    echo "warning: discarding incomplete python-build-standalone cache" >&2
+# Validate bytes before tar parses either cached or newly downloaded content.
+# Listing an archive alone only proves structural validity, not provenance.
+verify_pbs_archive() {
+    local actual_sha
+    actual_sha="$(shasum -a 256 "$1" | awk '{print $1}')" || return 1
+    [ "$actual_sha" = "$PBS_SHA256" ] && tar -tzf "$1" > /dev/null 2>&1
+}
+if [ -f "$PBS_TAR" ] && ! verify_pbs_archive "$PBS_TAR"; then
+    echo "warning: discarding untrusted python-build-standalone cache" >&2
     rm -f "$PBS_TAR"
 fi
 if [ ! -f "$PBS_TAR" ]; then
@@ -265,8 +281,8 @@ if [ ! -f "$PBS_TAR" ]; then
         rm -f "$PBS_TAR_TMP"
         exit 1
     fi
-    if ! tar -tzf "$PBS_TAR_TMP" > /dev/null 2>&1; then
-        echo "ERR: downloaded python-build-standalone archive is invalid" >&2
+    if ! verify_pbs_archive "$PBS_TAR_TMP"; then
+        echo "ERR: python-build-standalone archive failed SHA-256/integrity validation" >&2
         rm -f "$PBS_TAR_TMP"
         exit 1
     fi
