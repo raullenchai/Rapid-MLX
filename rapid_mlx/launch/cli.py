@@ -238,10 +238,10 @@ def launch_command(args: argparse.Namespace) -> None:
             print("Claude Desktop tier mapping disabled in Rapid-MLX.")
             return
         explicit = getattr(args, "_original_alias", None) or args.model
-        saved = claude_desktop.mappings() if not explicit else {}
+        saved_tiers = claude_desktop.mappings() if not explicit else {}
         model = (
             explicit
-            or saved.get("sonnet")
+            or saved_tiers.get("sonnet")
             or _select_model(
                 explicit=None, profile=get_profile("claude-code"), no_download=False
             )
@@ -254,9 +254,9 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         url, gateway_key = claude_desktop.configure(
             model,
-            opus=getattr(args, "opus_model", None) or saved.get("opus"),
-            sonnet=getattr(args, "sonnet_model", None) or saved.get("sonnet"),
-            haiku=getattr(args, "haiku_model", None) or saved.get("haiku"),
+            opus=getattr(args, "opus_model", None) or saved_tiers.get("opus"),
+            sonnet=getattr(args, "sonnet_model", None) or saved_tiers.get("sonnet"),
+            haiku=getattr(args, "haiku_model", None) or saved_tiers.get("haiku"),
             port=args.port,
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")
@@ -648,11 +648,20 @@ def launch_command(args: argparse.Namespace) -> None:
     original_alias = getattr(args, "_original_alias", None)
     saved = None
     if not (original_alias or args.model) and args.client in ("cline", "continue-dev"):
+        reader = (
+            cline.saved_model if args.client == "cline" else continue_dev.saved_model
+        )
         try:
-            saved = ADAPTERS[args.client].saved_model()
-        except (OSError, ValueError):
-            # The normal preview/write path reports invalid configuration.
-            pass
+            saved = reader()
+        except (OSError, ValueError) as exc:
+            if args.dry_run:
+                print(f"[dry-run] {args.client}: cannot preview — {exc}")
+                return
+            print(
+                f"launch: cannot read {args.client} configuration: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     model = original_alias or args.model or saved or _resolve_default_model()
     effective_cursor_url = cursor_server_url or server_url
     if args.dry_run:

@@ -122,11 +122,17 @@ def load_legacy_config(path: Path) -> dict[str, Any]:
 def saved_model() -> str | None:
     """Read the same named entry that a repeat configuration updates."""
     path = current_config_path()
+    assert path is not None
     data = load_yaml_config(path)
+    name_key = "name"
     if not path.exists():
-        data = convert_legacy_config(load_legacy_config(legacy_config_path(path)))
-    for entry in data.get("models") or []:
-        if isinstance(entry, dict) and entry.get("name") == _MODEL_ENTRY_NAME:
+        data = load_legacy_config(legacy_config_path(path))
+        name_key = "title"
+    models = data.get("models") or []
+    if not isinstance(models, list):
+        raise ValueError(f"{path} models must contain a list")
+    for entry in models:
+        if isinstance(entry, dict) and entry.get(name_key) == _MODEL_ENTRY_NAME:
             model = entry.get("model")
             return model if isinstance(model, str) and model.strip() else None
     return None

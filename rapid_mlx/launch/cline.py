@@ -170,7 +170,9 @@ def is_valid_providers_file(data: object) -> bool:
 
 def saved_model() -> str | None:
     """Read the configured provider's model before choosing a default."""
-    data = load_providers(current_config_path())
+    path = current_config_path()
+    assert path is not None
+    data = load_providers(path)
     model = (
         data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {}).get("model")
     )

@@ -2515,7 +2515,9 @@ def test_repeat_gateway_preserves_tiers(fake_home, monkeypatch, tier_overrides):
     launch_cli.launch_command(
         _make_args(client="claude-desktop", model="explicit-replacement")
     )
-    assert set(claude_desktop.mappings().values()) == {"explicit-replacement"}
+    assert claude_desktop.mappings() == {
+        tier: "explicit-replacement" for tier in ("opus", "sonnet", "haiku")
+    }
 
 
 @pytest.mark.parametrize("client", ["cline", "continue-dev"])
@@ -2543,3 +2545,39 @@ def test_continue_saved_model_from_legacy_config(fake_home):
         json.dumps({"models": [{"title": "rapid-mlx", "model": "saved-model"}]})
     )
     assert continue_dev.saved_model() == "saved-model"
+
+
+@pytest.mark.parametrize(
+    ("client", "content"),
+    [
+        ("cline", '{"providers": []}'),
+        (
+            "cline",
+            '{"version": 1, "providers": {"openai-compatible": {"settings": 1}}}',
+        ),
+        ("continue-dev", "models: 1"),
+        ("continue-dev", "models: wrong"),
+    ],
+)
+def test_repeat_rejects_structurally_invalid_config(
+    fake_home, monkeypatch, client, content
+):
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(content)
+    monkeypatch.setattr(launch_cli, "_resolve_default_model", lambda: "default-model")
+    with pytest.raises(ValueError):
+        adapter.saved_model()
+    with pytest.raises(SystemExit) as exc:
+        launch_cli.launch_command(_make_args(client=client))
+    assert exc.value.code == 1
+    assert path.read_text() == content
+
+
+def test_continue_rejects_invalid_legacy_model_list(fake_home):
+    path = continue_dev.legacy_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{"models": 1}')
+    with pytest.raises(ValueError, match="models must contain a list"):
+        continue_dev.saved_model()
