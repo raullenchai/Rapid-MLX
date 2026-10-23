@@ -15,7 +15,9 @@ from pathlib import Path
 from .._env import env_falsey, env_truthy
 
 
-def validate_local_model_file(model_name: str | Path) -> None:
+def validate_local_model_file(
+    model_name: str | Path, *, model_config: dict | None = None
+) -> None:
     """Validate ``config.json::model_file`` before a local MLX model load.
 
     Missing ``model_file`` is the normal case and is accepted.  When it is
@@ -33,12 +35,15 @@ def validate_local_model_file(model_name: str | Path) -> None:
 
     model_root = supplied_root.resolve(strict=True)
     config_path = model_root / "config.json"
-    if not config_path.is_file():
+    if model_config is None and not config_path.is_file():
         return
 
     try:
-        with config_path.open(encoding="utf-8") as config_file:
-            config = json.load(config_file)
+        if model_config is not None:
+            config = model_config
+        else:
+            with config_path.open(encoding="utf-8") as config_file:
+                config = json.load(config_file)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Unable to read local model config at {config_path}") from exc
 
@@ -121,5 +126,5 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
     config = {**config, **(kwargs.get("model_config") or {})}
     validate_model_code(config, trust_remote_code=trust)
     if config.get("model_file"):
-        validate_local_model_file(model_path)
+        validate_local_model_file(model_path, model_config=config)
     return (loader or load)(str(model_path), trust_remote_code=trust, **kwargs)

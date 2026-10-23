@@ -249,3 +249,20 @@ def test_vlm_policy_pins_snapshot_and_blocks_code(tmp_path, monkeypatch):
     load_vlm_with_policy("org/repo", revision="pinned", trust_remote_code=True)
     assert calls == [((str(root),), {"trust_remote_code": True})]
     assert resolved == [("org/repo", {"revision": "pinned"})] * 2
+
+
+def test_checked_model_file_validates_effective_overlay(tmp_path, monkeypatch):
+    from rapid_mlx.model_load_errors import load_model_checked
+
+    root = _model_dir(tmp_path, None)
+    (root / "config.json").write_text('{"model_type":"llama"}')
+    outside = tmp_path / "outside.py"
+    outside.write_text("# must not be loaded")
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    with pytest.raises(ValueError, match="must stay inside"):
+        load_model_checked(
+            lambda *args, **kwargs: pytest.fail("unsafe loader called"),
+            root,
+            trust_remote_code=True,
+            model_config={"model_file": "../outside.py"},
+        )

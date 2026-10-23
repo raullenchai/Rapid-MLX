@@ -252,7 +252,7 @@ def load_model_checked(
     effective_config = {**(config or {}), **(kwargs.get("model_config") or {})}
     validate_model_code(effective_config, trust_remote_code=trust_remote_code)
     if effective_config.get("model_file"):
-        validate_local_model_file(model_path)
+        validate_local_model_file(model_path, model_config=effective_config)
     with typed_mlx_load_boundaries():
         return loader(model_path, **kwargs)
 
