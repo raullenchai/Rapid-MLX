@@ -20,6 +20,63 @@ REPO = "RecursiveSI/flint-int4"
 UNPINNED = "mlx-community/Qwen3-0.6B-4bit"
 
 
+@pytest.mark.parametrize("name", [ALIAS, REPO])
+def test_vlm_loaders_honor_catalog_revision(name, monkeypatch, tmp_path):
+    import mlx_vlm
+    import mlx_vlm.utils
+
+    from rapid_mlx.models.mllm import _resolve_checkpoint
+    from rapid_mlx.utils import tokenizer
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+    (tmp_path / "config.json").write_text('{"model_type":"qwen3"}')
+    resolved = []
+
+    def exact_checkpoint(requested):
+        resolved.append(requested)
+        return str(tmp_path)
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", exact_checkpoint)
+    monkeypatch.setattr(
+        mlx_vlm.utils,
+        "get_model_path",
+        lambda *a, **kw: pytest.fail("catalog pin fell through to upstream HEAD"),
+    )
+    calls = []
+    monkeypatch.setattr(mlx_vlm, "load", lambda *a, **kw: calls.append((a, kw)))
+    assert _resolve_checkpoint(name) == str(tmp_path)
+    load_vlm_with_policy(name)
+    assert resolved == [name, name]
+    assert calls == [((str(tmp_path),), {"trust_remote_code": False})]
+
+
+def test_vlm_catalog_revision_cannot_be_overridden(monkeypatch):
+    from rapid_mlx.utils.model_file_guard import resolve_vlm_checkpoint
+
+    with pytest.raises(ValueError, match="conflicting revision"):
+        resolve_vlm_checkpoint(ALIAS, revision=OTHER)
+
+
+def test_vlm_catalog_pin_resolution_failure_never_uses_head(monkeypatch):
+    import mlx_vlm.utils
+
+    from rapid_mlx.utils import tokenizer
+    from rapid_mlx.utils.model_file_guard import resolve_vlm_checkpoint
+
+    def failed_pin(name):
+        raise RuntimeError("pinned checkpoint unavailable")
+
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", failed_pin)
+    monkeypatch.setattr(
+        mlx_vlm.utils,
+        "get_model_path",
+        lambda *a, **kw: pytest.fail("HEAD fallback"),
+    )
+    with pytest.raises(RuntimeError, match="pinned checkpoint unavailable"):
+        resolve_vlm_checkpoint(ALIAS)
+
+
 @pytest.fixture(params=[REPO, ALIAS, "my-flint"])
 def pinned_name(request, monkeypatch, tmp_path):
     from rapid_mlx import user_aliases

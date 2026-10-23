@@ -111,14 +111,44 @@ def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) 
         )
 
 
+def resolve_vlm_checkpoint(
+    model_name: str | Path, *, revision: str | None = None
+) -> Path:
+    """Honor catalog identity before handing VLM loaders a concrete snapshot."""
+    from mlx_vlm.utils import get_model_path
+
+    from ..model_aliases import resolve_hub_model, resolve_revision, resolve_subfolder
+
+    name = str(model_name)
+    local = Path(name).expanduser()
+    if local.is_dir():
+        return local
+    pin = resolve_revision(name)
+    if pin is not None:
+        if revision is not None and revision != pin:
+            raise ValueError(
+                f"{name} is pinned to revision {pin}; conflicting revision {revision}"
+            )
+        # Reuse the text loader's exact-cache/mirror resolution and completeness
+        # check. A failed pin resolution must not retry against repository HEAD.
+        from .tokenizer import _resolve_subfolder_checkpoint
+
+        return Path(_resolve_subfolder_checkpoint(name))
+    subfolder = resolve_subfolder(name)
+    options = {"revision": revision}
+    if subfolder is not None:
+        options["allow_patterns"] = [f"{subfolder}/*"]
+    snapshot = Path(get_model_path(resolve_hub_model(name), **options))
+    return snapshot / subfolder if subfolder is not None else snapshot
+
+
 def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
     """Load VLM weights and processors from one inspected snapshot with consent."""
     from mlx_vlm import load
-    from mlx_vlm.utils import get_model_path
 
     trust = remote_code_enabled(kwargs.pop("trust_remote_code", None))
     revision = kwargs.pop("revision", None)
-    model_path = get_model_path(str(model_name), revision=revision)
+    model_path = resolve_vlm_checkpoint(model_name, revision=revision)
     with (model_path / "config.json").open(encoding="utf-8") as handle:
         config = json.load(handle)
     if not isinstance(config, dict):

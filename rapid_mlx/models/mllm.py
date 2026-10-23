@@ -52,9 +52,9 @@ logger = logging.getLogger(__name__)
 
 def _resolve_checkpoint(model_name: str) -> str:
     """Pin config inspection and execution to the same local snapshot."""
-    from mlx_vlm.utils import get_model_path
+    from ..utils.model_file_guard import resolve_vlm_checkpoint
 
-    return str(get_model_path(model_name))
+    return str(resolve_vlm_checkpoint(model_name))
 
 
 class TextOnlyCheckpointError(RuntimeError):
