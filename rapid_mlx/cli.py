@@ -5847,6 +5847,19 @@ def serve_command(args):
     flush_serve_startup_notes(args)
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
     _validate_local_search_exposure_or_exit(args)
+    from .server_exposure import validate_server_exposure
+    from .server import _resolve_api_key
+
+    try:
+        validate_server_exposure(
+            host=getattr(args, "host", "127.0.0.1"),
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            allow_unauthenticated_public=getattr(args, "allow_unauthenticated_public", False),
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
     from .local_search_runtime import configure as configure_local_search
 

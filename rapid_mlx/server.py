@@ -3945,6 +3945,11 @@ Examples:
     # Inline value still works for backwards-compat with existing
     # scripts; if both are set, the inline value wins.
     parser.add_argument(
+        "--allow-unauthenticated-public",
+        action="store_true",
+        help="Explicitly allow network serving without an API key (e.g. an authenticated proxy)",
+    )
+    parser.add_argument(
         "--api-key",
         type=str,
         default=None,
@@ -4204,6 +4209,17 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
+    from .server_exposure import validate_server_exposure
+
+    try:
+        validate_server_exposure(
+            host=args.host,
+            api_key=_resolve_api_key(getattr(args, "api_key", None)),
+            allow_unauthenticated_public=args.allow_unauthenticated_public,
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     from .local_search_runtime import (
         validate_exposure as validate_local_search_exposure,
     )

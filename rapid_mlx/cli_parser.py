@@ -1372,6 +1372,11 @@ def _add_serve_parser(
     # any local user). Inline value still works for backwards-compat
     # with existing scripts; if both are set, the inline value wins.
     serve_parser.add_argument(
+        "--allow-unauthenticated-public",
+        action="store_true",
+        help="Explicitly allow network serving without an API key (e.g. an authenticated proxy)",
+    )
+    serve_parser.add_argument(
         "--api-key",
         type=str,
         default=None,
