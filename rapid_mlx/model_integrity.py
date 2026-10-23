@@ -148,7 +148,7 @@ def verify_snapshot(
                 30,
             )
         except RevisionNotFoundError:
-            if revision != commit:
+            if revision != commit and resolved_revision != commit:
                 raise
             # Preserve the mirror's explicit-pin recovery trust contract when
             # upstream has lost a commit. Reuse its strict complete-inventory

@@ -150,12 +150,16 @@ def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
     assert len(calls) == 1
 
 
-def test_missing_explicit_pin_uses_validated_mirror_manifest(snapshot, monkeypatch):
+@pytest.mark.parametrize("commit_argument", ["revision", "resolved_revision"])
+def test_missing_explicit_pin_uses_validated_mirror_manifest(
+    snapshot, monkeypatch, commit_argument
+):
     from huggingface_hub.errors import RevisionNotFoundError
 
     from rapid_mlx import _mirror
 
     path, info, calls = snapshot
+    commit_kwargs = {commit_argument: path.name}
 
     def missing(*args, **kwargs):
         import httpx
@@ -189,7 +193,7 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(snapshot, monkeypat
         lambda url: requests.append(url) or (manifest, 200),
     )
     verify_snapshot(
-        "test/integrity", path, revision=path.name, allow_patterns="*.safetensors"
+        "test/integrity", path, **commit_kwargs, allow_patterns="*.safetensors"
     )
     assert requests == [
         f"https://mirror.invalid/test/integrity/.rapid-mlx/revisions/{path.name}.json"
@@ -198,25 +202,23 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(snapshot, monkeypat
     verify_snapshot(
         "test/integrity",
         path,
-        revision=path.name,
+        **commit_kwargs,
         allow_patterns="*.safetensors",
         local_files_only=True,
     )
     (path / "model.safetensors").write_bytes(b"corruption!")
     with pytest.raises(ModelIntegrityError):
         verify_snapshot(
-            "test/integrity", path, revision=path.name, allow_patterns="*.safetensors"
+            "test/integrity", path, **commit_kwargs, allow_patterns="*.safetensors"
         )
     count = len(requests)
     with pytest.raises(ModelIntegrityError, match="Offline integrity"):
-        verify_snapshot(
-            "test/integrity", path, revision=path.name, local_files_only=True
-        )
+        verify_snapshot("test/integrity", path, **commit_kwargs, local_files_only=True)
     assert len(requests) == count
     # Missing inventory or wrong revision cannot authorize recovered content.
     manifest["file_inventory"].append("missing")
     with pytest.raises(ModelIntegrityError, match="no valid exact-revision"):
-        verify_snapshot("test/integrity", path, revision=path.name)
+        verify_snapshot("test/integrity", path, **commit_kwargs)
 
 
 @pytest.mark.parametrize("name", [None, "../outside", "/absolute", "folder\\file"])
