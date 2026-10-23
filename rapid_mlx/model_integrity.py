@@ -70,6 +70,25 @@ def verify_snapshot(
         if filenames is not None
         else None
     )
+    from huggingface_hub.utils import filter_repo_objects
+
+    local_names = [
+        file.relative_to(path).as_posix()
+        for file in path.rglob("*")
+        if file.is_file()
+        and not file.relative_to(path)
+        .as_posix()
+        .startswith((".cache/huggingface/", ".cache/rapid-mlx-integrity/"))
+    ]
+    local_selected = set(
+        filter_repo_objects(
+            local_names,
+            allow_patterns=None if allow_all else patterns,
+            ignore_patterns=ignored,
+        )
+    )
+    if exact is not None:
+        local_selected.intersection_update(exact)
     lock_path = Path(__file__).with_name("model_catalog_lock.json")
     try:
         locked = (
@@ -140,8 +159,13 @@ def verify_snapshot(
         entries = previous.get("files", {})
         if not isinstance(entries, dict):
             raise ValueError("Invalid receipt file inventory")
-        if entries and all(
-            _identity(path / name) == entry["stat"] for name, entry in entries.items()
+        if (
+            entries
+            and set(entries) == local_selected
+            and all(
+                _identity(path / name) == entry["stat"]
+                for name, entry in entries.items()
+            )
         ):
             return
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -173,7 +197,7 @@ def verify_snapshot(
                 "Offline integrity verification requires a packaged manifest or an unchanged verified receipt; run an online pull first"
             )
         from httpx import TransportError
-        from huggingface_hub.errors import RevisionNotFoundError
+        from huggingface_hub.errors import HfHubHTTPError, RevisionNotFoundError
 
         try:
             info = call_with_deadline(
@@ -182,7 +206,14 @@ def verify_snapshot(
                 ),
                 30,
             )
-        except (RevisionNotFoundError, TimeoutError, TransportError):
+        except (HfHubHTTPError, TimeoutError, TransportError) as exc:
+            if (
+                isinstance(exc, HfHubHTTPError)
+                and not isinstance(exc, RevisionNotFoundError)
+                and getattr(exc.response, "status_code", None)
+                not in (429, 500, 502, 503, 504)
+            ):
+                raise
             if revision != commit and resolved_revision != commit:
                 raise
             # Preserve explicit-pin recovery when upstream has lost a commit
@@ -200,8 +231,6 @@ def verify_snapshot(
             )
         siblings = _field(info, "siblings", [])
     siblings = list(siblings)
-    from huggingface_hub.utils import filter_repo_objects
-
     names = [_field(item, "rfilename") for item in siblings]
     if not all(isinstance(name, str) for name in names):
         raise ModelIntegrityError("Invalid integrity manifest filename")
@@ -261,6 +290,10 @@ def verify_snapshot(
             verified[name] = {"digest": digest, "stat": before}
         except OSError as exc:
             raise ModelIntegrityError(f"Cannot verify downloaded file: {name}") from exc
+    if local_selected - set(verified):
+        raise ModelIntegrityError(
+            "Downloaded snapshot inventory mismatch: selected local files are absent from the immutable manifest"
+        )
     if not verified:
         if not allow_all and not patterns:
             return

@@ -69,7 +69,7 @@ def test_symbolic_revisions_must_be_resolved_by_the_caller(snapshot, revision):
     assert calls == []
 
 
-@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
 def test_auth_errors_do_not_use_mirror_recovery(snapshot, monkeypatch, status):
     import httpx
     from huggingface_hub.errors import HfHubHTTPError
@@ -123,6 +123,7 @@ def test_packaged_manifest_requires_selected_weights_offline(
     lock = module / "model_catalog_lock.json"
     entry = {
         "revision": path.name,
+        "git_files": {"config.json": {"blob_id": info.siblings[1].blob_id, "size": 2}},
         "lfs_files": {
             "model.safetensors": {
                 "sha256": info.siblings[0].lfs["sha256"],
@@ -184,7 +185,9 @@ def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
 
 
 @pytest.mark.parametrize("commit_argument", ["revision", "resolved_revision"])
-@pytest.mark.parametrize("failure", ["missing", "timeout", "connect"])
+@pytest.mark.parametrize(
+    "failure", ["missing", "timeout", "connect", 429, 500, 502, 503, 504]
+)
 def test_missing_explicit_pin_uses_validated_mirror_manifest(
     snapshot, monkeypatch, commit_argument, failure
 ):
@@ -197,11 +200,19 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(
 
     def missing(*args, **kwargs):
         import httpx
+        from huggingface_hub.errors import HfHubHTTPError
 
         if failure == "timeout":
             raise TimeoutError("metadata deadline exceeded")
         if failure == "connect":
             raise httpx.ConnectError("metadata transport unavailable")
+        if isinstance(failure, int):
+            raise HfHubHTTPError(
+                "metadata temporarily unavailable",
+                response=httpx.Response(
+                    failure, request=httpx.Request("GET", "https://hub.invalid")
+                ),
+            )
         raise RevisionNotFoundError(
             "removed pin",
             response=httpx.Response(
@@ -289,8 +300,36 @@ def test_filters_matching_no_files_are_refused(snapshot, filters):
 def test_empty_manifest_is_refused(snapshot):
     path, info, _ = snapshot
     info.siblings = []
-    with pytest.raises(ModelIntegrityError, match="no selected files"):
+    with pytest.raises(ModelIntegrityError, match="inventory mismatch"):
         verify_snapshot("test/integrity", path)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_extra_selected_files_are_refused_even_with_receipt(snapshot, warm):
+    path, _, _ = snapshot
+    if warm:
+        verify_snapshot("test/integrity", path)
+    extra = path / "extra.safetensors"
+    extra.write_bytes(b"not in the commit")
+    with pytest.raises(ModelIntegrityError, match="inventory mismatch"):
+        verify_snapshot("test/integrity", path)
+    assert extra.read_bytes() == b"not in the commit"
+    extra.unlink()
+    verify_snapshot("test/integrity", path)
+
+
+def test_unselected_files_and_local_download_metadata_do_not_break_verification(
+    snapshot,
+):
+    path, _, _ = snapshot
+    (path / "unselected.safetensors").write_bytes(b"outside selection")
+    for directory in ("huggingface", "rapid-mlx-integrity"):
+        metadata = path / ".cache" / directory / "metadata"
+        metadata.parent.mkdir(parents=True)
+        metadata.write_bytes(b"download bookkeeping")
+    verify_snapshot("test/integrity", path, filenames="config.json")
+    verify_snapshot("test/integrity", path, allow_patterns="*.json")
+    verify_snapshot("test/integrity", path, ignore_patterns="unselected.safetensors")
 
 
 def test_size_mismatch_preserves_resume_files(snapshot):

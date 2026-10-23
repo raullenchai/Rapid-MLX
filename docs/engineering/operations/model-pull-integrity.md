@@ -16,6 +16,9 @@ checked offline without another metadata request. File identity, size and timest
 changes invalidate the receipt. An unknown offline snapshot requires a trusted
 packaged inventory or an online verification first. Cached files and partial
 transfers are retained on failure so download resume remains possible.
+Selected local files absent from the immutable manifest are refused, including
+files added after a receipt was created. Unselected variants and local download
+bookkeeping are excluded from this inventory comparison.
 If verified content resides in a read-only cache or a receipt cannot be saved,
 the pull still succeeds with a diagnostic. A later pull may need online
 verification again because no reusable receipt was persisted.
