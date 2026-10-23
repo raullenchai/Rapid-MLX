@@ -17,6 +17,11 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from rapid_mlx.tool_call_diagnostics import (
+    current_rejected_tool_calls,
+    observe_tool_rejections,
+)
+
 from .._env import env_falsey
 from ..api.errors import CHAT_RESPONSE_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
@@ -1810,6 +1815,32 @@ def _resolve_tool_start_exclusion_ids(parser, tokenizer, flat_tools) -> tuple[in
         return ()
 
 
+def _log_tool_grammar(request, status):
+    logger.info(
+        "tool-grammar request=%x model=%r admission=%s",
+        id(request),
+        getattr(request, "model", None),
+        status,
+    )
+
+
+def _tool_grammar_skip_reason(cfg, request):
+    if _constrain_tools_opted_out():
+        return "operator_opt_out"
+    if not getattr(request, "tools", None):
+        return "no_tools"
+    if not getattr(cfg, "tool_call_parser", None):
+        return "no_parser"
+    if not _tool_parser_supports_grammar(cfg):
+        return "parser_unsupported"
+    choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
+    if choice is None:
+        return "tool_choice"
+    if choice["mode"] == "auto" and not _tool_parser_auto_safe(cfg):
+        return "parser_auto_unsafe"
+    return "schema_bounds"
+
+
 def _maybe_build_tool_grammar_processor(
     engine, cfg, request, messages=None, resolved_thinking=None
 ):
@@ -1817,7 +1848,7 @@ def _maybe_build_tool_grammar_processor(
 
     Non-breaking: returns ``None`` (today's free-form-then-parse fallback)
     whenever anything is missing — env opt-out, no tools, no family parser,
-    ``tool_choice`` not in the PR-3 constrained set (required/named), the
+    ``tool_choice`` not in the constrained set (auto/required/named), the
     parser opts out of ``structure_info``, llguidance unavailable, or the
     tokenizer cannot back an ``LLTokenizer``.
 
@@ -1835,6 +1866,7 @@ def _maybe_build_tool_grammar_processor(
     so the route can reuse it for the coupled budget (no second render).
     """
     if not _tool_grammar_eligible(cfg, request):
+        _log_tool_grammar(request, "skipped:" + _tool_grammar_skip_reason(cfg, request))
         return None
 
     choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
@@ -1851,6 +1883,8 @@ def _maybe_build_tool_grammar_processor(
 
     try:
         from ..api.tool_grammar import (
+            HAS_LL_TOKENIZER,
+            HAS_LLGUIDANCE,
             GrammarLogitsProcessor,
             build_tool_grammar,
             get_lltokenizer,
@@ -1861,6 +1895,7 @@ def _maybe_build_tool_grammar_processor(
 
         tokenizer = getattr(engine, "tokenizer", None)
         if tokenizer is None:
+            _log_tool_grammar(request, "skipped:no_tokenizer")
             return None
         # Resolve the ``LLTokenizer`` FIRST (codex #558-PR3 nit): a tokenizer
         # already memoized as unsupported returns ``None`` here without paying
@@ -1869,6 +1904,12 @@ def _maybe_build_tool_grammar_processor(
         # avoids compiling a grammar we'd only discard.
         lltok = get_lltokenizer(tokenizer)
         if lltok is None:
+            cause = "tokenizer_unsupported"
+            if not HAS_LLGUIDANCE:
+                cause = "no_llguidance"
+            elif not HAS_LL_TOKENIZER:
+                cause = "no_lltokenizer"
+            _log_tool_grammar(request, "skipped:" + cause)
             return None
         parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
         parser = parser_cls(tokenizer=tokenizer)
@@ -1876,9 +1917,7 @@ def _maybe_build_tool_grammar_processor(
         if _auto_tool_grammar_declined_for_native_wire(
             engine, cfg, request, parser=parser
         ):
-            logger.debug(
-                "Skipping auto tool grammar: parser wire differs from native XML"
-            )
+            _log_tool_grammar(request, "skipped:native_wire_mismatch")
             return None
 
         # Flatten OpenAI tools -> [{name, parameters}] for the grammar builder.
@@ -1887,6 +1926,7 @@ def _maybe_build_tool_grammar_processor(
             fn = t.function if hasattr(t, "function") else t.get("function", t)
             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
             if not name:
+                _log_tool_grammar(request, "skipped:missing_tool_name")
                 return None
             has_params = (
                 ("parameters" in fn)
@@ -1933,6 +1973,7 @@ def _maybe_build_tool_grammar_processor(
                 # Named target not in tools. The #445 route handler already
                 # 400s this case before we get here, but stay defensive:
                 # free-form fallback rather than an empty/forcing grammar.
+                _log_tool_grammar(request, "skipped:unknown_named_tool")
                 return None
             flat_tools = narrowed
 
@@ -2095,6 +2136,12 @@ def _maybe_build_tool_grammar_processor(
             reasoning_sentinels=reasoning_sentinels,
         )
         if grammar is None:
+            _log_tool_grammar(
+                request,
+                "skipped:builder_declined"
+                if HAS_LLGUIDANCE
+                else "skipped:no_llguidance",
+            )
             return None
 
         # Reasoning-aware delay (design §5) is baked into the GRAMMAR (path A
@@ -2130,6 +2177,7 @@ def _maybe_build_tool_grammar_processor(
         # producing fully-unconstrained output — strictly worse than either
         # lever alone (codex #558-PR3). Fall back to free-form/forced-prefix.
         if processor.is_broken():
+            _log_tool_grammar(request, "skipped:compile_failed")
             logger.error("tool-grammar: grammar failed to compile; free-form fallback")
             return None
         # LINE① (#558, r3 #5): stash the seed render on the (gated) processor so the
@@ -2138,8 +2186,10 @@ def _maybe_build_tool_grammar_processor(
         # otherwise (the route reads it only when ``reasoning_gate_id is not None``).
         if _line1_gate_id is not None and _line1_seed_prefix is not _LINE1_SEED_UNSET:
             processor._line1_seed_prefix = _line1_seed_prefix
+        _log_tool_grammar(request, "armed")
         return processor
     except Exception:
+        _log_tool_grammar(request, "skipped:build_failed")
         logger.exception("tool-grammar: failed to build processor; free-form fallback")
         return None
 
@@ -2180,8 +2230,10 @@ async def _offload_tool_grammar_build(
     # — both must pass before we submit. Refused admission (at capacity) skips
     # the offload and falls back to free-form rather than queueing unbounded work.
     if not _tool_grammar_eligible(cfg, request):
+        _log_tool_grammar(request, "skipped:" + _tool_grammar_skip_reason(cfg, request))
         return None
     if not _try_admit_tool_grammar_build():
+        _log_tool_grammar(request, "skipped:admission_full")
         # DELIBERATE AVAILABILITY DEGRADE (NOT fail-closed) — codex #558-PR5.
         # The bounded compile-admission pool is saturated, so this request falls
         # back to the pre-#558 free-form tool-parsing path instead of being
@@ -2212,6 +2264,7 @@ async def _offload_tool_grammar_build(
         # Submission itself failed (e.g. pool shut down): the compile never ran,
         # so release the reserved slot synchronously and fall back.
         _release_tool_grammar_build()
+        _log_tool_grammar(request, "skipped:submission_failed")
         logger.exception("tool-grammar: compile submission failed; free-form")
         return None
     track_build = getattr(engine, "track_tool_grammar_build", None)
@@ -2241,6 +2294,7 @@ async def _offload_tool_grammar_build(
         # Log it (codex #558-PR3 nit): the inner builder already swallows its own
         # exceptions, so anything surfacing HERE is unexpected and must not be
         # silently indistinguishable from an intentional free-form fallback.
+        _log_tool_grammar(request, "skipped:offload_failed")
         logger.exception("tool-grammar: off-loop build failed; free-form fallback")
         return None
 
@@ -4411,6 +4465,7 @@ def _build_reasoning_budget_processor(
     )
 
 
+@observe_tool_rejections
 async def _create_chat_completion_impl(
     request: ChatCompletionRequest,
     raw_request: Request,
@@ -7181,6 +7236,7 @@ async def _create_chat_completion_impl(
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
+        rejected_tool_calls=current_rejected_tool_calls(),
         model=_resolve_model_name(request.model),
         choices=[
             ChatCompletionChoice(

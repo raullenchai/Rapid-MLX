@@ -18,7 +18,7 @@ The resolution these formats actually use is positional: an element ends at
 the LAST closing marker before the next sibling opens. This module is that
 rule, written once.
 
-It lives at package top level with no imports beyond ``re`` on purpose.
+It lives at package top level with a lazy diagnostic-recorder import.
 ``rapid_mlx/api/tool_calling.py`` and the parsers under
 ``rapid_mlx/tool_parsers/`` both need it, and those two packages already
 import each other (``api/__init__`` pulls in ``tool_calling``;
@@ -215,6 +215,11 @@ def split_marked_calls(
         # was still returned as a call, so the authorisation check could be
         # skipped entirely by putting the undeclared opener first.
         if valid_names is not None and openers[i].group(1).strip() not in valid_names:
+            from .tool_call_diagnostics import record_rejected_tool_call
+
+            rejected = segment_by_next_opener(text, openers, i, closer, valid_names)
+            if rejected is not None:
+                record_rejected_tool_call(openers[i].group(1).strip(), rejected[0])
             i += 1
             continue
         segmented = segment_by_next_opener(text, openers, i, closer, valid_names)

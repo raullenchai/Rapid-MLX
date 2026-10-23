@@ -107,6 +107,9 @@ class Glm47ToolParser(ToolParser):
 
             # Validate tool name against available tools if provided
             if valid_names and func_name not in valid_names:
+                from ..tool_call_diagnostics import record_rejected_tool_call
+
+                record_rejected_tool_call(func_name, args_section)
                 continue
 
             # Parse arguments
