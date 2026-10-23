@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
@@ -643,6 +644,7 @@ IMAGE_FACTOR = 28  # For smart resize
 # Security: File size limits (in bytes)
 MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB max for images
 MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB max for videos
+MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100 MB max for remote/inline audio
 MAX_BASE64_IMAGE_LENGTH = 30 * 1024 * 1024  # 30 MB base64 string (~22 MB decoded)
 MAX_BASE64_VIDEO_LENGTH = 700 * 1024 * 1024  # 700 MB base64 string (~500 MB decoded)
 
@@ -682,7 +684,7 @@ def is_base64_image(s: str) -> bool:
 
 def is_url(s: str) -> bool:
     """Check if string is a URL."""
-    return s.startswith(("http://", "https://"))
+    return urlsplit(s).scheme.lower() in {"http", "https"}
 
 
 def is_base64_video(s: str) -> bool:
@@ -1239,6 +1241,68 @@ def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE)
     )
 
     return _temp_manager.register(temp_file.name)
+
+
+def download_audio(url: str, timeout: int = 30, max_size: int = MAX_AUDIO_SIZE) -> str:
+    """Fetch audio through the same DNS-pinned, redirect-checked media transport."""
+    response = _guarded_request("GET", url, timeout=timeout, headers={}, stream=True)
+    temp_path = None
+    try:
+        response.raise_for_status()
+        length = response.headers.get("content-length")
+        if length and int(length) > max_size:
+            raise FileSizeExceededError("Remote audio exceeds maximum size")
+        # Decoders sniff the container; the suffix is only a useful hint.
+        suffix = Path(urlparse(url).path).suffix.lower()
+        if suffix not in {
+            ".wav",
+            ".mp3",
+            ".flac",
+            ".ogg",
+            ".opus",
+            ".m4a",
+            ".aac",
+            ".aiff",
+        }:
+            suffix = ".wav"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as output:
+            temp_path = output.name
+            size = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                size += len(chunk)
+                if size > max_size:
+                    raise FileSizeExceededError("Remote audio exceeds maximum size")
+                output.write(chunk)
+        return _temp_manager.register(temp_path)
+    except Exception:
+        if temp_path is not None:
+            Path(temp_path).unlink(missing_ok=True)
+        raise
+    finally:
+        _close_guarded_response(response)
+
+
+def process_audio_input(audio: str, timeout: int = 30):
+    """Resolve remote/inline audio before a decoder can initiate network I/O.
+
+    Local paths retain the decoder's existing behavior. Remote payloads use
+    the shared media guard, and data URIs become bounded in-memory bytes.
+    """
+    if is_url(audio):
+        return download_audio(audio, timeout=timeout)
+    if audio.startswith("data:audio/"):
+        header, separator, payload = audio.partition(",")
+        if not separator or not header.endswith(";base64"):
+            raise ValueError("Audio data URI must contain base64 data")
+        if len(payload) > ((MAX_AUDIO_SIZE + 2) // 3) * 4:
+            raise FileSizeExceededError("Inline audio exceeds maximum size")
+        decoded = base64.b64decode(payload, validate=True)
+        if len(decoded) > MAX_AUDIO_SIZE:
+            raise FileSizeExceededError("Inline audio exceeds maximum size")
+        return BytesIO(decoded)
+    if urlsplit(audio).scheme and not audio.startswith("file://"):
+        raise RemoteMediaFetchError("Remote audio URL must use http(s)")
+    return audio
 
 
 def decode_base64_video(

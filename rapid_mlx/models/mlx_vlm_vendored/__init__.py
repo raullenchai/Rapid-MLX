@@ -213,8 +213,11 @@ vendored copy differs by exactly the deviations listed):
   - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``prepare_inputs``: bytes
     video paths are ``os.fsdecode``-d (upstream str()-ed them into
     ``"b'/tmp/a.mp4'"``-style garbage filenames).
-  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_audio``: the streamed
-    URL response is closed via ``with`` (upstream left it open).
+  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_image``, ``load_audio``
+    and ``load_video``: remote URLs use the shared DNS-pinned media downloader
+    before decoding, including redirect checks and size bounds. Audio data
+    URIs are decoded to bounded in-memory bytes. Transport resources close on
+    success and failure.
 
   The
   lane's ``prepare_inputs`` call sites (``multimodal_processor.py``,
