@@ -9922,7 +9922,9 @@ def _recipe_free_disk_gb() -> float | None:
         return None
 
 
-def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
+def _cached_subfolder_size(
+    repo_id: str, subfolder: str, *, catalog_alias: str | None = None
+) -> int | None:
     """Logical bytes for one complete checkpoint subfolder in the pinned cache.
 
     A Hub repo can retain several independently runnable quantizations. The
@@ -9944,9 +9946,9 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
         return None
     from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
-    revision = resolve_revision(repo_id)
+    revision = resolve_revision(catalog_alias or repo_id)
     if revision is not None:
-        repo_id = resolve_hub_model(repo_id)
+        repo_id = resolve_hub_model(catalog_alias or repo_id)
     repo_root = os.path.join(
         HF_HUB_CACHE,
         f"models--{repo_id.replace('/', '--')}",
@@ -10051,7 +10053,13 @@ def _cached_models_json_payload() -> dict:
                         else None
                     )
                 else:
-                    artifact_size = _cached_subfolder_size(repo, subfolder)
+                    # The alias came from an exact repo match above. Do not
+                    # let a colliding repo name choose a different pin.
+                    artifact_size = (
+                        _cached_subfolder_size(repo, subfolder, catalog_alias=alias)
+                        if cached_repository_collides(repo)
+                        else _cached_subfolder_size(repo, subfolder)
+                    )
                 if artifact_size is not None:
                     artifacts.append((alias, subfolder, artifact_size, "ok"))
                     seen_artifacts.add(key)

@@ -771,6 +771,8 @@ def test_cached_repo_alias_collision_uses_exact_checkpoint(
     assert rows[0]["alias"] is None
     assert rows[0]["repo"] == repo
     assert rows[0]["launch_path"] == str(directory)
+    assert rows[0]["state"] == ("external" if external else "unmapped")
+    assert rows[0]["external"] is external
 
 
 def test_colliding_repository_path_rejects_missing_or_incomplete_cache(cache):
@@ -807,12 +809,19 @@ def test_colliding_name_uses_only_exact_repository_revision_and_subfolder(
     monkeypatch.setattr(
         ma, "list_profiles", lambda: {"local-chat": unrelated, "actual": exact}
     )
+    monkeypatch.setattr(ma, "_load", lambda: {"local-chat": unrelated, "actual": exact})
     directory = write_model(
         cache / "models--local-chat" / "snapshots" / ("c" * 40) / "nested"
     )
     assert ma.cached_repository_launch_path("local-chat", external=False) == str(
         directory
     )
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["state"] == "ok"
+    assert row["alias"] == "actual"
+    assert row["repo"] == "local-chat"
+    assert row["subfolder"] == "nested"
+    assert row["launch_path"] is None
 
 
 @pytest.mark.parametrize("difference", ["revision", "subfolder"])
