@@ -558,7 +558,7 @@ def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
     )
 
 
-def test_friendly_error_on_missing_vision_tensors(monkeypatch):
+def test_friendly_error_on_missing_vision_tensors(monkeypatch, tmp_path):
     """MLLMModel.load() must translate mlx_vlm's
     `ValueError: Missing N parameters: vision_tower.*` into a RuntimeError
     that mentions --no-mllm, so users find the escape hatch without
@@ -585,7 +585,8 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             # Mirror mlx's exact strict-load format: `Missing N parameters:`
             # header where N equals the number of `,\n`-joined names, list
             # terminated by a single `.`. All 60 names are vision-tower tensors.
@@ -594,7 +595,12 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def get_model_path(_name, **kwargs):
+            return tmp_path
+
+        @staticmethod
+        def load_config(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
@@ -633,7 +639,7 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
         sys.modules["mlx_vlm"] = real_mlx_vlm
 
 
-def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
+def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch, tmp_path):
     """A checkpoint missing BOTH vision AND language-backbone tensors is
     genuinely incomplete — the text lane can't serve it either — so
     MLLMModel.load() must NOT classify it as text-only. It must re-raise the
@@ -656,7 +662,8 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             # Vision tensors AND a language-backbone tensor are both absent:
             # this is corruption, not a text-only fork.
             raise ValueError(
@@ -668,7 +675,12 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def get_model_path(_name, **kwargs):
+            return tmp_path
+
+        @staticmethod
+        def load_config(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
@@ -3128,7 +3140,7 @@ def test_ddtree_branch_rejects_no_spec_decode():
     assert excinfo.value.code == 2
 
 
-def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
+def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch, tmp_path):
     """An unrelated ValueError (e.g. config parsing) must NOT trigger
     the friendly-error path — it should propagate as-is so genuine bugs
     surface and don't get misattributed to vision-tower issues."""
@@ -3151,12 +3163,18 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             raise ValueError("config.json has an invalid model_type field")
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def get_model_path(_name, **kwargs):
+            return tmp_path
+
+        @staticmethod
+        def load_config(_name, *, trust_remote_code):
+            assert trust_remote_code is False
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)

@@ -212,6 +212,12 @@ from unittest import mock
 # -> utils.tokenizer.load_model_with_fallback -> mlx_lm.load) does, not
 # about what this test script calls directly.
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
+
+checkpoint_directory = TemporaryDirectory()
+checkpoint = Path(checkpoint_directory.name)
+(checkpoint / "config.json").write_text(json.dumps({"model_type": %(model_type)r}))
 
 import rapid_mlx.utils.tokenizer  # noqa: F401
 import rapid_mlx.cli as cli
@@ -254,7 +260,7 @@ with (
         # A real Path, not a bare str: _apply_chat_template_sidecar (now
         # reached from the lazy branch too) does `model_path / "..."`,
         # which raises TypeError for a str left-operand.
-        lambda name: Path("/fake/disk-stream-checkpoint"),
+        lambda name: checkpoint,
     ),
     # The lazy branch now also runs _try_inject_mtp_post_load (which
     # re-resolves the checkpoint via mlx_lm.utils._download, a real Hub
@@ -349,7 +355,7 @@ def test_disk_stream_install_fires_on_real_bench_load_path():
     if model_type != "lfm2_moe":
         print(f"FAIL: unexpected model_type {model_type!r}")
         sys.exit(1)
-    if checkpoint_path != "/fake/disk-stream-checkpoint":
+    if checkpoint_path != str(checkpoint):
         print(f"FAIL: unexpected checkpoint_path {checkpoint_path!r}")
         sys.exit(1)
     if cache_gb != 1.0:
@@ -387,6 +393,12 @@ import contextlib
 import io
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
+
+checkpoint_directory = TemporaryDirectory()
+checkpoint = Path(checkpoint_directory.name)
+(checkpoint / "config.json").write_text('{"model_type":"qwen2_moe"}')
 from unittest import mock
 
 # Import the real serve-path modules FIRST — never `disk_stream_patch`
@@ -493,7 +505,7 @@ with (
         "rapid_mlx.utils.tokenizer._resolve_model_path",
         # A real Path, not a bare str — see the bench test's identical
         # comment: _apply_chat_template_sidecar does `model_path / "..."`.
-        lambda name: Path("/fake/disk-stream-checkpoint"),
+        lambda name: checkpoint,
     ),
     # Same as the bench test: stub the two lazy-path post-load fixups
     # that hit the network by design, so this fake ``does-not-exist/...``
@@ -539,7 +551,7 @@ model_type, checkpoint_path, cache_gb = calls[0]
 if model_type != "qwen2_moe":
     print(f"FAIL: unexpected model_type {model_type!r}")
     sys.exit(1)
-if checkpoint_path != "/fake/disk-stream-checkpoint":
+if checkpoint_path != str(checkpoint):
     print(f"FAIL: unexpected checkpoint_path {checkpoint_path!r}")
     sys.exit(1)
 if cache_gb != 1.0:
@@ -652,7 +664,7 @@ def test_disk_stream_unregistered_model_type_fails_clearly_at_load_time():
 # ---------------------------------------------------------------------------
 
 
-def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
+def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch, tmp_path):
     """Pins the fix for review-notes.md's blocking finding: the lazy=True
     short-circuit in load_model_with_fallback used to `return` immediately
     after the raw `mlx_lm.load(..., lazy=True)` call, skipping
@@ -686,7 +698,8 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     fake_model = SimpleNamespace()
     fake_tokenizer = SimpleNamespace(chat_template=None)
     model_name = "mlx-community/fake-qwen2-moe-checkpoint-4bit"
-    resolved_name = "/fake/disk-stream-checkpoint"
+    (tmp_path / "config.json").write_text('{"model_type":"qwen2_moe"}')
+    resolved_name = str(tmp_path)
 
     def _fake_mlx_lm_load(path_or_hf_repo, tokenizer_config=None, **kwargs):
         order.append("mlx_lm.load")

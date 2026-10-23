@@ -204,7 +204,7 @@ def test_patched_class_keeps_stock_fallback_and_matches_fused_composition(monkey
 
 
 @pytest.mark.parametrize("spec_decode", ["none", "mtp", "draft", "unknown", None])
-def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch, spec_decode):
+def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch, spec_decode, tmp_path):
     import mlx_vlm
     import mlx_vlm.utils
 
@@ -255,6 +255,7 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch, spec_decode):
         "install_qwen35_fused_gdn_decode",
         lambda m: calls.append(("decode", m)),
     )
+    monkeypatch.setattr(mlx_vlm.utils, "get_model_path", lambda *a, **kw: tmp_path)
     mllm.MLXMultimodalLM("local/qwen-moe", spec_decode=spec_decode).load()
     assert calls == (
         [("projection", model), ("decode", model)]
@@ -316,7 +317,7 @@ class TestExtendedVLMContract:
             VLMSwitchGLU, "_rapid_gate_up_original_call", None, raising=False
         )
 
-    def test_qwen_mllm_wrapper_fuses_extended_family(self, monkeypatch):
+    def test_qwen_mllm_wrapper_fuses_extended_family(self, monkeypatch, tmp_path):
         import mlx_vlm
         import mlx_vlm.utils
 
@@ -344,6 +345,7 @@ class TestExtendedVLMContract:
         ):
             monkeypatch.setattr(tokenizer_utils, name, lambda *a, **kw: None)
 
+        monkeypatch.setattr(mlx_vlm.utils, "get_model_path", lambda *a, **kw: tmp_path)
         mllm.MLXMultimodalLM("unit-test/qwen35-moe").load()
         layer = model.layers[0]
         assert hasattr(layer, "gate_up_proj")
