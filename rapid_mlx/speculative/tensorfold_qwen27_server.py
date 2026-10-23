@@ -609,8 +609,7 @@ def run_tensorfold_qwen27_server(
         drafter_repo,
         served_name=served_model_name,
         max_tokens=default_max_tokens,
-        # Other profiles share this bootstrap and keep their loader defaults.
-        **({"enable_prefix_cache": False} if not enable_prefix_cache else {}),
+        enable_prefix_cache=enable_prefix_cache,
         **({"lanes": lanes} if lanes > 1 else {}),
     )
     # Qualification-only token evidence. Unset by default so production

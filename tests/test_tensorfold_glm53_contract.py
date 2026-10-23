@@ -582,8 +582,9 @@ def glm_loader_runtime(monkeypatch):
 
 
 @pytest.mark.parametrize("lane_options", [{}, {"lanes": 1}])
+@pytest.mark.parametrize("enable_prefix_cache", [True, False])
 def test_glm_loader_uses_family_memory_and_lane_contracts(
-    glm_loader_runtime, tmp_path, lane_options
+    glm_loader_runtime, tmp_path, lane_options, enable_prefix_cache
 ) -> None:
     adapter, seen = glm_loader_runtime.adapter, glm_loader_runtime.seen
     family = glm_loader_runtime.family
@@ -594,6 +595,7 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
         context_window=4096,
         max_tokens=256,
         **lane_options,
+        enable_prefix_cache=enable_prefix_cache,
     )
     assert seen["load_kwargs"] == {"mtp_drafts": 3}
     assert seen["released"] is True
@@ -601,8 +603,7 @@ def test_glm_loader_uses_family_memory_and_lane_contracts(
     assert seen["app"]["max_draft"] == 15
     assert seen["app"]["enable_thinking"] is True
     assert seen["app"]["context_window"] == 4096
-    # The prompt store is on, so a follow-up turn resumes from the last one.
-    assert seen["app"]["checkpoint_slots"] is None
+    assert seen["app"]["checkpoint_slots"] == (None if enable_prefix_cache else 0)
     assert seen["app"]["checkpoint_budget_bytes"] == adapter._prompt_cache_bytes()
     assert 0 < adapter._prompt_cache_bytes() <= 16 * 1024**3
     engine_keywords = seen["app"]["engine_factory"].keywords

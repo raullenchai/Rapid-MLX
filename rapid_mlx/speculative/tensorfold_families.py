@@ -241,6 +241,7 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
         context_window: int = 0,
         max_tokens: int = 4096,
         lanes: int = 1,
+        enable_prefix_cache: bool = True,
     ) -> TensorFoldFamilyBackend:
         from .tensorfold_concurrency import request_lanes
 
@@ -321,7 +322,7 @@ class TensorFoldFamilyBackend(TensorFoldQwen27Backend):
                 enable_thinking=True,
                 # Kept prompt state is what lets a follow-up turn skip the
                 # prefill; the runtime evicts it under the memory budget.
-                checkpoint_slots=None,
+                checkpoint_slots=None if enable_prefix_cache else 0,
                 checkpoint_budget_bytes=_prompt_cache_bytes(),
                 memory_budget_bytes=memory_limit,
                 fit_context=not context_window,

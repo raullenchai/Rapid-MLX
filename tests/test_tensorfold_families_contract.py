@@ -266,8 +266,9 @@ def _install_fake_tensorfold(monkeypatch, family, seen: dict) -> None:
 
 @pytest.mark.parametrize("paired", [False, True])
 @pytest.mark.parametrize("lanes", [1, 4])
+@pytest.mark.parametrize("enable_prefix_cache", [True, False])
 def test_loader_follows_the_upstream_serve_construction(
-    monkeypatch, tmp_path: Path, paired: bool, lanes: int
+    monkeypatch, tmp_path: Path, paired: bool, lanes: int, enable_prefix_cache: bool
 ) -> None:
     profile = families.PROFILES[MTP_IDS[0]]
     if paired:
@@ -321,6 +322,7 @@ def test_loader_follows_the_upstream_serve_construction(
         context_window=4096,
         max_tokens=256,
         lanes=lanes,
+        enable_prefix_cache=enable_prefix_cache,
     )
     expected = {"lane_kernels": "auto", "parallel": lanes}
     if paired:
@@ -340,8 +342,7 @@ def test_loader_follows_the_upstream_serve_construction(
     assert app["context_window"] == 4096 and app["fit_context"] is False
     assert app["default_max_tokens"] == 256
     assert app["enable_thinking"] is True
-    # The prompt store is on, sized like the runtime's own serve default.
-    assert app["checkpoint_slots"] is None
+    assert app["checkpoint_slots"] == (None if enable_prefix_cache else 0)
     assert app["checkpoint_budget_bytes"] == families._prompt_cache_bytes()
     monkeypatch.setattr(
         families.os,
