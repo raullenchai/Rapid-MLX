@@ -72,15 +72,17 @@ def test_direct_script_execution_resolves_the_checkout(monkeypatch):
 # --------------------------------------------------------------------------
 
 
+NO_RUNTIME_PIN = object()
+
+
 def _audit(
     monkeypatch,
     tmp_path,
     listing,
     present,
-    selected_files=LIST,
+    runtime_list=LIST,
     subfolder=None,
     *,
-    runtime_list=LIST,
     hf_error=None,
 ):
     main = tmp_path / "main.json"
@@ -114,7 +116,9 @@ def _audit(
         drift.mirror_runtime_files,
         "pinned_runtime_files",
         lambda repo: (
-            (PIN, selected_files) if repo == REPO and runtime_list is not None else None
+            (PIN, runtime_list)
+            if repo == REPO and runtime_list is not NO_RUNTIME_PIN
+            else None
         ),
     )
     monkeypatch.setattr(
@@ -203,6 +207,17 @@ def test_audit_reads_the_pin_and_probes_only_the_runtime_list(monkeypatch, tmp_p
     assert report.findings == []
 
 
+@pytest.mark.parametrize("runtime_list", [frozenset({"model_index.json"}), frozenset()])
+def test_audit_uses_the_supplied_runtime_list(monkeypatch, tmp_path, runtime_list):
+    report, listed_at, probed = _audit(
+        monkeypatch, tmp_path, LISTING, set(runtime_list), runtime_list=runtime_list
+    )
+    assert listed_at == [(REPO, PIN)]
+    assert set(probed) == runtime_list
+    assert report.checked_files == len(runtime_list)
+    assert not any(f.kind == "missing_file" for f in report.findings)
+
+
 def test_audit_still_fails_a_missing_runtime_object(monkeypatch, tmp_path):
     report, _, _ = _audit(monkeypatch, tmp_path, LISTING, {"model_index.json"})
     assert [(f.kind, f.severity, f.path) for f in report.findings] == [
@@ -248,7 +263,7 @@ def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
     # mirror size mismatches although clients never pull that branch.
     paths = {item.path for item in LISTING}
     report, listed_at, probed = _audit(
-        monkeypatch, tmp_path, LISTING, paths, runtime_list=None
+        monkeypatch, tmp_path, LISTING, paths, runtime_list=NO_RUNTIME_PIN
     )
     assert listed_at == [(REPO, PIN)]
     assert sorted(probed) == sorted(paths)
@@ -302,7 +317,7 @@ def test_audit_keeps_other_pinned_listing_errors_generic(monkeypatch, tmp_path):
         tmp_path,
         LISTING,
         set(),
-        runtime_list=None,
+        runtime_list=NO_RUNTIME_PIN,
         hf_error=TimeoutError("read timed out"),
     )
     assert probed == []
@@ -317,7 +332,7 @@ def test_audit_fails_when_the_pinned_commit_vanishes_upstream(monkeypatch, tmp_p
         tmp_path,
         LISTING,
         set(),
-        runtime_list=None,
+        runtime_list=NO_RUNTIME_PIN,
         hf_error=_revision_not_found("404 Client Error: Invalid rev id"),
     )
     assert listed_at == [(REPO, PIN)]
