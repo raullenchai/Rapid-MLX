@@ -226,7 +226,7 @@ def verify_snapshot(
         except OSError as exc:
             raise ModelIntegrityError(f"Cannot verify downloaded file: {name}") from exc
     if not verified:
-        if not selected:
+        if not allow_all and not patterns:
             return
         raise ModelIntegrityError("Integrity manifest contains no selected files")
     receipt_path.parent.mkdir(parents=True, exist_ok=True)

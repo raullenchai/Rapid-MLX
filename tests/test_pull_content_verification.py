@@ -13,9 +13,13 @@ from rapid_mlx.model_integrity import ModelIntegrityError
 @pytest.mark.parametrize("mirror", [False, True])
 @pytest.mark.parametrize("tampered", [False, True])
 @pytest.mark.parametrize("subfolder", [None, "4bit"])
+@pytest.mark.parametrize("runtime_asset", [False, True])
 def test_pull_completion_requires_verified_content(
-    tmp_path, monkeypatch, mirror, tampered, subfolder
+    tmp_path, monkeypatch, mirror, tampered, subfolder, runtime_asset
 ):
+    catalog_subfolder = subfolder
+    if runtime_asset:
+        subfolder = "runtime"
     commit = "a" * 40
     root = tmp_path / "models--test--integrity"
     snapshot = root / "snapshots" / commit
@@ -34,6 +38,14 @@ def test_pull_completion_requires_verified_content(
             )
         ],
     )
+    if subfolder:
+        metadata.siblings.append(
+            SimpleNamespace(
+                rfilename="unselected/model.safetensors",
+                size=len(data),
+                lfs={"sha256": hashlib.sha256(data).hexdigest()},
+            )
+        )
     monkeypatch.setattr("huggingface_hub.HfApi.model_info", lambda *a, **k: metadata)
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download", lambda *a, **k: str(snapshot)
@@ -43,10 +55,16 @@ def test_pull_completion_requires_verified_content(
         "rapid_mlx._version_check.print_staleness_warning_if_any", lambda: None
     )
     monkeypatch.setattr(cli, "_resolve_variant_allow_patterns", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **k: mirror)
+    expected_allow = [f"{subfolder}/*"] if subfolder else None
+
+    def transfer(*args, **kwargs):
+        assert kwargs["allow_patterns"] == expected_allow
+        return mirror
+
+    monkeypatch.setattr("rapid_mlx._mirror.download_with_mirror_fallback", transfer)
     monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
     monkeypatch.setattr(
-        "rapid_mlx.model_aliases.resolve_subfolder", lambda *a: subfolder
+        "rapid_mlx.model_aliases.resolve_subfolder", lambda *a: catalog_subfolder
     )
     completed = []
     monkeypatch.setattr(
@@ -56,19 +74,23 @@ def test_pull_completion_requires_verified_content(
         cli, "_print_pull_summary", lambda *a, **k: completed.append("summary")
     )
     args = SimpleNamespace(model="test/integrity", bits=None, format=None)
+    pull_kwargs = {
+        "revision_override": commit,
+        "emit_lifecycle_event": False,
+        "allow_patterns_override": expected_allow if runtime_asset else None,
+    }
+    completion = ["summary"] if runtime_asset else ["marker", "summary"]
     if tampered:
         with pytest.raises(ModelIntegrityError):
-            cli._pull_repository(
-                args, revision_override=commit, emit_lifecycle_event=False
-            )
+            cli._pull_repository(args, **pull_kwargs)
         assert completed == []
     else:
-        cli._pull_repository(args, revision_override=commit, emit_lifecycle_event=False)
-        assert completed == ["marker", "summary"]
+        cli._pull_repository(args, **pull_kwargs)
+        assert completed == completion
         monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
         monkeypatch.setattr(
             "huggingface_hub.HfApi.model_info",
             lambda *a, **k: pytest.fail("verified offline pull queried metadata"),
         )
-        cli._pull_repository(args, revision_override=commit, emit_lifecycle_event=False)
-        assert completed == ["marker", "summary", "marker", "summary"]
+        cli._pull_repository(args, **pull_kwargs)
+        assert completed == completion * 2

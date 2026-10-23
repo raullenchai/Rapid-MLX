@@ -235,6 +235,22 @@ def test_missing_requested_file_and_empty_exact_selection(snapshot):
         verify_snapshot("test/integrity", path, filenames=[])
 
 
+@pytest.mark.parametrize(
+    "filters", [{"allow_patterns": ["missing/*"]}, {"ignore_patterns": "*"}]
+)
+def test_filters_matching_no_files_are_refused(snapshot, filters):
+    path, _, _ = snapshot
+    with pytest.raises(ModelIntegrityError, match="no selected files"):
+        verify_snapshot("test/integrity", path, **filters)
+
+
+def test_empty_manifest_is_refused(snapshot):
+    path, info, _ = snapshot
+    info.siblings = []
+    with pytest.raises(ModelIntegrityError, match="no selected files"):
+        verify_snapshot("test/integrity", path)
+
+
 def test_size_mismatch_preserves_resume_files(snapshot):
     path, _, _ = snapshot
     partial = path / "weights.incomplete"
