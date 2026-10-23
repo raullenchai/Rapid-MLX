@@ -399,11 +399,9 @@ def write_or_patch_config(
     for note in plan.notes:
         print(f"  note: {note}", file=sys.stderr)
     if not plan.changed and plan.path.exists():
-        record_ownership(plan.path, plan.after)
         return plan.path
     _common.backup_existing(plan.path)
-    _common.atomic_write_text(plan.path, dump_yaml(plan.after))
-    record_ownership(plan.path, plan.after)
+    write_owned_config(plan.path, plan.after)
     return plan.path
 
 
@@ -422,7 +420,7 @@ def preview(
     return plan.path, plan_diff(plan) if plan.changed else "", plan.notes
 
 
-def record_ownership(path: Path, data: dict[str, Any]) -> None:
+def write_owned_config(path: Path, data: dict[str, Any]) -> None:
     # Only the fields written by Rapid confer ownership. Custom fields or
     # roles keep the entry from matching, preserving user customization.
     entry = next(
@@ -430,7 +428,7 @@ def record_ownership(path: Path, data: dict[str, Any]) -> None:
         for m in data["models"]
         if isinstance(m, dict) and m.get("name") == _MODEL_ENTRY_NAME
     )
-    _ownership.record(
+    _ownership.write(
         path,
         {
             "model_entry": {
@@ -438,6 +436,7 @@ def record_ownership(path: Path, data: dict[str, Any]) -> None:
                 for key in ("name", "provider", "model", "apiBase", "apiKey")
             }
         },
+        lambda: _common.atomic_write_text(path, dump_yaml(data)),
     )
 
 

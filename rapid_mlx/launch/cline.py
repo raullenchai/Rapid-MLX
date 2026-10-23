@@ -275,11 +275,9 @@ def write_or_patch_config(
     existing = load_providers(path)
     updated = patched_config(existing, server_url, model, api_key)
     if updated is existing and path.exists():
-        record_ownership(path, updated)
         return path
     _common.backup_existing(path)
-    _common.atomic_write_json(path, updated)
-    record_ownership(path, updated)
+    write_owned_config(path, updated)
     return path
 
 
@@ -305,14 +303,15 @@ def preview(
 _OWNED_SETTINGS = ("apiKey", "model", "baseUrl")
 
 
-def record_ownership(path: Path, data: dict[str, Any]) -> None:
+def write_owned_config(path: Path, data: dict[str, Any]) -> None:
     settings = data["providers"][_PROVIDER_ID]["settings"]
-    _ownership.record(
+    _ownership.write(
         path,
         {
             **{key: settings[key] for key in _OWNED_SETTINGS},
             "lastUsedProvider": data["lastUsedProvider"],
         },
+        lambda: _common.atomic_write_json(path, data),
     )
 
 

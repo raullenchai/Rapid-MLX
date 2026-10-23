@@ -619,6 +619,8 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
             raise RuntimeError(
                 f"{plan.credentials_path} changed after preview; re-run --setup"
             )
+    if plan.agent in {"cline", "continue"} and not plan.changed:
+        return plan.path
     try:
         launch_common.backup_existing(plan.path)
         if plan.credentials_path is not None and plan.credentials_after is not None:
@@ -630,16 +632,18 @@ def apply_setup_plan(plan: SetupPlan) -> Path:
                 plan.credentials_path,
                 _serialize(plan.credentials_after, "yaml") + "\n",
             )
-        if plan.format == "yaml":
+        if plan.agent in {"cline", "continue"}:
+            assert isinstance(plan.after, dict)
+            write_owned = (
+                cline.write_owned_config
+                if plan.agent == "cline"
+                else continue_dev.write_owned_config
+            )
+            write_owned(plan.path, plan.after)
+        elif plan.format == "yaml":
             _atomic_write_secure_text(plan.path, _serialize(plan.after, "yaml") + "\n")
-            if plan.agent == "continue":
-                assert isinstance(plan.after, dict)
-                continue_dev.record_ownership(plan.path, plan.after)
         else:
             launch_common.atomic_write_json(plan.path, plan.after)
-            if plan.agent == "cline":
-                assert isinstance(plan.after, dict)
-                cline.record_ownership(plan.path, plan.after)
     except BaseException as exc:
         if isinstance(exc, OSError):
             track_agent_configure_failed("config_write_failed", plan.agent)

@@ -1866,3 +1866,81 @@ def test_continue_remove_preserves_yaml_specific_values(fake_home, extra):
     data = continue_dev.load_yaml_config(path)
     assert continue_dev.remove_config()
     assert continue_dev.load_yaml_config(path)["models"] == data["models"][1:]
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev", "cursor"])
+@pytest.mark.parametrize("marked", [True, False])
+def test_matching_config_does_not_create_or_refresh_ownership(
+    fake_home, client, marked
+):
+    adapter = ADAPTERS[client]
+    path = adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if not marked:
+        receipt.unlink()
+    before = path.read_bytes()
+    with patch.object(_common, "atomic_write_json") as write_json:
+        adapter.write_or_patch_config("https://example.com", "rapid-model", "key")
+    write_json.assert_not_called()
+    assert path.read_bytes() == before
+    assert receipt.exists() == marked
+    assert adapter.remove_config() == marked
+
+
+@pytest.mark.parametrize("client", ["cline", "continue-dev"])
+def test_unchanged_setup_plan_does_not_claim_user_settings(fake_home, client):
+    from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+
+    plan = build_setup_plan(client, "https://example.com", "rapid-model")
+    apply_setup_plan(plan)
+    receipt = plan.path.with_name(plan.path.name + ".rapid-mlx-owned.json")
+    receipt.unlink()
+    before = plan.path.read_bytes()
+    plan = build_setup_plan(client, "https://example.com", "rapid-model")
+    assert not plan.changed
+    apply_setup_plan(plan)
+    assert not receipt.exists()
+    assert not ADAPTERS[client].remove_config()
+    assert plan.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "client,setup",
+    [
+        ("cline", False),
+        ("continue-dev", False),
+        ("cursor", False),
+        ("cline", True),
+        ("continue-dev", True),
+    ],
+)
+@pytest.mark.parametrize("existing", [False, True])
+def test_receipt_failure_rolls_back_config(fake_home, client, existing, setup):
+    from rapid_mlx.agents.setup import apply_setup_plan, build_setup_plan
+
+    adapter = ADAPTERS[client]
+    path = adapter.current_config_path().resolve()
+    receipt = path.with_name(path.name + ".rapid-mlx-owned.json")
+    if existing:
+        adapter.write_or_patch_config("https://example.com", "old-model", "key")
+    before = path.read_bytes() if existing else None
+    old_receipt = receipt.read_bytes() if existing else None
+    original = _common.atomic_write_json
+
+    def fail_receipt(destination, data):
+        if destination == receipt:
+            raise OSError("receipt publication failed")
+        original(destination, data)
+
+    with (
+        patch.object(_common, "atomic_write_json", side_effect=fail_receipt),
+        pytest.raises(OSError, match="receipt publication"),
+    ):
+        if setup:
+            apply_setup_plan(
+                build_setup_plan(client, "https://example.com", "new-model")
+            )
+        else:
+            adapter.write_or_patch_config("https://example.com", "new-model", "key")
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert (receipt.read_bytes() if receipt.exists() else None) == old_receipt

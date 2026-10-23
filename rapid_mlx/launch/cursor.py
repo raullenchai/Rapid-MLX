@@ -160,14 +160,20 @@ def write_or_patch_config(
 
     path = path.resolve()
     existing = _common.load_json_lenient(path)
+    updated = {
+        **existing,
+        "cursor.aiprovider.openai.baseUrl": base_url,
+        "cursor.aiprovider.openai.apiKey": api_key,
+        "cursor.aiprovider.openai.model": model,
+    }
+    if updated == existing and path.exists():
+        return path
     _common.backup_existing(path)
-
-    existing["cursor.aiprovider.openai.baseUrl"] = base_url
-    existing["cursor.aiprovider.openai.apiKey"] = api_key
-    existing["cursor.aiprovider.openai.model"] = model
-
-    _common.atomic_write_json(path, existing)
-    _ownership.record(path, {key: existing[key] for key in _OWNED_SETTINGS})
+    _ownership.write(
+        path,
+        {key: updated[key] for key in _OWNED_SETTINGS},
+        lambda: _common.atomic_write_json(path, updated),
+    )
     return path
 
 

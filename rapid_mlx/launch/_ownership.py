@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,19 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def record(path: Path, fields: dict[str, Any]) -> None:
-    _common.atomic_write_json(
-        _receipt(path), {key: _fingerprint(value) for key, value in fields.items()}
-    )
+def write(path: Path, fields: dict[str, Any], write_config: Callable[[], None]) -> None:
+    """Publish settings and their receipt, restoring settings if the receipt fails."""
+    fingerprints = {key: _fingerprint(value) for key, value in fields.items()}
+    previous = path.read_bytes() if path.exists() else None
+    write_config()
+    try:
+        _common.atomic_write_json(_receipt(path), fingerprints)
+    except BaseException:
+        if previous is None:
+            path.unlink()
+        else:
+            _common.atomic_write_text(path, previous.decode("utf-8"))
+        raise
 
 
 def remove_fields(path: Path, fields: dict[str, Any], keys: tuple[str, ...]) -> bool:
