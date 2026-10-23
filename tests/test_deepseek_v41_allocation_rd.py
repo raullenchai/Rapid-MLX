@@ -59,7 +59,12 @@ def test_allocator_cli_checks_provenance_stability_and_payload_costs(
     scores = tmp_path / "scores.npz"
     errors = tmp_path / "errors.npz"
     costs = tmp_path / "costs.json"
-    sm = {"model_revision": "r", "routing_topk": 1, "config_sha256": "config"}
+    sm = {
+        "model_revision": "r",
+        "routing_topk": 1,
+        "config_sha256": "config",
+        "slice_names": ["hot"],
+    }
     qm = {
         "model_revision": "r",
         "config_sha256": "config",

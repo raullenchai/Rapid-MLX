@@ -98,6 +98,15 @@ def publish_allocations(outputs):
         raise
 
 
+def verify_source_identity(source, config_hash, error_metadata):
+    if file_hash(source / "config.json") != config_hash:
+        raise ValueError("source checkpoint config identity does not match")
+    if file_hash(source / "model.safetensors.index.json") != error_metadata.get(
+        "index_sha256"
+    ):
+        raise ValueError("source checkpoint index identity does not match")
+
+
 def validate_legacy_inventory(source, cost, config_hash, error_metadata):
     """Legacy per-expert plans also need independently verified fixed costs."""
     from scripts.deepseek_v41_expert_quant_error import inventory
@@ -106,10 +115,7 @@ def validate_legacy_inventory(source, cost, config_hash, error_metadata):
 
     if source is None:
         raise ValueError("legacy allocation requires --source to verify inventory")
-    if file_hash(source / "config.json") != config_hash or file_hash(
-        source / "model.safetensors.index.json"
-    ) != error_metadata.get("index_sha256"):
-        raise ValueError("source inventory identity does not match calibration")
+    verify_source_identity(source, config_hash, error_metadata)
     config = json.loads((source / "config.json").read_text())
     index = CheckpointIndex(source)
     release = cost.get("policy", "").startswith("release:")
@@ -135,6 +141,7 @@ def validate_legacy_inventory(source, cost, config_hash, error_metadata):
     for key in ("fixed_non_expert_bytes", "expert_bytes", "router_row_bytes_by_layer"):
         if cost[key] != expected[key]:
             raise ValueError(f"source inventory {key} mismatch")
+    verify_source_identity(source, config_hash, error_metadata)
 
 
 def pruning_audit(result, counts_by_slice, reap_by_slice, slice_names, roles):
@@ -368,17 +375,27 @@ def main():
         np.load(a.scores, allow_pickle=False) as scores,
         np.load(a.errors, allow_pickle=False) as errors,
     ):
-        overlaps = scores["split_keep_overlap"]
-        if not np.isfinite(overlaps).all() or np.min(overlaps) < a.min_split_overlap:
-            raise ValueError(
-                "unstable calibration keep sets; increase calibration tokens"
-            )
-        if not np.all(errors["completed"]):
-            raise ValueError("quantization-error artifact is incomplete")
         sm, qm = (
             json.loads(str(scores["metadata"])),
             json.loads(str(errors["metadata"])),
         )
+        overlaps = scores["split_keep_overlap"]
+        if (
+            overlaps.shape != (len(sm["slice_names"]), 3)
+            or not np.isfinite(overlaps).all()
+            or not 0 <= overlaps.min() <= overlaps.max() <= 1
+            or overlaps.min() < a.min_split_overlap
+        ):
+            raise ValueError(
+                "unstable calibration keep sets; increase calibration tokens"
+            )
+        completed = errors["completed"]
+        if (
+            completed.dtype.kind != "b"
+            or completed.shape != errors["q"].shape[:2]
+            or not completed.all()
+        ):
+            raise ValueError("quantization-error artifact is incomplete")
         if sm["model_revision"] != qm["model_revision"]:
             raise ValueError("model revisions do not match")
         score_config = sm.get("checkpoint_config_sha256", sm.get("config_sha256"))
@@ -435,12 +452,7 @@ def main():
             )
             from scripts.repack_deepseek_v41_native import CheckpointIndex
 
-            if file_hash(a.source / "config.json") != score_config:
-                raise ValueError("source checkpoint config hash does not match")
-            if file_hash(a.source / "model.safetensors.index.json") != qm.get(
-                "index_sha256"
-            ):
-                raise ValueError("source checkpoint index hash does not match")
+            verify_source_identity(a.source, score_config, qm)
             config = json.loads((a.source / "config.json").read_text())
             index = CheckpointIndex(a.source)
             # Recompute from source headers: older inventories contain only the
@@ -534,6 +546,8 @@ def main():
                 "costs_sha256": inventory_digest(cost),
             }
             outputs.append((a.output_dir / f"allocation-{gb:g}GB.json", result))
+        if a.source is not None:
+            verify_source_identity(a.source, score_config, qm)
         publish_allocations(outputs)
 
 

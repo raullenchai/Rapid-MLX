@@ -351,6 +351,20 @@ def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
     monkeypatch.setattr(builder, "plan", original_plan)
     config_path = source / "config.json"
     config_bytes = config_path.read_bytes()
+
+    def changed_during_plan(*args, **kwargs):
+        result = original_plan(*args, **kwargs)
+        config_path.write_bytes(config_bytes + b" ")
+        return result
+
+    monkeypatch.setattr(builder, "plan", changed_during_plan)
+    with pytest.raises(ValueError, match="source checkpoint config"):
+        allocator.main()
+    assert (
+        json.loads((tmp_path / "out" / "allocation-200GB.json").read_text()) == result
+    )
+    monkeypatch.setattr(builder, "plan", original_plan)
+    config_path.write_bytes(config_bytes)
     config_path.write_bytes(config_bytes + b" ")
     with pytest.raises(ValueError, match="source checkpoint config"):
         allocator.main()

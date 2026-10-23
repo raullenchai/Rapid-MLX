@@ -150,7 +150,12 @@ def test_direct_cli_help(script, monkeypatch, capsys):
 @pytest.fixture
 def cli_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(alloc, "validate_legacy_inventory", lambda *args: None)
-    sm = {"model_revision": "r", "routing_topk": 1, "config_sha256": "config"}
+    sm = {
+        "model_revision": "r",
+        "routing_topk": 1,
+        "config_sha256": "config",
+        "slice_names": ["hot"],
+    }
     qm = {
         "model_revision": "r",
         "config_sha256": "config",
@@ -657,3 +662,54 @@ def test_temporary_cleanup_failure_rolls_back_published_output(tmp_path, monkeyp
     with pytest.raises(OSError, match="temporary unlink failed"):
         alloc.publish_allocations([(output, {})])
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "overlap",
+    [np.array(1), np.ones(3), np.ones((2, 3)), np.ones((1, 2)), np.full((1, 3), 2)],
+)
+def test_allocator_rejects_malformed_stability_evidence(cli_inputs, overlap):
+    score, _, _, _, write = cli_inputs
+    score["split_keep_overlap"] = overlap
+    write()
+    with pytest.raises(ValueError, match="unstable calibration"):
+        alloc.main()
+
+
+@pytest.mark.parametrize(
+    "completed",
+    [np.array(True), np.ones((1, 1), bool), np.ones((1, 2), int), np.ones((2,), bool)],
+)
+def test_allocator_rejects_malformed_completion_evidence(cli_inputs, completed):
+    _, error, _, _, write = cli_inputs
+    error["completed"] = completed
+    write()
+    with pytest.raises(ValueError, match="incomplete"):
+        alloc.main()
+
+
+def test_legacy_inventory_rejects_source_changed_during_use(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    mx.set_default_device(mx.cpu)
+    from scripts import deepseek_v41_expert_quant_error as quant
+    from scripts.repack_deepseek_v41_native import CheckpointIndex
+    from tests.test_deepseek_v41_quant_error import tiny_source
+
+    source = tmp_path / "source"
+    config = tiny_source(source)
+    cost = quant.inventory(CheckpointIndex(source), config)
+    config_path = source / "config.json"
+    config_hash = alloc.file_hash(config_path)
+    metadata = {
+        "index_sha256": alloc.file_hash(source / "model.safetensors.index.json")
+    }
+    original = quant.inventory
+
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        config_path.write_bytes(config_path.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(quant, "inventory", changed)
+    with pytest.raises(ValueError, match="source checkpoint config"):
+        alloc.validate_legacy_inventory(source, cost, config_hash, metadata)
