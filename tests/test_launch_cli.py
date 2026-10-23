@@ -1856,3 +1856,13 @@ def test_adapter_remove_write_failure_preserves_config_and_receipt(fake_home, cl
     assert exc.value.code == 1
     assert path.read_bytes() == before
     assert receipt.read_bytes() == ownership
+
+
+@pytest.mark.parametrize("extra", ["updated: 2026-10-22", "custom: {1: a, text: b}"])
+def test_continue_remove_preserves_yaml_specific_values(fake_home, extra):
+    path = continue_dev.write_or_patch_config("https://example.com", "rapid-model")
+    with path.open("a") as stream:
+        stream.write(f"- name: personal\n  {extra}\n")
+    data = continue_dev.load_yaml_config(path)
+    assert continue_dev.remove_config()
+    assert continue_dev.load_yaml_config(path)["models"] == data["models"][1:]

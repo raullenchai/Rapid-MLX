@@ -36,7 +36,15 @@ def remove_fields(path: Path, fields: dict[str, Any], keys: tuple[str, ...]) -> 
         raise ValueError("Rapid settings ownership receipt must contain an object")
     removed = False
     for key in keys:
-        if key in fields and receipt.get(key) == _fingerprint(fields[key]):
+        if key not in fields:
+            continue
+        try:
+            fingerprint = _fingerprint(fields[key])
+        except (TypeError, ValueError):
+            # YAML user entries may contain dates or mixed-key mappings.
+            # Values Rapid could not have recorded are never ours to remove.
+            continue
+        if receipt.get(key) == fingerprint:
             del fields[key]
             removed = True
     return removed
