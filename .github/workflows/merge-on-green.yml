@@ -60,4 +60,4 @@ jobs:
           args=()
           if [ -n "$INPUT_PR" ]; then args+=(--pr "$INPUT_PR"); fi
           if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
-          python -m scripts.merge_on_green --repo "$GITHUB_REPOSITORY" "${args[@]}"
+          python -I scripts/merge_on_green.py --repo "$GITHUB_REPOSITORY" "${args[@]}"

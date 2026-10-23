@@ -36,6 +36,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from scripts.catalog_trust import audit_worktree, is_trust_control
+
 from .._test_env import is_dep_declaration_file
 from ..base import Step, StepResult
 from ..context import Context
@@ -427,6 +429,18 @@ class SupplyChainStep(Step):
 
         findings: list[str] = []
         artifacts: list[str] = []
+
+        catalog_changes, catalog_errors = audit_worktree(
+            ctx.repo_root, ctx.base_sha, ctx.files_changed
+        )
+        findings.extend(f"[BLOCKING] {error}" for error in catalog_errors)
+        controls = [path for path in ctx.files_changed if is_trust_control(path)]
+        if catalog_changes or controls:
+            findings.append(
+                "[warning] Catalog or trust controls changed: a current-head human "
+                "maintainer approval is required by merge-on-green. "
+                f"Catalog: {catalog_changes}; controls: {controls}"
+            )
 
         # 1. Hook-file modifications get an automatic flag — not a
         # FAIL on its own (legitimate workflow updates exist), but
