@@ -65,7 +65,7 @@ class AudioProcessor:
         self.sample_rate = 44100  # SAM-Audio default
 
     def load(self) -> None:
-        """Load SAM-Audio with safetensors-only main and lazy T5 weights.
+        """Load SAM-Audio with safetensors or restricted legacy tensor weights.
 
         Legacy checkpoint.pt / pytorch_model.bin-only sources are rejected;
         neither PyTorch defaults nor its environment flags authorize pickle.

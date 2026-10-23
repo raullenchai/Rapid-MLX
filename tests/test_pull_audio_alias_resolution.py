@@ -135,3 +135,10 @@ def test_main_pull_full_hf_path_unchanged(monkeypatch) -> None:
     _run_main(monkeypatch, ["pull", "mlx-community/whisper-tiny-mlx"])
 
     assert captured["model"] == "mlx-community/whisper-tiny-mlx"
+
+
+@pytest.fixture(autouse=True)
+def _mock_integrity_for_download_orchestration(monkeypatch):
+    # These tests fake transport/snapshot bytes; real hashing and failure ordering
+    # are exercised independently in test_model_integrity.py.
+    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)

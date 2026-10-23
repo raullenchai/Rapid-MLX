@@ -32,15 +32,12 @@ def test_legacy_checkpoint_rejected_without_deserialization(
     torch.save(_PickleSentinel(marker), tmp_path / filename)
     (tmp_path / "config.json").write_text("{}")
     monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", unsafe_default)
-    monkeypatch.setattr(
-        torch, "load", lambda *_a, **_kw: pytest.fail("pickle loader reached")
-    )
     invoke = (
         AudioProcessor(str(tmp_path)).load
         if target == "sam"
         else lambda: _load_t5(str(tmp_path))
     )
-    with pytest.raises(ValueError, match="Refusing legacy .pt/.bin pickle fallback"):
+    with pytest.raises((__import__("pickle").UnpicklingError, RuntimeError)):
         invoke()
     assert not marker.exists()
 
@@ -91,7 +88,7 @@ def test_sam_config_redirected_text_encoder_uses_safe_lazy_route(tmp_path, monke
     monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
     processor = AudioProcessor(str(tmp_path))
     processor.load()
-    with pytest.raises(ValueError, match="text encoder.*requires safetensors"):
+    with pytest.raises((__import__("pickle").UnpicklingError, RuntimeError)):
         processor.model.text_encoder._lazy_load()
     assert not marker.exists()
     assert processor.model.text_encoder.model is None
@@ -99,7 +96,10 @@ def test_sam_config_redirected_text_encoder_uses_safe_lazy_route(tmp_path, monke
     assert "*.bin" not in downloads[0][1]["allow_patterns"]
 
 
-def test_safe_t5_tensors_and_builtin_tokenizer_remain_supported(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_safe_t5_tensors_and_builtin_tokenizer_remain_supported(
+    tmp_path, monkeypatch, legacy
+):
     import mlx.core as mx
     from mlx.utils import tree_flatten
     from mlx_audio.sts.models.sam_audio.text_encoder import T5Config, T5Encoder
@@ -117,8 +117,21 @@ def test_safe_t5_tensors_and_builtin_tokenizer_remain_supported(tmp_path, monkey
     mx.save_safetensors(
         str(tmp_path / "model.safetensors"), dict(tree_flatten(model.parameters()))
     )
-    # A legacy sidecar may coexist; a successful tensor load must ignore it.
-    (tmp_path / "pytorch_model.bin").write_bytes(b"not a pickle")
+    if legacy:
+        import numpy as np
+        import torch
+
+        torch.save(
+            {
+                name: torch.from_numpy(np.array(value))
+                for name, value in tree_flatten(model.parameters())
+            },
+            tmp_path / "pytorch_model.bin",
+        )
+        (tmp_path / "model.safetensors").unlink()
+    else:
+        # A legacy sidecar may coexist; a successful tensor load must ignore it.
+        (tmp_path / "pytorch_model.bin").write_bytes(b"not a pickle")
     calls = []
     monkeypatch.setattr(
         AutoTokenizer,
@@ -147,3 +160,17 @@ def test_corrupt_safetensors_does_not_fall_back_to_pickle(tmp_path, monkeypatch)
     with pytest.raises((ValueError, RuntimeError)):
         _load_t5(str(tmp_path))
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_legacy_numeric_tensor_archives_remain_supported(tmp_path, nested):
+    import mlx.core as mx
+    import torch
+
+    from rapid_mlx.audio.sam_security import _tensor_weights
+
+    weights = {"weight": torch.arange(4, dtype=torch.float32)}
+    path = tmp_path / "checkpoint.pt"
+    torch.save({"state_dict": weights} if nested else weights, path)
+    loaded = _tensor_weights(path)
+    assert mx.array_equal(loaded["weight"], mx.arange(4, dtype=mx.float32)).item()

@@ -5521,7 +5521,20 @@ def _resolve_system_one_backend(model: str, requested: str) -> str:
 
 def system_one_command(args) -> None:
     """Start the dedicated typed-decision API without a generative model."""
-    import os
+    from .server import _resolve_api_key
+    from .server_exposure import normalize_bind_host, validate_server_exposure
+
+    args.host = normalize_bind_host(args.host)
+    api_key = _resolve_api_key(args.api_key)
+    try:
+        validate_server_exposure(
+            host=args.host,
+            api_key=api_key,
+            allow_unauthenticated_public=getattr(args, "allow_unauthenticated_public", False),
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
     from rapid_mlx._uvicorn import run_uvicorn
     from rapid_mlx.system_one.backends import (
@@ -5582,7 +5595,6 @@ def system_one_command(args) -> None:
             dtype=args.dtype,
             batch_size=args.batch_size,
         )
-    api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     app = create_app(
         backend,
         api_key=api_key,
@@ -5846,15 +5858,18 @@ def serve_command(args):
 
     flush_serve_startup_notes(args)
     disk_caches.configure(getattr(args, "disable_disk_caches", False))
-    _validate_local_search_exposure_or_exit(args)
-    from .server_exposure import validate_server_exposure
     from .server import _resolve_api_key
+    from .server_exposure import normalize_bind_host, validate_server_exposure
 
+    args.host = normalize_bind_host(getattr(args, "host", "127.0.0.1"))
+    _validate_local_search_exposure_or_exit(args)
     try:
         validate_server_exposure(
             host=getattr(args, "host", "127.0.0.1"),
             api_key=_resolve_api_key(getattr(args, "api_key", None)),
-            allow_unauthenticated_public=getattr(args, "allow_unauthenticated_public", False),
+            allow_unauthenticated_public=getattr(
+                args, "allow_unauthenticated_public", False
+            ),
             listen_fd=getattr(args, "listen_fd", None),
         )
     except ValueError as exc:
@@ -11056,6 +11071,8 @@ def _pull_repository(
     from huggingface_hub.errors import HFValidationError
     from huggingface_hub.utils import RepositoryNotFoundError
 
+    from rapid_mlx.model_integrity import verify_snapshot
+
     repo_id = args.model  # already alias-resolved by main()
     emit_lifecycle_event = emit_lifecycle_event and bool(
         getattr(args, "_emit_pull_lifecycle_event", True)
@@ -11194,6 +11211,18 @@ def _pull_repository(
         except OSError:
             snapshot_dir = repo_root
             print(f"  Cached at: {repo_root}")
+        from rapid_mlx.model_aliases import resolve_subfolder
+
+        integrity_allow = variant_allow
+        if integrity_allow is None:
+            subfolder = resolve_subfolder(repo_id)
+            integrity_allow = [f"{subfolder}/*"] if subfolder else None
+        verify_snapshot(
+            repo_id,
+            snapshot_dir,
+            revision=revision_override,
+            allow_patterns=integrity_allow,
+        )
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
         _was_cached = not _mirror_out.get("network_fetch", True)
@@ -11301,6 +11330,9 @@ def _pull_repository(
         path = _retry_hub_download(
             lambda: snapshot_download(repo_id, **download_kwargs), repo_id
         )
+        verify_snapshot(
+            repo_id, path, revision=revision_override, allow_patterns=_allow
+        )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched
         # #2340: apply the identical successful-pull metadata transaction on
@@ -11367,16 +11399,9 @@ def _pull_repository(
 
 
 def _pinned_checkpoint_revision(repo_id: str) -> str | None:
-    """Catalog or image/video checkpoint commit, or ``None``."""
-    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
-    from rapid_mlx.model_aliases import resolve_revision
-    from rapid_mlx.video.wan import WAN_REVISIONS
+    from rapid_mlx.model_catalog import resolve_repository_identity
 
-    return (
-        resolve_revision(repo_id)
-        or IMAGE_MODEL_REVISIONS.get(repo_id)
-        or WAN_REVISIONS.get(repo_id)
-    )
+    return resolve_repository_identity(repo_id)[1]
 
 
 # Commands that download into or delete from the Hugging Face cache. They
@@ -11409,13 +11434,10 @@ def pull_command(args):
     primary_args = args
     # ``main()`` normally resolves aliases before dispatch, but keep this
     # data-only security boundary fail-closed for direct/internal calls too.
-    from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
+    from rapid_mlx.model_catalog import resolve_repository_identity
 
-    resolved_primary = resolve_hub_model(primary_repo)
-    if resolved_primary != primary_repo and (
-        resolved_primary in IMAGE_MODEL_DATA_FILES
-        or resolve_revision(primary_repo) is not None
-    ):
+    resolved_primary, _primary_pin = resolve_repository_identity(primary_repo)
+    if resolved_primary != primary_repo:
         primary_args = copy.copy(args)
         primary_args._original_alias = (
             getattr(args, "_original_alias", None) or primary_repo
@@ -11530,6 +11552,7 @@ def pull_command(args):
         _pull_repository(
             dependency_args,
             allow_patterns_override=list(asset.allow_patterns),
+            revision_override=asset.revision,
         )
     for requirement in runtime_requirements_for(primary_repo):
         print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")
