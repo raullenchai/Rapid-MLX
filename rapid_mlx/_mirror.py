@@ -661,7 +661,7 @@ def pinned_snapshot_download(
     repo_id: str,
     revision: str,
     *,
-    allow_patterns: list[str] | None = None,
+    allow_patterns: str | list[str] | None = None,
 ) -> str:
     """``snapshot_download(repo_id, revision=revision)``, mirror first.
 
@@ -674,6 +674,8 @@ def pinned_snapshot_download(
 
     from . import model_downloads
 
+    if isinstance(allow_patterns, str):
+        allow_patterns = [allow_patterns]
     kwargs: dict[str, Any] = {"revision": revision}
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
@@ -1723,7 +1725,7 @@ def download_with_mirror_fallback(
     *,
     revision: str | None = None,
     on_pull_start: Callable[[], None] | None = None,
-    allow_patterns: list[str] | None = None,
+    allow_patterns: str | list[str] | None = None,
     out: dict | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
@@ -1795,6 +1797,9 @@ def download_with_mirror_fallback(
     repo, correct for the one-quant-per-repo layout every other mirror uses.
     """
     from fnmatch import fnmatch
+
+    if isinstance(allow_patterns, str):
+        allow_patterns = [allow_patterns]
 
     from ._hf_logging import silence_hf_unauthenticated_warning
 

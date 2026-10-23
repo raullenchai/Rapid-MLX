@@ -304,7 +304,10 @@ def test_git_blob_oid_matches_git(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_pinned_snapshot_download_returns_the_mirror_snapshot(tmp_path, monkeypatch):
+@pytest.mark.parametrize("patterns", [["a"], "a"])
+def test_pinned_snapshot_download_returns_the_mirror_snapshot(
+    tmp_path, monkeypatch, patterns
+):
     monkeypatch.setattr(_mirror, "_hf_cache_root", lambda: tmp_path)
     calls = []
     monkeypatch.setattr(
@@ -313,7 +316,7 @@ def test_pinned_snapshot_download_returns_the_mirror_snapshot(tmp_path, monkeypa
         lambda repo, **kw: calls.append((repo, kw)) or True,
     )
     with patch("huggingface_hub.snapshot_download") as snap:
-        path = _mirror.pinned_snapshot_download(REPO, PIN, allow_patterns=["a"])
+        path = _mirror.pinned_snapshot_download(REPO, PIN, allow_patterns=patterns)
     assert path == str(_snap(tmp_path))
     assert calls == [(REPO, {"revision": PIN, "allow_patterns": ["a"]})]
     assert snap.call_count == 0
@@ -1020,3 +1023,30 @@ def test_missing_revision_rehashes_and_repairs_git_blob(
                 tmp_path, monkeypatch, _manifest(), {"config.json": mirror_config}
             )
         assert not target.exists()
+
+
+@pytest.mark.parametrize("patterns", ["*.json", ["*.json"]])
+def test_missing_revision_pattern_forms_select_the_same_files(
+    tmp_path, monkeypatch, patterns
+):
+    assert _missing_pin_run(tmp_path, monkeypatch, _manifest(), allow_patterns=patterns)
+    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
+    assert not (_snap(tmp_path) / "model.safetensors").exists()
+
+
+def test_resolvable_revision_accepts_a_single_pattern(tmp_path, monkeypatch):
+    siblings = [
+        _sibling("model.safetensors", WEIGHTS, lfs=True),
+        _sibling("config.json", CONFIG, lfs=False),
+    ]
+    ok, _, hf_calls, _ = _run(
+        tmp_path,
+        monkeypatch,
+        siblings,
+        {"config.json": CONFIG},
+        allow_patterns="*.json",
+    )
+    assert ok
+    assert not hf_calls
+    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
+    assert not (_snap(tmp_path) / "model.safetensors").exists()
