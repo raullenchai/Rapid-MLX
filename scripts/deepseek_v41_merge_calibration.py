@@ -55,6 +55,15 @@ MERGE_RULE = (
 )
 
 
+class CalibrationRollbackError(OSError):
+    def __init__(self, failures):
+        self.failures = tuple(failures)
+        super().__init__(
+            "calibration publication failed; rollback incomplete: "
+            + "; ".join(str(error) for error in failures)
+        )
+
+
 def fsync_directory(path):
     """Persist publication names in an existing output directory."""
     descriptor = os.open(path, os.O_RDONLY)
@@ -117,10 +126,14 @@ def _read_pass(path):
             or counts.shape[:2] != (len(names), 2)
             or not all(counts.shape)
             or counts.dtype.kind not in "iu"
-            or np.any(counts < 0)
+            or np.any(counts > np.iinfo(np.int64).max)
         ):
             raise ValueError(f"{path}: invalid counts_halves_by_slice")
         counts = counts.astype(np.int64)
+        if np.any(counts < 0):
+            raise ValueError(f"{path}: invalid counts_halves_by_slice")
+        if np.any(counts[:, 0] > np.iinfo(np.int64).max - counts[:, 1]):
+            raise ValueError(f"{path}: route-count sum overflows int64")
         keep, topk = metadata["keep_experts"], metadata["routing_topk"]
         if (
             type(keep) is not int
@@ -182,7 +195,16 @@ def merge_calibration(pass_files, output):
         if file_hash(path) != digest:
             raise ValueError(f"source changed while reading: {path}")
         for accumulator, total in zip(pooled, totals):
-            accumulator[:, index % 2] += total
+            half = accumulator[:, index % 2]
+            if accumulator.dtype.kind == "i" and np.any(
+                total > np.iinfo(np.int64).max - half
+            ):
+                raise ValueError("merged route-count sum overflows int64")
+            with np.errstate(over="ignore", invalid="ignore"):
+                updated = half + total
+            if not np.isfinite(updated).all():
+                raise ValueError("merged scores are not finite")
+            half[:] = updated
         sources.append(
             dict(
                 file=str(path),
@@ -192,6 +214,8 @@ def merge_calibration(pass_files, output):
                 memory_estimate=current.get("memory_estimate"),
             )
         )
+    if pooled[-1].sum(dtype=object) > np.iinfo(np.int64).max:
+        raise ValueError("aggregate route-count sum overflows int64")
     budgets = metadata["tokens_per_slice"]
     metadata["tokens_per_slice"] = [t * len(paths) for t in budgets]
     # A pass's memory estimate and corpus must not masquerade as merged evidence.
@@ -227,13 +251,21 @@ def merge_calibration(pass_files, output):
         os.link(handle.name, output)
         try:
             fsync_directory(output.parent)
-        except BaseException:
+        except BaseException as publication_error:
+            failures = []
             try:
                 if output.samefile(handle.name):
                     output.unlink()
             except FileNotFoundError:
                 pass
-            fsync_directory(output.parent)
+            except OSError as error:
+                failures.append(error)
+            try:
+                fsync_directory(output.parent)
+            except OSError as error:
+                failures.append(error)
+            if failures:
+                raise CalibrationRollbackError(failures) from publication_error
             raise
     return output
 

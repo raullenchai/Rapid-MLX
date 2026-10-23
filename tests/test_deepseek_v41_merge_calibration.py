@@ -304,3 +304,79 @@ def test_merge_directory_sync_failure_rolls_back_only_own_output(
         merge.merge_calibration([a, b], output)
         with np.load(output) as merged:
             assert merged["tokens"].item() == 48
+
+
+@pytest.mark.parametrize(
+    "kind", ["unsigned", "negative", "half_sum", "merged_sum", "aggregate", "float_sum"]
+)
+def test_merge_rejects_overflowing_counts_and_scores(tmp_path, kind):
+    from scripts import deepseek_v41_merge_calibration as merge
+
+    paths = [write_pass(tmp_path / f"{i}.npz", raw(i)) for i in range(3)]
+    for path in paths:
+        with np.load(path) as data:
+            counts = data["counts_halves_by_slice"].copy()
+        if kind == "unsigned":
+            counts = counts.astype(np.uint64)
+            counts[0, 0, 0, 0] = np.uint64(2**63)
+        elif kind == "negative":
+            counts[0, 0, 0, 0] = -1
+        else:
+            counts.fill(0)
+            counts[0, 0, 0, 0] = 2**62
+            if kind == "half_sum":
+                counts[0, 1, 0, 0] = 2**62
+        arrays = {"counts_halves_by_slice": counts, "counts_by_slice": counts.sum(1)}
+        if kind in ("merged_sum", "aggregate", "float_sum"):
+            for metric in ("reap", "man", "msan"):
+                values = np.zeros(counts.shape)
+                values[0, 0, 0, 0] = (
+                    1e308 if kind == "float_sum" and metric == "reap" else 1
+                )
+                arrays[metric + "_halves"] = values
+        rewrite(path, arrays_update=arrays)
+    with pytest.raises(ValueError, match="counts|overflows|finite"):
+        merge.merge_calibration(
+            paths[:2] if kind == "aggregate" else paths, tmp_path / "out.npz"
+        )
+    assert not (tmp_path / "out.npz").exists()
+
+
+@pytest.mark.parametrize("failure", ["samefile", "unlink", "sync"])
+def test_merge_rollback_attempts_sync_and_preserves_original_error(
+    tmp_path, monkeypatch, failure
+):
+    from scripts import deepseek_v41_merge_calibration as merge
+
+    a = write_pass(tmp_path / "a.npz", raw(1))
+    b = write_pass(tmp_path / "b.npz", raw(2))
+    output = tmp_path / "out.npz"
+    calls = []
+    original_sync = merge.fsync_directory
+
+    def sync(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError("original sync failure")
+        if failure == "sync":
+            raise OSError("rollback sync failure")
+        original_sync(path)
+
+    monkeypatch.setattr(merge, "fsync_directory", sync)
+    if failure != "sync":
+        original = getattr(Path, failure)
+
+        def fail(path, *args, **kwargs):
+            if path == output:
+                raise OSError("rollback path failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, failure, fail)
+    with pytest.raises(
+        merge.CalibrationRollbackError, match="rollback incomplete"
+    ) as caught:
+        merge.merge_calibration([a, b], output)
+    assert str(caught.value.__cause__) == "original sync failure"
+    assert len(caught.value.failures) == 1
+    assert calls == [tmp_path, tmp_path]
+    assert output.exists() == (failure != "sync")
