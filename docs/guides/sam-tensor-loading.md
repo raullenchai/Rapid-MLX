@@ -12,3 +12,8 @@ fallback. T5 tokenizers load locally with repository code disabled.
 
 The nested encoder's configured name is retained. Its data is loaded through
 the same restrictions, without a new prompt for normal tensor checkpoints.
+
+The nested T5 encoder retains the native loader's single-file formats:
+`model.safetensors` or `pytorch_model.bin`. Index-based sharded T5 loading is
+not introduced by this adapter. SAM-Audio itself can load multiple safetensors
+files as before.
