@@ -71,6 +71,7 @@ def build_inputs(tmp_path, monkeypatch, failure=None):
             if failure == "markers"
             else "*** START OF BOOK ***\nbook\n*** END OF BOOK ***"
         )
+        monkeypatch.setitem(ruler.SOURCE_HASHES, name, ruler.file_hash(p))
         return p
 
     monkeypatch.setattr(ruler, "fetch", fetch)

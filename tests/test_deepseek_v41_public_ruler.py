@@ -70,7 +70,7 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         mode="unpruned_reference",
         model_revision="test",
         tokenizer_sha256="tok",
-        ruler="long17k",
+        ruler="tiny",
         vocab_size=32,
         num_layers=2,
         checkpoint_sha256={
@@ -113,7 +113,7 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         np.save(root / "a-tokens.npy", np.arange(11, dtype=np.int32))
     np.save(cand / "a-mass.npy", np.ones((11, 2)))
     got = compare(ref, cand)
-    assert got["rulers"]["long17k"]["tokens"] == 11
+    assert got["rulers"]["tiny"]["tokens"] == 11
     assert got["kl_nats"] == pytest.approx(kl.mean())
     assert got["p99_kl_nats"] == pytest.approx(np.quantile(kl, 0.99))
     assert got["top1_agreement"] == pytest.approx(1 - flip.mean())

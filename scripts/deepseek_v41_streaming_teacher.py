@@ -24,7 +24,9 @@ from scripts.deepseek_v41_public_ruler import (
     compact_hashes,
     compact_logits,
     create_compact,
+    retain_ruler_manifest,
     slice_tokens,
+    validate_ruler_manifest,
 )
 from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash, read_slices
 from scripts.repack_deepseek_v41_native import CheckpointIndex
@@ -432,6 +434,7 @@ def main():
     if source_identity is not None and checkpoint_hashes(a.source) != source_identity:
         raise ValueError("checkpoint changed during initialization")
     args = weights.args
+    ruler_digest = validate_ruler_manifest(a.slices)
     slices = read_slices(a.slices, [])
     if (
         not slices
@@ -520,6 +523,7 @@ def main():
         execution="layer_major_full_prefill",
         prefill_chunk=a.prefill_chunk,
         ruler=json.loads(a.slices.read_text()).get("ruler"),
+        ruler_manifest_sha256=ruler_digest,
         compact_k=a.compact_k,
         vocab_size=args.vocab_size,
         memory_estimate=estimate,
@@ -545,6 +549,7 @@ def main():
         )
         return
     a.output.mkdir()
+    retain_ruler_manifest(a.slices, a.output, ruler_digest)
     metadata.update(mode="unpruned_reference", slices={})
     norm, head = weights.tensor("norm.weight"), weights.tensor("head.weight")
     mx.eval(norm, head)

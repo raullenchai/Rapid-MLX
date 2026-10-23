@@ -19,10 +19,13 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v41_public_ruler import (
+    PUBLIC_RULERS,
     compact_arrays,
     compact_hashes,
     compact_metrics,
+    retain_ruler_manifest,
     slice_tokens,
+    validate_ruler_manifest,
 )
 from scripts.deepseek_v41_rd_common import (
     bank_plan,
@@ -154,6 +157,7 @@ def collect(a):
         raise FileExistsError("cache destination must not exist")
     if a.tokens < 1 or getattr(a, "prefill_chunk", 1) < 1:
         raise ValueError("tokens must be positive")
+    ruler_digest = validate_ruler_manifest(a.slices)
     slices = read_slices(a.slices, [])
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in slices):
         raise ValueError("slice names must be safe filenames")
@@ -198,6 +202,7 @@ def collect(a):
     if allocation is not None:
         install_native_masks(model, allocation, masses)
     a.output.mkdir(parents=True)
+    retain_ruler_manifest(a.slices, a.output, ruler_digest)
     if allocation_bytes is not None:
         (a.output / "allocation.json").write_bytes(allocation_bytes)
     if conversion_digest is not None:
@@ -229,6 +234,7 @@ def collect(a):
         else None,
         "slices": {},
         "ruler": json.loads(a.slices.read_text()).get("ruler"),
+        "ruler_manifest_sha256": ruler_digest,
         "reference_metadata_sha256": file_hash(reference / "metadata.json")
         if reference
         else None,
@@ -352,6 +358,21 @@ def compare(reference: Path, candidate: Path, subset=False):
                 raise ValueError("cache conversion provenance record mismatch")
     if rm["source_checkpoint_sha256"] != cm["source_checkpoint_sha256"]:
         raise ValueError("cache source checkpoint identity mismatch")
+    if rm.get("ruler") in PUBLIC_RULERS or cm.get("ruler") in PUBLIC_RULERS:
+        for root, meta in ((reference, rm), (candidate, cm)):
+            digest = meta.get("ruler_manifest_sha256")
+            if (
+                not digest
+                or validate_ruler_manifest(root / "ruler" / "manifest.json") != digest
+            ):
+                raise ValueError("cache public ruler manifest mismatch")
+            saved = json.loads((root / "ruler" / "manifest.json").read_bytes())
+            if saved["ruler"] != meta.get("ruler"):
+                raise ValueError("cache public ruler label mismatch")
+        if set(rm["slices"]) != set(PUBLIC_RULERS[rm["ruler"]]):
+            raise ValueError("reference public ruler slice coverage mismatch")
+        if rm["ruler_manifest_sha256"] != cm["ruler_manifest_sha256"]:
+            raise ValueError("cache public ruler identity mismatch")
     layers = cm.get("num_layers")
     if (
         type(layers) is not int
@@ -406,6 +427,10 @@ def compare(reference: Path, candidate: Path, subset=False):
             ids, np.load(candidate / f"{name}-tokens.npy", allow_pickle=False)
         ):
             raise ValueError("teacher-forced token IDs differ")
+        if rm.get("ruler") in PUBLIC_RULERS and not np.array_equal(
+            ids, np.load(reference / "ruler" / f"{name}.npy", allow_pickle=False)
+        ):
+            raise ValueError("cache tokens differ from authoritative public ruler")
         n = len(ids)
         if (
             not n

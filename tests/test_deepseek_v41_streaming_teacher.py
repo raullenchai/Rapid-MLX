@@ -411,7 +411,7 @@ def test_compact_reference_cli_and_online_candidate(tmp_path, monkeypatch):
     tok.save(str(source / "tokenizer.json"))
     np.save(tmp_path / "a.npy", np.arange(19, dtype=np.int32))
     slices = tmp_path / "slices.json"
-    slices.write_text(json.dumps(dict(slices=dict(a=["a.npy"]), ruler="long17k")))
+    slices.write_text(json.dumps(dict(slices=dict(a=["a.npy"]), ruler="tiny")))
     ref = tmp_path / "ref"
     monkeypatch.setattr(
         sys,
@@ -472,7 +472,7 @@ def test_compact_reference_cli_and_online_candidate(tmp_path, monkeypatch):
     result = evaluator.compare(ref, cand)
     assert result["kl_nats"] < 3e-7
     assert result["top1_agreement"] == 1
-    assert result["rulers"]["long17k"]["tokens"] == 19
+    assert result["rulers"]["tiny"]["tokens"] == 19
 
 
 @pytest.fixture(autouse=True)

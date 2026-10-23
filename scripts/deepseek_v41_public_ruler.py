@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,74 @@ SOURCE_HASHES = {
     "pg23950.txt": "ed422e10c16c19af7ca7b09ca0320012e60776b3d7cb054769b8f7d9a19aea7d",
 }
 TOKENIZER_HASH = "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b"
+
+
+PUBLIC_RULERS = {
+    "wiki1100": {f"wiki1100_{i:02d}": 1100 for i in range(24)},
+    "long17k": {"long17k_en": 17000, "long17k_zh": 17000},
+}
+
+
+def validate_ruler_manifest(path):
+    """Authenticate named public rulers against their retained build provenance."""
+    manifest = json.loads(path.read_bytes())
+    name = manifest.get("ruler")
+    if name not in PUBLIC_RULERS:
+        return None
+    root = path.parent
+    provenance_path = root / "provenance.json"
+    if file_hash(provenance_path) != manifest.get("provenance_sha256"):
+        raise ValueError("public ruler provenance hash mismatch")
+    provenance = json.loads(provenance_path.read_bytes())
+    if (
+        manifest.get("tokenizer_sha256") != TOKENIZER_HASH
+        or provenance.get("tokenizer_sha256") != TOKENIZER_HASH
+    ):
+        raise ValueError("public ruler tokenizer mismatch")
+    if set(manifest.get("slices", {})) != set(PUBLIC_RULERS[name]):
+        raise ValueError("public ruler slice coverage mismatch")
+    sources = {s.get("file"): s.get("sha256") for s in provenance.get("sources", [])}
+    expected_sources = {"raw/" + n: digest for n, digest in SOURCE_HASHES.items()}
+    if sources != expected_sources or any(
+        file_hash(root / n) != digest for n, digest in sources.items()
+    ):
+        raise ValueError("public ruler source provenance mismatch")
+    for slice_name, count in PUBLIC_RULERS[name].items():
+        filename = slice_name + ".npy"
+        entry = provenance.get("slices", {}).get(slice_name, {})
+        if manifest["slices"][slice_name] != [filename] or file_hash(
+            root / filename
+        ) != entry.get("sha256"):
+            raise ValueError("public ruler authoritative token hash mismatch")
+        ids = np.load(root / filename, allow_pickle=False)
+        if (
+            ids.shape != (count,)
+            or ids.dtype != np.dtype("int32")
+            or np.any(ids < 0)
+            or entry.get("tokens") != count
+        ):
+            raise ValueError("public ruler token shape mismatch")
+    return file_hash(path)
+
+
+def retain_ruler_manifest(path, cache, expected_digest):
+    if expected_digest is None:
+        return
+    if validate_ruler_manifest(path) != expected_digest:
+        raise ValueError("public ruler manifest changed during collection")
+    manifest = json.loads(path.read_bytes())
+    destination = cache / "ruler"
+    destination.mkdir()
+    (destination / "raw").mkdir()
+    for filename in [
+        "provenance.json",
+        *["raw/" + n for n in SOURCE_HASHES],
+        *[n + ".npy" for n in manifest["slices"]],
+    ]:
+        shutil.copyfile(path.parent / filename, destination / filename)
+    shutil.copyfile(path, destination / "manifest.json")
+    if validate_ruler_manifest(destination / "manifest.json") != expected_digest:
+        raise ValueError("public ruler snapshot mismatch")
 
 
 def slice_tokens(paths, tokenizer, count):
