@@ -575,25 +575,12 @@ def _resolve_safe_tts_checkpoint(model_name: str) -> Path:
 
     model_path = Path(model_name).expanduser()
     if not model_path.is_dir():
-        # Match the supported mlx-audio loader's asset selection. Resolve once
+        from mlx_audio.utils import DEFAULT_ALLOW_PATTERNS
+
+        # Use the native loader's authoritative asset selection. Resolve once
         # and pass a Path below so it cannot re-resolve mutable Hub refs.
         model_path = Path(
-            snapshot_download(
-                model_name,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jinja",
-                    "*.jsonl",
-                    "*.yaml",
-                    "*.npz",
-                    "*.pth",
-                ],
-            )
+            snapshot_download(model_name, allow_patterns=list(DEFAULT_ALLOW_PATTERNS))
         )
     return model_path
 

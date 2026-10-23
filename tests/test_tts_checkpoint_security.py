@@ -256,3 +256,41 @@ def test_voxcpm2_safetensors_sidecar_preferred(tmp_path, monkeypatch, empty):
     else:
         TTSEngine(str(path)).load()
         assert model.weights["audio_vae.weight"].tolist() == [3.0]
+
+
+def test_native_asset_patterns_reach_the_resolved_model(tmp_path, monkeypatch):
+    import fnmatch
+
+    import mlx_audio.utils as utils
+
+    from rapid_mlx import model_downloads
+
+    native_patterns = [*utils.DEFAULT_ALLOW_PATTERNS, "*.wav", "vocabulary.bin"]
+    monkeypatch.setattr(utils, "DEFAULT_ALLOW_PATTERNS", native_patterns)
+    files = {"config.json": "{}", "reference.wav": "audio", "vocabulary.bin": "tokens"}
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    downloads = []
+
+    def resolve(name, *, allow_patterns):
+        downloads.append(name)
+        assert allow_patterns == native_patterns
+        for filename, content in files.items():
+            if any(fnmatch.fnmatch(filename, pattern) for pattern in allow_patterns):
+                (snapshot / filename).write_text(content)
+        return str(snapshot)
+
+    model = object()
+
+    def native_load(path):
+        assert path == snapshot
+        assert (path / "reference.wav").read_text() == "audio"
+        assert (path / "vocabulary.bin").read_text() == "tokens"
+        return model
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", resolve)
+    _loader(monkeypatch, native_load)
+    engine = TTSEngine("org/model")
+    engine.load()
+    assert engine.model is model
+    assert downloads == ["org/model"]

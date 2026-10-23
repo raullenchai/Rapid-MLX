@@ -643,6 +643,9 @@ class TestVoiceDesignRoute:
         fake_gen = types.ModuleType("mlx_audio.tts.generate")
         fake_gen.load_model = load_model
         _install_fake_mlx_audio(monkeypatch)
+        fake_utils = types.ModuleType("mlx_audio.utils")
+        fake_utils.DEFAULT_ALLOW_PATTERNS = ["*.json", "*.safetensors", "*.pth"]
+        monkeypatch.setitem(sys.modules, "mlx_audio.utils", fake_utils)
         monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", fake_gen)
         monkeypatch.setattr(probe_mod, "require_mlx_audio_tts", lambda: None)
         monkeypatch.setattr(probe_mod, "require_kokoro_runtime", lambda *a, **k: None)
