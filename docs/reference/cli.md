@@ -32,7 +32,7 @@ rapid-mlx serve --help
 
 The server listens on loopback by default and prints its selected port. An explicit `--port` does not fall back to another port. See the [server guide](../guides/server.md) for the API and network setup.
 
-In an interactive terminal, the ready banner ends with a one-time pointer to [rapidmlx.com/newsletter](https://rapidmlx.com/newsletter). It appears once per machine, is skipped when an update notice was already shown, and never appears in piped output, CI, or managed/desktop sessions.
+An interactive `serve` prints a one-time [newsletter pointer](https://rapidmlx.com/newsletter) after its ready banner.
 
 ### KV cache dtype and quantization
 
