@@ -2467,7 +2467,6 @@ flow_cached_variant_collapse() {
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier Quickstart.CachedModel.qwen3-0.6b-4bit "$OUT/chooser.json"
-    wait_identifier Quickstart.CachedModel.qwen3-4b-4bit "$OUT/distinct-size.json"
     wait_identifier Quickstart.CachedVariants.Toggle "$OUT/collapsed.json"
     if jq -e '.data.ui_elements[]?
               | select(.identifier == "Quickstart.CachedVariant.qwen3-0.6b-8bit")' \
@@ -2477,6 +2476,14 @@ flow_cached_variant_collapse() {
 
     press "$OUT/collapsed.json" Quickstart.CachedVariants.Toggle "$OUT/expand.json"
     wait_identifier Quickstart.CachedVariant.qwen3-0.6b-8bit "$OUT/expanded.json"
+    wait_identifier Quickstart.CachedVariant.qwen3-4b-4bit "$OUT/distinct-size.json"
+    # A collapsed selection must survive the existing comparison round trip.
+    press "$OUT/distinct-size.json" Quickstart.CachedVariant.qwen3-4b-4bit "$OUT/select-variant.json"
+    wait_selected Quickstart.CachedModel.qwen3-4b-4bit "$OUT/selected-variant.json"
+    press "$OUT/selected-variant.json" Quickstart.BrowseAll "$OUT/browse.json"
+    wait_identifier Quickstart.BrowseAll.Search "$OUT/catalog.json"
+    press "$OUT/catalog.json" Quickstart.Footer.Back "$OUT/back.json"
+    wait_selected Quickstart.CachedModel.qwen3-4b-4bit "$OUT/selection-retained.json"
     cleanup_persona
 }
 

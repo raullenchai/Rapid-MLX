@@ -15,6 +15,20 @@ import Testing
 @Suite("Quickstart shortlist labels the models already on disk")
 struct QuickstartShortlistLabelTests {
 
+    @Test("Cached friendly names retain a spoken canonical alias without doubled punctuation")
+    func cachedFriendlyNameAccessibility() {
+        let choice = QuickstartCoordinator.defaultChoice
+        let label = QuickstartCompactCard.accessibilityText(
+            for: choice, sizeText: "2 GB · 92% capability", isCached: true,
+            secondaryText: choice.alias
+        )
+        #expect(label.hasPrefix(choice.displayName + ". " + choice.alias))
+        #expect(label.contains("on disk 2 GB · 92% capability"))
+        #expect(!label.contains("capability capability"))
+        #expect(!label.contains(".."))
+        #expect(!label.contains("download 2 GB"))
+    }
+
     private func entry(_ alias: String, sizeOnDisk: String? = "19.03 GiB") -> ModelEntry {
         ModelEntry(
             alias: alias,
@@ -51,7 +65,19 @@ struct QuickstartShortlistLabelTests {
             recommendedForPhysicalRAMGB: ram
         )
         // Being on disk changes what it costs, not how capable it is.
-        #expect(cached == "19.03 GiB · \(pick.capabilityPct)%")
+        #expect(cached == "19.03 GiB · \(pick.capabilityPct)% capability")
+    }
+
+    @Test("Setup labels the capability score exactly as the model picker does")
+    func capabilityLabelMatchesPicker() throws {
+        let pick = try #require(
+            RAMBucketedDefault.picks(forPhysicalRAMGB: 256).first { $0.caveat == nil }
+        )
+        let label = ModelPickerBar.capabilityText(pick.capabilityPct)
+        #expect(label == "\(pick.capabilityPct)% capability")
+        #expect(QuickstartView.recommendationSizeText(from: pick).hasSuffix(" · \(label)"))
+        #expect(ModelPickerBar.recommendedTagline(pick: pick, isPrimary: true)
+                .contains(label))
     }
 
     @Test("An uncached row is byte-identical to the lane it replaced")

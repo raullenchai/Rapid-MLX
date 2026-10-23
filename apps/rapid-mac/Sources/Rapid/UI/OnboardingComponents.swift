@@ -326,6 +326,9 @@ struct QuickstartCompactCard: View {
     let selected: Bool
     let sizeText: String
     var isCached: Bool = false
+    /// Secondary identity under the name — the canonical alias when the name
+    /// shown is a friendlier catalogue name.
+    var secondaryText: String? = nil
     var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
@@ -342,6 +345,12 @@ struct QuickstartCompactCard: View {
                         if isCached {
                             OnboardingBadge(text: "ON THIS MAC", tone: .ready)
                         }
+                    }
+                    if let secondaryText, !secondaryText.isEmpty {
+                        Text(secondaryText)
+                            .scaledSystemFont(11, design: .monospaced)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .lineLimit(1)
                     }
                     if !choice.blurb.isEmpty {
                         Text(choice.blurb)
@@ -366,15 +375,17 @@ struct QuickstartCompactCard: View {
         .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel(Self.accessibilityText(for: choice, sizeText: sizeText, isCached: isCached))
+        .accessibilityLabel(Self.accessibilityText(for: choice, sizeText: sizeText, isCached: isCached, secondaryText: secondaryText))
     }
 
     static func accessibilityText(
         for choice: QuickstartModelChoice,
         sizeText: String,
-        isCached: Bool = false
+        isCached: Bool = false,
+        secondaryText: String? = nil
     ) -> String {
         var parts = [choice.displayName]
+        if let secondaryText, !secondaryText.isEmpty { parts.append(secondaryText) }
         if !choice.blurb.isEmpty { parts.append(choice.blurb) }
         if isCached {
             parts.append(sizeText.isEmpty ? "on disk" : "on disk \(OnboardingModelAccessibility.size(sizeText))")
