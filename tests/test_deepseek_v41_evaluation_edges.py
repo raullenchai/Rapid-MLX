@@ -465,3 +465,30 @@ def test_pruning_allocation_is_authenticated_and_validated(tmp_path, bad):
     metadata_path.write_text(json.dumps(metadata))
     with pytest.raises(ValueError):
         evaluator.compare(r, c)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("target", ["manifest", "corpus", "tokenizer"])
+def test_collect_rechecks_tokenization_inputs(collector, tmp_path, monkeypatch, target):
+    a = collector
+    load = importlib.import_module("rapid_mlx.models.deepseek_v41_native.load")
+    original = load.load
+
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        path = (
+            a.slices
+            if target == "manifest"
+            else (
+                a.model / "tokenizer.json"
+                if target == "tokenizer"
+                else tmp_path / "a.npy"
+            )
+        )
+        path.write_bytes(path.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(load, "load", mutate)
+    with pytest.raises(ValueError, match="slice inputs changed"):
+        evaluator.collect(a)
+    assert not (a.output / "metadata.json").exists()

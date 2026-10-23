@@ -144,3 +144,32 @@ def test_public_comparison_requires_verified_matching_records(bundle, tmp_path, 
     (c / "metadata.json").write_text(json.dumps(cm))
     with pytest.raises(ValueError, match="ruler"):
         evaluator.compare(r, c)
+
+
+@pytest.mark.parametrize("bad", ["hash", "nonzero", "calibration"])
+def test_public_ruler_requires_bound_zero_overlap_audit(bundle, bad):
+    manifest = bundle / "long17k.json"
+    audit_path = bundle / "overlap.json"
+    audit = json.loads(audit_path.read_text())
+    if bad == "hash":
+        audit_path.write_text("{}")
+    else:
+        if bad == "nonzero":
+            audit["shared_windows_total"] = 1
+        else:
+            audit["calibration_manifest_sha256"] = "invalid"
+        audit_path.write_text(json.dumps(audit))
+        provenance = json.loads((bundle / "provenance.json").read_text())
+        provenance.update(
+            overlap_sha256=ruler.file_hash(audit_path),
+            calibration_manifest_sha256=audit["calibration_manifest_sha256"],
+        )
+        refresh_provenance(bundle, manifest, provenance)
+        data = json.loads(manifest.read_text())
+        data.update(
+            overlap_sha256=ruler.file_hash(audit_path),
+            calibration_manifest_sha256=audit["calibration_manifest_sha256"],
+        )
+        manifest.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="overlap qualification"):
+        ruler.validate_ruler_manifest(manifest)

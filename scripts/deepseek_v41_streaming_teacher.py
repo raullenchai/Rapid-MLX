@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import math
 import re
@@ -24,11 +25,13 @@ from scripts.deepseek_v41_public_ruler import (
     compact_hashes,
     compact_logits,
     create_compact,
+    read_slice_manifest,
     retain_ruler_manifest,
     slice_tokens,
     validate_ruler_manifest,
+    verify_input_hashes,
 )
-from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash, read_slices
+from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash
 from scripts.repack_deepseek_v41_native import CheckpointIndex
 
 
@@ -435,7 +438,7 @@ def main():
         raise ValueError("checkpoint changed during initialization")
     args = weights.args
     ruler_digest = validate_ruler_manifest(a.slices)
-    slices = read_slices(a.slices, [])
+    manifest_raw, manifest, slices = read_slice_manifest(a.slices)
     if (
         not slices
         or a.tokens < (2 if a.mode == "calibrate" else 1)
@@ -464,12 +467,18 @@ def main():
         raise ValueError("estimated memory exceeds limit; reduce --tokens")
     if a.output.exists():
         raise FileExistsError(a.output)
+    input_hashes = {
+        a.slices: hashlib.sha256(manifest_raw).hexdigest(),
+        a.source / "tokenizer.json": file_hash(a.source / "tokenizer.json"),
+    }
     tokenizer = Tokenizer.from_file(str(a.source / "tokenizer.json"))
-    expected_tokenizer = json.loads(a.slices.read_text()).get("tokenizer_sha256")
-    if expected_tokenizer and expected_tokenizer != file_hash(
-        a.source / "tokenizer.json"
+    expected_tokenizer = manifest.get("tokenizer_sha256")
+    if (
+        expected_tokenizer
+        and expected_tokenizer != input_hashes[a.source / "tokenizer.json"]
     ):
         raise ValueError("slice manifest tokenizer mismatch")
+    input_hashes.update({p: file_hash(p) for paths in slices.values() for p in paths})
     tokens = []
     for paths in slices.values():
         tokens.append(slice_tokens(paths, tokenizer, a.tokens))
@@ -512,17 +521,18 @@ def main():
     metadata = dict(
         schema_version=1,
         num_layers=args.n_layers,
+        slices_manifest_sha256=input_hashes[a.slices],
         model_revision=a.model_revision or a.source.resolve().name,
         checkpoint_sha256=source_identity,
         source_checkpoint_sha256=source_identity,
         config_sha256=source_identity["config.json"],
         checkpoint_config_sha256=source_identity["config.json"],
-        tokenizer_sha256=file_hash(a.source / "tokenizer.json"),
+        tokenizer_sha256=input_hashes[a.source / "tokenizer.json"],
         teacher="source_fp4_fp8_dequantized_bf16_native",
         engram="source_fp8_rowwise",
         execution="layer_major_full_prefill",
         prefill_chunk=a.prefill_chunk,
-        ruler=json.loads(a.slices.read_text()).get("ruler"),
+        ruler=manifest.get("ruler"),
         ruler_manifest_sha256=ruler_digest,
         compact_k=a.compact_k,
         vocab_size=args.vocab_size,
@@ -537,11 +547,12 @@ def main():
         },
         normalization="raw score max over domains; equal tokens per slice; halves checked separately",
         corpus={
-            n: [dict(file=str(p), sha256=file_hash(p)) for p in ps]
+            n: [dict(file=str(p), sha256=input_hashes[p]) for p in ps]
             for n, ps in slices.items()
         },
     )
     if a.mode == "calibrate":
+        verify_input_hashes(input_hashes)
         if checkpoint_hashes(a.source) != source_identity:
             raise ValueError("checkpoint changed during calibration")
         save_scores(
@@ -549,6 +560,7 @@ def main():
         )
         return
     a.output.mkdir()
+    (a.output / "slices-manifest.json").write_bytes(manifest_raw)
     retain_ruler_manifest(a.slices, a.output, ruler_digest)
     metadata.update(mode="unpruned_reference", slices={})
     norm, head = weights.tensor("norm.weight"), weights.tensor("head.weight")
@@ -597,13 +609,14 @@ def main():
             tokens=a.tokens,
             mass_sha256=file_hash(a.output / f"{name}-mass.npy"),
             tokens_sha256=file_hash(a.output / f"{name}-tokens.npy"),
-            corpus_sha256=[file_hash(p) for p in paths],
+            corpus_sha256=[input_hashes[p] for p in paths],
             **(
                 dict(compact_sha256=compact_hashes(a.output, name))
                 if compact
                 else dict(logits_sha256=file_hash(a.output / f"{name}-logits.npy"))
             ),
         )
+    verify_input_hashes(input_hashes)
     if checkpoint_hashes(a.source) != source_identity:
         raise ValueError("checkpoint changed during reference inference")
     (a.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")

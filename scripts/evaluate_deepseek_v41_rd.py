@@ -23,15 +23,16 @@ from scripts.deepseek_v41_public_ruler import (
     compact_arrays,
     compact_hashes,
     compact_metrics,
+    read_slice_manifest,
     retain_ruler_manifest,
     slice_tokens,
     validate_ruler_manifest,
+    verify_input_hashes,
 )
 from scripts.deepseek_v41_rd_common import (
     bank_plan,
     checkpoint_hashes,
     file_hash,
-    read_slices,
 )
 
 
@@ -158,24 +159,30 @@ def collect(a):
     if a.tokens < 1 or getattr(a, "prefill_chunk", 1) < 1:
         raise ValueError("tokens must be positive")
     ruler_digest = validate_ruler_manifest(a.slices)
-    slices = read_slices(a.slices, [])
+    manifest_raw, manifest, slices = read_slice_manifest(a.slices)
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in slices):
         raise ValueError("slice names must be safe filenames")
+    input_hashes = {
+        a.slices: hashlib.sha256(manifest_raw).hexdigest(),
+        a.model / "tokenizer.json": file_hash(a.model / "tokenizer.json"),
+    }
     tokenizer = Tokenizer.from_file(str(a.model / "tokenizer.json"))
-    expected_tokenizer = json.loads(a.slices.read_text()).get("tokenizer_sha256")
-    if expected_tokenizer and expected_tokenizer != file_hash(
-        a.model / "tokenizer.json"
+    expected_tokenizer = manifest.get("tokenizer_sha256")
+    if (
+        expected_tokenizer
+        and expected_tokenizer != input_hashes[a.model / "tokenizer.json"]
     ):
         raise ValueError("slice manifest tokenizer mismatch")
+    input_hashes.update({p: file_hash(p) for paths in slices.values() for p in paths})
     reference = getattr(a, "reference", None)
     rm = json.loads((reference / "metadata.json").read_text()) if reference else None
     if rm and (
         not rm.get("compact_k")
         or rm["mode"] != "unpruned_reference"
-        or rm["tokenizer_sha256"] != file_hash(a.model / "tokenizer.json")
+        or rm["tokenizer_sha256"] != input_hashes[a.model / "tokenizer.json"]
         or rm["model_revision"] != a.model_revision
         or set(rm["slices"]) != set(slices)
-        or rm.get("ruler") != json.loads(a.slices.read_text()).get("ruler")
+        or rm.get("ruler") != manifest.get("ruler")
     ):
         raise ValueError("incompatible compact reference")
     # Explicit lazy avoids full materialization and automatic page-cache prewarm.
@@ -202,6 +209,7 @@ def collect(a):
     if allocation is not None:
         install_native_masks(model, allocation, masses)
     a.output.mkdir(parents=True)
+    (a.output / "slices-manifest.json").write_bytes(manifest_raw)
     retain_ruler_manifest(a.slices, a.output, ruler_digest)
     if allocation_bytes is not None:
         (a.output / "allocation.json").write_bytes(allocation_bytes)
@@ -215,6 +223,7 @@ def collect(a):
     metadata = {
         "schema_version": 1,
         "num_layers": config.n_layers,
+        "slices_manifest_sha256": input_hashes[a.slices],
         "n_routed_experts": config.n_routed_experts,
         "routing_topk": config.n_activated_experts,
         "serving_qmv": getattr(a, "serving_qmv", False),
@@ -223,7 +232,7 @@ def collect(a):
         "source_checkpoint_sha256": origin_identity,
         "conversion_provenance_sha256": conversion_digest,
         "checkpoint_config_sha256": source_identity["config.json"],
-        "tokenizer_sha256": file_hash(a.model / "tokenizer.json"),
+        "tokenizer_sha256": input_hashes[a.model / "tokenizer.json"],
         "mode": "pruning_mask_only"
         if allocation is not None
         else "packed_candidate"
@@ -233,7 +242,7 @@ def collect(a):
         if allocation_bytes is not None
         else None,
         "slices": {},
-        "ruler": json.loads(a.slices.read_text()).get("ruler"),
+        "ruler": manifest.get("ruler"),
         "ruler_manifest_sha256": ruler_digest,
         "reference_metadata_sha256": file_hash(reference / "metadata.json")
         if reference
@@ -244,7 +253,7 @@ def collect(a):
         ids = slice_tokens(paths, tokenizer, a.tokens)
         if rm and (
             compact_hashes(reference, name) != rm["slices"][name]["compact_sha256"]
-            or rm["slices"][name]["corpus_sha256"] != [file_hash(p) for p in paths]
+            or rm["slices"][name]["corpus_sha256"] != [input_hashes[p] for p in paths]
             or file_hash(reference / f"{name}-tokens.npy")
             != rm["slices"][name].get("tokens_sha256")
             or not np.array_equal(
@@ -304,13 +313,14 @@ def collect(a):
             "tokens": a.tokens,
             "mass_sha256": file_hash(a.output / f"{name}-mass.npy"),
             "tokens_sha256": file_hash(a.output / f"{name}-tokens.npy"),
-            "corpus_sha256": [file_hash(p) for p in paths],
+            "corpus_sha256": [input_hashes[p] for p in paths],
             **(
                 {"scores_sha256": file_hash(a.output / f"{name}-scores.npy")}
                 if rm
                 else {"logits_sha256": file_hash(a.output / f"{name}-logits.npy")}
             ),
         }
+    verify_input_hashes(input_hashes)
     if checkpoint_hashes(a.model) != source_identity:
         raise ValueError("checkpoint changed during collection")
     (a.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")

@@ -38,6 +38,23 @@ PUBLIC_RULERS = {
 }
 
 
+def read_slice_manifest(path):
+    raw = path.read_bytes()
+    manifest = json.loads(raw)
+    slices = {
+        name: [(path.parent / p).resolve() for p in paths]
+        for name, paths in manifest["slices"].items()
+    }
+    if not slices or any(not paths for paths in slices.values()):
+        raise ValueError("each slice needs at least one local text file")
+    return raw, manifest, slices
+
+
+def verify_input_hashes(hashes):
+    if any(file_hash(path) != expected for path, expected in hashes.items()):
+        raise ValueError("slice inputs changed during inference")
+
+
 def validate_ruler_manifest(path):
     """Authenticate named public rulers against their retained build provenance."""
     manifest = json.loads(path.read_bytes())
@@ -54,6 +71,27 @@ def validate_ruler_manifest(path):
         or provenance.get("tokenizer_sha256") != TOKENIZER_HASH
     ):
         raise ValueError("public ruler tokenizer mismatch")
+    audit_path = root / "overlap.json"
+    audit_hash = file_hash(audit_path)
+    audit = json.loads(audit_path.read_bytes())
+    expected_slices = {n for entries in PUBLIC_RULERS.values() for n in entries}
+    calibration_hash = audit.get("calibration_manifest_sha256")
+    if (
+        audit_hash != manifest.get("overlap_sha256")
+        or audit_hash != provenance.get("overlap_sha256")
+        or calibration_hash != manifest.get("calibration_manifest_sha256")
+        or calibration_hash != provenance.get("calibration_manifest_sha256")
+        or not isinstance(calibration_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", calibration_hash) is None
+        or type(audit.get("shared_windows_total")) is not int
+        or audit["shared_windows_total"] != 0
+        or audit.get("shared_windows_by_slice") != {n: 0 for n in expected_slices}
+        or audit.get("window_tokens") != 64
+        or audit.get("stride") != 1
+        or not audit.get("calibration_files")
+        or audit.get("calibration_unique_windows", 0) < 1
+    ):
+        raise ValueError("public ruler overlap qualification mismatch")
     if set(manifest.get("slices", {})) != set(PUBLIC_RULERS[name]):
         raise ValueError("public ruler slice coverage mismatch")
     sources = {s.get("file"): s.get("sha256") for s in provenance.get("sources", [])}
@@ -91,6 +129,7 @@ def retain_ruler_manifest(path, cache, expected_digest):
     (destination / "raw").mkdir()
     for filename in [
         "provenance.json",
+        "overlap.json",
         *["raw/" + n for n in SOURCE_HASHES],
         *[n + ".npy" for n in manifest["slices"]],
     ]:
@@ -425,10 +464,14 @@ def build(a):
             long17k="UTF-8-sig decode; CRLF to LF; remove Gutenberg header/footer at markers; first 17000 body tokens, default tokenizer special-token processing; one uninterrupted context per book",
         ),
     )
+    (root / "overlap.json").write_text(json.dumps(audit, indent=2) + "\n")
+    provenance.update(
+        overlap_sha256=file_hash(root / "overlap.json"),
+        calibration_manifest_sha256=calibration_manifest_hash,
+    )
     (root / "provenance.json").write_text(
         json.dumps(provenance, ensure_ascii=False, indent=2) + "\n"
     )
-    (root / "overlap.json").write_text(json.dumps(audit, indent=2) + "\n")
     if audit["shared_windows_total"]:
         raise ValueError("calibration overlap; audit saved, rulers NOT qualified")
     if file_hash(a.calibration) != calibration_manifest_hash or any(
@@ -438,6 +481,8 @@ def build(a):
         raise ValueError("calibration inputs changed during overlap audit")
     for ruler, manifest in manifests.items():
         manifest["provenance_sha256"] = file_hash(root / "provenance.json")
+        manifest["overlap_sha256"] = provenance["overlap_sha256"]
+        manifest["calibration_manifest_sha256"] = calibration_manifest_hash
         (root / f"{ruler}.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         json.dumps(

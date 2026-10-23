@@ -296,3 +296,51 @@ def test_teacher_hashes_source_before_initialization(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="changed during initialization"):
         teacher.main()
     assert not output.exists()
+
+
+@pytest.mark.parametrize("mode", ["calibrate", "reference"])
+@pytest.mark.parametrize("target", ["manifest", "corpus"])
+def test_teacher_rechecks_tokenization_inputs(tmp_path, monkeypatch, mode, target):
+    from tokenizers import Tokenizer, models
+
+    source = tmp_path / "source"
+    fixtures.write_source(source)
+    Tokenizer(models.WordLevel({f"t{i}": i for i in range(32)}, unk_token="t0")).save(
+        str(source / "tokenizer.json")
+    )
+    np.save(tmp_path / "a.npy", np.arange(8, dtype=np.int32))
+    manifest = tmp_path / "slices.json"
+    manifest.write_text(json.dumps({"slices": {"a": ["a.npy"]}}))
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "teacher",
+            mode,
+            "--source",
+            str(source),
+            "--slices",
+            str(manifest),
+            "--output",
+            str(output),
+            "--tokens",
+            "8",
+            "--keep-experts",
+            "3",
+            "--cpu",
+        ],
+    )
+    original = teacher.stream_forward
+
+    def mutate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        path = manifest if target == "manifest" else tmp_path / "a.npy"
+        path.write_bytes(path.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(teacher, "stream_forward", mutate)
+    with pytest.raises(ValueError, match="slice inputs changed"):
+        teacher.main()
+    assert not (output / "metadata.json").exists()
+    assert not output.with_suffix(".npz").exists()
