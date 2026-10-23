@@ -5,12 +5,27 @@ enum ProductValueKind: Equatable, Sendable {
     case chatReply
     case dictationTranscript
     case generatedImage
+    case editedImage
+    case synthesizedSpeech
+    case audioTranscription
 
-    var telemetryActivationKind: TelemetryEvent.Activation.Kind {
+    var storageKey: String {
+        switch self {
+        case .chatReply: "chatReply"
+        case .dictationTranscript: "dictationTranscript"
+        case .generatedImage: "generatedImage"
+        case .editedImage: "editedImage"
+        case .synthesizedSpeech: "synthesizedSpeech"
+        case .audioTranscription: "audioTranscription"
+        }
+    }
+
+    var telemetryActivationKind: TelemetryEvent.Activation.Kind? {
         switch self {
         case .chatReply: .firstChatReply
         case .dictationTranscript: .firstDictation
         case .generatedImage: .firstImage
+        case .editedImage, .synthesizedSpeech, .audioTranscription: nil
         }
     }
 }
@@ -39,7 +54,9 @@ final class TelemetryLifecycleCoordinator {
         self.applyPolicy = applyPolicy
         self.startTelemetrySession = startTelemetrySession
         self.reportActivation = reportActivation ?? { kind in
-            await DesktopActivationReporter.shared.report(kind.telemetryActivationKind)
+            if let activation = kind.telemetryActivationKind {
+                await DesktopActivationReporter.shared.report(activation)
+            }
         }
     }
 

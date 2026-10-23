@@ -4,31 +4,31 @@ import Testing
 
 @MainActor
 @Suite("GitHub star value-moment policy")
-struct GitHubStarPromptCoordinatorTests {
-    @Test("The first card follows 35 successful outcomes, not app launches")
+struct PromptSchedulerTests {
+    @Test("The first card follows 10 successful outcomes, not app launches")
     func initialWorkloadGate() {
         let defaults = isolatedDefaults()
-        let prompt = GitHubStarPromptCoordinator(
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true
         )
 
-        for _ in 0..<(GitHubStarPromptCoordinator.initialWorkloadThreshold - 1) {
+        for _ in 0..<(PromptScheduler.initialWorkloadThreshold - 1) {
             prompt.productValueDelivered(.chatReply)
         }
         #expect(!prompt.isPresented)
 
         prompt.productValueDelivered(.generatedImage)
         #expect(prompt.isPresented)
-        #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions) == 35)
+        #expect(defaults.integer(forKey: PromptScheduler.Keys.totalSuccessfulActions) == 9)
     }
 
     @Test("Busy work and competing surfaces preserve the invitation until quiet")
     func waitsForCalmWorkspace() {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true
@@ -47,15 +47,15 @@ struct GitHubStarPromptCoordinatorTests {
         prompt.updatePresentationContext(.init(isBusy: false, hasBlockingSurface: true))
         #expect(!prompt.isPresented, "a new dialog temporarily tucks away an already-visible card")
         prompt.updatePresentationContext(.ready)
-        #expect(prompt.isPresented)
+        #expect(!prompt.isPresented, "a shown card is not presented twice in one launch")
     }
 
     @Test("Later applies a three-day floor and doubles subsequent workload")
     func exponentialDeferral() {
         var currentDate = Date(timeIntervalSince1970: 1_800_000_000)
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             now: { currentDate },
             quietWindow: .zero,
@@ -66,26 +66,27 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(prompt.isPresented)
         prompt.deferPrompt()
         #expect(!prompt.isPresented)
-        #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.baselineSuccessfulActions) == 35)
-        #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.nextWorkloadThreshold) == 70)
+        #expect(defaults.integer(forKey: PromptScheduler.Keys.baselineSuccessfulActions) == 10)
+        #expect(defaults.integer(forKey: PromptScheduler.Keys.nextWorkloadThreshold) == 20)
 
-        for _ in 0..<69 { prompt.productValueDelivered(.chatReply) }
-        currentDate.addTimeInterval(GitHubStarPromptCoordinator.deferralInterval - 1)
+        for _ in 0..<19 { prompt.productValueDelivered(.chatReply) }
+        currentDate.addTimeInterval(PromptScheduler.deferralInterval - 1)
         prompt.productValueDelivered(.chatReply)
         #expect(!prompt.isPresented, "workload alone cannot bypass the cooldown")
 
         currentDate.addTimeInterval(1)
-        prompt.productValueDelivered(.chatReply)
-        #expect(prompt.isPresented)
-        prompt.deferPrompt()
-        #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.nextWorkloadThreshold) == 140)
+        let nextLaunch = PromptScheduler(defaults: defaults, now: { currentDate }, quietWindow: .zero, presentationActive: true)
+        nextLaunch.startMonitoringUserActivity()
+        #expect(nextLaunch.isPresented)
+        nextLaunch.deferPrompt()
+        #expect(defaults.integer(forKey: PromptScheduler.Keys.nextWorkloadThreshold) == 40)
     }
 
     @Test("Opening GitHub completes the invitation without account probing")
     func completionIsDurable() {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true
@@ -93,20 +94,20 @@ struct GitHubStarPromptCoordinatorTests {
 
         prompt.productValueDelivered(.chatReply)
         prompt.repositoryOpened()
-        #expect(defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(defaults.bool(forKey: PromptScheduler.Keys.completed))
         #expect(!prompt.isPresented)
 
         for _ in 0..<500 { prompt.productValueDelivered(.generatedImage) }
         #expect(!prompt.isPresented)
-        #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions) == 35)
+        #expect(defaults.integer(forKey: PromptScheduler.Keys.totalSuccessfulActions) == 9)
     }
 
     @Test("A successful gh CLI star completes the invitation without a browser handoff")
     func directStarCompletesLocally() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
         let recorder = DirectStarRecorder()
-        let prompt = GitHubStarPromptCoordinator(
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -120,7 +121,7 @@ struct GitHubStarPromptCoordinatorTests {
 
         #expect(await prompt.attemptDirectStar() == .starred)
         #expect(await recorder.recordedURL() == GitHubCommunity.repositoryURL)
-        #expect(defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(defaults.bool(forKey: PromptScheduler.Keys.completed))
         #expect(!prompt.isPresented)
         #expect(!prompt.isStarring)
     }
@@ -128,8 +129,8 @@ struct GitHubStarPromptCoordinatorTests {
     @Test("A failed direct star preserves the browser invitation")
     func directStarFailureFallsBackLater() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -143,7 +144,7 @@ struct GitHubStarPromptCoordinatorTests {
 
         let directStarResult = await prompt.attemptDirectStar()
         #expect(directStarResult == .unavailable)
-        #expect(!defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!defaults.bool(forKey: PromptScheduler.Keys.completed))
         #expect(prompt.isPresented)
         #expect(!prompt.isStarring)
     }
@@ -151,9 +152,9 @@ struct GitHubStarPromptCoordinatorTests {
     @Test("A direct star finishing after deferral does not override cadence")
     func deferredDirectStarDoesNotCompleteInvitation() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
         let promptReference = PromptReference()
-        let prompt = GitHubStarPromptCoordinator(
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -168,16 +169,16 @@ struct GitHubStarPromptCoordinatorTests {
 
         let directStarResult = await prompt.attemptDirectStar()
         #expect(directStarResult == .unavailable)
-        #expect(!defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!defaults.bool(forKey: PromptScheduler.Keys.completed))
         #expect(!prompt.isPresented)
     }
 
     @Test("A successful direct star completes after transient hiding")
     func transientlyHiddenDirectStarCompletesLocally() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
         let promptReference = PromptReference()
-        let prompt = GitHubStarPromptCoordinator(
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -192,7 +193,7 @@ struct GitHubStarPromptCoordinatorTests {
 
         let directStarResult = await prompt.attemptDirectStar()
         #expect(directStarResult == .starred)
-        #expect(defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(defaults.bool(forKey: PromptScheduler.Keys.completed))
         #expect(!prompt.isPresented)
     }
 
@@ -333,9 +334,9 @@ struct GitHubStarPromptCoordinatorTests {
     @Test("A second direct star cannot start while the first is in flight")
     func directStarReentryIsRejected() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
         let gate = DirectStarGate()
-        let prompt = GitHubStarPromptCoordinator(
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -359,8 +360,8 @@ struct GitHubStarPromptCoordinatorTests {
     @Test("Cancelling a direct star does not trigger browser fallback")
     func directStarCancellationIsDistinctFromFailure() async {
         let defaults = isolatedDefaults()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .zero,
             presentationActive: true,
@@ -373,15 +374,15 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(result == .cancelled)
         #expect(prompt.isPresented)
         #expect(!prompt.isStarring)
-        #expect(!defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!defaults.bool(forKey: PromptScheduler.Keys.completed))
     }
 
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()
         let quietWindow = QuietWindowGate()
-        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
-        let prompt = GitHubStarPromptCoordinator(
+        defaults.set(9, forKey: PromptScheduler.Keys.totalSuccessfulActions)
+        let prompt = PromptScheduler(
             defaults: defaults,
             quietWindow: .seconds(1),
             presentationActive: true,
@@ -407,9 +408,12 @@ struct GitHubStarPromptCoordinatorTests {
     }
 
     private func isolatedDefaults() -> UserDefaults {
-        let name = "GitHubStarPromptCoordinatorTests.\(UUID().uuidString)"
+        let name = "PromptSchedulerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        defaults.set(true, forKey: PromptScheduler.PromoKeys.newsletterCompleted)
+        defaults.set(2, forKey: EffectiveUse.Keys.distinctDays)
+        defaults.set(Calendar.current.startOfDay(for: Date()), forKey: EffectiveUse.Keys.lastDay)
         return defaults
     }
 }
@@ -444,7 +448,7 @@ private actor DirectStarRecorder {
 }
 
 private final class PromptReference: @unchecked Sendable {
-    var prompt: GitHubStarPromptCoordinator?
+    var prompt: PromptScheduler?
 
     func deferPrompt() async {
         await MainActor.run { prompt?.deferPrompt() }

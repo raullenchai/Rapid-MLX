@@ -212,6 +212,8 @@ private struct AboutView: View {
                 Text("·").foregroundStyle(.tertiary)
                 aboutLink("GitHub", repoURL)
                 Text("·").foregroundStyle(.tertiary)
+                aboutLink("Newsletter", NewsletterLink.url.absoluteString)
+                Text("·").foregroundStyle(.tertiary)
                 aboutLink("Privacy", privacyURL)
             }
             .font(.rapid(.callout))

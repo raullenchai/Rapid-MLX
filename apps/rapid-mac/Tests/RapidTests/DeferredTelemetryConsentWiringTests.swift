@@ -23,9 +23,9 @@ struct TelemetryLifecycleWiringTests {
 
         #expect(app.contains("let telemetryLifecycle = TelemetryLifecycleCoordinator()"))
         #expect(content.contains("await telemetryLifecycle.start()"))
-        #expect(app.contains("let starPromptCoordinator = GitHubStarPromptCoordinator()"))
-        #expect(app.components(separatedBy: "telemetryLifecycle?.productValueDelivered(kind)").count - 1 == 3)
-        #expect(app.components(separatedBy: "starPromptCoordinator?.productValueDelivered(kind)").count - 1 == 3)
+        #expect(app.contains("let starPromptCoordinator = PromptScheduler()"))
+        #expect(app.components(separatedBy: "telemetryLifecycle?.productValueDelivered(kind)").count - 1 == 4)
+        #expect(app.components(separatedBy: "starPromptCoordinator?.productValueDelivered(kind)").count - 1 == 4)
         #expect(lifecycle.contains("DesktopFunnelReporter.enqueue(.firstChatReply)"))
     }
 
@@ -87,7 +87,7 @@ struct TelemetryLifecycleWiringTests {
         #expect(dictation.components(separatedBy: "onProductValueDelivered(.dictationTranscript)").count - 1 == 1)
     }
 
-    @Test("Only a newly generated image signals product value")
+    @Test("Generated and edited images signal distinct product value")
     func imageSignalsGenerationNotEdit() throws {
         let image = try Self.source("Sources/Rapid/Images/ImageGenViewModel.swift")
         let generateStart = try #require(image.range(of: "private func runGenerate("))
@@ -98,6 +98,7 @@ struct TelemetryLifecycleWiringTests {
         #expect(generation.contains("if let first = images.first"))
         #expect(generation.contains("onProductValueDelivered(.generatedImage)"))
         #expect(!editing.contains("onProductValueDelivered(.generatedImage)"))
+        #expect(editing.contains("onProductValueDelivered(.editedImage)"))
     }
 
     @Test("Settings contains the complete default-on disclosure")

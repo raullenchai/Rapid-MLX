@@ -119,7 +119,7 @@ struct ContentView: View {
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
     @Environment(TelemetryLifecycleCoordinator.self) private var telemetryLifecycle
-    @Environment(GitHubStarPromptCoordinator.self) private var githubStarPrompt
+    @Environment(PromptScheduler.self) private var githubStarPrompt
     @Environment(SparkleUpdateController.self) private var sparkleUpdater
     @Environment(CommandPaletteRequestCoordinator.self) private var commandPaletteRequest
     @Environment(\.openWindow) private var openWindow
@@ -826,7 +826,12 @@ struct ContentView: View {
             // Same suppression gate as the update card: the star prompt is a
             // bottom-trailing overlay that can land on the surface under
             // review.
-            if githubStarPrompt.isPresented, !Self.suppressesReviewChrome() {
+            if githubStarPrompt.newsletterPresented, !Self.suppressesReviewChrome() {
+                NewsletterPromptCard()
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 40)
+                    .zIndex(20)
+            } else if githubStarPrompt.isPresented, !Self.suppressesReviewChrome() {
                 GitHubStarPromptCard()
                     .padding(.trailing, 16)
                     .padding(.bottom, 40)
@@ -856,7 +861,7 @@ struct ContentView: View {
             || dictationIsBusy
     }
 
-    private var starPromptPresentationContext: GitHubStarPromptCoordinator.PresentationContext {
+    private var starPromptPresentationContext: PromptScheduler.PresentationContext {
         let campaignIsVisible = campaign.map {
             !UserDefaults.standard.bool(forKey: $0.dismissalKey)
         } ?? false

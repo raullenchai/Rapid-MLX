@@ -16,7 +16,7 @@ enum GitHubCommunity {
 /// A quiet, nonmodal value-moment card. It sits above the workspace instead
 /// of reflowing it, takes no focus, and remains until the user chooses.
 struct GitHubStarPromptCard: View {
-    @Environment(GitHubStarPromptCoordinator.self) private var prompt
+    @Environment(PromptScheduler.self) private var prompt
     @Environment(\.openURL) private var openURL
 
     var body: some View {

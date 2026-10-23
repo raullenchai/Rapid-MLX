@@ -15,7 +15,7 @@ enum GitHubStarAttemptResult: Equatable {
 /// and backs off exponentially when the user asks to see it later.
 @MainActor
 @Observable
-final class GitHubStarPromptCoordinator {
+final class PromptScheduler {
     struct PresentationContext: Equatable {
         var isBusy: Bool
         var hasBlockingSurface: Bool
@@ -31,14 +31,21 @@ final class GitHubStarPromptCoordinator {
         static let deferredUntil = "Rapid.githubStar.deferredUntil.v1"
     }
 
-    static let initialWorkloadThreshold = 35
+    static let initialWorkloadThreshold = 10
     static let deferralInterval: TimeInterval = 3 * 24 * 60 * 60
     static let quietWindow: Duration = .milliseconds(1_200)
 
     private(set) var isPresented = false
+    private(set) var newsletterPresented = false
     private(set) var isStarring = false
 
+    enum PromoKeys {
+        static let newsletterCompleted = "Rapid.newsletter.completed.v1"
+        static let lastShown = "Rapid.promo.lastShown.v1"
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let effectiveUse: EffectiveUse
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let quietWindow: Duration
     @ObservationIgnored private let starExecutor: @Sendable (URL) async throws -> Void
@@ -47,12 +54,15 @@ final class GitHubStarPromptCoordinator {
     @ObservationIgnored private var presentationPending = false
     @ObservationIgnored private var presentationTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardMonitor: Any?
+    @ObservationIgnored private var activationMonitor: Any?
     @ObservationIgnored private var presentationActive: Bool
+    @ObservationIgnored private let requiresVisibleWindow: Bool
+    @ObservationIgnored private var shownThisLaunch = false
 
     init(
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
-        quietWindow: Duration = GitHubStarPromptCoordinator.quietWindow,
+        quietWindow: Duration = PromptScheduler.quietWindow,
         presentationActive: Bool = false,
         starExecutor: @escaping @Sendable (URL) async throws -> Void = { url in
             try await GitHubStarCLI.star(url)
@@ -62,23 +72,20 @@ final class GitHubStarPromptCoordinator {
         }
     ) {
         self.defaults = defaults
+        self.effectiveUse = EffectiveUse(defaults: defaults, now: now)
         self.now = now
         self.quietWindow = quietWindow
         self.starExecutor = starExecutor
         self.presentationActive = presentationActive
+        self.requiresVisibleWindow = !presentationActive
         self.waitForQuietWindow = waitForQuietWindow
     }
 
     /// Records one delivered chat reply, dictation transcript, or generated
     /// image. No prompt state, content, or GitHub account data leaves the Mac.
     func productValueDelivered(_ kind: ProductValueKind) {
-        guard !defaults.bool(forKey: Keys.completed) else { return }
-
-        let previousTotal = defaults.integer(forKey: Keys.totalSuccessfulActions)
-        let total = previousTotal == Int.max ? Int.max : previousTotal + 1
-        defaults.set(total, forKey: Keys.totalSuccessfulActions)
-
-        guard !isPresented, !presentationPending, isWorkloadEligible(total: total) else { return }
+        effectiveUse.record(kind)
+        guard !isPresented, !newsletterPresented, !shownThisLaunch else { return }
         presentationPending = true
         schedulePresentationCheck()
     }
@@ -91,9 +98,10 @@ final class GitHubStarPromptCoordinator {
         if newContext.isBusy || newContext.hasBlockingSurface {
             presentationTask?.cancel()
             presentationTask = nil
-            if isPresented {
+            if isPresented { presentationPending = true }
+            if isPresented || newsletterPresented {
                 isPresented = false
-                presentationPending = true
+                newsletterPresented = false
             }
         } else if presentationPending {
             schedulePresentationCheck()
@@ -103,12 +111,20 @@ final class GitHubStarPromptCoordinator {
     /// Restarts the quiet window after a local key press without consuming or
     /// intercepting the event. This prevents the card arriving mid-sentence.
     func noteUserActivity() {
-        guard presentationPending, !isPresented else { return }
+        guard presentationPending, !isPresented, !newsletterPresented else { return }
         schedulePresentationCheck()
     }
 
     func startMonitoringUserActivity() {
         presentationActive = true
+        if activationMonitor == nil {
+            activationMonitor = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.schedulePresentationCheck() }
+            }
+        }
+        presentationPending = true
         if keyboardMonitor == nil {
             keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
                 self?.noteUserActivity()
@@ -122,13 +138,18 @@ final class GitHubStarPromptCoordinator {
         presentationActive = false
         presentationTask?.cancel()
         presentationTask = nil
-        if isPresented {
+        if isPresented || newsletterPresented {
+            if isPresented { presentationPending = true }
             isPresented = false
-            presentationPending = true
+            newsletterPresented = false
         }
         if let keyboardMonitor {
             NSEvent.removeMonitor(keyboardMonitor)
             self.keyboardMonitor = nil
+        }
+        if let activationMonitor {
+            NotificationCenter.default.removeObserver(activationMonitor)
+            self.activationMonitor = nil
         }
     }
 
@@ -139,7 +160,7 @@ final class GitHubStarPromptCoordinator {
         isPresented = false
         presentationPending = false
 
-        let total = defaults.integer(forKey: Keys.totalSuccessfulActions)
+        let total = effectiveUse.total
         let currentThreshold = workloadThreshold
         let (doubled, overflow) = currentThreshold.multipliedReportingOverflow(by: 2)
         defaults.set(total, forKey: Keys.baselineSuccessfulActions)
@@ -180,6 +201,12 @@ final class GitHubStarPromptCoordinator {
         defaults.set(true, forKey: Keys.completed)
     }
 
+    func completeNewsletter() {
+        guard newsletterPresented else { return }
+        newsletterPresented = false
+        defaults.set(true, forKey: PromoKeys.newsletterCompleted)
+    }
+
     private var workloadThreshold: Int {
         let stored = defaults.integer(forKey: Keys.nextWorkloadThreshold)
         return stored > 0 ? stored : Self.initialWorkloadThreshold
@@ -188,7 +215,7 @@ final class GitHubStarPromptCoordinator {
     private func isWorkloadEligible(total: Int) -> Bool {
         let baseline = defaults.integer(forKey: Keys.baselineSuccessfulActions)
         let completedWork = max(0, total - baseline)
-        guard completedWork >= workloadThreshold else { return false }
+        guard completedWork >= workloadThreshold, effectiveUse.distinctDays >= 2 else { return false }
         guard let deferredUntil = defaults.object(forKey: Keys.deferredUntil) as? Date else { return true }
         return now() >= deferredUntil
     }
@@ -197,6 +224,7 @@ final class GitHubStarPromptCoordinator {
         presentationTask?.cancel()
         guard presentationActive,
               presentationPending,
+              !shownThisLaunch,
               !context.isBusy,
               !context.hasBlockingSurface else {
             presentationTask = nil
@@ -219,13 +247,24 @@ final class GitHubStarPromptCoordinator {
         presentationTask = nil
         guard presentationPending,
               !isPresented,
+              !newsletterPresented,
+              !shownThisLaunch,
               presentationActive,
+              (!requiresVisibleWindow || (NSApp.isActive && NSApp.mainWindow?.isVisible == true)),
               !context.isBusy,
-              !context.hasBlockingSurface,
-              !defaults.bool(forKey: Keys.completed),
-              isWorkloadEligible(total: defaults.integer(forKey: Keys.totalSuccessfulActions)) else { return }
+              !context.hasBlockingSurface else { return }
+        if let lastShown = defaults.object(forKey: PromoKeys.lastShown) as? Date,
+           now().timeIntervalSince(lastShown) < Self.deferralInterval { return }
+        let newsletterEligible = effectiveUse.total >= 2
+            && !defaults.bool(forKey: PromoKeys.newsletterCompleted)
+        let starEligible = !defaults.bool(forKey: Keys.completed)
+            && isWorkloadEligible(total: effectiveUse.total)
+        guard newsletterEligible || starEligible else { return }
         presentationPending = false
-        isPresented = true
+        shownThisLaunch = true
+        defaults.set(now(), forKey: PromoKeys.lastShown)
+        if newsletterEligible { newsletterPresented = true }
+        else { isPresented = true }
     }
 }
 

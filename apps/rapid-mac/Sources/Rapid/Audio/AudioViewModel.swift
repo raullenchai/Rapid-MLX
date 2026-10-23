@@ -65,10 +65,13 @@ final class AudioViewModel {
 
     private let server: ServerManager
     private let client: AudioClient
+    private let onProductValueDelivered: @MainActor (ProductValueKind) -> Void
 
-    init(server: ServerManager, client: AudioClient = AudioClient()) {
+    init(server: ServerManager, client: AudioClient = AudioClient(),
+         onProductValueDelivered: @escaping @MainActor (ProductValueKind) -> Void = { _ in }) {
         self.server = server
         self.client = client
+        self.onProductValueDelivered = onProductValueDelivered
     }
 
     var transcriptionModels: [ModelEntry] {
@@ -183,7 +186,7 @@ final class AudioViewModel {
             return
         }
         do {
-            synthesizedAudio = try await client.synthesize(
+            let audio = try await client.synthesize(
                 text: trimmed,
                 model: entry.alias,
                 voice: selectedVoice,
@@ -191,6 +194,9 @@ final class AudioViewModel {
                 port: server.activePort,
                 bearer: server.activeBearer
             )
+            guard !Task.isCancelled, !audio.data.isEmpty else { return }
+            synthesizedAudio = audio
+            onProductValueDelivered(.synthesizedSpeech)
         } catch {
             errorMessage = Self.message(for: error)
         }

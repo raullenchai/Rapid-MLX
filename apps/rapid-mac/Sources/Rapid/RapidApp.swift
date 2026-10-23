@@ -111,7 +111,7 @@ struct RapidApp: App {
     @State private var telemetryLifecycle: TelemetryLifecycleCoordinator
     /// Local-only post-value GitHub invitation. It shares the typed success
     /// seam above but owns independent quiet-window and backoff policy.
-    @State private var githubStarPrompt: GitHubStarPromptCoordinator
+    @State private var githubStarPrompt: PromptScheduler
     /// Side-car downloader — spawns ``rapid-mlx pull <alias>`` jobs.
     @State private var downloads: DownloadManager
     /// Owns the opt-in QuickSilver provider process independently of the tab,
@@ -176,7 +176,7 @@ struct RapidApp: App {
         // persists it successfully.
         TelemetryConsent.synchronizeExistingDecision()
         let telemetryLifecycle = TelemetryLifecycleCoordinator()
-        let starPromptCoordinator = GitHubStarPromptCoordinator()
+        let starPromptCoordinator = PromptScheduler()
         // #2878 changed the Desktop default from 8000 to 7659. Preserve the
         // old endpoint for upgrades before InstallTracker records this launch;
         // otherwise existing OpenAI-compatible clients silently disconnect.
@@ -386,7 +386,13 @@ struct RapidApp: App {
             starPromptCoordinator?.productValueDelivered(kind)
         }
         _imageGen = State(initialValue: imageGenViewModel)
-        _audio = State(initialValue: AudioViewModel(server: manager))
+        _audio = State(initialValue: AudioViewModel(
+            server: manager,
+            onProductValueDelivered: { [weak telemetryLifecycle, weak starPromptCoordinator] kind in
+                telemetryLifecycle?.productValueDelivered(kind)
+                starPromptCoordinator?.productValueDelivered(kind)
+            }
+        ))
         _cuaServer = State(initialValue: cuaServerManager)
         _video = State(initialValue: VideoGenViewModel(server: manager))
         _dictation = State(initialValue: dictationController)

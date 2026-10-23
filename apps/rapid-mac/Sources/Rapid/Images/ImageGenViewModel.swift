@@ -423,6 +423,7 @@ final class ImageGenViewModel {
                 // Continue from the newest result so iterative edits never
                 // accidentally reapply to the original source.
                 self.editSource = first
+                self.onProductValueDelivered(.editedImage)
             }
             self.prompt = ""
         }

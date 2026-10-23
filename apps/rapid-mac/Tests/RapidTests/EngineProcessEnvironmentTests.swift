@@ -97,7 +97,7 @@ struct EngineProcessEnvironmentTests {
         let allowedNonEngineSites: [String: Int] = [
             "Server/PortSweep.swift": 2,
             "Services/ReonboardingReset.swift": 1,
-            "UI/GitHubStarPromptCoordinator.swift": 1,
+            "UI/PromptScheduler.swift": 1,
             "UI/ConnectToolsView.swift": 1,
             "Server/DownloadManager.swift": 1,
         ]
@@ -116,7 +116,7 @@ struct EngineProcessEnvironmentTests {
         let allowlistAnchors: [String: String] = [
             "Server/PortSweep.swift": "/usr/sbin/netstat",
             "Services/ReonboardingReset.swift": "/bin/sh",
-            "UI/GitHubStarPromptCoordinator.swift": "GitHubStarChild.spawn(",
+            "UI/PromptScheduler.swift": "GitHubStarChild.spawn(",
             "UI/ConnectToolsView.swift": "/usr/bin/open",
             "Server/DownloadManager.swift": "internal func _testingFinish(",
         ]

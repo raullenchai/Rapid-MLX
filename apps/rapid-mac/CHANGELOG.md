@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Desktop
+
+- Newsletter and GitHub invitations now share a local successful-use counter and a quiet, one-card-per-launch schedule. The newsletter is also available from About.
+
 ## [0.16.8] — 2026-10-22
 
 Desktop shows model loading inside the chat composer, keeping startup status where you write your message.

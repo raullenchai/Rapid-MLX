@@ -33,7 +33,7 @@ struct GitHubStarPromptTests {
         #expect(!chat.contains("GitHub" + "StarButton"))
         #expect(!chat.contains("GitHub.Star." + "EmptyState"))
         #expect(content.contains("GitHubStarPromptCard()"))
-        #expect(content.contains("GitHubStarPromptCoordinator"))
+        #expect(content.contains("PromptScheduler"))
         #expect(!content.contains("OnboardingCompletePrompt"))
         #expect(!content.contains("showOnboardingCompletePrompt"))
     }
@@ -82,7 +82,7 @@ struct GitHubStarPromptTests {
     @Test("The card is nonmodal, focus-neutral, and fully addressable")
     func interactionContract() throws {
         let card = try Self.source("GitHubStarPrompt.swift")
-        let coordinator = try Self.source("GitHubStarPromptCoordinator.swift")
+        let coordinator = try Self.source("PromptScheduler.swift")
 
         for identifier in ["Card", "Open", "Later", "Feedback", "Close"] {
             #expect(card.contains("GitHub.Star.ValueMoment.\(identifier)"))
