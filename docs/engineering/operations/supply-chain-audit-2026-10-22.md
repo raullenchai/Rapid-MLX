@@ -82,18 +82,23 @@ and retain a regression test.
 
 ## Final validation checkpoint
 
-Implementation commit: `e0c294306` (subsequent audit-record edits only). On Studio,
+Integration checkpoint: `dfb36adbb`, including current-main mirror recovery and
+reviewed vendor provenance. On Studio,
 Python 3.12 with mlx-vlm 0.7.2 and patched PyTorch 2.10.0:
 
-- Combined integration: **2,184 passed, zero failures/skips/deselections**,
+- Combined integration: **2,191 passed, zero failures/skips/deselections**,
   across the 44 files below.
 - Earlier security suite plus integrity/catalog checks: **919 passed, one
   skipped**, zero deselections. The skip is the opt-in full-model DFlash test,
   which requires approximately 30 GB of weights.
-- Ruff passed for all Python files changed in this audit; Git diff whitespace
-  checks passed.
-- A normal wheel build succeeded. Its packaged catalog lock, adapters,
-  tokenizer dependency and license/provenance files were inspected.
+- Ruff passed for the changed authored Python files. The imported tokenizer
+  source and tokenizer-template fixture retain upstream whitespace; their
+  provenance hashes bind those exact bytes.
+- Wheel and sdist builds succeeded. Packaged catalog lock, adapters, tokenizer
+  dependency and license/provenance files were inspected. Extracted-wheel LTX
+  runtime imports passed with the pinned runtime dependency, and nine focused
+  Swift sidecar tests passed. Hardware-qualified affine8 tests were skipped on
+  this validation host.
 - Three existing cached model configurations passed actual offline content
   verification. Full-size model weights were not downloaded for this work.
 
