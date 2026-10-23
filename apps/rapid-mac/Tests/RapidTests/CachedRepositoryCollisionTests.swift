@@ -129,4 +129,28 @@ struct CachedRepositoryCollisionTests {
             #expect(ModelCatalog.parseCachedJSON(payload) == nil)
         }
     }
+    @Test("Legacy five-field inventory retains explicit collision paths")
+    func legacyLaunchPath() throws {
+        let path = "/models/local-chat-1b"
+        let original = ModelEntry(
+            alias: "local-chat-1b", hfRepo: "org/Unrelated", sizeOnDisk: nil, cached: false
+        )
+        let cached: [(String, String?, String?, String?, String?)] = [
+            ("(unmapped)", "local-chat-1b", nil, "1 GiB", path)
+        ]
+        for entries in [
+            ModelCatalog.mergeAtomicAndCached(atomic: [original], cached: cached, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(
+                available: [(original.alias, original.hfRepo)], cached: cached, excluded: []
+            )
+        ] {
+            #expect(entries.count == 2)
+            let local = try #require(entries.first { $0.alias == path })
+            #expect(local.cached)
+            #expect(local.hfRepo == original.alias)
+            #expect(local.cachedChatDiscovery == nil)
+            #expect(entries.first { $0.alias == original.alias }?.cached == false)
+        }
+    }
+
 }

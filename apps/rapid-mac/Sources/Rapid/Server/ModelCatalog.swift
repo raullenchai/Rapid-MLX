@@ -690,12 +690,12 @@ enum ModelCatalog {
     /// deliberately withheld from ``models`` must NOT be re-admitted here.
     static func mergeAvailableAndCached(
         available: [(String, String?)],
-        cached: [(String, String?, String?, String?, CachedChatDiscovery?)],
+        cached: [(String, String?, String?, String?, String?)],
         excluded: Set<String>
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, $0.4, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, $0.4) },
             excluded: excluded
         )
     }
@@ -1410,12 +1410,12 @@ enum ModelCatalog {
     /// non-deletable, and hidden/media aliases cannot re-enter as Chat rows.
     static func mergeAtomicAndCached(
         atomic: [ModelEntry],
-        cached: [(String, String?, String?, String?, CachedChatDiscovery?)],
+        cached: [(String, String?, String?, String?, String?)],
         excluded: Set<String>
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, $0.4, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, $0.4) },
             excluded: excluded
         )
     }
