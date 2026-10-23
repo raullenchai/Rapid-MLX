@@ -49,6 +49,13 @@ from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
 logger = logging.getLogger(__name__)
 
 
+def _resolve_checkpoint(model_name: str) -> str:
+    """Pin config inspection and execution to the same local snapshot."""
+    from mlx_vlm.utils import get_model_path
+
+    return str(get_model_path(model_name))
+
+
 class TextOnlyCheckpointError(RuntimeError):
     """A vision-config checkpoint that ships no usable vision tower.
 
@@ -1604,7 +1611,7 @@ class MLXMultimodalLM:
     def __init__(
         self,
         model_name: str,
-        trust_remote_code: bool = True,
+        trust_remote_code: bool | None = None,
         enable_cache: bool = True,
         cache_size: int = 50,
         *,
@@ -1615,7 +1622,8 @@ class MLXMultimodalLM:
 
         Args:
             model_name: HuggingFace model name or local path
-            trust_remote_code: Whether to trust remote code
+            trust_remote_code: Explicit repository-code consent; None uses the process
+                opt-in (disabled by default)
             enable_cache: Enable KV cache for repeated image/video+prompt (default: True)
             cache_size: Maximum cache entries (default: 50)
             spec_decode: Only explicit "none" permits destructive projection fusion.
@@ -1674,10 +1682,21 @@ class MLXMultimodalLM:
             _, trust_remote_code = apply_remote_code_policy(
                 {"trust_remote_code": self.trust_remote_code}
             )
+            model_path = _resolve_checkpoint(self.model_name)
             self.config = load_config(
-                self.model_name,
+                model_path,
                 **({} if trust_remote_code else {"trust_remote_code": False}),
             )
+            from ..utils.model_file_guard import (
+                validate_local_model_file,
+                validate_model_code,
+            )
+
+            if not isinstance(self.config, dict):
+                raise ValueError("Model config must contain an object")
+            validate_model_code(self.config, trust_remote_code=trust_remote_code)
+            if self.config.get("model_file"):
+                validate_local_model_file(model_path)
             if (
                 isinstance(self.config, dict)
                 and self.config.get("model_type") == "minicpmv4_7"
@@ -1699,16 +1718,16 @@ class MLXMultimodalLM:
             ):
                 from .prism_hadamard_qwen35 import load as load_prism
 
-                self.model, self.processor = load_prism(self.model_name, self.config)
+                self.model, self.processor = load_prism(model_path, self.config)
                 # Prompt helpers use the base architecture; never rewrite the pack.
                 self.config = {**self.config, "model_type": "qwen3_5"}
             elif trust_remote_code:
                 # Preserve mlx-vlm's historical call shape (and compatibility
                 # with older versions/wrappers) unless the operator opts out.
-                self.model, self.processor = load(self.model_name)
+                self.model, self.processor = load(model_path)
             else:
                 self.model, self.processor = load(
-                    self.model_name,
+                    model_path,
                     trust_remote_code=False,
                 )
 

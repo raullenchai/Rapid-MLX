@@ -118,6 +118,7 @@ def test_shared_loader_validates_before_dispatch(
         )[1],
     )
     monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda model_name: None)
+    monkeypatch.setattr(tokenizer, "validate_model_config_file", lambda name: {})
     monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda model_name: None)
 
     assert tokenizer.load_model_with_fallback("local-model") is expected
@@ -154,3 +155,97 @@ def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
     assert result[:2] == expected
     assert result[2] == str(snapshot)
     assert loaded == [str(snapshot)]
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("remote", [False, True])
+def test_model_file_cannot_execute_without_consent(tmp_path, monkeypatch, lazy, remote):
+    from rapid_mlx.utils import tokenizer
+
+    root = _model_dir(tmp_path, "model.py")
+    marker = tmp_path / "executed"
+    (root / "model.py").write_text(f"open({str(marker)!r}, 'w').write('executed')")
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda name: root)
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        tokenizer.load_model_with_fallback(
+            "org/repo" if remote else str(root), lazy=lazy
+        )
+    assert not marker.exists()
+
+
+def test_checked_model_file_requires_consent_before_loader(tmp_path, monkeypatch):
+    from rapid_mlx.model_load_errors import load_model_checked
+
+    root = _model_dir(tmp_path, "model.py")
+    (root / "model.py").write_text("# reviewed custom code")
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    calls = []
+
+    def loader(path, **kwargs):
+        calls.append(path)
+        return object(), {}
+
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        load_model_checked(loader, root)
+    assert not calls
+    load_model_checked(loader, root, trust_remote_code=True)
+    assert calls == [root]
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        load_model_checked(loader, root, trust_remote_code=True)
+
+
+def test_reviewed_runtime_overlay_ignores_repository_model_file(tmp_path, monkeypatch):
+    from rapid_mlx.model_load_errors import load_model_checked
+
+    root = _model_dir(tmp_path, "does-not-exist.py")
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    result = load_model_checked(
+        lambda path, **kwargs: ("safe", kwargs["model_config"]),
+        root,
+        model_config={"model_file": None, "auto_map": None},
+    )
+    assert result == ("safe", {"model_file": None, "auto_map": None})
+
+
+def test_hub_snapshot_accepts_same_repository_blob(tmp_path, monkeypatch):
+    import huggingface_hub.constants
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+    repo = tmp_path / "models--org--model"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents=True)
+    blobs = repo / "blobs"
+    blobs.mkdir()
+    (blobs / "hash").write_text("# custom model")
+    (snapshot / "config.json").write_text('{"model_file":"model.py"}')
+    (snapshot / "model.py").symlink_to(blobs / "hash")
+    validate_local_model_file(snapshot)
+
+
+def test_vlm_policy_pins_snapshot_and_blocks_code(tmp_path, monkeypatch):
+    import mlx_vlm
+    import mlx_vlm.utils
+
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+    root = _model_dir(tmp_path, "model.py")
+    (root / "model.py").write_text("# custom model")
+    resolved = []
+    calls = []
+
+    def resolve(name, **kwargs):
+        resolved.append((name, kwargs))
+        return root
+
+    monkeypatch.setattr(mlx_vlm.utils, "get_model_path", resolve)
+    monkeypatch.setattr(mlx_vlm, "load", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        load_vlm_with_policy("org/repo", revision="pinned")
+    assert calls == []
+    load_vlm_with_policy("org/repo", revision="pinned", trust_remote_code=True)
+    assert calls == [((str(root),), {"trust_remote_code": True})]
+    assert resolved == [("org/repo", {"revision": "pinned"})] * 2

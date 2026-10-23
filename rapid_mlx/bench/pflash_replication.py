@@ -37,15 +37,13 @@ def _build_engine(model_name: str, *, pflash_mode: str, keep_ratio: float):
     """Construct an AsyncEngineCore configured with the requested
     PFlash mode. Heavy imports stay lazy so ``--help`` does not load
     MLX."""
-    from mlx_lm import load
 
     from ..engine_core import AsyncEngineCore, EngineConfig
     from ..pflash import PFlashConfig
     from ..scheduler import SchedulerConfig
-    from ..utils.model_file_guard import validate_local_model_file
+    from ..utils.tokenizer import load_model_with_fallback
 
-    validate_local_model_file(model_name)
-    model, tokenizer = load(model_name)
+    model, tokenizer = load_model_with_fallback(model_name)
     scheduler_config = SchedulerConfig(
         pflash_config=PFlashConfig(
             mode=pflash_mode,

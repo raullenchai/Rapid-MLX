@@ -189,6 +189,7 @@ def test_mllm_routes_only_darwin_glm_and_preserves_remote_code_policy(
 
         return stop
 
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(
         glm5_next_runtime, "install_glm5_next_runtime_fix", lambda: None

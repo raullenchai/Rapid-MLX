@@ -241,14 +241,20 @@ def test_mllm_installs_binding_before_load(
             assert not modules["mlx_vlm.prompt_utils"].MODEL_CONFIG
         return model, processor
 
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
     modules["mlx_vlm.utils"].load_config = load_config
     modules["mlx_vlm"].load = load
     wrapper = mllm.MLXMultimodalLM(
         "local-checkpoint", trust_remote_code=trust_remote_code, enable_cache=False
     )
-    wrapper.load()
-    wrapper.load()
     options = {} if trust_remote_code else {"trust_remote_code": False}
+    if kind in {"none", "object"}:
+        with pytest.raises(ValueError, match="Model config must contain an object"):
+            wrapper.load()
+        assert calls == [("config", "local-checkpoint", options)]
+        return
+    wrapper.load()
+    wrapper.load()
     assert calls == [
         ("config", "local-checkpoint", options),
         ("model", "local-checkpoint", options),

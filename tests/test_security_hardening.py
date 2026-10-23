@@ -20,13 +20,13 @@ def isolated_host_snapshot(monkeypatch):
     monkeypatch.setattr(browser_security, "_configured_hosts", None)
 
 
-def test_remote_code_policy_preserves_historical_unset_default(monkeypatch):
+def test_remote_code_policy_requires_opt_in(monkeypatch):
     from rapid_mlx.utils.tokenizer import apply_remote_code_policy
 
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     config, enabled = apply_remote_code_policy(None)
-    assert config is None
-    assert enabled is True
+    assert config == {"trust_remote_code": False}
+    assert enabled is False
 
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
@@ -48,6 +48,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
 
     from rapid_mlx.models import mllm as mllm_mod
 
+    monkeypatch.setattr(mllm_mod, "_resolve_checkpoint", lambda name: name)
     calls = {}
     model = SimpleNamespace(config=SimpleNamespace())
     processor = SimpleNamespace(tokenizer=SimpleNamespace())
@@ -202,3 +203,55 @@ def test_installer_pins_reviewed_python_artifact_digest():
         'download "https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD}/SHA256SUMS"'
         not in installer
     )
+
+
+@pytest.mark.parametrize(
+    "value,requested,expected",
+    [
+        (None, None, False),
+        ("1", None, True),
+        (None, True, True),
+        ("1", False, False),
+        ("0", True, False),
+        ("garbage", None, False),
+        (None, "false", False),
+    ],
+)
+def test_remote_code_explicit_consent(monkeypatch, value, requested, expected):
+    from rapid_mlx.utils.tokenizer import apply_remote_code_policy
+
+    if value is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", value)
+    config, enabled = apply_remote_code_policy({"trust_remote_code": requested})
+    assert enabled is expected
+    assert config["trust_remote_code"] is expected
+
+
+def test_tokenizer_auto_map_cannot_execute_by_default(tmp_path, monkeypatch):
+    import json
+
+    from transformers import AutoTokenizer
+
+    from rapid_mlx.utils.tokenizer import apply_remote_code_policy
+
+    marker = tmp_path / "executed"
+    (tmp_path / "tokenization_custom.py").write_text(
+        f"open({str(marker)!r}, 'w').write('executed')\n"
+    )
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "tokenizer_class": "CustomTokenizer",
+                "auto_map": {
+                    "AutoTokenizer": ["tokenization_custom.CustomTokenizer", None]
+                },
+            }
+        )
+    )
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    config, _ = apply_remote_code_policy(None)
+    with pytest.raises(ValueError):
+        AutoTokenizer.from_pretrained(tmp_path, local_files_only=True, **config)
+    assert not marker.exists()

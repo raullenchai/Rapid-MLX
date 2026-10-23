@@ -55,7 +55,7 @@ def test_loader_routes_puzzle_config_to_vendored_path(tmp_path, monkeypatch):
     expected = (object(), object())
     seen = []
 
-    def _fake_vendor_loader(model_name, *, enable_dspark=False):
+    def _fake_vendor_loader(model_name, *, enable_dspark=False, trust_remote_code=None):
         # ``enable_dspark`` mirrors the real ``_load_with_tokenizer_fallback``
         # signature (#1379); the vendored-arch route must forward it.
         seen.append(model_name)

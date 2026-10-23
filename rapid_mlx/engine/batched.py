@@ -1147,7 +1147,7 @@ class BatchedEngine(BaseEngine):
     def __init__(
         self,
         model_name: str,
-        trust_remote_code: bool = True,
+        trust_remote_code: bool | None = None,
         scheduler_config: Any | None = None,
         stream_interval: int = 1,
         force_mllm: bool = False,
@@ -1171,7 +1171,8 @@ class BatchedEngine(BaseEngine):
 
         Args:
             model_name: HuggingFace model name or local path
-            trust_remote_code: Whether to trust remote code
+            trust_remote_code: Explicit repository-code consent; None uses the process
+                opt-in (disabled by default)
             scheduler_config: Optional scheduler configuration
             stream_interval: Tokens to batch before streaming (1=every token)
             force_mllm: Force loading as MLLM even if not auto-detected
