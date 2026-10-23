@@ -21,10 +21,9 @@ An explicit API `False` denies execution even when the environment enables it;
 
 Permission does not disable path containment. `model_file` must name a Python
 file inside the model directory, with support for ordinary Hugging Face snapshot
-links into that repository's cache blobs. Entire cache repositories symlinked to
-another storage tier may still be rejected by the conservative containment
-check. Do not bypass this by weakening the default policy; use a reviewed local
-checkpoint layout if custom code is necessary.
+links into that repository's cache blobs. Configured cache repository entries may themselves be symlinked to another
+storage tier; these retain same-repository blob containment. Arbitrary local
+folders cannot gain that exception by imitating the cache layout.
 
 Repository-code permission is not a sandbox: permitted code executes with the
 server process's privileges. The default denial is enforced before upstream

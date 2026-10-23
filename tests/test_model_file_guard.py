@@ -266,3 +266,29 @@ def test_checked_model_file_validates_effective_overlay(tmp_path, monkeypatch):
             trust_remote_code=True,
             model_config={"model_file": "../outside.py"},
         )
+
+
+@pytest.mark.parametrize('subfolder', ['', 'quantized'])
+def test_configured_cache_repository_on_external_tier(tmp_path, monkeypatch, subfolder):
+    import huggingface_hub.constants as constants
+
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    external = tmp_path / 'cold' / 'stored-repository'
+    snapshot = external / 'snapshots' / ('a' * 40)
+    model = snapshot / subfolder
+    model.mkdir(parents=True)
+    blobs = external / 'blobs'
+    blobs.mkdir()
+    code = blobs / 'content-hash'
+    code.write_text('# reviewed custom architecture')
+    (model / 'config.json').write_text('{"model_file":"model.py"}')
+    (model / 'model.py').symlink_to(code)
+    entry = cache / 'models--org--model'
+    entry.symlink_to(external, target_is_directory=True)
+    monkeypatch.setattr(constants, 'HF_HUB_CACHE', str(cache))
+    validate_local_model_file(entry / 'snapshots' / ('a' * 40) / subfolder)
+    # The exception requires the configured cache entry, not its unregistered
+    # cold-storage pathname or a lookalike directory outside the cache.
+    with pytest.raises(ValueError, match='must stay inside'):
+        validate_local_model_file(model)

@@ -77,14 +77,24 @@ def validate_local_model_file(
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache_root = Path(HF_HUB_CACHE).resolve()
-        repository = model_root.parent.parent
-        contained = (
-            ".." not in relative_path.parts
-            and model_root.parent.name == "snapshots"
-            and repository.parent == cache_root
-            and repository.name.startswith("models--")
-            and custom_model_path.parent == (repository / "blobs").resolve()
-        )
+        # Preserve the lexical cache entry while resolving storage-tier links.
+        # A configured cache repository may itself point to a cold-storage disk.
+        # Only cache-owned entries gain this exception, never arbitrary folders
+        # that merely imitate the Hub directory names.
+        lexical_root = supplied_root.absolute()
+        for candidate in (lexical_root, *lexical_root.parents):
+            if candidate.parent.name != "snapshots":
+                continue
+            repository = candidate.parent.parent
+            if (
+                ".." not in relative_path.parts
+                and repository.parent.resolve() == cache_root
+                and repository.name.startswith("models--")
+                and model_root.is_relative_to(candidate.resolve())
+                and custom_model_path.parent == (repository / "blobs").resolve()
+            ):
+                contained = True
+                break
     if not contained or not custom_model_path.is_file():
         raise ValueError(
             "Local model config model_file must stay inside the model directory "
