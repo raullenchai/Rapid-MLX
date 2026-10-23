@@ -610,10 +610,10 @@ class TestVoiceDesignRoute:
         # Route did not fabricate an instruct; engine-layer fallback owns it.
         assert call["instruct"] is None
 
-    def test_end_to_end_fallback_reaches_model(self, monkeypatch):
-        """The whole stack: route → REAL ``TTSEngine.generate`` → model. Only
-        the mlx_audio model boundary is faked (a mandatory-``instruct`` model),
-        so a no-``instructions`` VoiceDesign request must still succeed AND the
+    def test_end_to_end_fallback_reaches_model(self, monkeypatch, tmp_path):
+        """The whole stack: route → REAL ``TTSEngine.generate`` → model.
+        Snapshot resolution and the native model boundary are faked, so a
+        no-``instructions`` VoiceDesign request must still succeed AND the
         model must actually receive the neutral-narrator fallback. Unlike the
         stub-engine tests, this fails if the production fallback is removed."""
         from fastapi import FastAPI
@@ -628,8 +628,20 @@ class TestVoiceDesignRoute:
         # Fake the mlx_audio.tts.generate.load_model boundary to return a
         # mandatory-instruct VoiceDesign model (no weights, no network).
         captured = _VoiceDesignModel()
+        resolved = []
+
+        def snapshot(model_name, *, allow_patterns):
+            assert "*.pth" in allow_patterns
+            resolved.append(model_name)
+            return str(tmp_path)
+
+        def load_model(path):
+            assert path == tmp_path
+            return captured
+
+        monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", snapshot)
         fake_gen = types.ModuleType("mlx_audio.tts.generate")
-        fake_gen.load_model = lambda _name: captured
+        fake_gen.load_model = load_model
         _install_fake_mlx_audio(monkeypatch)
         monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", fake_gen)
         monkeypatch.setattr(probe_mod, "require_mlx_audio_tts", lambda: None)
@@ -648,6 +660,7 @@ class TestVoiceDesignRoute:
             json={"model": "qwen3-tts-voicedesign", "input": "你好世界。"},
         )
         assert resp.status_code == 200, resp.text
+        assert resolved == [VOICEDESIGN_BF16]
         (call,) = captured.calls
         assert call["instruct"] == tts_mod.QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
         assert call["lang_code"] == "auto"
