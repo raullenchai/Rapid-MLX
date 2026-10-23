@@ -424,12 +424,14 @@ def _command(
     if name == "aider":
         return quote(str(root / "bin" / "aider-launch"))
     if name == "qwen-code":
+        # Safe mode suppresses customizations while retaining built-in file
+        # creation. Bare mode omits write_file from the declared tool set.
         saved_port = quote(str(port_path()))
         base = f'"http://127.0.0.1:$(cat {saved_port})/v1"'
         return (
             f"QWEN_HOME={quote(str(root))} QWEN_RUNTIME_DIR={quote(str(root / 'runtime'))} "
             f'OPENAI_API_KEY="$(cat {key})" OPENAI_BASE_URL={base} '
-            f"OPENAI_MODEL={quote(model)} qwen --bare --auth-type openai "
+            f"OPENAI_MODEL={quote(model)} qwen --safe-mode --auth-type openai "
             f"--model {quote(model)} --openai-base-url {base}"
         )
     if name == "claude-code":

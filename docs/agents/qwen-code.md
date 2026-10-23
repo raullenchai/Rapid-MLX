@@ -10,6 +10,20 @@ Verified via wire smoke against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-2
 agent matrix (`tests/integrations/test_agents_matrix.py::TestQwenCode`). See
 the [support matrix](matrix.md) for the current per-family status.
 
+## Isolated launch
+
+`rapid-mlx launch qwen-code --model qwen3.5-4b-8bit` uses `--safe-mode`
+with an explicit local endpoint, authentication type, and model. This suppresses
+customizations while retaining built-in file creation and shell tools. It does
+not automatically approve their execution. Personal settings remain untouched;
+sessions and runtime state live in the private launch profile.
+
+The previous `--bare` launch mode omitted `write_file` from the tool registry in
+client 0.26.0. A model could still emit that name, causing the server to reject
+the undeclared call and return only its introductory prose. Safe mode makes the
+tool available without weakening server-side tool-name authorization. See the
+upstream [mode and tool-schema documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/).
+
 ## How Qwen Code reaches rapid-mlx
 
 | Item | Value |

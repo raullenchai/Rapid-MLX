@@ -1589,8 +1589,9 @@ def test_qwen_runner_reads_current_port_after_saved_port_moves(
     assert capture.read_text() == "http://127.0.0.1:7661/v1"
 
 
+@pytest.mark.parametrize("model", ("qwen3.5-4b-8bit", "qwen3.5-9b-4bit"))
 def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
-    private_home, monkeypatch
+    private_home, monkeypatch, model
 ):
     settings = private_home / ".qwen/settings.json"
     settings.parent.mkdir()
@@ -1623,13 +1624,17 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
     monkeypatch.setenv("TEST_QWEN_HOME_CAPTURE", str(home_capture))
     monkeypatch.setenv("TEST_QWEN_RUNTIME_CAPTURE", str(runtime_capture))
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
-        isolated.configure("qwen-code", "qwen3.5-9b-4bit", port=7660)
+        isolated.configure("qwen-code", model, port=7660)
     runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
     subprocess.run([shutil.which("zsh") or "/bin/bash", str(runner)], check=True)
     args = capture.read_text().splitlines()
-    assert "--bare" in args
+    assert "--safe-mode" in args
+    assert "--bare" not in args
+    assert "--yolo" not in args
+    assert "--approval-mode" not in args
+    assert "--allowed-tools" not in args
     assert args[args.index("--auth-type") + 1] == "openai"
-    assert args[args.index("--model") + 1] == "qwen3.5-9b-4bit"
+    assert args[args.index("--model") + 1] == model
     assert args[args.index("--openai-base-url") + 1] == "http://127.0.0.1:7660/v1"
     assert home_capture.read_text() == str(
         isolated.connection_dir() / "agents" / "qwen-code"
