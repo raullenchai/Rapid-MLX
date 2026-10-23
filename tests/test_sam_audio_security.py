@@ -116,6 +116,7 @@ def test_safe_t5_tensors_and_builtin_tokenizer_remain_supported(
 
     (tmp_path / "config.json").write_text(json.dumps(asdict(config)))
     model = T5Encoder(config)
+    model.shared.weight = mx.full((config.vocab_size, config.d_model), 0.375)
     mx.save_safetensors(
         str(tmp_path / "model.safetensors"), dict(tree_flatten(model.parameters()))
     )
@@ -142,6 +143,7 @@ def test_safe_t5_tensors_and_builtin_tokenizer_remain_supported(
     )
     loaded, tokenizer = _load_t5(str(tmp_path))
     assert isinstance(loaded, T5Encoder)
+    assert mx.array_equal(loaded.shared.weight, model.shared.weight).item()
     assert tokenizer == "tokenizer"
     assert calls == [
         ((str(tmp_path),), {"trust_remote_code": False, "local_files_only": True})
