@@ -31,6 +31,17 @@ def inventory_digest(cost):
     ).hexdigest()
 
 
+class AllocationRollbackError(OSError):
+    """Publication failed and one or more best-effort cleanup operations failed."""
+
+    def __init__(self, failures):
+        self.failures = tuple(failures)
+        super().__init__(
+            "allocation publication failed; rollback incomplete: "
+            + "; ".join(str(error) for error in failures)
+        )
+
+
 def publish_allocations(outputs):
     """Stage a validated set before no-clobber publication; roll back on failure.
 
@@ -54,23 +65,37 @@ def publish_allocations(outputs):
                 handle.flush()
                 os.fsync(handle.fileno())
         for temporary, path in staged:
+            identity = temporary.stat()
             os.link(temporary, path)
-            published.append((temporary, path))
-        for parent in {path.parent for _, path in published}:
+            published.append((path, (identity.st_dev, identity.st_ino)))
+        for temporary, _ in staged:
+            temporary.unlink()
+        for parent in {path.parent for _, path in staged}:
             fsync_directory(parent)
-    except BaseException:
-        for temporary, path in published:
+    except BaseException as publication_error:
+        failures = []
+        for path, identity in published:
             try:
-                if path.samefile(temporary):
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == identity:
                     path.unlink()
             except FileNotFoundError:
                 pass
-        for parent in {path.parent for _, path in published}:
-            fsync_directory(parent)
-        raise
-    finally:
+            except OSError as error:
+                failures.append(error)
         for temporary, _ in staged:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as error:
+                failures.append(error)
+        for parent in {path.parent for _, path in staged}:
+            try:
+                fsync_directory(parent)
+            except OSError as error:
+                failures.append(error)
+        if failures:
+            raise AllocationRollbackError(failures) from publication_error
+        raise
 
 
 def validate_legacy_inventory(source, cost, config_hash, error_metadata):

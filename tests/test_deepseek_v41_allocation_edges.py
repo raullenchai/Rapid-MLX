@@ -589,3 +589,71 @@ def test_publication_syncs_directory_on_success_and_rollback(tmp_path, monkeypat
         alloc.publish_allocations([(first, {"a": 1}), (second, {"b": 2})])
     assert synced == [tmp_path, tmp_path]
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["unlink", "directory_sync", "temporary"])
+def test_allocation_rollback_attempts_every_cleanup(tmp_path, monkeypatch, failure):
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    first, second, third = (
+        roots[0] / "one.json",
+        roots[1] / "two.json",
+        roots[1] / "three.json",
+    )
+    original_link = alloc.os.link
+    original_unlink = Path.unlink
+    sync_calls = []
+    failed_temporary = []
+
+    def link(source, destination):
+        if destination == third:
+            raise OSError("publication failure")
+        original_link(source, destination)
+
+    def unlink(path, *args, **kwargs):
+        if failure == "unlink" and path == first:
+            raise OSError("unlink failure")
+        if failure == "temporary" and path.name.startswith("tmp"):
+            failed_temporary.append(path)
+            raise OSError("temporary cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    def sync(path):
+        sync_calls.append(path)
+        if failure == "directory_sync":
+            raise OSError("directory sync failure")
+
+    monkeypatch.setattr(alloc.os, "link", link)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(alloc, "fsync_directory", sync)
+    with pytest.raises(
+        alloc.AllocationRollbackError, match="rollback incomplete"
+    ) as caught:
+        alloc.publish_allocations([(first, {}), (second, {}), (third, {})])
+    assert str(caught.value.__cause__) == "publication failure"
+    assert len(caught.value.failures) >= 1
+    assert set(sync_calls) == set(roots)
+    assert not second.exists() and not third.exists()
+    assert first.exists() == (failure == "unlink")
+    if failure == "temporary":
+        assert len(failed_temporary) == 3
+
+
+def test_temporary_cleanup_failure_rolls_back_published_output(tmp_path, monkeypatch):
+    output = tmp_path / "out.json"
+    original = Path.unlink
+    calls = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal calls
+        if path.name.startswith("tmp"):
+            calls += 1
+            if calls == 1:
+                raise OSError("temporary unlink failed")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_once)
+    with pytest.raises(OSError, match="temporary unlink failed"):
+        alloc.publish_allocations([(output, {})])
+    assert not list(tmp_path.iterdir())
