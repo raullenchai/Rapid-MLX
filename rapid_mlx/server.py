@@ -4209,8 +4209,9 @@ def main():
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
     args = parser.parse_args()
-    from .server_exposure import validate_server_exposure
+    from .server_exposure import normalize_bind_host, validate_server_exposure
 
+    args.host = normalize_bind_host(args.host)
     try:
         validate_server_exposure(
             host=args.host,

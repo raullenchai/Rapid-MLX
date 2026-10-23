@@ -47,3 +47,17 @@ def test_module_parser_exposes_consent():
         .parse_args(["--allow-unauthenticated-public"])
         .allow_unauthenticated_public
     )
+
+
+def test_localhost_normalization_never_resolves_dns(monkeypatch):
+    from rapid_mlx.server_exposure import normalize_bind_host
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("localhost must not consult DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    for host in ("localhost", "LOCALHOST"):
+        assert normalize_bind_host(host) == "127.0.0.1"
+        validate_server_exposure(host=normalize_bind_host(host), api_key=None)
+    assert normalize_bind_host("::1") == "::1"
+    assert normalize_bind_host("public.example") == "public.example"
