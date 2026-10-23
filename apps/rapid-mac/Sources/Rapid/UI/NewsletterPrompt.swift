@@ -28,9 +28,11 @@ struct NewsletterPromptCard: View {
                         openURL(NewsletterLink.url)
                         prompt.completeNewsletter()
                     }
+                    .accessibilityIdentifier("Newsletter.ValueMoment.Subscribe")
                     .buttonStyle(RapidPrimaryButtonStyle(expands: true, height: RapidTheme.ControlHeight.medium,
                                                          font: .rapid(size: 14, weight: .medium)))
                     Button("Not now") { prompt.completeNewsletter() }
+                        .accessibilityIdentifier("Newsletter.ValueMoment.Dismiss")
                         .buttonStyle(RapidSecondaryButtonStyle(expands: true, height: RapidTheme.ControlHeight.medium,
                                                                font: .rapid(size: 14, weight: .medium)))
                 }
