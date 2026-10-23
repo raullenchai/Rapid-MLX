@@ -1820,17 +1820,19 @@ def test_runtime_generation_failure_is_http_500_without_ar_fallback() -> None:
 
 
 @pytest.mark.requires_mlx
-def test_runtime_refuses_target_checkpoint_code(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected", ["target", "drafter"])
+def test_runtime_refuses_target_checkpoint_code(tmp_path, monkeypatch, selected):
     import mlx_vlm
 
     from rapid_mlx.spec_decode.dspark import runtime
     from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
 
     target, draft = _write_configs(tmp_path)
-    config = json.loads((target / "config.json").read_text())
+    checkpoint = target if selected == "target" else draft
+    config = json.loads((checkpoint / "config.json").read_text())
     config["model_file"] = "custom.py"
-    (target / "config.json").write_text(json.dumps(config))
-    (target / "custom.py").write_text('raise AssertionError("must not import")')
+    (checkpoint / "config.json").write_text(json.dumps(config))
+    (checkpoint / "custom.py").write_text('raise AssertionError("must not import")')
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
     monkeypatch.setattr(mlx_vlm, "load", lambda *a, **k: pytest.fail("unchecked load"))

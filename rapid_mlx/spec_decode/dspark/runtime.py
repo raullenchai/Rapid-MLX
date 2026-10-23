@@ -8,7 +8,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from .artifacts import CompanionDSparkArtifacts
-from .eligibility import CompanionDSparkPair, validate_companion_artifacts
+from .eligibility import CompanionDSparkPair, _read_config, validate_companion_artifacts
 
 QUALIFIED_MLX_VLM_VERSION = "0.7.2"
 
@@ -63,8 +63,18 @@ def load_runtime(
         validate_drafter_compatibility,
     )
 
-    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy as load
+    from rapid_mlx.utils.model_file_guard import (
+        load_vlm_with_policy as load,
+    )
+    from rapid_mlx.utils.model_file_guard import (
+        validate_local_model_file,
+        validate_model_code,
+    )
 
+    # The companion uses the qualified upstream drafter registry. Inspect its
+    # local snapshot too, before either model can execute checkpoint Python.
+    validate_model_code(_read_config(artifacts.drafter_path))
+    validate_local_model_file(artifacts.drafter_path)
     model, processor = load(artifacts.target_path)
     drafter, kind = load_drafter(artifacts.drafter_path, kind=None)
     if kind != "dflash":
