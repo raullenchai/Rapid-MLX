@@ -8,6 +8,7 @@ Encode structured tool declaration to typescript style string.
 import dataclasses
 import json
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -257,9 +258,7 @@ class _ParameterTypeEnum(_BaseType):
                     raise ValueError(f"Enum value {val} is not a boolean")
 
     def to_typescript_style(self, indent: str = "") -> str:
-        return " | ".join(
-            [f'"{e}"' if isinstance(e, str) else str(e) for e in self.enum]
-        )
+        return " | ".join(json.dumps(e) for e in self.enum)
 
 
 class _ParameterTypeAnyOf(_BaseType):
@@ -366,9 +365,14 @@ class _Parameter:
             )
             comments += f"{indent}// Default: {default_repr}\n"
 
+        name = (
+            self.name
+            if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", self.name)
+            else json.dumps(self.name)
+        )
         return (
             comments
-            + f"{indent}{self.name}{'?' if self.optional else ''}: {self.type.to_typescript_style(indent=indent)}"
+            + f"{indent}{name}{'?' if self.optional else ''}: {self.type.to_typescript_style(indent=indent)}"
         )
 
 

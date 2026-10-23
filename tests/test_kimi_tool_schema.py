@@ -23,7 +23,9 @@ from rapid_mlx.utils.kimi_tokenizer import tool_declaration_ts as schema
         ),
         ({"enum": ["one", 2]}, '"one" | 2'),
         ({"type": ["string"], "enum": ["one"]}, '"one"'),
-        ({"type": ["null", "string"], "enum": [None, "one"]}, 'None | "one"'),
+        ({"type": ["null", "string"], "enum": [None, "one"]}, 'null | "one"'),
+        ({"enum": [None, True, False, 1, 1.5]}, "null | true | false | 1 | 1.5"),
+        ({"enum": ['a"b', "a\\b", "a\nb"]}, r'"a\"b" | "a\\b" | "a\nb"'),
         ({"type": "object", "additionalProperties": True}, "{\n  [k: string]: any\n}"),
         (
             {"type": "object", "additionalProperties": False},
@@ -55,6 +57,25 @@ def test_schema_rendering(value, expected):
 def test_invalid_schemas_fail(value):
     with pytest.raises(ValueError):
         schema._parse_parameter_type(value).to_typescript_style()
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("user_id", "user_id"),
+        ("$value2", "$value2"),
+        ("user-id", '"user-id"'),
+        ("postal code", '"postal code"'),
+        ('a"b', r'"a\"b"'),
+        ("a\\b", r'"a\\b"'),
+        ("a\nb", r'"a\nb"'),
+    ],
+)
+def test_object_property_names_are_typescript_literals(name, expected):
+    rendered = schema._parse_parameter_type(
+        {"type": "object", "properties": {name: {"type": "string"}}}
+    ).to_typescript_style()
+    assert rendered == "{\n  " + expected + "?: string\n}"
 
 
 def test_registry_and_recursive_function():

@@ -23,7 +23,7 @@ Native MLX `kimi_k25` handles model architecture. This adapter preserves the
 upstream thinking defaults, tool declarations, and special-token behavior.
 
 Local deviations also include Ruff formatting, explicit optional/container/return
-types and indexed token lookup. Reviewed packaged SHA256 values:
+types, indexed token lookup, and JSON-safe enum literals and property names. Reviewed packaged SHA256 values:
 
 - `tokenization.py`: `a1e79c8652393ad06c92d5a2e53fc90d87ddc6768fd06d5ab2a20df253a4a89d`
-- `tool_declaration_ts.py`: `fefa602eba382758873622271972f252b48d5e8382652094d929cf953446ace8`
+- `tool_declaration_ts.py`: `c098080f17f2bc9f4a9c5df845b926a767b245f3d06d313f21e993623237607c`
