@@ -923,6 +923,7 @@ def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch)
                 {"size": True},
                 {"size": -1},
                 {"sha256": None},
+                {"git_oid": _oid(WEIGHTS)},
                 {"sha256": "x" * 64},
                 {"sha256": "a" * 63},
             ]

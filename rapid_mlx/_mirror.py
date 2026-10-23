@@ -565,6 +565,7 @@ def _revision_manifest_info(base: str, repo_id: str, revision: str):
             or name in names
             or type(size) is not int
             or size < 0
+            or (sha is not None and oid is not None)
             or not isinstance(digest, str)
             or len(digest) != length
             or any(c not in "0123456789abcdef" for c in digest)
