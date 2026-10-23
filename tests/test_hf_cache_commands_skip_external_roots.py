@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from rapid_mlx import cli, model_aliases
+from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
 
 ALIAS = "deepseek-r1-8b-4bit"
 REPO = "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit"
@@ -66,7 +67,7 @@ def test_serve_still_uses_external_folder(external_model, monkeypatch):
 def test_pull_downloads_hub_repo_not_external_folder(
     external_model, monkeypatch, tmp_path, capsys
 ):
-    revision = "abc123" * 6
+    revision = "a" * 40
     repo_root = tmp_path / "hub" / f"models--{REPO.replace('/', '--')}"
     (repo_root / "refs").mkdir(parents=True)
     (repo_root / "refs" / "main").write_text(revision)
@@ -77,7 +78,7 @@ def test_pull_downloads_hub_repo_not_external_folder(
     def _download(*args, **kwargs):
         downloads.append(kwargs.get("repo_id", args[0] if args else None))
         (repo_root / "blobs" / "cafe").write_bytes(b"\x00" * 2048)
-        return str(repo_root / "snapshots" / revision)
+        return str(snapshot_tree(repo_root, revision))
 
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "pull", ALIAS])
     with (
