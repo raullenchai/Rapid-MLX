@@ -46,6 +46,31 @@ def current_rejected_tool_calls() -> list[dict[str, str]] | None:
     return list(records.values()) if records else None
 
 
+def _annotate_terminal_event(event, records):
+    # Preserve non-JSON/custom frames and arbitrary legal StreamingResponse
+    # payload types; only complete completion-chunk objects carry diagnostics.
+    if not records or not isinstance(event, (str, bytes)):
+        return event
+    try:
+        text = event.decode("utf-8") if isinstance(event, bytes) else event
+        if not text.startswith("data: {"):
+            return event
+        payload = json.loads(text[6:])
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return event
+    if payload.get("object") != "chat.completion.chunk":
+        return event
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not any(
+        isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str)
+        for choice in choices
+    ):
+        return event
+    payload["rejected_tool_calls"] = list(records.values())
+    text = "data: " + json.dumps(payload) + "\n\n"
+    return text.encode("utf-8") if isinstance(event, bytes) else text
+
+
 async def _observe_stream(iterator, records):
     """Keep parser context across awaits, but never across a yield to the caller."""
     try:
@@ -57,18 +82,11 @@ async def _observe_stream(iterator, records):
                 break
             finally:
                 _rejections.reset(token)
-            # Route SSE generators emit complete events. Annotate only terminal
-            # completion chunks, preserving normal deltas, usage, errors and DONE.
-            text = event.decode("utf-8") if isinstance(event, bytes) else event
-            if records and text.startswith("data: {"):
-                payload = json.loads(text[6:])
-                if any(c.get("finish_reason") for c in payload.get("choices", [])):
-                    payload["rejected_tool_calls"] = list(records.values())
-                    text = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
-                    event = text.encode("utf-8") if isinstance(event, bytes) else text
-            yield event
+            yield _annotate_terminal_event(event, records)
     finally:
-        await iterator.aclose()
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 def observe_tool_rejections(handler):

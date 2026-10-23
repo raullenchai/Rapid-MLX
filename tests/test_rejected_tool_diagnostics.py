@@ -140,7 +140,7 @@ def test_http_diagnostics_never_become_executable(
         )
         assert body["choices"][0]["finish_reason"] == "stop"
     else:
-        assert not body.get("rejected_tool_calls")
+        assert "rejected_tool_calls" not in body
         assert diagnostics.rejected_tool_calls_total() == before
 
 
@@ -371,7 +371,7 @@ async def test_stream_bytes_and_error_frames_keep_their_wire_type():
         diagnostics.record_rejected_tool_call("bad", "raw")
         for event in [
             b'data: {"error":"failed"}\n\n',
-            b'data: {"choices":[{"finish_reason":"stop"}]}\n\n',
+            b'data: {"object":"chat.completion.chunk","choices":[{"finish_reason":"stop"}]}\n\n',
             b"data: [DONE]\n\n",
         ]:
             yield event
@@ -404,3 +404,49 @@ def test_optional_sdk_accepts_diagnostic_extension(client, stream):
                 sdk.ChatCompletionChunk.model_validate(json.loads(line[6:]))
     else:
         sdk.ChatCompletion.model_validate(response.json())
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "data: {not json}\n\n",
+        b'data: {"value":"\xff"}\n\n',
+        "event: custom\ndata: {}\n\n",
+        'data: {"custom":true}\n\n',
+        'data: {"object":"chat.completion.chunk","choices":null}\n\n',
+        'data: {"object":"chat.completion.chunk","choices":[null,{}]}\n\n',
+        memoryview(b"custom"),
+    ],
+)
+def test_custom_frames_pass_through_unchanged(frame):
+    assert (
+        diagnostics._annotate_terminal_event(frame, {"key": {"name": "bad"}}) is frame
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_iterator_without_aclose_preserves_completion_and_errors():
+    class Events:
+        def __init__(self, fail):
+            self.started = False
+            self.fail = fail
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.started:
+                if self.fail:
+                    raise RuntimeError("original stream error")
+                raise StopAsyncIteration
+            self.started = True
+            diagnostics.record_rejected_tool_call("bad", "raw")
+            return "data: [DONE]\n\n"
+
+    assert [x async for x in diagnostics._observe_stream(Events(False), {})] == [
+        "data: [DONE]\n\n"
+    ]
+    with pytest.raises(RuntimeError, match="original stream error"):
+        async for _ in diagnostics._observe_stream(Events(True), {}):
+            pass
+    assert diagnostics._rejections.get() is None
