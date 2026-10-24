@@ -141,12 +141,14 @@ def _build(root, source, c, *, interrupt=False, length=17):
             guard,
             token_map=list(range(32)),
         )
-        if interrupt:
-            import subprocess
-            import sys
+        # Give uninterrupted and restarted conversions the same fresh-process
+        # numerical environment. The surrounding suite can initialize array
+        # runtime state differently; only the restart should differ here.
+        import subprocess
+        import sys
 
-            driver = root / "restart.py"
-            driver.write_text("""import json, os, sys
+        driver = root / "restart.py"
+        driver.write_text("""import json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd()))
 from scripts.deepseek_v41_gptq import MemoryGuard, run_layer
@@ -164,24 +166,22 @@ with MemoryGuard(c) as guard:
     if sys.argv[5] == 'crash':
         os._exit(77)
 """)
-            args = [
-                sys.executable,
-                str(driver),
-                str(parts),
-                str(scratch),
-                str(root.parent / "source"),
-            ]
+        args = [
+            sys.executable,
+            str(driver),
+            str(parts),
+            str(scratch),
+            str(root.parent / "source"),
+        ]
+        if interrupt:
             killed = subprocess.run(
                 [*args, "1", "crash"], capture_output=True, timeout=120
             )
             assert killed.returncode == 77, killed.stderr.decode()
-            resumed = subprocess.run(
-                [*args, "3", "finish"], capture_output=True, timeout=120
-            )
-            assert resumed.returncode == 0, resumed.stderr.decode()
-        else:
-            for layer in range(4):
-                run_layer(source, c, parts, scratch, layer, guard)
+        resumed = subprocess.run(
+            [*args, "3", "finish"], capture_output=True, timeout=120
+        )
+        assert resumed.returncode == 0, resumed.stderr.decode()
         assemble(source, c, parts, root / "build", guard)
     return parts, scratch, root / "build"
 
@@ -218,7 +218,13 @@ def test_streamed_build_resume_native_load_and_finite_logits(
     b, _, resumed = _build(tmp_path / "b", source, c, interrupt=True, length=length)
     for path in build.rglob("*"):
         if path.is_file():
-            assert path.read_bytes() == (resumed / path.relative_to(build)).read_bytes()
+            from hashlib import sha256
+
+            relative = path.relative_to(build)
+            assert (
+                sha256(path.read_bytes()).hexdigest()
+                == sha256((resumed / relative).read_bytes()).hexdigest()
+            ), str(relative)
     assert json.loads((scratch / "checkpoint.json").read_text())["next_layer"] == 4
     final = load_state(scratch / "boundary-4" / "window-0")
     assert len(final["selections"]) == (length + prefill_chunk - 1) // prefill_chunk
