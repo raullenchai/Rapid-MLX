@@ -116,7 +116,7 @@ and other macOS packages (including photo libraries, frameworks, Xcode projects,
 and localization bundles), binary files, and symlinks are skipped. System locations `/System`, `/Library`, `/usr`, `/bin`, `/sbin`, `/private`,
 `/dev`, `/cores`, `/opt`, `/Network`, and `/Volumes`, plus every user's
 `/Users/*/Library` and the current user's `~/Library`, are excluded by resolved
-absolute path while walking a broader root such as Whole Mac or home. An
+absolute path while walking a broader root such as home. An
 explicitly selected root inside an excluded location is accepted and indexed,
 including iCloud Drive under `~/Library/Mobile Documents`, scratch folders under
 `/private/tmp`, and external volumes. Unreadable
@@ -126,10 +126,13 @@ directory entries once, without traversing/counting their descendants, plus
 skipped files. Chunks target 1200 characters with 180 characters of overlap.
 
 Folder paths must identify existing absolute directories without `..`;
-hidden/secret-looking directories and package bundles remain rejected as roots. `/` is accepted as
-Whole Mac. The desktop Add Folder menu offers Desktop, Documents, Downloads,
-Whole Mac, and a multi-select Choose Folder picker. Whole Mac skips system files
-and app internals; its first indexing can take a long time. The home directory itself
+hidden/secret-looking directories and package bundles remain rejected as roots.
+The filesystem root `/`, system roots listed above, and broad containers
+(`/Users`, `/home`, `/tmp`, `/var`, `/etc`, `/proc`, `/sys`) are rejected with HTTP
+400 after resolving aliases and symlinks. Select a specific subfolder instead.
+Existing unsafe root registrations and their indexed content are removed with a
+warning when the index opens, before indexing resumes. Source files are untouched.
+Explicit subfolders inside excluded locations and the home directory itself
 and folders outside home are supported. Paths resolve before registration; adding
 the same resolved path or a folder inside an existing root returns the covering
 folder (HTTP 200), and the desktop refreshes silently. Shortcuts already covered
@@ -143,9 +146,7 @@ atomically, reuses unchanged content, removes deleted files, and resumes on
 server restart. While the engine is running, a background pass every minute
 queues folders last indexed more than 30 minutes ago, when indexing is idle.
 Opening Local Search also silently requests a rescan of each non-root folder
-last indexed more than 2 minutes ago when none is indexing or queued. The Whole
-Mac root (`/`) is excluded from this on-appear refresh to avoid walking the whole
-disk on every visit. Unchanged
+last indexed more than 2 minutes ago when none is indexing or queued. Unchanged
 files keep their existing rows and embeddings. Reindex remains available for an
 immediate rescan; there is no filesystem watcher in this pilot. Only one folder
 indexes at a time. Removing an active

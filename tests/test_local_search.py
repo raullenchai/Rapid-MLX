@@ -10193,3 +10193,123 @@ def test_index_real_darwin_tmp_symlink():
             assert store.path.is_file()
         finally:
             store.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/",
+        "//",
+        "/.",
+        "///",
+        "/Users",
+        "/System",
+        "/Library",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/private",
+        "/dev",
+        "/cores",
+        "/opt",
+        "/Network",
+        "/Volumes",
+        "/home",
+        "/tmp",
+        "/var",
+        "/etc",
+        "/proc",
+        "/sys",
+    ],
+)
+def test_broad_folder_root_policy(value, monkeypatch):
+    from rapid_mlx.local_search import extraction
+
+    # Restore the system prefix removed by this module's scratch fixture.
+    monkeypatch.setattr(
+        extraction, "SKIP_PREFIXES", (*extraction.SKIP_PREFIXES, Path("/private"))
+    )
+    assert extraction.broad_folder_root(Path(value))
+
+
+@pytest.mark.parametrize("value", ["/", "//", "/.", "///", "/usr/", "/tmp/."])
+@pytest.mark.parametrize("alias", [False, True])
+def test_broad_folder_roots_return_400(tmp_path, value, alias):
+    from rapid_mlx.routes.local_search import router
+
+    if alias:
+        link = tmp_path / "alias"
+        link.symlink_to(value, target_is_directory=True)
+        value = str(link)
+
+    async def scenario():
+        search = engine(tmp_path)
+        app = FastAPI()
+        install_exception_handlers(app)
+        app.include_router(router)
+        app.state.local_search = search
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost"
+            ) as client:
+                response = await client.post(
+                    "/v1/local-search/folders", json={"path": value}
+                )
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "invalid_folder_path"
+            assert "select a specific subfolder" in response.json()["error"]["message"]
+            assert await search.folders() == []
+            assert search.pending == []
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("value", ["/", "//", "/.", "/usr/", "alias"])
+def test_unsafe_persisted_roots_purged_before_resume(tmp_path, caplog, value):
+    root = folder(tmp_path)
+    document = root / "apple.txt"
+    document.write_text("apple safe document")
+    if value == "alias":
+        link = tmp_path / "alias"
+        link.symlink_to("/", target_is_directory=True)
+        value = str(link)
+    store = Store(tmp_path / "index" / "index.sqlite3", "test")
+    # Simulate a database written by a version that accepted filesystem roots.
+    with store.db:
+        store.db.execute(
+            "INSERT INTO folders(id,path,state) VALUES ('unsafe',?,'queued')", (value,)
+        )
+    store.replace(
+        "unsafe",
+        document,
+        document.stat(),
+        "old",
+        [Chunk("private apple", 1, None)],
+        [[1, 0, 0]],
+        "indexed",
+    )
+    store.close()
+
+    async def scenario():
+        search = engine(tmp_path)
+        try:
+            search.start()
+            await search.wait_idle()
+            assert await search.folders() == []
+            assert search.store.rows() == {}
+            assert search.store.vectors == {}
+            assert search.pending == []
+            assert (
+                "Removing unsafe local-search filesystem or system root" in caplog.text
+            )
+            registered, created = await search.add_folder(str(root))
+            await search.wait_idle()
+            assert created
+            assert registered["path"] == str(root.resolve())
+            assert search.store.files(registered["id"])
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())

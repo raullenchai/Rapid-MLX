@@ -280,11 +280,31 @@ def excluded(path: Path, *, directory: bool = False) -> bool:
     )
 
 
+def broad_folder_root(path: Path) -> bool:
+    """Reject system/container roots, while allowing explicitly selected subfolders."""
+    path = path.resolve()
+    roots = (
+        *SKIP_PREFIXES,
+        USERS_DIRECTORY,
+        Path("/home"),
+        Path("/tmp"),
+        Path("/var"),
+        Path("/etc"),
+        Path("/proc"),
+        Path("/sys"),
+    )
+    return path == Path(path.anchor) or any(path == root.resolve() for root in roots)
+
+
 def validate_folder(value: str) -> Path:
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("path must be absolute without '..'")
     path = path.resolve(strict=True)
+    if broad_folder_root(path):
+        raise ValueError(
+            "path is a filesystem or system root; select a specific subfolder"
+        )
     if not path.is_dir():
         raise ValueError("path must be a directory")
     if excluded_location(path, path) or any(

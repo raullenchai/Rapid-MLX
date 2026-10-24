@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -23,6 +24,7 @@ from .extraction import (
     EXTRACTION_VERSION,
     MAX_EMBEDDED_CHUNKS_PER_FILE,
     SKIP_REASONS,
+    broad_folder_root,
     excluded,
     excluded_location,
     file_kind,
@@ -569,6 +571,15 @@ class Store:
         ) = None
         self._keyword_scope: set[int] | None = None
         self._file_count: int | None = None
+        # Purge unsafe legacy roots before exposing rows or resuming discovery.
+        # This also prevents an old '/' entry absorbing newly selected folders.
+        for folder in self.folders():
+            if broad_folder_root(Path(folder["path"])):
+                logging.getLogger(__name__).warning(
+                    "Removing unsafe local-search filesystem or system root: %s",
+                    folder["path"],
+                )
+                self.delete_folder(folder["id"])
         for r in self.db.execute(
             "SELECT id,vector FROM chunks WHERE vector IS NOT NULL ORDER BY id"
         ):
