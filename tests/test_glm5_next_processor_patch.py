@@ -506,6 +506,7 @@ mllm._resolve_checkpoint = lambda name: name
 
 import mlx_vlm
 import mlx_vlm.utils
+mlx_vlm.utils.get_model_path = lambda *args, **kwargs: "."
 mlx_vlm.utils.load_config = lambda *args, **kwargs: {}
 mlx_vlm.load = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stop"))
 
@@ -525,7 +526,7 @@ assert events == ["runtime", "processor", "quant"]
     )
 
 
-def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch) -> None:
+def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch, tmp_path) -> None:
     import mlx_vlm
     import mlx_vlm.utils
 
@@ -561,6 +562,7 @@ def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch) -> None:
         lambda *args, **kwargs: None,
     )
 
+    monkeypatch.setattr(mlx_vlm.utils, "get_model_path", lambda *a, **kw: tmp_path)
     mllm.MLXMultimodalLM("local/glm5-next").load()
 
     assert fused == [model]

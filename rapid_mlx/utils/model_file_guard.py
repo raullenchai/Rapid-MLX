@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from .._env import env_falsey, env_truthy
 
@@ -145,7 +146,7 @@ def resolve_vlm_checkpoint(
 
         return Path(_resolve_subfolder_checkpoint(name))
     subfolder = resolve_subfolder(name)
-    options: dict[str, object] = {"revision": revision}
+    options: dict[str, Any] = {"revision": revision}
     if subfolder is not None:
         options["allow_patterns"] = [f"{subfolder}/*"]
     snapshot = Path(get_model_path(resolve_hub_model(name), **options))

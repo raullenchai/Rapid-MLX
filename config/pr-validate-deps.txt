@@ -4,6 +4,7 @@
 # CI pipeline runs against exactly the declared test dependencies (no ad hoc
 # list). Re-run ``python scripts/render_pr_validate_deps.py`` after changing
 # ``[ci-linux]``; ``--check`` (wired into pr-validate CI) fails on a stale copy.
+tiktoken>=0.5.0
 pytest>=7.0.0
 pytest-xdist>=3.8.0
 pytest-asyncio>=0.21.0

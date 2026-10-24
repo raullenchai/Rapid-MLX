@@ -15,6 +15,7 @@ def load_kimi_processor(model_path):
 
     from ..utils.kimi_tokenizer import load_kimi_tokenizer
     from ..utils.tokenizer import (
+        RAPID_EXTRA_EOS_ATTR,
         _apply_chat_template_sidecar,
         augment_eos_token_ids_from_generation_config,
     )
@@ -45,7 +46,9 @@ def load_kimi_processor(model_path):
     processor = KimiK25Processor(image_processor=image_processor, tokenizer=tokenizer)
     processor.detokenizer = NaiveStreamingDetokenizer(tokenizer)
     tokenizer.stopping_criteria = StoppingCriteria(
-        config.get("eos_token_id"), tokenizer
+        config.get("eos_token_id", config.get("text_config", {}).get("eos_token_id")),
+        tokenizer,
+        additional_eos_token_ids=getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, ()),
     )
     return processor
 

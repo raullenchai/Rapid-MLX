@@ -1749,7 +1749,7 @@ class MLXMultimodalLM:
             model_path = _resolve_checkpoint(self.model_name)
             self.config = load_config(
                 model_path,
-                **({} if trust_remote_code else {"trust_remote_code": False}),
+                trust_remote_code=trust_remote_code,
             )
             from ..utils.model_file_guard import (
                 validate_local_model_file,
@@ -1791,14 +1791,10 @@ class MLXMultimodalLM:
                 from .kimi_vlm import load_kimi_vlm
 
                 self.model, self.processor = load_kimi_vlm(model_path)
-            elif trust_remote_code:
-                # Preserve mlx-vlm's historical call shape (and compatibility
-                # with older versions/wrappers) unless the operator opts out.
-                self.model, self.processor = load(model_path)
             else:
                 self.model, self.processor = load(
                     model_path,
-                    trust_remote_code=False,
+                    trust_remote_code=trust_remote_code,
                 )
 
             config_model_type = (

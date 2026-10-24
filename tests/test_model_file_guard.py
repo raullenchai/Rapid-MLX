@@ -118,6 +118,7 @@ def test_shared_loader_validates_before_dispatch(
         )[1],
     )
     monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda model_name: None)
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda name: name)
     monkeypatch.setattr(tokenizer, "validate_model_config_file", lambda name: {})
     monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda model_name: None)
 
@@ -155,6 +156,63 @@ def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
     assert result[:2] == expected
     assert result[2] == str(snapshot)
     assert loaded == [str(snapshot)]
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("lazy", [False, True])
+def test_text_dispatch_keeps_the_inspected_snapshot_when_remote_reference_moves(
+    monkeypatch, tmp_path, lazy
+):
+    from types import SimpleNamespace
+
+    import mlx_lm
+
+    from rapid_mlx.utils import tokenizer
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "config.json").write_text('{"model_type":"llama"}')
+    (second / "config.json").write_text(
+        '{"model_type":"llama","model_file":"custom.py"}'
+    )
+    remote_resolutions = []
+
+    def resolve(name):
+        if name == "org/moving-model":
+            remote_resolutions.append(name)
+            return first if len(remote_resolutions) == 1 else second
+        return Path(name)
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    monkeypatch.setattr(tokenizer, "_resolve_subfolder_checkpoint", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", resolve)
+    loaded = []
+    expected = (SimpleNamespace(), SimpleNamespace(chat_template="local"))
+
+    def load(name, tokenizer_config=None, **kwargs):
+        loaded.append(name)
+        assert tokenizer_config["trust_remote_code"] is False
+        return expected
+
+    monkeypatch.setattr(mlx_lm, "load", load)
+    monkeypatch.setattr(tokenizer, "_load_model_with_fallback_impl", load)
+    for helper in [
+        "_try_inject_mtp_post_load",
+        "augment_eos_token_ids_from_generation_config",
+        "repair_byte_level_decoder",
+        "_post_load_ubc_evict",
+    ]:
+        monkeypatch.setattr(tokenizer, helper, lambda *args, **kwargs: None)
+    result = tokenizer.load_model_with_fallback(
+        "org/moving-model", lazy=lazy, return_source=True
+    )
+    assert result[:2] == expected
+    assert result[2] == str(first)
+    assert loaded == [str(first)]
+    assert remote_resolutions == ["org/moving-model"]
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -293,3 +351,111 @@ def test_configured_cache_repository_on_external_tier(tmp_path, monkeypatch, sub
     # cold-storage pathname or a lookalike directory outside the cache.
     with pytest.raises(ValueError, match="must stay inside"):
         validate_local_model_file(model)
+
+
+def test_unresolved_checked_model_refuses_loader():
+    from rapid_mlx.model_load_errors import load_model_checked
+
+    with pytest.raises(ValueError, match="Cannot inspect"):
+        load_model_checked(
+            lambda *a, **k: pytest.fail("must not load"), "missing/repository"
+        )
+
+
+@pytest.mark.requires_mlx
+def test_vlm_revision_subfolder_and_invalid_config(tmp_path, monkeypatch):
+    import mlx_vlm.utils
+
+    from rapid_mlx import model_aliases
+    from rapid_mlx.utils import model_file_guard as guard
+    from rapid_mlx.utils import tokenizer
+
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: "a" * 40)
+    with pytest.raises(ValueError, match="conflicting revision"):
+        guard.resolve_vlm_checkpoint("org/repo", revision="b" * 40)
+    monkeypatch.setattr(
+        tokenizer, "_resolve_subfolder_checkpoint", lambda name: str(tmp_path)
+    )
+    assert guard.resolve_vlm_checkpoint("org/repo") == tmp_path
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: None)
+    monkeypatch.setattr(model_aliases, "resolve_subfolder", lambda name: "4bit")
+    calls = []
+    monkeypatch.setattr(
+        mlx_vlm.utils, "get_model_path", lambda name, **kw: calls.append(kw) or tmp_path
+    )
+    assert guard.resolve_vlm_checkpoint("org/repo") == tmp_path / "4bit"
+    assert calls == [{"revision": None, "allow_patterns": ["4bit/*"]}]
+    (tmp_path / "config.json").write_text("[]")
+    with pytest.raises(ValueError, match="must contain an object"):
+        guard.load_vlm_with_policy(tmp_path)
+
+
+def test_unresolved_shared_loader_refuses_dispatch(monkeypatch):
+    from rapid_mlx.utils import tokenizer
+
+    for name in ["_resolve_subfolder_checkpoint", "_local_snapshot_if_cached"]:
+        monkeypatch.setattr(tokenizer, name, lambda value: value)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda name: None)
+    monkeypatch.setattr(tokenizer, "_rapid_owned_model_config", lambda name: None)
+    with pytest.raises(ValueError, match="Cannot inspect"):
+        tokenizer.load_model_with_fallback("missing/repository")
+
+
+@pytest.mark.requires_mlx
+def test_native_glm_requires_installed_gate(tmp_path, monkeypatch):
+    from mlx_lm.models import deepseek_v32
+
+    from rapid_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text('{"model_type":"glm_moe_dsa"}')
+    monkeypatch.setattr(tokenizer, "_install_dsv32_indexer_gate", lambda: None)
+    monkeypatch.setattr(deepseek_v32, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False)
+    with pytest.raises(RuntimeError, match="adapter is unavailable"):
+        tokenizer._uses_rapid_owned_runtime(str(tmp_path))
+
+
+@pytest.mark.requires_mlx
+def test_pflash_uses_checked_loader(tmp_path, monkeypatch):
+    from rapid_mlx import engine_core
+    from rapid_mlx.bench.pflash_replication import _build_engine
+    from rapid_mlx.utils import tokenizer
+
+    calls = []
+    monkeypatch.setattr(
+        tokenizer,
+        "load_model_with_fallback",
+        lambda path: calls.append(path) or ("model", "tokenizer"),
+    )
+    monkeypatch.setattr(engine_core, "AsyncEngineCore", lambda *args: args)
+    model, token, engine = _build_engine(
+        str(tmp_path), pflash_mode="off", keep_ratio=0.5
+    )
+    assert calls == [str(tmp_path)]
+    assert (model, token) == ("model", "tokenizer")
+    assert engine[:2] == (model, token)
+
+
+def test_tokenizer_fallback_preserves_consent(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.utils import tokenizer
+
+    module = ModuleType("mlx_lm")
+    module.load = lambda *a, **k: pytest.fail("high-level load must not run")
+    monkeypatch.setitem(sys.modules, "mlx_lm", module)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(
+        tokenizer, "_neutralize_unbundled_template_types", lambda name, config: config
+    )
+    monkeypatch.setattr(tokenizer, "_needs_tokenizer_fallback", lambda name: True)
+    calls = []
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_with_tokenizer_fallback",
+        lambda name, **kw: calls.append(kw) or ("model", "tokenizer"),
+    )
+    assert tokenizer._load_model_with_fallback_impl(
+        "local", {"trust_remote_code": False}
+    ) == ("model", "tokenizer")
+    assert calls == [{"enable_dspark": False, "trust_remote_code": False}]

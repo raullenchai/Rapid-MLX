@@ -53,6 +53,60 @@ def test_special_tokens_and_skip(tokenizer):
     assert tokenizer.encode("[BOS]", allow_special_tokens=False) == list(b"[BOS]")
 
 
+def test_base_tokenizer_positional_and_paired_contracts(tokenizer):
+    assert tokenizer.decode(tokenizer.encode("left", "right", False)) == "leftright"
+    assert tokenizer.encode(
+        "left", text_pair="right", add_special_tokens=False
+    ) == list(b"leftright")
+    assert tokenizer.encode([97, 98], [99], False) == [97, 98, 99]
+    ids = tokenizer.encode("[BOS]hello[EOS]")
+    assert tokenizer.decode(ids, True) == "hello"
+    assert tokenizer.decode(ids, False, False) == "[BOS]hello[EOS]"
+    assert (
+        tokenizer.decode(
+            tokenizer.encode("[BOS]", "[EOS]", False, allow_special_tokens=False), True
+        )
+        == "[BOS][EOS]"
+    )
+    assert tokenizer.encode([97], [98], allow_special_tokens=False) == [97, 98]
+
+
+def test_decode_normalizes_numpy_inputs(tokenizer):
+    import numpy as np
+
+    assert tokenizer.decode(np.array([97, 98], dtype=np.int64)) == "ab"
+    assert tokenizer.decode(np.array(97, dtype=np.int64)) == "a"
+    assert tokenizer.decode(np.int64(97)) == "a"
+
+
+def test_constructor_requires_local_vocabulary(tmp_path):
+    from rapid_mlx.utils.kimi_tokenizer.tokenization import TikTokenTokenizer
+
+    with pytest.raises(ValueError, match="local tiktoken.model"):
+        TikTokenTokenizer(str(tmp_path / "missing"))
+
+
+@pytest.mark.parametrize("value", [None, 42, ["text"]])
+def test_raw_tokenizer_rejects_non_text_explicitly(tokenizer, value):
+    with pytest.raises(TypeError, match="must be a string"):
+        tokenizer._encode_text(value)
+
+
+@pytest.mark.parametrize("boundary", [25_000, 400_000])
+@pytest.mark.parametrize("padding", ["x", " "])
+def test_special_tokens_survive_long_text_chunk_boundaries(
+    tokenizer, boundary, padding
+):
+    marker = "<|im_end|>"
+    text = padding * (boundary - 5) + marker + "tail"
+    tokens = tokenizer.encode(text)
+    assert tokens.count(tokenizer.special_tokens[marker]) == 1
+    assert tokenizer.decode(tokens) == text
+    ordinary = tokenizer.encode(text, allow_special_tokens=False)
+    assert tokenizer.special_tokens[marker] not in ordinary
+    assert tokenizer.decode(ordinary) == text
+
+
 @pytest.mark.parametrize(
     "thinking,suffix", [(True, "<think>"), (False, "<think></think>")]
 )
@@ -96,9 +150,8 @@ def test_tool_schema_rendering_and_thinking_history(tokenizer):
     result = tokenizer.apply_chat_template(
         [{"role": "user", "content": "Weather?"}], tools=tools, thinking=False
     )
-    assert result.startswith(
-        "<|im_system|>tool_declare<|im_middle|># Tools\n\n## functions\nnamespace functions {\n// Weather\ntype weather = (_: {\n  city: string\n}) => any;\n}\n<|im_end|>"
-    )
+    declaration = result.split("<|im_middle|>", 1)[1].split("<|im_end|>", 1)[0]
+    assert json.loads(declaration) == tools
     conversation = [
         {"role": "user", "content": "One"},
         {"role": "assistant", "content": "Answer", "reasoning_content": "Reason"},
@@ -108,6 +161,55 @@ def test_tool_schema_rendering_and_thinking_history(tokenizer):
     assert "Reason" in tokenizer.apply_chat_template(
         conversation, preserve_thinking=True
     )
+
+
+@pytest.mark.parametrize(
+    "name", ["weather", "get-weather", "default", 'a"\\b\nc', "天気"]
+)
+@pytest.mark.parametrize("tokenize", [False, True])
+def test_json_tool_format_preserves_complete_schemas(tokenizer, name, tokenize):
+    # Shared and nested definitions, escaped JSON Pointers, recursive roots,
+    # closed objects and scalar enums remain data.
+    schema = {
+        "type": "object",
+        "$defs": {
+            "a/b~c": {
+                "type": "object",
+                "$defs": {"Nested": {"type": "string"}},
+                "properties": {"value": {"$ref": "#/$defs/Nested"}},
+            }
+        },
+        "properties": {
+            "child": {"$ref": "#"},
+            "postal code": {"$ref": "#/$defs/a~1b~0c"},
+            "user-id": {"enum": [None, True, False, 1, 1.5, 'a"\\b\nc']},
+        },
+        "required": ["user-id"],
+        "additionalProperties": False,
+    }
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": "first\rsecond\u2028third\u2029fourth",
+                "parameters": schema,
+            },
+        }
+        for tool_name in [name, "second-tool"]
+    ]
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "Hi"}],
+        tools=tools,
+        tokenize=tokenize,
+        return_dict=False,
+        tools_ts_str="must not replace the JSON schema",
+    )
+    if tokenize:
+        rendered = tokenizer.decode(rendered)
+    declaration = rendered.split("<|im_middle|>", 1)[1].split("<|im_end|>", 1)[0]
+    assert json.loads(declaration) == tools
+    assert rendered.endswith("<think>")
 
 
 def test_vocab_refuses_url_and_invalid_ranks(tmp_path):
@@ -143,38 +245,14 @@ def test_real_pinned_vocabulary_offline_if_cached():
 def test_reviewed_source_provenance():
     root = Path(__file__).parents[1] / "rapid_mlx/utils/kimi_tokenizer"
     for filename, expected in {
-        "tokenization.py": "2ab1ffb6f5c4380758bd8d9752ff1041c09024182676a4311528fbdf92fb9599",
-        "tool_declaration_ts.py": "97e09ed262f1cd38f87584eaa46c5d4d5b3c9725dd299b21642f389040794ebc",
+        "tokenization.py": "21bfbe6f53235954c1cc17db42aa5a5de86004943fb3dffb20afc818bd656781",
     }.items():
-        source = (root / filename).read_text().split("\n", 3)[3]
-        if filename == "tokenization.py":
-            source = source.replace(
-                "from .vocabulary import load_local_bpe",
-                "from tiktoken.load import load_tiktoken_bpe",
-            ).replace("load_local_bpe(vocab_file)", "load_tiktoken_bpe(vocab_file)")
-        # Explicit type-only deviations must still reconstruct exact upstream bytes.
-        type_changes = {
-            "additional_special_tokens: List[str] = None,": "additional_special_tokens: Optional[List[str]] = None,",
-            "self._token_config_cache = OrderedDict()": "self._token_config_cache: OrderedDict[str, Any] = OrderedDict()",
-            "return super().encode(text, **kwargs)": "return cast(List[int], super().encode(text, **kwargs))",
-            "all_substrs = []": "all_substrs: List[str] = []",
-            "return super().decode(token_ids, **kwargs)": "return cast(str, super().decode(token_ids, **kwargs))",
-            "return self.model.decode(cast(List[int], token_ids))": "return cast(str, self.model.decode(cast(List[int], token_ids)))",
-            "def _convert_id_to_token(self, index: int) -> str:": "def _convert_id_to_token(self, index: int) -> Optional[str]:",
-        }
-        if filename == "tool_declaration_ts.py":
-            type_changes = {
-                "self.definitions = {}": "self.definitions: dict[str, dict[str, Any]] = {}"
-            }
-        for original, annotated in type_changes.items():
-            assert annotated in source
-            source = source.replace(annotated, original)
-        assert hashlib.sha256(source.encode()).hexdigest() == expected
+        assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected
 
 
+@pytest.mark.requires_mlx
 @pytest.mark.parametrize("trust", [None, "0"])
 @pytest.mark.parametrize("lazy", [False, True])
-@pytest.mark.requires_mlx
 def test_public_loader_uses_native_model_and_data_tokenizer(
     tokenizer, monkeypatch, trust, lazy
 ):
@@ -259,3 +337,66 @@ def test_tiny_native_kimi_model_executes_with_owned_tokenizer(tokenizer, monkeyp
     inputs = mx.array([loaded.encode("hello")])
     assert model(inputs).shape == (1, 5, 512)
     assert loaded.decode(inputs[0].tolist()) == "hello"
+
+
+def test_tokenizer_utility_contract(tokenizer, tmp_path):
+    from rapid_mlx.utils.kimi_tokenizer.tokenization import TikTokenTokenizer
+
+    token = tokenizer.encode("a")[0]
+    assert tokenizer.decode(token) == "a"
+    assert tokenizer.vocab_size == 512
+    assert tokenizer.clean_up_tokenization(" a ") == " a "
+    target = tmp_path / "saved"
+    target.mkdir()
+    (saved,) = tokenizer.save_vocabulary(str(target), filename_prefix="copy")
+    assert Path(saved).read_bytes() == Path(tokenizer.vocab_file).read_bytes()
+    assert tokenizer.save_vocabulary(str(Path(tokenizer.vocab_file).parent)) == (
+        tokenizer.vocab_file,
+    )
+    with pytest.raises(ValueError, match="directory"):
+        tokenizer.save_vocabulary(str(target / "missing"))
+    assert "Hi" in tokenizer.apply_chat_template(
+        [{"role": "user", "content": "Hi"}],
+        tools=[{"type": "function", "function": {"name": "bad"}}],
+    )
+    # Default special-token construction remains usable for supported vocabularies.
+    kwargs = {
+        "bos_token": "<|reserved_token_256|>",
+        "eos_token": "<|reserved_token_257|>",
+        "pad_token": "<|reserved_token_258|>",
+        "unk_token": "<|reserved_token_259|>",
+    }
+    native = TikTokenTokenizer(tokenizer.vocab_file, added_tokens_decoder={}, **kwargs)
+    assert native.decode(native.encode("hello")) == "hello"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        [],
+        {"tokenizer_class": "Unknown"},
+        {
+            "tokenizer_class": "TikTokenTokenizer",
+            "added_tokens_decoder": {"1": {"content": 2}},
+        },
+    ],
+)
+def test_invalid_tokenizer_configuration(tmp_path, config):
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError):
+        load_kimi_tokenizer(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "content,message",
+    [
+        (b"\nYQ== 1\n", "contiguous"),
+        (b"YQ== 0\n", "every byte"),
+        (b"YQ== -1\n", "duplicate"),
+    ],
+)
+def test_invalid_vocabulary_data(tmp_path, content, message):
+    path = tmp_path / "tiktoken.model"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match=message):
+        load_local_bpe(path)

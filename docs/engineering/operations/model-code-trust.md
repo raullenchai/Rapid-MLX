@@ -34,3 +34,11 @@ be passed to the loader.
 For compatibility recovery, first use a supported built-in adapter or explicitly
 authorize a reviewed model. Do not restore globally permissive defaults.
 Vector owns model compatibility follow-up; Atlas owns release integration.
+
+Supported GLM and Kimi checkpoints use installed model implementations. Kimi's
+packaged tokenizer reads local vocabulary, token configuration and chat-template
+data, preserving text, vision, tools and thinking without checkpoint Python.
+Tool declarations use the pinned template's JSON format, preserving callable
+names and complete schemas without TypeScript conversion. Its source identity,
+reviewed local changes and packaged SHA-256 are recorded in
+`rapid_mlx/utils/kimi_tokenizer/PROVENANCE.md`.

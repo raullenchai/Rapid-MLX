@@ -398,6 +398,7 @@ test = [
 # pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
 # then adds test-only packages required by automatically discovered modules.
 ci-linux = [
+    "tiktoken>=0.5.0",
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
@@ -760,9 +761,6 @@ exclude = [
     # the repository-wide Python gate should not mechanically rewrite them.
     "*.md",
     "rapid_mlx/models/deepseek_v4*.py",
-    # Kimi provenance reconstructs exact upstream bytes plus type-only patches.
-    "rapid_mlx/utils/kimi_tokenizer/tokenization.py",
-    "rapid_mlx/utils/kimi_tokenizer/tool_declaration_ts.py",
     "rapid_mlx/models/gemma4_vendored/*.py",
     "rapid_mlx/models/mlx_vlm_vendored/*.py",
     "rapid_mlx/models/hy_v3.py",

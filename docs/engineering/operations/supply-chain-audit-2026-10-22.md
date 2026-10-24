@@ -13,7 +13,7 @@ included in this work.
 | F-01 MLLM repository Python | Resolve and inspect the exact snapshot before the shared VLM loader; separate code consent from path containment | Main and auxiliary model loaders have refusal tests; built-in overlays remain supported |
 | F-02 text repository Python | Explicit consent independent of cache symlink layout; local paths inspected too | Cache blob links are supported after consent; external model roots retain precedence |
 | F-03 tokenizer auto-map | Default remote-code denial with explicit process/API policy | Native GLM and reviewed Kimi text/vision adapters preserve shipped compatibility; a pin never implicitly authorizes repository code |
-| F-04 catalog identity | 239 text and 44 audio aliases pinned; 280 repository identities with full file metadata | Existing pins and cached revisions are retained where available; pins establish identity, not model quality |
+| F-04 catalog identity | 241 text and 44 audio aliases pinned; 282 repository identities with full file metadata | Existing pins and cached revisions are retained where available; pins establish identity, not model quality |
 | F-05 installer/update | Remove mutable Git fallback and downloaded shell update; exact commit required for source installs | Stable/versioned package installs and current-environment updates retained |
 | F-06 desktop runtime | Automatic discovery uses bundled runtime; explicit developer override remains deliberate consent | Historical unsigned slim payloads need full-app migration; see desktop-runtime-trust.md |
 | F-07 Python runtime archive | Fixed SHA-256 checked for new and cached build artifacts | Existing validated archive remains reusable |
@@ -186,3 +186,12 @@ The expanded combined selection passed **3,824 tests**, with one existing
 opt-in full-model DFlash skip and zero failures (86 files, 223.76 seconds).
 Repository Ruff lint/format checks passed; the type-error budget did not grow.
 This evidence does not substitute for required GitHub CI or the next review.
+
+After integrating the landed installer, audio, validation and primary-loader
+changes through main `9d2ef9e45`, the expanded regression run passed **4,103**
+tests with the same single opt-in DFlash skip (95 files, 264.23 seconds).
+Upstream Kimi token API, special-token chunking, JSON tool-schema and EOS fixes
+are retained alongside cached-content verification and explicit external-root
+resolution. Final mypy, dependency renderer, wheel/sdist license inclusion and
+vendored provenance checks passed. The catalog now includes main's two reviewed
+Bolt publications without changing their immutable revisions.

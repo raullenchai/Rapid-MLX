@@ -1,6 +1,6 @@
 # Model catalog identity lock
 
-The shipped text catalog (239 aliases) and audio catalog (44 aliases) resolve to
+The shipped text catalog (241 aliases) and audio catalog (44 aliases) resolve to
 immutable Hugging Face commit IDs. `rapid_mlx/model_catalog_lock.json` records 279
 repository identities including auxiliary audio models, Whisper processors,
 Kokoro voices, and existing image/video runtime assets. Existing explicit image,

@@ -212,8 +212,12 @@ from unittest import mock
 # -> utils.tokenizer.load_model_with_fallback -> mlx_lm.load) does, not
 # about what this test script calls directly.
 from pathlib import Path
-import tempfile
+from tempfile import TemporaryDirectory
 import json
+
+checkpoint_directory = TemporaryDirectory()
+checkpoint = Path(checkpoint_directory.name)
+(checkpoint / "config.json").write_text(json.dumps({"model_type": %(model_type)r}))
 
 import rapid_mlx.utils.tokenizer  # noqa: F401
 import rapid_mlx.cli as cli
@@ -248,7 +252,6 @@ mlx_lm.load = _fake_mlx_lm_load
 %(install_patch)s
 
 with (
-    tempfile.TemporaryDirectory(prefix="rapid-mlx-diskstream-") as checkpoint_dir,
     mock.patch.object(cli, "_check_disk_space", lambda *a, **k: None),
     mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
     mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
@@ -257,7 +260,7 @@ with (
         # A real Path, not a bare str: _apply_chat_template_sidecar (now
         # reached from the lazy branch too) does `model_path / "..."`,
         # which raises TypeError for a str left-operand.
-        lambda name: Path(checkpoint_dir),
+        lambda name: checkpoint,
     ),
     # The lazy branch now also runs _try_inject_mtp_post_load (which
     # re-resolves the checkpoint via mlx_lm.utils._download, a real Hub
@@ -298,7 +301,6 @@ with (
     import io
     import contextlib
 
-    (Path(checkpoint_dir) / "config.json").write_text(json.dumps({"model_type": %(model_type)r}))
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
@@ -353,7 +355,7 @@ def test_disk_stream_install_fires_on_real_bench_load_path():
     if model_type != "lfm2_moe":
         print(f"FAIL: unexpected model_type {model_type!r}")
         sys.exit(1)
-    if checkpoint_path != checkpoint_dir:
+    if checkpoint_path != str(checkpoint):
         print(f"FAIL: unexpected checkpoint_path {checkpoint_path!r}")
         sys.exit(1)
     if cache_gb != 1.0:
@@ -391,8 +393,12 @@ import contextlib
 import io
 import sys
 from pathlib import Path
-import tempfile
+from tempfile import TemporaryDirectory
 import json
+
+checkpoint_directory = TemporaryDirectory()
+checkpoint = Path(checkpoint_directory.name)
+(checkpoint / "config.json").write_text('{"model_type":"qwen2_moe"}')
 from unittest import mock
 
 # Import the real serve-path modules FIRST — never `disk_stream_patch`
@@ -470,7 +476,6 @@ def _fake_run_uvicorn(app, args, log_level):
 
 
 with (
-    tempfile.TemporaryDirectory(prefix="rapid-mlx-diskstream-") as checkpoint_dir,
     mock.patch.object(cli, "_check_disk_space", lambda *a, **k: None),
     mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
     mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
@@ -500,7 +505,7 @@ with (
         "rapid_mlx.utils.tokenizer._resolve_model_path",
         # A real Path, not a bare str — see the bench test's identical
         # comment: _apply_chat_template_sidecar does `model_path / "..."`.
-        lambda name: Path(checkpoint_dir),
+        lambda name: checkpoint,
     ),
     # Same as the bench test: stub the two lazy-path post-load fixups
     # that hit the network by design, so this fake ``does-not-exist/...``
@@ -530,7 +535,6 @@ with (
     # repo's size) — same reasoning as the bench test's identical stub.
     mock.patch.object(sys.stdin, "isatty", return_value=False),
 ):
-    (Path(checkpoint_dir) / "config.json").write_text(json.dumps({"model_type": "qwen2_moe"}))
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
@@ -547,7 +551,7 @@ model_type, checkpoint_path, cache_gb = calls[0]
 if model_type != "qwen2_moe":
     print(f"FAIL: unexpected model_type {model_type!r}")
     sys.exit(1)
-if checkpoint_path != checkpoint_dir:
+if checkpoint_path != str(checkpoint):
     print(f"FAIL: unexpected checkpoint_path {checkpoint_path!r}")
     sys.exit(1)
 if cache_gb != 1.0:
@@ -694,8 +698,8 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch, tmp_path
     fake_model = SimpleNamespace()
     fake_tokenizer = SimpleNamespace(chat_template=None)
     model_name = "mlx-community/fake-qwen2-moe-checkpoint-4bit"
+    (tmp_path / "config.json").write_text('{"model_type":"qwen2_moe"}')
     resolved_name = str(tmp_path)
-    (tmp_path / "config.json").write_text('{"model_type": "qwen2_moe"}')
 
     def _fake_mlx_lm_load(path_or_hf_repo, tokenizer_config=None, **kwargs):
         order.append("mlx_lm.load")
