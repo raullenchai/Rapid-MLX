@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -510,15 +511,45 @@ def rename_directory_exclusive(source, destination):
 
 
 @contextmanager
+def cleanup_after_exit(root):
+    """A separate process reclaims only this private root, even after _exit.
+
+    EOF is the lifetime signal; no polling or PID reuse is involved. The helper
+    has its own session so terminating a conversion process group still cleans
+    its unpublished assembly. Committed/restart artifacts are outside this root.
+    """
+    code = (
+        "import shutil,sys; print('ready',flush=True); "
+        "sys.stdin.buffer.read(); shutil.rmtree(sys.argv[1],ignore_errors=True)"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", code, str(root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    ) as cleanup:
+        if cleanup.stdout.readline() != b"ready\n":
+            raise RuntimeError("assembly cleanup helper failed to start")
+        try:
+            yield
+        finally:
+            cleanup.stdin.close()
+
+
+@contextmanager
 def atomic_destination(destination):
     """Keep incomplete assemblies private and remove them after a failed attempt."""
     destination = Path(destination)
     if os.path.lexists(destination):
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        dir=destination.parent, prefix=f".{destination.name}.partial-"
-    ) as root:
+    with (
+        tempfile.TemporaryDirectory(
+            dir=destination.parent, prefix=f".{destination.name}.partial-"
+        ) as root,
+        cleanup_after_exit(root),
+    ):
         stage = Path(root) / "output"
         yield stage
         # Include reports and other metadata copied outside the shard writer.

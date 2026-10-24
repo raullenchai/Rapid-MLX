@@ -546,12 +546,19 @@ def test_batched_gptq_real_expert_shape_metal(bits):
 def test_batched_expert_memory_budget(monkeypatch):
     from types import SimpleNamespace
 
+    import psutil
+
     from scripts.deepseek_v41_gptq_batched import expert_batch_size
 
     args = SimpleNamespace(dim=5120, moe_inter_dim=2304, n_routed_experts=256)
+    # This sizing test allocates no model and must not depend on runner free RAM.
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=64e9)
+    )
+    monkeypatch.setenv("RAPID_MLX_GPTQ_FACTOR_WORKERS", "4")
     monkeypatch.setenv("RAPID_MLX_GPTQ_WORKING_GB", "48")
     monkeypatch.setenv("RAPID_MLX_GPTQ_EXPERT_BATCH", "4")
-    assert 1 <= expert_batch_size(args, dict(memory_limit_gb=26)) <= 4
+    assert expert_batch_size(args, dict(memory_limit_gb=26)) == 3
     monkeypatch.setenv("RAPID_MLX_GPTQ_EXPERT_BATCH", "0")
     with pytest.raises(ValueError, match="invalid GPTQ"):
         expert_batch_size(args, dict(memory_limit_gb=26))

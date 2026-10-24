@@ -704,3 +704,59 @@ def test_artifact_symlink_cannot_escape_parts(tmp_path, monkeypatch):
     monkeypatch.setattr(io, "file_hash", lambda _: pytest.fail("outside artifact read"))
     with pytest.raises(ValueError, match="escapes parts"):
         io.verify_artifact(parts, {"files": {"layer.bin": "hash"}})
+
+
+@pytest.mark.parametrize("termination", ["watchdog", "process_group"])
+def test_atomic_assembly_cleans_after_abrupt_exit(tmp_path, termination):
+    import subprocess
+    import time
+
+    from scripts.deepseek_v41_gptq_io import atomic_destination
+
+    target = tmp_path / "assembled"
+    retained = tmp_path / "checkpoint.json"
+    retained.write_text("committed boundary")
+    code = """import os,signal,sys
+from pathlib import Path
+from scripts.deepseek_v41_gptq_io import atomic_destination
+with atomic_destination(Path(sys.argv[1])) as stage:
+    stage.mkdir()
+    (stage / "payload").write_bytes(b"unpublished")
+    if sys.argv[2] == "watchdog":
+        os._exit(86)
+    os.killpg(os.getpgrp(), signal.SIGTERM)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(target), termination],
+        start_new_session=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == (86 if termination == "watchdog" else -15)
+    deadline = time.monotonic() + 10
+    while list(tmp_path.glob(".assembled.partial-*")) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not list(tmp_path.glob(".assembled.partial-*"))
+    assert not target.exists()
+    assert retained.read_text() == "committed boundary"
+    with atomic_destination(target) as stage:
+        stage.mkdir()
+        (stage / "payload").write_bytes(b"complete")
+    assert (target / "payload").read_bytes() == b"complete"
+
+
+def test_atomic_assembly_rejects_failed_cleanup_helper(tmp_path, monkeypatch):
+    import io
+
+    from scripts import deepseek_v41_gptq_io as storage
+
+    helper = SimpleNamespace(stdout=io.BytesIO(b""))
+    monkeypatch.setattr(
+        storage.subprocess, "Popen", lambda *a, **k: nullcontext(helper)
+    )
+    with (
+        pytest.raises(RuntimeError, match="cleanup helper"),
+        storage.atomic_destination(tmp_path / "assembled"),
+    ):
+        pytest.fail("must not start writing without cleanup supervision")
+    assert not list(tmp_path.iterdir())
