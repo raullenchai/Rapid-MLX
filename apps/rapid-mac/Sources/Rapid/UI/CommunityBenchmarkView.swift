@@ -1984,7 +1984,7 @@ struct CommunityBenchmarkView: View {
         } else {
             CommunityUnavailableBand(
                 title: String(localized: "No benchmark models available"),
-                message: errorMessage ?? String(localized: "No benchmark models available")
+                message: errorMessage ?? String(localized: "The runtime returned no models available for benchmarking.")
             )
         }
     }
