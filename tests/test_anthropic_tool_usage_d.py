@@ -1017,3 +1017,49 @@ def test_empty_stream_still_emits_message_start():
     events = _parse_sse(response.text)
     assert events[0]["type"] == "message_start"
     assert events[-1]["type"] == "message_stop"
+
+
+@pytest.mark.parametrize("cached_tokens", [0, 20])
+def test_stream_waits_for_usage_after_synthetic_prefix(monkeypatch, cached_tokens):
+    """A forced-prefix chunk has no usage; subsequent prefill owns the count."""
+
+    class PrefixEngine(_ToolStreamingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            yield SimpleNamespace(new_text="Prefix ", prompt_tokens=0, cached_tokens=0)
+            async for chunk in super().stream_chat(messages, **kwargs):
+                yield chunk
+
+    monkeypatch.setattr(
+        "rapid_mlx.routes.anthropic._estimate_anthropic_prompt_tokens",
+        lambda *args, **kwargs: 79,
+    )
+    client = _make_client(
+        PrefixEngine(
+            ["OK", "!"], engine_prompt_tokens=39, engine_cached_tokens=cached_tokens
+        )
+    )
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 8,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hi"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert events[0]["type"] == "message_start"
+    start = events[0]["message"]["usage"]
+    final = next(e["usage"] for e in reversed(events) if e["type"] == "message_delta")
+    assert start["input_tokens"] == final["input_tokens"] == 39 - cached_tokens
+    assert start.get("cache_read_input_tokens", 0) == cached_tokens
+    assert final.get("cache_read_input_tokens", 0) == cached_tokens
+    assert (
+        "".join(
+            e["delta"]["text"]
+            for e in events
+            if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        )
+        == "Prefix OK!"
+    )

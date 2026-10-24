@@ -2091,6 +2091,7 @@ async def _stream_anthropic_messages(
         initial_prompt_tokens_estimate = 0
 
     # Build the envelope now; emit after the first engine chunk supplies usage.
+    initial_usage = {"input_tokens": initial_prompt_tokens_estimate, "output_tokens": 0}
     message_start = {
         "type": "message_start",
         "message": {
@@ -2101,10 +2102,7 @@ async def _stream_anthropic_messages(
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {
-                "input_tokens": initial_prompt_tokens_estimate,
-                "output_tokens": 0,
-            },
+            "usage": initial_usage,
         },
     }
     message_started = False
@@ -2390,7 +2388,24 @@ async def _stream_anthropic_messages(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    async for output in _generation_stream:
+
+    async def _usage_ready_stream():
+        # Forced-prefix chunks can precede real engine usage. Hold them until
+        # prefill accounting arrives, then replay without losing content.
+        nonlocal prompt_tokens, cached_tokens
+        pending = []
+        async for chunk in _generation_stream:
+            pending.append(chunk)
+            if getattr(chunk, "prompt_tokens", 0):
+                prompt_tokens = chunk.prompt_tokens
+                cached_tokens = getattr(chunk, "cached_tokens", 0) or 0
+                break
+        for chunk in pending:
+            yield chunk
+        async for chunk in _generation_stream:
+            yield chunk
+
+    async for output in _usage_ready_stream():
         delta_text = output.new_text
 
         if hasattr(output, "prompt_tokens") and output.prompt_tokens:
@@ -2403,13 +2418,9 @@ async def _stream_anthropic_messages(
             # The engine counts the actual rendered prompt and knows cache hits.
             # A separate estimate can include template overhead absent from it.
             initial_cached_tokens = min(cached_tokens, prompt_tokens)
-            message_start["message"]["usage"]["input_tokens"] = (
-                prompt_tokens - initial_cached_tokens
-            )
+            initial_usage["input_tokens"] = prompt_tokens - initial_cached_tokens
             if initial_cached_tokens:
-                message_start["message"]["usage"]["cache_read_input_tokens"] = (
-                    initial_cached_tokens
-                )
+                initial_usage["cache_read_input_tokens"] = initial_cached_tokens
             yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
             message_started = True
         # H-03: latch the matched stop string from whichever chunk
