@@ -332,3 +332,99 @@ this scoped optimization, not broader cache redesign.
 Raw captures use the `value1-4459-paired-` prefix; the harness, fixed-source
 driver, analysis, coverage and host-observation receipts are preserved with
 them. No remote branch or unrelated workload was modified by the experiment.
+
+## Long-document current-main A/B (2026-10-24)
+
+**Disposition: BLOCKED; retain draft.** The requested workload shows a clear
+user benefit, so closing it as having no measurable gain would discard useful
+work. It does not meet the required identical-output/no-regression decision
+rule. No exact-head validator, MERGE-SAFE, readiness or merge is claimed.
+
+Baseline is main `ccc630179f57c8a8dec15327fa70b7a87394216a`; candidate runtime is
+`5863e624e09fff4fb6f5196b1a03fe30a7a4b708`. The branch rebased cleanly. Its old
+commits were consolidated to remove machine-local author/committer addresses;
+the complete candidate Git tree is unchanged from the measured checkout:
+`6e671e2f4d13a8c994674d2e95134dc74c652bc8`. Later changes are evidence only.
+The baseline was an archive of that fixed main commit, not a moving reference.
+Main history, release notes and related merged cache PRs were checked; the
+restored-boundary retention mechanism remains unique.
+
+Hardware: M3 Ultra, 256 GiB, macOS 26.5.2. Python 3.12.14, MLX 0.32.4,
+mlx-lm 0.31.3, Transformers 5.15.1 and httpx 0.28.1 are identical in both arms.
+The already-cached Qwen3.6-35B-A3B-4bit snapshot is the same immutable revision
+listed above. No weights were downloaded. Each owned loopback server ran on
+port 8736 under the large-model lock and was terminated before the next arm.
+The lock was released after the baseline pressure arm when a harness port
+probe rejected the just-closed socket; the probe was corrected to allow socket
+reuse, and the remaining arms reacquired the lock after another job finished.
+No measured request was retried or discarded.
+
+Use the HTTP workload and document generation in Reproduction above, with port
+8736. Each arm runs seeds 9201–9204: seed A/B, solo A/B, then barrier-release
+A/B/C/D (submission order ABCD for 9201/9204, CDAB for 9202/9203). Each rendered
+prompt contains 32,752 tokens. Arm order is baseline 2 GiB, candidate 2 GiB,
+candidate 4 GiB, baseline 4 GiB. The cache is cleared between seeds; one short
+unmeasured warmup precedes each arm. A submission barrier does not guarantee
+network arrival order. Both controls use the same cache-entry limit of eight,
+FCFS, four sequences, batch size four, prefill step 2048, temperature zero and
+32 output tokens, with the optional kernels/caches disabled as above.
+
+[Auditable receipts](2026-10-24-hybrid-boundary-retention.json) retain every
+response's text, reasoning, output hash, complete usage hash, normalized token
+usage hash, terminal/finish status and timings, plus cache counters/ledger after
+each phase. Complete usage hashes intentionally differ when cached-token
+metadata differs; normalized usage covers prompt/completion/total tokens.
+All 128 measured responses complete with 32 output tokens, and all 128 include
+the correct document code. All 64 paired normalized usage hashes match.
+
+Each timing below is a median across four document sets, in seconds.
+
+| Measurement | Main 2 GiB | Candidate 2 GiB | Main 4 GiB | Candidate 4 GiB |
+| --- | ---: | ---: | ---: | ---: |
+| Cold A TTFT | 18.232 | 18.567 | 17.962 | 18.483 |
+| Cold B TTFT | 18.830 | 18.593 | 18.062 | 18.741 |
+| Solo A TTFT | 0.323 | 0.293 | 0.288 | 0.287 |
+| Solo B TTFT | 18.622 | 0.390 | 0.369 | 0.380 |
+| Solo A elapsed | 0.698 | 0.646 | 0.599 | 0.633 |
+| Solo B elapsed | 19.186 | 0.759 | 0.696 | 0.737 |
+| Cohort A TTFT | 62.763 | 8.792 | 60.392 | 8.940 |
+| Cohort B TTFT | 9.775 | 8.792 | 9.555 | 8.940 |
+| Cohort C TTFT | 62.763 | 42.958 | 60.392 | 42.878 |
+| Cohort D TTFT | 62.764 | 42.956 | 60.392 | 42.877 |
+| Cohort makespan | 63.441 | 43.441 | 60.990 | 43.350 |
+
+At 2 GiB, candidate B solo reuses 32,736 tokens in 4/4 sets versus 0/4 on main;
+A solo hits in both. Both candidate cohort A/B reuse 32,736 tokens in all sets,
+whereas main reuses only B. At 4 GiB, both solo repeats hit in both arms, but
+main still loses cohort A's hit. Solo-phase eviction-counter increments are
+3 versus 0 at 2 GiB and 2 versus 0 at 4 GiB in every set. Cohort increments are
+5 versus 2 and 3 versus 1 respectively. These counters include restored-entry
+removal; they are not exclusively capacity evictions. The ledger remains within
+the configured byte budget in every recorded status.
+
+Exact output hashes match 31/32 paired responses at each budget: all eight
+cold and eight solo pairs, and 15/16 cohort pairs. In both budgets the mismatch
+is cohort D, seed 9203. Both responses correctly identify `9203D`; main's
+explanation begins “The secret code is embedded directly within the text of the
+document”, while the candidate begins “The secret code is explicitly stated in
+the very first sentence of”. Retention changes cache residency and batch
+execution; this experiment does not establish numerical losslessness. The
+repeated mismatch fails the owner's exact-output condition even though the
+narrow answer-quality check passes. Guaranteeing identical decoding across
+changed batch/cache paths would require a separate numerical investigation,
+outside this PR's retention-only scope and explicit kernel non-goals.
+
+Other CPU test workloads overlapped these arms. The 4 GiB candidate solo elapsed
+medians are approximately 5.7% (A) and 5.8% (B) higher, so no regression-free
+claim is made. This four-set sequential experiment is not the historical
+20-capture paired statistical gate and does not waive its 5% limit. It establishes
+the pressure benefit (B TTFT about 98% lower; cohort makespan about 32% lower),
+not a quiet-window nonregression pass. Attribution of the control timing
+variation remains unresolved.
+
+Focused CPU tests on the rebased runtime: 145 passed. Changed executable
+scheduler coverage: 46/46 lines, 100%; Ruff and whitespace checks pass. All
+owned servers exited and the lock was released. The draft and #4451 stay open;
+Vector owns the numerical-identity investigation and a genuinely quiet paired
+nonregression qualification before exact-head validation and green CI can
+permit landing. No serving defaults, API, kernels or cache formats changed.
