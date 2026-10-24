@@ -196,6 +196,7 @@ class LocalSearch:
         self.task: asyncio.Task | None = None
         self.progress = self._idle()
         self.closed = False
+        self.health = {"enabled": True, "status": "starting", "reason": None}
 
     @staticmethod
     def _idle():
@@ -237,9 +238,23 @@ class LocalSearch:
                     await self.queue(folder["id"])
 
     async def _resume(self):
-        for folder in await self.store.call("folders"):
-            await self.queue(folder["id"])
-        await self._run()
+        try:
+            folders = await self.store.call("folders")
+            self.health = {"enabled": True, "status": "healthy", "reason": None}
+            for folder in folders:
+                await self.queue(folder["id"])
+            await self._run()
+        except Exception:
+            # Consume the background exception here, once. Probe endpoints are
+            # public, so keep paths and raw exception text in the operator log.
+            self.health = {
+                "enabled": True,
+                "status": "degraded",
+                "reason": "Local-search initialization failed; check the index "
+                "directory and server logs, then restart the server",
+            }
+            logger.exception("Local-search initialization failed")
+            self.refresh_task.cancel()
 
     async def folder(self, folder_id: str) -> dict | None:
         return await self.store.call("folder", folder_id)

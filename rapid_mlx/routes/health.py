@@ -5,7 +5,7 @@ import asyncio
 import gc
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .. import update_refresh
@@ -55,8 +55,13 @@ async def root():
     return {"status": "ok"}
 
 
+def _local_search_health(request: Request | None):
+    service = getattr(request.app.state, "local_search", None) if request else None
+    return dict(service.health) if service is not None else None
+
+
 @probe_router.get("/health")
-async def health():
+async def health(request: Request = None):
     """Health check endpoint.
 
     `model_loaded` flips True as soon as the engine object exists
@@ -125,9 +130,14 @@ async def health():
     else:
         model_type = "llm"
 
+    local_search = _local_search_health(request)
     return {
         **update_refresh.snapshot(),
-        "status": "healthy",
+        "status": (
+            "degraded"
+            if local_search is not None and local_search["status"] == "degraded"
+            else "healthy"
+        ),
         "ready": cfg.ready and not switching,
         "state": (
             "switching"
@@ -143,12 +153,13 @@ async def health():
         "model_type": model_type,
         "engine_type": engine_stats.get("engine_type", "unknown"),
         "mcp": mcp_info,
+        "local_search": local_search,
         "model_lifecycle": primary_status,
     }
 
 
 @probe_router.get("/health/ready")
-async def health_ready():
+async def health_ready(request: Request = None):
     """Strict readiness probe — 503 until lifespan startup is fully done.
 
     Lifespan order is: engine.start() → warmup (Metal kernel JIT) →
@@ -169,6 +180,7 @@ async def health_ready():
         raise HTTPException(status_code=503, detail="model lifecycle error")
     return {
         "ready": True,
+        "local_search": _local_search_health(request),
         "model": cfg.model_name,
         "state": status["state"] if status is not None else "ready",
         "model_loaded": (
@@ -244,9 +256,9 @@ async def healthz():
 
 
 @probe_router.get("/readyz")
-async def readyz():
+async def readyz(request: Request = None):
     """k8s-convention alias for /health/ready."""
-    return await health_ready()
+    return await health_ready(request)
 
 
 @probe_router.get("/livez")

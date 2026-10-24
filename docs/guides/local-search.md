@@ -32,6 +32,23 @@ a dedicated index directory. Foreign ownership, symlinks, hard-linked or
 non-regular index files, and permission-repair failures refuse opening; status
 returns a readable structured `store_open_failed` error (503).
 
+Local-search initialization runs in the background. `/health`, `/health/ready`,
+and `/readyz` include a `local_search` component (`null` when disabled), with
+`enabled`, `status` (`starting`, `healthy`, or `degraded`), and `reason` fields.
+If the index cannot open, `/health` reports overall `status: "degraded"` and
+local-search routes return 503. The initialization exception is logged once;
+automatic refresh stops until restart. Public health reasons omit filesystem
+paths; consult the server log for the exact failure.
+
+Readiness remains tied to the primary serving model: an optional local-search
+failure does not change `ready` or the readiness HTTP status, matching optional
+MCP connections and non-fatal audio-lane probes. Search clients should inspect
+the component status. Startup does not fail the whole server for an unusable
+index directory: validation stays in the store's authoritative filesystem
+checks, preserving inference availability. Correct the directory and restart.
+A missing semantic model alone does not degrade this component because keyword
+search remains usable.
+
 Provision `mlx-community/embeddinggemma-2-4bit` explicitly with `rapid-mlx pull`
 before expecting semantic results. These routes never download a model. While
 it is absent, files are indexed for keywords, folders report
