@@ -602,6 +602,8 @@ def apply_layer(
         source.args,
         {**c, "pilot": True},
         guard,
+        run_identity=native.identity_for(layer) if native else digest(source.manifest),
+        layer=layer,
     )
     # BF16 is both the native residual dtype and the portable boundary format.
     for path in windows_at(target, len(windows)):
@@ -1159,6 +1161,13 @@ def finish_for_build(source, parts, layer, block, context, ffn_stats, guard):
         source.args,
         qc,
         guard,
+        run_identity=digest(
+            dict(
+                reference=reference["identity"],
+                build=context["native"].identity_for(layer),
+            )
+        ),
+        layer=layer,
     )
     reports = {
         **inputs["projections"],

@@ -299,6 +299,8 @@ def scan_layer(source, layer, windows, target, work, c, guard):
             source.args,
             {**c, "pilot": True},
             guard,
+            run_identity=digest(dict(source=source.manifest, recipe=c, branch=branch)),
+            layer=layer,
         )
     numerator = denominator = 0.0
     for i in range(len(windows)):

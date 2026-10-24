@@ -123,6 +123,8 @@ class FakeRemote:
             path.rmdir()
             return True
         if op == "delete":
+            root = self.path(kw["root"]).resolve()
+            assert path.resolve() != root and path.resolve().is_relative_to(root)
             cp = json.loads(self.path(kw["checkpoint"]).read_text())
             assert cp["identity"] == kw["identity"] and cp["next_layer"] > kw["layer"]
             # Export marker and all its hashes must exist before ANY deletion.
@@ -399,7 +401,14 @@ def test_remote_helper_header_hash_and_checkpoint_gate(tmp_path):
     }
     cp = tmp_path / "checkpoint.json"
     f.atomic(cp, {"identity": "run", "next_layer": 0})
-    q = dict(op="delete", path=str(shard), checkpoint=str(cp), identity="run", layer=0)
+    q = dict(
+        op="delete",
+        path=str(shard),
+        root=str(tmp_path),
+        checkpoint=str(cp),
+        identity="run",
+        layer=0,
+    )
     assert request(**q).returncode != 0
     assert shard.exists()
     f.atomic(cp, {"identity": "run", "next_layer": 1})
@@ -892,3 +901,68 @@ def test_metadata_download_space_and_durable_publication(setup, monkeypatch, eno
             driver.collect_metadata()
         assert not (args.destination / "run.json").exists()
         assert not any(op == "transfer" for op, _ in remote.events)
+
+
+@pytest.mark.parametrize(
+    "kind", ["outside", "root", "directory", "symlink", "parent_symlink", "missing"]
+)
+def test_remote_cleanup_is_confined_to_authorized_files(tmp_path, kind):
+    import subprocess
+    import sys
+
+    root = tmp_path / "allowed"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("keep")
+    cp = tmp_path / "checkpoint.json"
+    f.atomic(cp, {"identity": "run", "next_layer": 1})
+    target = root / "entry"
+    if kind == "outside":
+        target = outside
+    elif kind == "root":
+        target = root
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "symlink":
+        target.symlink_to(outside)
+    elif kind == "parent_symlink":
+        target.symlink_to(tmp_path, target_is_directory=True)
+        target = target / "outside"
+    result = subprocess.run(
+        [sys.executable, "-c", f.REMOTE],
+        input=json.dumps(
+            dict(
+                op="delete",
+                path=str(target),
+                root=str(root),
+                checkpoint=str(cp),
+                identity="run",
+                layer=0,
+            )
+        ),
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) is (kind == "missing")
+    assert outside.read_text() == "keep" and root.is_dir()
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_unlock_failure_preserves_conversion_error(setup, monkeypatch, primary_failure):
+    args, remote = setup
+    remote.fail_export = primary_failure
+    original = remote.call
+
+    def call(op, **kwargs):
+        if op == "unlock":
+            raise RuntimeError("unlock unavailable")
+        return original(op, **kwargs)
+
+    monkeypatch.setattr(remote, "call", call)
+    expected = "interrupted export" if primary_failure else "unlock unavailable"
+    with pytest.raises(RuntimeError, match=expected) as caught:
+        f.Driver(args, remote).run()
+    if primary_failure:
+        assert caught.value.__notes__ == [
+            "Remote unlock also failed: unlock unavailable"
+        ]

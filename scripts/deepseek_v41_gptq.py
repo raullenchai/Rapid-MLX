@@ -1026,19 +1026,24 @@ def quantize_ffn(
     return stats
 
 
-def finalize_windows(block, stage, paths, target, total, args, c, guard):
+def finalize_windows(
+    block, stage, paths, target, total, args, c, guard, *, run_identity, layer
+):
     from rapid_mlx.models.deepseek_v41_native.hyper_connections import hc_mixes, hc_post
 
     target.mkdir(exist_ok=True)
     offset = 0
     for window, path in enumerate(stage):
         completed = target / f"window-{window}"
+        binding = dict(run_identity=run_identity, layer=layer + 1, window=window)
         if (
             not path.with_suffix(".json").exists()
             and completed.with_suffix(".json").exists()
         ):
             # A previous process committed this window before its interruption.
             saved = load_state(completed)
+            if saved.get("gptq_boundary") != binding:
+                raise ValueError("completed boundary window identity mismatch")
             offset += saved["h"].shape[1]
             del saved
             continue
@@ -1073,6 +1078,7 @@ def finalize_windows(block, stage, paths, target, total, args, c, guard):
             mx.concatenate(xs, axis=1),
             mx.concatenate(pres, axis=1),
         )
+        state["gptq_boundary"] = binding
         save_state(target / f"window-{window}", state)
         if not c["pilot"]:
             _, payload = state_snapshot(path)
@@ -1608,7 +1614,18 @@ def run_layer(source, c, parts, scratch, layer, guard):
         sink.finish()
     finally:
         sink.close()
-    finalize_windows(block, stage, paths, target, total, source.args, c, guard)
+    finalize_windows(
+        block,
+        stage,
+        paths,
+        target,
+        total,
+        source.args,
+        c,
+        guard,
+        run_identity=run["identity"],
+        layer=layer,
+    )
     if quality is not None:
         from scripts.deepseek_v41_gptq_quality import finish_for_build
 

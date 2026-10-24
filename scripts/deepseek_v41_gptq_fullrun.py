@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -218,8 +219,10 @@ elif op=='delete':
  # Recheck the authoritative checkpoint immediately before EVERY unlink.
  cp=json.loads(Path(q['checkpoint']).read_text())
  if cp['identity']!=q['identity'] or cp['next_layer']<=q['layer']:raise ValueError('uncommitted cleanup')
- p=Path(q['path'])
+ p=Path(q['path']);root=Path(q['root']).resolve();resolved=p.resolve()
+ if resolved==root or not resolved.is_relative_to(root):raise ValueError('cleanup path outside authorized root')
  if p.is_symlink():raise ValueError('refuse symlink cleanup')
+ if p.exists() and not p.is_file():raise ValueError('cleanup requires a regular file')
  p.unlink(missing_ok=True);out=True
 elif op=='recover_init':
  root=Path(q['path'])
@@ -544,6 +547,7 @@ class Driver:
             self.r.call(
                 "delete",
                 path=self.stage + "/" + name,
+                root=self.stage,
                 checkpoint=self.state + "/checkpoint.json",
                 identity=self.identity,
                 layer=layer,
@@ -586,6 +590,7 @@ class Driver:
                 self.r.call(
                     "delete",
                     path=self.reference + f"/boundary-{i}/" + name,
+                    root=self.reference,
                     checkpoint=self.state + "/checkpoint.json",
                     identity=self.identity,
                     layer=layer,
@@ -770,7 +775,13 @@ class Driver:
                     reason="command status unknown; verify remote process termination before removing the lock and retrying",
                 )
             else:
-                self.r.call("unlock", path=self.a.remote_work + "/fullrun.lock")
+                active_error = sys.exc_info()[1]
+                try:
+                    self.r.call("unlock", path=self.a.remote_work + "/fullrun.lock")
+                except Exception as error:
+                    if active_error is None:
+                        raise
+                    active_error.add_note(f"Remote unlock also failed: {error}")
 
 
 def main():

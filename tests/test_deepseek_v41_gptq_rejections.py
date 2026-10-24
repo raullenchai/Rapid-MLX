@@ -670,3 +670,28 @@ def test_estimate_rejects_empty_calibration_with_actionable_error(source):
 def test_recipe_memory_caps_require_real_numbers(field, value):
     with pytest.raises(ValueError, match=f"invalid {field}"):
         b.recipe({field: value})
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "run_identity", "layer", "window"])
+def test_resume_rejects_unbound_or_stale_output_window(tmp_path, mismatch):
+    target = tmp_path / "boundary-1"
+    target.mkdir()
+    binding = dict(run_identity="run", layer=1, window=0)
+    state = {"h": mx.zeros((1, 2, 64))}
+    if mismatch != "missing":
+        binding[mismatch] = "stale"
+        state["gptq_boundary"] = binding
+    b.save_state(target / "window-0", state)
+    with pytest.raises(ValueError, match="boundary window identity mismatch"):
+        b.finalize_windows(
+            None,
+            [tmp_path / "missing-input"],
+            {},
+            target,
+            2,
+            None,
+            b.recipe(),
+            None,
+            run_identity="run",
+            layer=0,
+        )
