@@ -38,6 +38,7 @@ struct ModelPickerStreamingTests {
         let counter: BuildCounter
 
         var body: some View {
+            let selection = $inputs.alias
             VStack {
                 Text("Frame \(inputs.frame)")
                 ModelPickerBar.StablePickerMenuContent(key: .init(
@@ -51,10 +52,39 @@ struct ModelPickerStreamingTests {
                     deleting: nil, servingAlias: nil, downloading: []
                 )) {
                     counter.count += 1
-                    return AnyView(Text(inputs.alias))
+                    return AnyView(VStack {
+                        Text(selection.wrappedValue)
+                        Button("Select second model") {
+                            selection.wrappedValue = "second-model"
+                        }
+                        .accessibilityIdentifier("StreamingMenu.SelectSecond")
+                    })
                 }
                 .equatable()
             }
+        }
+    }
+
+    @Test("Retained menu actions write through the binding after transcript updates")
+    func retainedMenuActionUpdatesSelection() async throws {
+        let inputs = Inputs()
+        let counter = BuildCounter()
+        let stage = GoldenStage(MenuParent(inputs: inputs, counter: counter))
+        try await stage.waitForIdentifier("StreamingMenu.SelectSecond")
+        try await Task.sleep(for: .milliseconds(100))
+        let initialBuilds = counter.count
+        for frame in 1...25 {
+            inputs.frame = frame
+            try await stage.wait(for: "transcript update") {
+                stage.treeText().contains("Frame \(frame)")
+            }
+        }
+        #expect(counter.count <= initialBuilds + 1)
+        #expect(inputs.alias == "first-model")
+        try stage.press("StreamingMenu.SelectSecond")
+        try await stage.wait(for: "menu action selection") {
+            inputs.alias == "second-model"
+                && stage.treeText().contains("second-model")
         }
     }
 
