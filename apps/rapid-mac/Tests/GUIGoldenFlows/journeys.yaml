@@ -51,7 +51,7 @@ journeys:
     driver: ax
     ci_tier: pr
     fixtures: [fake-sidecar, slow-stream, isolated-home]
-    source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/UI/ContentView.swift]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/UI/ContentView.swift, apps/rapid-mac/Sources/Rapid/UI/ModelPickerBar.swift]
     owns_baseline: false
   - name: download-progress
     group: onboarding-settings

@@ -69,6 +69,13 @@ observations, including after restore.
    Settings, accepts a foreground interaction, and returns to the wizard with
    the user's original model selection intact. A final full-screen capture
    records the state a person actually sees.
+The `model-switch-active-request` journey uses a 200-row chat catalog and
+waits for the fake server's first content chunk before opening the picker.
+It holds the menu open across streamed updates, dismisses it with Escape,
+and requires a responsive accessibility tree while the response is still
+active. It then reopens the picker and verifies that cancelling the model
+switch preserves the original response and server.
+
 **Invariants** — properties that must hold, not paths a user walks. These were
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:

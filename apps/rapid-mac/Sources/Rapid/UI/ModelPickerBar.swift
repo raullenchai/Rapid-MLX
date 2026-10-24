@@ -413,69 +413,109 @@ struct ModelPickerBar: View {
         }
     }
 
+    /// The builder is evaluated only when menu inputs change. Passing an
+    /// eagerly built AnyView would still construct hundreds of rows on every
+    /// transcript update, even if SwiftUI subsequently skipped their bodies.
+    struct StablePickerMenuContent: View, Equatable {
+        let key: MenuContentKey
+        let build: () -> AnyView
+
+        nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.key == rhs.key
+        }
+
+        var body: some View { build() }
+    }
+
+    struct MenuContentKey: Equatable {
+        let catalog: [ModelEntry]
+        let loading: Bool
+        let selectedAlias: String
+        let showAll: Bool
+        let hardware: MacHardware
+        let deleting: String?
+        let servingAlias: String?
+        let downloading: Set<String>
+    }
+
+    private var menuContentKey: MenuContentKey {
+        MenuContentKey(
+            catalog: catalog, loading: loadingCatalog, selectedAlias: alias,
+            showAll: showAllModels, hardware: hardware, deleting: deleting,
+            servingAlias: server.servingAlias,
+            downloading: Set(catalog.filter { downloads.isDownloading($0.alias) }.map(\.alias))
+        )
+    }
+
+    @ViewBuilder
+    private var menuContent: some View {
+        if loadingCatalog && catalog.isEmpty {
+            // A plain ``Text`` in a SwiftUI Menu renders as a
+            // disabled, non-selectable row — which is exactly the
+            // affordance we want while the catalog is in flight.
+            // "Type a model name…" stays reachable so a user who
+            // knows what they want isn't blocked on the fetch.
+            Text("Fetching models…")
+            Divider()
+            Button("Type a model name…") { showCustom = true }
+                .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
+        } else if !hasSelectableRows {
+            // v0.4.29: previously this state was a dead end — a
+            // failed first-load (bootstrapper still installing
+            // the sidecar, transient network blip, manual
+            // runtime-override deletion) left the user with only
+            // "Type alias…" and no way back to a populated picker
+            // short of restarting the app. Retry is a one-click
+            // rescue.
+            //
+            // Keyed on "nothing renders", NOT on ``catalog.isEmpty``.
+            // A catalog can be non-empty and still produce zero rows —
+            // every alias sub-1B with the size filter on, or every one
+            // denylisted, and no Quickstart or recommended alias among
+            // them. Testing emptiness of the SOURCE rather than of the
+            // OUTPUT put that state in the else-branch below, which
+            // renders three empty sections and no way out.
+            // Honest terminal state: the fetch finished and there is
+            // nothing to offer. Non-selectable, and never an
+            // indefinite placeholder posing as a model.
+            Text("No models available")
+            Divider()
+            Button("Refresh catalog") {
+                Task { await refreshCatalog(force: true) }
+            }
+            .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
+            Button("Type a model name…") { showCustom = true }
+                .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
+        } else {
+            // v0.6.9: dropped the separate "Cached" section. Users
+            // skim the picker by alias name, not by cache-state —
+            // the on-disk affordance is now a small green dot at
+            // the right edge of each "All models" row, which keeps
+            // a single alphabetical list and removes the cognitive
+            // overhead of duplicate aliases appearing in two
+            // sections. Cached aliases were rendered once in
+            // "Cached" and (since they were filtered out of "All
+            // models") never in "All models" — meaning a user who
+            // remembered the alias's spelling would scroll right
+            // past the cached copy in the wrong section, then
+            // grumble that the alias was "missing".
+            // No "Refresh catalog" / "Type a model name…" here.
+            // Once the catalog HAS models, this menu has exactly one
+            // job — pick one — and two maintenance actions sitting
+            // above the Quickstart and Recommended sections made the
+            // list read as a settings pane. Both remain in the
+            // no-selectable-rows branch above, where they are not
+            // clutter but the only way out of a failed fetch.
+            quickstartSection
+            recommendedSection
+            allAliasesSection
+        }
+    }
+
     private var modelPicker: some View {
         Menu {
-            if loadingCatalog && catalog.isEmpty {
-                // A plain ``Text`` in a SwiftUI Menu renders as a
-                // disabled, non-selectable row — which is exactly the
-                // affordance we want while the catalog is in flight.
-                // "Type a model name…" stays reachable so a user who
-                // knows what they want isn't blocked on the fetch.
-                Text("Fetching models…")
-                Divider()
-                Button("Type a model name…") { showCustom = true }
-                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
-            } else if !hasSelectableRows {
-                // v0.4.29: previously this state was a dead end — a
-                // failed first-load (bootstrapper still installing
-                // the sidecar, transient network blip, manual
-                // runtime-override deletion) left the user with only
-                // "Type alias…" and no way back to a populated picker
-                // short of restarting the app. Retry is a one-click
-                // rescue.
-                //
-                // Keyed on "nothing renders", NOT on ``catalog.isEmpty``.
-                // A catalog can be non-empty and still produce zero rows —
-                // every alias sub-1B with the size filter on, or every one
-                // denylisted, and no Quickstart or recommended alias among
-                // them. Testing emptiness of the SOURCE rather than of the
-                // OUTPUT put that state in the else-branch below, which
-                // renders three empty sections and no way out.
-                // Honest terminal state: the fetch finished and there is
-                // nothing to offer. Non-selectable, and never an
-                // indefinite placeholder posing as a model.
-                Text("No models available")
-                Divider()
-                Button("Refresh catalog") {
-                    Task { await refreshCatalog(force: true) }
-                }
-                .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
-                Button("Type a model name…") { showCustom = true }
-                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
-            } else {
-                // v0.6.9: dropped the separate "Cached" section. Users
-                // skim the picker by alias name, not by cache-state —
-                // the on-disk affordance is now a small green dot at
-                // the right edge of each "All models" row, which keeps
-                // a single alphabetical list and removes the cognitive
-                // overhead of duplicate aliases appearing in two
-                // sections. Cached aliases were rendered once in
-                // "Cached" and (since they were filtered out of "All
-                // models") never in "All models" — meaning a user who
-                // remembered the alias's spelling would scroll right
-                // past the cached copy in the wrong section, then
-                // grumble that the alias was "missing".
-                // No "Refresh catalog" / "Type a model name…" here.
-                // Once the catalog HAS models, this menu has exactly one
-                // job — pick one — and two maintenance actions sitting
-                // above the Quickstart and Recommended sections made the
-                // list read as a settings pane. Both remain in the
-                // no-selectable-rows branch above, where they are not
-                // clutter but the only way out of a failed fetch.
-                quickstartSection
-                recommendedSection
-                allAliasesSection
-            }
+            StablePickerMenuContent(key: menuContentKey) { AnyView(menuContent) }
+                .equatable()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: pickerIcon)

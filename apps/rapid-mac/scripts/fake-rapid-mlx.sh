@@ -1170,6 +1170,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(_sse(_delta(content=c)))
                 self.wfile.flush()
                 content_emitted += 1
+                if content_emitted == 1:
+                    _event("chat_content_started")
                 if die_after_chunks > 0 and content_emitted >= die_after_chunks:
                     # Hard-kill the process — no atexit, no
                     # buffered flush, no SIGTERM grace window.
@@ -1249,6 +1251,8 @@ def _emit_catalog(subcommand, alias):
             aliases.append("fake-external-alias")
             if _setting("FAKE_SETTINGS_MTP") == "1":
                 aliases.append("qwen3.8-27b-4bit")
+            if _setting("FAKE_LARGE_CHAT_CATALOG") == "1":
+                aliases.extend(f"test-model-{index:03d}" for index in range(200))
             text = []
             for item in aliases:
                 is_builtin = item != "fake-external-alias"

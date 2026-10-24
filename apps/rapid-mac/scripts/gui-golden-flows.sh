@@ -5728,12 +5728,13 @@ flow_dictation_rc2_upgrade() {
 flow_model_switch_active_request() {
     log "flow: model-switch-active-request"
     start_persona model-switch-active-request \
+        FAKE_LARGE_CHAT_CATALOG=1 \
         FAKE_CHAT_RESPONSE_DELAY_MS=10000 \
         FAKE_INTER_TOKEN_SLEEP_S=0.02 \
-        FAKE_CONTENT_REPEAT=250
+        FAKE_CONTENT_REPEAT=100
     dismiss_first_run
     start_model
-    send_prompt "shape:long keep this stream active" "busy-stream"
+    send_prompt "Keep this response streaming while I open the model picker" "busy-stream"
 
     # The fake residency endpoint reports the real in-flight handler count.
     # Wait for the independent handler-lifecycle fact before asking the picker
@@ -5747,6 +5748,32 @@ flow_model_switch_active_request() {
         sleep 0.1
     done
     [[ "$busy" == 1 ]] || die "fake residency never reported the active stream"
+
+    # Exercise the token-delivery phase, not just the initial response delay.
+    # Keep the picker open across many streamed updates, then dismiss it and
+    # require a fresh responsive AX tree before testing model-switch admission.
+    local streaming=0
+    for ((i=0; i<160; i++)); do
+        if grep -q '"event": "chat_content_started"' "$OUT/fake-events.jsonl"; then
+            streaming=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$streaming" == 1 ]] || die "no content reached the streaming phase"
+    ! grep -q '"event": "chat_finished"' "$OUT/fake-events.jsonl" \
+        || die "stream completed before the picker stress checkpoint"
+    "$AX_DRIVER" click-center "$APP_PID" ModelPickerBar.ModelMenu > "$OUT/picker-opened.json"
+    wait_identifier ModelPickerBar.Alias.fake-external-alias "$OUT/picker-streaming.json"
+    sleep 3
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/picker-dismissed.json"
+    see_main "$OUT/picker-after-dismiss.json"
+    jq -e '.data.ui_elements | length > 0' "$OUT/picker-after-dismiss.json" >/dev/null \
+        || die "app stopped responding after dismissing the streaming picker"
+    ! jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.Alias.fake-external-alias")' \
+        "$OUT/picker-after-dismiss.json" >/dev/null \
+        || die "streaming picker did not close on Escape"
+    ! grep -q '"event": "chat_finished"' "$OUT/fake-events.jsonl" \
+        || die "stream ended before the picker closed"
 
     see_main "$OUT/busy.json"
     # SwiftUI creates these rows only after the native menu opens. Resolve the
