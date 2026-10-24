@@ -12,15 +12,17 @@ _lock = threading.Lock()
 _latest: str | None = None
 _seen_versions: set[str] = set()
 _available = False
+_notice_printed = False
 _thread: threading.Thread | None = None
 
 
 def _reset_after_fork():
-    global _lock, _thread, _latest, _available, _seen_versions
+    global _lock, _thread, _latest, _available, _seen_versions, _notice_printed
     _lock = threading.Lock()
     _thread = None
     _latest = None
     _available = False
+    _notice_printed = False
     _seen_versions = set()
 
 
@@ -31,8 +33,10 @@ def start(
     *, announced: str | None = None, interval: float = vc.CACHE_TTL_SECONDS
 ) -> bool:
     """Start at most one background checker per process, unless opted out."""
-    global _thread
+    global _thread, _notice_printed
     with _lock:
+        if announced is not None:
+            _notice_printed = True
         if vc._explicitly_disabled() or _thread is not None:
             return False
         _thread = threading.Thread(
@@ -61,7 +65,7 @@ def _run(interval):
 
 
 def _refresh():
-    global _latest, _available
+    global _latest, _available, _notice_printed
     if vc._explicitly_disabled():
         with _lock:
             _latest, _available = None, False
@@ -76,8 +80,16 @@ def _refresh():
         unseen = latest not in _seen_versions
         _seen_versions.add(latest)
         _latest, _available = latest, available
+        if available and unseen:
+            _notice_printed = True
     if available and unseen:
         print(vc.format_staleness_warning(installed, latest), file=sys.stderr)
+
+
+def notice_printed() -> bool:
+    """Whether a sync or background update notice appeared this process."""
+    with _lock:
+        return _notice_printed
 
 
 def snapshot() -> dict:

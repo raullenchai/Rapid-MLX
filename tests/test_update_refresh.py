@@ -19,6 +19,7 @@ def isolated(monkeypatch):
     monkeypatch.setattr(refresh, "_latest", None)
     monkeypatch.setattr(refresh, "_seen_versions", set())
     monkeypatch.setattr(refresh, "_available", False)
+    monkeypatch.setattr(refresh, "_notice_printed", False)
     monkeypatch.setattr(refresh, "_thread", None)
     monkeypatch.setattr(refresh, "_lock", refresh.threading.Lock())
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
@@ -41,6 +42,13 @@ def test_start_is_idempotent_and_does_no_io():
     vc.get_latest_version.assert_not_called()
 
 
+def test_sync_notice_after_thread_started_is_recorded():
+    assert refresh.start()
+    assert not refresh.notice_printed()
+    assert refresh.start(announced="1.1.0") is False
+    assert refresh.notice_printed()
+
+
 @pytest.mark.parametrize("announced", [None, "1.1.0"])
 def test_announce_each_new_version_once(capsys, announced):
     def check_announced():
@@ -49,7 +57,9 @@ def test_announce_each_new_version_once(capsys, announced):
 
     refresh.threading.Thread.return_value.start.side_effect = check_announced
     refresh.start(announced=announced)
+    assert refresh.notice_printed() is (announced is not None)
     refresh._refresh()
+    assert refresh.notice_printed()
     assert refresh.snapshot() == {"latest_version": "1.1.0", "update_available": True}
     assert capsys.readouterr().err == (
         "" if announced else vc.format_staleness_warning("1.0.0", "1.1.0") + "\n"
@@ -184,6 +194,7 @@ def test_child_ignores_parent_state_and_can_start(capsys):
         assert refresh._seen_versions == set()
         assert refresh._seen_versions is not parent_seen_versions
         assert parent_seen_versions == {"1.1.0"}
+        assert not refresh.notice_printed()
     assert refresh.snapshot() == EMPTY
     assert refresh.start() is True
     assert refresh.snapshot() == EMPTY

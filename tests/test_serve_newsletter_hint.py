@@ -8,9 +8,13 @@ import sys
 import pytest
 
 import rapid_mlx.server as server
-from rapid_mlx import cli, newsletter_hint
+from rapid_mlx import cli, newsletter_hint, update_refresh
 from rapid_mlx.config import get_config
-from rapid_mlx.newsletter_hint import NEWSLETTER_TEXT, maybe_print_newsletter_hint
+from rapid_mlx.newsletter_hint import (
+    NEWSLETTER_TEXT,
+    _interactive_stdout,
+    maybe_print_newsletter_hint,
+)
 from rapid_mlx.telemetry.consent_decision import ProcessRole
 from tests.test_serve_listen_fd import (  # noqa: F401
     _free_tcp_port,
@@ -32,6 +36,7 @@ def terminal(monkeypatch, tmp_path, capsys):
         newsletter_hint, "detect_role", lambda: ProcessRole.INTERACTIVE_CLI
     )
     monkeypatch.setattr(newsletter_hint, "_running_in_desktop_sidecar", lambda: False)
+    monkeypatch.setattr(update_refresh, "_notice_printed", False)
     return tmp_path / "state" / "newsletter_hint_shown"
 
 
@@ -131,7 +136,48 @@ def test_update_notice_defers_pointer(terminal, capsys):
 
 def test_stdout_probe(monkeypatch):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1)
+    monkeypatch.setattr(newsletter_hint.os, "tcgetpgrp", lambda _fd: 42)
+    monkeypatch.setattr(newsletter_hint.os, "getpgrp", lambda: 42)
     assert newsletter_hint._interactive_stdout()
+
+
+@pytest.mark.parametrize("probe", ["background", "error"])
+def test_background_job_does_not_consume_marker(terminal, monkeypatch, capsys, probe):
+    monkeypatch.setattr(newsletter_hint, "_interactive_stdout", _interactive_stdout)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1)
+    monkeypatch.setattr(newsletter_hint.os, "getpgrp", lambda: 42)
+
+    def terminal_group(_fd):
+        if probe == "error":
+            raise OSError("no controlling terminal")
+        return 43
+
+    monkeypatch.setattr(newsletter_hint.os, "tcgetpgrp", terminal_group)
+    maybe_print_newsletter_hint()
+    assert capsys.readouterr().out == ""
+    assert not terminal.exists()
+
+
+def test_background_update_before_print_defers_pointer(terminal, monkeypatch, capsys):
+    from rapid_mlx import _version_check as vc
+
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.1.0")
+    monkeypatch.setattr(update_refresh, "_seen_versions", set())
+    real_flock = fcntl.flock
+
+    def announce_while_acquiring_lock(lock, mode):
+        real_flock(lock, mode)
+        update_refresh._refresh()
+
+    monkeypatch.setattr(fcntl, "flock", announce_while_acquiring_lock)
+    maybe_print_newsletter_hint(update_notice_shown=False)
+    output = capsys.readouterr()
+    assert vc.format_staleness_warning("1.0.0", "1.1.0") in output.err
+    assert output.out == ""
+    assert not terminal.exists()
 
 
 def test_marker_write_failure_is_silent(terminal, monkeypatch, capsys):
