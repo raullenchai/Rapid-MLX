@@ -131,13 +131,14 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
     [
         (json.JSONDecodeError("/private/path", "{}", 0), "config_parse"),
         (ModuleNotFoundError("/private/path"), "import_error"),
-        (MemoryError("/private/path"), "memory_error"),
         (OSError("/private/path"), "io_error"),
+        (TypeError("/private/path"), "type_error"),
         (RuntimeError("/private/path"), "runtime_error"),
         (ValueError("/private/path"), "unknown"),
     ],
 )
 def test_serve_failure_subtype_uses_only_exception_types(failure, expected):
+    assert model_events.serve_error_class(failure) == "other"
     assert model_events.serve_failure_subtype(failure) == expected
     assert (
         expected in registry.load_registry()["enums"]["serve_failure_subtype"]["values"]

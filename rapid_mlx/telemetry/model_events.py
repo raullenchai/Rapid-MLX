@@ -432,8 +432,8 @@ def serve_failure_subtype(exc: BaseException) -> str:
     for failure_type, subtype in (
         (json.JSONDecodeError, "config_parse"),
         (ImportError, "import_error"),
-        (MemoryError, "memory_error"),
         (OSError, "io_error"),
+        (TypeError, "type_error"),
         (RuntimeError, "runtime_error"),
     ):
         if any(isinstance(cause, failure_type) for cause in chain):

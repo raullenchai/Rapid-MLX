@@ -235,7 +235,7 @@
     "serve_failure_subtype": {
       "_about": "Exception-type-only detail for model_serve_failed when error_class is other. No message, path, model name, or user text is inspected.",
       "values": [
-        "config_parse", "import_error", "memory_error", "io_error",
+        "config_parse", "import_error", "io_error", "type_error",
         "runtime_error", "unknown"
       ]
     },
