@@ -1063,3 +1063,53 @@ def test_stream_waits_for_usage_after_synthetic_prefix(monkeypatch, cached_token
         )
         == "Prefix OK!"
     )
+
+
+@pytest.mark.parametrize("completion_tokens,expected_pulls", [(0, 2), (1, 1)])
+def test_usage_less_engine_lookahead_is_bounded(completion_tokens, expected_pulls):
+    """Emit the estimate before consuming a usage-less engine's full response."""
+    import asyncio
+
+    from rapid_mlx.api.anthropic_models import AnthropicRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes.anthropic import _stream_anthropic_messages
+
+    class UsageLessEngine(_BaseEngine):
+        pulls = 0
+
+        async def stream_chat(self, messages, **kwargs):
+            for text in ["one ", "two ", "three"]:
+                self.pulls += 1
+                yield SimpleNamespace(
+                    new_text=text, completion_tokens=completion_tokens
+                )
+
+    engine = UsageLessEngine()
+    _make_client(engine)
+    request = dict(
+        model="test-model", max_tokens=8, messages=[{"role": "user", "content": "Hi"}]
+    )
+
+    async def drive():
+        stream = _stream_anthropic_messages(
+            engine,
+            ChatCompletionRequest(**request),
+            AnthropicRequest(**request, stream=True),
+            prompt_tokens_estimate=39,
+        )
+        first = await anext(stream)
+        assert engine.pulls == expected_pulls
+        assert _parse_sse(first)[0]["message"]["usage"]["input_tokens"] == 39
+        events = _parse_sse(first + "".join([event async for event in stream]))
+        assert (
+            "".join(
+                e["delta"]["text"]
+                for e in events
+                if e["type"] == "content_block_delta"
+                and e["delta"]["type"] == "text_delta"
+            )
+            == "one two three"
+        )
+        assert engine.pulls == 3
+
+    asyncio.run(drive())

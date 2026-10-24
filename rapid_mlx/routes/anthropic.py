@@ -2400,6 +2400,10 @@ async def _stream_anthropic_messages(
                 prompt_tokens = chunk.prompt_tokens
                 cached_tokens = getattr(chunk, "cached_tokens", 0) or 0
                 break
+            # A synthetic prefix has no generated tokens. Look ahead at most
+            # one more chunk; usage-less engines must still stream promptly.
+            if getattr(chunk, "completion_tokens", 0) or len(pending) >= 2:
+                break
         for chunk in pending:
             yield chunk
         async for chunk in _generation_stream:
