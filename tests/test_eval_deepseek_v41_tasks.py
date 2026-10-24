@@ -34,7 +34,9 @@ def call(name, arguments, ident="call_1"):
 
 @pytest.fixture
 def fake_server():
-    state = SimpleNamespace(requests=[], failure=None, no_done=False, truncate=False)
+    state = SimpleNamespace(
+        requests=[], failure=None, no_done=False, truncate=False, prompt_overhead=8
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -77,7 +79,10 @@ def fake_server():
                 message["content"] = "4"
             if state.truncate:
                 finish = "length"
-            usage = {"prompt_tokens": len(content.split()) + 8, "completion_tokens": 23}
+            usage = {
+                "prompt_tokens": len(content.split()) + state.prompt_overhead,
+                "completion_tokens": 23,
+            }
             self.send_response(200)
             self.send_header(
                 "Content-Type",
@@ -179,12 +184,19 @@ def test_speed_uses_usage_not_chunk_count(fake_server):
     assert [r["id"] for r in rows] == ["1024_0", "8192_0"]
     for row in rows:
         response = row["response"]
+        assert response["usage"]["prompt_tokens"] <= int(row["id"].split("_")[0])
         assert row["decode_tok_s"] == pytest.approx(
             22 / (response["elapsed"] - response["ttft"])
         )
         assert row["prefill_tok_s_client_estimate"] == pytest.approx(
             response["usage"]["prompt_tokens"] / response["ttft"]
         )
+
+
+def test_speed_rejects_rendered_prompt_exceeding_input_budget(fake_server):
+    fake_server.prompt_overhead = 256
+    rows = bench.speed(bench.Client(fake_server.url, "test"), Tokenizer(), 1)
+    assert all(not row["passed"] and row["decode_tok_s"] is None for row in rows)
 
 
 def test_http_and_incomplete_sse_preserve_raw(fake_server):
@@ -630,6 +642,18 @@ def test_prefetch_freezes_revisions_and_refuses_replacement(tmp_path, monkeypatc
     )
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
     manifest = tmp_path / "bundle" / "manifest.json"
+    original_dump = bench.dump
+    with monkeypatch.context() as patch:
+
+        def interrupted_dump(*args):
+            raise OSError("interrupted manifest publication")
+
+        patch.setattr(bench, "dump", interrupted_dump)
+        with pytest.raises(OSError, match="interrupted manifest"):
+            bench.prefetch(manifest, 1017)
+    assert not manifest.exists()
+    assert manifest.with_name(manifest.name + ".tokenizer.json").exists()
+    assert bench.dump is original_dump
     assert bench.main(["prefetch", "--manifest", str(manifest)]) == 0
     frozen = bench.load_manifest(manifest)
     assert frozen["counts"] == {
@@ -646,7 +670,7 @@ def test_prefetch_freezes_revisions_and_refuses_replacement(tmp_path, monkeypatc
     manifest.parent.rename(moved)
     manifest = moved / manifest.name
     assert (moved / frozen["tokenizer"]["file"]).read_text() == "{}"
-    assert len(downloads) == 12
+    assert len(downloads) == 24
     with pytest.raises(ValueError, match="Refusing to replace"):
         bench.prefetch(manifest, 1017)
 

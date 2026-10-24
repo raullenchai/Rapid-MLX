@@ -186,8 +186,10 @@ def prefetch(path, seed):
     tokenizer_name = path.name + ".tokenizer.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     # Publish an independent sibling artifact, never a machine-local cache path.
-    with path.with_name(tokenizer_name).open("xb") as stream:
-        stream.write(tokenizer_bytes)
+    # No manifest exists yet: safely replace an orphan from interrupted prefetch.
+    staged_tokenizer = path.with_name(tokenizer_name + ".tmp")
+    staged_tokenizer.write_bytes(tokenizer_bytes)
+    staged_tokenizer.replace(path.with_name(tokenizer_name))
     manifest = {
         "version": VERSION,
         "seed": seed,
@@ -794,9 +796,10 @@ def speed(client, tokenizer, runs):
     results = []
     for size in (1024, 8192):
         for run in range(runs):
+            # Reserve framing headroom and verify the rendered count from server usage.
             # Unique first record reduces prefix reuse; server cache state still matters.
             prompt, count = long_prompt(
-                tokenizer, size, salt=f"speed-{size}-{run}-{time.time_ns()}"
+                tokenizer, size - 128, salt=f"speed-{size}-{run}-{time.time_ns()}"
             )
             result = client.chat(
                 [{"role": "user", "content": prompt}], max_tokens=256, stream=True
@@ -809,7 +812,7 @@ def speed(client, tokenizer, runs):
                 and ttft is not None
                 and tokens > 1
                 and result["finish_reason"] in ("stop", "length")
-                and abs(usage.get("prompt_tokens", 0) - size) < 128
+                and size - 256 < usage.get("prompt_tokens", 0) <= size
             )
             results.append(
                 {

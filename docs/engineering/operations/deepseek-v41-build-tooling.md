@@ -38,7 +38,10 @@ No launcher or model checkpoint is bundled with these tools.
 HTTP `prefetch` writes a frozen manifest and an independent sibling named
 `<manifest filename>.tokenizer.json`. Move both files together. Smoke and speed
 commands resolve that sibling relative to the manifest and verify its digest;
-`--tokenizer` can supply another local copy with the same digest.
+`--tokenizer` can supply another local copy with the same digest. Interrupted
+manifest publication can be retried; prefetch replaces its unpublished tokenizer
+sidecar. Speed probes reserve 128 tokens for chat framing and qualify a result
+only when the server-reported input count stays within the target budget.
 
 All entry points live under `scripts/`; use `--help` for required inputs.
 See the dated build reports for recipe-specific command sequences and the
