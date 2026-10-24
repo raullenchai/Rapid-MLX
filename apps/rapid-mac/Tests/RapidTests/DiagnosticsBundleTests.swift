@@ -35,8 +35,20 @@ struct DiagnosticsBundleTests {
 
     @Test("Short account names cannot rewrite redaction placeholders")
     func shortAccount() {
-        #expect(DiagnosticsBundle.redact("/Users/a/cache USER=a", homeDirectory: "/Users/a", username: "a")
-            == "<redacted>/cache USER=<redacted>")
+        #expect(DiagnosticsBundle.redact("/Users/a/cache USER=a LOGNAME=a user a failed to load a model", homeDirectory: "/Users/a", username: "a")
+            == "<redacted>/cache USER=<redacted> LOGNAME=<redacted> user <redacted> failed to load a model")
+    }
+
+    @Test("Percent-encoded allowed characters and separators cannot leak identities")
+    func percentEncodings() {
+        let inputs = ["/Users/fake%2Bperson/cache", "%2fUsers%2ffake%2bperson/cache",
+                      "/Users/%66ake+person/cache"]
+        for input in inputs {
+            #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake+person", username: "fake+person")
+                == "<redacted>/cache")
+        }
+        #expect(DiagnosticsBundle.redact("USER=fake%2Bperson", homeDirectory: "/Users/fake+person", username: "fake+person")
+            == "USER=<redacted>")
     }
 
     @Test("Empty identities do not corrupt diagnostic text")

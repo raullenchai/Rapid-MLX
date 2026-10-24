@@ -97,22 +97,37 @@ enum DiagnosticsBundle {
     /// Literal replacement also handles account names containing regex syntax.
     static func redact(_ report: String, homeDirectory: String, username: String) -> String {
         let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
-        func variants(_ value: String) -> [String] {
-            guard !value.isEmpty && value != "/" else { return [] }
-            return [value, value.replacingOccurrences(of: "/", with: "\\/"),
-                    value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value]
-                .sorted { $0.count > $1.count }
-                .map { NSRegularExpression.escapedPattern(for: $0) }
+        func identityPattern(_ value: String) -> String {
+            // Accept mixtures of literal and percent-encoded characters,
+            // including encoded separators and lower-case hex digits.
+            value.unicodeScalars.map { scalar in
+                let literal = NSRegularExpression.escapedPattern(for: String(scalar))
+                let encoded = String(scalar).utf8.map { String(format: "%%%02X", $0) }.joined()
+                let escapedSlash = scalar == "/" ? #"|\\/"# : ""
+                return "(?:" + literal + "|(?i:" + encoded + ")" + escapedSlash + ")"
+            }.joined()
         }
-        let patterns = variants(home) + variants(username).map {
-            // Avoid destroying ordinary words for short account names.
-            "(?<![\\p{L}\\p{N}_])" + $0 + "(?![\\p{L}\\p{N}_])"
+        var patterns: [String] = []
+        if !home.isEmpty && home != "/" { patterns.append(identityPattern(home)) }
+        let shortAccount = !username.isEmpty && username.count <= 2
+        if !username.isEmpty {
+            let account = identityPattern(username)
+            if shortAccount {
+                // Short names overlap ordinary prose (e.g. "a model"). Match
+                // identity fields and path/quoted components, not prose words.
+                let field = #"(\b(?i:USER|LOGNAME|USERNAME|account)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
+                patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
+                patterns.append(#"(?<=[/("'])"# + account + #"(?![\p{L}\p{N}_])"#)
+            } else {
+                patterns.append(#"(?<![\p{L}\p{N}_])"# + account + #"(?![\p{L}\p{N}_])"#)
+            }
         }
         // Replace in one pass so a short account name cannot rewrite the
         // placeholder inserted for a home path (or another identity variant).
         guard !patterns.isEmpty else { return LogScrubber.scrub(report) }
         let pattern = patterns.joined(separator: "|")
-        let result = report.replacingOccurrences(of: pattern, with: "<redacted>", options: .regularExpression)
+        let replacement = shortAccount ? "$1<redacted>" : "<redacted>"
+        let result = report.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
         return LogScrubber.scrub(result)
     }
 
