@@ -210,15 +210,24 @@ class TestResponsesStreamEventOrder:
         assert initial_state == {"sequence_number": [1]}
         state = {"response": {"id": "resp_test"}, "sequence_number": [7]}
         assert _parse_sse(_responses_keepalive_sse(state)) == [
-            ("ping", {"type": "ping", "sequence_number": 7})
+            (
+                "response.in_progress",
+                {
+                    "type": "response.in_progress",
+                    "response": {"id": "resp_test"},
+                    "sequence_number": 7,
+                },
+            )
         ]
         assert state == {"response": {"id": "resp_test"}, "sequence_number": [8]}
-        assert _parse_sse(_responses_keepalive_sse({})) == [("ping", {"type": "ping"})]
+        assert _parse_sse(_responses_keepalive_sse({})) == [
+            ("response.in_progress", {"type": "response.in_progress"})
+        ]
 
     @pytest.mark.parametrize("kind", ["text", "tool", "reasoning"])
     @pytest.mark.parametrize("stall", [False, True])
     def test_exact_event_sequence(self, responses_client, monkeypatch, kind, stall):
-        """#5191: transport heartbeats must not duplicate lifecycle events."""
+        """#5191: only genuine stalls add parsed in-progress heartbeats."""
         from rapid_mlx.config import get_config
 
         monkeypatch.setattr(
@@ -276,15 +285,20 @@ class TestResponsesStreamEventOrder:
         assert response.status_code == 200
         events = _parse_sse(response.text)
         names = [name for name, _ in events]
-        assert names.count("response.in_progress") == 1
         assert names[:2] == ["response.created", "response.in_progress"]
         assert [data["sequence_number"] for _, data in events] == list(
             range(len(events))
         )
         expected = ["response.created", "response.in_progress"]
-        ping_count = names.count("ping")
-        assert (ping_count > 0) == stall
-        expected += ["ping"] * ping_count
+        heartbeat_count = names.count("response.in_progress") - 1
+        assert (heartbeat_count > 0) == stall
+        expected += ["response.in_progress"] * heartbeat_count
+        initial_response = events[0][1]["response"]
+        assert all(
+            data["response"] == initial_response
+            for name, data in events
+            if name == "response.in_progress"
+        )
         if kind == "tool":
             expected += [
                 "response.output_item.added",

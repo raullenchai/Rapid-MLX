@@ -2690,21 +2690,22 @@ async def _stream_buffered_responses_response(
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:
-    """Emit a parsed heartbeat without repeating a lifecycle transition.
+    """Keep the initial lifecycle pair unique, but preserve stall heartbeats.
 
-    Event-based idle watchdogs need a data frame (#1057). A distinct ping
-    keeps that activity visible without duplicating response.in_progress.
+    The guard sends an immediate heartbeat after response.created. Use a
+    comment there; genuine stalls still need parsed activity for #1057.
     """
     seq = state.get("sequence_number")
-    # The guard also sends an immediate heartbeat after the first chunk.
-    # Keep the created/in-progress pair adjacent before parsed heartbeats.
     if seq == [1]:
         return ": keepalive\n\n"
-    data: dict[str, object] = {"type": "ping"}
+    data: dict[str, object] = {"type": "response.in_progress"}
+    response = state.get("response")
+    if isinstance(response, dict):
+        data["response"] = response
     if isinstance(seq, list) and seq:
         data["sequence_number"] = seq[0]
         seq[0] += 1
-    return _sse("ping", data)
+    return _sse("response.in_progress", data)
 
 
 async def _stream_responses_with_nonprogress_retry(
