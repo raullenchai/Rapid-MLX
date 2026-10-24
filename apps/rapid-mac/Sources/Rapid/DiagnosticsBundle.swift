@@ -110,30 +110,30 @@ enum DiagnosticsBundle {
             }.joined()
         }
         var patterns: [String] = []
+        // Match delimiters in their literal and encoded forms alike.
+        let delimiters = "/ \t\r\n\"'<>:,;)]}?!#&="
+            .map { identityPattern(String($0)) }.joined(separator: "|")
+        let ending = "(?:$|" + delimiters + ")"
         if !home.isEmpty && home != "/" {
             // A home is a complete path component, not a prefix of another
-            // account's directory. Accept plain/escaped/encoded separators.
-            let boundary = #"(?=$|/|\\/|%2f|[\s"'<>:,;)\]}?!#&=]|\.(?=$|[\s"'<>)]))"#
+            // account's directory. A final period may terminate prose.
+            let boundary = "(?=" + ending + "|" + identityPattern(".") + "(?=" + ending + "))"
             patterns.append(identityPattern(home) + boundary)
         }
-        let shortAccount = !username.isEmpty && username.count <= 2
         if !username.isEmpty {
             let account = identityPattern(username)
-            if shortAccount {
-                // Short names overlap ordinary prose (e.g. "a model"). Match
-                // identity fields and path/quoted components, not prose words.
-                let field = #"(\b(?i:USER|LOGNAME|USERNAME|account)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
-                patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
-                patterns.append(#"(?:(?<=[/("'])|(?<=%2f))"# + account + #"(?![\p{L}\p{N}_.+-])"#)
-            } else {
-                patterns.append(#"(?<![\p{L}\p{N}_])"# + account + #"(?![\p{L}\p{N}_])"#)
-            }
+            // Account names of any length can be ordinary words ("a", "model").
+            // Limit matching to identity fields and path/quoted components.
+            let field = #"(\b(?i:USER|LOGNAME|USERNAME|account|serving|alias)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
+            patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
+            patterns.append(#"(?:(?<=/)|(?<=%2f))"# + account + "(?=" + ending + ")")
+            patterns.append(#"(?<=[("'])"# + account + #"(?![\p{L}\p{N}_])"#)
         }
         // Replace in one pass so a short account name cannot rewrite the
         // placeholder inserted for a home path (or another identity variant).
         guard !patterns.isEmpty else { return LogScrubber.scrub(report) }
         let pattern = patterns.joined(separator: "|")
-        let replacement = shortAccount ? "$1<redacted>" : "<redacted>"
+        let replacement = !username.isEmpty ? "$1<redacted>" : "<redacted>"
         let result = report.replacingOccurrences(of: pattern, with: replacement, options: [.regularExpression, .caseInsensitive])
         return LogScrubber.scrub(result)
     }

@@ -86,6 +86,24 @@ struct DiagnosticsBundleTests {
             == "%2Ftmp%2F<redacted>%2Fcache")
     }
 
+    @Test("Ordinary account words retain prose while identity fields are redacted")
+    func ordinaryAccountWords() {
+        for account in ["model", "server", "admin"] {
+            let input = "\(account) failed; USER=\(account); /tmp/\(account)/cache"
+            #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/\(account)", username: account)
+                == "\(account) failed; USER=<redacted>; /tmp/<redacted>/cache")
+        }
+    }
+
+    @Test("Encoded home delimiters cannot bypass redaction")
+    func encodedHomeDelimiters() {
+        for ending in ["%3Fmode=value", "%20failed", "%2E", "%09failed", "%23fragment", "%26mode=value"] {
+            #expect(DiagnosticsBundle.redact("/Users/fake-home" + ending,
+                                             homeDirectory: "/Users/fake-home", username: "account")
+                == "<redacted>" + ending)
+        }
+    }
+
     @Test("Empty identities do not corrupt diagnostic text")
     func emptyIdentities() {
         #expect(DiagnosticsBundle.redact("ready /opt/bin", homeDirectory: "", username: "") == "ready /opt/bin")
