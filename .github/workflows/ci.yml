@@ -582,6 +582,8 @@ jobs:
             tests/test_mllm_media_prefix_cache.py \
             tests/test_mlx_vlm_vendored_apc_adapters.py \
             tests/test_mlx_vlm_vendored_apc_support.py \
+            tests/test_mlx_vlm_vendored_inputs.py \
+            tests/test_remote_audio_security.py \
             tests/test_mlx_vlm_vendored_generate.py \
             tests/test_mlx_vlm_vendored_speculative.py \
             tests/test_mlx_vlm_vendored_drafters.py \
@@ -691,7 +693,6 @@ jobs:
             tests/test_model_file_guard.py \
             tests/test_alias_revision.py \
             tests/test_alternate_model_load_security.py \
-            tests/test_remote_audio_security.py \
             tests/test_kimi_tokenizer_security.py \
             tests/test_kimi_vlm_security.py \
             tests/test_mllm_model_file_consent.py \

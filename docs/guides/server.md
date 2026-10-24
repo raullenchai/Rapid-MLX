@@ -1319,3 +1319,15 @@ respective boundaries. Allow only required origins/hosts and authenticate shared
 servers. `rapid-mlx share` retains its origin allowlist and bearer authentication;
 the relay rewrites Host to the local destination. These defaults also apply to
 dedicated speculative decoding and model-free Computer Use servers.
+
+### Media helper downloads
+
+Direct image, audio, and video helper calls use the shared HTTP(S) transport
+before handing a local file to a decoder. Redirect destinations and resolved
+addresses are checked at each hop. Remote audio is limited to 100 MB, including
+streamed responses without a length header; inline audio uses the same decoded
+size limit. Image and video retain their existing download limits. Ordinary
+local files remain supported. Remote decoder-specific protocols are not
+accepted for audio or video.
+
+Media `file:///absolute/path` URIs decode escaped path characters and ignore URI query/fragment components. Their authority must be empty or `localhost`; other authorities are refused. Use an ordinary filesystem path for relative local files.

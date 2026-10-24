@@ -213,19 +213,19 @@ vendored copy differs by exactly the deviations listed):
   - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``prepare_inputs``: bytes
     video paths are ``os.fsdecode``-d (upstream str()-ed them into
     ``"b'/tmp/a.mp4'"``-style garbage filenames).
-  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_audio``, ``load_image``,
-    and ``load_video``: resolve remote inputs with Rapid's DNS-pinned,
-    redirect-checked, size-bounded media downloaders before decoding. Audio
-    data URIs become bounded in-memory bytes; local inputs retain decoder
-    behavior. Audio transport and decoder-boundary regressions are covered by
-    ``tests/test_remote_audio_security.py``. Responses are closed on every path.
+  - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_image``, ``load_audio``
+    and ``load_video``: remote URLs use the shared DNS-pinned media downloader
+    before decoding, including redirect checks and size bounds. Audio data
+    URIs are decoded to bounded in-memory bytes. Transport resources and owned temporary files are released on
+    success and failure. URI schemes are case-insensitive, and file URIs
+    resolve to local paths before decoding.
 
   The
   lane's ``prepare_inputs`` call sites (``multimodal_processor.py``,
   ``mllm_batch_generator.py``) resolve this module; per-function upstream
   parity is probed in ``tests/test_mlx_vlm_vendored_inputs.py`` (all
-  functions except ``processor_video_sampling``, ``load_video``,
-  ``load_image``, ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
+  functions except ``processor_video_sampling``, ``load_image``, ``load_video``,
+  ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
   A diff against the pinned tag must show only the header/import block
   and the documented hunks.
 
