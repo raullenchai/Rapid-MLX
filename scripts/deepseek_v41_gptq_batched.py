@@ -102,11 +102,10 @@ def expert_batch_size(args, c):
     scratch = (
         32 * cols * cols * min(factor_workers(), 2 * maximum, args.n_routed_experts)
     )
-    return min(
-        maximum,
-        args.n_routed_experts,
-        max(1, int(max(0, budget - scratch) // per_expert)),
-    )
+    capacity = int((budget - scratch) // per_expert)
+    if capacity < 1:
+        raise MemoryError("GPTQ working memory budget cannot hold one expert")
+    return min(maximum, args.n_routed_experts, capacity)
 
 
 class RoutedSpill:

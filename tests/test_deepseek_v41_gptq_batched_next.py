@@ -86,7 +86,8 @@ def test_factor_memory_budget(monkeypatch):
     four = next_batch.expert_batch_size(args, dict(memory_limit_gb=400))
     assert 1 <= four < one <= 64
     monkeypatch.setenv("RAPID_MLX_GPTQ_WORKING_GB", "0.000001")
-    assert next_batch.expert_batch_size(args, dict(memory_limit_gb=400)) == 1
+    with pytest.raises(MemoryError, match="cannot hold one expert"):
+        next_batch.expert_batch_size(args, dict(memory_limit_gb=400))
 
 
 def build_layer(root, source, c, reference, module, monkeypatch):
@@ -441,3 +442,34 @@ def test_spill_read_checks_sizes_and_guard(tmp_path):
 
     with pytest.raises(MemoryError, match="guard rejected RAM copy"):
         next_batch.RoutedSpill.read(path, np.uint16, (2, 2), fail)
+
+
+@pytest.mark.parametrize("limiter", ["working", "configured", "available"])
+@pytest.mark.parametrize(
+    "budget, expected", [(511, None), (1023, None), (1024, 1), (1536, 2)]
+)
+def test_expert_batch_rejects_insufficient_capacity(
+    monkeypatch, limiter, budget, expected
+):
+    import psutil
+
+    # 512 bytes of factor scratch plus 512 bytes per expert for this shape.
+    args = SimpleNamespace(dim=4, moe_inter_dim=2, n_routed_experts=4)
+    monkeypatch.setenv("RAPID_MLX_GPTQ_EXPERT_BATCH", "2")
+    monkeypatch.setenv("RAPID_MLX_GPTQ_FACTOR_WORKERS", "1")
+    monkeypatch.setenv(
+        "RAPID_MLX_GPTQ_WORKING_GB", str(budget / 1e9 if limiter == "working" else 1)
+    )
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(
+            available=budget * 4 if limiter == "available" else 1e9
+        ),
+    )
+    config = dict(memory_limit_gb=budget * 4 / 1e9 if limiter == "configured" else 1)
+    if expected is None:
+        with pytest.raises(MemoryError, match="cannot hold one expert"):
+            next_batch.expert_batch_size(args, config)
+    else:
+        assert next_batch.expert_batch_size(args, config) == expected
