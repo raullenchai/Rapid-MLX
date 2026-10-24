@@ -1308,11 +1308,12 @@ def test_folder_routes_accept_home_and_absorb_overlap(
             assert (response.json()["id"] == first_id) == parent_first
             assert response.json()["path"] == str(home)
             await app.state.local_search.wait_idle()
-            # Accept Whole Mac without walking the machine in a CPU test.
+            # Reject Whole Mac without absorbing the safe home registration.
             monkeypatch.setattr(app.state.local_search, "queue", AsyncMock())
             response = await client.post("/v1/local-search/folders", json={"path": "/"})
-            assert response.status_code == 201
-            assert response.json()["path"] == "/"
+            assert response.status_code == 400
+            assert app.state.local_search.store.folders()[0]["path"] == str(home)
+            app.state.local_search.queue.assert_not_awaited()
             assert len(app.state.local_search.store.folders()) == 1
             assert len(fake.calls) == 1
             assert app.state.local_search.status()["totals"]["files"] == 1
@@ -4066,24 +4067,10 @@ def test_video_dedupe_accumulates_slow_drift(tmp_path, monkeypatch):
     assert capture.released
 
 
-def test_whole_mac_validation_and_overlap_without_walking(tmp_path):
-    assert validate_folder("/") == Path("/")
-    for first, second in ((Path("/"), tmp_path), (tmp_path, Path("/"))):
-        store = Store(
-            tmp_path
-            / ("root-first.sqlite" if first == Path("/") else "root-last.sqlite"),
-            "fake",
-        )
-        try:
-            fid, _ = store.add_folder(first)
-            assert store.add_folder(first) == (fid, False)
-            covering_id, created = store.add_folder(second)
-            assert created == (second == Path("/"))
-            assert (covering_id == fid) == (first == Path("/"))
-            assert len(store.folders()) == 1
-            assert store.folders()[0]["path"] == "/"
-        finally:
-            store.close()
+def test_whole_mac_rejected_before_listing(monkeypatch):
+    monkeypatch.setattr(os, "scandir", lambda *args: pytest.fail("must not list root"))
+    with pytest.raises(ValueError, match="select a specific subfolder"):
+        validate_folder("/")
 
 
 @pytest.mark.parametrize(
@@ -4140,7 +4127,10 @@ def test_absolute_os_and_all_user_library_skips(tmp_path, monkeypatch, chosen):
     scratch = tmp_path / "private" / "tmp"
     scratch.mkdir()
     (scratch / "good.txt").write_text("banana")
-    # The temp tree stands in for "/"; never walk the real filesystem root.
+    system_subfolder = tmp_path / "System" / "Selected"
+    system_subfolder.mkdir()
+    (system_subfolder / "selected.txt").write_text("apple")
+    # The temp tree tests traversal exclusions without walking the filesystem root.
     root = {
         "whole": tmp_path,
         "home": home,
@@ -4149,7 +4139,7 @@ def test_absolute_os_and_all_user_library_skips(tmp_path, monkeypatch, chosen):
         "library": home / "Library",
         "icloud": icloud,
         "other-library": tmp_path / "Users" / "bob" / "Library",
-        "system": tmp_path / "System",
+        "system": system_subfolder,
         "scratch": scratch,
     }[chosen]
     expected = {
@@ -4160,15 +4150,17 @@ def test_absolute_os_and_all_user_library_skips(tmp_path, monkeypatch, chosen):
         "library": [home / "Library" / "nested" / "excluded.txt", icloud / "good.txt"],
         "icloud": [icloud / "good.txt"],
         "other-library": [root / "nested" / "excluded.txt"],
-        "system": [root / "excluded.txt"],
+        "system": [system_subfolder / "selected.txt"],
         "scratch": [scratch / "good.txt"],
     }[chosen]
     assert validate_folder(str(root)) == root
     files, skipped = scan(root)
     assert set(files) == set(expected)
     assert skipped == {"whole": len(prefixes) + 2, "home": 1}.get(chosen, 0)
+    for prefix in prefixes:
+        with pytest.raises(ValueError, match="select a specific subfolder"):
+            validate_folder(str(prefix))
     for selected in (
-        *prefixes,
         home / "Library",
         tmp_path / "Users" / "bob" / "Library",
     ):
@@ -4293,16 +4285,16 @@ def test_files_searchable_before_discovery_finishes(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_whole_mac_api_acceptance_does_not_walk_root(tmp_path, monkeypatch):
+def test_whole_mac_api_rejection_does_not_queue_root(tmp_path, monkeypatch):
     async def scenario():
         async with client_app(tmp_path, monkeypatch) as (client, app, _):
             monkeypatch.setattr(app.state.local_search, "queue", AsyncMock())
             response = await client.post("/v1/local-search/folders", json={"path": "/"})
-            assert response.status_code == 201
-            assert response.json()["path"] == "/"
+            assert response.status_code == 400
             again = await client.post("/v1/local-search/folders", json={"path": "/"})
-            assert again.status_code == 200
-            assert again.json()["id"] == response.json()["id"]
+            assert again.status_code == 400
+            assert app.state.local_search.store.folders() == []
+            app.state.local_search.queue.assert_not_awaited()
 
     asyncio.run(scenario())
 
