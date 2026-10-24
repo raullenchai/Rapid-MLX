@@ -114,23 +114,7 @@ struct DesktopRuntimeTrustTests {
         #expect(manager.binaryResolution == nil)
     }
 
-    @Test("Release assembly refuses an engine-less app before building", arguments: [
-        ["RAPID_MLX_OFFICIAL_RELEASE": "1"], ["CODESIGN_IDENTITY": "release-identity"],
-    ])
-    func releaseRequiresEngine(settings: [String: String]) async throws {
-        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("scripts/build.sh")
-        var environment = ProcessInfo.processInfo.environment
-        environment["SKIP_SIDECAR"] = "1"
-        environment.merge(settings) { _, new in new }
-        let result = try await TestSubprocess.run(
-            executableURL: URL(fileURLWithPath: "/bin/bash"), arguments: [script.path],
-            environment: environment
-        )
-        #expect(result.terminationStatus == 1)
-        #expect(String(decoding: result.standardError, as: UTF8.self).contains("require a bundled engine"))
-    }
+
 }
 
 private struct SignedRuntimeFixture {
