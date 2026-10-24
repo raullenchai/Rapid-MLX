@@ -1187,19 +1187,23 @@ def is_repo_cached(repo_id: str) -> bool:
 
 def _snapshot_is_complete_ltx25(snap_dir: str) -> bool:
     """Check the files the bundled LTX-2.5 runtime opens in this snapshot."""
+    from pathlib import Path
+
+    from .model_metadata import _read_json
     from .video.ltx25 import LTX25_CHECKPOINT_FILES
 
     required = all(
         _is_nonempty_snapshot_manifest_file(os.path.join(snap_dir, name), snap_dir)
         for name in LTX25_CHECKPOINT_FILES
     )
-    if not required:
+    if not required or _read_json(Path(snap_dir) / "text_encoder/config.json") is None:
         return False
-    # The runtime prefers these when present over transformer-distilled.safetensors.
-    from pathlib import Path
-
+    # The runtime prefers these when present over the required base weights.
     snapshot = Path(snap_dir)
-    alternatives = [snapshot / "transformer.safetensors"]
+    alternatives = [
+        snapshot / "transformer.safetensors",
+        snapshot / "spatial_upscaler_x2_v1_1.safetensors",
+    ]
     alternatives.extend(snapshot.glob("transformer-distilled-*.safetensors"))
     return all(
         not os.path.lexists(path)
