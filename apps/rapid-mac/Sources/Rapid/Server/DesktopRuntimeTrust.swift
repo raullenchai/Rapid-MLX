@@ -5,6 +5,36 @@ import Security
 /// Checking the outer resource seal covers the launcher, Python modules and
 /// native dependencies together, rather than just checking the interpreter.
 enum DesktopRuntimeTrust {
+    struct LaunchRefused: LocalizedError {
+        var errorDescription: String? { "The bundled engine could not be verified. Reinstall the full Desktop app." }
+    }
+
+    /// Recheck at the synchronous launch boundary, after any asynchronous
+    /// preparation. Other helper executables are not managed engines. Keep the
+    /// app-relative path intact so changing a symlink cannot change this policy.
+    /// RAPID_BIN is the deliberate, documented developer trust bypass.
+    static func verifyBeforeLaunch(
+        _ binary: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        authenticateBundle: (URL) -> Bool = authenticate
+    ) throws {
+        if let override = environment["RAPID_BIN"], !override.isEmpty,
+           URL(fileURLWithPath: override).resolvingSymlinksInPath() == binary.resolvingSymlinksInPath() {
+            return
+        }
+        guard binary.path.hasSuffix(".app/Contents/Resources/rapid-mlx/bin/rapid-mlx") else { return }
+        guard authenticateBundle(binary) else { throw LaunchRefused() }
+    }
+
+    static func run(
+        _ process: Process,
+        authenticateBundle: (URL) -> Bool = authenticate
+    ) throws {
+        guard let binary = process.executableURL else { throw LaunchRefused() }
+        try verifyBeforeLaunch(binary, authenticateBundle: authenticateBundle)
+        try process.run()
+    }
+
     static func authenticate(_ binary: URL) -> Bool {
         // Public release identity, pinned in source rather than read from the
         // candidate bundle or its writable metadata. Rotation needs review.

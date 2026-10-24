@@ -4,7 +4,9 @@ Desktop selects the engine inside its full application bundle. Before selecting
 it, Desktop validates the app's code signature and resource seal against the
 release Team ID and bundle identifier pinned in source. The seal includes the launcher,
 Python modules and native dependencies. Runtime symlinks must stay inside the
-sealed application. Server starts recheck the seal before probing the engine.
+sealed application. Engine launches recheck the seal synchronously immediately before process creation,
+including server starts, capability probes, catalogs and downloads. The launch
+path remains inside the app even when the launcher is an internal symlink.
 Missing, changed, unsigned or differently signed bundles are refused.
 Verification reads the bundled payload and adds some startup latency.
 
@@ -50,11 +52,20 @@ adds the full signed app payload, resolves and executes the new engine, and
 checks that the old managed engine remains unchanged. Release assembly refusal
 is exercised as a subprocess. No model or GPU is required.
 
-## Verification boundary
+## Threat model and residual race
 
-This is static authentication of the complete installed application before
-selection and server startup. It does not provide filesystem isolation from
-other processes already running as the same user. Checking the identity of a
-running shell or Python interpreter alone would not authenticate its imported
-Python resources, so it cannot replace the resource-seal check. A separately
-isolated runtime/helper protocol is outside this change's scope.
+Installation remains prompt-free. Desktop verifies the complete application
+signature and resource digests at selection and immediately before execution
+from the app-owned bundle location. An unsigned payload, a different signing
+identity, or a launcher/Python resource changed before that final verification
+is refused. The regression tests replace the launcher or a Python module after
+selection and before launch verification and assert that no child starts.
+
+The owner-approved threat model excludes a concurrent process already running
+as the same user changing files after the final verification, between checking
+and execution or during later Python imports. Such a process can already modify
+the user-installed application and its data. Static verification does not make
+the bundle immutable or isolate it from that user. This residual race is
+accepted explicitly; this release adds neither a privileged installation helper
+nor administrator authorization. The explicit developer override remains a
+separate, intentional bypass of bundled-engine verification.

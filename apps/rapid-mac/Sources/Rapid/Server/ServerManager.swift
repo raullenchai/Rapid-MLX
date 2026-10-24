@@ -5647,6 +5647,7 @@ final class ProcessGroupChild: @unchecked Sendable {
             .sorted()
 
         var pid: pid_t = 0
+        try DesktopRuntimeTrust.verifyBeforeLaunch(executableURL)
         let result = argv.withCStringArray { argvPointer in
             envp.withCStringArray { envPointer in
                 executableURL.path.withCString { executablePath in

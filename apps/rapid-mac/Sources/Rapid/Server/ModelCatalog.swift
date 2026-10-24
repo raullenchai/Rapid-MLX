@@ -2625,7 +2625,7 @@ final class CatalogProcessRegistry: @unchecked Sendable {
         }
         processes[ObjectIdentifier(process)] = process
         beforeLaunch?()
-        try process.run()
+        try DesktopRuntimeTrust.run(process)
         afterLaunch?()
         return true
     }

@@ -82,7 +82,7 @@ enum IntegrationCatalog {
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
             do {
-                try process.run()
+                try DesktopRuntimeTrust.run(process)
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 guard process.terminationStatus == 0 else { return [] }

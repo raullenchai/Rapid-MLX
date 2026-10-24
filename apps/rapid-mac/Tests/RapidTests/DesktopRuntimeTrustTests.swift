@@ -5,6 +5,84 @@ import Testing
 
 @Suite("Desktop runtime authentication")
 struct DesktopRuntimeTrustTests {
+    @Test("A swap after selection but before launch verification is refused", arguments: [
+        "bin/rapid-mlx", "site-packages/module.py",
+    ])
+    func swapBeforeLaunchVerification(path: String) async throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        let requirement = try await fixture.sign()
+        let resolution = try #require(fixture.locate(requirement: requirement))
+        // Atomic replacement models a changed inode, not only an in-place edit.
+        try Data("#!/bin/sh\nexit 17\n".utf8).write(
+            to: fixture.runtime.appendingPathComponent(path), options: .atomic
+        )
+        let process = Process()
+        process.executableURL = resolution.binary
+        #expect(throws: DesktopRuntimeTrust.LaunchRefused.self) {
+            try DesktopRuntimeTrust.run(process) {
+                DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+            }
+        }
+        #expect(process.processIdentifier == 0)
+    }
+
+    @Test("An intact signed runtime passes the actual launch boundary")
+    func verifiedLaunch() async throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        let requirement = try await fixture.sign()
+        let process = Process()
+        process.executableURL = fixture.binary
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try DesktopRuntimeTrust.run(process) {
+            DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+        }
+        defer { if process.isRunning { process.terminate() } }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while process.isRunning && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!process.isRunning)
+        if !process.isRunning { #expect(process.terminationStatus == 0) }
+    }
+
+    @Test("Process-group launches reject an unsigned bundled runtime")
+    func processGroupRefusal() throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        #expect(throws: DesktopRuntimeTrust.LaunchRefused.self) {
+            try ProcessGroupChild.spawn(
+                executableURL: fixture.binary, arguments: [],
+                standardInput: .nullDevice, standardOutput: Pipe(), standardError: Pipe()
+            )
+        }
+    }
+
+    @Test("A bundled launcher symlink keeps its app-owned launch path")
+    func launcherSymlink() async throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        let target = fixture.binary.deletingLastPathComponent().appendingPathComponent("launcher")
+        try FileManager.default.moveItem(at: fixture.binary, to: target)
+        try FileManager.default.createSymbolicLink(atPath: fixture.binary.path, withDestinationPath: "launcher")
+        let requirement = try await fixture.sign()
+        let resolution = try #require(fixture.locate(requirement: requirement))
+        #expect(resolution.binary == fixture.binary)
+        try FileManager.default.removeItem(at: fixture.binary)
+        try FileManager.default.createSymbolicLink(atPath: fixture.binary.path, withDestinationPath: "/usr/bin/true")
+        #expect(throws: DesktopRuntimeTrust.LaunchRefused.self) {
+            try DesktopRuntimeTrust.verifyBeforeLaunch(resolution.binary, environment: [:]) {
+                DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+            }
+        }
+    }
+
     @Test("A sealed runtime runs after a full-app update of an existing slim layout")
     func slimMigration() async throws {
         let fixture = try SignedRuntimeFixture()

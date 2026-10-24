@@ -510,7 +510,7 @@ final class DownloadManager {
         }
 
         do {
-            try process.run()
+            try DesktopRuntimeTrust.run(process)
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil

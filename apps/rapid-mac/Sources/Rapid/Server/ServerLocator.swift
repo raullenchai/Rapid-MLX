@@ -81,12 +81,12 @@ enum ServerLocator {
         // must never allow a legacy runtime-override to replace this payload.
         guard let bundled = bundleResourceURL?
             .appendingPathComponent("rapid-mlx/bin/rapid-mlx"),
-              let resolved = executableURL(path: bundled.path, allowRelative: false),
+              executableURL(path: bundled.path, allowRelative: false) != nil,
               authenticateBundle(bundled) else {
             return nil
         }
         return Resolution(
-            binary: resolved,
+            binary: bundled.standardizedFileURL,
             source: .bundled,
             version: sidecarVersion(forBinary: bundled)
         )
