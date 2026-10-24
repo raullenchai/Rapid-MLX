@@ -4030,7 +4030,11 @@ def _run_all_serialized(
                     continue
             try:
                 started_at = time.monotonic()
-                if not deep and _builder_id(builder) == "packages.optional":
+                if (
+                    not deep
+                    and _builder_id(builder) == "packages.optional"
+                    and index + 1 < len(selected_builders)
+                ):
                     # Optional imports must leave time for cache/network/shell
                     # and service diagnostics, even when a child hangs.
                     _DOCTOR_DEADLINE = max(

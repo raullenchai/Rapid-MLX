@@ -5678,10 +5678,11 @@ def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path)
     assert "pip install" not in row.label
 
 
-@pytest.mark.parametrize("import_seconds", [4.5, 40.0])
+@pytest.mark.parametrize("only_optional", [False, True])
+@pytest.mark.parametrize("import_seconds", [4.5, 17.0, 40.0])
 @pytest.mark.parametrize("preceding_seconds", [2.0, 18.0])
 def test_slow_optional_import_preserves_later_diagnostics(
-    monkeypatch, import_seconds, preceding_seconds
+    monkeypatch, import_seconds, preceding_seconds, only_optional
 ):
     """A cold or stuck optional import must not starve unrelated checks."""
     clock = [100.0]
@@ -5739,14 +5740,16 @@ def test_slow_optional_import_preserves_later_diagnostics(
         ),
     )
 
-    report = eh.run_all()
+    report = eh.run_all(only={"packages.optional"} if only_optional else None)
 
-    assert calls == list(later_ids), "cache/network/shell checks were starved"
-    vision = [c for c in report.sections[1].checks if c.label.startswith("mlx-vlm")]
+    assert calls == ([] if only_optional else list(later_ids))
+    optional_section = report.sections[0 if only_optional else 1]
+    vision = [c for c in optional_section.checks if c.label.startswith("mlx-vlm")]
     assert len(vision) == 2
     expected = (
         eh.CheckStatus.OK
-        if import_seconds == 4.5 and preceding_seconds == 2.0
+        if (only_optional and import_seconds < eh._DOCTOR_BUDGET_S)
+        or (import_seconds == 4.5 and preceding_seconds == 2.0)
         else eh.CheckStatus.SKIPPED
     )
     assert all(c.status is expected for c in vision)
