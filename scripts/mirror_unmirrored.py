@@ -84,3 +84,34 @@ def load_unmirrored(
             since=since,
         )
     return entries
+
+
+def load_published_unmirrored(
+    url: str = "https://models.rapidmlx.com/api/mirror-state",
+) -> dict[str, UnmirroredEntry | None]:
+    """Read autopilot removals so scheduled audits need no registry PR."""
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (rapid-mlx mirror-state)"}
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise ValueError("published mirror state must be an object")
+    result: dict[str, UnmirroredEntry | None] = {}
+    for repo, value in payload.items():
+        if not isinstance(repo, str) or not isinstance(value, dict):
+            raise ValueError("invalid published mirror state")
+        removed_at = value.get("removedAt")
+        if value.get("mirroredSince"):
+            result[repo] = None
+        elif removed_at:
+            since = str(removed_at)[:10]
+            date.fromisoformat(since)
+            result[repo] = UnmirroredEntry(
+                hf_path=repo,
+                reason="usage-driven mirror removal; Hugging Face fallback",
+                since=since,
+            )
+    return result

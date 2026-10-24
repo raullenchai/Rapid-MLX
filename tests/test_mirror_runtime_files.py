@@ -42,6 +42,14 @@ runtime = _load(
 drift = _load("scripts.mirror_drift_check", ROOT / "scripts" / "mirror_drift_check.py")
 mirror = _load("scripts.mirror_to_r2", ROOT / "scripts" / "mirror_to_r2.py")
 
+
+@pytest.fixture(autouse=True)
+def _no_live_mirror_state(monkeypatch):
+    monkeypatch.setattr(
+        mirror.mirror_unmirrored, "load_published_unmirrored", lambda: {}
+    )
+
+
 REPO = "org/pinned"
 PIN = "a" * 40
 LIST = frozenset({"model_index.json", "unet/model.fp16.safetensors"})

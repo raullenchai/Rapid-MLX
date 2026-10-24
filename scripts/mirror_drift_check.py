@@ -1052,6 +1052,12 @@ def audit(
         unmirrored = load_unmirrored(
             selected_unmirrored_path, main_aliases_path, audio_aliases_path
         )
+        if selected_unmirrored_path == UNMIRRORED_PATH:
+            for repo, entry in mirror_unmirrored.load_published_unmirrored().items():
+                if entry is None:
+                    unmirrored.pop(repo, None)
+                else:
+                    unmirrored[repo] = entry
     selected = [spec for spec in specs if aliases is None or spec.alias in aliases]
     if aliases is not None:
         unknown = aliases - {spec.alias for spec in selected}

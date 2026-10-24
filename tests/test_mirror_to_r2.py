@@ -45,6 +45,13 @@ sys.modules[_SPEC.name] = mirror_to_r2
 _SPEC.loader.exec_module(mirror_to_r2)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_mirror_state(monkeypatch):
+    monkeypatch.setattr(
+        mirror_to_r2.mirror_unmirrored, "load_published_unmirrored", lambda: {}
+    )
+
+
 # --------- 1. CLI argparse smoke ---------
 
 

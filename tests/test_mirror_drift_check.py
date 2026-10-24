@@ -115,6 +115,15 @@ def test_both_alias_schemas_and_allow_list(tmp_path):
     assert not drift._valid_repo_id("org/repo/extra")
 
 
+@pytest.fixture(autouse=True)
+def _no_live_mirror_state(monkeypatch, request):
+    if request.node.name.startswith("test_published_mirror_state"):
+        return
+    monkeypatch.setattr(
+        drift.mirror_unmirrored, "load_published_unmirrored", lambda: {}
+    )
+
+
 def _write_unmirrored(tmp_path, entries):
     path = tmp_path / "mirror_unmirrored.json"
     path.write_text(json.dumps({"schema_version": 1, "entries": entries}))
@@ -1853,3 +1862,101 @@ def test_readme_and_sync_severities_are_unchanged():
         config, drift.MirrorProbe(200, len(stale), None, _oid(stale)), sync=True
     )
     assert kinds == {("size_mismatch", "warning"), ("content_mismatch", "warning")}
+
+
+def test_published_mirror_state_marks_only_removed_repos(monkeypatch):
+    import io
+    import json
+    import urllib.request
+
+    payload = {
+        "org/removed": {"removedAt": "2026-10-24T00:00:00Z"},
+        "org/mirrored": {
+            "mirroredSince": "2026-10-01T00:00:00Z",
+            "removedAt": "2026-09-01",
+        },
+    }
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps(payload).encode()),
+    )
+    actual = drift.mirror_unmirrored.load_published_unmirrored()
+    assert set(actual) == {"org/removed", "org/mirrored"}
+    assert actual["org/mirrored"] is None
+    assert actual["org/removed"].since == "2026-10-24"
+
+
+@pytest.mark.parametrize("payload", [[], {"org/bad": 3}])
+def test_published_mirror_state_rejects_bad_shapes(monkeypatch, payload):
+    import io
+    import json
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps(payload).encode()),
+    )
+    with pytest.raises(ValueError):
+        drift.mirror_unmirrored.load_published_unmirrored()
+
+
+def test_default_audit_reconciles_published_state(monkeypatch):
+    entry = drift.UnmirroredEntry("org/retired", "retired", "2026-10-24")
+    monkeypatch.setattr(drift, "_load_aliases", lambda *_args: [])
+    monkeypatch.setattr(
+        drift, "load_unmirrored", lambda *_args: {"org/restored": entry}
+    )
+    monkeypatch.setattr(
+        drift.mirror_unmirrored,
+        "load_published_unmirrored",
+        lambda: {"org/restored": None, "org/retired": entry},
+    )
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    assert drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH) == []
+
+
+def test_uploader_reconciles_returned_and_removed_repos(monkeypatch, capsys):
+    entry = drift.UnmirroredEntry("org/repo", "retired", "2026-10-24")
+    monkeypatch.setattr(mirror, "load_unmirrored", lambda *_args: {"org/repo": entry})
+    monkeypatch.setattr(
+        mirror.mirror_unmirrored,
+        "load_published_unmirrored",
+        lambda: {"org/repo": None},
+    )
+    monkeypatch.setattr(mirror, "_hf_files", lambda *_args: [])
+    monkeypatch.setattr(mirror, "_r2_client", lambda *_args: object())
+    assert mirror.mirror_repo("org/repo") == 0
+
+    monkeypatch.setattr(
+        mirror.mirror_unmirrored,
+        "load_published_unmirrored",
+        lambda: {"org/repo": entry},
+    )
+    assert mirror.mirror_repo("org/repo") == 2
+    assert "SKIP intentionally unmirrored" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tool", ["audit", "upload"])
+def test_published_mirror_state_failure_prevents_external_work(monkeypatch, tool):
+    def unavailable():
+        raise urllib.error.URLError("state unavailable")
+
+    from unittest.mock import Mock
+
+    unexpected = Mock(side_effect=AssertionError("external work started without state"))
+
+    monkeypatch.setattr(
+        drift.mirror_unmirrored, "load_published_unmirrored", unavailable
+    )
+    monkeypatch.setattr(drift, "_catalog_entries", unexpected)
+    monkeypatch.setattr(mirror, "_hf_files", unexpected)
+    monkeypatch.setattr(mirror, "_r2_client", unexpected)
+    with pytest.raises(urllib.error.URLError, match="state unavailable"):
+        if tool == "audit":
+            drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH)
+        else:
+            mirror.mirror_repo("org/repo", force_unmirrored=True)
+    unexpected.assert_not_called()

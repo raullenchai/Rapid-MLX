@@ -658,9 +658,16 @@ def mirror_repo(
     matching one of its globs, plus repo-root licence/readme files: a pinned
     download that fetches a declared file list needs nothing else.
     """
-    unmirrored = load_unmirrored(unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH).get(
-        repo_id
+    unmirrored_entries = load_unmirrored(
+        unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH
     )
+    if unmirrored_path == UNMIRRORED_PATH:
+        for repo, entry in mirror_unmirrored.load_published_unmirrored().items():
+            if entry is None:
+                unmirrored_entries.pop(repo, None)
+            else:
+                unmirrored_entries[repo] = entry
+    unmirrored = unmirrored_entries.get(repo_id)
     if unmirrored is not None and not force_unmirrored:
         print(
             f"SKIP intentionally unmirrored: {repo_id} "

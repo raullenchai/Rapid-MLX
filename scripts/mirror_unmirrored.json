@@ -125,6 +125,141 @@
       "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
       "reason": "owner-approved low-demand mirror pruning; Hugging Face fallback",
       "since": "2026-10-19"
+    },
+    {
+      "hf_path": "mlx-community/DeepSeek-V4-Flash-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Qwen3.5-122B-A10B-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-3bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q4",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-6bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "rapid-mlx/G9v3-39A5B-MLX-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Qwen3.5-27B-6bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q8",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "OsaurusAI/Qwen-Image-Edit-mflux-q8",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Tmax-9B-MLX-bf16",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/gemma-4-31B-it-qat-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Muse-Glimmer-30B-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/Qwen3.5-27B-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
+    },
+    {
+      "hf_path": "mlx-community/gemma-4-26B-A4B-it-8bit",
+      "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
+      "since": "2026-10-24"
     }
   ]
 }
