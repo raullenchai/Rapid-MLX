@@ -95,12 +95,25 @@ def amend_recipe(parts, scratch, new, first, reason):
     replacements, retrying this exact amendment repairs only checkpoint identity.
     Readers fail closed during that interval. No layer artifacts are rewritten.
     """
+    from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
     from scripts.deepseek_v41_gptq_io import verify_artifact
 
     run_path, checkpoint_path = parts / "run.json", scratch / "checkpoint.json"
     run = json.loads(run_path.read_text())
     checkpoint = json.loads(checkpoint_path.read_text())
     epochs(run)
+    manifest = json.loads((parts / "source-manifest.json").read_text())
+    if digest(manifest) != run["source_identity"]:
+        raise ValueError("source manifest identity mismatch")
+    count = ModelArgs.from_dict(manifest["config"]).n_layers
+    layers = new.get("gate_up_3bit_layers")
+    if (
+        type(count) is not int
+        or count < 1
+        or not isinstance(layers, list)
+        or any(type(i) is not int or not 0 <= i < count for i in layers)
+    ):
+        raise ValueError("amended layer ID outside source model")
     if type(first) is not int or first < 0 or first != checkpoint["next_layer"]:
         raise ValueError("from-layer must equal checkpoint next_layer")
     if checkpoint.get("phase") not in (None, "boundary"):

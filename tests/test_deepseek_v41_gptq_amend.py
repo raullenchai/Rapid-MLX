@@ -32,7 +32,9 @@ def metadata(tmp_path):
     parts, scratch = tmp_path / "parts", tmp_path / "scratch"
     parts.mkdir()
     scratch.mkdir()
-    run = dict(recipe=b.recipe(), source_identity="fixture")
+    manifest = {"config": {"num_hidden_layers": 40}}
+    atomic_json(parts / "source-manifest.json", manifest)
+    run = dict(recipe=b.recipe(), source_identity=digest(manifest))
     run["identity"] = digest(run)
     atomic_json(parts / "run.json", run)
     atomic_json(
@@ -249,7 +251,7 @@ def test_launcher_checks_recorded_recipe_at_next_layer(tmp_path):
             "cache_limit_gb": 0.5,
         }
     )
-    run = dict(recipe=old)
+    run = dict(recipe=old, source_identity=run["source_identity"])
     run["identity"] = digest(run)
     atomic_json(parts / "run.json", run)
     atomic_json(
@@ -302,3 +304,23 @@ def test_unamended_run_rejects_modified_identity_fields(tmp_path, field):
         a.epochs(run)
     with pytest.raises(ValueError, match="authenticate"):
         a.validate_record(run, 0, {"run_identity": original})
+
+
+@pytest.mark.parametrize("kind", ["limit", "large", "manifest"])
+def test_amendment_rejects_out_of_range_layers_before_commit(tmp_path, kind):
+    parts, scratch, run = metadata(tmp_path)
+    new = {**run["recipe"], "gate_up_3bit_layers": [40 if kind == "limit" else 1000000]}
+    if kind == "manifest":
+        atomic_json(
+            parts / "source-manifest.json", {"config": {"num_hidden_layers": 1000001}}
+        )
+    before = (
+        (parts / "run.json").read_bytes(),
+        (scratch / "checkpoint.json").read_bytes(),
+    )
+    with pytest.raises(ValueError, match="outside source|manifest identity"):
+        a.amend_recipe(parts, scratch, new, 0, "invalid layer")
+    assert before == (
+        (parts / "run.json").read_bytes(),
+        (scratch / "checkpoint.json").read_bytes(),
+    )
