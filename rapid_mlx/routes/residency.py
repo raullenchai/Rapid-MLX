@@ -26,7 +26,12 @@ from ..middleware.exception_handlers import (
     register_request_model,
     register_request_path,
 )
-from ..model_aliases import RetiredModelAliasError, resolve_model, resolve_profile
+from ..model_aliases import (
+    RetiredModelAliasError,
+    local_dir_shadows_alias,
+    resolve_model,
+    resolve_profile,
+)
 from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.resident_models import (
     ResidentModelBusyError,
@@ -145,6 +150,8 @@ def _validate_load_ref(model_ref: str) -> str:
     value = resolved_model_ref(model_ref)
     if ".." in Path(value).parts:
         raise HTTPException(400, "Parent traversal is not a model path.")
+    if local_dir_shadows_alias(value):
+        return value
     root = Path(value).expanduser()
     if root.exists():
         root = root.resolve()
@@ -162,6 +169,7 @@ def _validate_load_ref(model_ref: str) -> str:
             raise HTTPException(
                 400, "Expected a model directory with config.json or a model manifest."
             )
+        return str(root)
     return value
 
 
@@ -241,11 +249,22 @@ async def load_resident_model(request: ModelLoadRequest):
     load_ref = request.model_path or request.model
     try:
         # Both fields can reach metadata resolution, even with an override.
-        await asyncio.to_thread(_validate_load_ref, request.model)
-        if request.model_path:
+        model = await asyncio.to_thread(_validate_load_ref, request.model)
+        model_path = (
             await asyncio.to_thread(_validate_load_ref, request.model_path)
-        load_ref = await asyncio.to_thread(resolve_model, load_ref)
-        await asyncio.to_thread(_validate_load_ref, load_ref)
+            if request.model_path
+            else None
+        )
+        load_ref = await asyncio.to_thread(resolve_model, model_path or model)
+        load_ref = await asyncio.to_thread(_validate_load_ref, load_ref)
+        # Carry the validated canonical target into admission and the loader;
+        # retaining a symlink spelling would allow it to be retargeted later.
+        request = request.model_copy(
+            update={
+                "model": model,
+                "model_path": load_ref if Path(load_ref).is_absolute() else model_path,
+            }
+        )
         performance = (
             request.performance.runtime_value() if request.performance else None
         )

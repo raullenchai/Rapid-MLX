@@ -564,3 +564,78 @@ async def test_path_validation_keeps_event_loop_responsive(control_plane, monkey
         await task
     assert caught.value.status_code == 400
     manager.load.assert_not_awaited()
+
+
+@pytest.mark.parametrize("field", ["model", "model_path"])
+def test_symlink_target_is_pinned_before_resolution(
+    control_plane, monkeypatch, tmp_path, field
+):
+    client, manager = control_plane
+    target = tmp_path / "checkpoint"
+    target.mkdir()
+    (target / "config.json").write_text("{}")
+    link = tmp_path / "selected"
+    link.symlink_to(target, target_is_directory=True)
+
+    def retarget(value):
+        link.unlink()
+        link.symlink_to("/", target_is_directory=True)
+        return value
+
+    monkeypatch.setattr(residency, "resolve_model", retarget)
+    manager.load.return_value = SimpleNamespace(model_id="loaded")
+    manager.snapshot = lambda: {"models": [{"id": "loaded"}]}
+    response = client.post(
+        "/v1/models/load", json={"model": "org/model", field: str(link)}
+    )
+    assert response.status_code == 200
+    assert manager.load.call_args.kwargs["model_path"] == str(target.resolve())
+    if field == "model":
+        assert manager.load.call_args.args[0] == str(target.resolve())
+
+
+def test_alias_directory_collision_preserves_catalog(
+    control_plane, monkeypatch, tmp_path
+):
+    client, manager = control_plane
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3.5-4b-4bit").mkdir()
+    manager.load.return_value = SimpleNamespace(model_id="loaded")
+    manager.snapshot = lambda: {"models": [{"id": "loaded"}]}
+    response = client.post("/v1/models/load", json={"model": "qwen3.5-4b-4bit"})
+    assert response.status_code == 200
+    assert manager.load.call_args.args[0] == "qwen3.5-4b-4bit"
+    assert manager.load.call_args.kwargs["model_path"] is None
+
+
+def test_existing_repo_spelling_keeps_local_precedence(
+    control_plane, monkeypatch, tmp_path
+):
+    client, manager = control_plane
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "org" / "model").mkdir(parents=True)
+    response = client.post("/v1/models/load", json={"model": "org/model"})
+    assert response.status_code == 400
+    manager.load.assert_not_awaited()
+
+
+def test_resolved_alias_loads_canonical_target(control_plane, monkeypatch, tmp_path):
+    client, manager = control_plane
+    target = tmp_path / "checkpoint"
+    target.mkdir()
+    (target / "config.json").write_text("{}")
+    link = tmp_path / "selected"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(residency, "resolve_model", lambda _: str(link))
+
+    def retarget(performance, **kwargs):
+        link.unlink()
+        link.symlink_to("/", target_is_directory=True)
+        return performance
+
+    monkeypatch.setattr(residency, "resolve_resident_performance", retarget)
+    manager.load.return_value = SimpleNamespace(model_id="loaded")
+    manager.snapshot = lambda: {"models": [{"id": "loaded"}]}
+    assert client.post("/v1/models/load", json={"model": "saved"}).status_code == 200
+    assert manager.load.call_args.args[0] == "saved"
+    assert manager.load.call_args.kwargs["model_path"] == str(target.resolve())
