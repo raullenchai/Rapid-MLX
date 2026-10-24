@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import Mock
 
 import pytest
+from fastapi import FastAPI, Request
 
 from rapid_mlx import _version_check as vc
 from rapid_mlx import update_refresh as refresh
@@ -147,12 +148,12 @@ def test_health_reads_snapshot_without_fetching(monkeypatch):
     from rapid_mlx.routes import health
 
     monkeypatch.setattr(health, "get_config", ServerConfig)
-    result = asyncio.run(health.health())
+    result = asyncio.run(health.health(Request({"type": "http", "app": FastAPI()})))
     assert {key: result[key] for key in EMPTY} == EMPTY
     refresh.start()
     refresh._refresh()
     vc.get_latest_version.reset_mock()
-    result = asyncio.run(health.health())
+    result = asyncio.run(health.health(Request({"type": "http", "app": FastAPI()})))
     assert result["latest_version"] == "1.1.0"
     assert result["update_available"] is True
     vc.get_latest_version.assert_not_called()

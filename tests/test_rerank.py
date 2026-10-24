@@ -11,6 +11,7 @@ from argparse import Namespace
 from unittest import mock
 
 import pytest
+from fastapi import FastAPI, Request
 
 pytestmark = pytest.mark.requires_mlx
 
@@ -1774,10 +1775,15 @@ def test_health_reports_rerank_only_server():
         cfg.rerank_engine = object()
         cfg.rerank_model_locked = RERANK_ID
         cfg.ready = True
-        full = asyncio.run(health.health())
+        full = asyncio.run(health.health(Request({"type": "http", "app": FastAPI()})))
         assert (full["model_loaded"], full["model_type"]) == (True, "rerank")
         cfg.embedding_engine = object()
-        assert asyncio.run(health.health())["model_type"] == "embedding+rerank"
+        assert (
+            asyncio.run(health.health(Request({"type": "http", "app": FastAPI()})))[
+                "model_type"
+            ]
+            == "embedding+rerank"
+        )
     finally:
         reset_config()
 

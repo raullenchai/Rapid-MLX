@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from rapid_mlx.config import ServerConfig
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
@@ -401,13 +401,15 @@ async def test_switching_lasts_until_audio_commit(switching_server, monkeypatch)
         env.release.set()
         await asyncio.wait_for(published.wait(), timeout=2)
         assert env.cfg.ready is True  # Publisher ran; audio is not committed yet.
-        assert (await health())["ready"] is False
+        assert (await health(Request({"type": "http", "app": FastAPI()})))[
+            "ready"
+        ] is False
         for name in (None, "default", "chat-new"):
             with pytest.raises(HTTPException) as error:
                 get_engine(name)
             assert error.value.detail["error"]["code"] == "model_switching"
         with pytest.raises(HTTPException) as error:
-            await health_ready()
+            await health_ready(Request({"type": "http", "app": FastAPI()}))
         assert error.value.detail["error"]["code"] == "model_switching"
     finally:
         commit.set()

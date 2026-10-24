@@ -86,7 +86,6 @@ def test_local_search_health_lifecycle(tmp_path, monkeypatch, caplog, mode):
         monkeypatch.setattr(runtime, "_enabled", False)
         await runtime.startup(app)
         assert health._local_search_health(SimpleNamespace(app=app)) is None
-        assert health._local_search_health(None) is None
 
     asyncio.run(scenario())
     failures = [

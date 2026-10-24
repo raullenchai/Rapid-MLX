@@ -3,6 +3,7 @@ import logging
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import FastAPI, Request
 
 from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 
@@ -542,9 +543,10 @@ async def test_ready_probe_reports_standby_as_available():
     cfg.model_name = "configured-model"
     cfg.primary_model_lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
 
-    result = await health_ready()
+    result = await health_ready(Request({"type": "http", "app": FastAPI()}))
     assert result == {
         "ready": True,
+        "local_search": None,
         "model": "configured-model",
         "state": "standby",
         "model_loaded": False,
@@ -1039,7 +1041,7 @@ async def test_health_probe_rejects_lifecycle_error():
     cfg.engine = engine
     cfg.primary_model_lifecycle = lifecycle
     with pytest.raises(HTTPException) as raised:
-        await health_ready()
+        await health_ready(Request({"type": "http", "app": FastAPI()}))
     assert raised.value.status_code == 503
     reset_config()
 

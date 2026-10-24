@@ -9,6 +9,7 @@ from argparse import Namespace
 from unittest import mock
 
 import pytest
+from fastapi import FastAPI, Request
 
 from rapid_mlx import cli
 
@@ -362,12 +363,14 @@ def test_health_probes_report_embedding_model_loaded(embeddings_only_config):
     from rapid_mlx.middleware.probe_fastpath import _build_healthz_payload
     from rapid_mlx.routes import health
 
-    full = asyncio.run(health.health())
+    full = asyncio.run(health.health(Request({"type": "http", "app": FastAPI()})))
     assert full["model_loaded"] is True
     assert full["model_name"] is None
     assert full["model_type"] == "embedding"
     assert asyncio.run(health.healthz())["model_loaded"] is True
-    ready = asyncio.run(health.health_ready())
+    ready = asyncio.run(
+        health.health_ready(Request({"type": "http", "app": FastAPI()}))
+    )
     assert ready["model_loaded"] is True
     assert ready["model"] is None
     status, body = _build_healthz_payload()

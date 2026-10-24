@@ -55,13 +55,13 @@ async def root():
     return {"status": "ok"}
 
 
-def _local_search_health(request: Request | None):
-    service = getattr(request.app.state, "local_search", None) if request else None
+def _local_search_health(request: Request):
+    service = getattr(request.app.state, "local_search", None)
     return dict(service.health) if service is not None else None
 
 
 @probe_router.get("/health")
-async def health(request: Request = None):
+async def health(request: Request):
     """Health check endpoint.
 
     `model_loaded` flips True as soon as the engine object exists
@@ -159,7 +159,7 @@ async def health(request: Request = None):
 
 
 @probe_router.get("/health/ready")
-async def health_ready(request: Request = None):
+async def health_ready(request: Request):
     """Strict readiness probe — 503 until lifespan startup is fully done.
 
     Lifespan order is: engine.start() → warmup (Metal kernel JIT) →
@@ -256,7 +256,7 @@ async def healthz():
 
 
 @probe_router.get("/readyz")
-async def readyz(request: Request = None):
+async def readyz(request: Request):
     """k8s-convention alias for /health/ready."""
     return await health_ready(request)
 
