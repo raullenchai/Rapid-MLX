@@ -110,7 +110,7 @@ def recipe(overrides=None):
         if type(c[k]) is not int or c[k] < 1:
             raise ValueError(f"invalid {k}")
     for k in ("memory_limit_gb", "cache_limit_gb", "resident_budget_gb"):
-        if not math.isfinite(c[k]) or c[k] <= 0:
+        if type(c[k]) not in (int, float) or not math.isfinite(c[k]) or c[k] <= 0:
             raise ValueError(f"invalid {k}")
     if c["gate_up_bits"] not in (2, 3, 4) or c["down_bits"] not in (2, 3, 4):
         raise ValueError("routed expert bits must be 2, 3 or 4")

@@ -661,3 +661,12 @@ def test_copied_metadata_is_bound_to_inventory(source, tmp_path):
 def test_estimate_rejects_empty_calibration_with_actionable_error(source):
     with pytest.raises(ValueError, match="calibration manifest contains no windows"):
         b.estimates(source, b.recipe(), [])
+
+
+@pytest.mark.parametrize(
+    "field", ["memory_limit_gb", "cache_limit_gb", "resident_budget_gb"]
+)
+@pytest.mark.parametrize("value", [True, False, "1", None])
+def test_recipe_memory_caps_require_real_numbers(field, value):
+    with pytest.raises(ValueError, match=f"invalid {field}"):
+        b.recipe({field: value})
