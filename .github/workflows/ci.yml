@@ -603,6 +603,7 @@ jobs:
             tests/test_pflash_threshold_basis_scheduler.py \
             tests/test_metal_memory_budget.py \
             tests/test_kv_cache_gemma4_gate.py \
+            tests/test_gemma_stop_tokens.py \
             tests/test_gemma4_unified_routing.py \
             tests/test_gemma4_kv_share.py \
             tests/test_quantized_batch_cache.py \
