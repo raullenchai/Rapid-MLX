@@ -87,6 +87,17 @@ struct EffectiveUseTests {
         #expect(!next.newsletterPresented)
     }
 
+    @Test("Completed newsletter stays hidden across repeated attachment replies", arguments: [false, true])
+    func completedNewsletter(completed: Bool) {
+        let defaults = defaults()
+        defaults.set(completed, forKey: PromptScheduler.PromoKeys.newsletterCompleted)
+        let prompt = PromptScheduler(defaults: defaults, quietWindow: .zero,
+                                     presentationActive: true)
+        for _ in 0..<3 { prompt.productValueDelivered(.chatReply) }
+        #expect(prompt.newsletterPresented == !completed)
+        #expect(EffectiveUse(defaults: defaults).count(.chatReply) == 3)
+    }
+
     @Test("Background threshold waits for the workspace and a later launch")
     func backgroundAndCooldown() {
         let defaults = defaults()

@@ -231,6 +231,9 @@ final class RapidUITestHarness {
         app.launchArguments += [
             "-com.rapidmlx.rapid.telemetry.enabled", "false",
             "-rapid.server.auto_start_on_launch.v1", "false",
+            // Attachment journeys exercise repeated replies, not promotion.
+            // The two-reply newsletter card can cover the native Send click.
+            "-Rapid.newsletter.completed.v1", "true",
         ]
         app.launchEnvironment = [
             "HOME": testHome.path,
