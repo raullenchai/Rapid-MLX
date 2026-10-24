@@ -21,7 +21,13 @@ def validate_server_exposure(
     if listen_fd is not None:
         # Inspect a duplicate: never close the launcher's inherited listener.
         try:
-            with socket.socket(fileno=os.dup(listen_fd)) as listener:
+            duplicate = os.dup(listen_fd)
+            try:
+                listener = socket.socket(fileno=duplicate)
+            except OSError:
+                os.close(duplicate)
+                raise
+            with listener:
                 if listener.family == socket.AF_UNIX:
                     return
                 host = listener.getsockname()[0]

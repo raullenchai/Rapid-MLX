@@ -118,3 +118,30 @@ def test_cli_refuses_public_before_model_setup(monkeypatch, capsys):
         cli.serve_command(args)
     assert error.value.code == 2
     assert "Non-loopback" in capsys.readouterr().err
+
+
+def test_non_socket_inherited_descriptor_copy_is_closed(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from rapid_mlx import server_exposure
+
+    duplicates = []
+    real_dup = os.dup
+
+    def duplicate(fd):
+        copied = real_dup(fd)
+        duplicates.append(copied)
+        return copied
+
+    monkeypatch.setattr(server_exposure.os, "dup", duplicate)
+    with (tmp_path / "regular-file").open("w+b") as original:
+        with pytest.raises(ValueError, match="Cannot verify"):
+            validate_server_exposure(
+                host="127.0.0.1", api_key=None, listen_fd=original.fileno()
+            )
+        assert len(duplicates) == 1
+        with pytest.raises(OSError) as closed:
+            os.fstat(duplicates[0])
+        assert closed.value.errno == errno.EBADF
+        assert os.fstat(original.fileno()).st_size == 0
