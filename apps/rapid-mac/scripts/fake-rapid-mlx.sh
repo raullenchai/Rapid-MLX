@@ -1255,7 +1255,9 @@ def _emit_catalog(subcommand, alias):
                 text.append({
                     "alias": item,
                     "hf_path": (
-                        FAKE_VISION_REPO if item == FAKE_VISION_ALIAS else FAKE_REPO
+                        FAKE_VISION_REPO if item == FAKE_VISION_ALIAS
+                        else "fake-external-alias" if item == "fake-external-alias"
+                        else FAKE_REPO
                     ),
                     "supports_spec_decode": False,
                     "mtp_draft_model": (
@@ -1400,6 +1402,7 @@ def _emit_catalog(subcommand, alias):
         # readiness/resolution for the image model would target the chat
         # repository. Default to the chat repo for the chat alias and unknowns.
         repo = {
+            "fake-external-alias": "fake-external-alias",
             FAKE_IMAGE_ALIAS: FAKE_IMAGE_REPO,
             "fake-video-alias": "fake/video-mlx",
             "fake-qwen3-tts": "fake/qwen3-tts",
