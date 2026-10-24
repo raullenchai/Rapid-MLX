@@ -205,19 +205,29 @@ class TestResponsesStreamEventOrder:
     def test_responses_keepalive_preserves_lifecycle_and_sequence(self):
         from rapid_mlx.routes.responses import _responses_keepalive_sse
 
+        initial_state = {"sequence_number": [1]}
+        assert _responses_keepalive_sse(initial_state) == ": keepalive\n\n"
+        assert initial_state == {"sequence_number": [1]}
         state = {"response": {"id": "resp_test"}, "sequence_number": [7]}
-        assert _responses_keepalive_sse(state) == ": keepalive\n\n"
-        assert state == {"response": {"id": "resp_test"}, "sequence_number": [7]}
+        assert _parse_sse(_responses_keepalive_sse(state)) == [
+            ("ping", {"type": "ping", "sequence_number": 7})
+        ]
+        assert state == {"response": {"id": "resp_test"}, "sequence_number": [8]}
+        assert _parse_sse(_responses_keepalive_sse({})) == [("ping", {"type": "ping"})]
 
     @pytest.mark.parametrize("kind", ["text", "tool", "reasoning"])
-    def test_exact_event_sequence(self, responses_client, monkeypatch, kind):
+    @pytest.mark.parametrize("stall", [False, True])
+    def test_exact_event_sequence(self, responses_client, monkeypatch, kind, stall):
         """#5191: transport heartbeats must not duplicate lifecycle events."""
         from rapid_mlx.config import get_config
 
-        get_config().sse_keepalive_seconds = 0.01
+        monkeypatch.setattr(
+            get_config(), "sse_keepalive_seconds", 0.01 if stall else 20.0
+        )
 
         async def stream_chat(messages, **kwargs):
-            await asyncio.sleep(0.03)
+            if stall:
+                await asyncio.sleep(0.04)
             yield _GenerationOutput(
                 text=(
                     "<think>Checking</think>Hello"
@@ -272,6 +282,9 @@ class TestResponsesStreamEventOrder:
             range(len(events))
         )
         expected = ["response.created", "response.in_progress"]
+        ping_count = names.count("ping")
+        assert (ping_count > 0) == stall
+        expected += ["ping"] * ping_count
         if kind == "tool":
             expected += [
                 "response.output_item.added",
@@ -297,7 +310,6 @@ class TestResponsesStreamEventOrder:
                 "response.output_item.done",
             ]
         assert names == [*expected, "response.completed"]
-        assert ": keepalive\n\n" in response.text
 
     def test_response_in_progress_event_between_created_and_first_item(
         self, responses_client
