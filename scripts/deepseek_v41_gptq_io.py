@@ -265,13 +265,14 @@ def save_state(path, state):
     Only one window is materialized at once. Safetensors is mmap-readable;
     a JSON tree describes scalars, array references and whitelisted native state.
     """
-    arrays, seen = {}, {}
+    arrays, seen, array_keys = {}, {}, {}
 
     def encode(obj):
         if isinstance(obj, mx.array):
-            key = f"a{len(arrays)}"
-            arrays[key] = obj
-            return {"array": key}
+            if id(obj) not in array_keys:
+                array_keys[id(obj)] = f"a{len(arrays)}"
+                arrays[array_keys[id(obj)]] = obj
+            return {"array": array_keys[id(obj)]}
         if obj is None or isinstance(obj, (str, bool, int, float)):
             return obj
         if isinstance(obj, mx.Dtype):

@@ -503,3 +503,22 @@ def test_recipe_mutable_defaults_and_overrides_are_isolated():
     second = b.recipe(overrides)
     second["gate_up_3bit_layers"].append(2)
     assert overrides == {"gate_up_3bit_layers": [1]}
+
+
+def test_restart_preserves_shared_array_identity(tmp_path):
+    from scripts.deepseek_v41_gptq_io import load_state, save_state
+
+    value = mx.arange(4).astype(mx.bfloat16)
+    separate = mx.array(value)
+    shared = SimpleNamespace(cache=value)
+    state = {"value": value, "nested": [shared, value, separate], "shared": shared}
+    path = tmp_path / "state"
+    save_state(path, state)
+    loaded = load_state(path)
+    assert loaded["value"] is loaded["nested"][0].cache
+    assert loaded["value"] is loaded["nested"][1]
+    assert loaded["shared"] is loaded["nested"][0]
+    assert loaded["value"] is not loaded["nested"][2]
+    assert loaded["value"].dtype == mx.bfloat16
+    assert mx.array_equal(loaded["value"], value)
+    assert len(mx.load(str(path.with_suffix(".safetensors")))) == 2
