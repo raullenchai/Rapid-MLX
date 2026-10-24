@@ -681,6 +681,7 @@ jobs:
             tests/test_deepseek_v41_merge_calibration.py \
             tests/test_deepseek_v41_streaming_teacher.py \
             tests/test_deepseek_v41_public_ruler.py \
+            tests/test_eval_deepseek_v41_tasks.py \
             tests/test_deepseek_v41_evaluation.py \
             tests/test_deepseek_v41_evaluation_subset.py \
             tests/test_deepseek_v41_evaluation_edges.py \
