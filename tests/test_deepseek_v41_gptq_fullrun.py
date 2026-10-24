@@ -709,3 +709,77 @@ def test_local_export_disk_preflight_prevents_cleanup(setup, monkeypatch, volume
     with pytest.raises(ValueError, match="local.*export space"):
         driver.export(0)
     assert not any(op == "delete" for op, _ in remote.events)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exit", "json"])
+def test_remote_command_uncertainty_stays_set_until_verified_success(
+    monkeypatch, failure
+):
+    import subprocess
+
+    remote = f.Remote("example.test", "python3")
+
+    def run(*args, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("ssh", 1)
+        return SimpleNamespace(
+            returncode=1 if failure == "exit" else 0, stdout="invalid"
+        )
+
+    monkeypatch.setattr(f.subprocess, "run", run)
+    with pytest.raises((RuntimeError, ValueError)):
+        remote.call("run", argv=["python3"], cwd="/work", log="/work/log")
+    assert remote.indeterminate
+    monkeypatch.setattr(
+        f.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout="true"),
+    )
+    remote.call("info", path="data")
+    assert remote.indeterminate
+
+
+def test_driver_retains_remote_lock_after_indeterminate_command(setup, monkeypatch):
+    args, remote = setup
+    original = remote.call
+
+    def call(op, **kw):
+        if op == "run":
+            remote.indeterminate = True
+            raise RuntimeError("uncertain remote process")
+        return original(op, **kw)
+
+    monkeypatch.setattr(remote, "call", call)
+    with pytest.raises(RuntimeError, match="uncertain remote"):
+        f.Driver(args, remote).run()
+    assert remote.path(args.remote_work + "/fullrun.lock").is_dir()
+    assert not any(op in ("unlock", "delete") for op, _ in remote.events)
+
+
+def test_export_flushes_payloads_before_committing_marker(setup, monkeypatch):
+    import os
+
+    args, remote = setup
+    driver = f.Driver(args, remote)
+    remote.fail_export = True
+    with pytest.raises(RuntimeError, match="interrupted export"):
+        driver.run()
+    remote.fail_export = False
+    synced = set()
+    real_sync, real_atomic = f.os.fsync, f.atomic
+
+    def sync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        real_sync(fd)
+
+    def atomic(path, value):
+        if path.name == "layer-0-export.json":
+            for name in ("model-layer-0.safetensors", "layer-0-stats.json"):
+                assert (args.destination / name).stat().st_ino in synced
+            assert args.destination.stat().st_ino in synced
+        return real_atomic(path, value)
+
+    monkeypatch.setattr(f.os, "fsync", sync)
+    monkeypatch.setattr(f, "atomic", atomic)
+    driver.export(0)
+    assert (args.destination / "layer-0-export.json").exists()

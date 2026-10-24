@@ -252,11 +252,13 @@ class Remote:
         if host.startswith("-") or not re.fullmatch(r"[\w.@-]+", host):
             raise ValueError("invalid SSH host")
         self.host, self.python = host, python
+        self.indeterminate = False
 
     def call(self, op, **kw):
         request = dict(op=op, **kw)
         timeout = METADATA_TIMEOUT
         if op == "run":
+            self.indeterminate = True
             request["command_timeout"] = COMMAND_TIMEOUT
             timeout = COMMAND_TIMEOUT + 30
         try:
@@ -280,7 +282,10 @@ class Remote:
             raise RuntimeError(
                 f"remote {op} failed (exit {result.returncode}); no cleanup authorized"
             )
-        return json.loads(result.stdout)
+        value = json.loads(result.stdout)
+        if op == "run":
+            self.indeterminate = False
+        return value
 
     def transfer(self, source, target, upload):
         # -L dereferences the HF snapshot's blob symlinks. No --delete.
@@ -463,7 +468,12 @@ class Driver:
                 self.r.transfer(self.parts + "/" + name, tmp, False)
                 if sha(tmp) != h:
                     raise ValueError("export hash mismatch")
+                with tmp.open("rb") as stream:
+                    os.fsync(stream.fileno())
                 tmp.replace(target)
+            with target.open("rb") as stream:
+                os.fsync(stream.fileno())
+            sync_parent(target)
             self.log("export_verified", layer=layer, file=name, sha256=h)
         # Snapshot the JSONL to a temporary path: later appends cannot affect exports.
         with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT, prefix="gptq-drift-") as tmp:
@@ -731,7 +741,13 @@ class Driver:
             )
             self.log("complete", next_layer=40)
         finally:
-            self.r.call("unlock", path=self.a.remote_work + "/fullrun.lock")
+            if getattr(self.r, "indeterminate", False):
+                self.log(
+                    "remote_lock_retained",
+                    reason="command status unknown; verify remote process termination before removing the lock and retrying",
+                )
+            else:
+                self.r.call("unlock", path=self.a.remote_work + "/fullrun.lock")
 
 
 def main():
