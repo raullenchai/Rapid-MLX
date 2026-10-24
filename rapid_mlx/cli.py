@@ -3383,6 +3383,34 @@ def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
         request_lanes,
     )
 
+    explicit = getattr(args, "tensorfold_lanes", None)
+    if explicit is not None:
+        from .model_aliases import resolve_profile
+
+        model = getattr(args, "_original_alias", None) or getattr(args, "model", None)
+        profile = resolve_profile(model) if model else None
+        config = getattr(args, "_speculative_config", None)
+        qualified = next(
+            (
+                name
+                for name in QUALIFIED_PROFILES
+                if profile is not None
+                and profile.hf_path == getattr(resolve_profile(name), "hf_path", None)
+            ),
+            None,
+        )
+        try:
+            if qualified is None or getattr(config, "backend", None) != "tensorfold":
+                raise ValueError(
+                    "--tensorfold-lanes is valid only on qualified TensorFold "
+                    f"profiles ({', '.join(sorted(QUALIFIED_PROFILES))})"
+                )
+            request_lanes(qualified, explicit)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        return
+
     config = getattr(args, "_speculative_config", None)
     if config is not None and config.backend == "tensorfold":
         return
@@ -4183,6 +4211,7 @@ def _serve_tensorfold_mtp_if_requested(
         tool_call_parser=None,
         reasoning_parser_name=args.reasoning_parser,
         default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
+        tensorfold_lanes=getattr(args, "tensorfold_lanes", None),
     )
     return True
 
@@ -7382,6 +7411,7 @@ def serve_command(args):
                 run_tensorfold_family_server,
             )
 
+            _dflash_kwargs["tensorfold_lanes"] = getattr(args, "tensorfold_lanes", None)
             _tf_family = profile_for(_alias_name)
             if _tf_family is not None:
                 run_tensorfold_family_server(_tf_family, **_dflash_kwargs)

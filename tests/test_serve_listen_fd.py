@@ -775,6 +775,7 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
 
     ns = _minimal_serve_ns()
     ns.disable_prefix_cache = disable_prefix_cache
+    ns.tensorfold_lanes = 4
     ns.model = "Vontra/Qwen3.8-27B-MLX-4bit"
     ns._original_alias = "qwen3.8-27b-tensorfold"
     ns._dflash_experimental = True
@@ -797,6 +798,7 @@ def test_tensorfold_alias_preflights_downloads_pair_and_dispatches_server(
     assert kwargs["drafter_revision"] is None
     assert kwargs["experimental_opt_in"] is True
     assert kwargs["enable_prefix_cache"] is (not disable_prefix_cache)
+    assert kwargs["tensorfold_lanes"] == 4
 
 
 def test_paired_family_alias_downloads_its_pair_and_dispatches_family_server(

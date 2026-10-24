@@ -679,6 +679,17 @@ def _add_serve_parser(
         help="Keep native DeepSeek V4.1 serial drafting (equivalent to --dsv41-lanes 1).",
     )
     serve_parser.add_argument(
+        "--tensorfold-lanes",
+        type=int,
+        choices=(1, 2, 4, 8),
+        default=None,
+        help=(
+            "Concurrent decode lanes for qualified Qwen3.8-27B and Nemotron "
+            "TensorFold profiles only (default: 1, serial). Overrides the "
+            "deprecated RAPID_MLX_TENSORFOLD_LANES environment alias."
+        ),
+    )
+    serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
     )
     serve_parser.add_argument(
