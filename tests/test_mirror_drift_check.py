@@ -1925,7 +1925,14 @@ def test_published_mirror_state_rejects_bad_shapes(monkeypatch, payload):
 
 def test_default_audit_reconciles_published_state(monkeypatch):
     entry = drift.UnmirroredEntry("org/retired", "retired", "2026-10-24")
-    monkeypatch.setattr(drift, "_load_aliases", lambda *_args: [])
+    monkeypatch.setattr(
+        drift,
+        "_load_aliases",
+        lambda *_args: [
+            drift.AliasSpec(name, "org/" + name, None, "main")
+            for name in ("restored", "retired")
+        ],
+    )
     monkeypatch.setattr(
         drift, "load_unmirrored", lambda *_args: {"org/restored": entry}
     )
@@ -1936,7 +1943,25 @@ def test_default_audit_reconciles_published_state(monkeypatch):
     )
     monkeypatch.setattr(drift, "_catalog_entries", lambda: [])
     monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
-    assert drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH) == []
+    monkeypatch.setattr(
+        drift,
+        "_hf_repo",
+        lambda *_args: drift.HfRepo("revision", [drift.HfFile("config.json", 2, None)]),
+    )
+    from unittest.mock import Mock
+
+    probe = Mock(return_value=drift.MirrorProbe(404, None, None, None))
+    monkeypatch.setattr(drift, "_public_probe", probe)
+    reports = {
+        report.alias: report
+        for report in drift.audit(drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH)
+    }
+    assert reports["retired"].state == "unmirrored (intentional)"
+    assert reports["retired"].findings == []
+    assert not reports["restored"].intentionally_unmirrored
+    assert any(f.kind == "missing_file" for f in reports["restored"].findings)
+    probe.assert_called_once()
+    assert probe.call_args.args[0] == "org/restored"
 
 
 def test_uploader_reconciles_returned_and_removed_repos(monkeypatch, capsys):
