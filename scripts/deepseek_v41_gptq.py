@@ -257,6 +257,8 @@ def boundary_estimate(a, lengths, layer, c):
 
 
 def estimates(source, c, lengths):
+    if not lengths:
+        raise ValueError("calibration manifest contains no windows")
     a = source.args
     tokens, window = sum(lengths), max(lengths)
     dim = max(a.dim, a.moe_inter_dim, a.q_lora_rank, a.o_groups * a.o_lora_rank)

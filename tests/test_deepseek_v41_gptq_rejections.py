@@ -656,3 +656,8 @@ def test_copied_metadata_is_bound_to_inventory(source, tmp_path):
     (source.source / "tokenizer.json").write_text('{"version":2}')
     with pytest.raises(ValueError, match="metadata identity"):
         copy_bound_metadata(bound, destination)
+
+
+def test_estimate_rejects_empty_calibration_with_actionable_error(source):
+    with pytest.raises(ValueError, match="calibration manifest contains no windows"):
+        b.estimates(source, b.recipe(), [])
