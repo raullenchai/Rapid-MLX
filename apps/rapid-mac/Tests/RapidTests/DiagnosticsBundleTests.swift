@@ -29,11 +29,12 @@ struct DiagnosticsBundleTests {
         "/Users/fake-account/cache", "file:///Users/fake-account/cache",
         "/Volumes/backup/Users/fake-account/cache", #"\/Users\/fake-account/cache"#,
         "%2fUsers%2fFAKE-account/cache", "/Users/%66ake-account/cache",
+        #"\u002FUsers\u002Ffake-account/cache"#, #"\u002f\u0075sers\u002ffake-account/cache"#, #"\u002fUsers\u002fother-account\u002fcache"#,
         "~fake-account/cache", "/Users/other-account/cache", "~/cache"
     ])
     func pathForms(_ input: String) {
         let out = DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake-account", username: "fake-account")
-        #expect(out.hasSuffix("~/cache"))
+        #expect(out.hasSuffix("~/cache") || out.hasSuffix(#"~\u002fcache"#))
         #expect(!out.contains("fake-account"))
         #expect(!out.contains("other-account"))
     }
@@ -47,6 +48,13 @@ struct DiagnosticsBundleTests {
         let out = DiagnosticsBundle.redact(input, homeDirectory: "/Volumes/Accounts/Fake Person/", username: "fake")
         #expect(out.hasSuffix("~/cache"))
         #expect(!out.contains("Person"))
+    }
+
+    @Test("JSON surrogate pairs in custom home paths are redacted")
+    func surrogateHome() {
+        let out = DiagnosticsBundle.redact(#"/Volumes/\uD83D\uDE00/cache"#,
+                                           homeDirectory: "/Volumes/😀", username: "account")
+        #expect(out == "~/cache")
     }
 
     @Test("Known short and full names match whole tokens, case-insensitively")

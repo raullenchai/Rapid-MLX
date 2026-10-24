@@ -108,7 +108,12 @@ enum DiagnosticsBundle {
                 let encoded = [String(scalar), String(scalar).lowercased(), String(scalar).uppercased()]
                     .map { $0.utf8.map { String(format: "%%%02X", $0) }.joined() }
                     .joined(separator: "|")
-                return "(?:" + literal + "|(?i:" + encoded + ")" + #"|\\"# + literal + ")"
+                let jsonPattern = [String(scalar), String(scalar).lowercased(), String(scalar).uppercased()]
+                    .map { value in
+                        let escaped = value.utf16.map { String(format: "\\u%04X", $0) }.joined()
+                        return NSRegularExpression.escapedPattern(for: escaped)
+                    }.joined(separator: "|")
+                return "(?:" + literal + "|(?i:" + encoded + ")|" + jsonPattern + #"|\\"# + literal + ")"
             }.joined()
         }
         func replace(_ text: String, pattern: String, with placeholder: String) -> String {
@@ -121,7 +126,7 @@ enum DiagnosticsBundle {
         if !home.isEmpty && home != "/" { paths.append(identityPattern(home) + #"(?![\p{L}\p{N}_.+-])"#) }
         // Also cover other accounts, embedded backup paths, and file:// URLs.
         // Encoded/escaped separators terminate the account component.
-        let account = #"(?:\\[^/\r\n]|%(?!2f|09|0a|0d|3f|23|26|3d)[0-9a-f]{2}|[^/\s\\%"'<>:,;)\]}?!#&=])+"#
+        let account = #"(?:\\(?!u002f)[^/\r\n]|%(?!2f|09|0a|0d|3f|23|26|3d)[0-9a-f]{2}|[^/\s\\%"'<>:,;)\]}?!#&=])+"#
         paths.append(identityPattern("/Users/") + account)
         // A literal ~/ path is already anonymous; ~account/ is not.
         paths.append(identityPattern("~") + account + "(?=" + identityPattern("/") + ")")
