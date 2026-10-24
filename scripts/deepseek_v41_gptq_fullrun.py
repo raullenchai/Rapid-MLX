@@ -507,13 +507,10 @@ class Driver:
         for name, meta in self.manifest["shards"].items():
             if (self.a.source / name).stat().st_size != meta["size"]:
                 raise ValueError("source shard absent or size mismatch")
-        calibration = json.loads(self.a.calibration.read_text())
-        slices = calibration.get("slices") if isinstance(calibration, dict) else None
-        if (
-            not isinstance(slices, dict)
-            or not slices
-            or any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in slices)
-        ):
+        from scripts.deepseek_v41_public_ruler import read_slice_manifest
+
+        calibration_bytes, _, slices = read_slice_manifest(self.a.calibration)
+        if any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in slices):
             raise ValueError("calibration slice names must be safe filename components")
         self.r.call("lock", path=self.a.remote_work + "/fullrun.lock")
         try:
@@ -522,13 +519,9 @@ class Driver:
                 source=digest(self.manifest),
                 recipe=self.recipe,
                 reference=self.ref_identity,
-                calibration=sha(self.a.calibration),
+                calibration=hashlib.sha256(calibration_bytes).hexdigest(),
                 calibration_files={
-                    str((self.a.calibration.parent / file).resolve()): sha(
-                        self.a.calibration.parent / file
-                    )
-                    for files in slices.values()
-                    for file in files
+                    str(path): sha(path) for files in slices.values() for path in files
                 },
                 tool={
                     p.name: sha(p)
@@ -589,14 +582,19 @@ class Driver:
                         self.manifest["shards"][name],
                     )
                 self.stage_reference(0)
-                raw = calibration
                 portable = {"slices": {}}
-                for name, files in raw["slices"].items():
+                for name, files in slices.items():
                     portable["slices"][name] = []
-                    for i, file in enumerate(files):
-                        src = (self.a.calibration.parent / file).resolve()
+                    for i, src in enumerate(files):
                         rel = f"text/{name}-{i}.txt"
-                        self.upload(src, self.root + "/corpus/" + rel)
+                        self.upload(
+                            src,
+                            self.root + "/corpus/" + rel,
+                            dict(
+                                size=src.stat().st_size,
+                                sha256=binding["calibration_files"][str(src)],
+                            ),
+                        )
                         portable["slices"][name].append(rel)
                 with tempfile.TemporaryDirectory(
                     dir=SCRATCH_ROOT, prefix="gptq-corpus-"

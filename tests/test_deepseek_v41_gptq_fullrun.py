@@ -583,6 +583,33 @@ def test_metadata_transfer_corruption_is_rejected(setup, monkeypatch):
 def test_unsafe_calibration_names_fail_before_remote_actions(setup, slices):
     a, remote = setup
     f.atomic(a.calibration, {"slices": slices})
-    with pytest.raises(ValueError, match="safe filename"):
+    with pytest.raises(ValueError):
+        f.Driver(a, remote).run()
+    assert remote.events == []
+
+
+@pytest.mark.parametrize(
+    "kind", ["absolute", "parent", "symlink", "malformed", "empty"]
+)
+def test_calibration_paths_cannot_escape_manifest_directory(setup, tmp_path, kind):
+    a, remote = setup
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must not upload")
+    directory = tmp_path / "calibration"
+    directory.mkdir()
+    a.calibration = directory / "manifest.json"
+    if kind == "absolute":
+        files = [str(outside)]
+    elif kind == "parent":
+        files = ["../outside.txt"]
+    elif kind == "symlink":
+        (directory / "link.txt").symlink_to(outside)
+        files = ["link.txt"]
+    elif kind == "malformed":
+        files = "outside.txt"
+    else:
+        files = []
+    f.atomic(a.calibration, {"slices": {"general": files}})
+    with pytest.raises(ValueError):
         f.Driver(a, remote).run()
     assert remote.events == []
