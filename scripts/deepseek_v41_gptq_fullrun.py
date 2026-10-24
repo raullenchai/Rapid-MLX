@@ -230,6 +230,7 @@ elif op=='recover_init':
 elif op=='run':
  with Path(q['log']).open('ab') as f:
   process=subprocess.Popen(q['argv'],cwd=q['cwd'],stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
+  timed_out=False
   try:code=process.wait(timeout=q.get('command_timeout',86400))
   except subprocess.TimeoutExpired:
    try:os.killpg(process.pid,signal.SIGTERM)
@@ -239,9 +240,8 @@ elif op=='run':
     try:os.killpg(process.pid,signal.SIGKILL)
     except ProcessLookupError:pass
     process.wait()
-   raise ValueError('GPTQ command timed out; child process group terminated')
- if code:raise ValueError('GPTQ command failed; inspect remote step log')
- out=True
+   timed_out=True
+ out={'command_finished':True,'returncode':process.returncode,'timed_out':timed_out}
 else:raise ValueError('unknown operation')
 print(json.dumps(out))
 """
@@ -284,7 +284,21 @@ class Remote:
             )
         value = json.loads(result.stdout)
         if op == "run":
+            if (
+                not isinstance(value, dict)
+                or value.get("command_finished") is not True
+                or type(value.get("returncode")) is not int
+                or type(value.get("timed_out")) is not bool
+            ):
+                raise RuntimeError(
+                    "remote command completion is unverified; retain lock"
+                )
             self.indeterminate = False
+            if value["returncode"] or value["timed_out"]:
+                raise RuntimeError(
+                    "remote command finished unsuccessfully; inspect step log before retry"
+                )
+            return True
         return value
 
     def transfer(self, source, target, upload):

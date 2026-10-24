@@ -366,7 +366,12 @@ def test_remote_operation_deadlines_and_keepalives(tmp_path, monkeypatch):
 
     def run(argv, **kw):
         calls.append((argv, kw))
-        return SimpleNamespace(returncode=0, stdout="true")
+        response = (
+            {"command_finished": True, "returncode": 0, "timed_out": False}
+            if json.loads(kw.get("input", "{}")).get("op") == "run"
+            else True
+        )
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response))
 
     monkeypatch.setattr(f.subprocess, "run", run)
     remote = f.Remote("example.test", "python3")

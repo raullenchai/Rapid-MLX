@@ -641,7 +641,10 @@ def test_remote_command_timeout_terminates_started_process(tmp_path):
         capture_output=True,
         timeout=15,
     )
-    assert result.returncode != 0 and "command timed out" in result.stderr
+    assert result.returncode == 0
+    completion = json.loads(result.stdout)
+    assert completion["command_finished"] and completion["timed_out"]
+    assert completion["returncode"] != 0
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid.read_text()), 0)
 
@@ -783,3 +786,51 @@ def test_export_flushes_payloads_before_committing_marker(setup, monkeypatch):
     monkeypatch.setattr(f, "atomic", atomic)
     driver.export(0)
     assert (args.destination / "layer-0-export.json").exists()
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_remote_helper_attests_completed_command_and_releases_uncertainty(
+    tmp_path, monkeypatch, returncode
+):
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", f.REMOTE],
+        input=json.dumps(
+            {
+                "op": "run",
+                "argv": [sys.executable, "-c", f"raise SystemExit({returncode})"],
+                "cwd": str(tmp_path),
+                "log": str(tmp_path / "command.log"),
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {
+        "command_finished": True,
+        "returncode": returncode,
+        "timed_out": False,
+    }
+    monkeypatch.setattr(f.subprocess, "run", lambda *a, **kw: result)
+    remote = f.Remote("example.test", "python3")
+    if returncode:
+        with pytest.raises(RuntimeError, match="finished unsuccessfully"):
+            remote.call("run", argv=[], cwd="/work", log="/work/log")
+    else:
+        assert remote.call("run", argv=[], cwd="/work", log="/work/log") is True
+    assert not remote.indeterminate
+
+
+def test_remote_rejects_unattested_success_response(monkeypatch):
+    monkeypatch.setattr(
+        f.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout="true"),
+    )
+    remote = f.Remote("example.test", "python3")
+    with pytest.raises(RuntimeError, match="completion is unverified"):
+        remote.call("run", argv=[], cwd="/work", log="/work/log")
+    assert remote.indeterminate
