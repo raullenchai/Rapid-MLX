@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 HEADROOM = 20_000_000_000
@@ -208,13 +209,25 @@ elif op=='free':
  s=os.statvfs(q['path']);out=s.f_bavail*s.f_frsize
 elif op=='mkdir':
  Path(q['path']).mkdir(parents=True,exist_ok=True);out=True
-elif op=='lock':
- # Refuse to race an existing pilot or another conversion command.
- ps=subprocess.check_output(['ps','-axo','command='],text=True)
- if any('deepseek_v41_gptq.py' in l and any(' '+c+' ' in l for c in ('run','init','reference')) for l in ps.splitlines()):
-  raise ValueError('an existing GPTQ job is running')
- p=Path(q['path']);p.mkdir();out=True
-elif op=='unlock':Path(q['path']).rmdir();out=True
+elif op in ('lock','unlock'):
+ sys.path.insert(0,q['repo'])
+ from scripts.deepseek_v41_gptq_lock import reserve_artifacts
+ p=Path(q['path'])
+ if op=='lock':
+  p.mkdir()
+  try:
+   with (p/'reservation.json').open('w') as marker:
+    json.dump({'resources':q['resources'],'owner':q['owner']},marker);marker.flush();os.fsync(marker.fileno())
+   reserve_artifacts(q['resources'],q['owner'])
+  except BaseException:
+   (p/'reservation.json').unlink(missing_ok=True)
+   p.rmdir()
+   raise
+ else:
+  reserve_artifacts(q['resources'],q['owner'],release=True)
+  (p/'reservation.json').unlink()
+  p.rmdir()
+ out=True
 elif op=='delete':
  # Recheck the authoritative checkpoint immediately before EVERY unlink.
  cp=json.loads(Path(q['checkpoint']).read_text())
@@ -235,7 +248,7 @@ elif op=='recover_init':
    p.rename(target);out.append(target.name)
 elif op=='run':
  with Path(q['log']).open('ab') as f:
-  process=subprocess.Popen(q['argv'],cwd=q['cwd'],stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
+  process=subprocess.Popen(q['argv'],cwd=q['cwd'],stdout=f,stderr=subprocess.STDOUT,start_new_session=True,env={**os.environ,**q.get('env',{})})
   timed_out=False
   try:code=process.wait(timeout=q.get('command_timeout',86400))
   except subprocess.TimeoutExpired:
@@ -359,6 +372,7 @@ class Driver:
         self.state = self.root + "/state"
         self.reference = self.root + "/reference"
         self.identity = None
+        self.lock_owner = uuid.uuid4().hex
 
     def log(self, step, **kw):
         print(json.dumps(dict(time=time.time(), step=step, **kw)), flush=True)
@@ -457,6 +471,7 @@ class Driver:
             argv=argv,
             cwd=self.a.remote_work + "/repo",
             log=self.root + "/commands.log",
+            env={"RAPID_MLX_GPTQ_LOCK_OWNER": self.lock_owner},
         )
         self.log("command_exit", command=command)
 
@@ -620,7 +635,13 @@ class Driver:
         calibration_bytes, _, slices = read_slice_manifest(self.a.calibration)
         if any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in slices):
             raise ValueError("calibration slice names must be safe filename components")
-        self.r.call("lock", path=self.a.remote_work + "/fullrun.lock")
+        lock_request = dict(
+            path=self.a.remote_work + "/fullrun.lock",
+            repo=self.a.remote_work + "/repo",
+            resources=[self.stage, self.parts, self.state, self.reference],
+            owner=self.lock_owner,
+        )
+        self.r.call("lock", **lock_request)
         try:
             self.r.call("mkdir", path=self.root)
             binding = dict(
@@ -777,7 +798,7 @@ class Driver:
             else:
                 active_error = sys.exc_info()[1]
                 try:
-                    self.r.call("unlock", path=self.a.remote_work + "/fullrun.lock")
+                    self.r.call("unlock", **lock_request)
                 except Exception as error:
                     if active_error is None:
                         raise
@@ -803,7 +824,12 @@ def main():
         p.error("remote-work must be an absolute workspace path")
     try:
         a.destination.mkdir(parents=True, exist_ok=True)
-        with (a.destination / "fullrun.lock").open("a") as lock:
+        from scripts.deepseek_v41_gptq_lock import artifact_locks
+
+        with (
+            artifact_locks([a.destination]),
+            (a.destination / "fullrun.lock").open("a") as lock,
+        ):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             Driver(a, Remote(a.host, a.remote_python)).run()
     except Exception as e:

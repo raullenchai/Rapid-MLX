@@ -966,3 +966,143 @@ def test_unlock_failure_preserves_conversion_error(setup, monkeypatch, primary_f
         assert caught.value.__notes__ == [
             "Remote unlock also failed: unlock unavailable"
         ]
+
+
+def test_artifact_locks_exclude_other_processes_and_aliases(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    from scripts import deepseek_v41_gptq_lock as locks
+
+    monkeypatch.setattr(locks, "LOCK_ROOT", tmp_path / "locks")
+    artifact = tmp_path / "parts"
+    artifact.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(artifact, target_is_directory=True)
+    probe = """import sys
+from pathlib import Path
+from scripts import deepseek_v41_gptq_lock as locks
+locks.LOCK_ROOT=Path(sys.argv[1])
+with locks.artifact_locks([Path(sys.argv[2])]): pass
+"""
+
+    def contender():
+        return subprocess.run(
+            [sys.executable, "-c", probe, str(locks.LOCK_ROOT), str(alias)],
+            capture_output=True,
+            text=True,
+        )
+
+    with locks.artifact_locks([artifact]):
+        assert contender().returncode != 0
+        with pytest.raises(RuntimeError, match="busy"), locks.artifact_locks([alias]):
+            pass
+    assert contender().returncode == 0
+    # Exceptions also release descriptors; lock files stay to preserve inodes.
+    with pytest.raises(ValueError), locks.artifact_locks([artifact]):
+        raise ValueError("interrupted")
+    assert contender().returncode == 0
+    assert len(list(locks.LOCK_ROOT.iterdir())) == 1
+
+
+def test_artifact_reservation_blocks_standalone_between_driver_commands(
+    tmp_path, monkeypatch
+):
+    from scripts import deepseek_v41_gptq_lock as locks
+
+    monkeypatch.setattr(locks, "LOCK_ROOT", tmp_path / "locks")
+    paths = [tmp_path / "parts", tmp_path / "state"]
+    with pytest.raises(ValueError, match="owner"):
+        locks.reserve_artifacts(paths, "")
+    locks.reserve_artifacts(paths, "driver")
+    for owner in (None, "another-driver"):
+        with (
+            pytest.raises(RuntimeError, match="reserved"),
+            locks.artifact_locks(paths, owner),
+        ):
+            pass
+    args = SimpleNamespace(parts=paths[0], scratch=paths[1])
+    monkeypatch.setenv(locks.OWNER_ENV, "driver")
+    # A second child must still acquire the OS lock, even with the token.
+    with (
+        locks.command_locks(args),
+        pytest.raises(RuntimeError, match="busy"),
+        locks.command_locks(args),
+    ):
+        pass
+    monkeypatch.delenv(locks.OWNER_ENV)
+    with pytest.raises(RuntimeError, match="reserved"), locks.command_locks(args):
+        pass
+    locks.reserve_artifacts(paths, "driver", release=True)
+    with locks.command_locks(args):
+        pass
+    with locks.command_locks(SimpleNamespace()):
+        pass
+
+
+def test_remote_reservation_and_standalone_cli_share_lock(tmp_path):
+    pytest.importorskip("mlx.core")
+    import os
+    import subprocess
+    import sys
+
+    from scripts import deepseek_v41_gptq_lock as locks
+
+    parts = tmp_path / "parts"
+    repo = Path(__file__).resolve().parents[1]
+    q = dict(
+        path=str(tmp_path / "fullrun.lock"),
+        repo=str(repo),
+        resources=[str(parts)],
+        owner="test-driver",
+    )
+
+    def remote(op):
+        return subprocess.run(
+            [sys.executable, "-c", f.REMOTE],
+            input=json.dumps(dict(op=op, **q)),
+            text=True,
+            capture_output=True,
+        )
+
+    def cli(owner=None):
+        env = dict(os.environ)
+        env.pop(locks.OWNER_ENV, None)
+        if owner:
+            env[locks.OWNER_ENV] = owner
+        return subprocess.run(
+            [
+                sys.executable,
+                str(repo / "scripts/deepseek_v41_gptq.py"),
+                "amend-recipe",
+                "--parts",
+                str(parts),
+                "--scratch",
+                str(tmp_path / "state"),
+                "--recipe",
+                str(tmp_path / "missing-recipe"),
+                "--from-layer",
+                "0",
+                "--reason",
+                "test",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    # A standalone job already holding the lock rejects the driver's reservation.
+    with locks.artifact_locks([parts]):
+        assert remote("lock").returncode != 0
+        assert not Path(q["path"]).exists()
+    assert remote("lock").returncode == 0
+    try:
+        rejected = cli()
+        assert "conversion artifact is reserved" in rejected.stderr
+        assert not parts.exists()
+        # Owned child passes the lock and reaches normal argument validation.
+        assert "FileNotFoundError" in cli("test-driver").stderr
+        assert remote("lock").returncode != 0
+    finally:
+        assert remote("unlock").returncode == 0
+    assert "FileNotFoundError" in cli().stderr

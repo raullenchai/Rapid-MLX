@@ -1945,7 +1945,7 @@ def calibration_windows(source, slices, tokens, total_tokens=None):
 
 
 def main():
-    from scripts.deepseek_v41_gptq_quality import add_parsers, execute
+    from scripts.deepseek_v41_gptq_quality import add_parsers
 
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -2026,6 +2026,15 @@ def main():
         if cmd == "assemble":
             q.add_argument("--destination", type=Path, required=True)
     a = p.parse_args()
+    from scripts.deepseek_v41_gptq_lock import command_locks
+
+    with command_locks(a):
+        execute_command(a)
+
+
+def execute_command(a):
+    from scripts.deepseek_v41_gptq_quality import execute
+
     if a.command == "amend-recipe":
         from scripts.deepseek_v41_gptq_amend import amend_recipe
 

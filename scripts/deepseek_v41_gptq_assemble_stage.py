@@ -493,6 +493,13 @@ def main():
             p.add_argument("--verify-cache", type=Path, required=True)
             p.add_argument("--trust-stage-hash", action="store_true")
     args = parser.parse_args()
+    from scripts.deepseek_v41_gptq_lock import command_locks
+
+    with command_locks(args):
+        execute_command(args)
+
+
+def execute_command(args):
     mx.set_default_device(mx.cpu)
     if args.command == "verify-layers":
         value = verify_layers(args.parts, args.cache)
