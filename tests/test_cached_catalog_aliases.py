@@ -45,7 +45,8 @@ def test_audio_catalog_alias_in_both_cached_views(inventory, capsys, alias, repo
         "ok",
     )
     cli._print_cached_models()
-    assert alias in capsys.readouterr().out
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()]
+    assert any(fields[:1] == [alias] for fields in rows)
 
 
 @pytest.mark.parametrize("modality", ["image-gen", "video-gen", "embedding"])
