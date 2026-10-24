@@ -2793,6 +2793,11 @@ def _add_connect_parser(
         ),
     )
     connect_parser.add_argument(
+        "--allow-insecure-api-key",
+        action="store_true",
+        help="Allow the API key to be sent unencrypted to a remote HTTP server",
+    )
+    connect_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of the rendered banner",

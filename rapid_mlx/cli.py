@@ -14461,7 +14461,25 @@ def connect_command(args):
         if args.port is None:
             port = base_port
 
-    eps = resolve_endpoints(host=host, port=port, model=args.model)
+    from urllib.parse import urlsplit
+
+    from rapid_mlx.connect import allows_api_key
+
+    scheme = (urlsplit(base_url).scheme or "http") if base_url else "http"
+    allow_insecure = getattr(args, "allow_insecure_api_key", False)
+    eps = resolve_endpoints(
+        host=host,
+        port=port,
+        model=args.model,
+        scheme=scheme,
+        allow_insecure_api_key=allow_insecure,
+    )
+    if not allows_api_key(eps.host, eps.scheme, allow_insecure):
+        print(
+            "  RAPID_MLX_API_KEY is withheld: remote HTTP sends credentials "
+            "unencrypted. Use HTTPS or explicitly opt in with --allow-insecure-api-key.",
+            file=sys.stderr,
+        )
 
     # Per-target "how to connect" cheat sheet.
     if args.target:
@@ -14474,7 +14492,9 @@ def connect_command(args):
 
     # Don't announce "Ready:" for a server that isn't there (#1999): probe the
     # target first so a stopped server reads as "no server", not "warming up".
-    running = eps.listen_fd is not None or probe_server_alive(eps.host, eps.port)
+    running = eps.listen_fd is not None or probe_server_alive(
+        eps.host, eps.port, scheme=eps.scheme
+    )
     print(render_banner(eps, running=running), end="")
 
 
@@ -14505,10 +14525,16 @@ def _connect_target(args, eps):
         print()
         print("      import os")
         print("      from openai import OpenAI")
-        print(
-            f"      client = OpenAI(base_url={eps.openai_url!r}, "
-            'api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop")'
+        from rapid_mlx.connect import allows_api_key
+
+        key_expr = (
+            'os.environ.get("RAPID_MLX_API_KEY") or "sk-noop"'
+            if allows_api_key(
+                eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
+            )
+            else '"sk-noop"'
         )
+        print(f"      client = OpenAI(base_url={eps.openai_url!r}, api_key={key_expr})")
         print("      resp = client.chat.completions.create(")
         print(f"          model={model!r},")
         print('          messages=[{"role": "user", "content": "Hello!"}],')

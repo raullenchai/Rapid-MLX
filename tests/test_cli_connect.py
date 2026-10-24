@@ -32,7 +32,14 @@ def _endpoints(host="localhost", port=8000, model="qwen3.6-35b-4bit"):
 
 
 def _run_connect(
-    *, target=None, json_=False, host=None, port=None, model=None, base_url=None
+    *,
+    target=None,
+    json_=False,
+    host=None,
+    port=None,
+    model=None,
+    base_url=None,
+    allow_insecure_api_key=False,
 ):
     """Invoke ``connect_command`` the way argparse drives it, capturing stdout."""
     buf = io.StringIO()
@@ -45,6 +52,7 @@ def _run_connect(
                 port=port,
                 model=model,
                 base_url=base_url,
+                allow_insecure_api_key=allow_insecure_api_key,
             )
         )
     return buf.getvalue()
@@ -405,7 +413,7 @@ def test_resolve_endpoints_preserves_explicit_model(monkeypatch):
 
     probe_called = []
 
-    def fake_probe(host, port):
+    def fake_probe(host, port, **kwargs):
         probe_called.append((host, port))
         return "server-says-other-model"
 
@@ -428,7 +436,7 @@ def test_resolve_endpoints_probes_when_no_model(monkeypatch):
 
     probe_called = []
 
-    def fake_probe(host, port):
+    def fake_probe(host, port, **kwargs):
         probe_called.append((host, port))
         return "probed-model"
 
@@ -581,13 +589,11 @@ def test_parse_base_url_does_not_decode_non_zone_host_escapes():
 def test_parse_base_url_default_port_and_errors():
     # No port → the rapid-mlx default.
     assert connect._parse_base_url("http://server.local/v1") == ("server.local", 8000)
-    # Non-http scheme (incl. https, which the http-only connect SSOT would
-    # silently downgrade), malformed URL, no host, an out-of-range/zero
+    # Unsupported scheme, malformed URL, no host, an out-of-range/zero
     # explicit port, and an unexpected path-prefix (a proxied endpoint the
     # SSOT does not model) are all rejected rather than retargeting the snippet.
     for bad in (
         "ftp://localhost:8123",
-        "https://localhost:8123/v1",
         "not-a-url",
         "http://:8123",
         "http://localhost:0/v1",
@@ -611,7 +617,7 @@ def test_connect_base_url_partial_override_keeps_other_coordinate(monkeypatch):
     only `--host` must keep the base URL's port (not fall back to 8000)."""
     probed = []
 
-    def fake_probe(host, port):
+    def fake_probe(host, port, **kwargs):
         probed.append((host, port))
         return "m"
 
@@ -631,7 +637,7 @@ def test_connect_openai_python_uses_base_url_for_snippet(monkeypatch):
     default to localhost:8000."""
     probed = []
 
-    def fake_probe(host, port):
+    def fake_probe(host, port, **kwargs):
         probed.append((host, port))
         return "lfm2.5-1b-4bit"
 
@@ -648,7 +654,7 @@ def test_connect_base_url_yields_to_explicit_host_port(monkeypatch):
     """Explicit --host/--port flags win over --base-url (flags > base-url)."""
     probed = []
 
-    def fake_probe(host, port):
+    def fake_probe(host, port, **kwargs):
         probed.append((host, port))
         return "m"
 
@@ -842,3 +848,65 @@ def test_connect_probe_closes_rejected_response(monkeypatch, status):
     else:
         assert connect._probe_running_model("localhost", 12345) is None
     assert body.closed
+
+
+@pytest.mark.parametrize(
+    "url,opt_in,expected_auth",
+    [
+        ("http://localhost:12345/v1", False, True),
+        ("http://127.0.0.2:12345/v1", False, True),
+        ("http://[::1]:12345/v1", False, True),
+        ("https://remote.example/v1", False, True),
+        ("https://remote.example:9443/v1", False, True),
+        ("http://remote.example:12345/v1", False, False),
+        ("http://192.0.2.1:12345/v1", False, False),
+        ("http://localhost.example:12345/v1", False, False),
+        ("http://remote.example:12345/v1", True, True),
+    ],
+)
+def test_connect_transport_policy(
+    auth_connect_server, monkeypatch, capsys, url, opt_in, expected_auth
+):
+    import urllib.request
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-key")
+    requests = []
+
+    def respond(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(b'{"data": [{"id": "loaded-model"}]}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    output = _run_connect(base_url=url, json_=True, allow_insecure_api_key=opt_in)
+    payload = json.loads(output)
+    expected_base = url.removesuffix("/v1")
+    if expected_base == "https://remote.example":
+        expected_base += ":443"
+    assert payload["ready"] == expected_base
+    assert payload["model"] == "loaded-model"
+    assert requests[0].full_url == expected_base + "/v1/models"
+    assert requests[0].get_header("Authorization") == (
+        "Bearer test-key" if expected_auth else None
+    )
+    stderr = capsys.readouterr().err
+    assert ("unencrypted" in stderr) is not expected_auth
+    if not expected_auth:
+        assert "--allow-insecure-api-key" in stderr
+    snippet = _run_connect(
+        base_url=url, target="python", model="explicit", allow_insecure_api_key=opt_in
+    )
+    assert ('api_key=os.environ.get("RAPID_MLX_API_KEY")' in snippet) == expected_auth
+    assert "test-key" not in snippet + output + stderr
+    banner = _run_connect(base_url=url, allow_insecure_api_key=opt_in)
+    assert f"Ready: {expected_base}" in banner
+    assert requests[-1] == expected_base + "/healthz"
+
+
+def test_connect_insecure_key_flag_is_explicit():
+    from rapid_mlx.cli_parser import build_parser
+
+    parser = build_parser()
+    assert not parser.parse_args(["connect"]).allow_insecure_api_key
+    assert parser.parse_args(
+        ["connect", "--allow-insecure-api-key"]
+    ).allow_insecure_api_key

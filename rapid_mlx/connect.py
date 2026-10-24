@@ -103,13 +103,14 @@ class ServerEndpoints:
     listen_fd: int | None = None
     # A model probe was rejected with HTTP 401/403. No credential is stored.
     auth_required: bool = False
+    scheme: str = "http"
 
     @property
     def base_url(self) -> str:
         """Base ``http://host:port`` — the anchor every endpoint hangs off."""
         if self.listen_fd is not None:
             raise RuntimeError("socket-activation endpoint has no known base URL")
-        return f"http://{_authority(self.host)}:{self.port}"
+        return f"{self.scheme}://{_authority(self.host)}:{self.port}"
 
     @property
     def openai_url(self) -> str:
@@ -202,9 +203,7 @@ def render_banner(
         )
         lines.append(f"  Model:     {ep.model or unknown_model}")
         if ep.auth_required or os.environ.get("RAPID_MLX_API_KEY"):
-            lines.append(
-                "  Auth: connections use RAPID_MLX_API_KEY; set it to the server key."
-            )
+            lines.append("  Auth: authenticated connections require RAPID_MLX_API_KEY.")
             lines.append("    export RAPID_MLX_API_KEY='<server-api-key>'")
         if image_note:
             lines.append(f"  Images:    off. {image_note}")
@@ -287,7 +286,7 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
     return "\n".join(lines) + "\n"
 
 
-def probe_server_alive(host: str, port: int) -> bool:
+def probe_server_alive(host: str, port: int, *, scheme: str = "http") -> bool:
     """Best-effort liveness check: is a rapid-mlx server answering on host:port?
 
     Hits ``/healthz`` — the middleware fast-path that answers without touching
@@ -309,7 +308,7 @@ def probe_server_alive(host: str, port: int) -> bool:
     import urllib.error
     import urllib.request
 
-    url = f"http://{_authority(host)}:{port}/healthz"
+    url = f"{scheme}://{_authority(host)}:{port}/healthz"
     try:
         urllib.request.urlopen(url, timeout=2.0)
         return True
@@ -353,25 +352,25 @@ def _parse_base_url(base_url: str) -> tuple[str, int]:
     Accepts and normalizes the same host shapes as :func:`_authority` —
     bare IPv4/hostnames and bracket-wrapped or scoped IPv6 literals — so a
     user can paste the banner URL verbatim. A missing port falls back to the
-    rapid-mlx default (8000).
+    rapid-mlx default (8000) for HTTP or 443 for HTTPS.
 
-    ``connect`` targets a local ``http://`` server whose endpoints the SSOT
-    models as ``http://host:port`` (+ a literal ``/v1`` for OpenAI) — it has no
+    ``connect`` accepts HTTP and HTTPS endpoints, preserving the scheme
+    in ``scheme://host:port`` (+ a literal ``/v1`` for OpenAI) — it has no
     notion of a URL path prefix. So, mirroring the scheme check, any path other
     than empty or ``/v1`` is rejected with a clear error rather than silently
     rewriting a proxied base URL to the wrong API (codex #2348-R2). An explicit
     port is validated against the CLI ``_port_arg`` 1-65535 invariant, so ``:0``
     or out-of-range values fail loudly instead of retargeting the snippet.
 
-    Raises ``ValueError`` on a non-http scheme, a URL with no host, an
+    Raises ``ValueError`` on a scheme other than HTTP or HTTPS, a URL with no host, an
     unexpected path, or an explicit out-of-range port.
     """
     from urllib.parse import urlsplit
 
     split = urlsplit(base_url, scheme="http")
     scheme = split.scheme or "http"
-    if scheme != "http":
-        raise ValueError(f"base-url must be an http URL, got {base_url!r}")
+    if scheme not in ("http", "https"):
+        raise ValueError(f"base-url must be an http or https URL, got {base_url!r}")
     host = split.hostname
     if not host:
         raise ValueError(f"base-url has no host, got {base_url!r}")
@@ -396,7 +395,9 @@ def _parse_base_url(base_url: str) -> tuple[str, int]:
     # URL would be malformed (codex #2348-R2/R3).
     if ":" in host:
         host = host.replace("%25", "%")
-    port = split.port if split.port is not None else 8000
+    port = (
+        split.port if split.port is not None else (443 if scheme == "https" else 8000)
+    )
     if not (1 <= port <= 65535):
         raise ValueError(f"base-url port must be between 1 and 65535, got {port}")
     return host, port
@@ -407,6 +408,8 @@ def resolve_endpoints(
     host: str | None = None,
     port: int | None = None,
     model: str | None = None,
+    scheme: str = "http",
+    allow_insecure_api_key: bool = False,
 ) -> ServerEndpoints:
     """Resolve connection info for ``rapid-mlx connect``.
 
@@ -442,25 +445,51 @@ def resolve_endpoints(
     auth_required = False
     if out_model is None and cfg.bind_host is None and cfg.bind_port is None:
         try:
-            out_model = _probe_running_model(out_host, out_port)
+            out_model = _probe_running_model(
+                out_host,
+                out_port,
+                scheme=scheme,
+                allow_insecure_api_key=allow_insecure_api_key,
+            )
         except PermissionError:
             auth_required = True
 
     return ServerEndpoints(
-        out_host, out_port, model=out_model, auth_required=auth_required
+        out_host, out_port, model=out_model, auth_required=auth_required, scheme=scheme
     )
 
 
-def _probe_running_model(host: str, port: int) -> str | None:
+def allows_api_key(
+    host: str, scheme: str, allow_insecure_api_key: bool = False
+) -> bool:
+    """Only literal loopback hosts and TLS endpoints receive keys automatically."""
+    import ipaddress
+
+    if scheme == "https" or allow_insecure_api_key or host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _probe_running_model(
+    host: str, port: int, *, scheme: str = "http", allow_insecure_api_key: bool = False
+) -> str | None:
     """Probe the model; raise PermissionError only when authentication fails."""
     import urllib.error
     import urllib.request
 
     from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
-    base = f"http://{_authority(host)}:{port}"
+    base = f"{scheme}://{_authority(host)}:{port}"
     request = urllib.request.Request(f"{base}/v1/models")
-    for name, value in rapid_mlx_auth_headers().items():
+    headers = (
+        rapid_mlx_auth_headers()
+        if allows_api_key(host, scheme, allow_insecure_api_key)
+        else {}
+    )
+    for name, value in headers.items():
         # Never forward the credential if this endpoint redirects elsewhere.
         request.add_unredirected_header(name, value)
     try:
