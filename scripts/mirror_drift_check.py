@@ -1052,7 +1052,7 @@ def audit(
         unmirrored = load_unmirrored(
             selected_unmirrored_path, main_aliases_path, audio_aliases_path
         )
-        if selected_unmirrored_path == UNMIRRORED_PATH:
+        if selected_unmirrored_path.resolve() == UNMIRRORED_PATH.resolve():
             for repo, entry in mirror_unmirrored.load_published_unmirrored().items():
                 if entry is None:
                     unmirrored.pop(repo, None)

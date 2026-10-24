@@ -661,7 +661,7 @@ def mirror_repo(
     unmirrored_entries = load_unmirrored(
         unmirrored_path, ALIASES_PATH, AUDIO_ALIASES_PATH
     )
-    if unmirrored_path == UNMIRRORED_PATH:
+    if unmirrored_path.resolve() == UNMIRRORED_PATH.resolve():
         for repo, entry in mirror_unmirrored.load_published_unmirrored().items():
             if entry is None:
                 unmirrored_entries.pop(repo, None)

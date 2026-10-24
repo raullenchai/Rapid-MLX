@@ -2006,3 +2006,52 @@ def test_published_mirror_state_failure_prevents_external_work(monkeypatch, tool
         else:
             mirror.mirror_repo("org/repo", force_unmirrored=True)
     unexpected.assert_not_called()
+
+
+@pytest.mark.parametrize("tool", ["audit", "upload"])
+def test_registry_symlink_still_consults_published_state(monkeypatch, tmp_path, tool):
+    from unittest.mock import Mock
+
+    registry = tmp_path / "registry.json"
+    registry.symlink_to(drift.UNMIRRORED_PATH)
+    published = Mock(side_effect=ValueError("published state rejected"))
+    monkeypatch.setattr(drift.mirror_unmirrored, "load_published_unmirrored", published)
+    with pytest.raises(ValueError, match="published state rejected"):
+        if tool == "audit":
+            drift.audit(
+                drift.ALIASES_PATH, drift.AUDIO_ALIASES_PATH, unmirrored_path=registry
+            )
+        else:
+            mirror.mirror_repo("org/repo", unmirrored_path=registry)
+    published.assert_called_once()
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_published_mirror_state_bounds_response(monkeypatch, oversized):
+    from unittest.mock import Mock
+
+    response = io.BytesIO(b" " * (1024 * 1024 + 1) if oversized else b"{}")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: response)
+    monkeypatch.setattr(
+        drift.mirror_unmirrored.time,
+        "monotonic",
+        Mock(side_effect=None if oversized else [0, 16], return_value=0),
+    )
+    with pytest.raises(
+        (ValueError, TimeoutError), match="exceeds 1 MiB|deadline exceeded"
+    ):
+        drift.mirror_unmirrored.load_published_unmirrored()
+    assert response.closed
+
+
+def test_published_mirror_state_equal_timestamps_retain_removal(monkeypatch):
+    payload = {"org/repo": {"removedAt": "2026-10-24", "mirroredSince": "2026-10-24"}}
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: io.BytesIO(json.dumps(payload).encode()),
+    )
+    assert (
+        drift.mirror_unmirrored.load_published_unmirrored()["org/repo"].since
+        == "2026-10-24"
+    )
