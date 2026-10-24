@@ -410,6 +410,37 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     return "other"
 
 
+def serve_failure_subtype(exc: BaseException) -> str:
+    """Classify an unclassified serve failure using exception types only.
+
+    Prefer a specific cause over a generic outer RuntimeError. Never inspect
+    exception messages, filenames, model references, or traceback frames.
+    """
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        chain.append(current)
+        try:
+            current = current.__cause__
+        except BaseException:
+            break
+
+    for failure_type, subtype in (
+        (json.JSONDecodeError, "config_parse"),
+        (ImportError, "import_error"),
+        (MemoryError, "memory_error"),
+        (OSError, "io_error"),
+        (RuntimeError, "runtime_error"),
+    ):
+        if any(isinstance(cause, failure_type) for cause in chain):
+            return subtype
+    return "unknown"
+
+
 def model_type(alias_or_path: object) -> str:
     """Derive the registry model type from catalog modality metadata."""
     if not isinstance(alias_or_path, str):
@@ -903,6 +934,8 @@ def emit_model_serve_failed(
         else serve_error_class(exc, model_ref=alias_or_path)
     )
     props: dict[str, object] = {"error_class": error_class}
+    if error_class == "other":
+        props["failure_subtype"] = serve_failure_subtype(exc)
     stage = _closed_failure_stage(failure_stage)
     if stage is not None:
         props["failure_stage"] = stage

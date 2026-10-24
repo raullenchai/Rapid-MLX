@@ -126,6 +126,75 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
     assert model_events.size_bucket(size) == expected
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (json.JSONDecodeError("/private/path", "{}", 0), "config_parse"),
+        (ModuleNotFoundError("/private/path"), "import_error"),
+        (MemoryError("/private/path"), "memory_error"),
+        (OSError("/private/path"), "io_error"),
+        (RuntimeError("/private/path"), "runtime_error"),
+        (ValueError("/private/path"), "unknown"),
+    ],
+)
+def test_serve_failure_subtype_uses_only_exception_types(failure, expected):
+    assert model_events.serve_failure_subtype(failure) == expected
+    assert (
+        expected in registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
+    )
+
+
+def test_serve_failure_subtype_prefers_specific_cause_and_terminates_on_cycle():
+    outer = RuntimeError("private outer")
+    inner = ImportError("private inner")
+    outer.__cause__ = inner
+    inner.__cause__ = outer
+    assert model_events.serve_failure_subtype(outer) == "import_error"
+
+
+def test_serve_failure_subtype_ignores_implicit_context():
+    outer = RuntimeError("private outer")
+    outer.__context__ = ImportError("private inner")
+    assert model_events.serve_failure_subtype(outer) == "runtime_error"
+
+
+def test_serve_failure_subtype_tolerates_hostile_cause(monkeypatch):
+    class HostileCauseError(RuntimeError):
+        def __getattribute__(self, name):
+            if name == "__cause__":
+                raise ValueError("private failure")
+            return super().__getattribute__(name)
+
+    failure = HostileCauseError("private failure")
+    assert model_events.serve_failure_subtype(failure) == "runtime_error"
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(failure)
+    assert calls == [{"error_class": "other", "failure_subtype": "runtime_error"}]
+
+
+def test_serve_failure_subtype_schema_is_closed_and_conditional():
+    values = registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
+    assert len(values) <= 8
+    assert registry.validate(
+        "model_serve_failed", {"error_class": "other", "failure_subtype": "unknown"}
+    ) == {"error_class": "other", "failure_subtype": "unknown"}
+    assert (
+        registry.validate(
+            "model_serve_failed",
+            {"error_class": "other", "failure_subtype": "/private/path"},
+        )
+        is None
+    )
+    assert (
+        registry.validate(
+            "model_serve_failed",
+            {"error_class": "invalid_config", "failure_subtype": "unknown"},
+        )
+        is None
+    )
+
+
 def test_model_served_submission_failure_is_contained(monkeypatch):
     monkeypatch.setattr(
         model_events,
@@ -1544,7 +1613,9 @@ def test_failure_prefers_engine_telemetry_identity(monkeypatch):
     monkeypatch.setattr(model_id, "engine_telemetry_id", lambda value: "tmax-9b")
     _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
     model_events.emit_model_serve_failed(RuntimeError("load"), engine=engine)
-    assert calls == [{"error_class": "other", "model": "tmax-9b"}]
+    assert calls == [
+        {"error_class": "other", "failure_subtype": "runtime_error", "model": "tmax-9b"}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1595,6 +1666,7 @@ def test_optional_runtime_failure_class_and_extra_are_structured(monkeypatch):
 
     assert model_events.serve_error_class(failure) == "missing_extra"
     assert calls == [{"error_class": "missing_extra", "extra": "vision"}]
+    assert "failure_subtype" not in calls[0]
     assert "private diagnostic detail" not in repr(calls)
 
 
@@ -2140,6 +2212,7 @@ def test_rejected_first_serve_failure_does_not_consume_process_latch(
     assert calls == [
         {
             "error_class": "other",
+            "failure_subtype": "runtime_error",
             "model": "<custom>",
             "model_type": "other",
             "auto_selected": False,
@@ -2315,7 +2388,9 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
     )
     model_events.emit_model_served(object(), "qwen3.5-4b-4bit", True)
     hostile_path = "/Users/alice/private-checkout/weights"
-    model_events.emit_model_serve_failed(MemoryError(), alias_or_path=hostile_path)
+    model_events.emit_model_serve_failed(
+        ValueError("private failure"), alias_or_path=hostile_path
+    )
     sender.flush()
     server.shutdown()
     thread.join(timeout=2)
@@ -2368,7 +2443,8 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
             "model_type": "other",
             "auto_selected": False,
             "quant": "unknown",
-            "error_class": "insufficient_memory",
+            "error_class": "other",
+            "failure_subtype": "unknown",
         },
     ]
     assert events == [

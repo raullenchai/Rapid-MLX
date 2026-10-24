@@ -232,6 +232,13 @@
         "other"
       ]
     },
+    "serve_failure_subtype": {
+      "_about": "Exception-type-only detail for model_serve_failed when error_class is other. No message, path, model name, or user text is inspected.",
+      "values": [
+        "config_parse", "import_error", "memory_error", "io_error",
+        "runtime_error", "unknown"
+      ]
+    },
     "byom_preflight": {
       "_about": [
         "Outcome of the bring-your-own-model metadata preflight for the model",
@@ -706,6 +713,10 @@
         "auto_selected": {"kind": "bool", "required": false},
         "quant": {"kind": "enum", "enum": "quant", "required": false},
         "error_class": {"kind": "enum", "enum": "serve_error_class", "required": true},
+        "failure_subtype": {
+          "kind": "enum", "enum": "serve_failure_subtype", "required": false,
+          "only_when": {"error_class": ["other"]}
+        },
         "failure_stage": {"kind": "enum", "enum": "failure_stage", "required": false},
         "extra": {
           "kind": "enum",
