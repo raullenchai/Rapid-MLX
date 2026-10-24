@@ -449,6 +449,28 @@ def repair_byte_level_decoder(tokenizer) -> bool:
     return True
 
 
+def _gemma_turn_eos_ids(tokenizer) -> tuple[int, ...]:
+    """Resolve Gemma turn terminators from vocabulary, never hard-coded IDs.
+
+    Converted checkpoints can omit or truncate generation_config.json. Gemma
+    3 uses <end_of_turn>; Gemma 4 uses <turn|> and yields tool calls with
+    <|tool_response>. Restrict this fallback to Gemma tokenizers so incidental
+    vocabulary entries in other families cannot change their stop behavior.
+    """
+    candidates = (tokenizer, getattr(tokenizer, "_tokenizer", None))
+    for candidate in candidates:
+        if any(
+            cls.__name__.startswith("GemmaTokenizer") for cls in type(candidate).__mro__
+        ):
+            vocab = candidate.get_vocab()
+            return tuple(
+                vocab[token]
+                for token in ("<end_of_turn>", "<turn|>", "<|tool_response>")
+                if token in vocab
+            )
+    return ()
+
+
 def augment_eos_token_ids_from_generation_config(
     tokenizer, model_path_or_name: str
 ) -> None:
@@ -499,12 +521,18 @@ def augment_eos_token_ids_from_generation_config(
        (``RAPID_EXTRA_EOS_ATTR``) that doesn't collide with any HF
        descriptor; both schedulers' source-4 union branch reads it.
 
+    Gemma turn terminators are also resolved from the tokenizer vocabulary
+    when converted checkpoints omit them from the generation configuration.
+    Existing configured EOS IDs are preserved.
+
     The fix is one mutation point per model load rather than an
     N-way patch across every consumer.
     """
     from .generation_config import load_generation_config_eos_ids
 
-    extras = load_generation_config_eos_ids(model_path_or_name)
+    extras = load_generation_config_eos_ids(model_path_or_name) + _gemma_turn_eos_ids(
+        tokenizer
+    )
     if not extras:
         return
 
