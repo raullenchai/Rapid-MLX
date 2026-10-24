@@ -480,7 +480,9 @@ struct ContentView: View {
         } message: { warning in
             Text(warning.message)
         }
-        .confirmationDialog(
+        // Use the native alert button path: confirmationDialog can acknowledge
+        // AXPress without delivering either button action on macOS (#5204).
+        .alert(
             displayedModelSwitch?.risk.title ?? "",
             isPresented: Binding(
                 get: { server.pendingModelSwitch != nil },
@@ -493,7 +495,6 @@ struct ContentView: View {
                     }
                 }
             ),
-            titleVisibility: .visible,
             presenting: displayedModelSwitch
         ) { request in
             Button("Switch", role: .destructive) {

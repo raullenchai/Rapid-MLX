@@ -239,8 +239,8 @@ def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
         'select-menu-item "$APP_PID" ModelPickerBar.ModelMenu '
         "\\\n        ModelPickerBar.Alias.fake-external-alias"
     ) in flow
-    assert '"$AX_DRIVER" click-center "$APP_PID" ModelSwitchGuard.Cancel' in flow
-    assert '"$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Cancel' not in flow
+    assert '"$AX_DRIVER" click-center "$APP_PID" ModelSwitchGuard.Cancel' not in flow
+    assert '"$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Cancel' in flow
     assert '"$AX_DRIVER" key "$APP_PID" escape' not in flow
 
 

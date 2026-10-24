@@ -5760,15 +5760,21 @@ flow_model_switch_active_request() {
            | select(.identifier == "ModelSwitchGuard.Cancel")' \
         "$OUT/switch-guard.json" >/dev/null \
         || die "active stream did not present the native switch guard"
-    # Click the semantic Cancel button's bounds directly. Posting Escape can
-    # succeed at the CoreGraphics boundary while the hosted confirmation
-    # dialog ignores it, and hosted macOS can expose a native dialog button
-    # while returning kAXErrorActionUnsupported for AXPress. A bounds click is
-    # the same explicit user action and still fails closed unless the stable
-    # product-owned identifier resolves to a visible control.
-    "$AX_DRIVER" click-center "$APP_PID" ModelSwitchGuard.Cancel \
+    # Require accessibility activation itself to dismiss the guard (#5204).
+    # A coordinate click would conceal a successful but ineffective AXPress.
+    "$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Cancel \
         > "$OUT/switch-cancelled.json" \
-        || die "switch guard did not honor the native Cancel action"
+        || die "switch guard did not honor AXPress on Cancel"
+    local dismissed=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/switch-dismissed.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "ModelSwitchGuard.Cancel")' \
+            "$OUT/switch-dismissed.json" >/dev/null; then
+            dismissed=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$dismissed" == 1 ]] || die "Cancel AXPress succeeded but the guard stayed open"
 
     # Cancellation occurs before /v1/models/load or process teardown. The
     # original stream must complete and the original model remains selected.
@@ -5786,7 +5792,38 @@ flow_model_switch_active_request() {
     [[ "$(element_field "$OUT/settled.json" ModelPickerBar.ModelMenu value)" == "fake-alias" ]] \
         || die "Cancel changed the selected model"
 
-    log "  active-request confirmation and cancellation preservation OK"
+    # Exercise the other button against a second active stream. Approval must
+    # dismiss the alert and actually replace the serving model.
+    wait_send_idle "$OUT/second-ready.json"
+    send_prompt "shape:long exercise switch approval" "second-busy-stream"
+    busy=0
+    for ((i=0; i<80; i++)); do
+        if [[ "$(jq -s '[.[] | select(.event == "chat_active" and .active_requests > 0)] | length' "$OUT/fake-events.jsonl")" -ge 2 ]]; then
+            busy=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$busy" == 1 ]] || die "second stream never became active"
+    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+        ModelPickerBar.Alias.fake-external-alias > "$OUT/second-switch-requested.json"
+    wait_identifier ModelSwitchGuard.Confirm "$OUT/second-switch-guard.json"
+    "$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Confirm > "$OUT/switch-confirmed.json"
+    local switched=0
+    for ((i=0; i<160; i++)); do
+        see_main "$OUT/switch-approved.json"
+        if jq -e '.data.ui_elements as $elements
+            | (any($elements[]?; .identifier == "ModelSwitchGuard.Confirm") | not)
+              and any($elements[]?; .identifier == "ModelPickerBar.ModelMenu" and .value == "fake-external-alias")' \
+            "$OUT/switch-approved.json" >/dev/null \
+            && jq -e 'select(.event == "server_started" and .alias == "fake-external-alias")' \
+                "$OUT/fake-events.jsonl" >/dev/null; then
+            switched=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$switched" == 1 ]] || die "Switch AXPress did not dismiss the alert and replace the model"
+
+    log "  AXPress Cancel preserves the stream; AXPress Switch replaces the model"
     cleanup_persona
 }
 
