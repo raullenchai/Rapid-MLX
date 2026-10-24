@@ -17,6 +17,19 @@ import time
 from pathlib import Path
 
 HEADROOM = 20_000_000_000
+METADATA_TIMEOUT = 3600
+COMMAND_TIMEOUT = 86400
+TRANSFER_TIMEOUT = 86400
+SSH_OPTIONS = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=3",
+]
 SCRATCH_ROOT = (
     Path(
         os.environ.get(
@@ -127,6 +140,14 @@ def validate_checkpoint(checkpoint, identity, count=40):
         raise ValueError("invalid checkpoint/run identity")
 
 
+def sync_parent(path):
+    descriptor = os.open(Path(path).parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic(path, value):
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".partial")
@@ -136,12 +157,13 @@ def atomic(path, value):
         f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
+    sync_parent(path)
 
 
 # Requests travel on stdin, never by interpolating code/data into a shell command.
 # No commands print environment variables, credentials, or arbitrary subprocess output.
 REMOTE = r"""
-import hashlib,json,os,struct,subprocess,sys,time
+import hashlib,json,os,signal,struct,subprocess,sys,time
 from pathlib import Path
 q=json.load(sys.stdin)
 def hashfile(p):
@@ -193,7 +215,17 @@ elif op=='recover_init':
    p.rename(target);out.append(target.name)
 elif op=='run':
  with Path(q['log']).open('ab') as f:
-  code=subprocess.call(q['argv'],cwd=q['cwd'],stdout=f,stderr=subprocess.STDOUT)
+  process=subprocess.Popen(q['argv'],cwd=q['cwd'],stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
+  try:code=process.wait(timeout=q.get('command_timeout',86400))
+  except subprocess.TimeoutExpired:
+   try:os.killpg(process.pid,signal.SIGTERM)
+   except ProcessLookupError:pass
+   try:process.wait(timeout=10)
+   except subprocess.TimeoutExpired:
+    try:os.killpg(process.pid,signal.SIGKILL)
+    except ProcessLookupError:pass
+    process.wait()
+   raise ValueError('GPTQ command timed out; child process group terminated')
  if code:raise ValueError('GPTQ command failed; inspect remote step log')
  out=True
 else:raise ValueError('unknown operation')
@@ -208,20 +240,28 @@ class Remote:
         self.host, self.python = host, python
 
     def call(self, op, **kw):
-        result = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=15",
-                self.host,
-                shlex.join([self.python, "-c", REMOTE]),
-            ],
-            input=json.dumps(dict(op=op, **kw)),
-            text=True,
-            capture_output=True,
-        )
+        request = dict(op=op, **kw)
+        timeout = METADATA_TIMEOUT
+        if op == "run":
+            request["command_timeout"] = COMMAND_TIMEOUT
+            timeout = COMMAND_TIMEOUT + 30
+        try:
+            result = subprocess.run(
+                [
+                    "ssh",
+                    *SSH_OPTIONS,
+                    self.host,
+                    shlex.join([self.python, "-c", REMOTE]),
+                ],
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"remote {op} timed out; inspect remote state before retry; no cleanup authorized"
+            ) from None
         if result.returncode:
             raise RuntimeError(
                 f"remote {op} failed (exit {result.returncode}); no cleanup authorized"
@@ -241,7 +281,11 @@ class Remote:
                 str(target),
             ]
         )
-        p = subprocess.run(argv, capture_output=True)
+        argv[1:1] = ["-e", shlex.join(["ssh", *SSH_OPTIONS])]
+        try:
+            p = subprocess.run(argv, capture_output=True, timeout=TRANSFER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("rsync timed out; no cleanup authorized") from None
         if p.returncode:
             raise RuntimeError("rsync failed; no cleanup authorized")
 

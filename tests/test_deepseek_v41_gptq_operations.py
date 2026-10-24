@@ -289,3 +289,106 @@ def test_exclusive_publication_platform_contract(tmp_path, monkeypatch):
         patch.setattr(io.sys, "platform", "unsupported")
         with pytest.raises(RuntimeError, match="unavailable"):
             io.rename_directory_exclusive(tmp_path / "source", tmp_path / "dest")
+
+
+@pytest.mark.parametrize("expert,shape", [(None, (4,)), (0, (1, 2))])
+def test_shard_sink_rejects_equal_bytes_wrong_shape(tmp_path, expert, shape):
+    from scripts.deepseek_v41_gptq_io import ShardSink
+    from scripts.deepseek_v41_rd_build import Entry
+
+    sink = ShardSink(
+        tmp_path / "bank.safetensors", [Entry("bank", (2, 2), "F32", (), "test")]
+    )
+    try:
+        before = sink.file.tell()
+        with pytest.raises(ValueError, match="range shape"):
+            sink.put("bank", mx.ones(shape), expert)
+        assert sink.file.tell() == before and not sink.written
+    finally:
+        sink.close()
+
+
+def test_publication_syncs_parent_after_file_is_visible(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+    from scripts.deepseek_v41_rd_build import Entry
+
+    observed = []
+    real = io.sync_parent
+
+    def sync(path):
+        assert path.exists()
+        observed.append(path.name)
+        real(path)
+
+    monkeypatch.setattr(io, "sync_parent", sync)
+    io.atomic_json(tmp_path / "record.json", {})
+    io.save_state(tmp_path / "state", {"value": mx.ones((1,))})
+    sink = io.ShardSink(
+        tmp_path / "bank.safetensors", [Entry("bank", (2,), "F32", (), "test")]
+    )
+    sink.put("bank", mx.ones((2,)))
+    sink.finish()
+    with io.atomic_destination(tmp_path / "complete") as stage:
+        stage.mkdir()
+    assert observed == [
+        "record.json",
+        "state.safetensors",
+        "state.json",
+        "bank.safetensors",
+        "complete",
+    ]
+
+
+def test_directory_sync_closes_descriptor_after_failure(tmp_path, monkeypatch):
+    import os
+
+    real_close = os.close
+    closed = []
+
+    def close(fd):
+        closed.append(fd)
+        real_close(fd)
+
+    def fail(fd):
+        raise OSError("injected directory sync failure")
+
+    monkeypatch.setattr(f.os, "fsync", fail)
+    monkeypatch.setattr(f.os, "close", close)
+    with pytest.raises(OSError, match="directory sync"):
+        f.sync_parent(tmp_path / "file")
+    assert len(closed) == 1
+    with pytest.raises(OSError):
+        os.fstat(closed[0])
+
+
+def test_remote_operation_deadlines_and_keepalives(tmp_path, monkeypatch):
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return SimpleNamespace(returncode=0, stdout="true")
+
+    monkeypatch.setattr(f.subprocess, "run", run)
+    remote = f.Remote("example.test", "python3")
+    remote.call("info", path="data")
+    assert calls[-1][1]["timeout"] == f.METADATA_TIMEOUT
+    assert "ServerAliveInterval=30" in calls[-1][0]
+    assert "ServerAliveCountMax=3" in calls[-1][0]
+    remote.call("run", argv=["python3"], cwd="/work", log="/work/log")
+    assert calls[-1][1]["timeout"] > f.COMMAND_TIMEOUT
+    assert json.loads(calls[-1][1]["input"])["command_timeout"] == f.COMMAND_TIMEOUT
+    remote.transfer(tmp_path / "a", "/work/a", True)
+    assert calls[-1][1]["timeout"] == f.TRANSFER_TIMEOUT
+    assert "ServerAliveInterval=30" in calls[-1][0][2]
+
+    def timeout(*args, **kwargs):
+        raise f.subprocess.TimeoutExpired("fixture", 1, stderr="sensitive-output")
+
+    monkeypatch.setattr(f.subprocess, "run", timeout)
+    for action in (
+        lambda: remote.call("info", path="data"),
+        lambda: remote.transfer(tmp_path / "a", "/work/a", True),
+    ):
+        with pytest.raises(RuntimeError, match="timed out") as error:
+            action()
+        assert "sensitive-output" not in str(error.value)

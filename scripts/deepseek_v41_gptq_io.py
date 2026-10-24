@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import numpy as np
 
+from scripts.deepseek_v41_gptq_fullrun import sync_parent
 from scripts.deepseek_v41_rd_build import header
 from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash
 from scripts.deepseek_v41_streaming_teacher import SourceWeights
@@ -36,6 +37,7 @@ def atomic_json(path, value):
         f.flush()
         os.fsync(f.fileno())
     temporary.replace(path)
+    sync_parent(path)
 
 
 def inventory(source, source_revision=None):
@@ -208,6 +210,9 @@ class ShardSink:
         )
         if raw.nbytes != expected:
             raise ValueError(f"wrong output range size: {name}")
+        expected_shape = entry.shape if expert is None else entry.shape[1:]
+        if tuple(tensor.shape) != tuple(expected_shape):
+            raise ValueError(f"wrong output range shape: {name}")
         dtype = {"BF16": mx.bfloat16, "F32": mx.float32, "U32": mx.uint32}[entry.dtype]
         if tensor.dtype != dtype:
             raise ValueError(f"wrong native output dtype: {name}")
@@ -226,6 +231,7 @@ class ShardSink:
         os.fsync(self.file.fileno())
         self.file.close()
         self.temporary.replace(self.path)
+        sync_parent(self.path)
 
     def close(self):
         if not self.file.closed:
@@ -271,6 +277,7 @@ def save_state(path, state):
     with temporary.open("rb") as f:
         os.fsync(f.fileno())
     temporary.replace(path.with_suffix(".safetensors"))
+    sync_parent(path.with_suffix(".safetensors"))
     atomic_json(path.with_suffix(".json"), tree)
 
 
@@ -402,3 +409,4 @@ def atomic_destination(destination):
         stage = Path(root) / "output"
         yield stage
         rename_directory_exclusive(stage, destination)
+        sync_parent(destination)

@@ -613,3 +613,34 @@ def test_calibration_paths_cannot_escape_manifest_directory(setup, tmp_path, kin
     with pytest.raises(ValueError):
         f.Driver(a, remote).run()
     assert remote.events == []
+
+
+def test_remote_command_timeout_terminates_started_process(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    pid = tmp_path / "child.pid"
+    command = (
+        "import os,time; from pathlib import Path; Path("
+        + repr(str(pid))
+        + ").write_text(str(os.getpid())); time.sleep(10)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", f.REMOTE],
+        input=json.dumps(
+            dict(
+                op="run",
+                argv=[sys.executable, "-c", command],
+                cwd=str(tmp_path),
+                log=str(tmp_path / "command.log"),
+                command_timeout=0.5,
+            )
+        ),
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode != 0 and "command timed out" in result.stderr
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)
