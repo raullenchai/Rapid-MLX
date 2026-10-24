@@ -749,6 +749,10 @@ jobs:
             tests/test_system_one_convert_clm.py \
             tests/test_module_import_smoke.py \
             tests/test_dflash_integration.py \
+            tests/test_alternate_model_load_security.py \
+            tests/test_byom_imports.py \
+            tests/test_dspark_companion.py \
+            tests/test_native_mtp.py \
             tests/test_ddtree_error_hints.py \
             tests/test_ltx25_video.py \
             tests/test_ltx25_extension.py \
