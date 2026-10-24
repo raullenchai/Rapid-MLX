@@ -53,7 +53,7 @@ def probe_models(base_url: str) -> list[dict]:
     try:
         url = base_url.rstrip("/") + "/models"
         endpoint = urllib.parse.urlsplit(url)
-        host = endpoint.hostname
+        host = endpoint.hostname or ""
         try:
             loopback = ipaddress.ip_address(host).is_loopback
         except ValueError:
