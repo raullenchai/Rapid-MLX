@@ -968,7 +968,7 @@ def test_stream_usage_matches_engine_and_nonstream(
 ):
     """Opening usage must use engine accounting, including prefix-cache hits."""
     monkeypatch.setattr(
-        "rapid_mlx.routes.anthropic._estimate_anthropic_prompt_tokens",
+        "rapid_mlx.routes.anthropic.enforce_context_length_for_messages",
         lambda *args, **kwargs: 79,
     )
     engine = _ToolStreamingEngine(
@@ -1030,7 +1030,7 @@ def test_stream_waits_for_usage_after_synthetic_prefix(monkeypatch, cached_token
                 yield chunk
 
     monkeypatch.setattr(
-        "rapid_mlx.routes.anthropic._estimate_anthropic_prompt_tokens",
+        "rapid_mlx.routes.anthropic.enforce_context_length_for_messages",
         lambda *args, **kwargs: 79,
     )
     client = _make_client(
@@ -1113,3 +1113,36 @@ def test_usage_less_engine_lookahead_is_bounded(completion_tokens, expected_pull
         assert engine.pulls == 3
 
     asyncio.run(drive())
+
+
+@pytest.mark.parametrize("with_prefix", [False, True])
+def test_prefill_failure_preserves_opening_envelope(monkeypatch, with_prefix):
+    """The guard can deliver an error after an estimated opening envelope."""
+
+    class FailingEngine(_BaseEngine):
+        async def stream_chat(self, messages, **kwargs):
+            if with_prefix:
+                yield SimpleNamespace(new_text="Prefix ", completion_tokens=0)
+            raise RuntimeError("private engine diagnostic")
+
+    monkeypatch.setattr(
+        "rapid_mlx.routes.anthropic.enforce_context_length_for_messages",
+        lambda *args, **kwargs: 79,
+    )
+    client = _make_client(FailingEngine())
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 8,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hi"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert events[0]["type"] == "message_start"
+    assert events[0]["message"]["usage"] == {"input_tokens": 79, "output_tokens": 0}
+    assert events[1]["error"]["type"] == "internal_error"
+    assert "private engine diagnostic" not in response.text
+    assert response.text.endswith("data: [DONE]\n\n")

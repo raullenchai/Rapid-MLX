@@ -2105,7 +2105,6 @@ async def _stream_anthropic_messages(
             "usage": initial_usage,
         },
     }
-    message_started = False
 
     # H-05 follow-up (PR #771 codex round-2 BLOCKING #1): when
     # ``tool_choice`` pins a specific tool, the model is supposed to
@@ -2389,21 +2388,31 @@ async def _stream_anthropic_messages(
         caller_client=caller_client,
     )
 
-    async def _usage_ready_stream():
-        # Forced-prefix chunks can precede real engine usage. Hold them until
-        # prefill accounting arrives, then replay without losing content.
-        nonlocal prompt_tokens, cached_tokens
-        pending = []
+    # A synthetic prefix can precede actual usage. Prefetch at most two
+    # chunks, stopping immediately for usage-less engines with real output.
+    pending = []
+    try:
         async for chunk in _generation_stream:
             pending.append(chunk)
             if getattr(chunk, "prompt_tokens", 0):
                 prompt_tokens = chunk.prompt_tokens
                 cached_tokens = getattr(chunk, "cached_tokens", 0) or 0
                 break
-            # A synthetic prefix has no generated tokens. Look ahead at most
-            # one more chunk; usage-less engines must still stream promptly.
             if getattr(chunk, "completion_tokens", 0) or len(pending) >= 2:
                 break
+    except Exception:
+        # Preserve the opening envelope when generation fails before usage.
+        # The route's disconnect guard serializes the propagated error.
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+        raise
+
+    initial_cached_tokens = min(cached_tokens, prompt_tokens)
+    initial_usage["input_tokens"] = prompt_tokens - initial_cached_tokens
+    if initial_cached_tokens:
+        initial_usage["cache_read_input_tokens"] = initial_cached_tokens
+    yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+
+    async def _usage_ready_stream():
         for chunk in pending:
             yield chunk
         async for chunk in _generation_stream:
@@ -2418,15 +2427,6 @@ async def _stream_anthropic_messages(
             completion_tokens = output.completion_tokens
         if hasattr(output, "cached_tokens") and output.cached_tokens:
             cached_tokens = output.cached_tokens
-        if not message_started:
-            # The engine counts the actual rendered prompt and knows cache hits.
-            # A separate estimate can include template overhead absent from it.
-            initial_cached_tokens = min(cached_tokens, prompt_tokens)
-            initial_usage["input_tokens"] = prompt_tokens - initial_cached_tokens
-            if initial_cached_tokens:
-                initial_usage["cache_read_input_tokens"] = initial_cached_tokens
-            yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
-            message_started = True
         # H-03: latch the matched stop string from whichever chunk
         # carries it. ``getattr`` keeps legacy mocks without the field
         # working unchanged.
@@ -2758,10 +2758,6 @@ async def _stream_anthropic_messages(
                     ev = _capture(event)
                     if ev is not None:
                         yield ev
-
-    if not message_started:
-        # An empty engine stream still needs a complete SSE envelope.
-        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
     # Flush remaining from both filters
     remaining = tool_filter.flush()
