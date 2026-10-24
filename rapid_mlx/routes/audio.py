@@ -2915,6 +2915,34 @@ def _resolve_tts_model(model: str | None) -> str:
     return TTS_MODEL_ALIASES.get(model.lower(), model)
 
 
+def _validate_speech_model(model: str | None) -> str:
+    """Resolve the requested TTS model before probing optional backends."""
+    from ..audio.registry import resolve_audio_alias
+    from ..config import get_config
+
+    served = _served_tts_default()
+    # An operator's custom served name denotes the same catalogued TTS model.
+    requested = model
+    if served is not None and model == getattr(get_config(), "model_alias", None):
+        model = served
+    resolved = _resolve_tts_model(model)
+    entry = resolve_audio_alias(resolved)
+    if entry is None or entry.type != "tts":
+        hint = f" Served TTS model: {served!r}." if served else ""
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "message": f"TTS model {requested!r} was not found.{hint}",
+                    "type": "model_not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
+    return resolved
+
+
 def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
     """R11-B-F2/F3 (Bo 0.8.12 dogfood): map the literal ``"default"``
     voice to the registry's ``default_voice`` for ``model_name``.
@@ -3234,8 +3262,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     # installs as fully broken.
     from ..audio.probe import require_kokoro_runtime, require_mlx_audio_tts
 
-    require_mlx_audio_tts()
-
     # Pydantic already validated min_length / non-blank — past this
     # point the input is safe to forward.
     #
@@ -3247,6 +3273,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     # is still honoured, while the omitted case flows through
     # ``_resolve_tts_model(None)`` to :func:`_served_tts_default`.
     model = request.model if "model" in request.model_fields_set else None
+    model_name = _validate_speech_model(model)
+    require_mlx_audio_tts()
     input_text = request.input
     voice = request.voice
     speed = request.speed
@@ -3264,15 +3292,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             UnsupportedAudioFormatError,
             is_indextts_model,
             is_kokoro_family_model,
+            is_qwen3_voicedesign_model,
         )
-
-        # R7-H3 follow-up: alias resolution lives in a shared helper
-        # (see ``_resolve_tts_model``) so the bare alias / ``"default"``
-        # / HF-path passthrough rule is one code path. Engines added in
-        # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
-        # handler body.
-        model_name = _resolve_tts_model(model)
-        from ..audio.tts import is_qwen3_voicedesign_model
 
         if voice_seed is not None and not is_qwen3_voicedesign_model(model_name):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
