@@ -30,7 +30,6 @@ from scripts.deepseek_v41_gptq_io import (
     atomic_json,
     conversion_record,
     digest,
-    entries_from_json,
     entries_json,
     verify_artifact,
 )
@@ -291,7 +290,11 @@ def _assemble_staged(
         verify_layer(parts, run, i, record, cache)
         atomic_json(verify_cache, cache)
         completion[str(i)] = record
-        layer_groups[f"layer-{i}"] = entries_from_json(record["entries"])
+        from scripts.deepseek_v41_gptq import validated_layer_entries
+
+        layer_groups[f"layer-{i}"] = validated_layer_entries(
+            source, run, i, record, parts
+        )
     other = {
         g: es for g, es in groups_for(entries).items() if not g.startswith("layer-")
     }

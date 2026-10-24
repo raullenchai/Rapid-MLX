@@ -28,6 +28,7 @@ from scripts.deepseek_v41_gptq_io import (
     digest,
     load_state,
     save_state,
+    state_snapshot,
     verify_artifact,
 )
 from scripts.deepseek_v41_rd_common import file_hash, read_slices
@@ -68,9 +69,9 @@ class TensorFile:
 
 def residual_mmap(path):
     path = Path(path)
-    tree = json.loads(path.with_suffix(".json").read_text())
+    tree, payload = state_snapshot(path)
     key = tree["dict"]["h"]["array"]
-    tensor_file = TensorFile(path.with_suffix(".safetensors"))
+    tensor_file = TensorFile(payload)
     if tensor_file.header[key]["dtype"] != "BF16":
         raise ValueError("quality boundaries must store BF16 residual streams")
     return tensor_file.array(key)

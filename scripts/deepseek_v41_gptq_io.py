@@ -298,9 +298,28 @@ def save_state(path, state):
     mx.save_safetensors(str(temporary), arrays)
     with temporary.open("rb") as f:
         os.fsync(f.fileno())
-    temporary.replace(path.with_suffix(".safetensors"))
-    sync_parent(path.with_suffix(".safetensors"))
-    atomic_json(path.with_suffix(".json"), tree)
+    sha = file_hash(temporary)
+    payload = path.with_name(f"{path.name}.{sha}.safetensors")
+    temporary.replace(payload)
+    sync_parent(payload)
+    atomic_json(path.with_suffix(".json"), dict(tree=tree, tensor_sha256=sha))
+
+
+def state_snapshot(path):
+    """Resolve one committed graph/payload generation, rejecting corruption."""
+    path = Path(path)
+    record = json.loads(path.with_suffix(".json").read_text())
+    sha = record.get("tensor_sha256")
+    if (
+        not isinstance(sha, str)
+        or len(sha) != 64
+        or any(c not in "0123456789abcdef" for c in sha)
+    ):
+        raise ValueError("invalid state payload identity; regenerate legacy state")
+    payload = path.with_name(f"{path.name}.{sha}.safetensors")
+    if file_hash(payload) != sha:
+        raise ValueError("state payload identity mismatch")
+    return record["tree"], payload
 
 
 def load_state(path):
@@ -309,7 +328,8 @@ def load_state(path):
     from rapid_mlx.models.deepseek_v41_native.model import SharedState
 
     path = Path(path)
-    arrays = mx.load(str(path.with_suffix(".safetensors")))
+    tree, payload = state_snapshot(path)
+    arrays = mx.load(str(payload))
     objects = {}
     classes = {
         c.__name__: c
@@ -335,7 +355,7 @@ def load_state(path):
         value.__dict__.update({k: decode(v) for k, v in obj["fields"].items()})
         return value
 
-    return decode(json.loads(path.with_suffix(".json").read_text()))
+    return decode(tree)
 
 
 def entries_json(entries):

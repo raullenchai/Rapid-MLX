@@ -37,6 +37,7 @@ from scripts.deepseek_v41_gptq_io import (
     load_state,
     required_shards,
     save_state,
+    state_snapshot,
     verify_artifact,
 )
 from scripts.deepseek_v41_gptq_quant import QuantConfig, gptq, gram
@@ -341,7 +342,13 @@ class MemoryGuard:
         self.event = threading.Event()
         self.thread = None
         self.previous_memory_limit = mx.set_memory_limit(self.limit)
-        self.previous_cache_limit = mx.set_cache_limit(int(c["cache_limit_gb"] * 1e9))
+        try:
+            self.previous_cache_limit = mx.set_cache_limit(
+                int(c["cache_limit_gb"] * 1e9)
+            )
+        except BaseException:
+            mx.set_memory_limit(self.previous_memory_limit)
+            raise
 
     def restore_limits(self):
         mx.set_cache_limit(self.previous_cache_limit)
@@ -1055,8 +1062,9 @@ def finalize_windows(block, stage, paths, target, total, args, c, guard):
         )
         save_state(target / f"window-{window}", state)
         if not c["pilot"]:
+            _, payload = state_snapshot(path)
             path.with_suffix(".json").unlink()
-            path.with_suffix(".safetensors").unlink()
+            payload.unlink()
         offset += n
         del state
         gc.collect()
@@ -1647,6 +1655,24 @@ def run_layer(source, c, parts, scratch, layer, guard):
     return stats
 
 
+def validated_layer_entries(source, run, layer, record, parts):
+    from scripts.deepseek_v41_gptq_amend import layer_epoch
+
+    stats = json.loads((parts / f"layer-{layer}-stats.json").read_text())
+    counts = np.asarray(stats["routed_tokens"])
+    if (
+        counts.shape != (source.args.n_routed_experts,)
+        or not np.issubdtype(counts.dtype, np.integer)
+        or np.any(counts < 0)
+    ):
+        raise ValueError("invalid completed layer routed-token counts")
+    expected, _ = output_plan(source, layer_epoch(run, layer)[2], layer, counts)
+    expected = groups_for(expected)[f"layer-{layer}"]
+    if digest(record["entries"]) != digest(entries_json(expected)):
+        raise ValueError("completed layer entries differ from source/recipe plan")
+    return expected
+
+
 def assemble(source, c, parts, destination, guard):
     with atomic_destination(destination) as stage:
         if Path(parts).stat().st_dev != stage.parent.stat().st_dev:
@@ -1673,7 +1699,9 @@ def _assemble(source, c, parts, destination, guard):
         validate_record(run, i, record)
         verify_artifact(parts, record)
         completion[str(i)] = record
-        layer_groups[f"layer-{i}"] = entries_from_json(record["entries"])
+        layer_groups[f"layer-{i}"] = validated_layer_entries(
+            source, run, i, record, parts
+        )
     other = {
         g: es for g, es in groups_for(entries).items() if not g.startswith("layer-")
     }

@@ -521,3 +521,45 @@ def test_failed_assembly_can_retry_without_partial_destination(
         assert not list(tmp_path.glob(".published.partial-*"))
         assemble(guard)
     assert file_bytes(target) == file_bytes(run.direct)
+
+
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("mutation", ["name", "shape", "counts"])
+def test_assembly_rejects_modified_completion_plan(run, tmp_path, staged, mutation):
+    import shutil
+
+    from scripts.deepseek_v41_gptq_io import file_hash
+
+    parts = tmp_path / "parts"
+    shutil.copytree(run.parts, parts)
+    path = parts / "layer-0-complete.json"
+    record = json.loads(path.read_text())
+    if mutation == "counts":
+        stats_path = parts / "layer-0-stats.json"
+        stats = json.loads(stats_path.read_text())
+        stats["routed_tokens"] = [-1]
+        atomic_json(stats_path, stats)
+        record["files"][stats_path.name] = file_hash(stats_path)
+    elif mutation == "name":
+        record["entries"][0]["name"] = "unplanned.weight"
+    else:
+        record["entries"][0]["shape"][0] += 1
+    atomic_json(path, record)
+    output = tmp_path / "out"
+    with (
+        b.MemoryGuard(run.c) as guard,
+        pytest.raises(ValueError, match="completed layer"),
+    ):
+        if staged:
+            s.assemble_staged(
+                run.source,
+                run.c,
+                parts,
+                output,
+                guard,
+                run.staging,
+                tmp_path / "cache.json",
+            )
+        else:
+            b.assemble(run.source, run.c, parts, output, guard)
+    assert not output.exists()

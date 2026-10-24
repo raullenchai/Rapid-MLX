@@ -332,7 +332,7 @@ def test_publication_syncs_parent_after_file_is_visible(tmp_path, monkeypatch):
         stage.mkdir()
     assert observed == [
         "record.json",
-        "state.safetensors",
+        io.state_snapshot(tmp_path / "state")[1].name,
         "state.json",
         "bank.safetensors",
         "complete",
@@ -521,4 +521,41 @@ def test_restart_preserves_shared_array_identity(tmp_path):
     assert loaded["value"] is not loaded["nested"][2]
     assert loaded["value"].dtype == mx.bfloat16
     assert mx.array_equal(loaded["value"], value)
-    assert len(mx.load(str(path.with_suffix(".safetensors")))) == 2
+    from scripts.deepseek_v41_gptq_io import state_snapshot
+
+    assert len(mx.load(str(state_snapshot(path)[1]))) == 2
+
+
+def test_state_publication_keeps_previous_generation_after_interruption(
+    tmp_path, monkeypatch
+):
+    from scripts import deepseek_v41_gptq_io as io
+
+    path = tmp_path / "state"
+    io.save_state(path, {"value": mx.array([1])})
+    previous = io.state_snapshot(path)[1]
+    real = io.atomic_json
+    monkeypatch.setattr(io, "atomic_json", Mock(side_effect=OSError("interrupted")))
+    with pytest.raises(OSError, match="interrupted"):
+        io.save_state(path, {"different": mx.array([2, 3])})
+    assert io.load_state(path)["value"].item() == 1
+    assert io.state_snapshot(path)[1] == previous
+    monkeypatch.setattr(io, "atomic_json", real)
+    io.save_state(path, {"different": mx.array([2, 3])})
+    assert io.load_state(path)["different"].tolist() == [2, 3]
+    payload = io.state_snapshot(path)[1]
+    payload.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="identity mismatch"):
+        io.load_state(path)
+    io.atomic_json(path.with_suffix(".json"), {"tree": {}, "tensor_sha256": "../bad"})
+    with pytest.raises(ValueError, match="invalid state payload"):
+        io.load_state(path)
+
+
+def test_memory_guard_restores_limit_if_cache_setup_fails(monkeypatch):
+    memory = Mock(return_value=123)
+    monkeypatch.setattr(mx, "set_memory_limit", memory)
+    monkeypatch.setattr(mx, "set_cache_limit", Mock(side_effect=RuntimeError("cache")))
+    with pytest.raises(RuntimeError, match="cache"):
+        b.MemoryGuard(b.recipe())
+    assert memory.call_args.args == (123,)

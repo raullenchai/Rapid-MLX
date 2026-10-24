@@ -318,9 +318,12 @@ def test_final_run_resumes_after_attention_commit_and_output_window_crash(
     assert (tmp_path / "p1" / "model-layer-0.safetensors").read_bytes() == (
         tmp_path / "p2" / "model-layer-0.safetensors"
     ).read_bytes()
-    assert (tmp_path / "s1" / "boundary-1" / "window-0.safetensors").read_bytes() == (
-        tmp_path / "s2" / "boundary-1" / "window-0.safetensors"
-    ).read_bytes()
+    from scripts.deepseek_v41_gptq_io import state_snapshot
+
+    assert (
+        state_snapshot(tmp_path / "s1/boundary-1/window-0")[1].read_bytes()
+        == state_snapshot(tmp_path / "s2/boundary-1/window-0")[1].read_bytes()
+    )
 
 
 def test_memory_cap_and_invalid_recipe_fail_closed():
