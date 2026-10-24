@@ -393,3 +393,41 @@ def test_ruler_tokenizer_copy_must_match_pin(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="tokenizer changed"):
         ruler.build(a)
     assert not (a.output / "wiki1100.json").exists()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["absolute", "parent", "symlink", "string", "nonstring", "empty", "empty_list"],
+)
+def test_slice_manifest_cannot_escape_its_directory(tmp_path, bad):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private fixture")
+    (root / "link.txt").symlink_to(outside)
+    files = {
+        "absolute": [str(outside)],
+        "parent": ["../outside.txt"],
+        "symlink": ["link.txt"],
+        "string": "outside.txt",
+        "nonstring": [7],
+        "empty": [""],
+        "empty_list": [],
+    }[bad]
+    manifest = root / "slices.json"
+    manifest.write_text(json.dumps({"slices": {"a": files}}))
+    with pytest.raises(ValueError, match="slice"):
+        ruler.read_slice_manifest(manifest)
+
+
+def test_relative_nested_slice_manifest_is_supported(tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    text = nested / "slice.txt"
+    text.write_text("fixture")
+    manifest = tmp_path / "slices.json"
+    raw = json.dumps({"slices": {"a": ["nested/slice.txt"]}}).encode()
+    manifest.write_bytes(raw)
+    retained, parsed, slices = ruler.read_slice_manifest(manifest)
+    assert retained == raw and parsed == json.loads(raw)
+    assert slices == {"a": [text.resolve()]}

@@ -18,7 +18,7 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.deepseek_v41_rd_common import file_hash, read_slices
+from scripts.deepseek_v41_rd_common import file_hash
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 
@@ -41,12 +41,27 @@ PUBLIC_RULERS = {
 def read_slice_manifest(path):
     raw = path.read_bytes()
     manifest = json.loads(raw)
-    slices = {
-        name: [(path.parent / p).resolve() for p in paths]
-        for name, paths in manifest["slices"].items()
-    }
-    if not slices or any(not paths for paths in slices.values()):
+    specs = manifest.get("slices") if isinstance(manifest, dict) else None
+    if not isinstance(specs, dict) or not specs:
         raise ValueError("each slice needs at least one local text file")
+    root = path.parent.resolve()
+    slices = {}
+    for name, files in specs.items():
+        if not isinstance(files, list) or not files:
+            raise ValueError("each slice needs at least one local text file")
+        resolved = []
+        for filename in files:
+            if (
+                not isinstance(filename, str)
+                or not filename
+                or Path(filename).is_absolute()
+            ):
+                raise ValueError("slice paths must be nonempty relative paths")
+            candidate = (root / filename).resolve()
+            if not candidate.is_relative_to(root):
+                raise ValueError("slice path escapes manifest directory")
+            resolved.append(candidate)
+        slices[name] = resolved
     return raw, manifest, slices
 
 
@@ -472,9 +487,11 @@ def build(a):
         save("long17k", f"long17k_{lang}", ids[:17000], len(sources) - 1, 0)
     cal_windows = set()
     cal_files = {}
-    calibration_manifest_hash = file_hash(a.calibration)
-    calibration_slices = read_slices(a.calibration, [])
-    if json.loads(a.calibration.read_bytes()).get("tokenizer_sha256") != TOKENIZER_HASH:
+    calibration_raw, calibration_manifest, calibration_slices = read_slice_manifest(
+        a.calibration
+    )
+    calibration_manifest_hash = hashlib.sha256(calibration_raw).hexdigest()
+    if calibration_manifest.get("tokenizer_sha256") != TOKENIZER_HASH:
         raise ValueError("calibration tokenizer identity mismatch")
     for name, paths in calibration_slices.items():
         cal_files[name] = [file_hash(p) for p in paths]
