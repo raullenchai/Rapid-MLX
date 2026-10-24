@@ -104,6 +104,15 @@ struct DiagnosticsBundleTests {
         }
     }
 
+    @Test("Account-prefixed binary filenames outside the home are redacted")
+    func binaryFilename() {
+        for separator in ["-", "%2D", "_", "%5f"] {
+            #expect(DiagnosticsBundle.redact("/opt/fake-account" + separator + "engine",
+                                             homeDirectory: "/Users/fake-account", username: "fake-account")
+                == "/opt/<redacted>" + separator + "engine")
+        }
+    }
+
     @Test("Empty identities do not corrupt diagnostic text")
     func emptyIdentities() {
         #expect(DiagnosticsBundle.redact("ready /opt/bin", homeDirectory: "", username: "") == "ready /opt/bin")

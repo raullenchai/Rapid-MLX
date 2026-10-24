@@ -126,7 +126,10 @@ enum DiagnosticsBundle {
             // Limit matching to identity fields and path/quoted components.
             let field = #"(\b(?i:USER|LOGNAME|USERNAME|account|serving|alias)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
             patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
-            patterns.append(#"(?:(?<=/)|(?<=%2f))"# + account + "(?=" + ending + ")")
+            let filenameBoundary = username.count > 2
+                ? "(?:" + ending + "|" + identityPattern("-") + "|" + identityPattern("_") + ")"
+                : ending
+            patterns.append(#"(?:(?<=/)|(?<=%2f))"# + account + "(?=" + filenameBoundary + ")")
             patterns.append(#"(?<=[("'])"# + account + #"(?![\p{L}\p{N}_])"#)
         }
         // Replace in one pass so a short account name cannot rewrite the
