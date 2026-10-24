@@ -958,3 +958,62 @@ def test_stream_message_start_consistent_with_nonstream_input_tokens():
     )
     ns_body = r_ns.json()
     assert delta_input == ns_body["usage"]["input_tokens"]
+
+
+@pytest.mark.parametrize("system", [None, "Be concise."])
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("cached_tokens", [0, 20, 100])
+def test_stream_usage_matches_engine_and_nonstream(
+    monkeypatch, system, with_tools, cached_tokens
+):
+    """Opening usage must use engine accounting, including prefix-cache hits."""
+    monkeypatch.setattr(
+        "rapid_mlx.routes.anthropic._estimate_anthropic_prompt_tokens",
+        lambda *args, **kwargs: 79,
+    )
+    engine = _ToolStreamingEngine(
+        ["OK"], engine_prompt_tokens=39, engine_cached_tokens=cached_tokens
+    )
+    client = _make_client(engine)
+    request = {
+        "model": "test-model",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+    }
+    if system:
+        request["system"] = system
+    if with_tools:
+        request["tools"] = [_tool_dict("get_weather")]
+    response = client.post("/v1/messages", json={**request, "stream": True})
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert events[0]["type"] == "message_start"
+    start = events[0]["message"]["usage"]
+    final = next(e["usage"] for e in reversed(events) if e["type"] == "message_delta")
+    response = client.post("/v1/messages", json=request)
+    assert response.status_code == 200, response.text
+    nonstream = response.json()["usage"]
+    expected = {"input_tokens": 39 - min(cached_tokens, 39)}
+    if cached_tokens:
+        expected["cache_read_input_tokens"] = min(cached_tokens, 39)
+    for usage in (start, final, nonstream):
+        assert {k: v for k, v in usage.items() if k != "output_tokens"} == expected
+    assert start["output_tokens"] == 0
+    assert final["output_tokens"] == nonstream["output_tokens"] == 1
+
+
+def test_empty_stream_still_emits_message_start():
+    client = _make_client(_ToolStreamingEngine([]))
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 8,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hi"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    assert events[0]["type"] == "message_start"
+    assert events[-1]["type"] == "message_stop"

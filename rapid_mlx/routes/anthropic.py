@@ -2059,13 +2059,9 @@ async def _stream_anthropic_messages(
                 effective = block_type
         return out
 
-    # D-ANTHRO-TOOL-USAGE F5: pre-compute prompt_tokens BEFORE
-    # ``message_start`` so the SSE envelope carries the real input
-    # estimate instead of the hard-coded ``0`` that under-reported the
-    # input share by 100%. Prefers the route-level estimate when the
-    # caller threaded one (already shared with the context-length DoS
-    # gate — codex r2 NIT) and falls back to a local render when the
-    # caller used the direct-call test path.
+    # Prepare a fallback estimate for engines without prompt usage. The first
+    # engine chunk overrides it before message_start is emitted. Reuse the
+    # route's context-length estimate when available.
     #
     # Codex r4 NIT (PR #807): treat ``None`` as the SENTINEL for "no
     # estimate available", separate from ``0`` ("estimator ran but
@@ -2094,7 +2090,7 @@ async def _stream_anthropic_messages(
     if not isinstance(initial_prompt_tokens_estimate, int):
         initial_prompt_tokens_estimate = 0
 
-    # Emit message_start
+    # Build the envelope now; emit after the first engine chunk supplies usage.
     message_start = {
         "type": "message_start",
         "message": {
@@ -2111,7 +2107,7 @@ async def _stream_anthropic_messages(
             },
         },
     }
-    yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+    message_started = False
 
     # H-05 follow-up (PR #771 codex round-2 BLOCKING #1): when
     # ``tool_choice`` pins a specific tool, the model is supposed to
@@ -2202,12 +2198,7 @@ async def _stream_anthropic_messages(
         # phantom thinking block that terminal reconciliation would duplicate.
         _starts_thinking = False
     think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
-    # D-ANTHRO-TOOL-USAGE F5: seed the running counter with the
-    # pre-message_start estimate so the terminal ``message_delta`` is
-    # NEVER worse than what we already announced in ``message_start``.
-    # The engine's own ``output.prompt_tokens`` (when it surfaces a
-    # non-zero value below) wins over the seed because the engine count
-    # is authoritative — the seed is a floor, not a ceiling.
+    # Retain the estimate only for engines that do not report prompt usage.
     prompt_tokens = initial_prompt_tokens_estimate
     completion_tokens = 0
     cached_tokens = 0
@@ -2408,6 +2399,19 @@ async def _stream_anthropic_messages(
             completion_tokens = output.completion_tokens
         if hasattr(output, "cached_tokens") and output.cached_tokens:
             cached_tokens = output.cached_tokens
+        if not message_started:
+            # The engine counts the actual rendered prompt and knows cache hits.
+            # A separate estimate can include template overhead absent from it.
+            initial_cached_tokens = min(cached_tokens, prompt_tokens)
+            message_start["message"]["usage"]["input_tokens"] = (
+                prompt_tokens - initial_cached_tokens
+            )
+            if initial_cached_tokens:
+                message_start["message"]["usage"]["cache_read_input_tokens"] = (
+                    initial_cached_tokens
+                )
+            yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+            message_started = True
         # H-03: latch the matched stop string from whichever chunk
         # carries it. ``getattr`` keeps legacy mocks without the field
         # working unchanged.
@@ -2739,6 +2743,10 @@ async def _stream_anthropic_messages(
                     ev = _capture(event)
                     if ev is not None:
                         yield ev
+
+    if not message_started:
+        # An empty engine stream still needs a complete SSE envelope.
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
     # Flush remaining from both filters
     remaining = tool_filter.flush()
