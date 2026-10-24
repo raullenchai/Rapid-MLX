@@ -90,20 +90,19 @@ def test_exact_pinned_artifact(inventory, monkeypatch, capsys, complete, subfold
     monkeypatch.setattr(aliases, "list_profiles", lambda: profiles)
     monkeypatch.setattr(aliases, "resolve_subfolder", lambda name: subfolder)
     monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda name: complete)
+    monkeypatch.setattr(cli, "_cached_repository_is_runnable", lambda name: complete)
     calls = []
 
     def size(repo, folder, *, catalog_alias):
         calls.append((repo, folder, catalog_alias))
-        return 512
+        return 512 if complete else None
 
     monkeypatch.setattr(cli, "_cached_subfolder_size", size)
     inventory("org/model")
     row = cli._cached_models_json_payload()["cached"][0]
     assert row["alias"] == ("pinned" if complete else None)
     assert row["subfolder"] == (subfolder if complete else None)
-    assert calls == (
-        [("org/model", "4bit", "pinned")] if complete and subfolder else []
-    )
+    assert calls == ([("org/model", "4bit", "pinned")] if subfolder else [])
     cli._print_cached_models()
     assert ("pinned" in capsys.readouterr().out) == complete
 

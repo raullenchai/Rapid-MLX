@@ -9676,7 +9676,7 @@ def _cached_repository_is_runnable(repo: str) -> bool:
     return _cache_entry_is_runnable(repo)
 
 
-def _cached_catalog_profiles():
+def _cached_catalog_profiles() -> dict[str, ModelProfile]:
     """Join all catalog sections without changing launch alias precedence."""
     from rapid_mlx.audio.registry import list_audio_aliases
     from rapid_mlx.model_aliases import AliasProfile, list_profiles
@@ -9725,9 +9725,15 @@ def _print_cached_models() -> None:
     profiles = _cached_catalog_profiles()
     hf_to_alias: dict[str, str] = {}
     for alias, p in profiles.items():
-        if (
-            p.subfolder is not None or getattr(p, "revision", None) is not None
-        ) and not _cache_entry_is_runnable(alias):
+        if p.subfolder is not None:
+            if (
+                _cached_subfolder_size(p.hf_path, p.subfolder, catalog_alias=alias)
+                is None
+            ):
+                continue
+        elif getattr(
+            p, "revision", None
+        ) is not None and not _cached_repository_is_runnable(p.hf_path):
             continue
         hf_to_alias.setdefault(p.hf_path, alias)
 
@@ -10114,8 +10120,8 @@ def _cached_models_json_payload() -> dict:
             for alias, subfolder in repo_artifacts.get(repo, []):
                 revision = getattr(profiles[alias], "revision", None)
                 key = (repo, revision, subfolder)
-                if revision is not None and not _cache_entry_is_runnable(alias):
-                    continue
+                # Subfolder completeness below resolves the exact alias pin.
+                # A second alias probe can reinterpret a colliding repo name.
                 if key in seen_artifacts:
                     continue
                 if subfolder is None:
