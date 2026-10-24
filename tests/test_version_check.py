@@ -1244,3 +1244,25 @@ def test_print_helper_returns_none_on_print_error(monkeypatch):
         "builtins.print", MagicMock(side_effect=OSError("closed stderr"))
     )
     assert vc.print_staleness_warning_if_any(allow_non_tty=True) is None
+
+
+@pytest.mark.parametrize("uv", [None, "/tools/uv"])
+def test_install_sh_without_pip_uses_available_installer(tmp_path, monkeypatch, uv):
+    home = tmp_path / "home"
+    binary = str(home / ".rapid-mlx/bin/rapid-mlx")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: binary if name == "rapid-mlx" else uv
+    )
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: None)
+    info = vc.detect_install_method()
+    expected = (
+        [uv, "pip", "install", "--python", vc.sys.executable, "--upgrade", "rapid-mlx"]
+        if uv
+        else [vc.sys.executable, "-m", "pip", "install", "--upgrade", "rapid-mlx"]
+    )
+    assert info.upgrade_argv == expected
+    import shlex
+
+    assert shlex.split(info.upgrade_command) == expected

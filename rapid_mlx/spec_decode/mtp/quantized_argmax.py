@@ -33,7 +33,7 @@ def _target_verify_qlinear_header(bits: int, group_size: int) -> str:
       float sum = 0.0f;
       if (BITS == 4) {
         for (int i = 0; i < VALUES_PER_THREAD; i += 4) {
-          sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+          sum += float(x[i]) + float(x[i + 1]) + float(x[i + 2]) + float(x[i + 3]);
           x_thread[i] = x[i];
           x_thread[i + 1] = x[i + 1] / 16.0f;
           x_thread[i + 2] = x[i + 2] / 256.0f;
@@ -41,8 +41,8 @@ def _target_verify_qlinear_header(bits: int, group_size: int) -> str:
         }
       } else if (BITS == 5) {
         for (int i = 0; i < VALUES_PER_THREAD; i += 8) {
-          sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3] + x[i + 4] + x[i + 5] +
-              x[i + 6] + x[i + 7];
+          sum += float(x[i]) + float(x[i + 1]) + float(x[i + 2]) + float(x[i + 3]) +
+              float(x[i + 4]) + float(x[i + 5]) + float(x[i + 6]) + float(x[i + 7]);
           x_thread[i] = x[i];
           x_thread[i + 1] = x[i + 1] / 32.0f;
           x_thread[i + 2] = x[i + 2] / 4.0f;

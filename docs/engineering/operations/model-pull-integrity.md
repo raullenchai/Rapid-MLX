@@ -41,3 +41,15 @@ requests by literal filename. Local destinations resolve an immutable commit
 before transfer; offline local destinations require that explicit commit.
 The packaged inventory includes ordinary Git files as well as LFS weights. Automatic loaders that bypass these shared
 wrappers retain the upstream downloader's own behavior.
+
+Selected local files absent from the immutable manifest are refused, including
+files added after a receipt was created. Unselected variants and local download
+bookkeeping are excluded from this inventory comparison.
+If verified content resides in a read-only cache or a receipt cannot be saved,
+the pull still succeeds with a diagnostic. A later pull may need online
+verification again because no reusable receipt was persisted.
+
+When an explicitly requested commit is unavailable upstream or the Hub transport
+cannot be reached, the verifier reuses
+the mirror's existing complete exact-revision manifest validation, then hashes the
+selected local bytes. This preserves the existing missing-revision recovery path.

@@ -57,6 +57,14 @@ def _reset_ltx25_runtime_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ltx25, "_TREE_DIGEST_CACHE", {})
 
 
+@pytest.fixture
+def _supported_runtime_python(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise runtime integrity independently of the host Python floor."""
+    monkeypatch.setattr(
+        ltx25, "sys", SimpleNamespace(version_info=(3, 11), executable=sys.executable)
+    )
+
+
 def _load_vendor_script():
     spec = importlib.util.spec_from_file_location("vendor_ltx25", VENDOR_SCRIPT)
     assert spec is not None and spec.loader is not None
@@ -139,6 +147,7 @@ def _fake_package_specs(
     monkeypatch.setattr(ltx25, "_install_root", lambda: install_root)
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_trusted_vendored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -155,6 +164,7 @@ def test_ltx25_runtime_trusted_vendored(
     assert ltx25.embedded_ltx25_interpreter() == ltx25.sys.executable
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_absent_when_no_vendored_packages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -172,6 +182,7 @@ def test_ltx25_runtime_absent_when_no_vendored_packages(
     assert ltx25.embedded_ltx25_interpreter() is None
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_partially_missing_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -186,6 +197,7 @@ def test_ltx25_runtime_partially_missing_is_corrupt(
     assert ltx25.embedded_ltx25_interpreter() is None
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_shadowed_copy_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -203,6 +215,7 @@ def test_ltx25_runtime_shadowed_copy_is_corrupt(
     assert ltx25.embedded_ltx25_interpreter() is None
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_foreign_origin_is_shadowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -226,6 +239,7 @@ def test_ltx25_runtime_foreign_origin_is_shadowed(
     assert "module origin" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_multiple_search_locations_is_shadowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -252,6 +266,7 @@ def test_ltx25_runtime_multiple_search_locations_is_shadowed(
     assert "import locations" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_overwritten_vendored_file_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,6 +285,7 @@ def test_ltx25_runtime_overwritten_vendored_file_is_corrupt(
     assert ltx25.embedded_ltx25_interpreter() is None
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_deleted_vendored_file_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -287,6 +303,7 @@ def test_ltx25_runtime_deleted_vendored_file_is_corrupt(
     assert "no longer match the audited snapshot" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_added_vendored_file_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -304,6 +321,7 @@ def test_ltx25_runtime_added_vendored_file_is_corrupt(
     assert "no longer match the audited snapshot" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_renamed_vendored_file_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -326,6 +344,7 @@ def test_ltx25_runtime_renamed_vendored_file_is_corrupt(
     assert ltx25.embedded_ltx25_interpreter() is None
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_unreadable_vendored_files_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -345,6 +364,7 @@ def test_ltx25_runtime_unreadable_vendored_files_is_corrupt(
     assert "files could not be read for verification" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_missing_provenance_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -358,6 +378,7 @@ def test_ltx25_runtime_missing_provenance_is_corrupt(
     assert "no usable _vendored.py provenance" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_malformed_provenance_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -383,6 +404,7 @@ def test_ltx25_runtime_malformed_provenance_is_corrupt(
         {"PACKAGE": "ltx_pipelines_mlx"},
     ],
 )
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_mismatched_provenance_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: dict[str, str]
 ) -> None:
@@ -397,6 +419,7 @@ def test_ltx25_runtime_mismatched_provenance_is_corrupt(
     assert f"provenance {name} is {value!r}" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_missing_cli_entry_point_is_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -412,6 +435,7 @@ def test_ltx25_runtime_missing_cli_entry_point_is_corrupt(
     )
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_find_spec_failure_is_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -430,6 +454,7 @@ def test_ltx25_runtime_find_spec_failure_is_absent(
     assert "missing vendored package(s)" in (runtime.detail or "")
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_explicit_override_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -453,6 +478,7 @@ def test_ltx25_runtime_explicit_override_wins(
     assert runtime.executable == str(runtime_path)
 
 
+@pytest.mark.usefixtures("_supported_runtime_python")
 def test_ltx25_runtime_invalid_override_never_falls_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1513,6 +1539,9 @@ def test_serve_routes_ltx25_model_to_specific_preflight(
         cli.serve_command(args)
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
+)
 def test_ltx25_child_pin_beats_a_shadowing_working_directory(
     tmp_path: Path,
 ) -> None:
@@ -1560,6 +1589,9 @@ def test_ltx25_child_pin_beats_a_shadowing_working_directory(
     assert pinned.stdout.strip() == str(REPO_ROOT / "ltx_pipelines_mlx" / "__init__.py")
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
+)
 def test_ltx25_child_refuses_a_pin_without_audited_provenance(
     tmp_path: Path,
 ) -> None:
@@ -1589,6 +1621,9 @@ def test_ltx25_child_refuses_a_pin_without_audited_provenance(
     assert "ltx_core_mlx: provenance file is missing" in completed.stderr
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
+)
 def test_ltx25_child_refuses_a_pin_that_does_not_contain_the_import(
     tmp_path: Path,
 ) -> None:

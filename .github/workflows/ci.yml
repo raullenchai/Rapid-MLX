@@ -616,15 +616,20 @@ jobs:
             tests/test_tool_logits.py \
             tests/test_no_mllm_flag.py \
             tests/test_audio_music_route.py \
+            tests/test_tts_checkpoint_security.py \
+            tests/test_sam_audio_security.py \
             tests/test_audio_route_registration_gate.py \
             tests/test_server_dependency_hints.py \
             tests/test_forced_alignment_route_hardening.py \
+            tests/test_sa3_checkpoint_consent.py \
+            tests/test_security_hardening.py \
             tests/test_muse_glimmer_model.py \
             tests/test_g9v3_model.py \
             tests/test_flint_model.py \
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_nemotron_h_puzzle_vendored.py \
+            tests/test_nemotron_bolt_e4b_alias.py \
             tests/test_nemotron_h_super.py \
             tests/test_nemotron_super_vl_convert.py \
             tests/test_cohere2_moe_reference_parity.py \
@@ -663,7 +668,25 @@ jobs:
             tests/test_deepseek_v41_phase7.py \
             tests/test_deepseek_v41_ring_rollback.py \
             tests/test_deepseek_v41_rope_quant.py \
+            tests/test_deepseek_v41_self_check.py \
+            tests/test_deepseek_v41_self_check_metal.py \
             tests/test_deepseek_v41_prefill.py \
+            tests/test_calibrate_deepseek_v41_reap.py \
+            tests/test_deepseek_v41_quant_error.py \
+            tests/test_deepseek_v41_allocation_edges.py \
+            tests/test_deepseek_v41_allocation_phase2.py \
+            tests/test_deepseek_v41_allocation_phase4.py \
+            tests/test_deepseek_v41_allocation_phase5.py \
+            tests/test_deepseek_v41_allocation_rd.py \
+            tests/test_deepseek_v41_merge_calibration.py \
+            tests/test_deepseek_v41_streaming_teacher.py \
+            tests/test_deepseek_v41_public_ruler.py \
+            tests/test_deepseek_v41_evaluation.py \
+            tests/test_deepseek_v41_evaluation_subset.py \
+            tests/test_deepseek_v41_evaluation_edges.py \
+            tests/test_deepseek_v41_ruler_cli.py \
+            tests/test_deepseek_v41_ruler_identity.py \
+            tests/test_deepseek_v41_teacher_edges.py \
             tests/test_model_load_entrypoint_boundaries.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
@@ -740,6 +763,22 @@ jobs:
           pytest tests/test_ltx25_packaged_artifact.py \
             --run-slow -m slow \
             -v --tb=short
+
+      - name: Run optional checkpoint contracts on CPU
+        env:
+          COVERAGE_FILE: coverage-apple.data
+        run: |
+          python - <<'PYTHON'
+          import subprocess
+          import sys
+          from rapid_mlx.speculative.tensorfold_runtime import SUPPORTED_REVISION, SUPPORTED_RUNTIME_URL
+          subprocess.run([
+              sys.executable, "-m", "pip", "install", "--no-deps",
+              f"tensorfold @ git+{SUPPORTED_RUNTIME_URL}@{SUPPORTED_REVISION}",
+          ], check=True)
+          PYTHON
+          pytest tests/test_tensorfold_qwen27_retention.py \
+            -q --tb=short --cov=rapid_mlx --cov-append --cov-report=
 
       - name: Upload Apple Silicon coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

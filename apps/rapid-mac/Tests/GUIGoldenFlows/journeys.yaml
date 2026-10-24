@@ -21,6 +21,14 @@ journeys:
     fixtures: [fake-sidecar, cached-model, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
     owns_baseline: false
+  - name: cached-uncataloged-quickstart
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, cached-model, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: true
   - name: cached-curated-tradeup
     group: onboarding-settings
     risk: medium

@@ -44,11 +44,27 @@ def load_voxcpm_checkpoint(path: Path):
             state = load_tensor_checkpoint(path / "audiovae.pth")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
-            if not isinstance(state, dict) or not state:
+            import torch
+
+            if (
+                not isinstance(state, dict)
+                or not state
+                or not all(
+                    isinstance(key, str) and isinstance(value, torch.Tensor)
+                    for key, value in state.items()
+                )
+            ):
                 raise ValueError(
                     "VoxCPM audio VAE checkpoint must contain tensor weights"
                 )
-            state = {k: mx.array(v.numpy()) for k, v in state.items()}
+            state = {
+                k: mx.array(
+                    v.detach().cpu().float().numpy()
+                    if v.dtype == torch.bfloat16
+                    else v.detach().cpu().numpy()
+                )
+                for k, v in state.items()
+            }
         if not state:
             raise ValueError("VoxCPM audio VAE checkpoint is empty")
         for key, value in state.items():
@@ -65,7 +81,7 @@ def load_voxcpm_checkpoint(path: Path):
     apply_quantization(
         model, config, weights, getattr(model, "model_quant_predicate", None)
     )
-    model.load_weights(list(weights.items()), strict=False)
+    model.load_weights(list(weights.items()), strict=True)
     mx.eval(model.parameters())
     model.eval()
     if hasattr(module.Model, "post_load_hook"):

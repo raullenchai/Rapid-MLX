@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+import weakref
 from pathlib import Path
 from unittest.mock import patch
 
@@ -200,7 +201,7 @@ def test_backend_closed_duplicate_submit_and_app_close(monkeypatch) -> None:
     assert app.closed
 
 
-@pytest.mark.parametrize("lanes", [1, 4])
+@pytest.mark.parametrize("lanes", [1, 2, 4, 8])
 @pytest.mark.parametrize("enable_prefix_cache", [None, True, False])
 def test_backend_load_uses_qualified_family(
     monkeypatch, tmp_path, lanes, enable_prefix_cache
@@ -219,12 +220,21 @@ def test_backend_load_uses_qualified_family(
             loaded.update(path=path, **kwargs)
             return object(), object()
 
+    class FullStore:
+        slots = 8
+        nbytes = 0
+        budget_bytes = 16 * 1024**3
+
+        def __len__(self):
+            return 8
+
     class ChatApp:
         def __init__(self, model, tokenizer, **kwargs):
             loaded.update(model=model, tokenizer=tokenizer, app=kwargs)
             # Exercise the supplied factory, rather than merely checking that
             # a keyword was passed. The default runtime factory loses reply
             # cuts for short prompts.
+            self.checkpoints = FullStore()
             self.engine = kwargs["engine_factory"](model)
             self.max_batch_size = kwargs["lanes"]
             self.scheduler = FakeScheduler()
@@ -233,8 +243,15 @@ def test_backend_load_uses_qualified_family(
         prefill_step = 2048
 
         def __init__(self, model, *, prefill_plan):
+            self.prefill_plan = prefill_plan
             loaded["engine_plan"] = prefill_plan
             loaded["engine_model"] = model
+
+        def prompt_chunks(self, prompt):
+            return types.SimpleNamespace(starts=[0, 2048, 4096, 6144, 7950])
+
+        def begin_stream(self, stream, **kwargs):
+            return kwargs
 
     class PrefillPlan:
         def __init__(self, step, openers, min_chunk, assistant):
@@ -294,6 +311,18 @@ def test_backend_load_uses_qualified_family(
     )
     assert loaded["marker_tokenizer"] is loaded["tokenizer"]
     assert loaded["engine_model"] is loaded["model"]
+    # Multi-lane prefills interleave before checkpoint transfer. They must use
+    # the native engine, with no optional state or shared-store observations.
+    assert (type(backend._app.engine) is LaneEngine) == (lanes > 1)
+    assert hasattr(backend._app.engine, "interior_tokens") == (lanes == 1)
+    # Extra interior copies can evict the histories needed by other chats.
+    prompt_ids = [0] * 7960
+    for at in (0, 33, 7950):
+        prompt_ids[at] = 10
+    retention = backend._app.engine.begin_stream(
+        types.SimpleNamespace(prompt_ids=prompt_ids), checkpoints_at=[7950]
+    )
+    assert retention["checkpoints_at"] == [7950]
     plan = loaded["engine_plan"]
     assert (plan.step, plan.openers, plan.min_chunk, plan.assistant) == (
         2048,
@@ -301,7 +330,9 @@ def test_backend_load_uses_qualified_family(
         256,
         (10, 11),
     )
+    store_ref = weakref.ref(backend._app.checkpoints)
     backend.close()
+    assert store_ref() is None
 
     Package.DRAFTER = "wrong"
     with pytest.raises(TensorFoldUnavailable, match="family declaration"):

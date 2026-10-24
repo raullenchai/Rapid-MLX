@@ -96,10 +96,10 @@ struct ExternalModelCatalogTests {
         #expect(entries.filter(\.isExternal).map(\.alias) == ["preferred-alias"])
     }
 
-    @Test("A root-level external model matching an alias is not dropped")
+    @Test("A root-level external model with exact repository identity is not dropped")
     func rootLevelExternalMatchesAlias() {
         let entries = ModelCatalog.mergeAvailableAndCached(
-            available: [("local-model", nil)],
+            available: [("local-model", "local-model")],
             cached: [("(external)", "local-model", "1.0 GiB")],
             excluded: []
         )
@@ -108,6 +108,20 @@ struct ExternalModelCatalogTests {
         #expect(entries[0].alias == "local-model")
         #expect(entries[0].cached)
         #expect(entries[0].isExternal)
+    }
+
+    @Test("A bare alias without repository identity cannot claim an external repo")
+    func rootLevelExternalDoesNotProveUnknownAliasIdentity() {
+        let entries = ModelCatalog.mergeAvailableAndCached(
+            available: [("local-model", nil)],
+            cached: [("(external)", "local-model", "1.0 GiB")],
+            excluded: []
+        )
+        #expect(entries.count == 1)
+        #expect(entries[0].alias == "local-model")
+        #expect(entries[0].hfRepo == nil)
+        #expect(!entries[0].cached)
+        #expect(!entries[0].isExternal)
     }
 
     @Test("An excluded external identifier cannot re-enter the chat catalog")

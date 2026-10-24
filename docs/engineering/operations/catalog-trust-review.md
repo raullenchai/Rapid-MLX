@@ -7,7 +7,7 @@ validator. Ordinary alias changes already select the engine CI lane; they are
 not exempted from CI as documentation-only changes.
 
 The offline `scripts/catalog_trust.py` policy compares the trusted base catalog
-with the proposed catalog. New text aliases, changed repository/subfolder
+with the proposed catalog. New text/audio aliases, changed repository/subfolder
 sources, and changed or removed revision pins require a full lowercase 40-hex
 commit SHA. A SHA identifies content; it is not a publisher signature or proof
 that someone reviewed the content. Existing unpinned identities are grandfathered
@@ -30,8 +30,10 @@ Only `notes`, `description`, `display_name` and the top-level `_comment` are
 cosmetic. Runtime defaults, capabilities, parser selection, alias removal and
 alias ordering require review. Ordering matters because repository reverse
 lookup uses the first matching alias. Audio runtime package/source edits also
-require review; audio does not acquire a fictitious revision field its loaders
-would ignore.
+require review. This gate does not change loaders or certify that a proposed pin
+is consumed by every runtime. Reviewers must verify runtime pin consumption before
+approving a new audio or runtime-asset identity. The shared downloader enforces
+the reviewed revisions; new loader paths still need explicit coverage.
 
 To inventory the remaining text-catalog migration offline:
 
@@ -40,9 +42,7 @@ python scripts/catalog_trust.py --report-unpinned
 python scripts/catalog_trust.py --base <exact-base-commit-sha>
 ```
 
-At this audit, 238 of 239 text aliases have no general `revision` pin; some lanes
-have separate specialized pins. This is residual mutable-source exposure, not a
-claim of exploitation. For each source migration, review the actual repository
+Existing unpinned entries remain unreviewed by this policy. For each source migration, review the actual repository
 commit/config/code, choose that immutable SHA, update all aliases sharing its
 repository consistently, and verify the appropriate runtime consumes the pin.
 Do not bulk resolve current remote HEAD and label the result reviewed. These
@@ -54,3 +54,9 @@ settings or prevent administrators from manually merging/pushing. Repository
 owners retain that governance responsibility. Rollback must retain an explicit
 human-review path for catalog and trust changes; do not restore unattended
 source switching to get around a failing validation gate.
+
+A current-head approval should record the reviewed repository and commit, why the
+publisher/source is appropriate, the selected files and runtime configuration,
+and positive loading/cache tests for the affected family. Check that all aliases
+for the identity agree, including subfolders and quantization variants. Pin format
+validation alone does not supply this evidence or certify existing entries.

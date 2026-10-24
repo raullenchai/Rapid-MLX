@@ -26637,6 +26637,148 @@
         }
       }
     },
+    "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit": {
+      "revision": "601cd937da1e168dfe0dcf184b95204344c683a9",
+      "selection": "existing_catalog_pin",
+      "cached_main_ref": null,
+      "configs": {
+        "config.json": {
+          "sha256": "97a8012794242589bff0f3f50982ea92cf5733037a5d0ba467672c7502ad7e42",
+          "model_type": "gemma4",
+          "model_file": null,
+          "auto_map": null,
+          "text_encoder": null
+        },
+        "tokenizer_config.json": {
+          "sha256": "b3da1b7227c5d35fd905ad13200a08be63cb346b2d1bd4f6d58878c9783d5de1",
+          "model_type": null,
+          "model_file": null,
+          "auto_map": null,
+          "text_encoder": null
+        }
+      },
+      "lfs_files": {
+        "model.safetensors": {
+          "sha256": "4f2e02b7ac3caa4fe3c34da096030dea4c5ac130230267e42d18bd5f16ab1af4",
+          "size": 4198925877
+        },
+        "tokenizer.json": {
+          "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+          "size": 32169626
+        }
+      },
+      "git_files": {
+        ".gitattributes": {
+          "blob_id": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+          "size": 1570
+        },
+        "LICENSE-BASE.txt": {
+          "blob_id": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+          "size": 11358
+        },
+        "LICENSE.txt": {
+          "blob_id": "ec297ac5456384786644013ec196da33b916be97",
+          "size": 2619
+        },
+        "README.md": {
+          "blob_id": "cb610dfdd6b3a77519422b86b7cafa63721be04a",
+          "size": 828
+        },
+        "chat_template.jinja": {
+          "blob_id": "e4ac6701388004b6f026cfefe4dd0c3939b5d8dd",
+          "size": 20161
+        },
+        "config.json": {
+          "blob_id": "b3967e309fef13d83966a049fe248648cf89f3c2",
+          "size": 3735
+        },
+        "generation_config.json": {
+          "blob_id": "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+          "size": 208
+        },
+        "model.safetensors.index.json": {
+          "blob_id": "7f67397b01fcce8fa6fc3113a395134e20931862",
+          "size": 118214
+        },
+        "tokenizer_config.json": {
+          "blob_id": "a5a633bda4364a5cf879ae350c048dd58bb556e5",
+          "size": 23725
+        }
+      }
+    },
+    "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit": {
+      "revision": "72263b814727693c874bf765c657dfb32102e870",
+      "selection": "existing_catalog_pin",
+      "cached_main_ref": null,
+      "configs": {
+        "config.json": {
+          "sha256": "eb2165fd22e64554c46aa128b8e166502204f347387597165488c39f4607a5fd",
+          "model_type": "gemma4",
+          "model_file": null,
+          "auto_map": null,
+          "text_encoder": null
+        },
+        "tokenizer_config.json": {
+          "sha256": "b3da1b7227c5d35fd905ad13200a08be63cb346b2d1bd4f6d58878c9783d5de1",
+          "model_type": null,
+          "model_file": null,
+          "auto_map": null,
+          "text_encoder": null
+        }
+      },
+      "lfs_files": {
+        "model-00001-of-00002.safetensors": {
+          "sha256": "d2a19ce0f96276cba72cadefbfabbe4fd750789c1cc41e95af13e5d72be544dd",
+          "size": 4906172928
+        },
+        "model-00002-of-00002.safetensors": {
+          "sha256": "c816c356a2bbddef2b6e6e389f77055cf4cc11b586f9d91ac4e5804537d90f99",
+          "size": 3023979920
+        },
+        "tokenizer.json": {
+          "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+          "size": 32169626
+        }
+      },
+      "git_files": {
+        ".gitattributes": {
+          "blob_id": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+          "size": 1570
+        },
+        "LICENSE-BASE.txt": {
+          "blob_id": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+          "size": 11358
+        },
+        "LICENSE.txt": {
+          "blob_id": "ec297ac5456384786644013ec196da33b916be97",
+          "size": 2619
+        },
+        "README.md": {
+          "blob_id": "a8ea8111f02ba843f720bbf0e6bff8f660c8f0cf",
+          "size": 828
+        },
+        "chat_template.jinja": {
+          "blob_id": "e4ac6701388004b6f026cfefe4dd0c3939b5d8dd",
+          "size": 20161
+        },
+        "config.json": {
+          "blob_id": "a7e801f311538b698f91dbb63badb3ed0dae5452",
+          "size": 3735
+        },
+        "generation_config.json": {
+          "blob_id": "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+          "size": 208
+        },
+        "model.safetensors.index.json": {
+          "blob_id": "dee9b6e565b2851493136a1f2d5d3ff70c3e9d1c",
+          "size": 138539
+        },
+        "tokenizer_config.json": {
+          "blob_id": "a5a633bda4364a5cf879ae350c048dd58bb556e5",
+          "size": 23725
+        }
+      }
+    },
     "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-3bit": {
       "revision": "38238f61f3b8430aea2efe17cc1ea658bb40a0ed",
       "selection": "cached_main_ref",

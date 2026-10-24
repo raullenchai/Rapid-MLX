@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-mx = pytest.importorskip("mlx.core", reason="VoxCPM tensor conversion requires MLX")
+mx = pytest.importorskip("mlx.core")
+pytest.importorskip("mlx_audio")
+pytestmark = pytest.mark.requires_mlx
 
 from rapid_mlx.audio.tts import TTSEngine
 
@@ -70,7 +72,7 @@ def test_legacy_tensor_sidecar_preserves_native_sanitization(
 
     path = _checkpoint(tmp_path, kind)
     model = _native(monkeypatch)
-    tensor = types.SimpleNamespace(numpy=lambda: [1.0, 2.0])
+    tensor = pytest.importorskip("torch").tensor([1.0, 2.0])
     seen = []
 
     def safe_load(value):
@@ -195,7 +197,7 @@ def test_native_vae_sanitize_runs_once_on_legacy_tensor_weights(
 
     model.audio_vae = types.SimpleNamespace(sanitize=sanitize_vae)
     model.sanitize = MethodType(native.sanitize, model)
-    tensor = types.SimpleNamespace(numpy=lambda: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    tensor = pytest.importorskip("torch").tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     monkeypatch.setattr(
         torch_checkpoint, "load_tensor_checkpoint", lambda p: {"conv.weight": tensor}
     )
@@ -203,3 +205,120 @@ def test_native_vae_sanitize_runs_once_on_legacy_tensor_weights(
     TTSEngine(str(path)).load()
     assert len(counts) == 1
     assert model.weights["audio_vae.conv.weight"].shape == (3, 2)
+
+
+@pytest.mark.parametrize("state", [None, {}, {"weight": "not a tensor"}])
+def test_invalid_legacy_weights_refused(tmp_path, monkeypatch, state):
+    from rapid_mlx.utils import torch_checkpoint
+
+    path = _checkpoint(tmp_path)
+    _native(monkeypatch)
+    monkeypatch.setattr(torch_checkpoint, "load_tensor_checkpoint", lambda p: state)
+    with pytest.raises(ValueError, match="tensor weights"):
+        TTSEngine(str(path)).load()
+
+
+def test_numeric_bfloat_checkpoint_and_post_load_hook(tmp_path, monkeypatch):
+    import mlx_audio.utils as utils
+    import torch
+
+    path = _checkpoint(tmp_path)
+    torch.save(
+        {"weight": torch.tensor([1.0, 2.0], dtype=torch.bfloat16)},
+        path / "audiovae.pth",
+    )
+    model = _native(monkeypatch)
+    module, _ = utils.get_model_class(model_type="voxcpm")
+    calls = []
+    module.Model.post_load_hook = lambda loaded, root: calls.append(root) or loaded
+    TTSEngine(str(path)).load()
+    assert model.weights["audio_vae.weight"].tolist() == [1.0, 2.0]
+    assert calls == [path]
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_voxcpm2_safetensors_sidecar_preferred(tmp_path, monkeypatch, empty):
+    from rapid_mlx.utils import torch_checkpoint
+
+    path = _checkpoint(tmp_path, "voxcpm2")
+    model = _native(monkeypatch)
+    mx.save_safetensors(
+        str(path / "audiovae.safetensors"), {} if empty else {"weight": mx.array([3.0])}
+    )
+    monkeypatch.setattr(
+        torch_checkpoint,
+        "load_tensor_checkpoint",
+        lambda p: pytest.fail("unused legacy sidecar"),
+    )
+    if empty:
+        with pytest.raises(ValueError, match="empty"):
+            TTSEngine(str(path)).load()
+    else:
+        TTSEngine(str(path)).load()
+        assert model.weights["audio_vae.weight"].tolist() == [3.0]
+
+
+def test_native_asset_patterns_reach_the_resolved_model(tmp_path, monkeypatch):
+    import fnmatch
+
+    import mlx_audio.utils as utils
+
+    from rapid_mlx import model_downloads
+
+    native_patterns = [*utils.DEFAULT_ALLOW_PATTERNS, "*.wav", "vocabulary.bin"]
+    monkeypatch.setattr(utils, "DEFAULT_ALLOW_PATTERNS", native_patterns)
+    files = {"config.json": "{}", "reference.wav": "audio", "vocabulary.bin": "tokens"}
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    downloads = []
+
+    def resolve(name, *, allow_patterns):
+        downloads.append(name)
+        assert allow_patterns == native_patterns
+        for filename, content in files.items():
+            if any(fnmatch.fnmatch(filename, pattern) for pattern in allow_patterns):
+                (snapshot / filename).write_text(content)
+        return str(snapshot)
+
+    model = object()
+
+    def native_load(path):
+        assert path == snapshot
+        assert (path / "reference.wav").read_text() == "audio"
+        assert (path / "vocabulary.bin").read_text() == "tokens"
+        return model
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", resolve)
+    _loader(monkeypatch, native_load)
+    engine = TTSEngine("org/model")
+    engine.load()
+    assert engine.model is model
+    assert downloads == ["org/model"]
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_native_strict_weight_validation_is_preserved(tmp_path, monkeypatch, missing):
+    import mlx.nn as nn
+    import torch
+
+    path = _checkpoint(tmp_path)
+    torch.save({"weight": torch.tensor([1.0, 2.0])}, path / "audiovae.pth")
+    base_weights = {} if missing else {"projection": mx.ones((1,))}
+    model = _native(monkeypatch, weights=base_weights)
+    native = nn.Module()
+    native["projection"] = mx.zeros((1,))
+    native["audio_vae"] = {"weight": mx.zeros((2,))}
+    model.load_weights = native.load_weights
+    model.parameters = native.parameters
+    model.eval = native.eval
+    _loader(monkeypatch, lambda *a: pytest.fail("upstream sidecar fallback"))
+    engine = TTSEngine(str(path))
+    if missing:
+        with pytest.raises(ValueError, match="Missing"):
+            engine.load()
+        assert not engine._loaded
+    else:
+        engine.load()
+        assert engine._loaded
+        assert native["projection"].tolist() == [1.0]
+        assert native["audio_vae"]["weight"].tolist() == [1.0, 2.0]

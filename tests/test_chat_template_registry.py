@@ -73,10 +73,29 @@ def test_profile_declares_template_for_alias_and_exact_repo_path(
     assert resolve_profile(profile.hf_path) == profile
 
 
-def test_every_gemma4_parser_profile_declares_a_template() -> None:
+def test_every_gemma4_parser_profile_declares_its_template_policy() -> None:
+    checkpoint_owned = {"nemotron-3.5-bolt-e4b", "nemotron-3.5-bolt-e4b-8bit"}
     for alias, profile in list_profiles().items():
         if profile.modality == "text" and profile.tool_call_parser == "gemma4":
-            assert profile.chat_template_id in {"gemma4_compact", "gemma4_full"}, alias
+            if alias in checkpoint_owned:
+                assert profile.chat_template_id is None
+                assert profile.revision is not None
+            else:
+                assert profile.chat_template_id in {"gemma4_compact", "gemma4_full"}, (
+                    alias
+                )
+
+
+@pytest.mark.parametrize(
+    "alias", ["nemotron-3.5-bolt-e4b", "nemotron-3.5-bolt-e4b-8bit"]
+)
+def test_e4b_alias_and_repo_preserve_checkpoint_template(alias) -> None:
+    profile = resolve_profile(alias)
+    tokenizer = _tokenizer()
+    assert not resolve_profile_chat_template(tokenizer, alias)
+    assert tokenizer.chat_template == _CHECKPOINT_TEMPLATE
+    assert not resolve_profile_chat_template(tokenizer, profile.hf_path)
+    assert tokenizer.chat_template == _CHECKPOINT_TEMPLATE
 
 
 def test_declared_profile_replaces_checkpoint_template_without_hash_or_name_probe() -> (

@@ -10,10 +10,15 @@ where it is bit-exact with the stock path.  Gate/up deliberately stay stock.
 from __future__ import annotations
 
 from functools import lru_cache
+from types import SimpleNamespace
 
 import mlx.core as mx
 
+from .kernels import custom_kernels_enabled
 from .moe_decode import _HEADER, _packed_width, _qmv_vpt
+from .self_check import SelfCheck
+
+_CHECK = SelfCheck("V4.1 route QMV")
 
 # The shared helpers adapt the stock kernels under the MIT notice in moe_decode.
 _SOURCE = r"""
@@ -81,6 +86,35 @@ def _shape(module, inputs: mx.array, indices: mx.array) -> tuple[int, int, int, 
 
 def affine2_route_down_qmv(module, inputs: mx.array, indices: mx.array) -> mx.array:
     routes, topk, input_dims, output_dims = _shape(module, inputs, indices)
+    if not (
+        custom_kernels_enabled()
+        and mx.default_device() == mx.gpu
+        and mx.metal.is_available()
+        and _CHECK.qualified(
+            (
+                inputs.dtype,
+                module.scales.dtype,
+                module.bits,
+                routes,
+                topk,
+                input_dims,
+                output_dims,
+            ),
+            _probe,
+            module.scales.dtype,
+            module.bits,
+            routes,
+            topk,
+            input_dims,
+            output_dims,
+        )
+    ):
+        return _reference(module, inputs, indices)
+    return _fused(module, inputs, indices)
+
+
+def _fused(module, inputs, indices):
+    routes, topk, input_dims, output_dims = _shape(module, inputs, indices)
     flat_indices = mx.contiguous(indices.astype(mx.uint32).reshape(-1))
     (output,) = _kernel()(
         inputs=[inputs, module.weight, module.scales, module.biases, flat_indices],
@@ -101,3 +135,37 @@ def affine2_route_down_qmv(module, inputs: mx.array, indices: mx.array) -> mx.ar
     )
     result: mx.array = output.reshape((int(inputs.shape[0]), topk, output_dims))
     return result
+
+
+def _reference(module, inputs, indices):
+    return mx.gather_qmm(
+        inputs[:, None, None, :],
+        module.weight,
+        module.scales,
+        module.biases,
+        rhs_indices=indices,
+        transpose=True,
+        group_size=64,
+        bits=module.bits,
+    ).squeeze(-2)
+
+
+def _probe(quant_dtype, bits, routes, topk, width, out):
+    # Two synthetic experts retain the exact K/OUT/BITS specialization without
+    # reading model weights or allocating the full expert bank.
+    weights = mx.sin(mx.arange(2 * out * width, dtype=mx.float32)).reshape(
+        2, out, width
+    )
+    weight, scales, biases = mx.quantize(
+        weights.astype(quant_dtype), group_size=64, bits=bits
+    )
+    module = SimpleNamespace(
+        weight=weight, scales=scales, biases=biases, bits=bits, group_size=64
+    )
+    # _shape rejects every activation dtype except float32, so this is the
+    # exact T specialization; quant_dtype selects the independent Q template.
+    x = mx.cos(mx.arange(routes // topk * width, dtype=mx.float32)).reshape(-1, width)
+    indices = (mx.arange(routes, dtype=mx.uint32) % 2).reshape(-1, topk)
+    actual = _fused(module, x, indices)
+    expected = _reference(module, x, indices)
+    return mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()

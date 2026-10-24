@@ -64,6 +64,9 @@ from functools import lru_cache
 import mlx.core as mx
 
 from .kernels import custom_kernels_enabled
+from .self_check import SelfCheck
+
+_CHECK = SelfCheck("V4.1 decode attention")
 
 
 # Module switch: tests and A/B runs turn the fused path off to compare.
@@ -318,6 +321,16 @@ def supports(x: mx.array, win_kv: mx.array, heads: int, head_dim: int, rd: int) 
         and head_dim <= 512
         and 0 < rd <= head_dim
         and rd % 2 == 0
+        and _CHECK.qualified(
+            (x.dtype, win_kv.dtype, heads, head_dim, rd, win_kv.shape[1]),
+            _probe,
+            x.dtype,
+            win_kv.dtype,
+            heads,
+            head_dim,
+            rd,
+            win_kv.shape[1],
+        )
     )
 
 
@@ -329,7 +342,7 @@ def overwritten_rows(win_kv: mx.array, start_pos: int, n: int) -> mx.array | Non
     return win_kv[:, (start_pos + mx.arange(n)) % win_kv.shape[1]]
 
 
-def attend(
+def _fused(
     q: mx.array,
     win_kv: mx.array,
     start_pos: int,
@@ -408,3 +421,78 @@ def attend(
         output_dtypes=[mx.float32],
     )[0]
     return out.reshape(bsz, n, heads, dim)
+
+
+# Private primitive for the qualified branch in Attention.__call__. That
+# branch calls supports() before any request cache write and takes the stock
+# graph on a failed verdict. Probes use _fused directly, without request hooks.
+_attend = _fused
+
+
+def _probe(dtype, cache_dtype, heads, dim, rd, window):
+    """Exercise a wrapped ring, overwritten rows, and masked compressed picks.
+
+    Selection and cache writes stay in the existing graph in both paths; the
+    probe snapshots them to ensure the fused read-only kernel preserves them.
+    """
+    from .layers import rope_tail
+    from .sparse_attention import sparse_attn
+
+    # One batch of the configured sliding window (normally 128), not the
+    # request context length. Keeping W exact exercises ring wrap/old-row reads.
+    n = min(MAX_QUERY_ROWS, window)
+    q = (
+        (mx.sin(mx.arange(n * heads * dim, dtype=mx.float32)) * 0.5)
+        .reshape(1, n, heads, dim)
+        .astype(dtype)
+    )
+    ring = (
+        mx.cos(mx.arange(window * dim, dtype=mx.float32))
+        .reshape(1, window, dim)
+        .astype(cache_dtype)
+    )
+    old = (
+        mx.sin(mx.arange(n * dim, dtype=mx.float32))
+        .reshape(1, n, dim)
+        .astype(cache_dtype)
+    )
+    comp = (
+        (mx.cos(mx.arange(3 * dim, dtype=mx.float32)) * 0.7)
+        .reshape(1, 3, dim)
+        .astype(cache_dtype)
+    )
+    start, offset = window + 1, window + n
+    picks = mx.broadcast_to(mx.array([offset + 2, -1, offset, offset + 3]), (1, n, 4))
+    angle = mx.arange(n * rd // 2, dtype=mx.float32).reshape(n, rd // 2) * 0.13
+    cos, sin = mx.cos(angle), mx.sin(angle)
+    sink = mx.sin(mx.arange(heads, dtype=mx.float32))
+    arrays = [ring, old, comp, picks]
+    snapshots = [mx.array(a) for a in arrays]
+    mx.eval(*arrays, *snapshots)
+    expected = []
+    for row in range(n):
+        # Chronological window as it stood after this row's write, before the
+        # later rows overwrote slots. Compressed picks include masked/OOB rows.
+        positions = mx.arange(start + row - window + 1, start + row + 1)
+        live0 = start + n - window
+        keys = mx.where(
+            (positions < live0)[None, :, None],
+            old[:, mx.clip(positions - (live0 - n), 0, n - 1)],
+            ring[:, positions % window],
+        )
+        keys = mx.concatenate([keys, comp], axis=1).astype(dtype)
+        idx = mx.concatenate(
+            [mx.arange(window), mx.array([window + 2, -1, window, -1])]
+        ).reshape(1, 1, -1)
+        c, s = cos[row : row + 1], sin[row : row + 1]
+        rotated = rope_tail(q[:, row : row + 1], rd, c, s)
+        out = sparse_attn(rotated, keys, sink, idx, dim**-0.5)
+        expected.append(rope_tail(out, rd, c, s, inverse=True).astype(mx.float32))
+    expected = mx.concatenate(expected, axis=1)
+    actual = _fused(
+        q, ring, start, comp, picks, offset, sink, cos, sin, dim**-0.5, rd, old
+    )
+    # Existing decode comparisons allow 3e-3 for fp32 and 5e-2 for bf16.
+    tol = 5e-2 if dtype == mx.bfloat16 else 3e-3
+    good = mx.allclose(actual, expected, rtol=tol, atol=tol).item()
+    return good and all(mx.array_equal(a, b).item() for a, b in zip(arrays, snapshots))

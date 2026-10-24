@@ -90,6 +90,7 @@ def capture_cli(monkeypatch, argv, *, tty=False):
 
 def test_empty_and_catalog_cache(cache):
     assert lm.discover_runnable_chat_models() == []
+    assert cli._cached_models_json_payload()["cached"] == []
     assert lm.select_default_local_model() is None
     repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
     snapshot(cache, repo)
@@ -100,6 +101,9 @@ def test_empty_and_catalog_cache(cache):
     assert found[0].fit == "yes"
     assert lm.select_default_local_model().model == first_run.FIRST_RUN_MODEL
     assert first_run.select_chat_default() == (first_run.FIRST_RUN_MODEL, True)
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["chat_ready"] is True
+    assert row["chat_fit"] == "yes"
 
 
 def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolution):
@@ -135,6 +139,13 @@ def test_uncataloged_default_and_store_untouched_by_selection(
     chosen = lm.select_default_local_model()
     assert chosen.model == repo and not chosen.cataloged
     assert chosen.external == external
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["repo"] == repo
+    assert row["external"] is external
+    assert row["chat_ready"] is True
+    assert row["chat_fit"] == "yes"
+    assert row["chat_mlx_native"] is True
+    assert row["modified_epoch"] == int(chosen.mtime)
     if external:
         assert ma.resolve_model(repo) == str(directory)
     args = capture_cli(monkeypatch, ["serve"])
@@ -171,6 +182,10 @@ def test_nonchat_and_incomplete_never_offered(cache, repo, options):
     snapshot(cache, repo, **options)
     assert lm.discover_runnable_chat_models() == []
     assert lm.select_default_local_model() is None
+    for row in cli._cached_models_json_payload()["cached"]:
+        assert row["chat_ready"] is False
+        assert row["chat_fit"] is None
+        assert row["chat_mlx_native"] is None
 
 
 def test_mtp_primary_is_allowed(cache):
@@ -199,6 +214,8 @@ def test_fit_and_unknown_ram(cache, monkeypatch):
     assert lm.discover_runnable_chat_models(ram_bytes=0)[0].fit == "unknown"
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 0)
     assert lm.select_default_local_model().fit == "unknown"
+    monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 4)
+    assert cli._cached_models_json_payload()["cached"][0]["chat_ready"] is False
 
 
 def test_policy_order(monkeypatch):
@@ -675,6 +692,11 @@ def test_valid_external_copy_backs_up_rejected_hub_copy(cache, tmp_path, monkeyp
     (found,) = lm.discover_runnable_chat_models()
     assert found.external and found.repo == repo
     assert found.model == str(directory)
+    # Desktop starts by repo ID, which resolves to the rejected Hub copy.
+    # The external path's verdict must not make that row chat-ready.
+    rows = cli._cached_models_json_payload()["cached"]
+    assert len(rows) == 1
+    assert rows[0]["chat_ready"] is False
 
 
 def test_serve_notes_wait_for_log_file(monkeypatch, capsys, tmp_path):
@@ -737,3 +759,181 @@ def test_speech_model_type_is_not_chat(cache, monkeypatch):
     monkeypatch.setattr(pf, "chat_model_types", lambda: None)
     snapshot(cache, "org/chat")
     assert lm.discover_runnable_chat_models() == []
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_cached_repo_alias_collision_uses_exact_checkpoint(
+    cache, tmp_path, monkeypatch, external
+):
+    repo = "local-chat"
+    profile = ma.AliasProfile(
+        hf_path="org/Unrelated", subfolder="nested", revision="b" * 40
+    )
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == repo else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {repo: profile})
+    if external:
+        root = tmp_path / "external"
+        directory = write_model(root / repo)
+        monkeypatch.setattr(ma, "external_model_root_paths", lambda: [str(root)])
+    else:
+        directory = snapshot(cache, repo)
+    found = lm.discover_runnable_chat_models()
+    assert len(found) == 1
+    assert found[0].repo == repo
+    assert found[0].alias is None
+    assert found[0].model == str(directory)
+    assert ma.resolve_model(found[0].model) == str(directory)
+    assert ma.resolve_revision(found[0].model) is None
+    assert ma.resolve_subfolder(found[0].model) is None
+    cli._print_cached_models()
+    from unittest.mock import patch
+
+    with patch.object(
+        lm, "discover_runnable_chat_models", wraps=lm.discover_runnable_chat_models
+    ) as discovery:
+        rows = cli._cached_models_json_payload()["cached"]
+        assert discovery.call_count == 1
+    assert len(rows) == 1
+    assert rows[0]["alias"] is None
+    assert rows[0]["repo"] == repo
+    assert rows[0]["launch_path"] == str(directory)
+    assert rows[0]["state"] == ("external" if external else "unmapped")
+    assert rows[0]["external"] is external
+    assert rows[0]["chat_ready"] is True
+    assert rows[0]["chat_fit"] == "yes"
+
+
+def test_colliding_repository_path_rejects_missing_or_incomplete_cache(cache):
+    assert ma.cached_repository_launch_path("missing", external=False) is None
+    directory = snapshot(cache, "partial", weights=False)
+    assert directory.exists()
+    assert ma.cached_repository_launch_path("partial", external=False) is None
+
+
+def test_collision_without_chat_evidence_is_not_offered(cache, monkeypatch):
+    profile = ma.AliasProfile(hf_path="org/Unrelated")
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == "local-chat" else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {"local-chat": profile})
+    snapshot(cache, "local-chat", template=False)
+    assert lm.discover_runnable_chat_models() == []
+    row = cli._cached_models_json_payload()["cached"][0]
+    # Inventory completeness is not a chat verdict. Keep complete non-chat
+    # artifacts visible, but do not issue a selectable collision identity.
+    assert row["state"] == "unmapped"
+    assert row["alias"] is None
+    assert row["launch_path"] is None
+
+
+@pytest.mark.parametrize("hub_chat", [False, True])
+def test_collision_keeps_certified_external_fallback(
+    cache, tmp_path, monkeypatch, hub_chat
+):
+    repo = "local-chat"
+    profile = ma.AliasProfile(hf_path="org/Unrelated")
+    monkeypatch.setattr(
+        ma, "resolve_profile", lambda name: profile if name == repo else None
+    )
+    monkeypatch.setattr(ma, "list_profiles", lambda: {repo: profile})
+    managed = snapshot(cache, repo, template=hub_chat)
+    root = tmp_path / "external"
+    external = write_model(root / repo)
+    monkeypatch.setattr(ma, "external_model_root_paths", lambda: [str(root)])
+    found = lm.discover_runnable_chat_models()
+    assert [m.model for m in found] == [str(managed if hub_chat else external)]
+    rows = cli._cached_models_json_payload()["cached"]
+    hub_row = next(row for row in rows if not row["external"])
+    assert hub_row["state"] == "unmapped"
+    assert hub_row["launch_path"] == (str(managed) if hub_chat else None)
+    if hub_chat:
+        assert len(rows) == 1
+    else:
+        assert len(rows) == 2
+        external_row = next(row for row in rows if row["external"])
+        assert external_row["state"] == "external"
+        assert external_row["launch_path"] == str(external)
+
+
+def test_repository_spelling_preserves_exact_catalog_profile(monkeypatch):
+    profile = ma.AliasProfile(hf_path="Org/Chat", subfolder="nested", revision="b" * 40)
+    monkeypatch.setattr(ma, "resolve_profile", lambda name: profile)
+    assert not ma.cached_repository_collides("org/chat")
+
+
+def test_colliding_name_uses_only_exact_repository_revision_and_subfolder(
+    cache, monkeypatch
+):
+    unrelated = ma.AliasProfile(
+        hf_path="org/Unrelated", revision="b" * 40, subfolder="wrong"
+    )
+    exact = ma.AliasProfile(hf_path="local-chat", revision="c" * 40, subfolder="nested")
+    monkeypatch.setattr(
+        ma, "list_profiles", lambda: {"local-chat": unrelated, "actual": exact}
+    )
+    monkeypatch.setattr(ma, "_load", lambda: {"local-chat": unrelated, "actual": exact})
+    directory = write_model(
+        cache / "models--local-chat" / "snapshots" / ("c" * 40) / "nested"
+    )
+    assert ma.cached_repository_launch_path("local-chat", external=False) == str(
+        directory
+    )
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert row["state"] == "ok"
+    assert row["alias"] == "actual"
+    assert row["repo"] == "local-chat"
+    assert row["subfolder"] == "nested"
+    assert row["launch_path"] is None
+
+
+@pytest.mark.parametrize("difference", ["revision", "subfolder"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_colliding_repository_rejects_ambiguous_catalog_artifacts(
+    cache, monkeypatch, difference, reverse
+):
+    first = ma.AliasProfile(hf_path="local-chat")
+    second = replace(
+        first, **{difference: "b" * 40 if difference == "revision" else "nested"}
+    )
+    profiles = {"one": first, "two": second}
+    if reverse:
+        profiles = dict(reversed(list(profiles.items())))
+    monkeypatch.setattr(ma, "list_profiles", lambda: profiles)
+    snapshot(cache, "local-chat")
+    assert ma.cached_repository_launch_path("local-chat", external=False) is None
+
+
+@pytest.mark.parametrize("nested_first", [False, True])
+@pytest.mark.parametrize("root_chat", [False, True])
+def test_cached_verdicts_do_not_borrow_nested_artifact_evidence(
+    cache, monkeypatch, nested_first, root_chat
+):
+    repo = "org/multi-chat"
+    profiles = {
+        "root-chat": ma.AliasProfile(hf_path=repo),
+        "nested-chat": ma.AliasProfile(hf_path=repo, subfolder="int4"),
+    }
+    if nested_first:
+        profiles = dict(reversed(list(profiles.items())))
+    monkeypatch.setattr(ma, "_load", lambda: profiles)
+    monkeypatch.setattr(ma, "list_profiles", lambda: profiles)
+    monkeypatch.setattr(ma, "_hf_to_alias", {repo: next(iter(profiles))})
+    root = snapshot(cache, repo, template=root_chat)
+    write_model(root / "int4")
+    found = lm.discover_runnable_chat_models()
+    expected_aliases = (
+        ["nested-chat"] if nested_first else (["root-chat"] if root_chat else [])
+    )
+    assert [model.alias for model in found] == expected_aliases
+    rows = {row["alias"]: row for row in cli._cached_models_json_payload()["cached"]}
+    # Only the representative root is judged by this producer contract.
+    # Unjudged artifacts retain catalog eligibility without being certified.
+    assert rows["root-chat"]["chat_ready"] is (None if nested_first else root_chat)
+    assert rows["nested-chat"]["chat_ready"] is None
+    assert rows["nested-chat"]["chat_fit"] is None
+    assert rows["nested-chat"]["chat_mlx_native"] is None
+    assert rows["root-chat"]["chat_fit"] == (
+        "yes" if root_chat and not nested_first else None
+    )

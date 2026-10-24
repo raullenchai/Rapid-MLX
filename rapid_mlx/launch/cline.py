@@ -168,6 +168,17 @@ def is_valid_providers_file(data: object) -> bool:
     return True
 
 
+def saved_model() -> str | None:
+    """Read the configured provider's model before choosing a default."""
+    path = current_config_path()
+    assert path is not None
+    data = load_providers(path)
+    model = (
+        data.get("providers", {}).get(_PROVIDER_ID, {}).get("settings", {}).get("model")
+    )
+    return model if isinstance(model, str) and model.strip() else None
+
+
 def _now_iso() -> str:
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"

@@ -234,6 +234,8 @@ def test_supports_and_graph_fallback(monkeypatch):
 
 
 def test_dispatch_geometry(monkeypatch):
+    # This checks request geometry; qualification has separate probe tests.
+    monkeypatch.setattr(rope_quant._CHECK, "qualified", lambda *a: True)
     calls = []
 
     def fake(**kw):

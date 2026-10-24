@@ -30,11 +30,57 @@ from rapid_mlx.model_aliases import (
     subfolder_allow_patterns,
 )
 from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 ALIAS = "lfm2.5-2.6b-4bit"
 REPO = "LiquidAI/LFM2.5-2.6B-MLX"
 ABLITERATED_ALIAS = "qwen3.8-27b-abliterated-4bit"
 ABLITERATED_REPO = "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp"
+
+FLAT_REPO = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
+
+
+@pytest.fixture
+def unpinned_profiles(monkeypatch):
+    """Legacy path semantics use explicit synthetic, unpinned profiles.
+
+    Shipped aliases are immutable now; their revision behavior is covered by
+    test_alias_revision and the real digest tests in test_model_integrity.
+    """
+    import sys
+    from dataclasses import replace
+
+    import rapid_mlx.model_aliases as aliases
+
+    profiles = dict(aliases.list_profiles())
+    replacements = {REPO: "test-org/subfolder-model", FLAT_REPO: "test-org/flat-model"}
+    profiles = {
+        name: replace(profile, hf_path=replacements[profile.hf_path], revision=None)
+        if profile.hf_path in replacements
+        else profile
+        for name, profile in profiles.items()
+    }
+    monkeypatch.setattr(aliases, "_aliases", profiles)
+    index = {}
+    for name, profile in profiles.items():
+        index.setdefault(profile.hf_path, name)
+    monkeypatch.setattr(aliases, "_hf_to_alias", index)
+    monkeypatch.setattr(sys.modules[__name__], "REPO", replacements[REPO])
+    monkeypatch.setattr(sys.modules[__name__], "FLAT_REPO", replacements[FLAT_REPO])
+
+
+@pytest.fixture
+def checkpoint_transport(unpinned_profiles, monkeypatch):
+    """Mock the checked transport boundary for path/completeness unit tests."""
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *args, **kwargs: huggingface_hub.snapshot_download(*args, **kwargs),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -173,7 +219,7 @@ def test_subfolder_is_recoverable_from_the_resolved_repo_id():
 
 
 def test_unknown_and_flat_models_report_no_subfolder():
-    assert resolve_subfolder("mlx-community/LFM2.5-8B-A1B-MLX-4bit") is None
+    assert resolve_subfolder(FLAT_REPO) is None
     assert resolve_subfolder("some/model-nobody-registered") is None
 
 
@@ -203,7 +249,7 @@ def test_abliterated_alias_uses_the_single_build_repo_without_a_subfolder():
 def test_allow_patterns_is_none_for_flat_repos():
     """``None``, not ``["*"]`` — callers branch on it to keep the
     historical single-argument ``snapshot_download(repo)`` call shape."""
-    assert subfolder_allow_patterns("mlx-community/LFM2.5-8B-A1B-MLX-4bit") is None
+    assert subfolder_allow_patterns(FLAT_REPO) is None
 
 
 def test_allow_pattern_prefix_matches_the_real_repo_layout():
@@ -223,8 +269,9 @@ def test_allow_pattern_prefix_matches_the_real_repo_layout():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_flat_repo_id_passes_through_untouched():
-    name = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
+    name = FLAT_REPO
     assert _resolve_subfolder_checkpoint(name) == name
 
 
@@ -250,6 +297,7 @@ def test_local_path_passes_through_even_if_its_name_matches_an_alias(
     assert _resolve_subfolder_checkpoint(ALIAS) == ALIAS
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_joins_the_subfolder_onto_the_snapshot(monkeypatch, tmp_path):
     snapshot = tmp_path / "snapshots" / "deadbeef"
     (snapshot / "4bit").mkdir(parents=True)
@@ -279,6 +327,7 @@ def test_joins_the_subfolder_onto_the_snapshot(monkeypatch, tmp_path):
     assert json.loads(Path(out, "config.json").read_text()) == {}
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_download_failure_raises_instead_of_returning_the_repo_id(monkeypatch):
     """Returning the bare repo id would send mlx-lm to its own UNFILTERED
     snapshot_download: the user waits out ~20 GB and then fails anyway,
@@ -293,6 +342,7 @@ def test_download_failure_raises_instead_of_returning_the_repo_id(monkeypatch):
         _resolve_subfolder_checkpoint(REPO)
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_warm_complete_subfolder_never_touches_the_network(monkeypatch, tmp_path):
     """A warm, COMPLETE cache resolves offline-first with zero network.
 
@@ -339,6 +389,7 @@ def test_warm_complete_subfolder_never_touches_the_network(monkeypatch, tmp_path
     )
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_incomplete_cached_subfolder_falls_through_to_the_hub(monkeypatch, tmp_path):
     """A half-pulled cache must NOT short-circuit — it still hits the Hub to
     finish the download, rather than loading a shard-less checkpoint that
@@ -373,6 +424,7 @@ def test_incomplete_cached_subfolder_falls_through_to_the_hub(monkeypatch, tmp_p
     )
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_flat_repos_are_untouched_by_the_strict_path(monkeypatch):
     """The strictness applies only to subfolder aliases — a flat repo must
     never reach snapshot_download here at all."""
@@ -382,10 +434,11 @@ def test_flat_repos_are_untouched_by_the_strict_path(monkeypatch):
         raise AssertionError("flat repo must not be downloaded by this helper")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", tripwire)
-    name = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
+    name = FLAT_REPO
     assert _resolve_subfolder_checkpoint(name) == name
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_missing_subfolder_after_download_raises(monkeypatch, tmp_path):
     """Publisher renamed or dropped the folder. Say so — silently loading
     the repo root would either fail obscurely or, worse, succeed against
@@ -414,7 +467,7 @@ def test_prefix_is_empty_for_flat_repos_so_callers_can_prepend_blindly():
     from rapid_mlx.model_aliases import checkpoint_prefix
 
     assert checkpoint_prefix(REPO) == "4bit/"
-    assert checkpoint_prefix("mlx-community/LFM2.5-8B-A1B-MLX-4bit") == ""
+    assert checkpoint_prefix(FLAT_REPO) == ""
     assert checkpoint_prefix("nobody/registered-this") == ""
     # The whole point of "" over None: ``f"{prefix}config.json"`` is
     # correct for both kinds of repo with no branch at the call site.
@@ -497,7 +550,7 @@ def test_size_estimate_unchanged_for_flat_repos(monkeypatch):
         {"siblings": [Sib("model.safetensors", 100), Sib("config.json", 5)]},
     )()
     monkeypatch.setattr(gate, "_model_info_with_timeout", lambda r, t: info)
-    assert gate.estimate_repo_size_bytes("mlx-community/LFM2.5-8B-A1B-MLX-4bit") == 105
+    assert gate.estimate_repo_size_bytes(FLAT_REPO) == 105
 
 
 def test_cache_probe_descends_before_asking_if_complete(tmp_path):
@@ -510,9 +563,7 @@ def test_cache_probe_descends_before_asking_if_complete(tmp_path):
     (snap / "4bit").mkdir(parents=True)
     assert _descend_to_checkpoint(str(snap), REPO) == str(snap / "4bit")
     # Flat repo: identity.
-    assert _descend_to_checkpoint(
-        str(snap), "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
-    ) == str(snap)
+    assert _descend_to_checkpoint(str(snap), FLAT_REPO) == str(snap)
 
 
 def test_cache_probe_does_not_invent_a_directory(tmp_path):
@@ -557,7 +608,7 @@ def test_mirror_runs_subfolder_repos_with_allow_patterns(monkeypatch):
 
     # Control: a flat repo still goes through the mirror with no filter.
     seen.clear()
-    assert cli._try_mirror_prefetch("mlx-community/LFM2.5-8B-A1B-MLX-4bit") is True
+    assert cli._try_mirror_prefetch(FLAT_REPO) is True
     assert seen == [None], "flat repo must pull the whole repo (allow_patterns=None)"
 
 
@@ -633,6 +684,7 @@ def test_subfolder_cannot_widen_the_download_glob():
         )
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_alias_spelling_downloads_the_repo_not_the_alias(monkeypatch, tmp_path):
     """``server.load_model`` is a public entry point: a programmatic caller
     reaches it with the bare alias, skipping the CLI's pre-resolution.
@@ -715,7 +767,10 @@ def test_unclosed_think_does_not_leak_into_content():
     assert "</think>" not in (content or "")
 
 
-def test_pull_narrows_to_the_checkpoint_and_says_so(monkeypatch, capsys, tmp_path):
+@pytest.mark.usefixtures("unpinned_profiles")
+def test_pull_narrows_to_the_checkpoint_and_says_so(
+    hub_online_env, monkeypatch, capsys, tmp_path
+):
     """``pull`` fetches only the served folder — for the bare repo id too.
 
     Every other consumer already reaches inside on the repo id: the gate
@@ -728,8 +783,7 @@ def test_pull_narrows_to_the_checkpoint_and_says_so(monkeypatch, capsys, tmp_pat
 
     import rapid_mlx.cli as cli
 
-    snapshot = tmp_path / "snap"
-    (snapshot / "4bit").mkdir(parents=True)
+    snapshot = snapshot_tree(tmp_path, filename="4bit/model.safetensors")
     seen: dict = {}
 
     def fake_dl(rid, **kw):
@@ -749,7 +803,8 @@ def test_pull_narrows_to_the_checkpoint_and_says_so(monkeypatch, capsys, tmp_pat
     )
 
 
-def test_pull_of_a_flat_repo_is_unfiltered(monkeypatch, tmp_path):
+@pytest.mark.usefixtures("unpinned_profiles")
+def test_pull_of_a_flat_repo_is_unfiltered(hub_online_env, monkeypatch, tmp_path):
     """The generic contract is untouched for every ordinary repo."""
     import argparse
 
@@ -759,21 +814,18 @@ def test_pull_of_a_flat_repo_is_unfiltered(monkeypatch, tmp_path):
 
     def fake_dl(rid, **kw):
         seen["allow"] = kw.get("allow_patterns", "ABSENT")
-        return str(tmp_path)
+        return str(snapshot_tree(tmp_path))
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_dl)
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **kw: False)
 
-    cli.pull_command(
-        argparse.Namespace(
-            model="mlx-community/LFM2.5-8B-A1B-MLX-4bit", _original_alias=None
-        )
-    )
+    cli.pull_command(argparse.Namespace(model=FLAT_REPO, _original_alias=None))
     assert seen["allow"] == "ABSENT", (
         "flat repos must keep the historical single-argument call shape"
     )
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_incomplete_cached_checkpoint_is_rejected(monkeypatch, tmp_path):
     """A directory is not a checkpoint.
 
@@ -857,9 +909,10 @@ def test_disk_check_keeps_the_prefix_when_the_cache_probe_throws(monkeypatch):
         )(),
     )
     with pytest.raises(SystemExit):
-        cli._check_disk_space("mlx-community/LFM2.5-8B-A1B-MLX-4bit")
+        cli._check_disk_space(FLAT_REPO)
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_completeness_is_checked_on_the_success_path_too(monkeypatch, tmp_path):
     """A publisher who reorganizes the repo can leave ``config.json`` with no
     weights beside it. That arrives via a perfectly SUCCESSFUL download, so
@@ -877,6 +930,7 @@ def test_completeness_is_checked_on_the_success_path_too(monkeypatch, tmp_path):
         _resolve_subfolder_checkpoint(REPO)
 
 
+@pytest.mark.usefixtures("checkpoint_transport")
 def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
     """A verified-complete cached repo is resolved to its local snapshot dir
     with ``local_files_only=True`` — so the loader gets a path and never

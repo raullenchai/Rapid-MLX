@@ -26,7 +26,7 @@ def test_latest_requires_full_commit_before_install(commit):
 
 
 @pytest.mark.parametrize(
-    "target", ["1.2.3 @ https://untrusted.invalid", "1.2.3;id", "1.2.3junk"]
+    "target", ["1.2.3 @ https://untrusted.invalid", "1.2.3;id", "1.2.3/other"]
 )
 def test_version_target_cannot_include_requirement_suffix(target):
     result = subprocess.run(
@@ -34,3 +34,20 @@ def test_version_target_cannot_include_requirement_suffix(target):
     )
     assert result.returncode != 0
     assert "Usage:" in result.stderr
+
+
+@pytest.mark.parametrize("target", ["1.2.3.post1.dev1", "1.2.3+corp", "1.2.3rc1"])
+def test_version_suffixes_reach_package_manager(target):
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'RAPID_INSTALL_LIB=1 source "$1"; TARGET="$2"; validate_target',
+            "bash",
+            str(INSTALLER),
+            target,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

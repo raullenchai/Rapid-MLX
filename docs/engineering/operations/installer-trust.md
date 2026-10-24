@@ -2,8 +2,9 @@
 
 `rapid-mlx upgrade` upgrades an `install.sh` environment with its own Python's
 `-m pip install --upgrade rapid-mlx`. It no longer downloads or runs a website
-shell script. The environment must have working pip, as required by the installer.
-A broken environment reports the package-manager error; automatic upgrade does
+shell script. If pip is absent and uv is available, it uses
+`uv pip install --python <running-python> --upgrade rapid-mlx` instead.
+An environment without either installer reports the pip error; automatic upgrade does
 not repair or replace its interpreter.
 
 `install.sh stable` and explicit versions use the configured package index and

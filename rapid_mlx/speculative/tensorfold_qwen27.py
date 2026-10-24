@@ -16,7 +16,8 @@ import logging
 import platform
 import sys
 import threading
-from collections.abc import AsyncIterator
+import weakref
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -231,6 +232,268 @@ def require_environment(
         )
 
 
+def _checkpoint_headroom() -> int:
+    import mlx.core as mx
+    import psutil
+    from tensorfold.server.memory_budget import PROCESS_BYTES, memory_limit_bytes
+
+    return int(
+        min(
+            psutil.virtual_memory().available,
+            memory_limit_bytes(mx) - PROCESS_BYTES - mx.get_active_memory(),
+        )
+    )
+
+
+def _checkpoint_engine(
+    engine_type: Any,
+    store_getter: Callable[[], Any],
+    checkpoint_context: dict[str, tuple[int, tuple[int, ...]]],
+) -> Any:
+    """Keep one optional cut unless native selection without it would retain it."""
+
+    class CheckpointEngine(engine_type):
+        interior_tokens = None
+        interior_releases = 0
+
+        def _release_interior(self, store):
+            tokens = self.interior_tokens
+            self.interior_tokens = None
+            if tokens is None:
+                return
+            # Public take transfers precisely this owned prefix; it does not
+            # choose a victim. Never remove a state promoted to a system pin.
+            probe = [*tokens, 0]
+            usable = lambda n: n == len(tokens)
+            entry = store.peek(probe, usable=usable)
+            if entry is not None and not entry.pinned:
+                if store.match(probe, usable=usable, take=True) is not None:
+                    self.interior_releases += 1
+
+        def _retention_fits(self, store, snapshots, pending=0):
+            return len(store) + len(snapshots) + pending <= store.slots and (
+                store.budget_bytes is None
+                or store.nbytes
+                + sum(int(self.cache_nbytes(cache)) for _, cache in snapshots)
+                <= store.budget_bytes
+            )
+
+        def _guarded_steps(self, steps, stream, store, added, selections, cached):
+            from tensorfold.server.cancellation import Cancellation, PrefillGuard
+
+            engine = self
+            boundaries = iter(
+                sorted(n for n in selections if cached < n < len(stream.prompt_ids))
+            )
+
+            class Guard:
+                def __init__(self, previous):
+                    self.previous = previous
+
+                def __getattr__(self, name):
+                    return getattr(self.previous, name)
+
+                def allow_checkpoint(self, cache):
+                    boundary = next(boundaries)
+                    if not self.previous.allow_checkpoint(cache):
+                        return False
+                    if boundary != added:
+                        return True
+                    # Size the populated cache before copy_single_cache allocates.
+                    # Reserve a full-size copy for each remaining native cut too.
+                    from tensorfold.server.memory_budget import CacheMemory
+
+                    profile = CacheMemory.from_cache(cache)
+                    required = sum(
+                        profile.cache_bytes(n) for n in selections if n >= added
+                    )
+                    pending = sum(
+                        engine.cache_nbytes(c) for _, c in stream.history_checkpoints
+                    )
+                    return (
+                        store.budget_bytes is None
+                        or store.nbytes + pending + required <= store.budget_bytes
+                    ) and required <= _checkpoint_headroom()
+
+            class Steps:
+                def __iter__(self):
+                    return self
+
+                def _call(self, method, *args):
+                    previous = getattr(engine, "prefill_guard", None)
+                    engine.prefill_guard = Guard(
+                        previous or PrefillGuard(Cancellation())
+                    )
+                    try:
+                        return getattr(steps, method)(*args)
+                    finally:
+                        engine.prefill_guard = previous
+
+                def __next__(self):
+                    return self._call("__next__")
+
+                def send(self, value):
+                    return self._call("send", value)
+
+                def throw(self, *args):
+                    return self._call("throw", *args)
+
+                def close(self):
+                    return self._call("close")
+
+            return Steps()
+
+        def _native_selection_without_owned(self, store, stream, owned):
+            from tensorfold.server.checkpoints import choose_checkpoints
+
+            ids = stream.prompt_ids
+            starts = self.prompt_chunks(ids)
+            # prompt_fill.py:80-99: usable is chunk membership; take only changes
+            # cache transfer, not selection. peek returns match's prior metadata
+            # without copying, touching LRU, or changing last_prompt
+            # (checkpoints.py:175-208). Reject just our compatible exact key.
+            hit = store.peek(ids, usable=lambda n: n != len(owned) and n in starts)
+            cached = 0 if hit is None else len(hit.tokens)
+            last_prompt = None if hit is None else hit.last_prompt
+            history, shared = checkpoint_context.get(stream.stream_id, (0, ()))
+            chosen = choose_checkpoints(history, cached, last_prompt, ids)
+            # prompt_fill.py:57-58,97-99: shared cuts use the same floor, then
+            # both sources are filtered strictly beyond the counterfactual hit.
+            shared_at = {starts.floor(n) for n in shared} - {0}
+            return {
+                at
+                for at in {*(starts.floor(n) for n in chosen), *shared_at}
+                if cached < at < len(ids)
+            }
+
+        def begin_stream(
+            self, stream, *, cache=None, cached_tokens=0, checkpoints_at=()
+        ):
+            store = store_getter()
+            if store is None:
+                return super().begin_stream(
+                    stream,
+                    cache=cache,
+                    cached_tokens=cached_tokens,
+                    checkpoints_at=checkpoints_at,
+                )
+            original = set(checkpoints_at)
+            ids = stream.prompt_ids
+            owned = self.interior_tokens
+            if owned is not None:
+                entry = store.peek([*owned, 0], usable=lambda n: n == len(owned))
+                compatible = ids[: len(owned)] == owned
+                if entry is None or entry.pinned:
+                    self.interior_tokens = None
+                elif (
+                    compatible
+                    and cached_tokens == len(owned)
+                    and len(owned)
+                    in self._native_selection_without_owned(store, stream, owned)
+                ):
+                    # Public insert replaces this exact key without copying.
+                    # Match refreshed last_prompt, but only insert refreshes born,
+                    # which native eviction uses (checkpoints.py:244,275-283).
+                    shared = checkpoint_context.get(stream.stream_id, (0, ()))[1]
+                    store.insert(
+                        owned,
+                        entry.cache,
+                        last_prompt=ids,
+                        pinned=len(owned)
+                        in {self.prompt_chunks(ids).floor(n) for n in shared},
+                    )
+                    self.interior_tokens = None
+                elif not compatible or cached_tokens > len(owned):
+                    # A later native boundary supersedes this optional tail.
+                    self._release_interior(store)
+            # Reserve original insertions before considering another optional cut.
+            if not self._retention_fits(store, (), len(original)):
+                self._release_interior(store)
+            if not original and self.interior_tokens is None:
+                return super().begin_stream(
+                    stream,
+                    cache=cache,
+                    cached_tokens=cached_tokens,
+                    checkpoints_at=checkpoints_at,
+                )
+            starts = [
+                i for i, token in enumerate(ids) if token in self.prefill_plan.openers
+            ]
+            candidate = None
+            if len(starts) >= 2 and starts[-1] - starts[-2] >= self.prefill_step:
+                cuts = self.prompt_chunks(ids).starts or []
+                boundary = min(starts[-1], max(original, default=starts[-1]))
+                grid = [
+                    at
+                    for previous, at in zip(cuts, cuts[1:])
+                    if at - previous == self.prefill_step
+                    and at < boundary
+                    and at not in original
+                ]
+                if grid:
+                    candidate = grid[-1]
+            added = None
+            if (
+                original
+                and self.interior_tokens is None
+                and candidate is not None
+                and candidate > cached_tokens
+                and len(store) + len(original) + 1 <= store.slots
+            ):
+                added = candidate
+                checkpoints_at = sorted(original | {added})
+            steps = super().begin_stream(
+                stream,
+                cache=cache,
+                cached_tokens=cached_tokens,
+                checkpoints_at=checkpoints_at,
+            )
+            if added is not None:
+                steps = self._guarded_steps(
+                    steps, stream, store, added, checkpoints_at, cached_tokens
+                )
+            if added is None and self.interior_tokens is None:
+                return steps
+
+            def retain():
+                completed = False
+                try:
+                    result = yield from steps
+                    completed = True
+                    return result
+                finally:
+                    snapshots = stream.history_checkpoints
+                    # Exhaustion/throw/close runs this before the scheduler takes
+                    # history_checkpoints. Drop resident surplus before any insert.
+                    if not self._retention_fits(store, snapshots):
+                        self._release_interior(store)
+                    if added is not None:
+                        extra = next(
+                            (pair for pair in snapshots if len(pair[0]) == added), None
+                        )
+                        progress = (
+                            not completed
+                            and extra is not None
+                            and added == max(len(tokens) for tokens, _ in snapshots)
+                        )
+                        if (
+                            extra is not None
+                            and completed
+                            and self._retention_fits(store, snapshots)
+                        ):
+                            self.interior_tokens = extra[0]
+                        elif not progress:
+                            # Only remove our extra. Keep every runtime history,
+                            # shared-system and interrupted-prefill selection.
+                            stream.history_checkpoints = [
+                                pair for pair in snapshots if len(pair[0]) != added
+                            ]
+
+            return retain()
+
+    return CheckpointEngine
+
+
 class TensorFoldQwen27Backend:
     """Request adapter around a pinned TensorFold ``ChatApp``.
 
@@ -243,6 +506,7 @@ class TensorFoldQwen27Backend:
         self, app: Any, *, executor: concurrent.futures.Executor | None = None
     ):
         self._app = app
+        self._checkpoint_context: dict[str, tuple[int, tuple[int, ...]]] = {}
         self._executor = executor or concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(getattr(app, "max_batch_size", 1))),
             thread_name_prefix="tensorfold-qwen27",
@@ -307,11 +571,24 @@ class TensorFoldQwen27Backend:
 
             fraction = model_fraction(package)
 
+        checkpoint_context: dict[str, tuple[int, tuple[int, ...]]] = {}
+        store_ref: Callable[[], Any] = lambda: None
+        # The scheduler interleaves unfinished prefills when lanes > 1.
+        # Admission and later transfer are not one transaction: the optional
+        # cut's ownership/headroom policy therefore requires a single lane.
+        engine_type = (
+            _checkpoint_engine(LaneEngine, lambda: store_ref(), checkpoint_context)
+            if lanes == 1
+            else LaneEngine
+        )
         app = ChatApp(
             model,
             tokenizer,
             served_name=served_name,
-            engine_factory=functools.partial(LaneEngine, prefill_plan=plan),
+            engine_factory=functools.partial(
+                engine_type,
+                prefill_plan=plan,
+            ),
             lanes=lanes,
             **({"memory_fraction": fraction} if lanes > 1 else {}),
             context_window=int(context_window),
@@ -320,7 +597,11 @@ class TensorFoldQwen27Backend:
             # Disk snapshots and in-memory prompt checkpoints are independent.
             checkpoint_slots=None if enable_prefix_cache else 0,
         )
-        return cls(app)
+        if app.checkpoints is not None:
+            store_ref = weakref.ref(app.checkpoints)
+        backend = cls(app)
+        backend._checkpoint_context = checkpoint_context
+        return backend
 
     async def stream(
         self,

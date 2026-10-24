@@ -67,8 +67,8 @@ class AudioProcessor:
     def load(self) -> None:
         """Load SAM-Audio with safetensors or restricted legacy tensor weights.
 
-        Legacy checkpoint.pt / pytorch_model.bin-only sources are rejected;
-        neither PyTorch defaults nor its environment flags authorize pickle.
+        Numeric checkpoint.pt / pytorch_model.bin sources remain supported
+        through the patched tensor-only loader, without unrestricted retries.
         """
         if self._loaded:
             return

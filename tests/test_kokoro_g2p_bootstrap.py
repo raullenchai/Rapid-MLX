@@ -570,3 +570,43 @@ def test_unknown_spacy_runtime_cannot_select_unreviewed_pipeline(
         AudioRuntimePreparationError, match="No reviewed audio pipeline pin"
     ):
         prepare_runtime_requirement(_requirement())
+
+
+def test_registry_refuses_unreviewed_pipeline(monkeypatch, tmp_path):
+    import json
+
+    from rapid_mlx.audio import registry
+
+    catalog = tmp_path / "aliases.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "_runtime_requirements": {
+                    "kokoro": [
+                        {"kind": "spacy_pipeline", "name": "unreviewed_pipeline"}
+                    ]
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(registry, "_registry_path", lambda: str(catalog))
+    with pytest.raises(ValueError, match="code-owned pipeline catalog"):
+        registry._load_registry_uncached()
+
+
+def test_missing_spacy_metadata_refuses_install(monkeypatch):
+    _fake_spacy(monkeypatch, {"installed": False})
+
+    def missing(name):
+        raise runtime_requirements.PackageNotFoundError(name)
+
+    monkeypatch.setattr(runtime_requirements, "version", missing)
+    monkeypatch.setattr(
+        runtime_requirements,
+        "_run_installer",
+        lambda *a, **k: pytest.fail("unexpected install"),
+    )
+    with pytest.raises(
+        AudioRuntimePreparationError, match="No reviewed audio pipeline pin"
+    ):
+        prepare_runtime_requirement(_requirement())

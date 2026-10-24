@@ -143,6 +143,8 @@ esac
                     + drain_stdin
                     + """
 echo "uv:$*" >> "$EVENTS"
+[ "$FAIL" = 0 ] || exit 7
+[ "$FALLBACK" = 0 ] || exit 7
 cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
 """,
                 )
@@ -253,11 +255,21 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 self.run_installer(bootstrap=False, drain="pip-package", target=target)
 
     def test_streamed_package_failure_does_not_change_sources(self):
-        for target in ("stable", "0.16.1"):
-            with self.subTest(target=target):
-                self.run_installer(
-                    bootstrap=False, drain="pip-package", target=target, fallback=True
-                )
+        for uv in (False, True):
+            for target in ("stable", "0.16.1"):
+                with self.subTest(target=target, uv=uv):
+                    self.run_installer(
+                        bootstrap=False,
+                        uv=uv,
+                        drain="pip-package",
+                        target=target,
+                        fallback=True,
+                    )
+
+    def test_source_failure(self):
+        for uv in (False, True):
+            with self.subTest(uv=uv):
+                self.run_installer(bootstrap=False, uv=uv, target="latest", fail=True)
 
     def test_streamed_uv_targets(self):
         for target in ("stable", "latest", "0.16.1"):

@@ -25,6 +25,7 @@ def _fake_backend(app):
         _lock=threading.Lock(),
         _closed=False,
         _active={},
+        _checkpoint_context={},
         _provider_iterators=set(),
     )
 
@@ -352,6 +353,9 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
 
         def submit(self, job):
             self.job = job
+            assert provider.backend._checkpoint_context == {
+                job.job_id: (job.history_len, tuple(job.shared_prefix_lens))
+            }
             job.chunks.put([21, 22])
             job.chunks.put(None)
 
@@ -580,6 +584,10 @@ def test_provider_timeout_worker_error_and_generate_success(
 
     class Scheduler:
         def submit(self, job):
+            assert provider.backend._checkpoint_context == {
+                job.job_id: (job.history_len, tuple(job.shared_prefix_lens))
+            }
+
             def finish():
                 job.chunks.put([2])
                 job.chunks.put(None)
@@ -601,10 +609,52 @@ def test_provider_timeout_worker_error_and_generate_success(
     result = provider.generate(None, None, "x", max_tokens=1)
     assert result.text == "x"
     assert result.generation_tokens == 1
+    assert provider.backend._checkpoint_context == {}
+    iterator = provider._outputs("x", max_tokens=1)
+    next(iterator)
+    assert len(provider.backend._checkpoint_context) == 1
+    iterator.close()
+    assert provider.backend._checkpoint_context == {}
+
+    def reject(job):
+        assert provider.backend._checkpoint_context == {
+            job.job_id: (job.history_len, tuple(job.shared_prefix_lens))
+        }
+        raise RuntimeError("submit failed")
+
+    # Simulate a scheduler still owning a job when its output iterator closes.
+    # The cancellation must not erase context before a delayed begin_stream.
+    held = []
+    scheduler = app.scheduler
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.tensorfold_qwen27_server._prompt_boundaries",
+        lambda *args: (6200, (6144,)),
+    )
+
+    def retain(job):
+        held.append(job)
+        job.chunks.put([2])
+
+    app.scheduler = SimpleNamespace(submit=retain)
+    iterator = provider._outputs("x", max_tokens=1)
+    next(iterator)
+    expected_context = dict(provider.backend._checkpoint_context)
+    iterator.close()
+    assert provider.backend._checkpoint_context == expected_context
+    assert expected_context[held[0].job_id] == (6200, (6144,))
+    held.clear()
+    assert provider.backend._checkpoint_context == {}
+
+    app.scheduler = SimpleNamespace(submit=reject)
+    with pytest.raises(RuntimeError, match="submit failed"):
+        list(provider._outputs("x", max_tokens=1))
+    assert provider.backend._checkpoint_context == {}
+    app.scheduler = scheduler
 
     ChatJob.next_error = RuntimeError("job failed")
     with pytest.raises(RuntimeError, match="job failed"):
         list(provider._outputs("x", max_tokens=1))
+    assert provider.backend._checkpoint_context == {}
 
     terminal = RequestOutput(request_id="r", finished=True)
     provider._outputs = lambda *_a, **_k: (output for output in [terminal])

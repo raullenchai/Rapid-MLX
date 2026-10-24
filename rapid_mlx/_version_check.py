@@ -543,6 +543,7 @@ def detect_install_method() -> InstallInfo:
          so the upgrade lands in the same env that's currently running
          the CLI.
     """
+    import importlib.util
     import shlex
     import shutil
 
@@ -578,6 +579,16 @@ def detect_install_method() -> InstallInfo:
             # Upgrade the existing environment through its package manager.
             # Never fetch and execute mutable website shell scripts here.
             argv = [sys.executable, "-m", "pip", "install", "--upgrade", "rapid-mlx"]
+            if importlib.util.find_spec("pip") is None and (uv := shutil.which("uv")):
+                argv = [
+                    uv,
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--upgrade",
+                    "rapid-mlx",
+                ]
             return InstallInfo(
                 method="install_sh",
                 upgrade_command=shlex.join(argv),

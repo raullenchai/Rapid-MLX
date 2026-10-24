@@ -219,7 +219,7 @@ def launch_command(args: argparse.Namespace) -> None:
     # any registry lookup — see CLIENT_ALIASES and issue #2082.
     args.client = canonical_client(args.client)
 
-    if args.client == "list":
+    if args.client == "list" or getattr(args, "list", False):
         sys.exit(_print_list(as_json=args.json))
 
     if args.client == "claude-desktop":
@@ -237,8 +237,14 @@ def launch_command(args: argparse.Namespace) -> None:
             claude_desktop.mapping_path().unlink(missing_ok=True)
             print("Claude Desktop tier mapping disabled in Rapid-MLX.")
             return
-        model = getattr(args, "_original_alias", None) or _select_model(
-            explicit=args.model, profile=get_profile("claude-code"), no_download=False
+        explicit = getattr(args, "_original_alias", None) or args.model
+        saved_tiers = claude_desktop.mappings() if not explicit else {}
+        model = (
+            explicit
+            or saved_tiers.get("sonnet")
+            or _select_model(
+                explicit=None, profile=get_profile("claude-code"), no_download=False
+            )
         )
         if model is None:
             print(
@@ -248,9 +254,9 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         url, gateway_key = claude_desktop.configure(
             model,
-            opus=getattr(args, "opus_model", None),
-            sonnet=getattr(args, "sonnet_model", None),
-            haiku=getattr(args, "haiku_model", None),
+            opus=getattr(args, "opus_model", None) or saved_tiers.get("opus"),
+            sonnet=getattr(args, "sonnet_model", None) or saved_tiers.get("sonnet"),
+            haiku=getattr(args, "haiku_model", None) or saved_tiers.get("haiku"),
             port=args.port,
         )
         print("Claude Desktop gateway (configure inside Claude Desktop):")
@@ -569,7 +575,7 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    server_url = args.server_url or "http://127.0.0.1:8000"
+    server_url = args.server_url or f"http://127.0.0.1:{args.port}"
     api_key = os.environ.get("RAPID_MLX_API_KEY")
     cursor_server_url: str | None = None
     cursor_reason: str | None = None
@@ -640,7 +646,23 @@ def launch_command(args: argparse.Namespace) -> None:
     # request-side resolution accepts both), so we restore it here.
     # Same pattern as ``share_command`` in ``rapid_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
-    model = original_alias or args.model or _resolve_default_model()
+    saved = None
+    if not (original_alias or args.model) and args.client in ("cline", "continue-dev"):
+        reader = (
+            cline.saved_model if args.client == "cline" else continue_dev.saved_model
+        )
+        try:
+            saved = reader()
+        except (OSError, ValueError) as exc:
+            if args.dry_run:
+                print(f"[dry-run] {args.client}: cannot preview — {exc}")
+                return
+            print(
+                f"launch: cannot read {args.client} configuration: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    model = original_alias or args.model or saved or _resolve_default_model()
     effective_cursor_url = cursor_server_url or server_url
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
@@ -767,6 +789,11 @@ def register(subparsers) -> None:
         ),
     )
     p.add_argument(
+        "--list",
+        action="store_true",
+        help="List supported clients (alias for launch list); accepts --json.",
+    )
+    p.add_argument(
         "--all",
         action="store_true",
         help="Patch every detected client. Mutually exclusive with a client name.",
@@ -812,7 +839,7 @@ def register(subparsers) -> None:
         "--server-url",
         type=str,
         default=None,
-        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:<port>, port 8000)",
     )
     p.add_argument(
         "--port",

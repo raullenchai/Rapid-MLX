@@ -133,3 +133,36 @@ def test_tensorfold_repair_matches_sidecar_and_running_python(monkeypatch):
         f"mlx-audio=={policy.SUPPORTED_MLX_AUDIO_VERSION}",
         f"tensorfold @ git+{policy.SUPPORTED_RUNTIME_URL}@{policy.SUPPORTED_REVISION}",
     ]
+
+
+def test_arsenal_dependency_matches_release_tested_sidecar(constraints):
+    from packaging.requirements import Requirement
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    project = tomllib.loads((SCRIPT.parents[3] / "pyproject.toml").read_text())[
+        "project"
+    ]
+    for requirements in (
+        project["dependencies"],
+        project["optional-dependencies"]["video"],
+    ):
+        requirement = next(
+            Requirement(value)
+            for value in requirements
+            if value.startswith("mlx-arsenal")
+        )
+        assert str(requirement.specifier) == "==0.12.1"
+        assert "mlx-arsenal==0.12.1" in constraints.emit_constraints().splitlines()
+        assert requirement.marker.evaluate(
+            {"platform_system": "Darwin", "python_version": "3.11"}
+        )
+        assert not requirement.marker.evaluate(
+            {"platform_system": "Darwin", "python_version": "3.10"}
+        )
+        assert not requirement.marker.evaluate(
+            {"platform_system": "Linux", "python_version": "3.12"}
+        )

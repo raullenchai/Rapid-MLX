@@ -94,7 +94,7 @@ def test_mixed_route_dispatch_and_installation(monkeypatch, bits) -> None:
         return [mx.zeros(kw["output_shapes"][0], dtype=mx.float32)]
 
     monkeypatch.setattr(affine_route_qmv, "_kernel", lambda: fake)
-    out = affine2_route_down_qmv(
+    out = affine_route_qmv._fused(
         projection,
         mx.zeros((2, 256), dtype=mx.float32),
         mx.zeros((2, 6), dtype=mx.uint32),

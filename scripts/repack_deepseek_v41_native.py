@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import struct
+import sys
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -26,6 +27,9 @@ from pathlib import Path
 from typing import BinaryIO
 
 import numpy as np
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _EXPERT_RE = re.compile(
     r"^layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\."
@@ -37,6 +41,9 @@ _DROP_PREFIXES = ("mtp.", "vision.", "aligner.", "image_")
 _PROJECTION_NAMES = {"w1": "gate_proj", "w2": "down_proj", "w3": "up_proj"}
 _DTYPE_BYTES = {
     "BOOL": 1,
+    "F8_E4M3": 1,
+    "F8_E4M3FN": 1,
+    "F8_E8M0": 1,
     "U8": 1,
     "I8": 1,
     "U16": 2,
@@ -338,15 +345,56 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-experts", type=int, default=None)
     parser.add_argument("--saliency", type=Path)
     parser.add_argument(
+        "--allocation",
+        type=Path,
+        help="raw FP4/FP8 source to pruned per-layer/projection build",
+    )
+    parser.add_argument(
+        "--shared-engram",
+        type=Path,
+        help="same-filesystem shared Engram directory; required with --allocation",
+    )
+    parser.add_argument(
         "--layers",
         help="comma-separated layer ids for a small parity fixture; default is all",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--reuse-from", type=Path, help="reuse identical allocation shards"
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.allocation:
+        if (
+            args.shared_engram is None
+            or args.saliency
+            or args.keep_experts
+            or args.layers
+        ):
+            raise ValueError(
+                "--allocation requires --shared-engram and excludes legacy pruning/layer flags"
+            )
+        from scripts.deepseek_v41_rd_build import build
+
+        print(
+            json.dumps(
+                build(
+                    args.source.resolve(),
+                    args.destination.resolve(),
+                    args.shared_engram.resolve(),
+                    json.loads(args.allocation.read_text()),
+                    args.dry_run,
+                    args.reuse_from.resolve() if args.reuse_from else None,
+                ),
+                indent=2,
+            )
+        )
+        return
+    if args.reuse_from:
+        raise ValueError("--reuse-from requires --allocation")
     source = args.source.resolve()
     destination = args.destination.resolve()
     if not source.is_dir():

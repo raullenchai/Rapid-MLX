@@ -98,3 +98,11 @@ def test_sa3_consent_does_not_bypass_runtime_patch_requirement(monkeypatch):
     with pytest.raises(RuntimeError, match="PyTorch"):
         load_torch_checkpoint("legacy.ckpt")
     assert calls == []
+
+
+def test_numeric_legacy_checkpoint_loads(tmp_path):
+    torch = pytest.importorskip("torch", minversion="2.10.0")
+    checkpoint = tmp_path / "weights.pth"
+    torch.save({"weight": torch.tensor([1.0, 2.0])}, checkpoint)
+    result = load_tensor_checkpoint(checkpoint)
+    assert result["weight"].tolist() == [1.0, 2.0]

@@ -128,3 +128,136 @@ def test_alias_reordering_requires_review_of_reverse_lookup_winner():
 
 def test_controller_package_initializer_is_a_trust_control():
     assert is_trust_control("scripts/__init__.py")
+
+
+@pytest.mark.parametrize("value", [None, [], 1, {"revision": PIN}])
+def test_malformed_new_identity_fails_closed(value):
+    assert catalog_changes({}, {"new": value}, PATH)[1]
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [
+        None,
+        [],
+        {"family": None},
+        {"family": [None]},
+        {"family": [{"repo_id": "org/asset"}]},
+    ],
+)
+def test_malformed_or_unpinned_runtime_assets_fail_closed(assets):
+    assert catalog_changes({}, {"_runtime_assets": assets}, PATH)[1]
+
+
+def test_runtime_asset_positive_and_grandfathered_identity():
+    existing = {"repo_id": "org/old"}
+    added = {"repo_id": "org/new", "revision": PIN}
+    before = {"_runtime_assets": {"family": [existing]}}
+    after = {"_runtime_assets": {"family": [existing, added]}}
+    assert catalog_changes(before, after, PATH) == (["_runtime_assets"], [])
+
+
+@pytest.mark.parametrize("previous", [{"repo_id": "org/model"}, "repo_id", None])
+def test_malformed_prior_runtime_assets_cannot_grandfather_new_values(previous):
+    before = {"_runtime_assets": {"family": previous}}
+    after = {"_runtime_assets": {"family": ["repo_id"]}}
+    assert catalog_changes(before, after, PATH)[1]
+    after["_runtime_assets"]["family"] = [{"repo_id": "org/model"}]
+    assert catalog_changes(before, after, PATH)[1]
+    after["_runtime_assets"]["family"][0]["revision"] = PIN
+    assert catalog_changes(before, after, PATH) == (["_runtime_assets"], [])
+
+
+def test_edited_runtime_asset_list_revalidates_existing_asset_shapes():
+    before = {"_runtime_assets": {"family": ["repo_id"]}}
+    after = {
+        "_runtime_assets": {
+            "family": ["repo_id", {"repo_id": "org/new", "revision": PIN}]
+        }
+    }
+    assert catalog_changes(before, after, PATH)[1]
+
+
+def test_audio_and_removal_identity_rules():
+    path = "rapid_mlx/audio/aliases.json"
+    assert catalog_changes(
+        {}, {"new": {"hf_id": "org/model", "revision": PIN}}, path
+    ) == (["new"], [])
+    assert catalog_changes({"old": "org/model"}, {}, PATH) == (["old"], [])
+    assert catalog_changes({"old": "org/model"}, {"renamed": "org/model"}, PATH)[1]
+
+
+def test_existing_catalog_is_unchanged_not_certified():
+    from pathlib import Path
+
+    from scripts.catalog_trust import CATALOGS
+
+    root = Path(__file__).resolve().parents[1]
+    for path in CATALOGS:
+        data = parse_catalog((root / path).read_text())
+        assert catalog_changes(data, data, path) == ([], [])
+
+
+def test_nonobject_catalog_rejected():
+    with pytest.raises(ValueError, match="JSON object"):
+        parse_catalog("[]")
+
+
+def test_git_catalog_and_worktree_errors(tmp_path):
+    import subprocess
+
+    from scripts.catalog_trust import audit_worktree, read_git_catalog
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(tmp_path), *args], text=True
+        ).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.invalid")
+    target = tmp_path / PATH
+    target.parent.mkdir()
+    target.write_text('{"old": "org/model"}')
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    base = git("rev-parse", "HEAD")
+    assert read_git_catalog(tmp_path, base, PATH) == {"old": "org/model"}
+    assert audit_worktree(tmp_path, base, [PATH]) == ([], [])
+    target.unlink()
+    assert audit_worktree(tmp_path, base, [PATH]) == ([PATH + ":old"], [])
+    target.symlink_to("missing")
+    assert "symlink" in audit_worktree(tmp_path, base, [PATH])[1][0]
+    target.unlink()
+    target.write_text("[]")
+    assert audit_worktree(tmp_path, base, [PATH])[1]
+    with pytest.raises(ValueError, match="exact"):
+        read_git_catalog(tmp_path, "main", PATH)
+
+
+def test_cli_report_and_comparison(tmp_path, monkeypatch, capsys):
+    import runpy
+    import sys
+    from pathlib import Path
+
+    import scripts.catalog_trust as policy
+
+    target = tmp_path / PATH
+    target.parent.mkdir()
+    target.write_text(
+        json.dumps(
+            {"old": "org/model", "pinned": {"hf_path": "org/pinned", "revision": PIN}}
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["catalog_trust", "--report-unpinned"])
+    assert policy.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"old": "org/model"}
+    with pytest.raises(SystemExit) as result:
+        runpy.run_path(str(Path(policy.__file__)), run_name="__main__")
+    assert result.value.code == 0
+    monkeypatch.setattr(sys, "argv", ["catalog_trust"])
+    with pytest.raises(SystemExit):
+        policy.main()
+    monkeypatch.setattr(sys, "argv", ["catalog_trust", "--base", PIN])
+    assert policy.main() == 1

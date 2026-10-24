@@ -55,6 +55,8 @@ def _checkpoint_dir(repo: str, external: bool) -> str | None:
     from rapid_mlx import model_aliases
     from rapid_mlx.model_metadata import read_cached_model_metadata
 
+    if model_aliases.cached_repository_collides(repo):
+        return model_aliases.cached_repository_launch_path(repo, external=external)
     if external:
         # The external scanner keeps one row per repo id (the first configured
         # root holding a complete copy), and serve resolves the id to that same
@@ -185,9 +187,14 @@ def _judge_checkpoint(
     """The checkpoint as a runnable local chat model, or ``None``."""
     from rapid_mlx.byom.preflight import evaluate, inspect_local
     from rapid_mlx.first_run import _is_chat_alias
-    from rapid_mlx.model_aliases import raise_if_draft_only_model
+    from rapid_mlx.model_aliases import (
+        cached_repository_collides,
+        raise_if_draft_only_model,
+    )
 
-    raise_if_draft_only_model(alias or repo)
+    collision = alias is None and cached_repository_collides(repo)
+    if not collision:
+        raise_if_draft_only_model(alias or repo)
     if alias is not None and not _is_chat_alias(alias):
         return None
     # Judge the exact checkpoint serve would load: a config, a chat template,
@@ -195,7 +202,8 @@ def _judge_checkpoint(
     directory = _checkpoint_dir(repo, external)
     inspection = inspect_local(directory) if directory else None
     if (
-        inspection is None
+        directory is None
+        or inspection is None
         or not inspection.config
         or inspection.weight_bytes <= 0
         or inspection.has_chat_template is not True
@@ -221,7 +229,7 @@ def _judge_checkpoint(
     if verdict.failure is not None or verdict.fit == "no":
         return None
     return LocalModel(
-        alias or repo,
+        directory if collision else alias or repo,
         repo,
         alias,
         external,
@@ -263,7 +271,7 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
     try:
         from rapid_mlx.byom.preflight import physical_ram_bytes, supported_model_types
         from rapid_mlx.cli import (
-            _cache_entry_is_runnable,
+            _cached_repository_is_runnable,
             _scan_external_model_dirs,
             _scan_hf_cache_models,
         )
@@ -276,7 +284,9 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
         for name, profile in list_profiles().items():
             aliases.setdefault(profile.hf_path, name)
         hub = [
-            row for row in _scan_hf_cache_models() if _cache_entry_is_runnable(row[0])
+            row
+            for row in _scan_hf_cache_models()
+            if _cached_repository_is_runnable(row[0])
         ]
         hub_repos = {row[0] for row in hub}
         rows = [(row, False) for row in hub]

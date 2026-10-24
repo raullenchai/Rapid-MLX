@@ -230,6 +230,34 @@ def _isolate_admission_context():
             engine_module._admission_token_context.set(None)
 
 
+def _mlx_default_device_guard():
+    """Undo ``mx.set_default_device`` so CPU-pinned code cannot leak to peers."""
+    loaded = sys.modules.get("mlx.core")
+    get_device = getattr(loaded, "default_device", None)
+    before = get_device() if callable(get_device) else None
+    yield
+    mx = sys.modules.get("mlx.core")
+    if mx is None or not callable(getattr(mx, "default_device", None)):
+        return
+    if not callable(getattr(mx, "set_default_device", None)):
+        return
+    if before is None:
+        before = mx.gpu if mx.metal.is_available() else mx.cpu
+    if mx.default_device() != before:
+        mx.set_default_device(before)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _restore_mlx_default_device_per_module():
+    """Also cover module-scoped fixtures, which the per-test guard sees as baseline."""
+    yield from _mlx_default_device_guard()
+
+
+@pytest.fixture(autouse=True)
+def _restore_mlx_default_device():
+    yield from _mlx_default_device_guard()
+
+
 @pytest.fixture(autouse=True)
 def _reset_hub_guidance_latch():
     """Keep process-wide Hub guidance state isolated between every test."""

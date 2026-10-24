@@ -22,6 +22,10 @@ from rapid_mlx.image.engine import (
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.model_sizes import size_bytes
 from rapid_mlx.runtime.resident_models import estimate_model_bytes
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 REPO = "mlx-community/HiDream-O1-Image-Dev-mlx-bf16"
 REVISION = "33c7a00bce8e3410304f83ec408a15a1eb6782df"
@@ -743,7 +747,7 @@ def test_non_hidream_pull_keeps_the_generic_download_path(
 
 
 def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    hub_online_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The lower-level pull path must enforce, not merely receive, the pin.
 
@@ -773,7 +777,7 @@ def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
 
     def fake_snapshot_download(repo_id: str, **kwargs) -> str:
         calls.append((repo_id, kwargs))
-        return str(tmp_path)
+        return str(snapshot_tree(tmp_path, REVISION, "config.json"))
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
     cli._pull_repository(
@@ -795,7 +799,7 @@ def test_pinned_pull_tries_the_mirror_at_the_pin_then_hf(
 
 
 def test_pinned_pull_served_by_the_mirror_reports_the_pinned_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+    hub_online_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     # Synthetic transport has no real model bytes; hash rejection is tested separately.
     monkeypatch.setattr(
@@ -814,6 +818,9 @@ def test_pinned_pull_served_by_the_mirror_reports_the_pinned_snapshot(
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
         lambda *_a, **_k: pytest.fail("the mirror already completed the pull"),
+    )
+    snapshot_tree(
+        tmp_path / f"models--{REPO.replace('/', '--')}", REVISION, "config.json"
     )
     args = SimpleNamespace(model=REPO, bits=None, format=None, json=True)
     cli._pull_repository(

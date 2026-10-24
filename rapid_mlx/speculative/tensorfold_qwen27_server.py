@@ -13,6 +13,7 @@ import queue
 import secrets
 import threading
 import uuid
+import weakref
 from collections.abc import Generator
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -274,6 +275,8 @@ class TensorFoldRequestProvider:
         incremental = _StableIncrementalText(tokenizer, app.tokenizer_lock)
         outputs: list[RequestOutput] = []
         registered = False
+        submitted = False
+        terminated = False
         try:
             # Registration and closing share one lock: close either sees this
             # cancellation or submission is refused before it starts.
@@ -282,7 +285,17 @@ class TensorFoldRequestProvider:
                     raise RuntimeError("TensorFold backend is closed")
                 self.backend._active[request_id] = cancellation
                 registered = True
+            self.backend._checkpoint_context[request_id] = (
+                history_len,
+                tuple(shared_prefix_lens),
+            )
+            # A cancelled output iterator can end before the scheduler starts
+            # this job. Keep its immutable context while either owns the job.
+            weakref.finalize(
+                job, self.backend._checkpoint_context.pop, request_id, None
+            )
             app.scheduler.submit(job)
+            submitted = True
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     cancellation.cancel()
@@ -293,6 +306,7 @@ class TensorFoldRequestProvider:
                     cancellation.check()
                     continue
                 if chunk is None:
+                    terminated = True
                     break
                 chunk_tokens = [int(token) for token in chunk]
                 fresh: list[int] = []
@@ -365,6 +379,8 @@ class TensorFoldRequestProvider:
             )
             outputs.append(terminal)
         finally:
+            if not submitted or terminated:
+                self.backend._checkpoint_context.pop(request_id, None)
             cancellation.cancel()
             if registered:
                 with self.backend._lock:

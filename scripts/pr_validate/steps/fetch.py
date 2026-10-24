@@ -50,7 +50,7 @@ class FetchStep(Step):
                 f"pr view {ctx.pr_number} --repo {ctx.repo} "
                 "--json number,title,body,author,isCrossRepository,"
                 "headRefOid,headRefName,baseRefOid,additions,deletions,"
-                "files,state,mergeStateStatus"
+                "state,mergeStateStatus"
             )
         except subprocess.CalledProcessError as e:
             return StepResult(
@@ -99,9 +99,22 @@ class FetchStep(Step):
                 ctx.base_strategy = "tip-fallback"
         ctx.additions = meta.get("additions", 0)
         ctx.deletions = meta.get("deletions", 0)
-        ctx.files_changed = sorted(
-            f["path"] for f in (meta.get("files") or []) if "path" in f
-        )
+        # The metadata API truncates files at 100 even when pr diff succeeds.
+        # Always enumerate the exact local comparison used by validation.
+        try:
+            ctx.files_changed = _local_changed_files(ctx)
+        except (
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+            ValueError,
+            UnicodeError,
+        ) as e:
+            return StepResult(
+                name=self.name,
+                status="error",
+                summary="Cannot enumerate the complete local PR file list",
+                details=str(e),
+            )
 
         # Pull the full diff. We save to disk so the codex review and
         # supply chain steps can stream-read it without re-running gh.
@@ -137,9 +150,7 @@ class FetchStep(Step):
                     ),
                     details=f"```\n{e.stderr or e.stdout}\n```",
                 )
-            # ``gh pr view --json files`` is capped by the same API, so the
-            # file list derived above may be truncated too — replace it
-            # with the complete local listing.
+            # Keep the fallback diff and its local inventory together.
             if local_files is not None:
                 ctx.files_changed = local_files
             diff_source = "local-git (GitHub 300-file diff cap)"
@@ -238,26 +249,34 @@ def _local_git_diff(ctx: Context) -> tuple[str | None, list[str] | None]:
             check=True,
             cwd=str(ctx.repo_root),
         ).stdout
-        files = sorted(
-            subprocess.run(
-                [
-                    "git",
-                    "diff",
-                    "--name-only",
-                    "--find-renames",
-                    ctx.base_sha,
-                    ctx.head_sha,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                cwd=str(ctx.repo_root),
-            ).stdout.splitlines()
-        )
+        files = _local_changed_files(ctx)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         ctx.run_log(f"local git diff fallback failed: {e}")
         return None, None
     return diff, files
+
+
+def _local_changed_files(ctx: Context) -> list[str]:
+    """Enumerate every changed path without API caps or filename quoting."""
+    if not ctx.base_sha or not ctx.head_sha:
+        raise ValueError("PR base and head commits are required")
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--find-renames",
+            ctx.base_sha,
+            ctx.head_sha,
+            "--",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(ctx.repo_root),
+    )
+    return sorted(path for path in result.stdout.split("\0") if path)
 
 
 def _derive_merge_base(ctx: Context, meta: dict) -> tuple[str, str]:

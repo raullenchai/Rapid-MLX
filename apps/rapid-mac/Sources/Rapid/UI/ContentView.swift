@@ -1962,7 +1962,7 @@ struct ContentView: View {
         }
 
         async let chatRestore = runLaunchAutoStart(
-            catalogEntries: sessionCatalog,
+            catalogEntries: ModelSelectionPurpose.chat.entries(in: sessionCatalog),
             launchPlan: launchPlan
         )
         await dictation.bootstrap(deferModelPreparation: true)

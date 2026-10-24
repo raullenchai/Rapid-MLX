@@ -46,6 +46,7 @@
     "revision": "f94a85ec3612b0bf6cf23a0d7ebcc9c682883a81"
   },
   "qwen3.5-4b-4bit": {
+    "min_memory_gb": 16,
     "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -93,6 +94,7 @@
     "revision": "fbb1092aa9daef007603ea9273cd24c225a409f1"
   },
   "qwen3.5-9b-4bit": {
+    "min_memory_gb": 18,
     "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
     "vision_min_memory_gb": 32,
@@ -390,6 +392,7 @@
     "revision": "7baaa18ea869b8f8bd229b82bffd0d00ce5042f3"
   },
   "qwen3.6-35b-4bit": {
+    "min_memory_gb": 48,
     "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
     "vision_min_memory_gb": 32,
@@ -1855,6 +1858,7 @@
     "revision": "97228558fcbdd1adefd39d515155db3a894b37f7"
   },
   "qwen3-coder-30b-4bit": {
+    "min_memory_gb": 24,
     "hf_path": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1960,6 +1964,40 @@
     "is_text_only": true,
     "supports_spec_decode": false,
     "revision": "7816420d25f0c1ce2495a5a8e4dc8349f112cbce"
+  },
+  "nemotron-3.5-bolt-e4b": {
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-4bit",
+    "revision": "601cd937da1e168dfe0dcf184b95204344c683a9",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_text_only": true,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "nemotron-3.5-bolt-e4b-8bit": {
+    "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-8bit",
+    "revision": "72263b814727693c874bf765c657dfb32102e870",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_text_only": true,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
   },
   "nemotron-3.5-super-vl": {
     "hf_path": "rapid-mlx/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-MLX-4bit",
@@ -2949,6 +2987,7 @@
     "revision": "667408d494bde191c2cb9dd4f4549827816b9275"
   },
   "lfm2.5-2.6b-4bit": {
+    "min_memory_gb": 8,
     "hf_path": "LiquidAI/LFM2.5-2.6B-MLX",
     "subfolder": "4bit",
     "tool_call_parser": "lfm",

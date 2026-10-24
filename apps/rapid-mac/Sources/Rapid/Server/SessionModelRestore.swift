@@ -24,7 +24,7 @@ struct SessionModelRestore: Equatable, Sendable {
     /// belongs to the chat lane. Unknown direct aliases fail closed: process
     /// ownership alone is never enough evidence to rewrite user selection.
     static func shouldPersistChatAlias(catalogEntry: ModelEntry?) -> Bool {
-        catalogEntry?.supports(.chat) == true
+        catalogEntry.map { ModelSelectionPurpose.chat.accepts($0) } == true
     }
 
     /// Record a successful ready transition without confusing the process
@@ -50,7 +50,7 @@ struct SessionModelRestore: Equatable, Sendable {
         speechAlias: String?,
         catalog: [ModelEntry]
     ) -> SessionModelRestore {
-        let chatAliases = catalog.filter { $0.supports(.chat) }.map(\.alias)
+        let chatAliases = ModelSelectionPurpose.chat.entries(in: catalog).map(\.alias)
         let audioAliases = catalog.filter { $0.supports(.audio) }.map(\.alias)
         return SessionModelRestore(
             chatAlias: validated(legacyLastAlias, in: chatAliases),

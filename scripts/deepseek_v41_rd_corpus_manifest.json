@@ -1,0 +1,839 @@
+{
+  "schema_version": 2,
+  "purpose": "Calibration and held-out RD screening only; never execute dataset scripts",
+  "destination": "$RD_DATA",
+  "fetch_status": "Complete: 36 calibration and 38 held-out slices; source pins, rows, licenses and hashes in destination/provenance.json",
+  "max_total_download_bytes": 20000000000,
+  "max_export_bytes_per_slice": 2000000,
+  "revision_policy": "Resolve and record a commit SHA before fetching any selected file. Record URL, file SHA256, revision, license text and selected row IDs in provenance.json. Fetch only selected parquet/JSON files, never a repository snapshot.",
+  "split_policy": "Native train/test for GSM8K; deterministic SHA256 modulo 10 for chats, tools, MMLU and cross-language HumanEval task IDs; Wikipedia curated disjoint article/concept sets; agent trajectories use disjoint tasks AND repositories. See per-document group_id in provenance.json. Exclude duplicate document/text IDs globally.",
+  "export_policy": "Exactly 8192 source-tokenizer tokens per calibration slice and 512 per held-out slice. UTF-8 formatted document prefixes joined with two newlines. At a Unicode token boundary a final newline/document separator may be required; it is explicitly recorded, never repeated source text. Record prefix character ranges. No requirement that 4096-token halves respect document boundaries: half stability must still be measured.",
+  "sources": [
+    {
+      "slices": [
+        "general_chat_en"
+      ],
+      "dataset": "HuggingFaceH4/ultrachat_200k",
+      "url": "https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k",
+      "license": "MIT (dataset card)",
+      "selection": "A bounded subset of train_sft messages and test_sft messages; include both user and assistant turns",
+      "download_policy": "Selected parquet shard only if <200 MB; otherwise stream a bounded row export and count actual received bytes",
+      "revision": "8049631c405ae6576f93f445c6b8166f76f5505a",
+      "approved_licenses": [
+        "mit"
+      ]
+    },
+    {
+      "slices": [
+        "code"
+      ],
+      "dataset": "bigcode/humanevalpack",
+      "url": "https://huggingface.co/datasets/bigcode/humanevalpack",
+      "license": "MIT",
+      "selection": "Python, JavaScript, Java, C++, Go, Rust; group translated task numbers before split; canonical code and tests as inert text.",
+      "revision": "9a41762f73a8cb23bb5811b73d5aab164efcf378",
+      "approved_licenses": [
+        "MIT"
+      ]
+    },
+    {
+      "slices": [
+        "math"
+      ],
+      "dataset": "openai/gsm8k",
+      "url": "https://huggingface.co/datasets/openai/gsm8k",
+      "license": "MIT",
+      "selection": "main; calibration train, heldout test; question and answer",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "approved_licenses": [
+        "MIT"
+      ]
+    },
+    {
+      "slices": [
+        "tool_calling"
+      ],
+      "dataset": "NousResearch/hermes-function-calling-v1",
+      "url": "https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1",
+      "license": "Apache-2.0 (verify selected component license)",
+      "selection": "Bounded rows including tool schemas, assistant calls, JSON arguments and tool results; deterministic disjoint conversation IDs",
+      "revision": "dae3e1d28cfbcf4b915c04ea1e072030529b4bda",
+      "approved_licenses": [
+        "Apache-2.0"
+      ]
+    },
+    {
+      "slices": [
+        "medical",
+        "legal",
+        "finance",
+        "science"
+      ],
+      "dataset": "cais/mmlu",
+      "url": "https://huggingface.co/datasets/cais/mmlu",
+      "license": "MIT",
+      "selection": {
+        "medical": [
+          "clinical_knowledge",
+          "professional_medicine",
+          "anatomy"
+        ],
+        "legal": [
+          "professional_law",
+          "international_law",
+          "jurisprudence"
+        ],
+        "finance": [
+          "professional_accounting",
+          "econometrics",
+          "high_school_macroeconomics"
+        ],
+        "science": [
+          "college_physics",
+          "college_chemistry",
+          "college_biology",
+          "astronomy"
+        ]
+      },
+      "split": "Use auxiliary/dev/validation where available, otherwise deterministic disjoint test row IDs; render question, choices and answer text. Small domain probes, not clinical/legal/financial validation.",
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "approved_licenses": [
+        "MIT"
+      ]
+    },
+    {
+      "slices": [
+        "multilingual_zho_Hans",
+        "multilingual_spa_Latn",
+        "multilingual_arb_Arab",
+        "multilingual_hin_Deva",
+        "low_resource_swh_Latn",
+        "low_resource_yor_Latn",
+        "low_resource_amh_Ethi",
+        "low_resource_npi_Deva",
+        "low_resource_sin_Sinh",
+        "multilingual_deu_Latn",
+        "multilingual_fra_Latn",
+        "multilingual_por_Latn",
+        "multilingual_rus_Cyrl",
+        "multilingual_jpn_Jpan",
+        "multilingual_kor_Hang",
+        "multilingual_ind_Latn",
+        "multilingual_tur_Latn",
+        "multilingual_vie_Latn"
+      ],
+      "dataset": "Wikimedia Wikipedia multilingual article revisions",
+      "url": "https://www.wikipedia.org/",
+      "license": "CC-BY-SA-4.0",
+      "selection": "Daily-life, language, education, travel and civic articles. Curated disjoint article/concept sets across splits, native language scripts. Exact article revision content returned with IDs in one response. Language mapping is recorded per slice. FLORES and FLORES+ excluded: access gates and FLORES+ training-use restriction. No gated mirrors used.",
+      "approved_licenses": [
+        "CC-BY-SA-4.0"
+      ]
+    },
+    {
+      "slices": [
+        "general_chat_zh"
+      ],
+      "dataset": "allenai/WildChat-1M",
+      "url": "https://huggingface.co/datasets/allenai/WildChat-1M",
+      "license": "ODC-BY-1.0; retain database attribution (verify pinned card)",
+      "selection": "Public Chinese general conversations only: exclude toxic/redacted rows, PII patterns, cold/professional topics, long technical prompts and mostly non-Chinese text. Group normalized first user prompt across variants; retain conversation_hash and turn IDs; export only role/content, never user metadata.",
+      "revision": "7d6490e462285cf85d91eabea0f9a954fbddcd1f",
+      "approved_licenses": [
+        "ODC-BY-1.0"
+      ]
+    },
+    {
+      "slices": [
+        "agentic_terminal"
+      ],
+      "dataset": "SWE-bench/SWE-smith-trajectories",
+      "url": "https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories",
+      "license": "MIT dataset; retain underlying repository attribution for code excerpts",
+      "selection": "ticks shard 0; calibration mahmoud/boltons at 3bfcfdd04395b6cc74a5c0cdc72c8f64cc4ac01f; held-out andialbrecht/sqlparse at e57923b3aa823c524c807953cecc48cf6eec2cb2. BSD-3-Clause repository notices retained. Start at first assistant action, preserving terminal observations; commands are inert text.",
+      "revision": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+      "approved_licenses": [
+        "MIT (dataset); BSD-3-Clause (repository excerpts)"
+      ]
+    },
+    {
+      "slices": [
+        "cold_archaeology_en",
+        "cold_archaeology_zh",
+        "cold_folk_customs_en",
+        "cold_folk_customs_zh",
+        "cold_obscure_history_en",
+        "cold_obscure_history_zh",
+        "general_reference_en",
+        "general_reference_zh"
+      ],
+      "dataset": "Wikimedia Wikipedia English/Chinese article revisions",
+      "url": "https://en.wikipedia.org/w/api.php",
+      "secondary_url": "https://zh.wikipedia.org/w/api.php",
+      "license": "CC-BY-SA-4.0",
+      "selection": "Revision-pinned wikitext, mwparserfromhell 0.7.2 strip_code; bounded prefixes. Curated archaeology, folk customs and obscure history in English/Chinese; broad daily-topic language-matched references. Disjoint articles across slices and splits; oldid and contributors URLs retained.",
+      "approved_licenses": [
+        "CC-BY-SA-4.0"
+      ]
+    },
+    {
+      "slices": [
+        "heldout_cybersecurity",
+        "heldout_electrical_engineering"
+      ],
+      "dataset": "cais/mmlu",
+      "url": "https://huggingface.co/datasets/cais/mmlu",
+      "license": "MIT",
+      "selection": [
+        "computer_security",
+        "electrical_engineering"
+      ],
+      "split": "held-out only; no calibration rows from these subjects; preserve source row IDs and use disjoint source shards from other subjects",
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "approved_licenses": [
+        "MIT"
+      ]
+    }
+  ],
+  "license_policy": "Retain each source license and attribution alongside local exports. Check cards at pinned revisions before fetching. Do not redistribute raw corpus in the model artifact.",
+  "slices": [
+    {
+      "name": "general_chat_en",
+      "role": "hot",
+      "source": "HuggingFaceH4/ultrachat_200k",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "HuggingFaceH4/ultrachat_200k"
+      ]
+    },
+    {
+      "name": "code",
+      "role": "hot",
+      "source": "bigcode/humanevalpack",
+      "languages": [
+        "python",
+        "javascript",
+        "java",
+        "cpp",
+        "go",
+        "rust"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "bigcode/humanevalpack"
+      ]
+    },
+    {
+      "name": "math",
+      "role": "hot",
+      "source": "openai/gsm8k",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "openai/gsm8k"
+      ]
+    },
+    {
+      "name": "tool_calling",
+      "role": "hot",
+      "source": "NousResearch/hermes-function-calling-v1",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "NousResearch/hermes-function-calling-v1"
+      ]
+    },
+    {
+      "name": "medical",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "legal",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "finance",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "science",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "multilingual_zho_Hans",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia zh",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia zh"
+      ]
+    },
+    {
+      "name": "multilingual_spa_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia es",
+      "languages": [
+        "es"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia es"
+      ]
+    },
+    {
+      "name": "multilingual_arb_Arab",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia ar",
+      "languages": [
+        "ar"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia ar"
+      ]
+    },
+    {
+      "name": "multilingual_hin_Deva",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia hi",
+      "languages": [
+        "hi"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia hi"
+      ]
+    },
+    {
+      "name": "low_resource_swh_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia sw",
+      "languages": [
+        "sw"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia sw"
+      ]
+    },
+    {
+      "name": "low_resource_yor_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia yo",
+      "languages": [
+        "yo"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia yo"
+      ]
+    },
+    {
+      "name": "low_resource_amh_Ethi",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia am",
+      "languages": [
+        "am"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia am"
+      ]
+    },
+    {
+      "name": "low_resource_npi_Deva",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia ne",
+      "languages": [
+        "ne"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia ne"
+      ]
+    },
+    {
+      "name": "low_resource_sin_Sinh",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia si",
+      "languages": [
+        "si"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia si"
+      ]
+    },
+    {
+      "name": "multilingual_deu_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia de",
+      "languages": [
+        "de"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia de"
+      ]
+    },
+    {
+      "name": "multilingual_fra_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia fr",
+      "languages": [
+        "fr"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia fr"
+      ]
+    },
+    {
+      "name": "multilingual_por_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia pt",
+      "languages": [
+        "pt"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia pt"
+      ]
+    },
+    {
+      "name": "multilingual_rus_Cyrl",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia ru",
+      "languages": [
+        "ru"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia ru"
+      ]
+    },
+    {
+      "name": "multilingual_jpn_Jpan",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia ja",
+      "languages": [
+        "ja"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia ja"
+      ]
+    },
+    {
+      "name": "multilingual_kor_Hang",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia ko",
+      "languages": [
+        "ko"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia ko"
+      ]
+    },
+    {
+      "name": "multilingual_ind_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia id",
+      "languages": [
+        "id"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia id"
+      ]
+    },
+    {
+      "name": "multilingual_tur_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia tr",
+      "languages": [
+        "tr"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia tr"
+      ]
+    },
+    {
+      "name": "multilingual_vie_Latn",
+      "role": "hot",
+      "source": "Wikimedia Wikipedia vi",
+      "languages": [
+        "vi"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia vi"
+      ]
+    },
+    {
+      "name": "general_chat_zh",
+      "role": "hot",
+      "source": "allenai/WildChat-1M",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "allenai/WildChat-1M"
+      ]
+    },
+    {
+      "name": "agentic_terminal",
+      "role": "hot",
+      "source": "SWE-bench/SWE-smith-trajectories",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "SWE-bench/SWE-smith-trajectories"
+      ]
+    },
+    {
+      "name": "cold_archaeology_en",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia en",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia en"
+      ]
+    },
+    {
+      "name": "cold_archaeology_zh",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia zh",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia zh"
+      ]
+    },
+    {
+      "name": "cold_folk_customs_en",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia en",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia en"
+      ]
+    },
+    {
+      "name": "cold_folk_customs_zh",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia zh",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia zh"
+      ]
+    },
+    {
+      "name": "cold_obscure_history_en",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia en",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia en"
+      ]
+    },
+    {
+      "name": "cold_obscure_history_zh",
+      "role": "cold",
+      "source": "Wikimedia Wikipedia zh",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia zh"
+      ]
+    },
+    {
+      "name": "heldout_cybersecurity",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 0,
+      "heldout_tokens": 512,
+      "calibration_halves": 0,
+      "heldout_only": true,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "heldout_electrical_engineering",
+      "role": "hot",
+      "source": "cais/mmlu",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 0,
+      "heldout_tokens": 512,
+      "calibration_halves": 0,
+      "heldout_only": true,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "cais/mmlu"
+      ]
+    },
+    {
+      "name": "general_reference_en",
+      "role": "reference",
+      "source": "Wikimedia Wikipedia en",
+      "languages": [
+        "en"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia en"
+      ]
+    },
+    {
+      "name": "general_reference_zh",
+      "role": "reference",
+      "source": "Wikimedia Wikipedia zh",
+      "languages": [
+        "zh"
+      ],
+      "calibration_tokens": 8192,
+      "heldout_tokens": 512,
+      "calibration_halves": 2,
+      "heldout_only": false,
+      "split_key": "Per-document group_id and source_split in provenance.json; see manifest split_policy.",
+      "resolved_datasets": [
+        "Wikimedia Wikipedia zh"
+      ]
+    }
+  ],
+  "contrastive_policy": {
+    "normalization": "REAP divided by per-layer expert mean separately per slice/half for hot protection; raw hot REAP retained for RD layer sensitivity",
+    "hot_threshold": 0.25,
+    "cold_specificity_ratio": 4,
+    "min_cold_routes_per_half": 2,
+    "max_relative_ratio_change": 0.5,
+    "general_reference": "general_reference_en / general_reference_zh, matched by cold slice language suffix",
+    "never_routed": "keep by default; hard-protected during fallback too",
+    "cold_languages": "English/Chinese only; low-resource languages remain hot/protected, never cold",
+    "language_balance": "Each cold English or Chinese slice uses its same-language reference with equal token budgets; audit topic contamination before calibration."
+  },
+  "tokenizer": {
+    "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+    "sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b"
+  },
+  "pinned_sources": {
+    "HuggingFaceH4/ultrachat_200k": "8049631c405ae6576f93f445c6b8166f76f5505a",
+    "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+    "NousResearch/hermes-function-calling-v1": "dae3e1d28cfbcf4b915c04ea1e072030529b4bda",
+    "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "allenai/WildChat-1M": "7d6490e462285cf85d91eabea0f9a954fbddcd1f",
+    "SWE-bench/SWE-smith-trajectories": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+    "bigcode/humanevalpack": "9a41762f73a8cb23bb5811b73d5aab164efcf378"
+  }
+}

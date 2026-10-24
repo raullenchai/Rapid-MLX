@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokens", type=int, default=16)
     parser.add_argument("--intervals", type=int, nargs="+", default=[1, 2, 4])
     parser.add_argument("--fuse-moe-gate-up", action="store_true")
+    parser.add_argument("--engram-ssd-offload", action="store_true")
     parser.add_argument(
         "--prompt",
         default="What is the capital of France? Answer in one short sentence.",
@@ -96,6 +97,7 @@ def main() -> None:
         str(args.model.resolve()),
         lazy=False,
         fuse_moe_gate_up=args.fuse_moe_gate_up,
+        engram_ssd_offload=args.engram_ssd_offload,
     )
     load_seconds = time.monotonic() - started
     tokenizer = PreTrainedTokenizerFast(

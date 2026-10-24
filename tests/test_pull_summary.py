@@ -31,6 +31,10 @@ import pytest
 
 from rapid_mlx import cli
 from rapid_mlx.telemetry import track as track_module
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
@@ -66,6 +70,7 @@ def _hf_snapshot_layout(
     blob_dir.mkdir(parents=True, exist_ok=True)
     if already_cached:
         (blob_dir / blob_name).write_bytes(b"\x00" * 2048)
+    snapshot_tree(repo_root, revision)
     return cache_root, blob_dir
 
 
@@ -702,12 +707,13 @@ def test_pull_command_suppresses_mtp_runtime_asset_lifecycle(monkeypatch):
 
 
 def test_summary_printed_on_hf_success(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HF-fallback path prints ``Downloaded ... — <size> in <duration>``."""
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         "mlx-community/Qwen3-0.6B-4bit", revision, tmp_path, already_cached=False
     )
@@ -741,6 +747,7 @@ def test_summary_printed_on_hf_success(
 
 
 def test_hf_cached_fallback_reports_verified(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -753,7 +760,7 @@ def test_hf_cached_fallback_reports_verified(
     huggingface_hub tqdm-progress internals): a warm, fully-cached pull leaves
     ``blobs/`` untouched, so before == after and it reports verified.
     """
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         "mlx-community/Qwen3-0.6B-4bit", revision, tmp_path, already_cached=True
     )
@@ -779,6 +786,7 @@ def test_hf_cached_fallback_reports_verified(
 
 
 def test_partial_mirror_fetch_combines_into_fallback_verdict(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -794,7 +802,7 @@ def test_partial_mirror_fetch_combines_into_fallback_verdict(
     transfer state must therefore be OR'd in: bytes did cross the wire this
     invocation, so the summary says ``Downloaded``.
     """
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         "mlx-community/Qwen3-0.6B-4bit", revision, tmp_path, already_cached=True
     )
@@ -828,6 +836,7 @@ def test_partial_mirror_fetch_combines_into_fallback_verdict(
 
 
 def test_hf_fetch_zero_byte_file_counts_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -843,7 +852,7 @@ def test_hf_fetch_zero_byte_file_counts_as_download(
     otherwise an empty pre-pull fingerprint already forces ``_was_cached = False``
     and the test would pass without ever exercising the blob transition.
     """
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         "mlx-community/Qwen3-0.6B-4bit", revision, tmp_path, already_cached=True
     )
@@ -870,13 +879,14 @@ def test_hf_fetch_zero_byte_file_counts_as_download(
 
 
 def test_hf_fallback_transfers_bytes_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real HF-fallback transfer is a download: the blob inventory changes
     across the pull (a new blob appears), so before != after -> Downloaded."""
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         "mlx-community/Qwen3-0.6B-4bit", revision, tmp_path, already_cached=False
     )
@@ -900,11 +910,13 @@ def test_hf_fallback_transfers_bytes_as_download(
     assert "Already cached" not in out, out
 
 
-def test_hf_fallback_event_is_labelled_hf(monkeypatch, tmp_path) -> None:
+def test_hf_fallback_event_is_labelled_hf(
+    hub_online_env, monkeypatch, tmp_path
+) -> None:
     from rapid_mlx.telemetry import model_events
 
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root, blob_dir = _hf_snapshot_layout(
         repo_id, revision, tmp_path, already_cached=False
     )
@@ -961,6 +973,7 @@ def test_runtime_asset_pull_suppresses_unpaired_failure_event(monkeypatch):
 
 
 def test_summary_printed_on_mirror_success(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1006,6 +1019,7 @@ def test_summary_printed_on_mirror_success(
 
 
 def test_cached_pull_reports_verified_not_downloaded(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1018,7 +1032,7 @@ def test_cached_pull_reports_verified_not_downloaded(
     fetched bytes; an already-complete snapshot reports the cache was reused.
     """
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
-    revision = "abc123" * 6
+    revision = "a" * 40
     cache_root = tmp_path / "hub"
     repo_root = cache_root / "models--mlx-community--Qwen3-0.6B-4bit"
     refs_dir = repo_root / "refs"
@@ -1050,6 +1064,7 @@ def test_cached_pull_reports_verified_not_downloaded(
 
 
 def test_moved_main_reported_as_download(
+    hub_online_env,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1064,8 +1079,8 @@ def test_moved_main_reported_as_download(
     ``out["transferred_bytes"]``; the pull is reported as a download.
     """
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
-    stale_rev = "aaaaaa" * 6
-    head_rev = "bbbbbb" * 6
+    stale_rev = "a" * 40
+    head_rev = "b" * 40
     cache_root = tmp_path / "hub"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 

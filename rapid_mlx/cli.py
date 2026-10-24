@@ -9674,6 +9674,18 @@ def _cache_entry_is_runnable(repo: str) -> bool:
     return _cache_runnability(repo) is True
 
 
+def _cached_repository_is_runnable(repo: str) -> bool:
+    """Probe a scanned repository without interpreting its name as an alias."""
+    from rapid_mlx.model_aliases import (
+        cached_repository_collides,
+        cached_repository_launch_path,
+    )
+
+    if cached_repository_collides(repo):
+        return cached_repository_launch_path(repo, external=False) is not None
+    return _cache_entry_is_runnable(repo)
+
+
 def _print_cached_models() -> None:
     """Render the ``--cached`` view: locally-downloaded HF cache entries
     cross-referenced against the alias registry.
@@ -9693,7 +9705,9 @@ def _print_cached_models() -> None:
     # incomplete same-named hub row alongside the external copy: it is a real,
     # independently removable cache entry, and hiding it makes `rm <repo>` look
     # like it targets the read-only external row.
-    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
+    runnable_hub_repos = {
+        repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
+    }
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
     tagged_rows = [(*row, False) for row in rows] + [
         (*row, True) for row in external_rows
@@ -9757,7 +9771,7 @@ def _print_cached_models() -> None:
         # desktop joins those to its audio registry by HF id, so leaving a
         # partial row as `(unmapped)` gives it a green checkmark and Start.
         # The desktop deliberately rejects `(incomplete)` status rows.
-        elif not _cache_entry_is_runnable(repo):
+        elif not _cached_repository_is_runnable(repo):
             alias = "(incomplete)"
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:
@@ -9955,7 +9969,9 @@ def _recipe_free_disk_gb() -> float | None:
         return None
 
 
-def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
+def _cached_subfolder_size(
+    repo_id: str, subfolder: str, *, catalog_alias: str | None = None
+) -> int | None:
     """Logical bytes for one complete checkpoint subfolder in the pinned cache.
 
     A Hub repo can retain several independently runnable quantizations. The
@@ -9977,9 +9993,9 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
         return None
     from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
-    revision = resolve_revision(repo_id)
+    revision = resolve_revision(catalog_alias or repo_id)
     if revision is not None:
-        repo_id = resolve_hub_model(repo_id)
+        repo_id = resolve_hub_model(catalog_alias or repo_id)
     repo_root = os.path.join(
         HF_HUB_CACHE,
         f"models--{repo_id.replace('/', '--')}",
@@ -10015,32 +10031,73 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
 def _cached_models_json_payload() -> dict:
     """Structured form of the ``models --cached`` view — the same rows the
     text table renders, with stable keys instead of fixed-width columns.
+    Also retain certified external collision fallbacks with explicit paths.
 
     Sizes are raw bytes; ``subfolder`` is the exact catalog checkpoint folder
     for mapped aliases (``None`` means repository root); ``state`` is one of
     ``ok`` / ``unmapped`` /
     ``incomplete`` / ``external`` mirroring the alias column's parenthesized
     tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
-    launchable by alias). Sorted biggest-first, like the table.
+    launchable by alias). Sorted biggest-first, like the table. ``chat_ready``
+    is the shared discovery verdict for a root checkpoint addressable by this
+    row's repo/alias, including memory fit. Unjudged artifacts have a null
+    verdict; false rejects a judged root. Neither is positive chat evidence.
+    The optional chat fit/native fields let Desktop rank uncataloged choices
+    without repeating checkpoint inspection or guessing size from repo names.
     """
     import time as _time
 
-    from rapid_mlx.model_aliases import list_profiles, resolve_subfolder
+    from rapid_mlx.local_models import discover_runnable_chat_models
+    from rapid_mlx.model_aliases import (
+        cached_repository_collides,
+        list_profiles,
+        resolve_subfolder,
+    )
 
+    chat_models = {
+        (
+            model.repo,
+            model.external,
+            resolve_subfolder(model.alias) if model.alias else None,
+        ): model
+        for model in discover_runnable_chat_models()
+        # Ordinary rows launch by repo; collision rows carry an explicit path.
+        # Other shadowed external copies cannot supply a repo launch verdict.
+        if model.model in (model.repo, model.alias)
+        or (model.alias is None and cached_repository_collides(model.repo))
+    }
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
-    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
-    external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
+    runnable_hub_repos = {
+        repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
+    }
 
     profiles = list_profiles()
+    representative_subfolders: dict[str, str | None] = {}
     repo_artifacts: dict[str, list[tuple[str, str | None]]] = {}
     for alias, p in profiles.items():
+        representative_subfolders.setdefault(p.hf_path, p.subfolder)
         artifact = (alias, p.subfolder)
         if artifact not in repo_artifacts.setdefault(p.hf_path, []):
             repo_artifacts[p.hf_path].append(artifact)
 
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
+    collision_paths = {
+        (model.repo, model.external): model.model
+        for model in chat_models.values()
+        if model.alias is None and cached_repository_collides(model.repo)
+    }
+    # Completeness is an inventory property, not chat certification. A
+    # rejected managed collision must not hide a certified external copy:
+    # its explicit path can launch independently of the managed snapshot.
+    tagged = [
+        row
+        for row in tagged
+        if not row[3]
+        or row[0] not in runnable_hub_repos
+        or (row[0], True) in collision_paths
+    ]
     models = []
     total_bytes = 0
     for repo, size, mtime, is_external in tagged:
@@ -10062,32 +10119,54 @@ def _cached_models_json_payload() -> dict:
                     # subfolder must not masquerade as its root artifact.
                     artifact_size = (
                         size
-                        if resolve_subfolder(repo) is None
-                        and _cache_entry_is_runnable(repo)
+                        if resolve_subfolder(alias) is None
+                        and _cached_repository_is_runnable(repo)
                         else None
                     )
                 else:
-                    artifact_size = _cached_subfolder_size(repo, subfolder)
+                    # The alias came from an exact repo match above. Do not
+                    # let a colliding repo name choose a different pin.
+                    artifact_size = (
+                        _cached_subfolder_size(repo, subfolder, catalog_alias=alias)
+                        if cached_repository_collides(repo)
+                        else _cached_subfolder_size(repo, subfolder)
+                    )
                 if artifact_size is not None:
                     artifacts.append((alias, subfolder, artifact_size, "ok"))
                     seen_artifacts.add(key)
             if not artifacts:
-                state = "unmapped" if _cache_entry_is_runnable(repo) else "incomplete"
+                state = (
+                    "unmapped" if _cached_repository_is_runnable(repo) else "incomplete"
+                )
                 artifacts = [(None, None, size, state)]
 
         for alias, subfolder, artifact_size, state in artifacts:
+            chat = chat_models.get((repo, is_external, subfolder))
+            # Discovery judges repo-level resolution, not every sibling
+            # checkpoint in a multi-artifact catalog repository.
+            chat_ready = (
+                (chat is not None and state != "incomplete")
+                if subfolder is None and representative_subfolders.get(repo) is None
+                else None
+            )
             models.append(
                 {
                     "alias": alias,
+                    "launch_path": collision_paths.get((repo, is_external)),
                     "repo": repo,
                     "subfolder": subfolder,
                     "size_bytes": int(artifact_size),
-                    "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
                     "age_seconds": int(max(0, now - mtime))
                     if mtime and mtime > 0
                     else None,
                     "state": state,
                     "external": is_external,
+                    "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
+                    "chat_ready": chat_ready,
+                    "chat_fit": chat.fit if chat is not None and chat_ready else None,
+                    "chat_mlx_native": chat.mlx_native
+                    if chat is not None and chat_ready
+                    else None,
                 }
             )
     models.sort(key=lambda m: -m["size_bytes"])
@@ -11262,8 +11341,9 @@ def _pull_repository(
         verify_snapshot(
             repo_id,
             snapshot_dir,
-            revision=revision_override,
+            revision=revision_override or snapshot_dir.name,
             allow_patterns=integrity_allow,
+            local_files_only=_offline_hub_mode_active(),
         )
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
@@ -11373,7 +11453,11 @@ def _pull_repository(
             lambda: snapshot_download(repo_id, **download_kwargs), repo_id
         )
         verify_snapshot(
-            repo_id, path, revision=revision_override, allow_patterns=_allow
+            repo_id,
+            path,
+            revision=revision_override,
+            allow_patterns=_allow,
+            local_files_only=_offline_hub_mode_active(),
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched

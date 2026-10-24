@@ -231,6 +231,9 @@ class TestMergifyMetadata:
 
         monkeypatch.setattr(fetch_mod.shutil, "which", lambda _name: "/usr/bin/gh")
         monkeypatch.setattr(fetch_mod, "_gh", fake_gh)
+        monkeypatch.setattr(
+            fetch_mod, "_local_changed_files", lambda _ctx: ["tests/test_example.py"]
+        )
         ctx.base_override = meta["baseRefOid"]
 
         result = FetchStep().run(ctx)
@@ -239,3 +242,77 @@ class TestMergifyMetadata:
         assert ctx.pr_author == author
         assert ctx.head_branch == "mergify/merge-queue/867c6127d0"
         assert ctx.is_mergify_merge_candidate is True
+
+
+def metadata(ctx):
+    return {
+        "headRefOid": ctx.head_sha,
+        "baseRefOid": ctx.base_sha,
+        "state": "OPEN",
+        "files": [{"path": "truncated.py"}],
+    }
+
+
+def mock_gh(monkeypatch, meta, *, capped=False):
+    def gh(command):
+        if command.startswith("pr view"):
+            assert "files" not in command
+            return json.dumps(meta)
+        if capped:
+            raise subprocess.CalledProcessError(1, command, stderr="HTTP 406")
+        return "a complete remote diff"
+
+    monkeypatch.setattr(fetch_mod, "_gh", gh)
+    monkeypatch.setattr(fetch_mod.shutil, "which", lambda _: "gh")
+
+
+@pytest.mark.parametrize("capped", [False, True])
+def test_complete_inventory_with_unusual_paths(ctx, monkeypatch, capped):
+    repo = ctx.repo_root
+    _make_branched_repo(repo)
+    (repo / "old.py").write_text("rename me\n")
+    (repo / "deleted.py").write_text("delete me\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "original files")
+    ctx.base_override = ctx.base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "old.py").rename(repo / "renamed.py")
+    (repo / "deleted.py").unlink()
+    names = [f"file{i:03}.py" for i in range(156)] + [
+        "tab\tname.py",
+        "line\nname.py",
+        "日本語.py",
+    ]
+    for name in names:
+        (repo / name).write_text("content\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "many changes")
+    ctx.head_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    mock_gh(monkeypatch, metadata(ctx), capped=capped)
+    result = fetch_mod.FetchStep().run(ctx)
+    assert result.status == "pass"
+    assert ctx.files_changed == sorted(names + ["renamed.py", "deleted.py"])
+
+
+@pytest.mark.parametrize("failure", ["missing", "git", "executable", "encoding"])
+def test_inventory_failure_is_closed(ctx, monkeypatch, failure):
+    ctx.base_override = ctx.base_sha = "a" * 40
+    ctx.head_sha = "b" * 40 if failure != "missing" else ""
+    mock_gh(monkeypatch, metadata(ctx))
+    if failure in {"executable", "encoding"}:
+
+        def unavailable(*args, **kwargs):
+            if failure == "encoding":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(fetch_mod.subprocess, "run", unavailable)
+    result = fetch_mod.FetchStep().run(ctx)
+    assert result.status == "error"
+    assert "complete local PR file list" in result.summary
+    assert ctx.files_changed == []
+
+
+def test_local_diff_failure_returns_controlled_result(ctx):
+    ctx.base_sha = "a" * 40
+    ctx.head_sha = "b" * 40
+    assert fetch_mod._local_git_diff(ctx) == (None, None)

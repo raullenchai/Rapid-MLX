@@ -52,6 +52,12 @@ assert_debug_map_removed() {
 # build by the caller.
 ENGINE_ROOT="${RAPID_MLX_ENGINE_ROOT:-$(cd "$ROOT/../.." && pwd)}"
 SKIP_SIDECAR="${SKIP_SIDECAR:-0}"
+# Full-app updates migrate legacy slim installs without trusting or deleting
+# their writable runtime. A distributable app must carry its replacement engine.
+if [[ "$SKIP_SIDECAR" == "1" && ( "${RAPID_MLX_OFFICIAL_RELEASE:-0}" == "1" || "${CODESIGN_IDENTITY:--}" != "-" ) ]]; then
+    echo "ERR: signed releases require a bundled engine; SKIP_SIDECAR is for local development only." >&2
+    exit 1
+fi
 SIDECAR_SCRIPT="${RAPID_SIDECAR_SCRIPT:-$ROOT/scripts/build-sidecar.sh}"
 SIDECAR_STAGE="${RAPID_SIDECAR_STAGE:-$ROOT/build/sidecar-stage}"
 SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"

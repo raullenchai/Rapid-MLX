@@ -692,7 +692,9 @@ enum CacheAwareDefault {
         bucketedDefault: String,
         excludedAliases: Set<String> = retiredAutomaticAliases
     ) -> String? {
-        let eligibleCatalog = catalog.filter { !excludedAliases.contains($0.alias) }
+        let eligibleCatalog = catalog.filter {
+            !excludedAliases.contains($0.alias) && ModelSelectionPurpose.chat.accepts($0)
+        }
         let bucketedEntry = eligibleCatalog.first(where: { $0.alias == bucketedDefault })
         // The RAM-tier primary is trusted to fit even when ModelSizing's
         // heuristic over-states it (it scores the real-7.6 GB
@@ -730,12 +732,29 @@ enum CacheAwareDefault {
         // quant doesn't phantom-classify as small and land us in an
         // OOM (codex r3 on #165).
         let cachedCandidates = eligibleCatalog
-            .filter { $0.cached }
+            .filter { $0.cached && !$0.isUncataloged }
             .filter { ModelSizing.estimate(alias: $0.alias).paramsBillions != nil }
             .filter { isSafe($0, on: hardware) }
         if let pick = preferredCachedAlias(cachedCandidates, on: hardware) {
             return pick
         }
+
+        // Prefer a certified uncataloged root before downloading. The engine
+        // handles memory fit even for names without parameter counts.
+        let discovered = eligibleCatalog.filter {
+            $0.cached && $0.isUncataloged && $0.cachedChatDiscovery?.ready == true
+                && ["yes", "tight"].contains($0.cachedChatDiscovery?.fit ?? "")
+        }.sorted {
+            let left = $0.cachedChatDiscovery!
+            let right = $1.cachedChatDiscovery!
+            if left.fit != right.fit { return left.fit == "yes" }
+            if left.mlxNative != right.mlxNative { return left.mlxNative }
+            if left.modifiedEpoch != right.modifiedEpoch {
+                return left.modifiedEpoch > right.modifiedEpoch
+            }
+            return $0.alias < $1.alias
+        }
+        if let entry = discovered.first { return entry.alias }
 
         // Step 3: nothing cached fits, but the canonical pick still
         // runs on this Mac → legacy bucketed-default branch.

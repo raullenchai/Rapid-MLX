@@ -1012,3 +1012,55 @@ def test_isolated_controller_ignores_checkout_import_shadowing(tmp_path):
     assert result.returncode == 0, result.stderr
     workflow = (root / ".github/workflows/merge-on-green.yml").read_text()
     assert "python -I scripts/merge_on_green.py" in workflow
+
+
+def test_catalog_rename_requires_review():
+    api = ready()
+    api.data["pulls/1/files"] = [
+        {
+            "filename": "moved.json",
+            "previous_filename": "rapid_mlx/aliases.json",
+            "status": "renamed",
+        }
+    ]
+    api.data["pulls/1/reviews"] = []
+    assert "human maintainer approval" in m.catalog_review_gate(api, pull())
+
+
+@pytest.mark.parametrize("previous", ["draft.json", "rapid_mlx/audio/aliases.json"])
+def test_rename_into_catalog_uses_prior_path_and_requires_approval(previous):
+    value = {"model": {"hf_path": "org/model", "revision": SHA}}
+    api = catalog_pr(value, value)
+    api.data["pulls/1/files"][0].update(status="renamed", previous_filename=previous)
+    old = api.data.pop(f"contents/rapid_mlx/aliases.json?ref={'b' * 40}")
+    api.data[f"contents/{previous}?ref={'b' * 40}"] = old
+    assert "human maintainer approval" in m.catalog_review_gate(api, pull())
+    api.data["pulls/1/reviews"] = [approval()]
+    api.data["collaborators/maintainer/permission"] = {"permission": "write"}
+    assert m.catalog_review_gate(api, pull()) == ""
+
+
+def test_rename_from_unprotected_file_cannot_grandfather_unpinned_identities():
+    value = {"model": {"hf_path": "org/model"}}
+    api = catalog_pr(value, value)
+    api.data["pulls/1/files"][0].update(
+        status="renamed", previous_filename="draft.json"
+    )
+    assert "Catalog identity policy" in m.catalog_review_gate(api, pull())
+
+
+def test_catalog_unavailable_encoding_fails_closed():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data[f"contents/rapid_mlx/aliases.json?ref={SHA}"]["encoding"] = "none"
+    assert "unavailable" in m.catalog_review_gate(api, pull())
+
+
+def test_human_change_request_blocks_even_with_another_approval():
+    api = catalog_pr({}, {"new": {"hf_path": "org/model", "revision": SHA}})
+    api.data["pulls/1/reviews"] = [
+        approval(),
+        approval(state="CHANGES_REQUESTED", login="second", identifier=2),
+    ]
+    for login in ("maintainer", "second"):
+        api.data[f"collaborators/{login}/permission"] = {"permission": "write"}
+    assert "outstanding human change requests" in m.catalog_review_gate(api, pull())

@@ -3585,22 +3585,73 @@ def test_generator_budget_forces_think_end_on_the_verify_row_and_rolls_back_draf
     assert budget._think_count == 1
 
 
-def test_quantized_argmax_matches_materialized_qlinear_logits():
-    """The fused greedy kernel must select the exact qlinear argmax."""
+@pytest.mark.parametrize("bits", [4, 5])
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16])
+@pytest.mark.parametrize("cancellation", [False, True])
+def test_quantized_argmax_matches_materialized_qlinear_logits(
+    monkeypatch, bits, dtype, cancellation
+):
+    """Check every tile's logits, and exact argmax outside rounding near-ties."""
+    import importlib
+
     import mlx.nn as nn
 
-    from rapid_mlx.spec_decode.mtp.quantized_argmax import quantized_argmax
+    qargmax = importlib.import_module("rapid_mlx.spec_decode.mtp.quantized_argmax")
+    make_kernel = qargmax._target_verify_qargmax_kernel
+    captured = []
 
+    def capture_kernel(*args):
+        kernel = make_kernel(*args)
+
+        def run_kernel(**kwargs):
+            outputs = kernel(**kwargs)
+            captured.append(outputs)
+            return outputs
+
+        return run_kernel
+
+    monkeypatch.setattr(qargmax, "_target_verify_qargmax_kernel", capture_kernel)
     dense = nn.Linear(1024, 4096, bias=False)
-    dense.set_dtype(mx.bfloat16)
-    head = nn.QuantizedLinear.from_linear(dense, group_size=64, bits=4)
-    hidden = mx.random.normal((1, 3, 1024)).astype(mx.bfloat16)
+    dense.set_dtype(dtype)
+    head = nn.QuantizedLinear.from_linear(dense, group_size=64, bits=bits)
+    hidden = mx.random.normal((1, 3, 1024)).astype(dtype)
+    if cancellation:
+        # The affine bias term needs a float sum of inputs. Adding in the
+        # input dtype loses the first 1 before cancellation, even though the
+        # exact sum (512) is representable. Exercise both packing formats.
+        large = 256 if dtype == mx.bfloat16 else 2048
+        hidden = mx.tile(mx.array([large, 1, -large, 1], dtype=dtype), 256)
+        hidden = mx.broadcast_to(hidden, (1, 3, 1024))
+        head.scales = mx.zeros_like(head.scales)
+        head.biases = mx.ones_like(head.biases)
 
-    fused = quantized_argmax(head, hidden)
-    reference = mx.argmax(head(hidden), axis=-1)
+    fused = qargmax.quantized_argmax(head, hidden)
     assert fused is not None
-    mx.eval(fused, reference)
-    assert fused.tolist() == reference.tolist()
+    logits = head(hidden).astype(mx.float32)
+    reference = mx.argmax(logits, axis=-1)
+    ((tile_values, tile_indices),) = captured
+
+    # The two matmuls accumulate in different orders before output rounding.
+    # One dtype relative spacing, scaled by each row's largest logit,
+    # bounds their numeric difference; random top-two logits can be closer
+    # than this (or tied). Exact token equality then is not a valid oracle.
+    epsilon = 2**-7 if dtype == mx.bfloat16 else 2**-10
+    tolerance = mx.max(mx.abs(logits), axis=-1, keepdims=True) * epsilon
+    tile_reference = mx.max(logits.reshape(1, 3, -1, 8), axis=-1)
+    selected_tile_logits = mx.take_along_axis(logits, tile_indices, axis=-1)
+    assert mx.all(mx.abs(tile_values - tile_reference) <= tolerance).item()
+    assert mx.all(mx.abs(tile_values - selected_tile_logits) <= tolerance).item()
+
+    # Even near ties must select a numerically maximal logit: never just skip
+    # those rows. With a margin > twice the error bound, the index must match.
+    selected = mx.take_along_axis(logits, fused[..., None], axis=-1)
+    top_two = mx.sort(logits, axis=-1)[..., -2:]
+    assert mx.all(top_two[..., -1:] - selected <= 2 * tolerance).item()
+    if cancellation:
+        assert mx.all(logits == 512).item()
+        assert mx.all(fused == 0).item()
+    stable = top_two[..., -1] - top_two[..., -2] > 2 * tolerance.squeeze(-1)
+    assert mx.all((~stable) | (fused == reference)).item()
 
 
 def test_generator_k3_restores_ssm_state_at_partial_accept_boundary(monkeypatch):

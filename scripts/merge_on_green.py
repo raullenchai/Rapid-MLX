@@ -205,7 +205,15 @@ def catalog_review_gate(api: GitHub, pr: dict) -> str:
                     raise ValueError(
                         "Catalog must be a regular Git blob, not a symlink"
                     )
-            before = {} if entry["status"] == "added" else read(pr["base"]["sha"])
+            renamed = entry["status"] == "renamed"
+            needs_review |= renamed
+            # A file entering the protected catalog set introduces new
+            # identities; unreviewed data cannot grandfather missing pins.
+            before = (
+                {}
+                if entry["status"] == "added" or (renamed and previous not in CATALOGS)
+                else read(pr["base"]["sha"], previous if renamed else path)
+            )
             after = {} if entry["status"] == "removed" else read(pr["head"]["sha"])
             changes, errors = catalog_changes(before, after, path)
             if errors:

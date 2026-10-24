@@ -22,6 +22,7 @@ one simdgroup, so its max is a shuffle reduction.
 from __future__ import annotations
 
 from functools import lru_cache
+from math import prod
 
 import mlx.core as mx
 
@@ -29,6 +30,9 @@ from . import fakequant
 from .fakequant import FP4_MAX, FP8_MAX
 from .layers import rope_tail
 from .kernels import custom_kernels_enabled
+from .self_check import SelfCheck
+
+_CHECK = SelfCheck("V4.1 rope + fake-quant")
 
 # Module switch: tests and A/B runs turn the kernel off to compare.
 ENABLED = True
@@ -170,8 +174,21 @@ def rope_fake_quant(
     """
     block, code, graph = FORMATS[fmt]
     out_dtype = out_dtype or x.dtype
-    if not supports(x, rd, cos, sin):
+    if not supports(x, rd, cos, sin) or not _CHECK.qualified(
+        (x.dtype, out_dtype, x.shape[1:], rd, fmt),
+        _probe,
+        x.shape[1:],
+        x.dtype,
+        rd,
+        fmt,
+        out_dtype,
+    ):
         return graph(rope_tail(x, rd, cos, sin), block).astype(out_dtype)
+    return _fused(x, rd, cos, sin, fmt, out_dtype)
+
+
+def _fused(x, rd, cos, sin, fmt, out_dtype, *, sequence=None):
+    block, code, _ = FORMATS[fmt]
     max_inv = 1.0 / (FP8_MAX if code == 0 else FP4_MAX)
     return _kernel()(
         inputs=[x, cos, sin, _scalar(max_inv)],
@@ -180,7 +197,7 @@ def rope_fake_quant(
             ("OT", out_dtype),
             ("D", x.shape[-1]),
             ("H", x.shape[2] if x.ndim == 4 else 1),
-            ("S", x.shape[1]),
+            ("S", x.shape[1] if sequence is None else sequence),
             ("RD", rd),
             ("BLK", block),
             ("FMT", code),
@@ -190,3 +207,23 @@ def rope_fake_quant(
         output_shapes=[x.shape],
         output_dtypes=[out_dtype],
     )[0]
+
+
+def _probe(shape, dtype, rd, fmt, out_dtype):
+    # Concrete arrays, independent of request values and compiled placeholders.
+    # The launch grid is x.size, NOT S * H * D. With one batch and at most
+    # two rows, e < rows*H*D and s=(e/(D*H))%S < rows; all x/out/cos/sin
+    # accesses remain in bounds even when the compiled S is much larger.
+    sequence = shape[0]
+    shape = (min(sequence, 2), *shape[1:])
+    x = mx.sin(mx.arange(prod(shape), dtype=mx.float32))
+    x = (x.reshape(1, *shape) * 7.0).astype(dtype)
+    angle = (
+        mx.arange(shape[0] * rd // 2, dtype=mx.float32).reshape(shape[0], rd // 2)
+        * 0.17
+    )
+    cos, sin = mx.cos(angle), mx.sin(angle)
+    block, _, graph = FORMATS[fmt]
+    expected = graph(rope_tail(x, rd, cos, sin), block).astype(out_dtype)
+    actual = _fused(x, rd, cos, sin, fmt, out_dtype, sequence=sequence)
+    return mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()

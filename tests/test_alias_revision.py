@@ -12,6 +12,10 @@ import pytest
 from rapid_mlx import _download_gate as gate
 from rapid_mlx import cli, model_downloads, model_metadata
 from rapid_mlx import model_aliases as aliases
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 PIN = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
 OTHER = "a" * 40
@@ -387,7 +391,7 @@ def test_ensure_pin_survives_metadata_failure_and_download_failure(monkeypatch, 
 @pytest.mark.parametrize("mirror_ok", [True, False])
 @pytest.mark.parametrize("name,pin", [(ALIAS, PIN), (UNPINNED, None)])
 def test_pull_uses_revision_override_in_existing_pipeline(
-    monkeypatch, tmp_path, mirror_ok, name, pin
+    hub_online_env, monkeypatch, tmp_path, mirror_ok, name, pin
 ):
     import huggingface_hub
 
@@ -400,14 +404,21 @@ def test_pull_uses_revision_override_in_existing_pipeline(
         "rapid_mlx._version_check.print_staleness_warning_if_any", lambda: None
     )
     mirror = Mock(return_value=mirror_ok)
-    hf = Mock(return_value=str(tmp_path))
+    repo = aliases.resolve_hub_model(name)
+    repo_root = tmp_path / "hub" / f"models--{repo.replace('/', '--')}"
+    snapshot = snapshot_tree(repo_root, pin or OTHER)
+    if pin is None:
+        (repo_root / "refs").mkdir()
+        (repo_root / "refs" / "main").write_text(OTHER)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(repo_root.parent))
+    hf = Mock(return_value=str(snapshot))
     monkeypatch.setattr(_mirror, "download_with_mirror_fallback", mirror)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", hf)
     cli.pull_command(SimpleNamespace(model=name, bits=None, format=None, json=True))
     assert mirror.call_args.kwargs.get("revision") == pin
     if not mirror_ok:
         assert hf.call_args.kwargs.get("revision") == pin
-    assert (tmp_path / "refs" / "main").exists() is False
+    assert (repo_root / "refs" / "main").exists() is (pin is None)
 
 
 def test_metadata_and_variant_probes_use_pin(monkeypatch, cache, pinned_name):

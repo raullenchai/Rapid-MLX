@@ -750,7 +750,7 @@ struct AtomicModelCatalogTests {
 
         let structured = ModelCatalog.mergeAtomicAndCached(
             atomic: [subA, subASibling, subB],
-            cached: [("sub-a", "org/shared", "a", "1 GiB")],
+            cached: [("sub-a", "org/shared", "a", "1 GiB", nil)],
             excluded: []
         )
         #expect(structured.first { $0.alias == "sub-a" }?.cached == true)
@@ -796,4 +796,155 @@ struct AtomicModelCatalogTests {
             #"{"cached":[{"alias":"nested-4bit","repo":"org/multi-quant","subfolder":"4bit","size_bytes":true,"state":"ok","external":false}]}"#
         ) == nil)
     }
+    @Test("uncataloged discovery admits only ready roots and preserves external ownership")
+    @MainActor
+    func uncatalogedDiscovery() throws {
+        let rows = try #require(ModelCatalog.parseCachedJSON(#"""
+        {"cached":[
+          {"alias":null,"repo":"org/Local-Chat","subfolder":null,"size_bytes":2048,"state":"unmapped","external":false,"chat_ready":true,"chat_fit":"yes","chat_mlx_native":true,"modified_epoch":42},
+          {"alias":null,"repo":"org/External-Chat","subfolder":null,"size_bytes":2048,"state":"external","external":true,"chat_ready":true,"chat_fit":"tight"},
+          {"alias":null,"repo":"org/Image","subfolder":null,"size_bytes":2048,"state":"external","external":true,"chat_ready":false},
+          {"alias":null,"repo":"org/Unknown","subfolder":null,"size_bytes":2048,"state":"unmapped","external":false},
+          {"alias":null,"repo":"org/Legacy","subfolder":null,"size_bytes":2048,"state":"external","external":true}
+        ]}
+        """#))
+        for entries in [
+            ModelCatalog.mergeAtomicAndCached(atomic: [], cached: rows, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(available: [], cached: rows, excluded: [])
+        ] {
+            #expect(Set(entries.map(\.alias)) == ["org/Local-Chat", "org/External-Chat", "org/Image", "org/Legacy"])
+            let local = try #require(entries.first { $0.alias == "org/Local-Chat" })
+            #expect(local.isUncataloged && local.cached && !local.isExternal)
+            #expect(local.cachedChatDiscovery?.modifiedEpoch == 42)
+            #expect(QuickstartView.choice(forCachedModel: local).blurb.contains("not catalog-tested"))
+            #expect(entries.first { $0.alias == "org/External-Chat" }?.isExternal == true)
+            #expect(entries.first { $0.alias == "org/Legacy" }?.cachedChatDiscovery == nil)
+            let nonChat = try #require(entries.first { $0.alias == "org/Image" })
+            #expect(nonChat.cached && nonChat.isExternal)
+            // Keep the existing inventory capability classification and row;
+            // the selection purpose owns chat eligibility independently.
+            #expect(nonChat.supports(.chat))
+            #expect(!ModelSelectionPurpose.chat.accepts(nonChat))
+            #expect(!QuickstartView.quickstartCachedModels(entries).contains(nonChat))
+            #expect(!QuickstartView.onboardingCatalogModels(entries).contains(nonChat))
+            #expect(!SessionModelRestore.shouldPersistChatAlias(catalogEntry: nonChat))
+            #expect(SessionModelRestore.resolve(
+                legacyLastAlias: nonChat.alias, dictationAlias: nil,
+                speechAlias: nil, catalog: entries
+            ).chatAlias == nil)
+            #expect(ModelSelectionPurpose.chat.accepts(try #require(entries.first { $0.alias == "org/Legacy" })))
+        }
+        let catalog = [ModelEntry(alias: "known", hfRepo: "org/Local-Chat", sizeOnDisk: nil, cached: false)]
+        let merged = ModelCatalog.mergeAtomicAndCached(atomic: catalog, cached: rows, excluded: ["org/External-Chat"])
+        #expect(merged.first { $0.alias == "known" }?.cached == true)
+        #expect(!merged.contains { $0.alias == "org/Local-Chat" })
+        #expect(!merged.contains { $0.alias == "org/External-Chat" })
+    }
+
+    @Test("discovery never removes or reclassifies a catalog alias matching its repo", arguments: [false, true])
+    func discoveryPreservesCatalogProvenance(ready: Bool) {
+        let catalogEntry = ModelEntry(
+            alias: "local-chat", hfRepo: "local-chat", sizeOnDisk: nil, cached: false
+        )
+        let discovery = CachedChatDiscovery(
+            ready: ready, fit: "yes", mlxNative: true, modifiedEpoch: 42
+        )
+        for status in ["(unmapped)", "(external)"] {
+            let cached: [CachedModelInventoryEntry] = [
+                (status, "local-chat", nil, "1 GiB", discovery, nil)
+            ]
+            for entries in [
+                ModelCatalog.mergeAtomicAndCached(atomic: [catalogEntry], cached: cached, excluded: []),
+                ModelCatalog.mergeAvailableAndCached(available: [("local-chat", "local-chat")], cached: cached, excluded: [])
+            ] {
+                #expect(entries.count == 1)
+                #expect(entries.first?.alias == "local-chat")
+                #expect(entries.first?.hfRepo == "local-chat")
+                #expect(entries.first?.isUncataloged == false)
+                #expect(entries.first?.cachedChatDiscovery == discovery)
+            }
+        }
+    }
+
+    @Test("catalog verdicts match exact repository and subfolder", arguments: [false, true])
+    @MainActor
+    func catalogDiscoveryIdentity(ready: Bool) throws {
+        let discovery = CachedChatDiscovery(
+            ready: ready, fit: "yes", mlxNative: true, modifiedEpoch: 42
+        )
+        let root = ModelEntry(alias: "root", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false)
+        let sibling = ModelEntry(alias: "sibling", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false)
+        let nested = ModelEntry(
+            alias: "nested", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false,
+            sourceSubfolder: "int4"
+        )
+        let other = ModelEntry(alias: "other", hfRepo: "org/Other", sizeOnDisk: nil, cached: false)
+        for subfolder: String? in [nil, "int4"] {
+            let rows: [CachedModelInventoryEntry] = [
+                (subfolder == nil ? "root" : "nested", "org/Chat", subfolder, "1 GiB", discovery, nil)
+            ]
+            let entries = ModelCatalog.mergeAtomicAndCached(
+                atomic: [root, sibling, nested, other], cached: rows, excluded: []
+            )
+            #expect(entries.count == 4)
+            for entry in entries {
+                let matches = entry.hfRepo == "org/Chat" && entry.sourceSubfolder == subfolder
+                #expect(entry.cachedChatDiscovery == (matches ? discovery : nil))
+                #expect(!entry.isUncataloged)
+                #expect(ModelSelectionPurpose.chat.accepts(entry) == (!matches || ready))
+            }
+        }
+        let rows: [CachedModelInventoryEntry] = [("root", "org/Chat", nil, "1 GiB", discovery, nil)]
+        for entries in [
+            ModelCatalog.mergeAtomicAndCached(atomic: [root], cached: rows, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(available: [("root", "org/Chat")], cached: rows, excluded: [])
+        ] {
+            let entry = try #require(entries.first)
+            #expect(entry.cachedChatDiscovery == discovery)
+            #expect(!entry.isUncataloged)
+            #expect(QuickstartView.quickstartCachedModels(entries).contains(entry) == ready)
+            #expect(SessionModelRestore.shouldPersistChatAlias(catalogEntry: entry) == ready)
+            #expect(SessionModelRestore.resolve(
+                legacyLastAlias: "root", dictationAlias: nil, speechAlias: nil, catalog: entries
+            ).chatAlias == (ready ? "root" : nil))
+        }
+        let legacy: [CachedModelInventoryEntry] = [("root", "org/Chat", nil, "1 GiB", nil, nil)]
+        let entry = try #require(ModelCatalog.mergeAtomicAndCached(
+            atomic: [root], cached: legacy, excluded: []
+        ).first)
+        #expect(entry.cachedChatDiscovery == nil)
+        #expect(ModelSelectionPurpose.chat.accepts(entry))
+    }
+
+    @MainActor
+    @Test("Unknown subfolder verdict preserves catalog selection")
+    func unknownSubfolderVerdict() throws {
+        let rows = try #require(ModelCatalog.parseCachedJSON(#"""
+        {"cached":[
+          {"alias":"root","repo":"org/Chat","subfolder":null,"size_bytes":2048,"state":"ok","external":false,"chat_ready":false},
+          {"alias":"nested","repo":"org/Chat","subfolder":"int4","size_bytes":1024,"state":"ok","external":false,"chat_ready":null,"chat_fit":null,"chat_mlx_native":null}
+        ]}
+        """#))
+        let root = ModelEntry(alias: "root", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false)
+        let nested = ModelEntry(
+            alias: "nested", hfRepo: "org/Chat", sizeOnDisk: nil, cached: false,
+            sourceSubfolder: "int4"
+        )
+        for entries in [
+            ModelCatalog.mergeAtomicAndCached(atomic: [root, nested], cached: rows, excluded: []),
+            ModelCatalog.mergeAvailableAndCached(
+                available: [("root", "org/Chat"), ("nested", "org/Chat")], cached: rows, excluded: []
+            )
+        ] {
+            let selected = try #require(entries.first { $0.alias == "nested" })
+            let rejected = try #require(entries.first { $0.alias == "root" })
+            #expect(selected.cachedChatDiscovery == nil)
+            #expect(selected.sourceSubfolder == "int4")
+            #expect(ModelSelectionPurpose.chat.accepts(selected))
+            #expect(QuickstartView.quickstartCachedModels(entries).contains(selected))
+            #expect(SessionModelRestore.shouldPersistChatAlias(catalogEntry: selected))
+            #expect(!ModelSelectionPurpose.chat.accepts(rejected))
+        }
+    }
+
 }
