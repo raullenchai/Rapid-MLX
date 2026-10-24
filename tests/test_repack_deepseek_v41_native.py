@@ -173,3 +173,15 @@ def test_generated_model_card_refuses_unqualified_publication(tmp_path: Path) ->
     assert "not product-qualified" in card
     assert "must not be published or cataloged" in card
     assert "336 of 384" in card
+
+
+def test_metadata_copy_uses_shared_allowlist(tmp_path):
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    expected = {"LICENSE": b"fixture license", "tokenizer.json": b"{}"}
+    for name, value in expected.items():
+        (source / name).write_bytes(value)
+    (source / "unrelated.py").write_text("must not copy")
+    repack._copy_metadata_files(source, destination)
+    assert {p.name: p.read_bytes() for p in destination.iterdir()} == expected

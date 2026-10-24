@@ -557,3 +557,102 @@ def test_dense_fixed_affine_policy_is_preserved(source, monkeypatch, tmp_path):
         _, packed, _ = b.prepare_attention(source, 0, c, block, [], tmp_path, guard)
     assert "attn.wq_a" not in packed
     assert not isinstance(block.attn.wq_a, b.Probe)
+
+
+def test_candidate_mask_estimate_matches_serialized_boolean_payload(source, tmp_path):
+    from copy import copy
+
+    from rapid_mlx.models.deepseek_v41_native.indexer import select_candidate_blocks
+    from scripts.deepseek_v41_gptq_io import read_header, save_state, state_snapshot
+
+    args = source.args
+    c = b.recipe({"prefill_chunk": 3})
+    lengths = [7]
+    layer = args.candidate_source_layer
+    ratio = args.compress_ratio(layer)
+    without = copy(args)
+    without.candidate_source_layer = -1
+    estimate = b.boundary_estimate(args, lengths, layer, c) - b.boundary_estimate(
+        without, lengths, layer, c
+    )
+    masks = []
+    for start in range(0, lengths[0], c["prefill_chunk"]):
+        end = min(lengths[0], start + c["prefill_chunk"])
+        scores = mx.zeros((1, end - start, end // ratio))
+        lens = mx.arange(start + 1, end + 1)[:, None] // ratio
+        mask = select_candidate_blocks(
+            scores, lens, args.candidate_topk_blocks, args.candidate_block_size
+        )
+        assert mask.dtype == mx.bool_
+        masks.append(mask)
+    path = tmp_path / "candidate-state"
+    save_state(path, {"candidates": masks})
+    header = json.loads(read_header(state_snapshot(path)[1])[8:])
+    payload = sum(
+        v["data_offsets"][1] - v["data_offsets"][0]
+        for k, v in header.items()
+        if k != "__metadata__"
+    )
+    assert payload == estimate
+    assert all(v["dtype"] == "BOOL" for k, v in header.items() if k != "__metadata__")
+
+
+def test_ffn_restart_inputs_are_durable_before_checkpoint(
+    source, tmp_path, monkeypatch
+):
+    import os
+
+    parts, scratch = tmp_path / "parts", tmp_path / "scratch"
+    c = b.recipe({"prefill_chunk": 2, "ffn_chunk": 2})
+    synced = set()
+    real_sync, real_atomic = os.fsync, b.atomic_json
+
+    def sync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        real_sync(fd)
+
+    def atomic(path, value):
+        if path.name == "checkpoint.json" and value.get("phase") == "ffn":
+            work = scratch / "working-0"
+            for name in (
+                "attention-quantized.safetensors",
+                "x.bin",
+                "ids.bin",
+                "gates.bin",
+            ):
+                assert (work / name).stat().st_ino in synced
+            assert work.stat().st_ino in synced
+        return real_atomic(path, value)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(b, "atomic_json", atomic)
+    with b.MemoryGuard(c) as guard:
+        b.initialize(
+            source,
+            c,
+            [np.array([1, 2], np.int32)],
+            scratch,
+            parts,
+            "cal",
+            guard,
+            token_map=list(range(32)),
+        )
+        b.run_layer(source, c, parts, scratch, 0, guard)
+    assert (parts / "layer-0-complete.json").exists()
+
+
+def test_copied_metadata_is_bound_to_inventory(source, tmp_path):
+    from scripts.deepseek_v41_gptq_io import copy_bound_metadata
+
+    (source.source / "tokenizer.json").write_text('{"version":1}')
+    (source.source / "LICENSE").write_text("fixture license")
+    bound = PartialSource(source.source, inventory(source.source))
+    destination = tmp_path / "out"
+    destination.mkdir()
+    copy_bound_metadata(bound, destination)
+    assert (destination / "tokenizer.json").read_bytes() == (
+        source.source / "tokenizer.json"
+    ).read_bytes()
+    (source.source / "tokenizer.json").write_text('{"version":2}')
+    with pytest.raises(ValueError, match="metadata identity"):
+        copy_bound_metadata(bound, destination)

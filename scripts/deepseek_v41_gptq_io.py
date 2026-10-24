@@ -22,7 +22,11 @@ from scripts.deepseek_v41_gptq_fullrun import sync_parent
 from scripts.deepseek_v41_rd_build import header
 from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash
 from scripts.deepseek_v41_streaming_teacher import SourceWeights
-from scripts.repack_deepseek_v41_native import CheckpointIndex, SourceTensor
+from scripts.repack_deepseek_v41_native import (
+    METADATA_FILES,
+    CheckpointIndex,
+    SourceTensor,
+)
 
 
 def digest(value):
@@ -77,10 +81,34 @@ def copy_verified(source, destination, expected_hash):
         os.fsync(stream.fileno())
 
 
+def metadata_hashes(source):
+    return {
+        name: file_hash(Path(source) / name)
+        for name in sorted(METADATA_FILES)
+        if (Path(source) / name).is_file()
+    }
+
+
+def copy_bound_metadata(source, destination):
+    expected = source.manifest["metadata_sha256"]
+    if metadata_hashes(source.source) != expected:
+        raise ValueError("source metadata identity mismatch")
+    for name, checksum in expected.items():
+        copy_verified(source.source / name, destination / name, checksum)
+
+
+def sync_files(paths):
+    for path in paths:
+        with Path(path).open("rb") as stream:
+            os.fsync(stream.fileno())
+        sync_parent(path)
+
+
 def inventory(source, source_revision=None):
     """Run on the source host once; subsequent commands need only this JSON."""
     source = Path(source)
     before = checkpoint_hashes(source)
+    metadata = metadata_hashes(source)
     index_json = (source / "model.safetensors.index.json").read_bytes().decode("utf-8")
     index = CheckpointIndex(source, header_reader=read_header)
     shards = {}
@@ -96,10 +124,11 @@ def inventory(source, source_revision=None):
         n: {**asdict(t), "path": str(t.path.relative_to(source))}
         for n, t in index.tensors.items()
     }
-    if checkpoint_hashes(source) != before:
+    if checkpoint_hashes(source) != before or metadata_hashes(source) != metadata:
         raise ValueError("source changed during inventory")
     return dict(
         checkpoint_sha256=before,
+        metadata_sha256=metadata,
         checkpoint_index_json=index_json,
         config=json.loads((source / "config.json").read_text()),
         tensors=tensors,

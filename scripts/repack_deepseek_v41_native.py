@@ -309,17 +309,19 @@ def _module_map(groups: dict[str, list[TensorPlan]], bits: int, group_size: int)
     return modules
 
 
+METADATA_FILES = {
+    "LICENSE",
+    "chat_template.jinja",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+}
+
+
 def _copy_metadata_files(source: Path, destination: Path) -> None:
-    allowed = {
-        "LICENSE",
-        "chat_template.jinja",
-        "generation_config.json",
-        "preprocessor_config.json",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-    }
-    for name in allowed:
+    for name in METADATA_FILES:
         src = source / name
         if src.is_file():
             shutil.copy2(src, destination / name)

@@ -584,3 +584,25 @@ def test_published_checkpoint_mutation_cannot_change_parts(run, tmp_path, mode):
             )
     (target / "model-layer-0.safetensors").write_bytes(b"modified output")
     assert (run.parts / "model-layer-0.safetensors").read_bytes() == original
+
+
+@pytest.mark.parametrize("mode", ["direct", "staged"])
+def test_assembly_rejects_metadata_added_after_inventory(run, tmp_path, mode):
+    import shutil
+
+    root = tmp_path / "source"
+    shutil.copytree(run.source.source, root)
+    (root / "tokenizer_config.json").write_text('{"changed":true}')
+    source = PartialSource(root, run.source.manifest)
+    target = tmp_path / "published"
+    with (
+        b.MemoryGuard(run.c) as guard,
+        pytest.raises(ValueError, match="metadata identity"),
+    ):
+        if mode == "direct":
+            b.assemble(source, run.c, run.parts, target, guard)
+        else:
+            s.assemble_staged(
+                source, run.c, run.parts, target, guard, run.staging, tmp_path / "cache"
+            )
+    assert not target.exists()

@@ -30,6 +30,7 @@ from scripts.deepseek_v41_gptq_io import (
     atomic_destination,
     atomic_json,
     conversion_record,
+    copy_bound_metadata,
     copy_verified,
     digest,
     entries_from_json,
@@ -39,6 +40,7 @@ from scripts.deepseek_v41_gptq_io import (
     required_shards,
     save_state,
     state_snapshot,
+    sync_files,
     verify_artifact,
 )
 from scripts.deepseek_v41_gptq_quant import QuantConfig, gptq, gram
@@ -246,6 +248,9 @@ def boundary_estimate(a, lengths, layer, c):
                 size += sum(
                     (min(n, start + c["prefill_chunk"]) - start)
                     * (min(n, start + c["prefill_chunk"]) // ratio)
+                    * np.dtype(
+                        np.bool_
+                    ).itemsize  # Native candidates are Boolean masks.
                     for start in range(0, n, c["prefill_chunk"])
                 )
     return size
@@ -1541,6 +1546,12 @@ def run_layer(source, c, parts, scratch, layer, guard):
             report["heldout"] = dict(status="not_configured")
     if checkpoint.get("phase") != "ffn":
         counts = spill_ffn(block, stage, paths, total, source.args, c, guard)
+        sync_files(
+            [
+                work / "attention-quantized.safetensors",
+                *(paths[key] for key in ("x", "ids", "gates")),
+            ]
+        )
         atomic_json(work / "ffn-inputs-ready.json", dict(counts=counts.tolist()))
         atomic_json(
             scratch / "checkpoint.json",
@@ -1692,7 +1703,6 @@ def assemble(source, c, parts, destination, guard):
 def _assemble(source, c, parts, destination, guard):
     from scripts.deepseek_v41_gptq_amend import epochs, validate_record
     from scripts.deepseek_v41_rd_build import group_path
-    from scripts.repack_deepseek_v41_native import _copy_metadata_files
 
     run = json.loads((parts / "run.json").read_text())
     epochs(run)
@@ -1812,7 +1822,7 @@ def _assemble(source, c, parts, destination, guard):
             destination / "dspark" / "model.safetensors.index.json",
             dict(weight_map=mtp_mapping),
         )
-    _copy_metadata_files(source.source, destination)
+    copy_bound_metadata(source, destination)
     if (parts / "engram_token_map.json").exists():
         shutil.copyfile(
             parts / "engram_token_map.json", destination / "engram_token_map.json"

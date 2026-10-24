@@ -28,6 +28,7 @@ from scripts.deepseek_v41_gptq_io import (
     atomic_destination,
     atomic_json,
     conversion_record,
+    copy_bound_metadata,
     copy_verified,
     digest,
     entries_json,
@@ -275,7 +276,6 @@ def _assemble_staged(
     """Assembly tail kept aligned with assemble(); byte-identity tests guard drift."""
     from scripts.deepseek_v41_gptq_amend import epochs, validate_record
     from scripts.deepseek_v41_rd_build import group_path
-    from scripts.repack_deepseek_v41_native import _copy_metadata_files
 
     run = json.loads((parts / "run.json").read_text())
     epochs(run)
@@ -413,7 +413,7 @@ def _assemble_staged(
             destination / "dspark" / "model.safetensors.index.json",
             dict(weight_map=mtp_mapping),
         )
-    _copy_metadata_files(source.source, destination)
+    copy_bound_metadata(source, destination)
     if (parts / "engram_token_map.json").exists():
         shutil.copyfile(
             parts / "engram_token_map.json", destination / "engram_token_map.json"
