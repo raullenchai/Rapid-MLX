@@ -246,7 +246,7 @@ def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
     assert '"$AX_DRIVER" key "$APP_PID" escape' not in confirmation
     assert "chat_content_started" in picker
     assert "stream ended before the picker closed" in picker
-    assert picker.count("(( SECONDS - picker_started < 3 ))") == 2
+    assert picker.count("(( $(monotonic_ms) - picker_started < 3000 ))") == 2
     assert "picker opening exceeded responsiveness budget" in picker
     assert "picker dismissal exceeded responsiveness budget" in picker
 
