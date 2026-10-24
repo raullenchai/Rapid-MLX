@@ -105,8 +105,8 @@ enum DiagnosticsBundle {
                 let encoded = [String(scalar), String(scalar).lowercased(), String(scalar).uppercased()]
                     .map { $0.utf8.map { String(format: "%%%02X", $0) }.joined() }
                     .joined(separator: "|")
-                let escapedSlash = scalar == "/" ? #"|\\/"# : ""
-                return "(?:" + literal + "|(?i:" + encoded + ")" + escapedSlash + ")"
+                let escapedCharacter = #"|\\"# + literal
+                return "(?:" + literal + "|(?i:" + encoded + ")" + escapedCharacter + ")"
             }.joined()
         }
         var patterns: [String] = []

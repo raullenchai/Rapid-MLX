@@ -28,9 +28,9 @@ struct DiagnosticsBundleTests {
     @Test("Custom homes, escaped paths and URL paths use the same placeholder")
     func representations() {
         let home = "/Volumes/Accounts/Fake Person"
-        let input = #"/Volumes/Accounts/Fake Person/cache \/Volumes\/Accounts\/Fake Person/cache file:///Volumes/Accounts/Fake%20Person/cache"#
+        let input = #"/Volumes/Accounts/Fake Person/cache \/Volumes\/Accounts\/Fake Person/cache file:///Volumes/Accounts/Fake%20Person/cache /Volumes/Accounts/Fake\ Person/cache"#
         let out = DiagnosticsBundle.redact(input, homeDirectory: home + "/", username: "fake-account")
-        #expect(out == "<redacted>/cache <redacted>/cache file://<redacted>/cache")
+        #expect(out == "<redacted>/cache <redacted>/cache file://<redacted>/cache <redacted>/cache")
     }
 
     @Test("Short account names cannot rewrite redaction placeholders")
