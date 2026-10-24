@@ -263,14 +263,17 @@ def _resolve_root_model(
     1. ``exc.title`` — Pydantic v2 sets this on the raw
        ``ValidationError``. The route's ``AnthropicRequest(**body)`` /
        ``ResponsesRequest(**body)`` constructions land here. Unambiguous.
-    2. Request-path probe — for FastAPI-bound bodies the wrapped
+    2. Matched route body schema — FastAPI's body model includes File/Form
+       fields and public aliases that are absent from the static registry.
+       Only body-validation locations use this model.
+    3. Request-path probe — for FastAPI-bound bodies the wrapped
        ``RequestValidationError`` doesn't carry a title, but the
        ``Request`` object's path tells us which route received the
        body. Path-based lookup is the disambiguator for request
        models that share a field name (codex r3 BLOCKING #1:
        ``input`` is on both ``EmbeddingRequest`` and
        ``ResponsesRequest``).
-    3. Field-name probe (legacy fallback) — try each registered
+    4. Field-name probe (legacy fallback) — try each registered
        model and pick the first whose ``model_fields`` contain the
        FIRST non-``"body"`` string component of ``loc``. Still a
        safe fallback because the field-name probe only fires when
@@ -286,6 +289,16 @@ def _resolve_root_model(
         root = _REQUEST_MODEL_REGISTRY.get(title)
         if root is not None:
             return root
+    # FastAPI builds a body model for File/Form parameters, including their
+    # public aliases. Use the matched route's schema, never client-supplied
+    # multipart names, so missing upload fields remain actionable and safe.
+    if isinstance(exc, RequestValidationError) and request is not None:
+        if loc and loc[0] == "body":
+            body_field = getattr(request.scope.get("route"), "body_field", None)
+            body_info = getattr(body_field, "field_info", None)
+            body_model = getattr(body_info, "annotation", None)
+            if isinstance(body_model, type) and issubclass(body_model, BaseModel):
+                return body_model
     # Path probe: matches by canonical-segment suffix so the same
     # registry entry covers both unmounted routes (``/v1/embeddings``)
     # AND deployments behind a FastAPI ``APIRouter`` mount that prepends
@@ -360,15 +373,21 @@ def _walk_loc_with_root(
             isinstance(current, type) and issubclass(current, BaseModel)
         ):
             current = _descend_field(current, hint=raw)
+        field_name = raw
+        if isinstance(current, type) and issubclass(current, BaseModel):
+            for name, field in current.model_fields.items():
+                if field.alias == raw:
+                    field_name = name
+                    break
         is_schema_owned = (
             isinstance(current, type)
             and issubclass(current, BaseModel)
-            and raw in current.model_fields
+            and field_name in current.model_fields
         )
         if is_schema_owned:
             parts.append(raw)
             last_field = raw
-            field_info = current.model_fields[raw]  # type: ignore[union-attr]
+            field_info = current.model_fields[field_name]  # type: ignore[union-attr]
             current = _unwrap_optional(field_info.annotation)
         else:
             parts.append("<field>")
