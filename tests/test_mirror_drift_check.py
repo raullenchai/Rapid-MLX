@@ -1871,6 +1871,8 @@ def test_published_mirror_state_marks_only_removed_repos(monkeypatch):
 
     payload = {
         "org/removed": {"removedAt": "2026-10-24T00:00:00Z"},
+        "org/removed-again": {"removedAt": "2026-10-24", "mirroredSince": "2026-10-01"},
+        "org/returned": {"mirroredSince": "2026-10-24"},
         "org/mirrored": {
             "mirroredSince": "2026-10-01T00:00:00Z",
             "removedAt": "2026-09-01",
@@ -1882,12 +1884,31 @@ def test_published_mirror_state_marks_only_removed_repos(monkeypatch):
         lambda *_args, **_kwargs: io.BytesIO(json.dumps(payload).encode()),
     )
     actual = drift.mirror_unmirrored.load_published_unmirrored()
-    assert set(actual) == {"org/removed", "org/mirrored"}
+    assert set(actual) == {
+        "org/removed",
+        "org/mirrored",
+        "org/removed-again",
+        "org/returned",
+    }
+    assert actual["org/removed-again"].since == "2026-10-24"
+    assert actual["org/returned"] is None
     assert actual["org/mirrored"] is None
     assert actual["org/removed"].since == "2026-10-24"
 
 
-@pytest.mark.parametrize("payload", [[], {"org/bad": 3}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"org/bad": 3},
+        {"org/bad": {}},
+        *(
+            {"org/bad": {key: value}}
+            for key in ("removedAt", "mirroredSince")
+            for value in (None, False, 20261024, "", "not-a-date", "2026-99-99")
+        ),
+    ],
+)
 def test_published_mirror_state_rejects_bad_shapes(monkeypatch, payload):
     import io
     import json

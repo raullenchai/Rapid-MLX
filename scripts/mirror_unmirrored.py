@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -103,15 +103,31 @@ def load_published_unmirrored(
     for repo, value in payload.items():
         if not isinstance(repo, str) or not isinstance(value, dict):
             raise ValueError("invalid published mirror state")
-        removed_at = value.get("removedAt")
-        if value.get("mirroredSince"):
+        timestamps = {}
+        for key in ("removedAt", "mirroredSince"):
+            if key not in value:
+                continue
+            timestamp = value[key]
+            if not isinstance(timestamp, str) or not timestamp:
+                raise ValueError("invalid published mirror state timestamp")
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            timestamps[key] = (
+                parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+            )
+        if not timestamps:
+            raise ValueError("published mirror state has no state timestamp")
+        # A returned repository may retain its historical removal timestamp.
+        # When both events are present, the latest event determines its state.
+        removed_at = timestamps.get("removedAt")
+        mirrored_since = timestamps.get("mirroredSince")
+        if mirrored_since is not None and (
+            removed_at is None or mirrored_since > removed_at
+        ):
             result[repo] = None
-        elif removed_at:
-            since = str(removed_at)[:10]
-            date.fromisoformat(since)
+        else:
             result[repo] = UnmirroredEntry(
                 hf_path=repo,
                 reason="usage-driven mirror removal; Hugging Face fallback",
-                since=since,
+                since=removed_at.date().isoformat(),
             )
     return result
