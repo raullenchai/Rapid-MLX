@@ -309,6 +309,7 @@ def test_image_request_error_precedes_local_diagnostics(
 ):
     from rapid_mlx.image.engine import ImageRequestError
 
+    (tmp_path / "config.json").write_text("{}")
     client, manager = control_plane
     manager.load.side_effect = ImageRequestError("unsupported image mode")
     monkeypatch.setattr(
@@ -447,3 +448,119 @@ def test_request_cancellation_still_propagates(control_plane):
         asyncio.run(
             residency.load_resident_model(residency.ModelLoadRequest(model="org/model"))
         )
+
+
+@pytest.mark.parametrize(
+    "model", ["/", "//", "..", "../model", "org/../model", "'..'", "' .. '", " / "]
+)
+@pytest.mark.parametrize("field", ["model", "model_path"])
+def test_directory_like_paths_fail_fast(control_plane, monkeypatch, model, field):
+    import os
+    import time
+    from pathlib import Path
+
+    client, manager = control_plane
+
+    def no_walk(*args, **kwargs):
+        pytest.fail("request attempted a filesystem walk")
+
+    monkeypatch.setattr(os, "walk", no_walk)
+    monkeypatch.setattr(Path, "rglob", no_walk)
+    monkeypatch.setattr(residency, "resolve_model", no_walk)
+    started = time.monotonic()
+    response = client.post("/v1/models/load", json={"model": "org/model", field: model})
+    assert response.status_code == 400
+    assert time.monotonic() - started < 1
+    manager.load.assert_not_awaited()
+    assert client.get("/v1/models/residency").status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["empty", "nested", "file", "root-link"])
+def test_non_model_directory_rejected(control_plane, monkeypatch, tmp_path, kind):
+    client, manager = control_plane
+    target = tmp_path / "target"
+    if kind == "file":
+        target.write_text("not a model")
+    elif kind == "root-link":
+        target.symlink_to("/", target_is_directory=True)
+    else:
+        target.mkdir()
+        if kind == "nested":
+            (target / "child").mkdir()
+            (target / "child" / "config.json").write_text("{}")
+    response = client.post("/v1/models/load", json={"model": str(target)})
+    assert response.status_code == 400
+    manager.load.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "marker", ["config.json", "model_index.json", "split_model.json", "params.json"]
+)
+@pytest.mark.parametrize("override", [False, True])
+def test_local_model_manifests_accepted(control_plane, tmp_path, marker, override):
+    client, manager = control_plane
+    (tmp_path / marker).write_text("{}")
+    manager.load.return_value = SimpleNamespace(model_id="loaded")
+    manager.snapshot = lambda: {"models": [{"id": "loaded"}]}
+    body = (
+        {"model": "org/model", "model_path": str(tmp_path)}
+        if override
+        else {"model": str(tmp_path)}
+    )
+    assert client.post("/v1/models/load", json=body).status_code == 200
+    manager.load.assert_awaited_once()
+
+
+def test_resolved_alias_to_root_rejected(control_plane, monkeypatch):
+    client, manager = control_plane
+    monkeypatch.setattr(residency, "resolve_model", lambda _: "/")
+    assert client.post("/v1/models/load", json={"model": "saved"}).status_code == 400
+    manager.load.assert_not_awaited()
+
+
+def test_local_failure_does_not_scan_tree(control_plane, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    client, manager = control_plane
+    (tmp_path / "config.json").write_text("{}")
+    monkeypatch.setattr(
+        Path, "rglob", lambda *a, **kw: pytest.fail("recursive diagnostic")
+    )
+    manager.load.side_effect = FileNotFoundError(
+        2, "missing", str(tmp_path / "model.safetensors")
+    )
+    response = client.post("/v1/models/load", json={"model": str(tmp_path)})
+    assert response.status_code == 400
+    assert "model.safetensors" in response.text
+
+
+async def test_path_validation_keeps_event_loop_responsive(control_plane, monkeypatch):
+    import threading
+
+    _, manager = control_plane
+    entered = threading.Event()
+    release = threading.Event()
+    original = residency._validate_load_ref
+
+    def slow_probe(value):
+        entered.set()
+        assert release.wait(2), "event loop could not release filesystem probe"
+        return original(value)
+
+    monkeypatch.setattr(residency, "_validate_load_ref", slow_probe)
+    task = asyncio.create_task(
+        residency.load_resident_model(residency.ModelLoadRequest(model="/"))
+    )
+    try:
+        for _ in range(100):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert entered.is_set()
+        assert (await residency.model_residency())["models"] == []
+    finally:
+        release.set()
+    with pytest.raises(residency.HTTPException) as caught:
+        await task
+    assert caught.value.status_code == 400
+    manager.load.assert_not_awaited()

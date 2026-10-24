@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -14,7 +16,11 @@ from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from ..config import get_config
 from ..kv_cache_dtype import KVCacheQuantizationUnsupportedError
-from ..local_model_path import local_model_failure_message, raise_if_missing_local_model
+from ..local_model_path import (
+    local_model_failure_message,
+    raise_if_missing_local_model,
+    resolved_model_ref,
+)
 from ..middleware.auth import verify_api_key
 from ..middleware.exception_handlers import (
     register_request_model,
@@ -133,6 +139,32 @@ def _resolved_group_for_profile(modality: str) -> str:
     return "assistant" if modality in {"text", "vision", "text-diffusion"} else modality
 
 
+def _validate_load_ref(model_ref: str) -> str:
+    """Reject unsafe directories with fixed metadata probes, never a tree walk."""
+    # Check before resolution so normalization cannot erase parent traversal.
+    value = resolved_model_ref(model_ref)
+    if ".." in Path(value).parts:
+        raise HTTPException(400, "Parent traversal is not a model path.")
+    root = Path(value).expanduser()
+    if root.exists():
+        root = root.resolve()
+        if root == root.parent:
+            raise HTTPException(400, "A filesystem root is not a model directory.")
+        if not root.is_dir() or not any(
+            (root / marker).is_file()
+            for marker in (
+                "config.json",
+                "model_index.json",
+                "split_model.json",
+                "params.json",
+            )
+        ):
+            raise HTTPException(
+                400, "Expected a model directory with config.json or a model manifest."
+            )
+    return value
+
+
 def _load_failure(exc: BaseException, model_ref: str) -> HTTPException:
     """Render expected load failures without reflecting upstream secrets/paths.
 
@@ -158,7 +190,7 @@ def _load_failure(exc: BaseException, model_ref: str) -> HTTPException:
     except (OSError, ValueError):
         pass
     try:
-        message = local_model_failure_message(model_ref, exc)
+        message = local_model_failure_message(model_ref, exc, scan_indexes=False)
     except (OSError, ValueError):
         message = None
     if message is not None:
@@ -208,7 +240,12 @@ async def load_resident_model(request: ModelLoadRequest):
     )
     load_ref = request.model_path or request.model
     try:
-        load_ref = resolve_model(load_ref)
+        # Both fields can reach metadata resolution, even with an override.
+        await asyncio.to_thread(_validate_load_ref, request.model)
+        if request.model_path:
+            await asyncio.to_thread(_validate_load_ref, request.model_path)
+        load_ref = await asyncio.to_thread(resolve_model, load_ref)
+        await asyncio.to_thread(_validate_load_ref, load_ref)
         performance = (
             request.performance.runtime_value() if request.performance else None
         )
@@ -256,7 +293,8 @@ async def load_resident_model(request: ModelLoadRequest):
                 status_code=422,
                 detail="Performance overrides are only supported for text models.",
             )
-        performance = resolve_resident_performance(
+        performance = await asyncio.to_thread(
+            resolve_resident_performance,
             performance,
             model_name=request.model,
             model_path=request.model_path,
@@ -312,9 +350,11 @@ async def load_resident_model(request: ModelLoadRequest):
     except SystemExit as exc:
         # CLI prefetch terminates on Hub/disk failures. At the HTTP boundary,
         # preserve its underlying typed error without terminating the ASGI task.
-        raise _load_failure(exc.__cause__ or exc.__context__ or exc, load_ref) from exc
+        raise await asyncio.to_thread(
+            _load_failure, exc.__cause__ or exc.__context__ or exc, load_ref
+        ) from exc
     except Exception as exc:
-        raise _load_failure(exc, load_ref) from exc
+        raise await asyncio.to_thread(_load_failure, exc, load_ref) from exc
     return _record_payload(record)
 
 

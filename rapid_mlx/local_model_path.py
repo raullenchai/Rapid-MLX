@@ -159,15 +159,20 @@ def missing_local_model_files(
     exc: BaseException | None = None,
     *,
     limit: int = MAX_MISSING_LOCAL_MODEL_FILES,
+    scan_indexes: bool = True,
 ) -> tuple[str, ...]:
-    """Return bounded, model-root-relative missing names for a local failure."""
+    """Return model-root-relative missing names, capped by ``limit``.
+
+    HTTP callers disable ``scan_indexes`` to inspect only the exception chain
+    rather than enumerate an untrusted directory tree.
+    """
     if not is_local_model_ref(model_ref) or not isinstance(model_ref, str):
         return ()
     root = Path(model_ref).expanduser().absolute()
     if not root.is_dir():
         return ()
 
-    missing = set(_missing_index_shards(root))
+    missing = set(_missing_index_shards(root)) if scan_indexes else set()
     for current in _exception_chain(exc):
         candidate = _exception_filename_path(current)
         if candidate is None:
@@ -188,6 +193,7 @@ def local_model_failure_message(
     exc: BaseException | None = None,
     *,
     include_supplied_path: bool = False,
+    scan_indexes: bool = True,
 ) -> str | None:
     """Render a local-model failure without exposing paths to HTTP clients."""
     if _has_authoritative_load_failure(exc):
@@ -233,7 +239,7 @@ def local_model_failure_message(
                 message += " If you meant a Hugging Face repo, use org/model without a path prefix."
             return message
         return None
-    missing = missing_local_model_files(model_ref, exc)
+    missing = missing_local_model_files(model_ref, exc, scan_indexes=scan_indexes)
     if missing:
         return (
             f"The local model directory{shown} is missing required files: "
