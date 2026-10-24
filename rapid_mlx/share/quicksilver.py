@@ -1830,6 +1830,12 @@ def _run_share(
     passthrough = list(getattr(args, "_passthrough", None) or [])
     # Keep pool advertisement, child configuration and HTTP admission aligned.
     tensorfold_qwen = serve_alias == "qwen3.8-27b-tensorfold"
+    if not tensorfold_qwen and any(
+        token.split("=", 1)[0] == "--tensorfold-lanes" for token in passthrough
+    ):
+        raise QuickSilverError(
+            "--tensorfold-lanes in pool mode requires the Qwen27 TensorFold node"
+        )
     max_concurrency = _pool_max_concurrency(
         passthrough,
         default=4 if tensorfold_qwen else _POOL_DEFAULT_MAX_CONCURRENCY,

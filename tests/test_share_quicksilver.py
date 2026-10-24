@@ -3930,3 +3930,31 @@ def test_qwen_pool_cached_serial_registration_requires_reregister(capsys):
         assert exc.value.code == 2
         assert "--reregister" in capsys.readouterr().err
         network.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model, ram_gb",
+    [
+        ("nemotron-3.5-lightning", 256.0),
+        ("qwen3.8-27b", 36.0),
+    ],
+)
+@pytest.mark.parametrize(
+    "passthrough",
+    [
+        ["--tensorfold-lanes", "4"],
+        ["--tensorfold-lanes=1"],
+        ["--tensorfold-lanes"],
+        ["--tensorfold-lanes=3", "--tensorfold-lanes=4"],
+    ],
+)
+def test_pool_rejects_tensorfold_lanes_on_other_profiles_before_registration(
+    monkeypatch, capsys, model, ram_gb, passthrough
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    with patch.object(qs, "_open") as network:
+        with pytest.raises(SystemExit) as exc:
+            qs.run_share(_make_args(model=model, _passthrough=passthrough))
+        assert exc.value.code == 2
+        assert "requires the Qwen27 TensorFold node" in capsys.readouterr().err
+        network.assert_not_called()
