@@ -68,6 +68,24 @@ struct DiagnosticsBundleTests {
         }
     }
 
+    @Test("Home paths ending in prose punctuation and URL delimiters are redacted")
+    func homeTerminators() {
+        for ending in [".", "?mode=value", "!", "#fragment", "&mode=value", "=value"] {
+            #expect(DiagnosticsBundle.redact("/Users/fake-home" + ending,
+                                             homeDirectory: "/Users/fake-home", username: "account")
+                == "<redacted>" + ending)
+        }
+        #expect(DiagnosticsBundle.redact("/Users/fake-home.backup/cache",
+                                         homeDirectory: "/Users/fake-home", username: "account")
+            == "/Users/fake-home.backup/cache")
+    }
+
+    @Test("Short usernames in encoded non-home paths are redacted")
+    func encodedShortAccount() {
+        #expect(DiagnosticsBundle.redact("%2Ftmp%2Fa%2Fcache", homeDirectory: "/Users/a", username: "a")
+            == "%2Ftmp%2F<redacted>%2Fcache")
+    }
+
     @Test("Empty identities do not corrupt diagnostic text")
     func emptyIdentities() {
         #expect(DiagnosticsBundle.redact("ready /opt/bin", homeDirectory: "", username: "") == "ready /opt/bin")

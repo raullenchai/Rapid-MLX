@@ -113,7 +113,7 @@ enum DiagnosticsBundle {
         if !home.isEmpty && home != "/" {
             // A home is a complete path component, not a prefix of another
             // account's directory. Accept plain/escaped/encoded separators.
-            let boundary = #"(?=$|/|\\/|%2f|[\s"'<>:,;)\]}])"#
+            let boundary = #"(?=$|/|\\/|%2f|[\s"'<>:,;)\]}?!#&=]|\.(?=$|[\s"'<>)]))"#
             patterns.append(identityPattern(home) + boundary)
         }
         let shortAccount = !username.isEmpty && username.count <= 2
@@ -124,7 +124,7 @@ enum DiagnosticsBundle {
                 // identity fields and path/quoted components, not prose words.
                 let field = #"(\b(?i:USER|LOGNAME|USERNAME|account)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
                 patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
-                patterns.append(#"(?<=[/("'])"# + account + #"(?![\p{L}\p{N}_.+-])"#)
+                patterns.append(#"(?:(?<=[/("'])|(?<=%2f))"# + account + #"(?![\p{L}\p{N}_.+-])"#)
             } else {
                 patterns.append(#"(?<![\p{L}\p{N}_])"# + account + #"(?![\p{L}\p{N}_])"#)
             }
