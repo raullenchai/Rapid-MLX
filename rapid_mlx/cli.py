@@ -14474,7 +14474,9 @@ def connect_command(args):
         scheme=scheme,
         allow_insecure_api_key=allow_insecure,
     )
-    if not allows_api_key(eps.host, eps.scheme, allow_insecure):
+    if os.environ.get("RAPID_MLX_API_KEY") and not allows_api_key(
+        eps.host, eps.scheme, allow_insecure
+    ):
         print(
             "  RAPID_MLX_API_KEY is withheld: remote HTTP sends credentials "
             "unencrypted. Use HTTPS or explicitly opt in with --allow-insecure-api-key.",
@@ -14514,24 +14516,29 @@ def _connect_target(args, eps):
         print()
         print(f"  Python (OpenAI SDK)  →  {eps.openai_url}")
         print()
-        from rapid_mlx.connect import package_install_command
+        from rapid_mlx.connect import allows_api_key, package_install_command
 
+        key_allowed = allows_api_key(
+            eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
+        )
         print("     ", package_install_command("openai"))
         print()
-        print(
-            "  If authentication is enabled, set RAPID_MLX_API_KEY to the server key:"
-        )
-        print("      export RAPID_MLX_API_KEY='<server-api-key>'")
+        if key_allowed:
+            print(
+                "  If authentication is enabled, set RAPID_MLX_API_KEY to the server key:"
+            )
+            print("      export RAPID_MLX_API_KEY='<server-api-key>'")
+        else:
+            print(
+                "  This snippet omits your API key because remote HTTP is unencrypted. "
+                "For authentication, rerun with an HTTPS URL or --allow-insecure-api-key."
+            )
         print()
         print("      import os")
         print("      from openai import OpenAI")
-        from rapid_mlx.connect import allows_api_key
-
         key_expr = (
             'os.environ.get("RAPID_MLX_API_KEY") or "sk-noop"'
-            if allows_api_key(
-                eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
-            )
+            if key_allowed
             else '"sk-noop"'
         )
         print(f"      client = OpenAI(base_url={eps.openai_url!r}, api_key={key_expr})")

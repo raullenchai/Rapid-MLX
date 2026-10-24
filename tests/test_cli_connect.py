@@ -864,12 +864,14 @@ def test_connect_probe_closes_rejected_response(monkeypatch, status):
         ("http://remote.example:12345/v1", True, True),
     ],
 )
+@pytest.mark.parametrize("key", [None, "test-key"])
 def test_connect_transport_policy(
-    auth_connect_server, monkeypatch, capsys, url, opt_in, expected_auth
+    auth_connect_server, monkeypatch, capsys, url, opt_in, expected_auth, key
 ):
     import urllib.request
 
-    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-key")
+    if key:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key)
     requests = []
 
     def respond(request, **kwargs):
@@ -886,16 +888,19 @@ def test_connect_transport_policy(
     assert payload["model"] == "loaded-model"
     assert requests[0].full_url == expected_base + "/v1/models"
     assert requests[0].get_header("Authorization") == (
-        "Bearer test-key" if expected_auth else None
+        "Bearer test-key" if expected_auth and key else None
     )
     stderr = capsys.readouterr().err
-    assert ("unencrypted" in stderr) is not expected_auth
-    if not expected_auth:
+    assert ("unencrypted" in stderr) == (bool(key) and not expected_auth)
+    if key and not expected_auth:
         assert "--allow-insecure-api-key" in stderr
     snippet = _run_connect(
         base_url=url, target="python", model="explicit", allow_insecure_api_key=opt_in
     )
     assert ('api_key=os.environ.get("RAPID_MLX_API_KEY")' in snippet) == expected_auth
+    assert ("export RAPID_MLX_API_KEY=" in snippet) == expected_auth
+    if not expected_auth:
+        assert "rerun with an HTTPS URL or --allow-insecure-api-key" in snippet
     assert "test-key" not in snippet + output + stderr
     banner = _run_connect(base_url=url, allow_insecure_api_key=opt_in)
     assert f"Ready: {expected_base}" in banner
