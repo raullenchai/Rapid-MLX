@@ -467,6 +467,7 @@ def _probe_running_model(host: str, port: int) -> str | None:
         with urllib.request.urlopen(request, timeout=2.0) as resp:
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code in (401, 403):
             raise PermissionError("Model discovery requires a valid API key") from None
         return None

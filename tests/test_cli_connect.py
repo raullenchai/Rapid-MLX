@@ -820,3 +820,25 @@ def test_connect_does_not_forward_key_on_redirect(auth_connect_server, monkeypat
         ("/v1/models", "Bearer test-key"),
         ("/redirected-models", None),
     ]
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_connect_probe_closes_rejected_response(monkeypatch, status):
+    import urllib.error
+    import urllib.request
+
+    body = io.BytesIO(b"rejected")
+    error = urllib.error.HTTPError(
+        "http://localhost/v1/models", status, "error", {}, body
+    )
+
+    def reject(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(urllib.request, "urlopen", reject)
+    if status in (401, 403):
+        with pytest.raises(PermissionError):
+            connect._probe_running_model("localhost", 12345)
+    else:
+        assert connect._probe_running_model("localhost", 12345) is None
+    assert body.closed
