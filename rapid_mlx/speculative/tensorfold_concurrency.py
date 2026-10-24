@@ -18,7 +18,7 @@ def request_lanes(profile_id: str, value: int | str | None = None) -> int:
         if LANES_ENV in os.environ:
             warnings.warn(
                 f"{LANES_ENV} is deprecated; use --tensorfold-lanes instead",
-                FutureWarning,
+                UserWarning,
                 stacklevel=2,
             )
     if isinstance(value, bool) or str(value) not in {"1", "2", "4", "8"}:

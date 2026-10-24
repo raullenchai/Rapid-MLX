@@ -1263,6 +1263,41 @@ def test_legacy_lanes_warn_and_explicit_lanes_win(monkeypatch):
     from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV, request_lanes
 
     monkeypatch.setenv(LANES_ENV, "4")
-    with pytest.warns(FutureWarning, match="deprecated; use --tensorfold-lanes"):
+    with pytest.warns(UserWarning, match="deprecated; use --tensorfold-lanes"):
         assert request_lanes("qwen3.8-27b-tensorfold") == 4
     assert request_lanes("qwen3.8-27b-tensorfold", 1) == 1
+
+
+def test_legacy_lane_notice_visible_with_default_library_warning_filters():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONWARNINGS", None)
+    environment[LANES_ENV] = "4"
+    library_call = (
+        "from rapid_mlx.speculative.tensorfold_concurrency import request_lanes\n"
+        "print(request_lanes('qwen3.8-27b-tensorfold'))"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"exec({library_call!r}, {{'__name__': 'operator_warning_probe'}})",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == "4"
+    assert (
+        "UserWarning: RAPID_MLX_TENSORFOLD_LANES is deprecated; "
+        "use --tensorfold-lanes instead"
+    ) in result.stderr
