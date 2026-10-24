@@ -2690,22 +2690,12 @@ async def _stream_buffered_responses_response(
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:
-    """Emit a parsed Responses SSE heartbeat for clients that ignore comments.
+    """Keep the transport alive without repeating the lifecycle transition.
 
-    Codex's idle watchdog observes parsed SSE events, so ``: keepalive`` comment
-    frames can keep proxies alive while Codex still considers the stream idle.
-    Reusing ``response.in_progress`` keeps the frame in the Responses event
-    vocabulary and lets SDK consumers treat it as a harmless lifecycle refresh.
+    SSE comments do not consume event sequence numbers. Only the stream
+    generator emits ``response.in_progress``, immediately after created.
     """
-    data: dict[str, object] = {"type": "response.in_progress"}
-    response = state.get("response")
-    if isinstance(response, dict):
-        data["response"] = response
-    seq = state.get("sequence_number")
-    if isinstance(seq, list) and seq:
-        data["sequence_number"] = seq[0]
-        seq[0] += 1
-    return _sse("response.in_progress", data)
+    return ": keepalive\n\n"
 
 
 async def _stream_responses_with_nonprogress_retry(

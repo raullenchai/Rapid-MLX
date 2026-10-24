@@ -13,6 +13,7 @@ event, and consumers (Codex CLI, openai-agents, etc.) rely on the
 ordering to drive their own UI / control-flow state machines.
 """
 
+import asyncio
 import json
 import sys
 import types
@@ -201,29 +202,102 @@ def _stream_payload(**overrides):
 
 
 class TestResponsesStreamEventOrder:
-    def test_responses_keepalive_event_uses_in_progress_envelope(self):
-        """Issue #1057: Responses keepalives must be parsed SSE events, not
-        comment frames, so Codex's event-level idle watchdog observes them.
-        """
+    def test_responses_keepalive_preserves_lifecycle_and_sequence(self):
         from rapid_mlx.routes.responses import _responses_keepalive_sse
 
-        response = {
-            "id": "resp_test",
-            "object": "response",
-            "created_at": 123,
-            "status": "in_progress",
-            "model": "test-model",
-            "output": [],
-        }
-        state = {"response": response, "sequence_number": [7]}
+        state = {"response": {"id": "resp_test"}, "sequence_number": [7]}
+        assert _responses_keepalive_sse(state) == ": keepalive\n\n"
+        assert state == {"response": {"id": "resp_test"}, "sequence_number": [7]}
 
-        event_name, payload = _parse_sse(_responses_keepalive_sse(state))[0]
+    @pytest.mark.parametrize("kind", ["text", "tool", "reasoning"])
+    def test_exact_event_sequence(self, responses_client, monkeypatch, kind):
+        """#5191: transport heartbeats must not duplicate lifecycle events."""
+        from rapid_mlx.config import get_config
 
-        assert event_name == "response.in_progress"
-        assert payload["type"] == "response.in_progress"
-        assert payload["response"] == response
-        assert payload["sequence_number"] == 7
-        assert state["sequence_number"] == [8]
+        get_config().sse_keepalive_seconds = 0.01
+
+        async def stream_chat(messages, **kwargs):
+            await asyncio.sleep(0.03)
+            yield _GenerationOutput(
+                text=(
+                    "<think>Checking</think>Hello"
+                    if kind == "reasoning"
+                    else "Hello"
+                    if kind == "text"
+                    else ""
+                ),
+                new_text=(
+                    "<think>Checking</think>Hello"
+                    if kind == "reasoning"
+                    else "Hello"
+                    if kind == "text"
+                    else ""
+                ),
+                tool_calls=[
+                    {
+                        "id": "call_lookup",
+                        "type": "function",
+                        "name": "lookup",
+                        "arguments": "{}",
+                    }
+                ]
+                if kind == "tool"
+                else None,
+                prompt_tokens=3,
+                completion_tokens=1,
+            )
+
+        monkeypatch.setattr(responses_client.engine, "stream_chat", stream_chat)
+        overrides = {}
+        if kind == "tool":
+            overrides = {
+                "tool_choice": "required",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "lookup",
+                        "parameters": {"type": "object", "properties": {}},
+                    }
+                ],
+            }
+        response = responses_client.client.post(
+            "/v1/responses", json=_stream_payload(**overrides), headers=HEADERS
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        names = [name for name, _ in events]
+        assert names.count("response.in_progress") == 1
+        assert names[:2] == ["response.created", "response.in_progress"]
+        assert [data["sequence_number"] for _, data in events] == list(
+            range(len(events))
+        )
+        expected = ["response.created", "response.in_progress"]
+        if kind == "tool":
+            expected += [
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.output_item.done",
+            ]
+        else:
+            expected += ["response.output_item.added"]
+            if kind == "reasoning":
+                expected += [
+                    "response.reasoning_summary_part.added",
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_summary_text.done",
+                    "response.reasoning_summary_part.done",
+                ]
+            expected += [
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+            ]
+        assert names == [*expected, "response.completed"]
+        assert ": keepalive\n\n" in response.text
 
     def test_response_in_progress_event_between_created_and_first_item(
         self, responses_client
