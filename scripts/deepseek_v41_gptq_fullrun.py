@@ -596,8 +596,8 @@ class Driver:
                 self.log("metadata_verified", file=name, sha256=info["sha256"])
 
     def cleanup_reference(self, layer):
-        # Keep boundary zero and current/next originals; cleanup is checkpoint-gated.
-        for i in range(1, layer):
+        # After commit/export, retain zero and the next layer's input boundary.
+        for i in range(1, layer + 1):
             root = self.a.reference_source / f"boundary-{i}"
             record = json.loads((root / "complete.json").read_text())
             for name in [*record["files"], "complete.json"]:
@@ -610,7 +610,7 @@ class Driver:
                     identity=self.identity,
                     layer=layer,
                 )
-        self.log("old_references_released", through_layer=layer - 1)
+        self.log("old_references_released", through_layer=layer)
 
     def run(self):
         # Preflight ALL source descriptors, reference commits and immutable inputs

@@ -1106,3 +1106,26 @@ def test_remote_reservation_and_standalone_cli_share_lock(tmp_path):
     finally:
         assert remote("unlock").returncode == 0
     assert "FileNotFoundError" in cli().stderr
+
+
+def test_consumed_reference_is_released_before_next_layer(setup, monkeypatch):
+    args, remote = setup
+    driver = f.Driver(args, remote)
+    stage_reference = driver.stage_reference
+
+    def stage(layer):
+        if layer == 2:
+            # Layer one is committed and exported before its input is reclaimed.
+            assert remote.runs == [0, 1]
+            assert (args.destination / "layer-1-export.json").exists()
+            root = remote.path(driver.reference)
+            assert not any((root / "boundary-1").iterdir())
+            assert (root / "boundary-0/complete.json").exists()
+            assert (root / "boundary-2/complete.json").exists()
+            assert (args.reference_source / "boundary-1/complete.json").exists()
+            raise RuntimeError("reference retention checked")
+        stage_reference(layer)
+
+    monkeypatch.setattr(driver, "stage_reference", stage)
+    with pytest.raises(RuntimeError, match="reference retention checked"):
+        driver.run()
