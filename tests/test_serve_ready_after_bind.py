@@ -557,7 +557,19 @@ def test_ddtree_runner_uses_shared_seam_without_false_ready(monkeypatch, capsys)
     assert observations == [0]
 
 
-def test_dflash_runner_defers_its_existing_banner_to_callback(monkeypatch, capsys):
+@pytest.fixture
+def checked_target_snapshot(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text('{"model_type": "test_target"}')
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.resolve_vlm_checkpoint",
+        lambda name, *, revision=None: tmp_path,
+    )
+    return tmp_path
+
+
+def test_dflash_runner_defers_its_existing_banner_to_callback(
+    monkeypatch, capsys, checked_target_snapshot
+):
     from rapid_mlx.speculative.dflash import server as dflash_server
 
     mlx_vlm = ModuleType("mlx_vlm")
@@ -602,7 +614,9 @@ def test_dflash_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
     )
 
 
-def test_native_mtp_runner_defers_its_existing_banner_to_callback(monkeypatch, capsys):
+def test_native_mtp_runner_defers_its_existing_banner_to_callback(
+    monkeypatch, capsys, checked_target_snapshot
+):
     from rapid_mlx.speculative.dflash import server as dflash_server
     from rapid_mlx.speculative.native_mtp import server as native_server
     from rapid_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
@@ -714,7 +728,7 @@ def test_dspark_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
     )
 
 
-def test_dflash_loader_failure_is_prepare_stage(monkeypatch):
+def test_dflash_loader_failure_is_prepare_stage(monkeypatch, checked_target_snapshot):
     from rapid_mlx.speculative.dflash import server as dflash_server
 
     mlx_vlm = ModuleType("mlx_vlm")
@@ -742,7 +756,9 @@ def test_dflash_loader_failure_is_prepare_stage(monkeypatch):
     assert stages == ["prepare"]
 
 
-def test_native_mtp_loader_failure_is_prepare_stage(monkeypatch):
+def test_native_mtp_loader_failure_is_prepare_stage(
+    monkeypatch, checked_target_snapshot
+):
     from rapid_mlx.speculative.dflash import server as dflash_server
     from rapid_mlx.speculative.native_mtp import server as native_server
     from rapid_mlx.speculative.native_mtp.eligibility import QWEN36_35B_4BIT
