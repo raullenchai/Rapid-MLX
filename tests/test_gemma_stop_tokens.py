@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 pytestmark = pytest.mark.requires_mlx
+pytest.importorskip("mlx_lm")
 
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from tokenizers import Tokenizer, models
