@@ -941,6 +941,23 @@ class Message(BaseModel):
     # For tool response messages (role="tool")
     tool_call_id: str | None = None
 
+    @field_validator("tool_calls")
+    @classmethod
+    def _validate_tool_call_history(cls, calls):
+        """Keep history dictionaries intact, but reject unusable call fields."""
+        for index, call in enumerate(calls or []):
+            prefix = f"tool_calls[{index}]"
+            for field in ("id", "type"):
+                if not isinstance(call.get(field), str):
+                    raise ValueError(f"{prefix}.{field} must be a string")
+            function = call.get("function")
+            if not isinstance(function, dict):
+                raise ValueError(f"{prefix}.function must be a JSON object")
+            for field in ("name", "arguments"):
+                if not isinstance(function.get(field), str):
+                    raise ValueError(f"{prefix}.function.{field} must be a string")
+        return calls
+
     @model_validator(mode="after")
     def _validate_content_not_null(self) -> "Message":
         """Reject ``content: null`` on roles where the OpenAI spec
@@ -1242,7 +1259,9 @@ class ToolDefinition(BaseModel):
         params = (
             self.function.get("parameters") if isinstance(self.function, dict) else None
         )
-        if isinstance(params, (dict, list)):
+        if "parameters" in self.function and not isinstance(params, dict):
+            raise ValueError("function.parameters must be a JSON object")
+        if isinstance(params, dict):
             cap = resolve_max_tool_schema_depth()
             if cap > 0 and json_nesting_depth_exceeds(params, cap):
                 raise ValueError(
