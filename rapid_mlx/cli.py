@@ -9676,6 +9676,17 @@ def _cached_repository_is_runnable(repo: str) -> bool:
     return _cache_entry_is_runnable(repo)
 
 
+def _cached_catalog_profiles():
+    """Join all catalog sections without changing launch alias precedence."""
+    from rapid_mlx.audio.registry import list_audio_aliases
+    from rapid_mlx.model_aliases import AliasProfile, list_profiles
+
+    profiles = dict(list_profiles())
+    for entry in list_audio_aliases():
+        profiles.setdefault(entry.alias, AliasProfile(hf_path=entry.hf_id))
+    return profiles
+
+
 def _print_cached_models() -> None:
     """Render the ``--cached`` view: locally-downloaded HF cache entries
     cross-referenced against the alias registry.
@@ -9686,8 +9697,6 @@ def _print_cached_models() -> None:
     pointing at ``pull`` / ``chat``.
     """
     import time as _time
-
-    from rapid_mlx.model_aliases import list_profiles
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
@@ -9713,9 +9722,13 @@ def _print_cached_models() -> None:
 
     # Reverse-map HF repo path → alias name so the alias column matches the
     # user's mental model (``qwen3.5-4b-4bit`` not ``mlx-community/Qwen3.5-4B...``).
-    profiles = list_profiles()
+    profiles = _cached_catalog_profiles()
     hf_to_alias: dict[str, str] = {}
     for alias, p in profiles.items():
+        if (
+            p.subfolder is not None or getattr(p, "revision", None) is not None
+        ) and not _cache_entry_is_runnable(alias):
+            continue
         hf_to_alias.setdefault(p.hf_path, alias)
 
     cols = (
@@ -10040,7 +10053,6 @@ def _cached_models_json_payload() -> dict:
     from rapid_mlx.local_models import discover_runnable_chat_models
     from rapid_mlx.model_aliases import (
         cached_repository_collides,
-        list_profiles,
         resolve_subfolder,
     )
 
@@ -10062,7 +10074,7 @@ def _cached_models_json_payload() -> dict:
         repo for repo, _, _ in rows if _cached_repository_is_runnable(repo)
     }
 
-    profiles = list_profiles()
+    profiles = _cached_catalog_profiles()
     representative_subfolders: dict[str, str | None] = {}
     repo_artifacts: dict[str, list[tuple[str, str | None]]] = {}
     for alias, p in profiles.items():
@@ -10098,9 +10110,12 @@ def _cached_models_json_payload() -> dict:
             ]
         else:
             artifacts = []
-            seen_artifacts: set[tuple[str, str | None]] = set()
+            seen_artifacts: set[tuple[str, str | None, str | None]] = set()
             for alias, subfolder in repo_artifacts.get(repo, []):
-                key = (repo, subfolder)
+                revision = getattr(profiles[alias], "revision", None)
+                key = (repo, revision, subfolder)
+                if revision is not None and not _cache_entry_is_runnable(alias):
+                    continue
                 if key in seen_artifacts:
                     continue
                 if subfolder is None:
@@ -10118,7 +10133,7 @@ def _cached_models_json_payload() -> dict:
                     # let a colliding repo name choose a different pin.
                     artifact_size = (
                         _cached_subfolder_size(repo, subfolder, catalog_alias=alias)
-                        if cached_repository_collides(repo)
+                        if revision is not None or cached_repository_collides(repo)
                         else _cached_subfolder_size(repo, subfolder)
                     )
                 if artifact_size is not None:

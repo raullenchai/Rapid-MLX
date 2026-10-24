@@ -472,7 +472,7 @@ def test_cached_view_marks_unmapped_partial_repo_incomplete(monkeypatch, capsys)
     assert "audio/partial-custom-voice" in out
 
 
-def test_cached_view_recognizes_complete_unmapped_whisper_npz(
+def test_cached_view_recognizes_complete_mapped_whisper_npz(
     tmp_path, monkeypatch, capsys
 ):
     """A completed Whisper pull must remain usable despite having no safetensors."""
@@ -497,7 +497,8 @@ def test_cached_view_recognizes_complete_unmapped_whisper_npz(
     cli._print_cached_models()
     out = capsys.readouterr().out
 
-    assert "(unmapped)" in out
+    assert "(unmapped)" not in out
+    assert "whisper-medium" in out
     assert "(incomplete)" not in out
     assert repo in out
 
