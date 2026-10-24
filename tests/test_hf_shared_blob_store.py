@@ -289,13 +289,17 @@ def test_shared_blob_probe_rejects_a_rebound_blob_directory(hub):
 
 
 def _seed_audio_repo(hub: Path, repo_id: str, weight: str) -> Path:
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    _, revision = resolve_repository_identity(repo_id)
+    revision = revision or SHA
     repo_root = hub / f"models--{repo_id.replace('/', '--')}"
-    snap = repo_root / "snapshots" / SHA
+    snap = repo_root / "snapshots" / revision
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
     (snap / weight).write_bytes(b"w" * 64)
     (repo_root / "refs").mkdir()
-    (repo_root / "refs" / "main").write_text(SHA)
+    (repo_root / "refs" / "main").write_text(revision)
     return repo_root
 
 

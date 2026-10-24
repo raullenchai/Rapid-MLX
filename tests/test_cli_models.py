@@ -479,7 +479,10 @@ def test_cached_view_recognizes_complete_unmapped_whisper_npz(
     repo = "mlx-community/whisper-medium-mlx"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-medium-mlx"
-    sha = "whisper123"
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    _, sha = resolve_repository_identity(repo)
+    assert sha is not None
     snapshot = repo_root / "snapshots" / sha
     snapshot.mkdir(parents=True)
     (snapshot / "config.json").write_text("{}")
@@ -511,7 +514,10 @@ def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
     repo = "mlx-community/Kokoro-82M-bf16"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
-    sha = "kokoro123"
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    _, sha = resolve_repository_identity(repo)
+    assert sha is not None
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -573,7 +579,10 @@ def test_cache_entry_runnable_for_cached_whisper_turbo(tmp_path, monkeypatch):
     repo = "mlx-community/whisper-large-v3-turbo"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-large-v3-turbo"
-    sha = "w12345"
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    _, sha = resolve_repository_identity(repo)
+    assert sha is not None
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -592,7 +601,10 @@ def test_cache_entry_not_runnable_for_metadata_only_kokoro(tmp_path, monkeypatch
     repo = "mlx-community/Kokoro-82M-bf16"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
-    sha = "kokoro-stub"
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    _, sha = resolve_repository_identity(repo)
+    assert sha is not None
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")

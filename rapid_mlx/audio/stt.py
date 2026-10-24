@@ -653,9 +653,19 @@ class STTEngine:
             from mlx_audio.stt.utils import load_model
 
             model_path = Path(self.model_name).expanduser()
+            load_kwargs = {}
             if not model_path.is_dir():
+                from mlx_audio.utils import get_model_name_parts
+
+                from ..model_catalog import resolve_repository_identity
+
+                repository, _revision = resolve_repository_identity(self.model_name)
                 model_path = Path(model_downloads.snapshot_download(self.model_name))
-            self.model = load_model(model_path)
+                # Keep the verified snapshot as the loading boundary. Native
+                # dispatch also needs the repository hint: custom HF caches
+                # need not contain the literal "hub" directory upstream expects.
+                load_kwargs["model_name_parts"] = get_model_name_parts(repository)
+            self.model = load_model(model_path, **load_kwargs)
             # Prefer the backend metadata after loading so renamed/private
             # SenseVoice repos still receive the native generate() contract.
             # The constructor's name check remains a useful pre-load fallback.

@@ -1244,8 +1244,9 @@ def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
       * Kokoro (TTS) ships a single ``kokoro-v1_0.safetensors`` (the canonical
         base weights; sharded Kokoro layouts are out of #2406 scope).
 
-    Mirror ``_snapshot_is_complete_whisper_model``: resolve the pinned sha,
-    require ``config.json`` present + on-this-repo (no crafted symlink
+    Resolve catalog snapshots by exact revision, without requiring refs/main;
+    uncataloged repos retain the refs/main lookup. Require ``config.json``
+    present + on-this-repo (no crafted symlink
     pointing outside), and require a non-empty, VERIFIED weight file for the
     family. Strict verified-filename-only matching: no speculative generic
     ``any(*.safetensors)`` acceptance, so an unrelated sharded/aux safetensors
@@ -1255,11 +1256,14 @@ def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
+        from rapid_mlx.model_catalog import resolve_repository_identity
+
+        repo_id, revision = resolve_repository_identity(repo_id)
         repo_root = os.path.join(
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = revision or _resolved_snapshot_sha(repo_root)
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)

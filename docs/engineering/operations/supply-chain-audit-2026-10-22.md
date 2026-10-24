@@ -195,3 +195,14 @@ are retained alongside cached-content verification and explicit external-root
 resolution. Final mypy, dependency renderer, wheel/sdist license inclusion and
 vendored provenance checks passed. The catalog now includes main's two reviewed
 Bolt publications without changing their immutable revisions.
+
+Local review round 2 confirmed the first-round fixes and identified two audio
+compatibility gaps. The family-specific audio cache probe now selects the pinned
+snapshot without requiring `refs/main`; unlisted repositories retain their
+reference-based behavior. STT passes the canonical repository-name hint to native
+architecture dispatch while still loading the verified snapshot, including
+custom cache roots. Explicit local-directory loading remains unchanged.
+Validation: 363 cache/gate tests passed; 186 STT/download tests passed with three
+existing opt-in download skips. The 111-test CI-routing selection passed, and
+native alias, auxiliary-code and audio-transport security tests now run explicitly
+in the Apple lane instead of relying on Linux collection guards.

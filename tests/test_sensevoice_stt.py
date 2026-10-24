@@ -96,7 +96,9 @@ def test_sensevoice_backend_detection_uses_loaded_model_metadata(
 ) -> None:
     model = _SenseVoiceModel()
     model.config = types.SimpleNamespace(model_type="sensevoice")
-    monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+    monkeypatch.setattr(
+        "mlx_audio.stt.utils.load_model", lambda _name, **_kwargs: model
+    )
     monkeypatch.setattr(
         "rapid_mlx.model_downloads.snapshot_download", lambda *a, **kw: str(tmp_path)
     )
@@ -114,7 +116,9 @@ def test_loaded_model_metadata_overrides_false_positive_name(
 ) -> None:
     model = _SenseVoiceModel()
     model.config = types.SimpleNamespace(model_type="whisper")
-    monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+    monkeypatch.setattr(
+        "mlx_audio.stt.utils.load_model", lambda _name, **_kwargs: model
+    )
     monkeypatch.setattr(
         "rapid_mlx.model_downloads.snapshot_download", lambda *a, **kw: str(tmp_path)
     )
@@ -139,3 +143,68 @@ def test_translations_reject_sensevoice_before_inference(model: str) -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["error"]["code"] == "invalid_model_for_translation"
+
+
+@pytest.mark.parametrize("name", ["parakeet", "mlx-community/parakeet-tdt-0.6b-v2"])
+def test_parakeet_native_dispatch_with_custom_snapshot_cache(
+    monkeypatch, tmp_path, name
+):
+    """Use real installed dispatch, with no architecture hint and no weights download."""
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx_audio.stt.models import parakeet
+
+    snapshot = (
+        tmp_path
+        / "custom-cache"
+        / "models--mlx-community--parakeet-tdt-0.6b-v2"
+        / "snapshots"
+        / ("a" * 40)
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    mx.save_safetensors(str(snapshot / "model.safetensors"), {"weight": mx.zeros((1,))})
+    loaded_configs = []
+
+    class TinyNativeModel(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            loaded_configs.append(config)
+            self.weight = mx.zeros((1,))
+
+    monkeypatch.setattr(parakeet, "Model", TinyNativeModel)
+    monkeypatch.setattr(
+        parakeet, "ModelConfig", types.SimpleNamespace(from_dict=lambda config: config)
+    )
+    downloads = []
+
+    def verified_snapshot(repository):
+        downloads.append(repository)
+        return str(snapshot)
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", verified_snapshot
+    )
+    monkeypatch.setattr(
+        "mlx_audio.utils.get_model_path",
+        lambda *a, **kw: pytest.fail("native loader must keep verified Path"),
+    )
+    engine = STTEngine(name)
+    engine.load()
+    assert isinstance(engine.model, TinyNativeModel)
+    assert loaded_configs[0]["model_path"] == str(snapshot)
+    assert downloads == [name]
+
+
+def test_local_stt_directory_keeps_native_path_inference(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        "mlx_audio.stt.utils.load_model",
+        lambda path, **kwargs: calls.append((path, kwargs)) or types.SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *a, **kw: pytest.fail("local directory must not download"),
+    )
+    STTEngine(str(tmp_path)).load()
+    assert calls == [(tmp_path, {})]

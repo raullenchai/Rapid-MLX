@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("mlx.core", reason="Vendored audio inputs require MLX")
+pytestmark = pytest.mark.requires_mlx
 
 from rapid_mlx.models import mllm
 from rapid_mlx.models.mlx_vlm_vendored import inputs

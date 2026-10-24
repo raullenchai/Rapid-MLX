@@ -3856,3 +3856,44 @@ def test_weightless_stub_notice_none_when_not_stub(monkeypatch):
     )
 
     assert gate.weightless_stub_notice("mlx-community/complete-4bit") is None
+
+
+@pytest.mark.parametrize(
+    "alias,weight",
+    [
+        ("whisper", "weights.npz"),
+        ("whisper", "weights.safetensors"),
+        ("kokoro", "kokoro-v1_0.safetensors"),
+    ],
+)
+@pytest.mark.parametrize("state", ["complete", "other-revision", "partial"])
+def test_pinned_audio_cache_without_main_ref_admits_only_complete_exact_revision(
+    tmp_path, monkeypatch, alias, weight, state
+):
+    from rapid_mlx import cli
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    repo, revision = resolve_repository_identity(alias)
+    assert revision is not None
+    hub = tmp_path / "hub"
+    repo_root = hub / ("models--" + repo.replace("/", "--"))
+    snapshot = (
+        repo_root / "snapshots" / ("f" * 40 if state == "other-revision" else revision)
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    if state != "partial":
+        (snapshot / weight).write_bytes(b"weights")
+    assert not (repo_root / "refs" / "main").exists()
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(hub))
+    monkeypatch.setenv("RAPID_MLX_DISABLE_MODEL_DOWNLOADS", "1")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+
+    assert cli._cache_runnability(repo) is (state == "complete")
+    assert cli._cache_runnability(alias) is (state == "complete")
+    if state == "complete":
+        cli._ensure_model_downloaded(repo)
+    else:
+        with pytest.raises(SystemExit):
+            cli._ensure_model_downloaded(repo)
