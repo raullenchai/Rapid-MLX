@@ -123,3 +123,24 @@ def test_audio_preserves_nonlaunchable_states(
     assert (row["alias"], row["state"]) == (None, state)
     cli._print_cached_models()
     assert f"({state})" in capsys.readouterr().out
+
+
+def test_subfolder_only_alias_requires_complete_checkpoint(
+    inventory, monkeypatch, tmp_path
+):
+    import huggingface_hub.constants as hub_constants
+
+    profile = aliases.AliasProfile(hf_path="org/multi", subfolder="4bit")
+    monkeypatch.setattr(aliases, "list_profiles", lambda: {"nested": profile})
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    root = tmp_path / "models--org--multi"
+    checkpoint = root / "snapshots" / "abc123" / "4bit"
+    checkpoint.mkdir(parents=True)
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("abc123")
+    (checkpoint / "config.json").write_text("{}")
+    inventory("org/multi")
+    assert cli._cached_models_json_payload()["cached"][0]["alias"] is None
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    row = cli._cached_models_json_payload()["cached"][0]
+    assert (row["alias"], row["subfolder"], row["state"]) == ("nested", "4bit", "ok")
