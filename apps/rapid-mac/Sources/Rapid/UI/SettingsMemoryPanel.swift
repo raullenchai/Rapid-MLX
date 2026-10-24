@@ -18,10 +18,7 @@ struct SettingsMemoryPanel: View {
                 emphasis: .page
             )
 
-            Toggle(isOn: Binding(
-                get: { memoryStore.isEnabled },
-                set: { memoryStore.isEnabled = $0 }
-            )) {
+            Toggle(isOn: $store.isEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Automatic memory")
                         .font(.rapid(.body))

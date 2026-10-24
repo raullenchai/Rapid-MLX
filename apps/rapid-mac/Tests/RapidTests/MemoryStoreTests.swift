@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 @testable import Rapid
 
@@ -15,6 +16,82 @@ struct MemoryStoreTests {
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
         return (defaults, name)
+    }
+
+    @Test("Memory panel observes enabling, entry changes, and disabling without relaunch")
+    func panelObservation() async {
+        let (defaults, domain) = freshDefaults()
+        let url = tempURL()
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: url)
+        }
+        let store = MemoryStore(fileURL: url, defaults: defaults)
+        #expect(!store.isEnabled)
+
+        // Match the panel's conditional read: while disabled, entries are
+        // not observed, so enabling must itself invalidate the view.
+        await confirmation("Enabling invalidates the hidden memory section") { changed in
+            withObservationTracking {
+                #expect(!(store.isEnabled && !store.entries.isEmpty))
+            } onChange: {
+                changed()
+            }
+            store.isEnabled = true
+        }
+        #expect(defaults.bool(forKey: "rapid.memory.enabled"))
+        #expect(MemoryStore(fileURL: url, defaults: defaults).isEnabled)
+
+        await confirmation("Extraction invalidates the enabled empty section") { changed in
+            withObservationTracking {
+                #expect(!(store.isEnabled && !store.entries.isEmpty))
+            } onChange: {
+                changed()
+            }
+            store.upsert(content: "Favorite color is teal", conversationID: UUID())
+        }
+        #expect(store.isEnabled && store.entries.count == 1)
+
+        await confirmation("Editing invalidates the visible memory row") { changed in
+            withObservationTracking {
+                #expect(store.entries.first?.content == "Favorite color is teal")
+            } onChange: {
+                changed()
+            }
+            store.update(id: store.entries[0].id, content: "Favorite color is blue")
+        }
+        #expect(store.entries.first?.content == "Favorite color is blue")
+
+        await confirmation("Disabling invalidates the visible memory section") { changed in
+            withObservationTracking {
+                #expect(store.isEnabled && !store.entries.isEmpty)
+            } onChange: {
+                changed()
+            }
+            store.isEnabled = false
+        }
+        #expect(!defaults.bool(forKey: "rapid.memory.enabled"))
+        #expect(!MemoryStore(fileURL: url, defaults: defaults).isEnabled)
+
+        await confirmation("Re-enabling reveals existing memories") { changed in
+            withObservationTracking {
+                #expect(!(store.isEnabled && !store.entries.isEmpty))
+            } onChange: {
+                changed()
+            }
+            store.isEnabled = true
+        }
+        #expect(store.isEnabled && store.entries.count == 1)
+
+        await confirmation("Deleting invalidates the saved memory section") { changed in
+            withObservationTracking {
+                #expect(store.isEnabled && !store.entries.isEmpty)
+            } onChange: {
+                changed()
+            }
+            store.remove(id: store.entries[0].id)
+        }
+        #expect(store.entries.isEmpty)
     }
 
     @Test("Empty store formats to nil")

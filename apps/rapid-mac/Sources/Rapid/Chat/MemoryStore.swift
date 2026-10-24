@@ -67,12 +67,12 @@ final class MemoryStore {
     /// opt-in feature the user enables in Settings, not something that
     /// silently collects data.
     var isEnabled: Bool {
-        get { defaults.bool(forKey: "rapid.memory.enabled") }
-        set { defaults.set(newValue, forKey: "rapid.memory.enabled") }
+        didSet { defaults.set(isEnabled, forKey: "rapid.memory.enabled") }
     }
 
     init(fileURL: URL? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.isEnabled = defaults.bool(forKey: "rapid.memory.enabled")
         if let fileURL {
             self.fileURL = fileURL
         } else {
