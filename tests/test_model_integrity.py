@@ -777,3 +777,63 @@ def test_warm_image_loader_rejects_previously_failed_weights(snapshot, monkeypat
         verify_snapshot("test/integrity", path, revision=path.name)
     with pytest.raises(ModelIntegrityError):
         engine._model_path_for_mflux()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["repo", "commit", "snapshot", "lock_identity", "invalid-json", "missing-files"],
+)
+def test_offline_cached_verification_does_not_borrow_invalid_receipts(snapshot, fault):
+    import json
+
+    from rapid_mlx.model_integrity import verify_cached_checkpoint
+
+    path, _, calls = snapshot
+    verify_snapshot("test/integrity", path, revision=path.name)
+    receipt = next((path.parent.parent / ".rapid-mlx-integrity").glob("*.json"))
+    proof = json.loads(receipt.read_text())
+    if fault == "invalid-json":
+        receipt.write_text("{")
+    else:
+        if fault == "missing-files":
+            del proof["files"]
+        else:
+            proof[fault] = "unrelated"
+        receipt.write_text(json.dumps(proof))
+    with pytest.raises(
+        ModelIntegrityError, match="requires a packaged manifest or verified receipts"
+    ):
+        verify_cached_checkpoint("test/integrity", path, revision=path.name)
+    assert len(calls) == 1, "offline verification must not fetch missing evidence"
+
+
+def test_uncataloged_checkpoint_retains_local_trust_semantics(monkeypatch, tmp_path):
+    from rapid_mlx.model_integrity import verify_cached_checkpoint
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot",
+        lambda *a, **kw: pytest.fail(
+            "unpinned local checkpoint has no remote identity"
+        ),
+    )
+    verify_cached_checkpoint("test/uncataloged-local", tmp_path)
+
+
+@pytest.mark.parametrize("empty_snapshot", [False, True])
+def test_cached_pin_requires_exact_snapshot_with_verifiable_files(
+    tmp_path, empty_snapshot
+):
+    from rapid_mlx.model_integrity import verify_cached_checkpoint
+
+    revision = "a" * 40
+    checkpoint = tmp_path / (revision if empty_snapshot else "other-directory")
+    checkpoint.mkdir()
+    if not empty_snapshot:
+        (checkpoint / "model.safetensors").write_bytes(b"weights")
+    error = (
+        "contains no verifiable files"
+        if empty_snapshot
+        else "not inside its immutable snapshot"
+    )
+    with pytest.raises(ModelIntegrityError, match=error):
+        verify_cached_checkpoint("test/integrity", checkpoint, revision=revision)

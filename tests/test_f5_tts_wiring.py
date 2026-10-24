@@ -239,3 +239,19 @@ def test_f5_rejects_near_silent_reference_below_rms_floor(
     engine = TTSEngine("lucasnewman/f5-tts-mlx")
     with pytest.raises(ValueError, match="non-silent"):
         engine._generate_f5("hello", "ref.wav", "reference", 1.0)
+
+
+def test_f5_engine_load_uses_safe_adapter_once(monkeypatch):
+    model = object()
+    calls = []
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", lambda name: None)
+    monkeypatch.setattr(
+        "rapid_mlx.audio.f5_security.load_f5_checkpoint",
+        lambda name: calls.append(name) or model,
+    )
+    engine = TTSEngine("lucasnewman/f5-tts-mlx")
+    engine.load()
+    engine.load()
+    assert engine.model is model
+    assert engine._loaded
+    assert calls == ["lucasnewman/f5-tts-mlx"]

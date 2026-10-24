@@ -106,3 +106,39 @@ def test_stray_directory_does_not_shadow_registered_text_alias(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     (tmp_path / name).mkdir()
     assert resolve_repository_identity(name) == expected
+
+
+@pytest.mark.parametrize(
+    "lock,error",
+    [
+        ({"schema_version": 2, "repositories": {}}, "incomplete"),
+        (
+            {"schema_version": 1, "errors": ["unresolved repo"], "repositories": {}},
+            "incomplete",
+        ),
+        (
+            {"schema_version": 1, "repositories": {"org/model": {"revision": "main"}}},
+            "Invalid locked",
+        ),
+    ],
+)
+def test_invalid_identity_lock_fails_closed(monkeypatch, lock, error):
+    monkeypatch.setattr("rapid_mlx.model_catalog.json.load", lambda handle: lock)
+    # Exercise parsing independently of the process's already loaded valid lock.
+    with pytest.raises(ValueError, match=error):
+        locked_repositories.__wrapped__()
+
+
+def test_audio_identity_disagreement_is_rejected(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "rapid_mlx.audio.registry.resolve_audio_alias",
+        lambda name: SimpleNamespace(hf_id="org/audio", revision="a" * 40),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_catalog.locked_repositories",
+        lambda: {"org/audio": {"revision": "b" * 40}},
+    )
+    with pytest.raises(ValueError, match="Audio catalog and identity lock disagree"):
+        resolve_repository_identity("org/audio")

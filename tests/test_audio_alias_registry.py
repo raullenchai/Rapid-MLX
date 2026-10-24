@@ -1377,3 +1377,30 @@ class TestVoxcpmDoesNotAdvertiseChinese:
             "``Chinese/English high-quality TTS`` — the de-advertisement "
             "must stop presenting voxcpm as a Chinese/English TTS."
         )
+
+
+@pytest.mark.parametrize("revision", ["main", "A" * 40, "a" * 39, 123])
+def test_registry_rejects_mutable_or_malformed_revision(
+    monkeypatch, tmp_path, revision
+):
+    import json
+
+    from rapid_mlx.audio import registry
+
+    catalog = tmp_path / "aliases.json"
+    catalog.write_text(
+        json.dumps(
+            {
+                "test": {
+                    "hf_id": "example/audio",
+                    "type": "tts",
+                    "family": "kokoro",
+                    "revision": revision,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(registry, "_REGISTRY", None)
+    monkeypatch.setattr(registry, "_registry_path", lambda: str(catalog))
+    with pytest.raises(ValueError, match="full lowercase 40-hex commit"):
+        registry.resolve_audio_alias("test")

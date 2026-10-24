@@ -660,3 +660,74 @@ def _fake_transport_integrity_boundary(monkeypatch):
     monkeypatch.setattr(
         "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
     )
+
+
+@pytest.mark.parametrize("entry", ["snapshot", "file"])
+def test_local_destination_resolves_mutable_ref_before_download(
+    monkeypatch, tmp_path, entry
+):
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub.HfApi,
+        "model_info",
+        lambda self, repo, **kw: (
+            calls.append((repo, kw)) or SimpleNamespace(sha=_REVISION)
+        ),
+    )
+    downloads = []
+
+    def download(repo, *args, **kwargs):
+        downloads.append((repo, kwargs))
+        return str(tmp_path / "weights.bin") if entry == "file" else str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    verified = []
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot",
+        lambda *args, **kw: verified.append(kw),
+    )
+    if entry == "file":
+        model_downloads.hf_hub_download(
+            "test/local-destination",
+            "weights.bin",
+            revision="release",
+            local_dir=tmp_path,
+            token="test-token",
+        )
+    else:
+        model_downloads.snapshot_download(
+            "test/local-destination",
+            revision="release",
+            local_dir=tmp_path,
+            token="test-token",
+        )
+    assert calls == [
+        ("test/local-destination", {"revision": "release", "token": "test-token"})
+    ]
+    assert downloads[0][1]["revision"] == _REVISION
+    assert verified[0]["resolved_revision"] == _REVISION
+
+
+@pytest.mark.parametrize("mode", ["disabled", "local-only", "invalid-hub-sha"])
+def test_local_destination_refuses_unresolved_identity_before_download(
+    monkeypatch, tmp_path, mode
+):
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fail)
+    if mode == "invalid-hub-sha":
+        monkeypatch.setattr(
+            huggingface_hub.HfApi,
+            "model_info",
+            lambda *a, **kw: SimpleNamespace(sha="main"),
+        )
+        error = "Hub did not return an immutable commit"
+    else:
+        monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _fail)
+        error = "Offline local_dir downloads require an immutable revision"
+    model_downloads.configure(mode == "disabled")
+    with pytest.raises(ValueError, match=error):
+        model_downloads.snapshot_download(
+            "test/local-destination",
+            local_dir=tmp_path,
+            local_files_only=mode == "local-only",
+        )

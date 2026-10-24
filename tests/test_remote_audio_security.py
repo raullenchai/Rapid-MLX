@@ -183,3 +183,25 @@ def test_inline_audio_bound_and_array_are_preserved(monkeypatch):
         )
     values = np.array([0.25, 0.5], dtype=np.float32)
     np.testing.assert_array_equal(inputs.load_audio(values, 16000), values)
+
+
+def test_remote_audio_unknown_suffix_uses_decoder_safe_hint(transport):
+    path = Path(mllm.download_audio("https://audio.example/stream.bin"))
+    assert path.suffix == ".wav"
+    assert path.read_bytes() == b"audio"
+    assert transport["response"].closed
+
+
+@pytest.mark.parametrize("uri", ["data:audio/wav;base64", "data:audio/wav,plain"])
+def test_inline_audio_requires_base64_header_and_separator(uri):
+    with pytest.raises(ValueError, match="must contain base64"):
+        mllm.process_audio_input(uri)
+
+
+def test_inline_audio_checks_decoded_size_after_base64_padding(monkeypatch):
+    monkeypatch.setattr(mllm, "MAX_AUDIO_SIZE", 1)
+    # Two bytes encode within the four-character preflight limit for one byte.
+    with pytest.raises(mllm.FileSizeExceededError, match="Inline audio"):
+        mllm.process_audio_input(
+            "data:audio/wav;base64," + base64.b64encode(b"ab").decode()
+        )
