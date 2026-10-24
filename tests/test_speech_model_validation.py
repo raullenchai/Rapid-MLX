@@ -37,6 +37,7 @@ def test_unknown_model_precedes_all_dependency_probes(
     client, monkeypatch, served, model
 ):
     serve(monkeypatch, served)
+    assert audio._served_tts_default() == served
     probe = Mock(side_effect=AssertionError("must validate before dependencies"))
     monkeypatch.setattr("rapid_mlx.audio.probe.require_mlx_audio_tts", probe)
     monkeypatch.setattr("rapid_mlx.audio.probe.require_kokoro_runtime", probe)
