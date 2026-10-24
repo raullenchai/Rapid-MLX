@@ -413,7 +413,10 @@ def test_cli_smoke_speed_save_raw_and_summary(
     tokenizer = tmp_path / "tokenizer.json"
     tokenizer.write_text("{}")
     manifest.pop("sha256")
-    manifest["tokenizer"] = {"file": str(tokenizer)}
+    manifest["tokenizer"] = {
+        "file": str(tokenizer),
+        "sha256": bench.hashlib.sha256(tokenizer.read_bytes()).hexdigest(),
+    }
     manifest["sha256"] = bench.digest(manifest)
     bench.dump(path, manifest)
     monkeypatch.setattr(
@@ -757,3 +760,45 @@ def test_sandbox_launch_denial_is_infrastructure_error(tmp_path, monkeypatch):
         "def f(): return 1", "def check(f): pass", "f", 1, tmp_path
     )
     assert not result["passed"] and "Operation not permitted" in result["error"]
+
+
+@pytest.mark.parametrize("defect", ["name", "arguments", "ids"])
+def test_tool_smoke_rejects_malformed_calls(defect):
+    calls = [
+        call("get_temperature", {"city": "Paris"}),
+        call("get_population", {"city": "Paris"}, "two"),
+    ]
+    if defect == "name":
+        calls[0]["function"]["name"] = "other"
+    elif defect == "arguments":
+        calls[0]["function"]["arguments"] = '{"city":"London"}'
+    else:
+        calls[1]["id"] = calls[0]["id"]
+    result = {
+        "message": {"tool_calls": calls},
+        "usage": {},
+        "finish_reason": "tool_calls",
+    }
+    checks = bench.smoke(SimpleNamespace(chat=lambda *a, **k: result), Tokenizer())
+    tool_checks = [c for c in checks if c["id"].startswith("tools")]
+    assert all(not c["passed"] and "ValueError" in c["error"] for c in tool_checks)
+
+
+def test_tokenizer_mismatch_fails_before_http(tmp_path, monkeypatch):
+    path = tmp_path / "manifest.json"
+    manifest = make_manifest(path)
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text("{}")
+    manifest.pop("sha256")
+    manifest["tokenizer"] = {"file": str(tokenizer), "sha256": "wrong"}
+    manifest["sha256"] = bench.digest(manifest)
+    bench.dump(path, manifest)
+    monkeypatch.setattr(
+        bench.Client, "chat", lambda *a, **k: pytest.fail("unexpected HTTP")
+    )
+    with pytest.raises(ValueError, match="tokenizer digest"):
+        bench.main(
+            ["speed", "--manifest", str(path), "--output", str(tmp_path / "run")]
+        )
+    with pytest.raises(SystemExit):
+        bench.main(["speed", "--timeout", "nan"])

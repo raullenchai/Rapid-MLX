@@ -38,6 +38,7 @@ import argparse
 import ast
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -726,14 +727,17 @@ def smoke(client, tokenizer):
         check = {"id": f"tools_{stream}", "passed": False, "responses": [first]}
         try:
             calls = parse_calls(first["message"])
-            assert valid(first) and sorted(name for name, _ in calls) == [
+            if not valid(first) or sorted(name for name, _ in calls) != [
                 "get_population",
                 "get_temperature",
-            ]
-            assert all(arguments == {"city": "Paris"} for _, arguments in calls)
+            ]:
+                raise ValueError("expected both smoke tool names")
+            if not all(arguments == {"city": "Paris"} for _, arguments in calls):
+                raise ValueError("unexpected smoke tool arguments")
             raw_calls = first["message"]["tool_calls"]
             ids = [c["id"] for c in raw_calls]
-            assert all(ids) and len(set(ids)) == 2
+            if not all(ids) or len(set(ids)) != 2:
+                raise ValueError("smoke tool call IDs must be nonempty and unique")
             messages.append(first["message"])
             for call in raw_calls:
                 value = (
@@ -884,6 +888,7 @@ def main(argv=None):
     if (
         args.code_timeout < 1
         or args.runs < 1
+        or not math.isfinite(args.timeout)
         or args.timeout <= 0
         or args.max_consecutive_errors < 1
         or (args.max_tokens is not None and args.max_tokens < 1)
@@ -989,6 +994,8 @@ def main(argv=None):
         config["actual_tokenizer_sha256"] = hashlib.sha256(
             tokenfile.read_bytes()
         ).hexdigest()
+        if config["actual_tokenizer_sha256"] != manifest["tokenizer"]["sha256"]:
+            raise ValueError("tokenizer digest differs from frozen manifest")
         dump(output / "config.json", config)
         tokenizer = Tokenizer.from_file(str(tokenfile))
         results = (
