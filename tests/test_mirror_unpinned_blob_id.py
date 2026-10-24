@@ -202,7 +202,8 @@ def test_same_size_stale_config_comes_from_hf(tmp_path, monkeypatch):
     # The mirror was asked (and refused), then HF served that one file.
     assert f"{BASE}/{REPO}/config.json" in router.file_urls()
     assert hf_calls == [("config.json", MAIN)]
-    assert out["source"] == "hf"
+    # The weight came from R2, despite the config fallback.
+    assert out["source"] == "mirror"
     assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
     # The rejected bytes left nothing behind under the snapshot or blobs.
     assert not (_repo_root(tmp_path) / "blobs" / _oid(STALE_CONFIG)).exists()

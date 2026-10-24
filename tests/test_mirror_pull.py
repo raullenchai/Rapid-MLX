@@ -4634,6 +4634,128 @@ def test_mirror_download_reports_transfer_account_via_out(
     assert out["source"] == "hf", "one HF fallback makes the pull source HF"
 
 
+def test_mirror_source_tracks_weights_when_readme_falls_back_to_hf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing README must not relabel R2-served weights as HF-served."""
+    repo_id = "mlx-community/Qwen3.5-4B-MLX-4bit"
+    revision = "a" * 40
+    files = [("README.md", 4), ("model.safetensors", 200)]
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(
+            200,
+            json.dumps(
+                _catalog_payload([("qwen3.5-4b-4bit", repo_id, "mirrored")])
+            ).encode(),
+        ),
+    )
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/README.md",
+        _FakeResponse(404, b""),
+    )
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/model.safetensors",
+        _FakeResponse(200, b"x" * 200),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        assert filename == "README.md"
+        repo_root = Path(cache_dir) / f"models--{repo_id.replace('/', '--')}"
+        blob = repo_root / "blobs" / "readme"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"h" * 4)
+        target = repo_root / "snapshots" / revision / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to("../../blobs/readme")
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info", return_value=_mk_model_info(revision, files)
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        assert _mirror.download_with_mirror_fallback(
+            repo_id, cache_dir=tmp_path, out=out
+        )
+
+    assert out["source"] == "mirror"
+
+
+@pytest.mark.parametrize(
+    ("r2_file", "hf_file", "hf_succeeds", "expected_source"),
+    [
+        ("model.npy", "README.md", True, "mirror"),
+        ("model.safetensors", "model.npy", True, "hf"),
+        ("model.npy", "README.md", False, "mirror"),
+        ("model.safetensors", "model.npy", False, "hf"),
+    ],
+)
+def test_npy_transfer_counts_as_weight_for_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    r2_file: str,
+    hf_file: str,
+    hf_succeeds: bool,
+    expected_source: str,
+) -> None:
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "a" * 40
+    files = [(r2_file, 200), (hf_file, 4)]
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(
+            200,
+            json.dumps(
+                _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+            ).encode(),
+        ),
+    )
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/{r2_file}",
+        _FakeResponse(200, b"x" * 200),
+    )
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/{hf_file}",
+        _FakeResponse(404, b""),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        assert filename == hf_file
+        if not hf_succeeds:
+            raise OSError("per-file HF attempt failed")
+        repo_root = Path(cache_dir) / f"models--{repo_id.replace('/', '--')}"
+        blob = repo_root / "blobs" / "hf-file"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"h" * 4)
+        target = repo_root / "snapshots" / revision / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to("../../blobs/hf-file")
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info", return_value=_mk_model_info(revision, files)
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        result = _mirror.download_with_mirror_fallback(
+            repo_id, cache_dir=tmp_path, out=out
+        )
+
+    assert result is hf_succeeds
+    assert out["source"] == expected_source
+
+
 def test_mirror_r2_only_non_lfs_fetch_is_a_transfer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -11482,7 +11482,9 @@ def _pull_repository(
         # serving-choice metadata and therefore performs no marker transition.
         if _owns_variant_marker:
             _sync_pulled_variant_marker(repo_id, _selected_variant)
-        args._telemetry_pull_source = "hf"
+        # A snapshot retry may recover only missing metadata after the mirror
+        # already transferred every weight. Keep that weight-origin verdict.
+        args._telemetry_pull_source = _mirror_out.get("source", "hf")
         args._telemetry_pull_snapshot_dir = path
         args._telemetry_pull_transferred = _was_cached is not True
     except HFValidationError as exc:

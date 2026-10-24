@@ -1483,6 +1483,7 @@ _STREAMED_WEIGHT_SUFFIXES: tuple[str, ...] = (
     ".bin",
     ".gguf",
     ".npz",
+    ".npy",
     ".pt",
     ".pth",
 )
@@ -1754,10 +1755,11 @@ def download_with_mirror_fallback(
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
 
-    ``out`` (optional) receives ``out["source"]`` = ``"mirror"`` only when
-    every file that needed transfer came from the mirror, otherwise ``"hf"``;
-    this is derived from the per-file outcomes below, never mirror
-    configuration. It also receives ``out["transferred_bytes"]`` = the total
+    ``out`` (optional) receives ``out["source"]`` according to the origin of
+    transferred weight files: an HF weight fallback selects ``"hf"``, while
+    R2-served weights select ``"mirror"`` even if metadata falls back to HF.
+    When no weight was transferred, the existing all-file classification is
+    retained. It also receives ``out["transferred_bytes"]`` = the total
     completed-file bytes of every file actually fetched over the wire this
     pull (R2 + HF-fallback only; warm ``cached`` hits are excluded). This is
     the files' on-disk size after download, NOT a byte-exact wire delta: a
@@ -2104,6 +2106,8 @@ def download_with_mirror_fallback(
     # otherwise fall straight to HF. Run a small pool in parallel.
     r2_hits = 0
     hf_hits = 0
+    r2_weight_hits = 0
+    hf_weight_hits = 0
     misses: list[str] = []
     total_bytes = 0
     # Bytes actually transferred over the wire this pull (R2 + HF-fallback
@@ -2505,10 +2509,14 @@ def download_with_mirror_fallback(
                     kind, size = "miss", 0
                 if kind == "r2":
                     r2_hits += 1
+                    if fname.lower().endswith(_STREAMED_WEIGHT_SUFFIXES):
+                        r2_weight_hits += 1
                     total_bytes += size
                     transferred_bytes += size
                 elif kind in ("hf", "hf_streamed"):
                     hf_hits += 1
+                    if fname.lower().endswith(_STREAMED_WEIGHT_SUFFIXES):
+                        hf_weight_hits += 1
                     total_bytes += size
                     transferred_bytes += size
                     # HF fallback's tqdm doesn't feed into the R2 chunk loop,
@@ -2597,11 +2605,18 @@ def download_with_mirror_fallback(
     if out is not None:
         out["transferred_bytes"] = transferred_bytes
         out["network_fetch"] = bool(r2_hits) or bool(hf_hits)
-        # A single HF fallback means the mirror did not serve the complete
-        # checkpoint. Warm cache hits are neutral; when every file was already
-        # present, this successful mirror-managed path retains ``mirror`` as
-        # the selected origin rather than guessing from configuration.
-        out["source"] = "hf" if hf_hits or misses else "mirror"
+        # The event reports the origin of model weights. Missing/stale READMEs
+        # and other metadata still use HF for correctness, but must not turn
+        # an R2-served checkpoint into an HF-served one. A mixed weight pull
+        # counts as HF; with no weight transfer, preserve the former verdict.
+        if hf_weight_hits or any(
+            fname.lower().endswith(_STREAMED_WEIGHT_SUFFIXES) for fname in misses
+        ):
+            out["source"] = "hf"
+        elif r2_weight_hits:
+            out["source"] = "mirror"
+        else:
+            out["source"] = "hf" if hf_hits or misses else "mirror"
 
     if misses:
         if mirror_only:

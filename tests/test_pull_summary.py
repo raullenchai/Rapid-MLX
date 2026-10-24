@@ -31,7 +31,10 @@ import pytest
 
 from rapid_mlx import cli
 from rapid_mlx.telemetry import track as track_module
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
@@ -926,6 +929,37 @@ def test_hf_fallback_event_is_labelled_hf(
     cli.pull_command(argparse.Namespace(model=repo_id, bits=None, format=None))
 
     assert calls[0][1] == "hf"
+
+
+@pytest.mark.parametrize("mirror_source", ["mirror", "hf"])
+def test_snapshot_retry_keeps_weight_source(
+    hub_online_env, monkeypatch, tmp_path, mirror_source
+) -> None:
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "a" * 40
+    cache_root, blob_dir = _hf_snapshot_layout(
+        repo_id, revision, tmp_path, already_cached=False
+    )
+    snapshot = blob_dir.parent / "snapshots" / revision
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    def mirror(_repo_id, *, out, **_kwargs):
+        # Per-file attempts left only metadata unresolved; all transferred
+        # weights have already determined the source.
+        out["source"] = mirror_source
+        out["network_fetch"] = True
+        return False
+
+    def download(*_args, **_kwargs):
+        (snapshot / "README.md").write_text("recovered metadata")
+        return str(snapshot)
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", mirror)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    args = argparse.Namespace(model=repo_id, bits=None, format=None)
+    cli._pull_repository(args, emit_lifecycle_event=False)
+
+    assert args._telemetry_pull_source == mirror_source
 
 
 def test_runtime_asset_pull_suppresses_unpaired_failure_event(monkeypatch):
