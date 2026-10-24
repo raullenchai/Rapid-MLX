@@ -5,6 +5,22 @@ from pathlib import Path
 import yaml
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
+
+
+def test_apple_lane_retains_shared_and_auxiliary_consent_regressions() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    run = _apple_mlx_test_run(workflow)
+    for module in (
+        "test_security_hardening.py",
+        "test_alternate_model_load_security.py",
+        "test_byom_imports.py",
+        "test_dspark_companion.py",
+        "test_native_mtp.py",
+        "test_rerank.py",
+    ):
+        assert run.count(f"tests/{module}") == 1
+
+
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 REQ_CI_LINUX = Path(__file__).parents[1] / "config" / "requirements-ci-linux.txt"
 
