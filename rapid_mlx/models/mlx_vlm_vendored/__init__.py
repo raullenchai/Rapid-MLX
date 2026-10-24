@@ -451,7 +451,8 @@ vendored copy differs by exactly the deviations listed):
   string reached runtime code as a ``str``; and a retained split backup
   that fails cleanup is logged instead of silently left behind. The drafter registry also
   applies Rapid's explicit repository-code consent and path-containment
-  checks before loading a drafter with a ``model_file`` selector, and
+  checks before loading a drafter with a ``model_file`` selector, forwards
+  the resolved consent to the pinned loader, and
   installs a Rapid binding hook: ``load_drafter`` pre-registers a
   package-compatible ``sys.modules`` shim for the loaded family (from
   ``glm5_next_mtp``, ``qwen3_5_mtp``, ``qwen3_dflash``, ``dflash2``)

@@ -743,11 +743,13 @@ def load_drafter(
             """    path = get_model_path(path_or_repo)
     config = _read_drafter_config(path)
     from rapid_mlx.utils.model_file_guard import (
+        remote_code_enabled,
         validate_local_model_file,
         validate_model_code,
     )
 
-    validate_model_code(config, trust_remote_code=kwargs.get("trust_remote_code"))
+    trust = remote_code_enabled(kwargs.pop("trust_remote_code", None))
+    validate_model_code(config, trust_remote_code=trust)
     validate_local_model_file(path)
     peeked = _normalized_drafter_model_type(config)
     install_served_architecture_bindings(peeked)
@@ -809,7 +811,7 @@ def load_drafter(
         family_model.load_weights(list(weights.items()), strict=True)
         mx.eval(family_model.parameters())
         return family_model, resolved
-    return load_model(path, **kwargs), resolved""",
+    return load_model(path, trust_remote_code=trust, **kwargs), resolved""",
             """    path = get_model_path(path_or_repo)
     resolved = resolve_drafter_kind(path, kind)
     return load_model(path, **kwargs), resolved""",
@@ -3757,7 +3759,7 @@ def test_runtime_binds_vendored_registry(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "environment,requested,allowed",
-    [(None, True, True), ("1", False, False), ("0", True, False)],
+    [(None, True, True), ("1", None, True), ("1", False, False), ("0", True, False)],
 )
 def test_drafter_explicit_consent_precedence(
     tmp_path, monkeypatch, environment, requested, allowed
@@ -3785,7 +3787,7 @@ def test_drafter_explicit_consent_precedence(
         assert load_drafter(
             str(tmp_path), kind="dflash", trust_remote_code=requested
         ) == ("model", "dflash")
-        assert calls == [(tmp_path, {"trust_remote_code": requested})]
+        assert calls == [(tmp_path, {"trust_remote_code": True})]
     else:
         with pytest.raises(ValueError, match="executable Python"):
             load_drafter(str(tmp_path), kind="dflash", trust_remote_code=requested)

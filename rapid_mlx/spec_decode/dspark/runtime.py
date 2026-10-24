@@ -67,16 +67,20 @@ def load_runtime(
         load_vlm_with_policy as load,
     )
     from rapid_mlx.utils.model_file_guard import (
+        remote_code_enabled,
         validate_local_model_file,
         validate_model_code,
     )
 
     # The companion uses the qualified upstream drafter registry. Inspect its
     # local snapshot too, before either model can execute checkpoint Python.
-    validate_model_code(_read_config(artifacts.drafter_path))
+    trust = remote_code_enabled()
+    validate_model_code(_read_config(artifacts.drafter_path), trust_remote_code=trust)
     validate_local_model_file(artifacts.drafter_path)
-    model, processor = load(artifacts.target_path)
-    drafter, kind = load_drafter(artifacts.drafter_path, kind=None)
+    model, processor = load(artifacts.target_path, trust_remote_code=trust)
+    drafter, kind = load_drafter(
+        artifacts.drafter_path, kind=None, trust_remote_code=trust
+    )
     if kind != "dflash":
         raise RuntimeError(
             "LFM companion DSpark runtime mismatch: upstream drafter did not "

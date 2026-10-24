@@ -243,7 +243,10 @@ def test_artifact_downloads_pin_both_revisions(monkeypatch, tmp_path) -> None:
     ]
 
 
-def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("consent", [None, "0", "1"])
+def test_runtime_loads_and_attaches_without_fallback(
+    monkeypatch, tmp_path, consent
+) -> None:
     from rapid_mlx.spec_decode.dspark import runtime
     from rapid_mlx.spec_decode.dspark.artifacts import CompanionDSparkArtifacts
 
@@ -252,12 +255,26 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
     processor = SimpleNamespace()
     drafter = SimpleNamespace(accept_lens=[])
     compatibility_calls = []
+    load_calls = []
+    if consent is None:
+        monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", consent)
+    if consent == "1":
+        config = json.loads((draft / "config.json").read_text())
+        config["model_file"] = "custom.py"
+        (draft / "config.json").write_text(json.dumps(config))
+        (draft / "custom.py").write_text("# reviewed drafter")
 
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.load = lambda path, trust_remote_code: (target_model, processor)
+    fake_vlm.load = lambda path, trust_remote_code: (
+        load_calls.append(("target", trust_remote_code)) or (target_model, processor)
+    )
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
     fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
-    fake_drafters.load_drafter = lambda path, kind=None: (drafter, "dflash")
+    fake_drafters.load_drafter = lambda path, kind=None, trust_remote_code=False: (
+        load_calls.append(("drafter", trust_remote_code)) or (drafter, "dflash")
+    )
     fake_drafters.validate_drafter_compatibility = lambda model, draft_model, kind: (
         compatibility_calls.append((model, draft_model, kind))
     )
@@ -276,6 +293,7 @@ def test_runtime_loads_and_attaches_without_fallback(monkeypatch, tmp_path) -> N
 
     assert (model, loaded_processor) == (target_model, processor)
     assert compatibility_calls == [(target_model, drafter, "dflash")]
+    assert load_calls == [("target", consent == "1"), ("drafter", consent == "1")]
     assert handle.algorithm == "dspark"
     assert handle.num_speculative_tokens == 7
     assert handle.draft_block_size == 8
@@ -339,7 +357,10 @@ def test_runtime_rejects_wrong_upstream_draft_kind(monkeypatch, tmp_path) -> Non
     )
     fake_speculative = types.ModuleType("mlx_vlm.speculative")
     fake_drafters = types.ModuleType("mlx_vlm.speculative.drafters")
-    fake_drafters.load_drafter = lambda _path, kind=None: (SimpleNamespace(), "mtp")
+    fake_drafters.load_drafter = lambda _path, kind=None, trust_remote_code=False: (
+        SimpleNamespace(),
+        "mtp",
+    )
     fake_drafters.validate_drafter_compatibility = lambda *_args: None
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
     fake_utils = types.ModuleType("mlx_vlm.utils")
