@@ -459,7 +459,7 @@ def _gemma_turn_eos_ids(tokenizer) -> tuple[int, ...]:
     """
     candidates = (tokenizer, getattr(tokenizer, "_tokenizer", None))
     for candidate in candidates:
-        if any(
+        if candidate is not None and any(
             cls.__name__.startswith("GemmaTokenizer") for cls in type(candidate).__mro__
         ):
             vocab = candidate.get_vocab()
