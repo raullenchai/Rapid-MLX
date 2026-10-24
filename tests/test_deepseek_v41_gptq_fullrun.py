@@ -834,3 +834,61 @@ def test_remote_rejects_unattested_success_response(monkeypatch):
     with pytest.raises(RuntimeError, match="completion is unverified"):
         remote.call("run", argv=[], cwd="/work", log="/work/log")
     assert remote.indeterminate
+
+
+def test_exports_ignore_remote_working_space_after_commit(setup, monkeypatch):
+    args, remote = setup
+    driver = f.Driver(args, remote)
+    remote.fail_export = True
+    with pytest.raises(RuntimeError, match="interrupted export"):
+        driver.run()
+    remote.fail_export = False
+    remote.free = 0
+    monkeypatch.setattr(
+        f.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(free=f.LOCAL_EXPORT_RESERVE + 1000000),
+    )
+    driver.export(0)
+    driver.collect_metadata()
+    assert (args.destination / "layer-0-export.json").is_file()
+    assert (args.destination / "run.json").is_file()
+
+
+@pytest.mark.parametrize("enough", [False, True])
+def test_metadata_download_space_and_durable_publication(setup, monkeypatch, enough):
+    import stat
+
+    args, remote = setup
+    driver = f.Driver(args, remote)
+    args.destination.mkdir()
+    source = remote.path(driver.parts + "/run.json")
+    source.parent.mkdir(parents=True)
+    source.write_text("{}")
+    monkeypatch.setattr(
+        f.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(free=f.LOCAL_EXPORT_RESERVE + (2 if enough else 1)),
+    )
+    events = []
+    real_sync, real_log = f.os.fsync, driver.log
+
+    def sync(fd):
+        events.append("directory" if stat.S_ISDIR(f.os.fstat(fd).st_mode) else "file")
+        real_sync(fd)
+
+    def log(event, **kwargs):
+        if event == "metadata_verified":
+            assert events == ["file", "directory"]
+        real_log(event, **kwargs)
+
+    monkeypatch.setattr(f.os, "fsync", sync)
+    monkeypatch.setattr(driver, "log", log)
+    if enough:
+        driver.collect_metadata()
+        assert (args.destination / "run.json").read_text() == "{}"
+    else:
+        with pytest.raises(ValueError, match="local metadata export space"):
+            driver.collect_metadata()
+        assert not (args.destination / "run.json").exists()
+        assert not any(op == "transfer" for op, _ in remote.events)

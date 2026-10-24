@@ -18,6 +18,9 @@ import time
 from pathlib import Path
 
 HEADROOM = 20_000_000_000
+# Downloads need their payload size plus room for metadata/logs and transient
+# local writes, not the remote worker's 20 GB model-execution reserve.
+LOCAL_EXPORT_RESERVE = 1_000_000_000
 METADATA_TIMEOUT = 3600
 COMMAND_TIMEOUT = 86400
 TRANSFER_TIMEOUT = 86400
@@ -473,10 +476,9 @@ class Driver:
                 if remote["sha256"] != h:
                     raise ValueError("remote part hash mismatch")
                 tmp = target.with_suffix(target.suffix + ".partial")
-                self.room(0)
                 if (
                     shutil.disk_usage(self.a.destination).free
-                    < remote["size"] + HEADROOM
+                    < remote["size"] + LOCAL_EXPORT_RESERVE
                 ):
                     raise ValueError("insufficient local export space")
                 self.r.transfer(self.parts + "/" + name, tmp, False)
@@ -493,10 +495,10 @@ class Driver:
         with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT, prefix="gptq-drift-") as tmp:
             path = Path(tmp) / "heldout-drift.jsonl"
             drift_info = self.r.call("info", path=self.parts + "/heldout-drift.jsonl")
-            self.room(0)
             if (
                 not drift_info
-                or shutil.disk_usage(path.parent).free < drift_info["size"] + HEADROOM
+                or shutil.disk_usage(path.parent).free
+                < drift_info["size"] + LOCAL_EXPORT_RESERVE
             ):
                 raise ValueError(
                     "insufficient local drift export space or missing drift"
@@ -560,11 +562,18 @@ class Driver:
             if info:
                 target = self.a.destination / name
                 temporary = target.with_suffix(target.suffix + ".partial")
-                self.room(0)
+                if (
+                    shutil.disk_usage(self.a.destination).free
+                    < info["size"] + LOCAL_EXPORT_RESERVE
+                ):
+                    raise ValueError("insufficient local metadata export space")
                 self.r.transfer(self.parts + "/" + name, temporary, False)
                 if sha(temporary) != info["sha256"]:
                     raise ValueError("metadata hash mismatch")
+                with temporary.open("rb") as stream:
+                    os.fsync(stream.fileno())
                 temporary.replace(target)
+                sync_parent(target)
                 self.log("metadata_verified", file=name, sha256=info["sha256"])
 
     def cleanup_reference(self, layer):

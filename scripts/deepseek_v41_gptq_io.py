@@ -438,8 +438,20 @@ def entries_from_json(values):
 
 
 def verify_artifact(directory, record):
+    root = Path(directory).resolve()
     for name, sha in record["files"].items():
-        if file_hash(Path(directory) / name) != sha:
+        if (
+            not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+            or name in (".", "..")
+            or "\\" in name
+        ):
+            raise ValueError("unsafe checkpoint artifact name")
+        path = root / name
+        if not path.resolve().is_relative_to(root):
+            raise ValueError("checkpoint artifact escapes parts directory")
+        if file_hash(path) != sha:
             raise ValueError(f"checkpoint artifact changed: {name}")
 
 

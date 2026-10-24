@@ -681,3 +681,26 @@ def test_assembly_flushes_supporting_files_before_publication(tmp_path, monkeypa
         (stage / "README.md").write_text("report")
         (stage / "statistics" / "layer-0.json").write_text("{}")
     assert events[-1] == ("publish", "build")
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "../outside", "/outside", "a/b", "a\\b", 7]
+)
+def test_artifact_names_cannot_escape_parts(tmp_path, monkeypatch, name):
+    from scripts import deepseek_v41_gptq_io as io
+
+    monkeypatch.setattr(io, "file_hash", lambda _: pytest.fail("unsafe artifact read"))
+    with pytest.raises(ValueError, match="unsafe checkpoint artifact"):
+        io.verify_artifact(tmp_path, {"files": {name: "hash"}})
+
+
+def test_artifact_symlink_cannot_escape_parts(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    (tmp_path / "outside").write_text("private")
+    (parts / "layer.bin").symlink_to(tmp_path / "outside")
+    monkeypatch.setattr(io, "file_hash", lambda _: pytest.fail("outside artifact read"))
+    with pytest.raises(ValueError, match="escapes parts"):
+        io.verify_artifact(parts, {"files": {"layer.bin": "hash"}})
