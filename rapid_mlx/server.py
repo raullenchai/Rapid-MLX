@@ -349,7 +349,8 @@ def _resolve_api_key(argv_value: str | None) -> str | None:
 
     Argv-inline (``--api-key X``) wins for backwards-compat with
     existing scripts; otherwise we fall back to the ``RAPID_MLX_API_KEY``
-    env var. The env-var form keeps the bearer key out of ``argv``
+    env var. Explicit empty or whitespace-only values are invalid; only
+    absent values disable auth. The env-var form keeps keys out of ``argv``
     (visible to ``ps -ef`` for any local user) — this is the path
     rapid-desktop's sidecar shim uses to avoid the codex BLOCKER #3
     "bearer-in-shell-history" leak.
@@ -359,7 +360,19 @@ def _resolve_api_key(argv_value: str | None) -> str | None:
     a model — a regression here is the bug the dogfood-v0.8.2 finding
     #3 exposed, so a test-via-the-real-code path matters.
     """
-    return argv_value or os.environ.get("RAPID_MLX_API_KEY")
+    key = argv_value if argv_value is not None else os.environ.get("RAPID_MLX_API_KEY")
+    if key is not None and not key.strip():
+        source = "--api-key" if argv_value is not None else "RAPID_MLX_API_KEY"
+        raise ValueError(
+            f"{source} must be a non-empty string; "
+            + (
+                "omit the flag"
+                if argv_value is not None
+                else "unset the environment variable"
+            )
+            + " to run without authentication"
+        )
+    return key
 
 
 # Per-request body size cap (DoS defense). 0 disables. Resolved from

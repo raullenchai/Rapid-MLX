@@ -13,8 +13,8 @@ SSOT and routes both entrypoints (``cli.py``'s ``rapid-mlx serve`` and
 ``rapid-mlx serve`` banner reads the same SSOT via
 ``rapid_mlx.cli._auth_feature_str``. These tests call into both helpers
 directly so a refactor that drops the env-var branch fails them;
-mutation-testing the production code (removing the ``or`` clause)
-flips them red.
+Blank explicit values fail closed instead of falling through to another
+source or disabling authentication.
 
 A live-subprocess test boots a real ``rapid-mlx serve`` with the
 bearer in env-only and asserts: (a) ``psutil.Process.cmdline()`` —
@@ -76,14 +76,66 @@ def test_api_key_neither_set_is_none(monkeypatch):
     assert _resolve_api_key(argv_value=None) is None
 
 
-def test_api_key_empty_string_argv_falls_back_to_env(monkeypatch):
-    """Edge case: an empty ``--api-key ""`` should not silently disable
-    auth when the env var is set. The ``or`` short-circuit means env
-    wins because empty string is falsy."""
+@pytest.mark.parametrize("key", ["", " ", "\t\r\n", "\u2003"])
+@pytest.mark.parametrize("env_key", [None, "", "ENV_FALLBACK"])
+def test_api_key_blank_argv_is_rejected(monkeypatch, key, env_key):
     from rapid_mlx.server import _resolve_api_key
 
-    monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_FALLBACK")
-    assert _resolve_api_key(argv_value="") == "ENV_FALLBACK"
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    if env_key is not None:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", env_key)
+    with pytest.raises(ValueError, match="--api-key must be a non-empty string"):
+        _resolve_api_key(key)
+
+
+@pytest.mark.parametrize("key", ["", " ", "\t\r\n", "\u2003"])
+def test_api_key_blank_env_is_rejected(monkeypatch, key):
+    from rapid_mlx.server import _resolve_api_key
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", key)
+    with pytest.raises(
+        ValueError, match="RAPID_MLX_API_KEY must be a non-empty string"
+    ):
+        _resolve_api_key(None)
+    assert _resolve_api_key("ARGV_SECRET") == "ARGV_SECRET"
+
+
+def test_api_key_nonblank_value_is_not_modified(monkeypatch):
+    from rapid_mlx.server import _resolve_api_key
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", " secret ")
+    assert _resolve_api_key(None) == " secret "
+    assert _resolve_api_key(" other ") == " other "
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "cli-cua", "server"])
+@pytest.mark.parametrize("source", ["argv", "env"])
+@pytest.mark.parametrize("key", ["", " ", "\t\r\n"])
+def test_blank_key_rejected_before_startup(
+    monkeypatch, capsys, entrypoint, source, key
+):
+    from rapid_mlx import cli, local_search_runtime, server
+    from rapid_mlx.cli_parser import build_parser
+
+    def unexpected_startup(*args, **kwargs):
+        pytest.fail("invalid key reached runtime configuration")
+
+    monkeypatch.setattr(local_search_runtime, "configure", unexpected_startup)
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    options = ["--api-key", key] if source == "argv" else []
+    if source == "env":
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key)
+    with pytest.raises(SystemExit) as error:
+        if entrypoint.startswith("cli"):
+            mode = ["--cua-only"] if entrypoint == "cli-cua" else ["example"]
+            cli.serve_command(build_parser().parse_args(["serve", *mode, *options]))
+        else:
+            monkeypatch.setattr(sys, "argv", ["server", *options])
+            server.main.__wrapped__()
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "must be a non-empty string" in message
+    assert "to run without authentication" in message
 
 
 # ---------------------------------------------------------------------------

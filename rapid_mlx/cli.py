@@ -5716,7 +5716,9 @@ def _serve_cua_only_mode(args) -> None:
     import os
     import sys
 
-    configured_api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    from .server import _resolve_api_key
+
+    configured_api_key = _resolve_api_key(args.api_key)
     if not configured_api_key:
         print(
             "rapid-mlx serve --cua-only requires an API key via --api-key or "
