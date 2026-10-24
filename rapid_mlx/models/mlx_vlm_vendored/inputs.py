@@ -72,7 +72,7 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
                 and Path(image_source).is_file()
             ):
                 image_source = str(Path(image_source).resolve())
-            if isinstance(image_source, str) and urlsplit(image_source).scheme in (
+            if isinstance(image_source, str) and urlsplit(image_source).scheme.lower() in (
                 "http",
                 "https",
             ):
@@ -436,14 +436,14 @@ def load_video(
         and Path(video_path).is_file()
     ):
         video_path = str(Path(video_path).resolve())
-    if urlsplit(video_path).scheme in ("http", "https"):
+    if urlsplit(video_path).scheme.lower() in ("http", "https"):
         from rapid_mlx.models.mllm import download_video
 
         video_path = download_video(video_path)
-    elif urlsplit(video_path).scheme and not video_path.startswith("file://"):
+    elif urlsplit(video_path).scheme and video_path[:7].lower() != "file://":
         raise ValueError("Remote video URL must use http(s)")
 
-    if video_path.startswith("file://"):
+    if video_path[:7].lower() == "file://":
         video_path = str(Path(video_path[7:]).resolve())
 
     cap = cv2.VideoCapture(video_path)

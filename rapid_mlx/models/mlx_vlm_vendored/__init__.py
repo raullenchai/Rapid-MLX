@@ -217,13 +217,14 @@ vendored copy differs by exactly the deviations listed):
     and ``load_video``: remote URLs use the shared DNS-pinned media downloader
     before decoding, including redirect checks and size bounds. Audio data
     URIs are decoded to bounded in-memory bytes. Transport resources close on
-    success and failure.
+    success and failure. URI schemes are case-insensitive, and file URIs
+    resolve to local paths before decoding.
 
   The
   lane's ``prepare_inputs`` call sites (``multimodal_processor.py``,
   ``mllm_batch_generator.py``) resolve this module; per-function upstream
   parity is probed in ``tests/test_mlx_vlm_vendored_inputs.py`` (all
-  functions except ``processor_video_sampling``, ``load_video``,
+  functions except ``processor_video_sampling``, ``load_image``, ``load_video``,
   ``load_audio``, and ``prepare_inputs``, which carry the hunks above).
   A diff against the pinned tag must show only the header/import block
   and the documented hunks.

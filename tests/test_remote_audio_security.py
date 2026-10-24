@@ -159,7 +159,7 @@ def test_vendored_audio_rejects_private_url_before_decoder(
 
 
 @pytest.mark.parametrize("kind", ["image", "video"])
-@pytest.mark.parametrize("scheme", ["http", "HTTP"])
+@pytest.mark.parametrize("scheme", ["http", "HTTP", "https", "HTTPS"])
 def test_vendored_other_decoders_reject_private_url(inputs, transport, kind, scheme):
     transport["addresses"] = ["127.0.0.1"]
     with pytest.raises(mllm.RemoteMediaFetchError):
@@ -252,7 +252,8 @@ def test_remote_audio_decodes_valid_wav(inputs, transport):
     np.testing.assert_array_equal(result, np.zeros(16))
 
 
-def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path):
+@pytest.mark.parametrize("source_kind", ["https", "file", "FILE"])
+def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path, source_kind):
     cv2 = pytest.importorskip("cv2")
     local = tmp_path / "source.mp4"
     writer = cv2.VideoWriter(str(local), cv2.VideoWriter_fourcc(*"mp4v"), 2, (16, 16))
@@ -263,13 +264,21 @@ def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path):
     finally:
         writer.release()
     transport["response"] = Response(local.read_bytes(), {"content-type": "video/mp4"})
+    source = (
+        "https://media.example/video.mp4"
+        if source_kind == "https"
+        else f"{source_kind}://{local}"
+    )
     frames, metadata = inputs.load_video(
-        "https://media.example/video.mp4",
+        source,
         inputs.VideoSampling(nframes=1, min_frames=1, max_frames=1, frame_factor=1),
     )
     assert len(frames) == 1
     assert metadata.total_num_frames == 2
-    assert transport["response"].closed
+    if source_kind == "https":
+        assert transport["response"].closed
+    else:
+        assert transport["requests"] == []
 
 
 def test_local_colon_audio_filename_is_not_a_protocol(tmp_path, monkeypatch):
@@ -288,9 +297,9 @@ def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch):
     assert inputs.load_image(path.name).size == (2, 2)
 
 
-@pytest.mark.parametrize("file_uri", [False, True])
+@pytest.mark.parametrize("prefix", ["", "file://", "FILE://"])
 def test_local_colon_video_filename_reaches_local_decoder(
-    inputs, tmp_path, monkeypatch, file_uri
+    inputs, tmp_path, monkeypatch, prefix
 ):
     cv2 = pytest.importorskip("cv2")
     monkeypatch.chdir(tmp_path)
@@ -310,7 +319,7 @@ def test_local_colon_video_filename_reaches_local_decoder(
 
     monkeypatch.setattr(cv2, "VideoCapture", Capture)
     with pytest.raises(ValueError, match="Cannot open video"):
-        inputs.load_video("file://" + path.name if file_uri else path.name)
+        inputs.load_video(prefix + path.name)
     assert seen == [str(path)]
 
 
