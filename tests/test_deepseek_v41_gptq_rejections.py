@@ -493,3 +493,62 @@ def test_promoted_layout_cannot_exceed_resident_budget(tmp_path, source, monkeyp
         with pytest.raises(ValueError, match="cumulative resident"):
             b.run_layer(source, c, parts, scratch, 0, guard)
     assert not (parts / "layer-0-complete.json").exists()
+
+
+@pytest.mark.parametrize("group", [32, 64])
+def test_dense_unpacked_source_shape_matches_completed_artifact(
+    tmp_path, monkeypatch, group
+):
+    from tests import test_deepseek_v41_streaming_teacher as teacher
+
+    original = teacher.tiny_config
+    monkeypatch.setattr(
+        teacher, "tiny_config", lambda: {**original(), "q_lora_rank": 32}
+    )
+    teacher.write_source(tmp_path / "source")
+    source = PartialSource(tmp_path / "source", inventory(tmp_path / "source"))
+    c = b.recipe(
+        {"group_size": group, "prefill_chunk": 2, "ffn_chunk": 2, "keep_mtp": False}
+    )
+    entries, _ = b.output_plan(source, c)
+    name = "layers.0.attn.wq_b.weight"
+    entry = next(e for e in entries if e.name == name)
+    assert entry.bits == (4 if group == 32 else None)
+    with b.MemoryGuard(c) as guard:
+        b.initialize(
+            source,
+            c,
+            [np.array([1, 2])],
+            tmp_path / "state",
+            tmp_path / "parts",
+            "cal",
+            guard,
+            token_map=list(range(32)),
+        )
+        b.run_layer(source, c, tmp_path / "parts", tmp_path / "state", 0, guard)
+    actual = mx.load(str(tmp_path / "parts/model-layer-0.safetensors"))
+    assert actual[name].shape == entry.shape
+    assert actual[name].dtype == (mx.uint32 if group == 32 else mx.bfloat16)
+    assert not any(".module." in n for n in actual)
+
+
+def test_dense_fixed_affine_policy_is_preserved(source, monkeypatch, tmp_path):
+    from scripts.deepseek_v41_rd_build import output_entries
+
+    c = b.recipe({"group_size": 128})
+    entries = output_entries(
+        "layers.0.attn.wq_a.weight",
+        (32, 64),
+        ("layers.0.attn.wq_a.weight",),
+        "attention_other_8bit",
+        8,
+    )
+    monkeypatch.setattr(b, "plan", lambda *a: (entries, {}, {}))
+    planned, _ = b.output_plan(source, c)
+    assert planned == entries
+    block = b.bounded_block(source, 0, c)
+    assert block.attn.wq_a.bits == 8 and block.attn.wq_a.group_size == 64
+    with b.MemoryGuard(c) as guard:
+        _, packed, _ = b.prepare_attention(source, 0, c, block, [], tmp_path, guard)
+    assert "attn.wq_a" not in packed
+    assert not isinstance(block.attn.wq_a, b.Probe)

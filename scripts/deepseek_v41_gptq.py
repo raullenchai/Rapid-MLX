@@ -167,7 +167,14 @@ def output_plan(source, c, layer=None, counts=None):
             )
         elif local in DENSE:
             i = int(base.split(".")[1])
-            shape = (*e.shape[:-1], e.shape[-1] * 32 // e.bits)
+            shape = (
+                e.shape
+                if e.bits is None
+                else (*e.shape[:-1], e.shape[-1] * 32 // e.bits)
+            )
+            if shape[-1] % c["group_size"]:
+                changed.extend(x for x in entries if x.name.rsplit(".", 1)[0] == base)
+                continue
             bits = 8 if i in c["dense_8bit_layers"] else c["dense_bits"]
             changed.extend(
                 output_entries(
@@ -586,7 +593,9 @@ def bounded_block(source, layer, c, *, original=False):
 
     # Fixed policy remains the existing eight-bit policy, including grouped wo_a.
     def pred(name, module):
-        if name in DENSE or not hasattr(module, "to_quantized"):
+        if not hasattr(module, "to_quantized"):
+            return False
+        if name in DENSE and module.weight.shape[-1] % c["group_size"] == 0:
             return False
         w = module.weight
         shape = w.shape if w.ndim == 2 else (math.prod(w.shape[:-1]), w.shape[-1])
@@ -1367,7 +1376,7 @@ def prepare_attention(source, layer, c, block, windows, work, guard):
     for name in DENSE[:4]:
         module = module_at(block, name)
         # Shapes that cannot use native affine groups retain the fixed policy.
-        if module.weight.shape[-1] % c["group_size"]:
+        if hasattr(module, "scales") or module.weight.shape[-1] % c["group_size"]:
             continue
         probe = Probe(module, guard)
         probes[name] = probe
