@@ -1259,7 +1259,11 @@ class ToolDefinition(BaseModel):
         params = (
             self.function.get("parameters") if isinstance(self.function, dict) else None
         )
-        if "parameters" in self.function and not isinstance(params, dict):
+        if (
+            isinstance(self.function, dict)
+            and "parameters" in self.function
+            and not isinstance(params, dict)
+        ):
             raise ValueError("function.parameters must be a JSON object")
         if isinstance(params, dict):
             cap = resolve_max_tool_schema_depth()

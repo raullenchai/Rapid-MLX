@@ -133,7 +133,7 @@ class TestMessage:
                 {
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "get_weather"},
+                    "function": {"name": "get_weather", "arguments": "{}"},
                 }
             ],
         )
@@ -200,7 +200,7 @@ class TestMessage:
                 {
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "noop"},
+                    "function": {"name": "noop", "arguments": "{}"},
                 }
             ],
         )
