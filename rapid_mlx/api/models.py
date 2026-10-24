@@ -950,6 +950,8 @@ class Message(BaseModel):
             for field in ("id", "type"):
                 if not isinstance(call.get(field), str):
                     raise ValueError(f"{prefix}.{field} must be a string")
+            if call["type"] != "function":
+                raise ValueError(f'{prefix}.type must be "function"')
             function = call.get("function")
             if not isinstance(function, dict):
                 raise ValueError(f"{prefix}.function must be a JSON object")

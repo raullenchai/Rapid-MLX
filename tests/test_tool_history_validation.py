@@ -55,7 +55,8 @@ def client():
         for value in (MISSING, None, 7, True, [], {})
         if not (field == "function" and value == {})
     ]
-    + [("function", "bad")],
+    + [("function", "bad")]
+    + [("type", value) for value in ("not_function", "", "FUNCTION", "tool")],
 )
 def test_malformed_call_returns_field_named_400(client, field, value):
     call = deepcopy(CALL)
