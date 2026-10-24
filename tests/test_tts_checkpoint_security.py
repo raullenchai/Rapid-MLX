@@ -7,8 +7,9 @@ import sys
 import types
 from pathlib import Path
 
-import mlx.core as mx
 import pytest
+
+mx = pytest.importorskip("mlx.core", reason="VoxCPM tensor conversion requires MLX")
 
 from rapid_mlx.audio.tts import TTSEngine
 

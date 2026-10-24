@@ -164,3 +164,25 @@ and catalog checks. Pixel owns the historical slim-to-full-app migration.
 Production merge/release/deployment is not performed by this audit. Orca role
 messaging was unavailable; implementation and independent review were
 coordinated with the three task subagents and recorded here.
+
+## Local review and CI follow-up
+
+The owner selected an independent Codex process on Studio for formal review.
+Round 1 found two valid regressions: cached loading could reuse previously
+rejected bytes, and an alias resolved to an external local directory could
+enter Hub downloading. Both now have positive and negative regression coverage.
+Text/image warm loading checks selected content offline against packaged
+manifests or prior snapshot-scoped verification evidence. External directories
+retain intentional local semantics.
+
+CI follow-up also preserves modality-specific cache completeness, warm pinned
+image disk checks, typed Kimi loading errors, and Linux temporary-file behavior.
+Synthetic transport tests now mock the owned download boundary; actual integrity
+tests continue to reject altered bytes. Portable tests keep running on Linux,
+while tests requiring MLX are classified in the Apple lane. The CLI snapshot
+includes the intentional public-listening consent flag.
+
+The expanded combined selection passed **3,824 tests**, with one existing
+opt-in full-model DFlash skip and zero failures (86 files, 223.76 seconds).
+Repository Ruff lint/format checks passed; the type-error budget did not grow.
+This evidence does not substitute for required GitHub CI or the next review.

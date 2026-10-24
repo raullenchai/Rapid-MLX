@@ -1609,6 +1609,9 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch, hub_online_env):
     """`_ensure_model_downloaded` must gate on `_check_disk_space` so a
     user without room for a 20 GB model fails fast with a clear error
     instead of a 90 % partial download."""
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     # Force the cache-miss path so we reach the download branch.
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache", lambda *_a, **_kw: None
@@ -1685,6 +1688,9 @@ def test_ensure_model_downloaded_pins_resolved_sha_and_records_main_ref(
     monkeypatch, hub_online_env
 ):
     """The bounded probe result must replace, not precede, an unbounded lookup."""
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     from types import SimpleNamespace
 
     from rapid_mlx import _download_gate as gate

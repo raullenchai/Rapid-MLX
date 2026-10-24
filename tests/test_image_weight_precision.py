@@ -164,6 +164,10 @@ def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys)
 
 @pytest.mark.requires_mlx
 def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
+    # These constructors receive synthetic local paths, not checkpoint bytes.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_cached_checkpoint", lambda *a, **kw: None
+    )
     engine = ImageGenerationEngine(FLUX2_KLEIN_BF16_REPO)
     constructor_kwargs = {}
     built_model = object()
@@ -251,6 +255,10 @@ def test_real_bf16_single_file_layout_is_complete(monkeypatch, tmp_path):
 
 def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatch):
     """Do not download moving main and then the pinned 16 GB snapshot again."""
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
 
     from rapid_mlx import cli
 
@@ -292,7 +300,6 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
         "mirror": expected,
         "metadata": expected,
         "download": expected,
-        "ref": expected,
     }
 
 
@@ -328,7 +335,7 @@ def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch, tm
     (refs / "main").write_text(main_revision)
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
 
-    assert download_gate.is_repo_cached(FLUX2_KLEIN_BF16_REPO) is True
+    assert download_gate.is_repo_cached(FLUX2_KLEIN_BF16_REPO) is False
     assert (
         download_gate._snapshot_is_complete_mflux_model(FLUX2_KLEIN_BF16_REPO) is False
     )

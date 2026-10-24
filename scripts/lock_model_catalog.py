@@ -145,8 +145,11 @@ def inspect(repo, selection):
         "cached_main_ref": cached,
         "configs": configs,
         "lfs_files": files,
-        "git_files": {entry.rfilename: {"blob_id": entry.blob_id, "size": entry.size}
-                      for entry in info.siblings if not entry.lfs},
+        "git_files": {
+            entry.rfilename: {"blob_id": entry.blob_id, "size": entry.size}
+            for entry in info.siblings
+            if not entry.lfs
+        },
     }
 
 

@@ -288,7 +288,7 @@ def test_text_only_defaults_delegation_and_model_inputs() -> None:
 def test_local_optional_metadata_miss_never_falls_through_to_hub(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import huggingface_hub
+    from rapid_mlx import model_downloads as huggingface_hub
 
     def fail(*_args, **_kwargs):
         raise AssertionError("local checkpoint must not make a Hub request")
@@ -310,7 +310,7 @@ def test_json_metadata_local_remote_and_invalid_shapes(
 
     downloaded = tmp_path / "downloaded.json"
     downloaded.write_text('{"remote":true}')
-    import huggingface_hub
+    from rapid_mlx import model_downloads as huggingface_hub
 
     monkeypatch.setattr(
         huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: downloaded
@@ -392,7 +392,7 @@ def test_from_pretrained_builds_local_processor(monkeypatch, tmp_path: Path) -> 
 def test_from_pretrained_forwards_hub_identity_to_all_metadata(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import huggingface_hub
+    from rapid_mlx import model_downloads as huggingface_hub
 
     metadata = tmp_path / "metadata.json"
     metadata.write_text("{}")
@@ -502,6 +502,7 @@ patch.install_glm5_next_processor_patch = lambda: events.append("processor")
 quant_patch.install_glm5_next_forget_gate_quant_fix = lambda: events.append("quant")
 runtime_patch.install_glm5_next_runtime_fix = lambda: events.append("runtime")
 mllm._require_mlx_vlm = lambda: None
+mllm._resolve_checkpoint = lambda name: name
 
 import mlx_vlm
 import mlx_vlm.utils
@@ -535,6 +536,7 @@ def test_mllm_load_enables_moe_fusion_for_glm5(monkeypatch) -> None:
     model = SimpleNamespace(config=SimpleNamespace())
     processor = SimpleNamespace(tokenizer=SimpleNamespace())
     fused = []
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
     monkeypatch.setattr(

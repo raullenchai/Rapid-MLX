@@ -129,16 +129,44 @@ def verify_snapshot(
                 **locked.get("lfs_files", {}),
             }.items()
         ]
+    elif local_files_only:
+        # A partial warm checkpoint may be covered by a prior broader pull.
+        # Reuse only exact-snapshot, manifest-scoped digest evidence; modified
+        # bytes still go through hashing below, never a presence-only shortcut.
+        known = {}
+        for receipt in receipt_root.glob("*.json"):
+            try:
+                proof = json.loads(receipt.read_text())
+                if (
+                    proof.get("repo"),
+                    proof.get("commit"),
+                    proof.get("snapshot"),
+                    proof.get("lock_identity"),
+                ) != (repo_id, commit, str(path.absolute()), lock_identity):
+                    continue
+                known.update(proof["files"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        if exact is None or not exact or any(name not in known for name in exact):
+            raise ModelIntegrityError(
+                "Offline integrity verification requires a packaged manifest or verified receipts for selected files; run an online pull first"
+            )
+        siblings = []
+        for name in exact:
+            digest = known[name]["digest"]
+            siblings.append(
+                {
+                    "rfilename": name,
+                    "size": known[name]["stat"][2],
+                    "lfs": {"sha256": digest} if len(digest) == 64 else None,
+                    "blob_id": digest if len(digest) == 40 else None,
+                }
+            )
     else:
         from huggingface_hub import HfApi
+        from huggingface_hub.errors import RevisionNotFoundError
 
         from rapid_mlx._download_gate import call_with_deadline
-
-        if local_files_only:
-            raise ModelIntegrityError(
-                "Offline integrity verification requires a packaged manifest or an unchanged verified receipt; run an online pull first"
-            )
-        from huggingface_hub.errors import RevisionNotFoundError
 
         try:
             info = call_with_deadline(
@@ -244,6 +272,8 @@ def verify_snapshot(
                     "repo": repo_id,
                     "commit": commit,
                     "patterns": patterns,
+                    "snapshot": str(path.absolute()),
+                    "lock_identity": lock_identity,
                     "files": verified,
                 },
                 handle,
@@ -251,3 +281,41 @@ def verify_snapshot(
         os.replace(temporary, receipt_path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def verify_cached_checkpoint(repo_id, checkpoint_path, *, revision=None):
+    """Verify existing checkpoint files at the loader boundary, without fetching.
+
+    The caller must first establish its runtime-specific completeness contract.
+    Optional repository assets need not be present; every existing selected file
+    must belong to and match the immutable manifest. Inventory scans don't call
+    this function. Explicit local model directories retain local semantics.
+    """
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    canonical, catalog_revision = resolve_repository_identity(repo_id)
+    revision = revision or catalog_revision
+    if revision is None:
+        return
+    checkpoint = Path(checkpoint_path)
+    snapshot = next(
+        (p for p in (checkpoint, *checkpoint.parents) if p.name == revision), None
+    )
+    if snapshot is None:
+        raise ModelIntegrityError(
+            "Cached checkpoint is not inside its immutable snapshot"
+        )
+    filenames = sorted(
+        str(path.relative_to(snapshot).as_posix())
+        for path in checkpoint.rglob("*")
+        if path.is_file() and ".cache" not in path.relative_to(checkpoint).parts
+    )
+    if not filenames:
+        raise ModelIntegrityError("Cached checkpoint contains no verifiable files")
+    verify_snapshot(
+        canonical,
+        snapshot,
+        revision=revision,
+        filenames=filenames,
+        local_files_only=True,
+    )

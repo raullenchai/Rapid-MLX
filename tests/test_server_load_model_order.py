@@ -1419,9 +1419,13 @@ def test_routing_integrity_failure_never_falls_back_to_mirror(monkeypatch):
     from rapid_mlx.model_integrity import ModelIntegrityError
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
-    monkeypatch.setattr("huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="a" * 40))
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="a" * 40)
+    )
+
     def corrupt(*args, **kwargs):
         raise ModelIntegrityError("content hash mismatch")
+
     monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", corrupt)
     with pytest.raises(ModelIntegrityError, match="content hash mismatch"):
         server._prefetch_routing_metadata("publisher/model")

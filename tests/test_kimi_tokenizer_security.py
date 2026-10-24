@@ -152,11 +152,29 @@ def test_reviewed_source_provenance():
                 "from .vocabulary import load_local_bpe",
                 "from tiktoken.load import load_tiktoken_bpe",
             ).replace("load_local_bpe(vocab_file)", "load_tiktoken_bpe(vocab_file)")
+        # Explicit type-only deviations must still reconstruct exact upstream bytes.
+        type_changes = {
+            "additional_special_tokens: List[str] = None,": "additional_special_tokens: Optional[List[str]] = None,",
+            "self._token_config_cache = OrderedDict()": "self._token_config_cache: OrderedDict[str, Any] = OrderedDict()",
+            "return super().encode(text, **kwargs)": "return cast(List[int], super().encode(text, **kwargs))",
+            "all_substrs = []": "all_substrs: List[str] = []",
+            "return super().decode(token_ids, **kwargs)": "return cast(str, super().decode(token_ids, **kwargs))",
+            "return self.model.decode(cast(List[int], token_ids))": "return cast(str, self.model.decode(cast(List[int], token_ids)))",
+            "def _convert_id_to_token(self, index: int) -> str:": "def _convert_id_to_token(self, index: int) -> Optional[str]:",
+        }
+        if filename == "tool_declaration_ts.py":
+            type_changes = {
+                "self.definitions = {}": "self.definitions: dict[str, dict[str, Any]] = {}"
+            }
+        for original, annotated in type_changes.items():
+            assert annotated in source
+            source = source.replace(annotated, original)
         assert hashlib.sha256(source.encode()).hexdigest() == expected
 
 
 @pytest.mark.parametrize("trust", [None, "0"])
 @pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.requires_mlx
 def test_public_loader_uses_native_model_and_data_tokenizer(
     tokenizer, monkeypatch, trust, lazy
 ):

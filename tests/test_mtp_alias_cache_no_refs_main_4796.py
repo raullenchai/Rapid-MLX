@@ -19,6 +19,16 @@ CONFIG = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
+    original_profile = model_aliases.resolve_profile
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda name: (
+            replace(original_profile(name), revision=None)
+            if original_profile(name)
+            else None
+        ),
+    )
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
     sidecar = tmp_path / "models--mlx-community--Qwen3.5-9B-MTP-4bit"
     _snapshot(sidecar)

@@ -820,7 +820,9 @@ def test_reap_public_loader_uses_native_weights_and_tokenizer_without_repo_pytho
     config = json.loads((repro / "config.json").read_text())
     config["model_file"] = "glm_moe_dsa.py"
     (repro / "config.json").write_text(json.dumps(config))
-    (repro / "glm_moe_dsa.py").write_text("raise AssertionError('repository Python executed')\n")
+    (repro / "glm_moe_dsa.py").write_text(
+        "raise AssertionError('repository Python executed')\n"
+    )
     tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]"))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer.save(str(repro / "tokenizer.json"))

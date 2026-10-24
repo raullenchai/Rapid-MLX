@@ -253,6 +253,10 @@ def test_sdxl_snapshot_is_pinned_and_requires_every_runtime_file(
 def test_cold_engine_download_uses_exact_revision_and_data_only_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     import huggingface_hub
 
     calls = []

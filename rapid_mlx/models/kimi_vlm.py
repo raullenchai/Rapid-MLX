@@ -53,6 +53,7 @@ def load_kimi_processor(model_path):
 def load_kimi_vlm(model_path, *, adapter_path=None, lazy=False, strict=True, **kwargs):
     from mlx_vlm.utils import apply_lora_layers, load_model
 
+    from ..model_load_errors import typed_mlx_load_boundaries
     from ..utils.model_file_guard import validate_model_code
 
     path = Path(model_path)
@@ -62,9 +63,10 @@ def load_kimi_vlm(model_path, *, adapter_path=None, lazy=False, strict=True, **k
     # This adapter deliberately owns the executable implementation.
     validate_model_code(config, trust_remote_code=False)
     kwargs.pop("trust_remote_code", None)
-    model = load_model(
-        path, lazy=lazy, strict=strict, trust_remote_code=False, **kwargs
-    )
+    with typed_mlx_load_boundaries():
+        model = load_model(
+            path, lazy=lazy, strict=strict, trust_remote_code=False, **kwargs
+        )
     if adapter_path is not None:
         model = apply_lora_layers(model, adapter_path)
         model.eval()

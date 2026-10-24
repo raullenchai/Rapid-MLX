@@ -49,13 +49,16 @@ def run_gate(tmp_path, cached=None, download=b"trusted interpreter"):
     block = "PBS_URL=" + block.split("# ----- step 1.5:", 1)[0]
     # Replace transport, not validation: the real script must reject a valid tar
     # carrying unexpected bytes, before extraction or any interpreter execution.
-    script = """set -euo pipefail
+    script = (
+        """set -euo pipefail
 curl() {
     touch "$OUT_DIR/download-attempted"
     while [ "$1" != "-o" ]; do shift; done
     cp "$OUT_DIR/download.tar.gz" "$2"
 }
-""" + block
+"""
+        + block
+    )
     env = dict(
         os.environ,
         PBS_TAG="test",

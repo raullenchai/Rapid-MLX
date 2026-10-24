@@ -431,6 +431,9 @@ class ImageGenerationEngine:
 
         snapshot = mflux_local_snapshot(self.model_name)
         if snapshot is not None:
+            from ..model_integrity import verify_cached_checkpoint
+
+            verify_cached_checkpoint(self.model_name, snapshot)
             return snapshot
         pinned_revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
         if pinned_revision is None:
@@ -502,6 +505,10 @@ class ImageGenerationEngine:
                     "SD3.5 Large requires its pinned model and text-encoder assets. "
                     "Re-run the model download to finish them."
                 )
+            from ..model_integrity import verify_cached_checkpoint
+
+            verify_cached_checkpoint(SD35_SHARED_REPO, shared_path)
+            verify_cached_checkpoint(SD35_T5_TOKENIZER_REPO, t5_tokenizer_path)
             return SD35Large(
                 model_path,
                 shared_path,

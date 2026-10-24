@@ -19,6 +19,15 @@ protection against a local account that can rewrite both. Download resume
 behavior is unchanged. A mismatch stops completion without deleting blobs or
 resume data; repair the named cached file and rerun the pull.
 
+Cached catalog text checkpoints and pinned image runtime assets also verify
+content at the loading boundary. A previous failed pull cannot become accepted
+merely because its retained files look complete. Warm checks cover the selected
+checkpoint's existing files, so absent optional repository assets or other
+quantizations do not force a download. The runtime's separate completeness check
+still requires its necessary files. Packaged manifests and matching prior
+receipts support offline loading; explicitly configured local model directories
+retain their local trust semantics. Inventory scans do not hash model weights.
+
 SAM-Audio's main checkpoint and lazy T5 encoder prefer safetensors. Numeric
 legacy `checkpoint.pt` / `pytorch_model.bin` state dictionaries remain supported
 through explicit `weights_only=True` on stable PyTorch 2.10 or newer. Unsafe

@@ -17,7 +17,8 @@ OTHER_SHA = "b" * 40
 CONFIG = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 
 
-def snapshot(cache, repo, sha=SHA, weight="model.safetensors"):
+def snapshot(cache, repo, sha=None, weight="model.safetensors"):
+    sha = sha or model_aliases.resolve_revision(repo) or SHA
     root = cache / ("models--" + repo.replace("/", "--"))
     path = root / "snapshots" / sha
     path.mkdir(parents=True, exist_ok=True)

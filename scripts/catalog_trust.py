@@ -125,7 +125,9 @@ def catalog_changes(
                         continue
                     pin = asset.get("revision") if isinstance(asset, dict) else None
                     if not isinstance(pin, str) or not SHA.fullmatch(pin):
-                        errors.append(f"{alias}.{family}: changed runtime asset requires a full 40-hex revision")
+                        errors.append(
+                            f"{alias}.{family}: changed runtime asset requires a full 40-hex revision"
+                        )
         if new is None or alias.startswith("_"):
             continue
         source_field = "hf_id" if path == "rapid_mlx/audio/aliases.json" else "hf_path"

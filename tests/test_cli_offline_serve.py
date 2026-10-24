@@ -768,4 +768,6 @@ def test_ensure_model_downloaded_does_not_refuse_offline_on_probe_fault(
 @pytest.fixture(autouse=True)
 def _synthetic_download_integrity(monkeypatch):
     # Offline policy tests fake successful transport without model bytes.
-    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )

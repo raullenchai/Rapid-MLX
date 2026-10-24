@@ -538,6 +538,16 @@ def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
         captured.update(kwargs)
         raise _SentinelError()
 
+    monkeypatch.setattr(
+        srv,
+        "_resolve_serving_checkpoint",
+        lambda *a, **kw: srv._ServingCheckpoint(
+            model_path="local/checkpoint",
+            load_path="local/checkpoint",
+            auto_text_fallback=False,
+            lane_reason="test text alias",
+        ),
+    )
     monkeypatch.setattr(srv, "BatchedEngine", _spy_batched_engine)
 
     # No routing overrides — the alias pin is the ONLY thing that can set
@@ -585,7 +595,7 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, **kwargs):
             # Mirror mlx's exact strict-load format: `Missing N parameters:`
             # header where N equals the number of `,\n`-joined names, list
             # terminated by a single `.`. All 60 names are vision-tower tensors.
@@ -594,11 +604,12 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def load_config(_name, **kwargs):
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", _FakeMlxVlmUtils)
+    monkeypatch.setattr(mllm_mod, "_resolve_checkpoint", lambda name: name)
 
     # Avoid the global instance count guard
     inst = mllm_mod.MLXMultimodalLM(model_name="fake/incomplete-vlm")
@@ -656,7 +667,7 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, **kwargs):
             # Vision tensors AND a language-backbone tensor are both absent:
             # this is corruption, not a text-only fork.
             raise ValueError(
@@ -668,11 +679,12 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def load_config(_name, **kwargs):
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", _FakeMlxVlmUtils)
+    monkeypatch.setattr(mllm_mod, "_resolve_checkpoint", lambda name: name)
 
     inst = mllm_mod.MLXMultimodalLM(model_name="fake/corrupt-vlm")
 
@@ -3151,16 +3163,17 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
 
     class _FakeMlxVlm:
         @staticmethod
-        def load(_name):
+        def load(_name, **kwargs):
             raise ValueError("config.json has an invalid model_type field")
 
     class _FakeMlxVlmUtils:
         @staticmethod
-        def load_config(_name):
+        def load_config(_name, **kwargs):
             return {}
 
     monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", _FakeMlxVlmUtils)
+    monkeypatch.setattr(mllm_mod, "_resolve_checkpoint", lambda name: name)
 
     inst = mllm_mod.MLXMultimodalLM(model_name="fake/bad-config")
 

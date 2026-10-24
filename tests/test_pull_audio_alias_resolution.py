@@ -141,4 +141,6 @@ def test_main_pull_full_hf_path_unchanged(monkeypatch) -> None:
 def _mock_integrity_for_download_orchestration(monkeypatch):
     # These tests fake transport/snapshot bytes; real hashing and failure ordering
     # are exercised independently in test_model_integrity.py.
-    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )

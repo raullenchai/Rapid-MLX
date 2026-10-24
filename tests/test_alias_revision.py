@@ -21,6 +21,7 @@ UNPINNED = "example/unregistered-model"
 
 
 @pytest.mark.parametrize("name", [ALIAS, REPO])
+@pytest.mark.requires_mlx
 def test_vlm_loaders_honor_catalog_revision(name, monkeypatch, tmp_path):
     import mlx_vlm
     import mlx_vlm.utils
@@ -51,6 +52,7 @@ def test_vlm_loaders_honor_catalog_revision(name, monkeypatch, tmp_path):
     assert calls == [((str(tmp_path),), {"trust_remote_code": False})]
 
 
+@pytest.mark.requires_mlx
 def test_vlm_catalog_revision_cannot_be_overridden(monkeypatch):
     from rapid_mlx.utils.model_file_guard import resolve_vlm_checkpoint
 
@@ -58,6 +60,7 @@ def test_vlm_catalog_revision_cannot_be_overridden(monkeypatch):
         resolve_vlm_checkpoint(ALIAS, revision=OTHER)
 
 
+@pytest.mark.requires_mlx
 def test_vlm_catalog_pin_resolution_failure_never_uses_head(monkeypatch):
     import mlx_vlm.utils
 
@@ -664,4 +667,26 @@ def test_launch_warm_pinned_cache_has_no_download_label(
 def mock_integrity_boundary_for_resolution_fixtures(monkeypatch):
     # These tests synthesize cache layouts/transport results, not valid weights.
     # Byte verification and rejection are covered in test_model_integrity.
-    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
+
+
+@pytest.mark.requires_mlx
+def test_pinned_alias_resolved_to_explicit_external_root_stays_local(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+
+    (tmp_path / "config.json").write_text("{}")
+    monkeypatch.setattr(aliases, "external_model_root_paths", lambda: [str(tmp_path)])
+    monkeypatch.setattr(aliases, "_managed_hub_model_is_runnable", lambda name: False)
+    monkeypatch.setattr(
+        aliases, "_resolve_external_model_path", lambda name: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._mirror.pinned_snapshot_download",
+        lambda *a, **kw: pytest.fail("local root sent to Hub"),
+    )
+    assert aliases.resolve_revision(ALIAS) == PIN
+    assert _resolve_subfolder_checkpoint(ALIAS) == str(tmp_path)

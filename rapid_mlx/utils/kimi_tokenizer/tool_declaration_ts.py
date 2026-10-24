@@ -20,7 +20,7 @@ class _SchemaRegistry:
     """Registry for schema definitions to handle $ref resolution"""
 
     def __init__(self):
-        self.definitions = {}
+        self.definitions: dict[str, dict[str, Any]] = {}
         self.has_self_ref = False
 
     def register_definitions(self, defs: dict[str, Any]):

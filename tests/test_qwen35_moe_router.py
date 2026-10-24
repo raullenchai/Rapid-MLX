@@ -216,6 +216,7 @@ def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch, spec_decode):
     processor = SimpleNamespace(tokenizer=SimpleNamespace())
     fused = []
     routed = []
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
     monkeypatch.setattr(
@@ -327,6 +328,7 @@ class TestExtendedVLMContract:
         model = TinyVLMMoE(n_layers=1)
         model.config = type("Config", (), {})()
         processor = type("Processor", (), {"tokenizer": type("Tokenizer", (), {})()})()
+        monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
         monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
         monkeypatch.setattr(mlx_vlm, "load", lambda *a, **kw: (model, processor))
         monkeypatch.setattr(

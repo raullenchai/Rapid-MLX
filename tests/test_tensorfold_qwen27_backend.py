@@ -83,7 +83,7 @@ def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
     from rapid_mlx import cli
 
     source = inspect.getsource(cli.serve_command)
-    assert source.index("_preflight_tensorfold_qwen27_or_exit()") < source.index(
+    assert source.index("_preflight_tensorfold_qwen27_or_exit(") < source.index(
         "download_qualified_pair"
     )
 
@@ -118,7 +118,7 @@ def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
         calls.append((repo, revision))
         return str(next(paths))
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", download)
     monkeypatch.setattr(adapter, "validate_pair", lambda a, b: calls.append((a, b)))
     result = adapter.download_qualified_pair()
     assert result.target_path == str(target)

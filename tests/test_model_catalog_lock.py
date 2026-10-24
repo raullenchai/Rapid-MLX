@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shipped identity locks preserve explicit snapshots without downloading weights."""
+
 import json
 from pathlib import Path
 
@@ -13,13 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_all_shipped_primary_and_nested_repositories_have_matching_pins():
     locked = locked_repositories()
-    for relative, field in [("aliases.json", "hf_path"), ("audio/aliases.json", "hf_id")]:
+    for relative, field in [
+        ("aliases.json", "hf_path"),
+        ("audio/aliases.json", "hf_id"),
+    ]:
         catalog = json.loads((ROOT / "rapid_mlx" / relative).read_text())
         for name, entry in catalog.items():
             if name.startswith("_"):
                 continue
             assert entry["revision"] == locked[entry[field]]["revision"], name
-            assert resolve_repository_identity(name) == (entry[field], entry["revision"])
+            assert resolve_repository_identity(name) == (
+                entry[field],
+                entry["revision"],
+            )
         for assets in catalog.get("_runtime_assets", {}).values():
             for asset in assets:
                 assert asset["revision"] == locked[asset["repo_id"]]["revision"]
@@ -28,6 +35,7 @@ def test_all_shipped_primary_and_nested_repositories_have_matching_pins():
 def test_auxiliary_default_and_existing_image_pins_are_preserved():
     from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
     from rapid_mlx.video.wan import WAN_REVISIONS
+
     locked = locked_repositories()
     for repo, revision in {**IMAGE_MODEL_REVISIONS, **WAN_REVISIONS}.items():
         assert locked[repo]["revision"] == revision
@@ -57,26 +65,42 @@ def test_local_directory_wins_over_alias(tmp_path, monkeypatch):
 def test_new_audio_and_runtime_asset_sources_require_full_pin(revision):
     entry = {"hf_id": "org/model", "revision": revision}
     assert catalog_changes({}, {"audio": entry}, "rapid_mlx/audio/aliases.json")[1]
-    assets = {"_runtime_assets": {"family": [{"repo_id": "org/asset", "revision": revision}]}}
+    assets = {
+        "_runtime_assets": {"family": [{"repo_id": "org/asset", "revision": revision}]}
+    }
     assert catalog_changes({}, assets, "rapid_mlx/audio/aliases.json")[1]
 
 
 def test_pinned_audio_and_runtime_asset_sources_still_require_review():
     pin = "a" * 40
-    after = {"audio": {"hf_id": "org/model", "revision": pin},
-             "_runtime_assets": {"family": [{"repo_id": "org/asset", "revision": pin}]}}
+    after = {
+        "audio": {"hf_id": "org/model", "revision": pin},
+        "_runtime_assets": {"family": [{"repo_id": "org/asset", "revision": pin}]},
+    }
     changed, errors = catalog_changes({}, after, "rapid_mlx/audio/aliases.json")
     assert set(changed) == {"audio", "_runtime_assets"}
     assert not errors
 
 
-@pytest.mark.parametrize("path", ["rapid_mlx/model_catalog.py", "rapid_mlx/model_catalog_lock.json", "scripts/lock_model_catalog.py", "rapid_mlx/model_integrity.py", "rapid_mlx/server_exposure.py", "rapid_mlx/audio/f5_security.py", "rapid_mlx/audio/voxcpm_security.py"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "rapid_mlx/model_catalog.py",
+        "rapid_mlx/model_catalog_lock.json",
+        "scripts/lock_model_catalog.py",
+        "rapid_mlx/model_integrity.py",
+        "rapid_mlx/server_exposure.py",
+        "rapid_mlx/audio/f5_security.py",
+        "rapid_mlx/audio/voxcpm_security.py",
+    ],
+)
 def test_new_security_controls_require_review(path):
     assert is_trust_control(path)
 
 
 def test_stray_directory_does_not_shadow_registered_text_alias(tmp_path, monkeypatch):
     from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
+
     name = "lfm2.5-2.6b-4bit"
     expected = (resolve_hub_model(name), resolve_revision(name))
     monkeypatch.chdir(tmp_path)

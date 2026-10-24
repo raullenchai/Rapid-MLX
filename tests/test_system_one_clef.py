@@ -180,6 +180,21 @@ def test_clef_uses_official_joint_head_result(monkeypatch):
 def test_clef_backend_loads_pinned_checkpoint_without_remote_code(
     monkeypatch, device, expected_device
 ):
+    import importlib.metadata
+
+    installed_version = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda package: (
+            {"torch": "2.11.0", "transformers": "5.15.0"}.get(package)
+            or installed_version(package)
+        ),
+    )
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     torch = pytest.importorskip("torch")
     import huggingface_hub
 
@@ -237,7 +252,14 @@ def test_clef_backend_rejects_bad_setup(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="torch>=2.11"):
         ClefBackend("clef-flash", device="cpu")
-    monkeypatch.setattr(importlib.metadata, "version", original_version)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda package: (
+            {"torch": "2.11.0", "transformers": "5.15.0"}.get(package)
+            or original_version(package)
+        ),
+    )
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="Apple Metal/MPS"):
         ClefBackend("clef-flash", device="gpu")

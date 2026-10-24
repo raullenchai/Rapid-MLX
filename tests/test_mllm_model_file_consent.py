@@ -6,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 @pytest.mark.parametrize(
     "environment,requested", [(None, None), ("0", None), ("0", True)]

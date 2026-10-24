@@ -70,7 +70,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         eos_token: Union[str, AddedToken] = "[EOS]",
         unk_token: Union[str, AddedToken, None] = None,
         pad_token: Union[str, AddedToken, None] = None,
-        additional_special_tokens: List[str] = None,
+        additional_special_tokens: Optional[List[str]] = None,
         added_tokens_decoder: Optional[dict] = None,
         **kwargs,
     ):
@@ -141,7 +141,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
             if i in self.decoder:
                 self.encoder[self.decoder[i]] = i
 
-        self._token_config_cache = OrderedDict()
+        self._token_config_cache: OrderedDict[str, Any] = OrderedDict()
         self._cache_max_size = 128
 
         super().__init__(
@@ -174,7 +174,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         #   e.g. split_special_tokens' default is True in our encode method.
         if len(kwargs) > 0:
             logger.warning(f"Calling super().encode with {kwargs}")
-            return super().encode(text, **kwargs)
+            return cast(List[int], super().encode(text, **kwargs))
 
         assert type(text) is str
 
@@ -189,7 +189,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         texts = self.pre_tokenizer_process(text)
 
-        all_substrs = []
+        all_substrs: List[str] = []
         for text in texts:
             substrs = (
                 substr for i in range(0, len(text), TIKTOKEN_MAX_ENCODE_CHARS)
@@ -230,12 +230,12 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         # If there are other args, we should call super().decode because there are a lot of code
         # to handle those args. supper().encode finally will call convert_tokens_to_string and _convert_id_to_token.
         if len(kwargs) > 0:
-            return super().decode(token_ids, **kwargs)
+            return cast(str, super().decode(token_ids, **kwargs))
 
         if type(token_ids) is int:
             token_ids = [token_ids]
 
-        return self.model.decode(cast(List[int], token_ids))
+        return cast(str, self.model.decode(cast(List[int], token_ids)))
 
     @staticmethod
     def _split_whitespaces_or_nonwhitespaces(
@@ -284,7 +284,7 @@ class TikTokenTokenizer(PreTrainedTokenizer):
     def _convert_token_to_id(self, token: str) -> int:
         return self.encoder.get(token, self.unk_id)
 
-    def _convert_id_to_token(self, index: int) -> str:
+    def _convert_id_to_token(self, index: int) -> Optional[str]:
         return self.decoder.get(index)
 
     @staticmethod

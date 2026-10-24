@@ -392,15 +392,16 @@ def test_worker_conversion_rejects_repository_code_before_converter(
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     (tmp_path / "config.json").write_text('{"model_file": "custom.py"}')
     (tmp_path / "custom.py").write_text('raise AssertionError("must not execute")')
-    import mlx_lm
-    import mlx_lm.utils
-
-    import rapid_mlx.utils.tokenizer as tokenizer
-
-    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
-    monkeypatch.setattr(mlx_lm.utils, "_download", lambda source: tmp_path)
+    tokenizer = types.ModuleType("rapid_mlx.utils.tokenizer")
+    tokenizer._register_vendored_archs = lambda: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.utils.tokenizer", tokenizer)
+    utils = types.ModuleType("mlx_lm.utils")
+    utils._download = lambda source: tmp_path
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
     called = []
-    monkeypatch.setattr(mlx_lm, "convert", lambda **kwargs: called.append(kwargs))
+    mlx_lm = types.ModuleType("mlx_lm")
+    mlx_lm.convert = lambda **kwargs: called.append(kwargs)
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
     with pytest.raises(ValueError, match="model_file"):
         worker.convert("org/untrusted", str(tmp_path / "output"), 4, 64)
     assert called == []

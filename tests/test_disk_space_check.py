@@ -206,6 +206,22 @@ class TestDiskSpaceCheck:
         cache_lookup.assert_not_called()
         statvfs.assert_not_called()
 
+    def test_complete_image_cache_does_not_hide_an_explicit_other_revision(self):
+        """A warm catalog pin cannot satisfy a different requested commit."""
+        from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+        repo = "stabilityai/stable-diffusion-xl-base-1.0"
+        other = "b" * 40
+        assert other != IMAGE_MODEL_REVISIONS[repo]
+        info = SimpleNamespace(sha=other, siblings=[])
+        with (
+            patch("rapid_mlx._download_gate.mflux_missing_weights", return_value=[]),
+            patch("huggingface_hub.model_info", return_value=info) as metadata,
+            patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+        ):
+            _check_disk_space(repo, revision_override=other)
+        metadata.assert_called_once_with(repo, revision=other, files_metadata=True)
+
     def test_partial_mflux_cache_counts_only_missing_files(self, tmp_path):
         """A partial component cache requires space only for missing weights."""
         cached_transformer = tmp_path / "transformer.safetensors"

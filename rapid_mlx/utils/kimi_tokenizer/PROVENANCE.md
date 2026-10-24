@@ -23,3 +23,7 @@ Explicit local checkpoints remain operator-owned data.
 
 Native MLX `kimi_k25` handles model architecture. This adapter preserves the
 upstream thinking defaults, tool declarations, and special-token behavior.
+
+Type-only annotations and typing.cast calls are documented as explicit reversible
+patches in test_reviewed_source_provenance. That test reconstructs and hashes the
+exact upstream bytes; no inference or tokenization behavior changes.

@@ -242,6 +242,10 @@ def test_pull_fetches_all_three_exact_allowlisted_snapshots(
 def test_engine_ensures_only_missing_pinned_runtime_assets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)
@@ -304,7 +308,11 @@ def test_direct_pull_of_an_auxiliary_repo_keeps_generic_semantics(
     args = SimpleNamespace(model=repo)
     cli.pull_command(args)
 
-    assert calls == [((args,), {})]
+    from rapid_mlx.model_catalog import resolve_repository_identity
+
+    assert calls == [
+        ((args,), {"revision_override": resolve_repository_identity(repo)[1]})
+    ]
 
 
 @pytest.mark.requires_mlx
@@ -504,6 +512,10 @@ def test_sd35_cancellation_restores_cached_modulation_weights() -> None:
 def test_engine_build_dispatch_progress_cancel_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # These constructors receive synthetic local paths, not checkpoint bytes.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_cached_checkpoint", lambda *a, **kw: None
+    )
     from rapid_mlx.image import sd35_runtime
 
     built = []

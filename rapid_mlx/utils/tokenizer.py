@@ -1233,6 +1233,10 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     from ..model_aliases import resolve_model, resolve_revision, resolve_subfolder
 
     repo_id = resolve_model(model_name)
+    # Explicit operator-configured local roots retain local semantics even when
+    # their catalog alias also has an immutable Hub identity.
+    if Path(repo_id).expanduser().is_dir():
+        return str(Path(repo_id).expanduser())
     revision = resolve_revision(model_name)
     if revision is not None:
         from .._mirror import pinned_snapshot_download
@@ -1244,9 +1248,15 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
         subfolder = explicit_subfolder or pulled_variant(repo_id) or catalog_subfolder
         cached = resolve_pinned_cached_snapshot(model_name)
         if cached is not None and subfolder == catalog_subfolder:
+            from ..model_integrity import verify_cached_checkpoint
+
+            verify_cached_checkpoint(repo_id, cached, revision=revision)
             return str(cached)
-        patterns = ([f"{_escape_variant_glob_literal(subfolder)}/*"]
-                    if subfolder else subfolder_allow_patterns(model_name))
+        patterns = (
+            [f"{_escape_variant_glob_literal(subfolder)}/*"]
+            if subfolder
+            else subfolder_allow_patterns(model_name)
+        )
         local = pinned_snapshot_download(repo_id, revision, allow_patterns=patterns)
         checkpoint = os.path.join(local, subfolder or "")
         if not _snapshot_is_complete(checkpoint):
@@ -1568,7 +1578,8 @@ def load_model_with_fallback(
             lazy_load_kwargs["model_config"] = rapid_owned_model_config
         if (
             rapid_owned_model_config is not None
-            and (_read_model_config_json(model_name) or {}).get("model_type") == "kimi_k25"
+            and (_read_model_config_json(model_name) or {}).get("model_type")
+            == "kimi_k25"
             and not (Path(model_name) / "tokenizer.json").is_file()
         ):
             from mlx_lm.utils import load_model

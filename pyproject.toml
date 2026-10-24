@@ -419,6 +419,7 @@ ci-linux = [
     "psutil>=5.9.0",
     "transformers>=5.0.0,!=5.13.0,<5.16",
     "tokenizers>=0.19.0",
+    "tiktoken>=0.5.0",
     "huggingface-hub>=1.1.0",
     "numpy>=1.24.0",
     # Imported directly by the vendored LTX-2.5 runtime; also a transitive
@@ -757,6 +758,9 @@ exclude = [
     # the repository-wide Python gate should not mechanically rewrite them.
     "*.md",
     "rapid_mlx/models/deepseek_v4*.py",
+    # Kimi provenance reconstructs exact upstream bytes plus type-only patches.
+    "rapid_mlx/utils/kimi_tokenizer/tokenization.py",
+    "rapid_mlx/utils/kimi_tokenizer/tool_declaration_ts.py",
     "rapid_mlx/models/gemma4_vendored/*.py",
     "rapid_mlx/models/mlx_vlm_vendored/*.py",
     "rapid_mlx/models/hy_v3.py",

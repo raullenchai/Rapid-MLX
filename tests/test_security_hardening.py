@@ -176,10 +176,17 @@ def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
 
 
 def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch, tmp_path):
+    from rapid_mlx.audio.sa3.models.defs import checkpoint_security
     from rapid_mlx.audio.sa3.models.defs.checkpoint_security import (
         load_torch_checkpoint,
     )
 
+    # Linux does not provide a writable /private; retain the private-copy
+    # hash/deserialize contract using its platform temporary directory.
+    monkeypatch.setattr(checkpoint_security.sys, "platform", "linux")
+    monkeypatch.setattr(
+        checkpoint_security.tempfile, "gettempdir", lambda: str(tmp_path)
+    )
     calls: list[bool] = []
 
     def fake_load(_path, *, map_location, weights_only):
@@ -193,6 +200,7 @@ def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch, tm
     )
     monkeypatch.setenv("RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE", "1")
     import hashlib
+
     checkpoint = tmp_path / "legacy.ckpt"
     checkpoint.write_bytes(b"reviewed legacy artifact")
     with pytest.raises(RuntimeError, match="Refusing unsafe pickle fallback"):
@@ -200,7 +208,10 @@ def test_sa3_checkpoint_unsafe_fallback_requires_explicit_opt_in(monkeypatch, tm
     monkeypatch.setenv("RAPID_MLX_SA3_TRUSTED_SHA256", "0" * 64)
     with pytest.raises(RuntimeError, match="does not match"):
         load_torch_checkpoint(checkpoint)
-    monkeypatch.setenv("RAPID_MLX_SA3_TRUSTED_SHA256", hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+    monkeypatch.setenv(
+        "RAPID_MLX_SA3_TRUSTED_SHA256",
+        hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+    )
     calls.clear()
     assert load_torch_checkpoint(checkpoint) == {"state_dict": {}}
     assert calls == [True, False]

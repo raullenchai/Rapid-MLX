@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from rapid_mlx.models.kimi_vlm import load_kimi_processor, load_kimi_vlm
 
 

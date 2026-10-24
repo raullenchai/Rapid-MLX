@@ -1164,7 +1164,7 @@ def test_generic_eager_loader_normalizes_missing_tokenizer_config(
     utils.load_model = lambda _path, **_kwargs: (model, {})
 
     def load_tokenizer(_path, config, *, eos_token_ids):
-        assert config == {}
+        assert config == {"trust_remote_code": False}
         assert eos_token_ids is None
         return tokenizer
 

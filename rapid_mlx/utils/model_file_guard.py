@@ -145,7 +145,7 @@ def resolve_vlm_checkpoint(
 
         return Path(_resolve_subfolder_checkpoint(name))
     subfolder = resolve_subfolder(name)
-    options = {"revision": revision}
+    options: dict[str, object] = {"revision": revision}
     if subfolder is not None:
         options["allow_patterns"] = [f"{subfolder}/*"]
     snapshot = Path(get_model_path(resolve_hub_model(name), **options))

@@ -292,3 +292,105 @@ def test_missing_explicit_pin_uses_validated_mirror_manifest(snapshot, monkeypat
     manifest["file_inventory"].append("missing")
     with pytest.raises(ModelIntegrityError, match="no valid exact-revision"):
         verify_snapshot("test/integrity", path, revision=path.name)
+
+
+@pytest.mark.parametrize("subfolder", ["", "4bit"])
+def test_cached_catalog_load_reverifies_rejected_bytes_and_allows_partial_offline(
+    tmp_path, monkeypatch, subfolder
+):
+    import json
+    from pathlib import Path
+
+    from rapid_mlx import model_aliases, model_catalog
+    from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+
+    repo, commit = "test/cached-integrity", "c" * 40
+    snapshot = tmp_path / "models--test--cached-integrity" / "snapshots" / commit
+    checkpoint = snapshot / subfolder
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+    weight = checkpoint / "model.safetensors"
+    weight.write_bytes(b"valid tensors")
+    records = {
+        str(file.relative_to(snapshot)): {
+            "sha256": hashlib.sha256(file.read_bytes()).hexdigest(),
+            "size": file.stat().st_size,
+        }
+        for file in checkpoint.iterdir()
+    }
+    # Optional repository data and other variants were never downloaded.
+    records["optional/other.safetensors"] = {"sha256": "0" * 64, "size": 10}
+    lock = {"repositories": {repo: {"revision": commit, "lfs_files": records}}}
+    read_text = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, *a, **kw: (
+            json.dumps(lock)
+            if path.name == "model_catalog_lock.json"
+            else read_text(path, *a, **kw)
+        ),
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(model_aliases, "resolve_model", lambda name: repo)
+    monkeypatch.setattr(model_aliases, "resolve_hub_model", lambda name: repo)
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: commit)
+    monkeypatch.setattr(
+        model_aliases, "resolve_subfolder", lambda name: subfolder or None
+    )
+    monkeypatch.setattr(model_aliases, "checkpoint_prefix", lambda name: subfolder)
+    monkeypatch.setattr(
+        model_catalog, "resolve_repository_identity", lambda name: (repo, commit)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._mirror.pinned_snapshot_download",
+        lambda *a, **kw: pytest.fail("complete partial cache must not download"),
+    )
+    assert _resolve_subfolder_checkpoint("cached-alias") == str(checkpoint)
+    weight.write_bytes(b"wrong tensors")
+    names = [str(file.relative_to(snapshot)) for file in checkpoint.iterdir()]
+    with pytest.raises(ModelIntegrityError, match="hash mismatch"):
+        verify_snapshot(repo, snapshot, revision=commit, filenames=names)
+    # A retry remains structurally complete, but cannot reach the actual loader.
+    with pytest.raises(ModelIntegrityError, match="hash mismatch"):
+        _resolve_subfolder_checkpoint("cached-alias")
+    assert weight.read_bytes() == b"wrong tensors"
+
+
+def test_cached_custom_pin_reuses_full_pull_proof_offline(snapshot, monkeypatch):
+    from rapid_mlx.model_integrity import verify_cached_checkpoint
+
+    path, info, calls = snapshot
+    verify_snapshot("test/integrity", path, revision=path.name)
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info",
+        lambda *a, **kw: pytest.fail("warm verification must be offline"),
+    )
+    verify_cached_checkpoint("test/integrity", path, revision=path.name)
+    (path / "model.safetensors").write_bytes(b"wrong data!")
+    with pytest.raises(ModelIntegrityError, match="hash mismatch"):
+        verify_cached_checkpoint("test/integrity", path, revision=path.name)
+
+
+def test_warm_image_loader_rejects_previously_failed_weights(snapshot, monkeypatch):
+    from rapid_mlx.image.engine import ImageGenerationEngine
+
+    path, info, calls = snapshot
+    verify_snapshot("test/integrity", path, revision=path.name)
+    monkeypatch.setattr(
+        "rapid_mlx.model_catalog.resolve_repository_identity",
+        lambda name: (name, path.name),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda name: str(path)
+    )
+    engine = object.__new__(ImageGenerationEngine)
+    engine._packaged_checkpoint = True
+    engine.family = "sdxl-base"
+    engine.model_name = "test/integrity"
+    assert engine._model_path_for_mflux() == str(path)
+    (path / "model.safetensors").write_bytes(b"wrong data!")
+    with pytest.raises(ModelIntegrityError):
+        verify_snapshot("test/integrity", path, revision=path.name)
+    with pytest.raises(ModelIntegrityError):
+        engine._model_path_for_mflux()

@@ -501,6 +501,7 @@ def test_standalone_entrypoint_stashes_endpoint_and_runs_real_seam(
             "--no-mllm",
             "--host",
             "0.0.0.0",
+            "--allow-unauthenticated-public",
             "--port",
             str(unused_tcp_port),
         ],
@@ -563,6 +564,9 @@ def test_dflash_runner_defers_its_existing_banner_to_callback(monkeypatch, capsy
     mlx_vlm = ModuleType("mlx_vlm")
     mlx_vlm.load = lambda *_args, **_kwargs: (object(), object())
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", mlx_vlm.load
+    )
     monkeypatch.setattr(dflash_server, "have_runtime", lambda: True)
     monkeypatch.setattr(dflash_server, "load_runtime", lambda *_a, **_k: object())
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
@@ -610,6 +614,9 @@ def test_native_mtp_runner_defers_its_existing_banner_to_callback(monkeypatch, c
     mlx_vlm = ModuleType("mlx_vlm")
     mlx_vlm.load = lambda *_args, **_kwargs: (object(), object())
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", mlx_vlm.load
+    )
     runtime = SimpleNamespace(
         drafter=SimpleNamespace(bind=lambda _model: None),
         kind="mtp",
@@ -722,6 +729,9 @@ def test_dflash_loader_failure_is_prepare_stage(monkeypatch):
         RuntimeError("target load failed")
     )
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", mlx_vlm.load
+    )
     monkeypatch.setattr(dflash_server, "have_runtime", lambda: True)
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
     stages: list[str] = []
@@ -752,6 +762,9 @@ def test_native_mtp_loader_failure_is_prepare_stage(monkeypatch):
         RuntimeError("target load failed")
     )
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy", mlx_vlm.load
+    )
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
     stages: list[str] = []
     monkeypatch.setattr(server_start, "failed", stages.append)

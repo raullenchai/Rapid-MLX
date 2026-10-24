@@ -71,7 +71,10 @@ def _seed_alias_cache(monkeypatch, tmp_path, *, with_weights: bool):
 
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / ("models--" + resolved.replace("/", "--"))
-    sha = "seed0000seed0000seed0000seed0000seed0000"
+    from rapid_mlx.model_aliases import resolve_revision
+
+    sha = resolve_revision(resolved)
+    assert sha is not None
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     blobs = repo_root / "blobs"

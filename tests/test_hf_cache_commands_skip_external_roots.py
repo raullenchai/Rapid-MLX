@@ -66,6 +66,10 @@ def test_serve_still_uses_external_folder(external_model, monkeypatch):
 def test_pull_downloads_hub_repo_not_external_folder(
     external_model, monkeypatch, tmp_path, capsys
 ):
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     revision = "abc123" * 6
     repo_root = tmp_path / "hub" / f"models--{REPO.replace('/', '--')}"
     (repo_root / "refs").mkdir(parents=True)

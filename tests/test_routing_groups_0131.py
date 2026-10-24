@@ -390,6 +390,9 @@ def test_fix3_standalone_server_forwards_parsed_mtp_to_lane_contract(monkeypatch
         return False, True
 
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     monkeypatch.setattr(server, "resolve_serving_lane", _resolve)
     monkeypatch.setattr(server, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr(

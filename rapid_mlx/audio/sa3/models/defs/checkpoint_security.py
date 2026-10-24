@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import tempfile
+import sys
 import pickle
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,9 @@ def load_torch_checkpoint(path: str | Path) -> Any:
         return load_tensor_checkpoint(path)
     except pickle.UnpicklingError as exc:
         approved_digest = os.environ.get("RAPID_MLX_SA3_TRUSTED_SHA256", "").lower()
-        allowed = env_truthy(_UNSAFE_ENV) and re.fullmatch(r"[0-9a-f]{64}", approved_digest)
+        allowed = env_truthy(_UNSAFE_ENV) and re.fullmatch(
+            r"[0-9a-f]{64}", approved_digest
+        )
         if not allowed:
             raise RuntimeError(
                 f"Refusing unsafe pickle fallback for SA3 checkpoint {path}. "
@@ -45,7 +48,12 @@ def load_torch_checkpoint(path: str | Path) -> Any:
         )
         # Hash the exact private copy that will be deserialized. A mutable source
         # path or cache symlink cannot switch bytes between approval and load.
-        scratch = Path("/private/tmp/rapid-mlx-checkpoint")
+        scratch_root = (
+            Path("/private/tmp")
+            if sys.platform == "darwin"
+            else Path(tempfile.gettempdir())
+        )
+        scratch = scratch_root / "rapid-mlx-checkpoint"
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryFile(dir=scratch) as approved:
             digest = hashlib.sha256()
@@ -54,6 +62,8 @@ def load_torch_checkpoint(path: str | Path) -> Any:
                     digest.update(chunk)
                     approved.write(chunk)
             if not hmac.compare_digest(digest.hexdigest(), approved_digest):
-                raise RuntimeError("SA3 checkpoint does not match the explicitly trusted SHA-256")
+                raise RuntimeError(
+                    "SA3 checkpoint does not match the explicitly trusted SHA-256"
+                )
             approved.seek(0)
             return torch.load(approved, map_location="cpu", weights_only=False)

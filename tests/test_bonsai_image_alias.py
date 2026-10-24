@@ -161,6 +161,10 @@ def test_complete_snapshot_requires_every_reviewed_data_file(
 def test_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)

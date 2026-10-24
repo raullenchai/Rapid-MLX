@@ -1612,9 +1612,12 @@ def _check_disk_space(
     # snapshot was downloaded, and pricing the newer remote revision here
     # would reject a perfectly runnable warm start as a huge new download.
     # Text checkpoints retain the selective-loader fast path below.
-    from rapid_mlx._download_gate import mflux_missing_weights
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS, mflux_missing_weights
 
-    if revision_override is None and mflux_missing_weights(model_name) == []:
+    if (
+        revision_override is None
+        or revision_override == IMAGE_MODEL_REVISIONS.get(model_name)
+    ) and mflux_missing_weights(model_name) == []:
         return
 
     # Which directory inside the repo this alias actually needs. Resolved
@@ -9604,8 +9607,6 @@ def _cache_runnability(repo: str) -> bool | None:
         )
         from rapid_mlx.video.wan import WAN_REVISIONS
 
-        if resolve_revision(repo) is not None:
-            return is_repo_cached(repo)
         audio_entry = resolve_audio_alias(repo)
         if audio_entry is not None and audio_entry.family in ("whisper", "kokoro"):
             # Audio repos don't share the text ``model*.safetensors`` layout;
@@ -9629,6 +9630,8 @@ def _cache_runnability(repo: str) -> bool | None:
             # all component indexes/shards there, so only that exact snapshot
             # can suppress the foreground download.
             return _snapshot_is_complete_mflux_model(repo)
+        if resolve_revision(repo) is not None:
+            return is_repo_cached(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)

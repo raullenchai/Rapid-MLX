@@ -56,7 +56,9 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
     calls: list[tuple[str, list[str] | None, str | None, str | None]] = []
     preparations = []
 
-    def fake_pull_repository(args, *, allow_patterns_override=None, revision_override=None):
+    def fake_pull_repository(
+        args, *, allow_patterns_override=None, revision_override=None
+    ):
         calls.append(
             (
                 args.model,
@@ -83,7 +85,13 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
     cli.pull_command(args)
 
     assert calls == [
-        ("mlx-community/Kokoro-82M-bf16", registry.resolve_audio_alias("kokoro").revision, None, None, None),
+        (
+            "mlx-community/Kokoro-82M-bf16",
+            registry.resolve_audio_alias("kokoro").revision,
+            None,
+            None,
+            None,
+        ),
         (
             "prince-canuma/Kokoro-82M",
             "e02c9eada7ce7416798af36b190a8a2dd2ecd566",
@@ -424,4 +432,6 @@ def test_concurrent_first_lookup_publishes_runtime_assets_atomically(
 def _mock_integrity_for_download_orchestration(monkeypatch):
     # These tests fake transport/snapshot bytes; real hashing and failure ordering
     # are exercised independently in test_model_integrity.py.
-    monkeypatch.setattr("rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )

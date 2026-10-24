@@ -155,7 +155,9 @@ def test_pull_is_storage_only_and_never_emits_serve_failure(monkeypatch) -> None
 
     cli.pull_command(argparse.Namespace(model="qwen3.8-27b-4bit"))
 
-    assert pulled == ["qwen3.8-27b-4bit"]
+    from rapid_mlx.model_aliases import resolve_hub_model
+
+    assert pulled == [resolve_hub_model("qwen3.8-27b-4bit")]
 
 
 def test_repair_command_detector_failures_fall_back_to_python(monkeypatch) -> None:

@@ -104,6 +104,10 @@ def test_rejects_foreign_quantized_pack():
 
 
 def test_cold_load_uses_pinned_snapshot(monkeypatch):
+    # Transport is synthetic; content verification is tested with real bytes separately.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **kw: None
+    )
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(_download_gate, "mflux_local_snapshot", lambda _repo: None)
     monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
