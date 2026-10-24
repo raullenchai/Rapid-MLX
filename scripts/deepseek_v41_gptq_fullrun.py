@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -162,6 +163,16 @@ def atomic(path, value):
 
 # Requests travel on stdin, never by interpolating code/data into a shell command.
 # No commands print environment variables, credentials, or arbitrary subprocess output.
+def tool_manifest(root):
+    root = Path(root)
+    return {
+        str(p.relative_to(root)): sha(p)
+        for directory in ("scripts", "rapid_mlx")
+        for p in sorted((root / directory).rglob("*"))
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+    }
+
+
 REMOTE = r"""
 import hashlib,json,os,signal,struct,subprocess,sys,time
 from pathlib import Path
@@ -185,6 +196,9 @@ def info(p,meta=None):
 op=q['op']
 if op=='json':
  p=Path(q['path']);out=json.loads(p.read_text()) if p.exists() else None
+elif op=='tools':
+ root=Path(q['path'])
+ out={str(p.relative_to(root)):hashfile(p) for directory in ('scripts','rapid_mlx') for p in sorted((root/directory).rglob('*')) if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
 elif op=='info':out=info(Path(q['path']),q.get('meta'))
 elif op=='free':
  s=os.statvfs(q['path']);out=s.f_bavail*s.f_frsize
@@ -441,6 +455,11 @@ class Driver:
                     raise ValueError("remote part hash mismatch")
                 tmp = target.with_suffix(target.suffix + ".partial")
                 self.room(0)
+                if (
+                    shutil.disk_usage(self.a.destination).free
+                    < remote["size"] + HEADROOM
+                ):
+                    raise ValueError("insufficient local export space")
                 self.r.transfer(self.parts + "/" + name, tmp, False)
                 if sha(tmp) != h:
                     raise ValueError("export hash mismatch")
@@ -451,6 +470,13 @@ class Driver:
             path = Path(tmp) / "heldout-drift.jsonl"
             drift_info = self.r.call("info", path=self.parts + "/heldout-drift.jsonl")
             self.room(0)
+            if (
+                not drift_info
+                or shutil.disk_usage(path.parent).free < drift_info["size"] + HEADROOM
+            ):
+                raise ValueError(
+                    "insufficient local drift export space or missing drift"
+                )
             self.r.transfer(self.parts + "/heldout-drift.jsonl", path, False)
             if not drift_info or sha(path) != drift_info["sha256"]:
                 raise ValueError("drift export hash mismatch")
@@ -567,11 +593,7 @@ class Driver:
                 calibration_files={
                     str(path): sha(path) for files in slices.values() for path in files
                 },
-                tool={
-                    p.name: sha(p)
-                    for p in sorted(Path(__file__).parent.glob("deepseek_v41_gptq*.py"))
-                    if p.name != Path(__file__).name
-                },
+                tool=tool_manifest(Path(__file__).parent.parent),
             )
             prior = self.r.call("json", path=self.root + "/driver-inputs.json")
             local_prior = self.a.destination / "driver-inputs.json"
@@ -602,14 +624,13 @@ class Driver:
             self.upload(self.a.manifest, self.root + "/source-manifest.json")
             self.upload(self.a.recipe, self.root + "/recipe.json")
             # Require reviewed tooling to have been synced separately; never mutate a pilot's repo.
-            for name, h in binding["tool"].items():
-                info = self.r.call(
-                    "info", path=self.a.remote_work + "/repo/scripts/" + name
+            if (
+                self.r.call("tools", path=self.a.remote_work + "/repo")
+                != binding["tool"]
+            ):
+                raise ValueError(
+                    "remote tooling differs; sync reviewed source tree before launch"
                 )
-                if not info or info["sha256"] != h:
-                    raise ValueError(
-                        "M5 tooling differs; sync reviewed tooling before launch"
-                    )
             for name in ("config.json", "tokenizer.json"):
                 self.upload(self.a.source / name, self.stage + "/" + name)
             cp = self.r.call("json", path=self.state + "/checkpoint.json")

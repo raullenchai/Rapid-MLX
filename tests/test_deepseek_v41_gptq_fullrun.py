@@ -89,12 +89,11 @@ class FakeRemote:
         self.free = f.HEADROOM + 10000000
         self.runs = []
         self.path(args.remote_work).mkdir(parents=True)
-        for p in Path(f.__file__).parent.glob("deepseek_v41_gptq*.py"):
-            if p.name == Path(f.__file__).name:
-                continue
-            target = self.path(args.remote_work + "/repo/scripts/" + p.name)
+        root = Path(f.__file__).parent.parent
+        for name in f.tool_manifest(root):
+            target = self.path(args.remote_work + "/repo/" + name)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(p, target)
+            shutil.copyfile(root / name, target)
 
     def path(self, p):
         return self.root / str(p).lstrip("/")
@@ -102,6 +101,8 @@ class FakeRemote:
     def call(self, op, **kw):
         self.events.append((op, kw))
         path = self.path(kw["path"]) if "path" in kw else None
+        if op == "tools":
+            return f.tool_manifest(path)
         if op == "free":
             return self.free
         if op == "json":
@@ -644,3 +645,68 @@ def test_remote_command_timeout_terminates_started_process(tmp_path):
     assert result.returncode != 0 and "command timed out" in result.stderr
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid.read_text()), 0)
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "scripts/deepseek_v41_rd_build.py",
+        "rapid_mlx/models/deepseek_v41_native/model.py",
+    ],
+)
+def test_remote_imported_dependency_change_rejected_before_conversion(
+    setup, dependency
+):
+    args, remote = setup
+    remote.path(args.remote_work + "/repo/" + dependency).write_text("changed")
+    with pytest.raises(ValueError, match="tooling differs"):
+        f.Driver(args, remote).run()
+    assert not remote.runs
+    assert not any(op == "delete" for op, _ in remote.events)
+
+
+def test_remote_tool_manifest_matches_local_and_detects_extra_code(tmp_path):
+    import subprocess
+    import sys
+
+    for name in ("scripts/entry.py", "rapid_mlx/helper.py", "rapid_mlx/kernel.metal"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name)
+    cached = tmp_path / "scripts/__pycache__/entry.pyc"
+    cached.parent.mkdir()
+    cached.write_bytes(b"cache")
+    expected = f.tool_manifest(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-c", f.REMOTE],
+        input=json.dumps({"op": "tools", "path": str(tmp_path)}),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == expected
+    (tmp_path / "rapid_mlx/extra.py").write_text("extra")
+    assert f.tool_manifest(tmp_path) != expected
+
+
+@pytest.mark.parametrize("volume", ["destination", "scratch"])
+def test_local_export_disk_preflight_prevents_cleanup(setup, monkeypatch, volume):
+    args, remote = setup
+    driver = f.Driver(args, remote)
+    remote.fail_export = True
+    with pytest.raises(RuntimeError, match="interrupted export"):
+        driver.run()
+    remote.fail_export = False
+    remote.events.clear()
+    monkeypatch.setattr(
+        f.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            free=0
+            if (volume == "destination" or Path(path) != args.destination)
+            else f.HEADROOM + 10000000
+        ),
+    )
+    with pytest.raises(ValueError, match="local.*export space"):
+        driver.export(0)
+    assert not any(op == "delete" for op, _ in remote.events)
