@@ -1185,6 +1185,29 @@ def is_repo_cached(repo_id: str) -> bool:
     return _is_repo_cached(repo_id, raise_on_probe_timeout=False)
 
 
+def _snapshot_is_complete_ltx25(snap_dir: str) -> bool:
+    """Check the files the bundled LTX-2.5 runtime opens in this snapshot."""
+    from .video.ltx25 import LTX25_CHECKPOINT_FILES
+
+    return all(
+        _is_nonempty_snapshot_manifest_file(os.path.join(snap_dir, name), snap_dir)
+        for name in LTX25_CHECKPOINT_FILES
+    )
+
+
+def _snapshot_is_complete_ltx25_model(repo_id: str) -> bool:
+    """Resolve LTX-2.5's selected Hub snapshot and check its runtime files."""
+    if repo_id != "MrMofer/ltx-2.5-mlx-q8":
+        return False
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    repo_root = os.path.join(HF_HUB_CACHE, "models--MrMofer--ltx-2.5-mlx-q8")
+    sha = _resolved_snapshot_sha(repo_root)
+    return sha is not None and _snapshot_is_complete_ltx25(
+        os.path.join(repo_root, "snapshots", sha)
+    )
+
+
 def require_repo_cache_probe(repo_id: str) -> bool:
     """Check the cache and surface a blocked external-volume probe to callers."""
 
@@ -2148,9 +2171,11 @@ def is_weightless_stub(repo_id: str) -> bool:
         # manifest lists components and EVERY one is cached, the weights are
         # present — not a stub. Check this BEFORE the text-glob probe so a
         # fully-cached video model doesn't mis-fire the notice.
-        if _snapshot_is_complete_split_model(
-            repo_id
-        ) or _snapshot_is_complete_mflux_model(repo_id):
+        if (
+            _snapshot_is_complete_split_model(repo_id)
+            or _snapshot_is_complete_mflux_model(repo_id)
+            or _snapshot_is_complete_ltx25_model(repo_id)
+        ):
             return False
         # Config is on disk; the stub is exactly "config present but the
         # loader's weight glob (model*.safetensors) is not satisfied".

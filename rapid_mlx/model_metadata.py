@@ -236,7 +236,11 @@ def _complete_cached_checkpoint(
 ) -> Path | None:
     """Validate one immutable snapshot and return its checkpoint directory."""
     try:
-        from ._download_gate import _is_repo_blob, _snapshot_is_complete
+        from ._download_gate import (
+            _is_repo_blob,
+            _snapshot_is_complete,
+            _snapshot_is_complete_ltx25,
+        )
         from .model_aliases import checkpoint_prefix
 
         if snapshot.is_symlink() or not snapshot.is_dir():
@@ -264,9 +268,12 @@ def _complete_cached_checkpoint(
                 repo_real
             ) and not _is_repo_blob(str(path), str(repo_root)):
                 return None
-        if _read_json(config_path) is None or not _snapshot_is_complete(
-            str(checkpoint)
-        ):
+        complete = (
+            _snapshot_is_complete_ltx25(str(checkpoint))
+            if model_name == "MrMofer/ltx-2.5-mlx-q8"
+            else _snapshot_is_complete(str(checkpoint))
+        )
+        if _read_json(config_path) is None or not complete:
             return None
         return checkpoint
     except (ImportError, OSError, RuntimeError, ValueError):

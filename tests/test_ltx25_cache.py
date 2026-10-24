@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: Apache-2.0
+"""LTX-2.5 cache admission uses the files opened by its bundled runtime."""
+
+import json
+
+import pytest
+
+from rapid_mlx import _download_gate as gate
+from rapid_mlx import cli, model_metadata
+
+REPO = "MrMofer/ltx-2.5-mlx-q8"
+CHECKPOINT_FILES = (
+    "config.json",
+    "embedded_config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors",
+    "text_encoder/tokenizer.json",
+    "text_encoder/tokenizer_config.json",
+    "transformer-distilled.safetensors",
+    "transformer-dev.safetensors",
+    "ltx-2.5-22b-distilled-lora-450.safetensors",
+    "connector.safetensors",
+    "vae_encoder.safetensors",
+    "vae_decoder.safetensors",
+    "audio_vae.safetensors",
+    "vocoder.safetensors",
+    "spatial_upscaler_x2.safetensors",
+    "temporal_upscaler_x2.safetensors",
+    "duration_head.safetensors",
+)
+
+
+def _cache(tmp_path, monkeypatch):
+    root = tmp_path / "models--MrMofer--ltx-2.5-mlx-q8"
+    snap = root / "snapshots" / "revision"
+    snap.mkdir(parents=True)
+    for name in CHECKPOINT_FILES:
+        path = snap / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"{}" if name.endswith(".json") else b"weights")
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("revision")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    import huggingface_hub.file_download as fd
+
+    monkeypatch.setattr(fd, "HF_HUB_CACHE", str(tmp_path), raising=False)
+    return snap
+
+
+def test_complete_ltx25_cache_serves_offline_without_stub_notice(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    assert cli._cache_runnability(REPO) is True
+    assert gate.weightless_stub_notice(REPO) is None
+    assert (
+        model_metadata._complete_cached_checkpoint(snap.parents[1], snap, REPO) == snap
+    )
+    cli._ensure_model_downloaded(REPO)
+
+
+@pytest.mark.parametrize(
+    "missing", ["transformer-distilled.safetensors", "text_encoder/model.safetensors"]
+)
+def test_partial_ltx25_cache_is_not_runnable(tmp_path, monkeypatch, missing):
+    snap = _cache(tmp_path, monkeypatch)
+    (snap / missing).unlink()
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    assert cli._cache_runnability(REPO) is False
+    assert gate.weightless_stub_notice(REPO) is not None
+    assert (
+        model_metadata._complete_cached_checkpoint(snap.parents[1], snap, REPO) is None
+    )
+    with pytest.raises(SystemExit, match="1"):
+        cli._ensure_model_downloaded(REPO)
+
+
+def test_text_cache_behavior_unchanged(tmp_path, monkeypatch):
+    root = tmp_path / "models--publisher--text"
+    snap = root / "snapshots" / "revision"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text("revision")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    import huggingface_hub.file_download as fd
+
+    monkeypatch.setattr(fd, "HF_HUB_CACHE", str(tmp_path), raising=False)
+
+    assert cli._cache_runnability("publisher/text") is False
+    assert gate.is_weightless_stub("publisher/text") is True
+    (snap / "model.safetensors").write_bytes(b"weights")
+    assert cli._cache_runnability("publisher/text") is True
+    assert gate.is_weightless_stub("publisher/text") is False

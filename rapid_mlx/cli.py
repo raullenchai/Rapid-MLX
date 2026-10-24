@@ -9584,6 +9584,7 @@ def _cache_runnability(repo: str) -> bool | None:
         from rapid_mlx._download_gate import (
             IMAGE_MODEL_REVISIONS,
             _snapshot_is_complete_audio_model,
+            _snapshot_is_complete_ltx25_model,
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
             _snapshot_is_complete_wan_model,
@@ -9622,6 +9623,8 @@ def _cache_runnability(repo: str) -> bool | None:
             # all component indexes/shards there, so only that exact snapshot
             # can suppress the foreground download.
             return _snapshot_is_complete_mflux_model(repo)
+        if repo == "MrMofer/ltx-2.5-mlx-q8":
+            return _snapshot_is_complete_ltx25_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
