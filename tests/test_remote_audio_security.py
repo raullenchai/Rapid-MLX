@@ -203,12 +203,15 @@ def test_audio_data_uri_requires_base64(uri):
         mllm.process_audio_input(uri)
 
 
-def test_inline_audio_size_checks_and_positive(monkeypatch):
+@pytest.mark.parametrize("scheme", ["data", "DATA"])
+def test_inline_audio_size_checks_and_positive(monkeypatch, scheme):
     monkeypatch.setattr(mllm, "MAX_AUDIO_SIZE", 2)
-    assert mllm.process_audio_input("data:audio/wav;base64,YWI=").getvalue() == b"ab"
+    assert (
+        mllm.process_audio_input(scheme + ":audio/wav;base64,YWI=").getvalue() == b"ab"
+    )
     for payload in ("YWJj", "YWJjZA=="):
         with pytest.raises(mllm.FileSizeExceededError):
-            mllm.process_audio_input("data:audio/wav;base64," + payload)
+            mllm.process_audio_input(scheme + ":audio/wav;base64," + payload)
 
 
 def test_audio_unrecognized_protocol_refused():

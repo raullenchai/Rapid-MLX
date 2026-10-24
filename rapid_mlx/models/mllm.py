@@ -1302,7 +1302,7 @@ def process_audio_input(audio: str, timeout: int = 30):
     if (
         urlsplit(audio).scheme
         and "://" not in audio
-        and not audio.startswith("data:")
+        and audio[:5].lower() != "data:"
         and Path(audio).is_file()
     ):
         return str(Path(audio).resolve())
@@ -1314,7 +1314,7 @@ def process_audio_input(audio: str, timeout: int = 30):
             return BytesIO(downloaded.read_bytes())
         finally:
             _temp_manager.cleanup(str(downloaded))
-    if audio.startswith("data:audio/"):
+    if audio[:11].lower() == "data:audio/":
         header, separator, payload = audio.partition(",")
         if not separator or not header.endswith(";base64"):
             raise ValueError("Audio data URI must contain base64 data")
