@@ -639,3 +639,37 @@ def test_resolved_alias_loads_canonical_target(control_plane, monkeypatch, tmp_p
     assert client.post("/v1/models/load", json={"model": "saved"}).status_code == 200
     assert manager.load.call_args.args[0] == "saved"
     assert manager.load.call_args.kwargs["model_path"] == str(target.resolve())
+
+
+def test_replaced_canonical_directory_cannot_trigger_recursive_diagnostics(
+    control_plane, monkeypatch, tmp_path
+):
+    import os
+    import time
+    from pathlib import Path
+
+    client, manager = control_plane
+    target = tmp_path / "checkpoint"
+    target.mkdir()
+    (target / "config.json").write_text("{}")
+
+    def replace_directory(performance, **kwargs):
+        target.rename(tmp_path / "moved")
+        target.symlink_to("/", target_is_directory=True)
+        return performance
+
+    def no_walk(*args, **kwargs):
+        pytest.fail("a replaced checkpoint triggered a recursive scan")
+
+    monkeypatch.setattr(residency, "resolve_resident_performance", replace_directory)
+    monkeypatch.setattr(os, "walk", no_walk)
+    monkeypatch.setattr(Path, "rglob", no_walk)
+    manager.load.side_effect = FileNotFoundError(
+        2, "missing", str(target / "config.json")
+    )
+    started = time.monotonic()
+    response = client.post("/v1/models/load", json={"model": str(target)})
+    assert response.status_code == 400
+    assert "config.json" in response.text
+    assert time.monotonic() - started < 1
+    assert client.get("/v1/models/residency").status_code == 200
