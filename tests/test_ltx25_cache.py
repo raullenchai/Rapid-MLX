@@ -127,3 +127,32 @@ def test_text_cache_behavior_unchanged(tmp_path, monkeypatch):
     (snap / "model.safetensors").write_bytes(b"weights")
     assert cli._cache_runnability("publisher/text") is True
     assert gate.is_weightless_stub("publisher/text") is False
+
+
+def test_ltx25_main_ref_must_select_complete_snapshot(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    partial = snap.parent / "new-revision"
+    partial.mkdir()
+    (partial / "config.json").write_text("{}")
+    (snap.parents[1] / "refs" / "main").write_text(partial.name)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    assert cli._cache_runnability(REPO) is False
+    assert gate.weightless_stub_notice(REPO) is not None
+    with pytest.raises(SystemExit, match="1"):
+        cli._ensure_model_downloaded(REPO)
+
+
+def test_complete_ltx25_cache_online_with_preferred_weights(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    for name in (
+        "transformer.safetensors",
+        "transformer-distilled-1.1.safetensors",
+        "spatial_upscaler_x2_v1_1.safetensors",
+    ):
+        (snap / name).write_bytes(b"weights")
+
+    assert cli._cache_runnability(REPO) is True
+    assert gate.weightless_stub_notice(REPO) is None
+    cli._ensure_model_downloaded(REPO)
