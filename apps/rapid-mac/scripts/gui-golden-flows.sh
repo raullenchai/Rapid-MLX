@@ -5764,11 +5764,15 @@ flow_model_switch_active_request() {
     [[ "$streaming" == 1 ]] || die "no content reached the streaming phase"
     ! grep -q '"event": "chat_finished"' "$OUT/fake-events.jsonl" \
         || die "stream completed before the picker stress checkpoint"
+    local picker_started=$SECONDS
     "$AX_DRIVER" click-center "$APP_PID" ModelPickerBar.ModelMenu > "$OUT/picker-opened.json"
     wait_identifier ModelPickerBar.Alias.fake-external-alias "$OUT/picker-streaming.json"
+    (( SECONDS - picker_started < 3 )) || die "streaming picker opening exceeded responsiveness budget"
     sleep 3
+    picker_started=$SECONDS
     "$AX_DRIVER" key "$APP_PID" escape > "$OUT/picker-dismissed.json"
     see_main "$OUT/picker-after-dismiss.json"
+    (( SECONDS - picker_started < 3 )) || die "streaming picker dismissal exceeded responsiveness budget"
     jq -e '.data.ui_elements | length > 0' "$OUT/picker-after-dismiss.json" >/dev/null \
         || die "app stopped responding after dismissing the streaming picker"
     ! jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.Alias.fake-external-alias")' \
