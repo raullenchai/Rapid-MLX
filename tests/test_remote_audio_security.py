@@ -299,13 +299,14 @@ def test_local_colon_audio_filename_is_not_a_protocol(tmp_path, monkeypatch):
     assert mllm.process_audio_input(path.name) == str(path)
 
 
-def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["", "file://", "FILE://"])
+def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch, prefix):
     from PIL import Image
 
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "http:frame.png"
     Image.new("RGB", (2, 2)).save(path)
-    assert inputs.load_image(path.name).size == (2, 2)
+    assert inputs.load_image(prefix + path.name).size == (2, 2)
 
 
 @pytest.mark.parametrize("prefix", ["", "file://", "FILE://"])
@@ -446,3 +447,16 @@ def test_remote_video_failure_releases_download(
         inputs.load_video("https://media.example/video.mp4")
     assert not transport["manager"]._files
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("scheme", ["file", "FILE"])
+def test_image_file_uri_decodes_escaped_local_path(inputs, tmp_path, scheme):
+    from PIL import Image
+
+    path = tmp_path / "local image.png"
+    Image.new("RGB", (2, 2), color="red").save(path)
+    uri = path.as_uri().replace("file:", scheme + ":", 1)
+    assert "%20" in uri
+    result = inputs.load_image(uri)
+    assert result.getpixel((0, 0)) == (255, 0, 0)
+    assert path.is_file()

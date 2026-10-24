@@ -78,7 +78,7 @@ def test_vendored_region_matches_reviewed_sources():
     vendored_path = Path(inspect.getsourcefile(vendored_inputs))
     vendored_source = vendored_path.read_text()
     assert hashlib.sha256(vendored_source.encode()).hexdigest() == (
-        "f49dfd063118825af66f208900a3168fa313064a7ee665328cc231bbe0381722"
+        "a5348855655b237c641d429b0f08178af7e1f0f2cfdd4304f2b297579d42e58e"
     )
     deviation_comments = [
         token.string

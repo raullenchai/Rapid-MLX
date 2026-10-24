@@ -30,7 +30,7 @@ from dataclasses import dataclass, fields
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import mlx.core as mx
 import numpy as np
@@ -72,6 +72,8 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
                 and Path(image_source).is_file()
             ):
                 image_source = str(Path(image_source).resolve())
+            if isinstance(image_source, str) and image_source[:7].lower() == "file://":
+                image_source = str(Path(unquote(image_source[7:])).resolve())
             if isinstance(image_source, str) and urlsplit(image_source).scheme.lower() in (
                 "http",
                 "https",
