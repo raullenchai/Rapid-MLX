@@ -4423,6 +4423,27 @@
        "type": null
       },
       {
+       "choices": [
+        1,
+        2,
+        4,
+        8
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "tensorfold_lanes",
+       "help": "Concurrent decode lanes for qualified Qwen3.8-27B and Nemotron TensorFold profiles only (default: 1, serial). Overrides the deprecated RAPID_MLX_TENSORFOLD_LANES environment alias.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--tensorfold-lanes"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -6624,6 +6645,7 @@
         "log_file",
         "dsv41_lanes",
         "dsv41_lanes",
+        "tensorfold_lanes",
         "max_num_seqs",
         "max_concurrent_requests",
         "prefill_batch_size",

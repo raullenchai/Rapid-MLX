@@ -34,6 +34,29 @@ The server listens on loopback by default and prints its selected port. An expli
 
 An interactive `serve` prints a one-time [newsletter pointer](https://rapidmlx.com/newsletter) after its ready banner.
 
+### TensorFold request lanes
+
+`--tensorfold-lanes {1,2,4,8}` controls concurrent decoding on the qualified
+`qwen3.8-27b-tensorfold` and `nemotron-3.5-lightning-tensorfold` profiles.
+Standalone serving defaults to **1** (serial). Other profiles reject the option
+before downloading or loading weights. Desktop does not expose this option.
+
+```bash
+rapid-mlx serve qwen3.8-27b-tensorfold --tensorfold-lanes 4
+```
+
+The flag overrides `RAPID_MLX_TENSORFOLD_LANES`, which remains a deprecated
+compatibility alias and emits a warning when used. Lane capacity governs HTTP
+admission; an excess request receives `503` with `Retry-After: 1`.
+
+The Qwen27 TensorFold pool configuration defaults to four lanes and advertises
+four slots. `share --quicksilver ... -- --max-num-seqs 1` selects serial pool
+serving; 2 and 4 are also supported. An explicit `--tensorfold-lanes` passthrough
+must match that capacity. An older cached registration with a different capacity
+requires `--reregister` before starting, so the advertised slots stay aligned.
+The 4-bit small-memory fallback retains its existing capacity. These settings
+apply on the next operator-started invocation; they do not change running nodes.
+
 ### KV cache dtype and quantization
 
 The default BF16 KV cache favors fidelity. `--kv-cache-dtype int8` or `int4` uses less memory and can change output quality or speed. Use `rapid-mlx serve --help` for the current quantization options and defaults; the [performance flags guide](https://rapidmlx.com/docs/perf-flags.html) covers tuning.

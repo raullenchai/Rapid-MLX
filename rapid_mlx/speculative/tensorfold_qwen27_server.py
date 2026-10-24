@@ -597,6 +597,7 @@ def run_tensorfold_qwen27_server(
     reasoning_parser_name: str | None = "qwen3",
     default_reasoning_effort: str | None = None,
     enable_prefix_cache: bool = True,
+    tensorfold_lanes: int | None = None,
     backend_class: Any = TensorFoldQwen27Backend,
     profile_id: str = "qwen3.8-27b-tensorfold",
     backend_label: str = "TensorFold Qwen3.8-27B",
@@ -623,7 +624,7 @@ def run_tensorfold_qwen27_server(
         raise RuntimeError("tensorfold backend does not support tool parsing")
     from .tensorfold_concurrency import request_lanes
 
-    lanes = request_lanes(profile_id)
+    lanes = request_lanes(profile_id, tensorfold_lanes)
     backend = backend_class.load(
         main_model_repo,
         drafter_repo,

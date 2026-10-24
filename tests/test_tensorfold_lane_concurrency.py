@@ -210,11 +210,12 @@ def test_execution_policy_rejects_invalid_capacity(capacity):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("concurrent", [0, 2, 4])
 async def test_http_execution_policy_preserves_default_and_capacity(
     monkeypatch, stream, concurrent
 ):
     monkeypatch.setattr(server, "_dflash_lock", asyncio.Lock())
+    capacity = concurrent or 2
     entered, two_entered, release = Event(), Event(), Event()
     mutex = threading.Lock()
     active = peak = 0
@@ -229,7 +230,7 @@ async def test_http_execution_policy_preserves_default_and_capacity(
             observed.append(server._dflash_lock.locked())
             worker_names.append(threading.current_thread().name)
             entered.set()
-            if active == 2:
+            if active == capacity:
                 two_entered.set()
         assert release.wait(5)
 
@@ -252,7 +253,7 @@ async def test_http_execution_policy_preserves_default_and_capacity(
         finally:
             end()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=capacity) as executor:
         app = server._build_app(
             model=None,
             processor=SimpleNamespace(eos_token_id=99),
@@ -266,7 +267,7 @@ async def test_http_execution_policy_preserves_default_and_capacity(
             default_max_tokens=8,
             cors_origins=[],
             max_concurrent_requests=99 if concurrent else 2,
-            execution_policy=server.BackendExecutionPolicy(2, executor)
+            execution_policy=server.BackendExecutionPolicy(capacity, executor)
             if concurrent
             else None,
             generate_fn=generate,
@@ -284,7 +285,10 @@ async def test_http_execution_policy_preserves_default_and_capacity(
             }
             first = asyncio.create_task(client.post("/v1/chat/completions", json=body))
             assert await asyncio.to_thread(entered.wait, 3)
-            second = asyncio.create_task(client.post("/v1/chat/completions", json=body))
+            remaining = [
+                asyncio.create_task(client.post("/v1/chat/completions", json=body))
+                for _ in range(capacity - 1)
+            ]
             try:
                 if concurrent:
                     assert await asyncio.to_thread(two_entered.wait, 3)
@@ -297,12 +301,12 @@ async def test_http_execution_policy_preserves_default_and_capacity(
                 assert overflow.json()["error"]["code"] == "at_capacity"
             finally:
                 release.set()
-            responses = await asyncio.gather(first, second)
+            responses = await asyncio.gather(first, *remaining)
             assert all(r.status_code == 200 for r in responses)
             if stream:
                 assert all("data: [DONE]" in r.text for r in responses)
-    assert peak == (2 if concurrent else 1)
-    assert observed == [not concurrent, not concurrent]
+    assert peak == (capacity if concurrent else 1)
+    assert observed == [not concurrent] * capacity
     if not concurrent:
         assert all(name.startswith("dflash-worker") for name in worker_names)
     assert not server._dflash_lock.locked()
@@ -452,8 +456,9 @@ async def test_cancelled_nonstream_retains_resources_until_worker_finishes(
 
 
 @pytest.mark.parametrize("lanes", [1, 2, 4, 8])
+@pytest.mark.parametrize("explicit", [False, True])
 def test_tensorfold_bootstrap_aligns_load_http_capacity_and_capability(
-    monkeypatch, lanes
+    monkeypatch, lanes, explicit
 ):
     import rapid_mlx._uvicorn as uvicorn
     from rapid_mlx.speculative import tensorfold_qwen27_server as adapter
@@ -491,6 +496,7 @@ def test_tensorfold_bootstrap_aligns_load_http_capacity_and_capability(
             uvicorn_log_level="warning",
             backend_class=loader,
             profile_id="nemotron-3.5-lightning-tensorfold",
+            tensorfold_lanes=lanes if explicit else None,
         )
     assert captured["load"].get("lanes", 1) == lanes
     assert captured["max_concurrent_requests"] == lanes
@@ -1202,3 +1208,96 @@ async def test_nonstream_default_does_not_pass_cancel_event(monkeypatch):
         generate_fn=generate,
     )
     assert response.choices[0].message.content == "ok"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "qwen3.8-27b-tensorfold",
+        "nemotron-3.5-lightning-tensorfold",
+        "Vontra/Qwen3.8-27B-MLX-4bit",
+    ],
+)
+@pytest.mark.parametrize("lanes", [1, 2, 4, 8])
+def test_cli_explicit_lanes_override_legacy_env(monkeypatch, model, lanes):
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
+
+    monkeypatch.setenv(LANES_ENV, "invalid")
+    args = SimpleNamespace(
+        model=model,
+        tensorfold_lanes=lanes,
+        _speculative_config=SimpleNamespace(backend="tensorfold"),
+    )
+    cli._reject_tensorfold_lanes_off_lane_or_exit(args)
+    assert args.tensorfold_lanes == lanes
+
+
+@pytest.mark.parametrize(
+    "model, backend, lanes",
+    [
+        ("ordinary", None, 4),
+        (None, None, 1),
+        ("gemma-4-26b-tensorfold", "tensorfold", 1),
+        ("qwen3.8-27b-tensorfold", "native", 4),
+        ("qwen3.8-27b-tensorfold", "tensorfold", 3),
+    ],
+)
+def test_cli_explicit_lanes_refuse_unqualified_or_invalid(
+    capsys, model, backend, lanes
+):
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        model=model,
+        tensorfold_lanes=lanes,
+        _speculative_config=SimpleNamespace(backend=backend),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._reject_tensorfold_lanes_off_lane_or_exit(args)
+    assert exc.value.code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_legacy_lanes_warn_and_explicit_lanes_win(monkeypatch):
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV, request_lanes
+
+    monkeypatch.setenv(LANES_ENV, "4")
+    with pytest.warns(UserWarning, match="deprecated; use --tensorfold-lanes"):
+        assert request_lanes("qwen3.8-27b-tensorfold") == 4
+    assert request_lanes("qwen3.8-27b-tensorfold", 1) == 1
+
+
+def test_legacy_lane_notice_visible_with_default_library_warning_filters():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONWARNINGS", None)
+    environment[LANES_ENV] = "4"
+    library_call = (
+        "from rapid_mlx.speculative.tensorfold_concurrency import request_lanes\n"
+        "print(request_lanes('qwen3.8-27b-tensorfold'))"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"exec({library_call!r}, {{'__name__': 'operator_warning_probe'}})",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == "4"
+    assert (
+        "UserWarning: RAPID_MLX_TENSORFOLD_LANES is deprecated; "
+        "use --tensorfold-lanes instead"
+    ) in result.stderr

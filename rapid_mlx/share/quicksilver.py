@@ -162,7 +162,12 @@ _CACHE_REQUIRED_KEYS = _WIRE_REQUIRED_KEYS + ("heartbeat_interval_s", "alias")
 # runs keep validating against the RIGHT origin (a staging-registered
 # node restarted against the default origin would reject its own
 # cache).
-_CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base", "worker")
+_CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + (
+    "payout_account",
+    "api_base",
+    "worker",
+    "max_concurrency",
+)
 
 # Desktop provider-session bridge. The session id is an opaque capability for
 # locating one non-secret status snapshot; keeping the path under the existing
@@ -888,6 +893,8 @@ def _pool_max_concurrency(
     *,
     default: int = _POOL_DEFAULT_MAX_CONCURRENCY,
     ceiling: int = _POOL_MAX_CONCURRENCY_CEILING,
+    option: str = "--max-num-seqs",
+    choices: tuple[int, ...] | None = None,
 ) -> int:
     """Slots to advertise at registration: the ``--max-num-seqs`` the child
     serve will actually run with (§5.3 default 2, or the user's ``--``
@@ -898,7 +905,7 @@ def _pool_max_concurrency(
     raw: str | None = None
     for i, token in enumerate(passthrough):
         key, sep, value = token.partition("=")
-        if key != "--max-num-seqs":
+        if key != option:
             continue
         if sep:
             raw = value
@@ -911,11 +918,13 @@ def _pool_max_concurrency(
         except ValueError:
             result = 0
             break  # any malformed occurrence fails serve's parser: stop here
+        if choices is not None and result not in choices:
+            raise QuickSilverError(f"{option} must be one of {choices} (got {raw!r})")
     if raw is None:
         return default
     if not 1 <= result <= ceiling:
         raise QuickSilverError(
-            f"--max-num-seqs must be an integer between 1 and "
+            f"{option} must be an integer between 1 and "
             f"{ceiling} in pool mode (got {raw!r}) — the "
             f"pool advertises exactly the slots the local serve admits"
         )
@@ -1819,14 +1828,35 @@ def _run_share(
     # Validate the serve passthrough BEFORE registering: a rejected invocation
     # must not leave a remote node registration behind.
     passthrough = list(getattr(args, "_passthrough", None) or [])
-    # The qualified Qwen TensorFold HTTP adapter admits exactly one request.
-    # Advertise its real capacity rather than the ordinary batching default.
+    # Keep pool advertisement, child configuration and HTTP admission aligned.
     tensorfold_qwen = serve_alias == "qwen3.8-27b-tensorfold"
+    if not tensorfold_qwen and any(
+        token.split("=", 1)[0] == "--tensorfold-lanes" for token in passthrough
+    ):
+        raise QuickSilverError(
+            "--tensorfold-lanes in pool mode requires the Qwen27 TensorFold node"
+        )
     max_concurrency = _pool_max_concurrency(
         passthrough,
-        default=1 if tensorfold_qwen else _POOL_DEFAULT_MAX_CONCURRENCY,
-        ceiling=1 if tensorfold_qwen else _POOL_MAX_CONCURRENCY_CEILING,
+        default=4 if tensorfold_qwen else _POOL_DEFAULT_MAX_CONCURRENCY,
+        ceiling=4 if tensorfold_qwen else _POOL_MAX_CONCURRENCY_CEILING,
     )
+    if tensorfold_qwen:
+        if max_concurrency not in (1, 2, 4):
+            raise QuickSilverError("TensorFold pool capacity must be 1, 2 or 4")
+        lane_value = _pool_max_concurrency(
+            passthrough,
+            default=max_concurrency,
+            ceiling=4,
+            option="--tensorfold-lanes",
+            choices=(1, 2, 4, 8),
+        )
+        if lane_value != max_concurrency:
+            raise QuickSilverError(
+                "--tensorfold-lanes must match --max-num-seqs in pool mode"
+            )
+        # An explicit child flag takes precedence over any inherited legacy env alias.
+        passthrough += ["--tensorfold-lanes", str(max_concurrency)]
     # ``share`` advertises thinking off by default. The child server defaults
     # it on, so pool mode must forward the disabling flag just like plain share
     # — except for listings whose pool contract has reasoning always on.
@@ -1861,6 +1891,15 @@ def _run_share(
 
     worker = _resolve_worker(args)
     cache = None if args.reregister else _load_cache(catalog_id, serve_alias, worker)
+    if (
+        tensorfold_qwen
+        and cache is not None
+        and cache.get("max_concurrency", 1) != max_concurrency
+    ):
+        raise QuickSilverError(
+            "Cached TensorFold node capacity differs from the requested lanes; "
+            "re-run with --reregister to advertise matching capacity"
+        )
     if cache is None:
         if desktop_status is not None:
             desktop_status.publish(
@@ -1892,6 +1931,7 @@ def _run_share(
         # allowlist in _validate_wire_urls accepts the registration
         # origin; installed services and later cached runs must keep
         # validating against THAT, not the default).
+        cache["max_concurrency"] = max_concurrency
         cache["api_base"] = api_base
         _validate_wire_urls(cache, api_base, source="register response")
         interval = _resolve_heartbeat_interval(cache, source="register response")

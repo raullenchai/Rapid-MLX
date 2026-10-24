@@ -1847,7 +1847,8 @@ def test_run_share_serves_with_max_seqs_2_and_no_rate_limit():
     assert "--no-thinking" in extra
 
 
-def test_qwen_pool_registers_and_serves_one_tensorfold_lane():
+@pytest.mark.parametrize("capacity", [1, 2, 4, None])
+def test_qwen_pool_registers_and_serves_matching_tensorfold_lanes(capacity):
     tunnel = _fake_tunnel()
     serve, ctrl_c = _patched_run_env(None)
     spawned: dict = {}
@@ -1867,10 +1868,34 @@ def test_qwen_pool_registers_and_serves_one_tensorfold_lane():
         patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
     )
     with _enter(*ctxs):
-        qs.run_share(_make_args(model="qwen3.8-27b", provider_key=PROVIDER_KEY))
-    registration = next(r for r in calls if r.full_url.endswith("/nodes/register"))
-    assert json.loads(registration.data)["max_concurrency"] == 1
-    assert spawned["extra_args"][:3] == ["--disable-disk-caches", "--max-num-seqs", "1"]
+        qs.run_share(
+            _make_args(
+                model="qwen3.8-27b",
+                provider_key=PROVIDER_KEY,
+                _passthrough=[]
+                if capacity is None
+                else ["--max-num-seqs", str(capacity)],
+            )
+        )
+    first_registration = next(
+        r for r in calls if r.full_url.endswith("/nodes/register")
+    )
+    cached = qs._load_cache("qwen3.8-27b", "qwen3.8-27b-tensorfold")
+    assert cached["max_concurrency"] == (capacity or 4)
+    calls.clear()
+    with _enter(*ctxs):
+        qs.run_share(
+            _make_args(
+                model="qwen3.8-27b", _passthrough=["--max-num-seqs", str(capacity or 4)]
+            )
+        )
+    assert not any(r.full_url.endswith("/nodes/register") for r in calls)
+    registration = first_registration
+    expected = capacity or 4
+    assert json.loads(registration.data)["max_concurrency"] == expected
+    extra = spawned["extra_args"]
+    assert extra[extra.index("--max-num-seqs") + 1] == str(expected)
+    assert extra[extra.index("--tensorfold-lanes") + 1] == str(expected)
     assert spawned["alias"] == "qwen3.8-27b-tensorfold"
     assert spawned["quicksilver_pool"] is True
 
@@ -1907,18 +1932,28 @@ def test_qwen_pool_below_memory_floor_serves_mtp_lane_with_default_concurrency(
     assert spawned["quicksilver_pool"] is True
 
 
-def test_qwen_pool_rejects_more_than_one_lane_before_registration(capsys):
+@pytest.mark.parametrize(
+    "passthrough, message",
+    [
+        (["--max-num-seqs", "8"], "between 1 and 4"),
+        (["--max-num-seqs", "3"], "capacity must be 1, 2 or 4"),
+        (["--tensorfold-lanes", "2"], "must match --max-num-seqs"),
+    ],
+)
+def test_qwen_pool_rejects_invalid_lanes_before_registration(
+    capsys, passthrough, message
+):
     with patch.object(qs, "_open") as network:
         with pytest.raises(SystemExit) as exc:
             qs.run_share(
                 _make_args(
                     model="qwen3.8-27b",
                     provider_key=PROVIDER_KEY,
-                    _passthrough=["--max-num-seqs", "2"],
+                    _passthrough=passthrough,
                 )
             )
         assert exc.value.code == 2
-        assert "between 1 and 1" in capsys.readouterr().err
+        assert message in capsys.readouterr().err
         network.assert_not_called()
 
 
@@ -3867,3 +3902,59 @@ def test_pool_browser_request_reaches_default_protected_backend(monkeypatch):
     assert len(seen) == 1
     assert "origin" not in seen[0]
     assert seen[0]["host"] == "127.0.0.1:8898"
+
+
+@pytest.mark.parametrize(
+    "passthrough",
+    [
+        ["--tensorfold-lanes"],
+        ["--tensorfold-lanes", "--no-thinking"],
+        ["--tensorfold-lanes=invalid", "--tensorfold-lanes=4"],
+        ["--tensorfold-lanes=3", "--tensorfold-lanes=4"],
+    ],
+)
+def test_qwen_pool_refuses_malformed_lane_flags_before_registration(passthrough):
+    with patch.object(qs, "_open") as network:
+        with pytest.raises(SystemExit):
+            qs.run_share(_make_args(model="qwen3.8-27b", _passthrough=passthrough))
+        network.assert_not_called()
+
+
+def test_qwen_pool_cached_serial_registration_requires_reregister(capsys):
+    with (
+        patch.object(qs, "_load_cache", return_value={}),
+        patch.object(qs, "_open") as network,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            qs.run_share(_make_args(model="qwen3.8-27b"))
+        assert exc.value.code == 2
+        assert "--reregister" in capsys.readouterr().err
+        network.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model, ram_gb",
+    [
+        ("nemotron-3.5-lightning", 256.0),
+        ("qwen3.8-27b", 36.0),
+    ],
+)
+@pytest.mark.parametrize(
+    "passthrough",
+    [
+        ["--tensorfold-lanes", "4"],
+        ["--tensorfold-lanes=1"],
+        ["--tensorfold-lanes"],
+        ["--tensorfold-lanes=3", "--tensorfold-lanes=4"],
+    ],
+)
+def test_pool_rejects_tensorfold_lanes_on_other_profiles_before_registration(
+    monkeypatch, capsys, model, ram_gb, passthrough
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    with patch.object(qs, "_open") as network:
+        with pytest.raises(SystemExit) as exc:
+            qs.run_share(_make_args(model=model, _passthrough=passthrough))
+        assert exc.value.code == 2
+        assert "requires the Qwen27 TensorFold node" in capsys.readouterr().err
+        network.assert_not_called()

@@ -142,6 +142,7 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Qualification-only destination for generated token-ID evidence.
         # It changes audit storage, never model, parser, or serving-lane choice.
         "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
+        # Deprecated alias of the registered --tensorfold-lanes CLI option.
         # Opt-in decode concurrency (1/2/4/8) for an already-selected qualified
         # TensorFold backend. It sets how many requests share decode rounds;
         # it never selects a model, parser, engine, or backend route, and every
