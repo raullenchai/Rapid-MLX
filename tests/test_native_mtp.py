@@ -765,7 +765,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])
 def test_native_mtp_server_sanitizes_glm_target_before_load(
-    monkeypatch, platform
+    monkeypatch, platform, tmp_path
 ) -> None:
     from rapid_mlx.models import glm5_shardwise_load
     from rapid_mlx.speculative.native_mtp import server as native_server
@@ -785,22 +785,29 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(
 
     mlx_vlm = ModuleType("mlx_vlm")
 
-    def _load(repo, revision):
-        events.append(("load", repo, revision))
+    def _load(repo, *, trust_remote_code):
+        events.append(("load", repo, trust_remote_code))
         return "model", "processor"
 
     mlx_vlm.load = _load
 
-    def _shardwise(repo, revision):
+    def _shardwise(repo, *, trust_remote_code):
         events.append("shardwise")
-        return _load(repo, revision)
+        return _load(repo, trust_remote_code=trust_remote_code)
 
     monkeypatch.setattr(glm5_shardwise_load, "load_glm5_shardwise", _shardwise)
     monkeypatch.setattr(native_server.sys, "platform", platform)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    (tmp_path / "config.json").write_text('{"model_type": "glm5_next"}')
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+
+    def resolve(repo, *, revision):
+        assert repo == GLM53_FLASH_4BIT.target_repo
+        assert revision == GLM53_FLASH_4BIT.target_revision
+        return tmp_path
+
     monkeypatch.setattr(
-        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
-        lambda repo, *, loader, **kwargs: loader(repo, **kwargs),
+        "rapid_mlx.utils.model_file_guard.resolve_vlm_checkpoint", resolve
     )
     monkeypatch.setattr("rapid_mlx._uvicorn._run_server", lambda *_a, **_kw: None)
 
@@ -838,8 +845,8 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(
         *(["shardwise"] if platform == "darwin" else []),
         (
             "load",
-            GLM53_FLASH_4BIT.target_repo,
-            GLM53_FLASH_4BIT.target_revision,
+            str(tmp_path),
+            False,
         ),
     ]
 
