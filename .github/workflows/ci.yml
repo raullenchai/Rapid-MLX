@@ -687,6 +687,17 @@ jobs:
             tests/test_deepseek_v41_ruler_cli.py \
             tests/test_deepseek_v41_ruler_identity.py \
             tests/test_deepseek_v41_teacher_edges.py \
+            tests/test_deepseek_v41_gptq.py \
+            tests/test_deepseek_v41_gptq_amend.py \
+            tests/test_deepseek_v41_gptq_assemble_stage.py \
+            tests/test_deepseek_v41_gptq_batched_next.py \
+            tests/test_deepseek_v41_gptq_cli.py \
+            tests/test_deepseek_v41_gptq_edges.py \
+            tests/test_deepseek_v41_gptq_fullrun.py \
+            tests/test_deepseek_v41_gptq_operations.py \
+            tests/test_deepseek_v41_gptq_quality.py \
+            tests/test_deepseek_v41_gptq_rejections.py \
+            tests/test_deepseek_v41_gptq_scan.py \
             tests/test_model_load_entrypoint_boundaries.py \
             tests/test_model_file_guard.py \
             tests/test_kimi_tokenizer_security.py \

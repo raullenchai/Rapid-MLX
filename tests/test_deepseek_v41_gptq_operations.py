@@ -1,0 +1,241 @@
+"""Failure and CLI contracts for staging and full-run coordination."""
+
+import json
+import runpy
+import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
+
+from scripts import deepseek_v41_gptq as b
+from scripts import deepseek_v41_gptq_assemble_stage as s
+from scripts import deepseek_v41_gptq_fullrun as f
+
+
+@pytest.fixture(autouse=True)
+def cpu():
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    yield
+    mx.set_default_device(previous)
+
+
+def test_staging_rejects_mutation_and_unexpected_group(tmp_path, monkeypatch):
+    path = tmp_path / "data"
+    with pytest.raises(ValueError, match="regular"):
+        s.signature(path)
+    path.write_bytes(b"original")
+    real = s.file_hash
+
+    def mutate(p):
+        value = real(p)
+        p.write_bytes(b"mutated")
+        return value
+
+    monkeypatch.setattr(s, "file_hash", mutate)
+    with pytest.raises(ValueError, match="changed during hashing"):
+        s.checked_hash(path)
+    with pytest.raises(ValueError, match="unexpected"):
+        s.check_binding(
+            {"entry_digests": {}, "groups": {"bad": {}}}, {"entry_digests": {}}
+        )
+
+
+@pytest.mark.parametrize("command", ["verify-layers", "stage-other", "assemble-staged"])
+def test_stage_cli_dispatch(tmp_path, monkeypatch, command):
+    (tmp_path / "run.json").write_text(json.dumps({"recipe": b.recipe()}))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    args = ["stage", command, "--parts", str(tmp_path)]
+    if command == "verify-layers":
+        args += ["--cache", str(tmp_path / "cache")]
+    else:
+        args += [
+            "--source",
+            str(tmp_path),
+            "--manifest",
+            str(manifest),
+            "--staging",
+            str(tmp_path),
+        ]
+    if command == "assemble-staged":
+        args += [
+            "--destination",
+            str(tmp_path / "out"),
+            "--verify-cache",
+            str(tmp_path / "cache"),
+        ]
+    monkeypatch.setattr(sys, "argv", args)
+    source = object()
+    monkeypatch.setattr(s, "PartialSource", lambda *a: source)
+    guard = SimpleNamespace(report=lambda: {})
+    monkeypatch.setattr(s, "MemoryGuard", lambda *a: nullcontext(guard))
+    mocks = {}
+    for name in ("verify_layers", "stage_other", "assemble_staged"):
+        mocks[name] = Mock(return_value={"layers": {"0": {}}})
+        monkeypatch.setattr(s, name, mocks[name])
+    s.main()
+    assert mocks[command.replace("-", "_")].call_count == 1
+    if command == "stage-other":
+        recipe = tmp_path / "recipe.json"
+        recipe.write_text(json.dumps({"memory_limit_gb": 2}))
+        monkeypatch.setattr(sys, "argv", [*args, "--recipe", str(recipe)])
+        with pytest.raises(ValueError, match="CURRENT"):
+            s.main()
+
+
+@pytest.mark.parametrize("module", [s, f])
+def test_script_entrypoint_help(module, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [module.__file__, "--help"])
+    with pytest.raises(SystemExit) as result:
+        runpy.run_path(module.__file__, run_name="__main__")
+    assert result.value.code == 0
+
+
+@pytest.mark.parametrize("host", ["-option", "bad;command", ""])
+def test_remote_rejects_unsafe_host(host):
+    with pytest.raises(ValueError, match="host"):
+        f.Remote(host, "python3")
+
+
+def test_remote_transports_and_failures(tmp_path, monkeypatch):
+    calls = []
+    result = SimpleNamespace(returncode=0, stdout='{"ok": true}')
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return result
+
+    monkeypatch.setattr(f.subprocess, "run", run)
+    remote = f.Remote("example.test", "python3")
+    assert remote.call("info", path="data") == {"ok": True}
+    assert json.loads(calls[-1][1]["input"])["path"] == "data"
+    remote.transfer(tmp_path / "a", "/work/a", True)
+    assert calls[-1][0][0] == "rsync"
+    remote.transfer("/work/a", tmp_path / "a", False)
+    assert calls[-1][0][-1] == str(tmp_path / "a")
+    result.returncode = 1
+    with pytest.raises(RuntimeError, match="remote info failed"):
+        remote.call("info", path="data")
+    with pytest.raises(RuntimeError, match="rsync failed"):
+        remote.transfer(tmp_path / "a", "/work/a", True)
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_driver_cli(tmp_path, monkeypatch, failure):
+    args = [
+        "fullrun",
+        "--host",
+        "example.test",
+        "--remote-work",
+        "/work/build",
+        "--remote-python",
+        "python3",
+        "--destination",
+        str(tmp_path / "out"),
+    ]
+    for name in ("source", "manifest", "recipe", "calibration", "reference-source"):
+        args += ["--" + name, str(tmp_path / name)]
+    monkeypatch.setattr(sys, "argv", args)
+    run = Mock(side_effect=ValueError("fixture") if failure else None)
+    monkeypatch.setattr(f, "Driver", lambda *a: SimpleNamespace(run=run))
+    monkeypatch.setattr(f, "Remote", lambda *a: object())
+    if failure:
+        with pytest.raises(SystemExit) as exc:
+            f.main()
+        assert exc.value.code == 1
+    else:
+        f.main()
+    assert run.called
+    args[args.index("/work/build")] = "relative"
+    with pytest.raises(SystemExit) as exc:
+        f.main()
+    assert exc.value.code == 2
+
+
+def test_shard_sink_rejects_ranges_before_writing(tmp_path):
+    from scripts.deepseek_v41_gptq_io import ShardSink
+    from scripts.deepseek_v41_rd_build import Entry
+
+    entry = Entry("bank", (2, 2), "F32", (), "test")
+    sink = ShardSink(tmp_path / "out.safetensors", [entry])
+    try:
+        for expert in (-1, 2, True):
+            with pytest.raises(ValueError, match="expert output range"):
+                sink.put("bank", mx.ones((2,)), expert)
+        with pytest.raises(ValueError, match="range size"):
+            sink.put("bank", mx.ones((3,)))
+        with pytest.raises(ValueError, match="dtype"):
+            sink.put("bank", mx.ones((2, 2), mx.uint32))
+        with pytest.raises(ValueError, match="incomplete"):
+            sink.finish()
+        sink.put("bank", mx.ones((2,)), 0)
+        before = sink.file.tell()
+        for expert, tensor in ((0, mx.zeros((2,))), (None, mx.zeros((2, 2)))):
+            with pytest.raises(ValueError, match="duplicate"):
+                sink.put("bank", tensor, expert)
+            assert sink.file.tell() == before
+        sink.put("bank", mx.ones((2,)), 1)
+        sink.finish()
+    finally:
+        sink.close()
+    sink = ShardSink(tmp_path / "whole.safetensors", [entry])
+    try:
+        sink.put("bank", mx.ones((2, 2)))
+        with pytest.raises(ValueError, match="duplicate"):
+            sink.put("bank", mx.zeros((2,)), 0)
+        sink.finish()
+    finally:
+        sink.close()
+    sink = ShardSink(tmp_path / "unfinished.safetensors", [entry])
+    sink.close()
+
+
+@pytest.mark.parametrize("kind", ["quantized", "expert_type", "path", "size", "header"])
+def test_partial_source_rejects_invalid_inventory(tmp_path, kind):
+    from scripts.deepseek_v41_gptq_io import PartialSource, inventory
+    from tests.test_deepseek_v41_streaming_teacher import write_source
+
+    write_source(tmp_path / "source")
+    manifest = inventory(tmp_path / "source")
+    if kind == "quantized":
+        manifest["config"]["quantization"] = {"bits": 4}
+    if kind == "expert_type":
+        manifest["config"]["quantization_config"]["expert_dtype"] = "bad"
+    if kind == "path":
+        next(iter(manifest["tensors"].values()))["path"] = "../outside"
+    if kind == "size":
+        manifest["shards"]["source.safetensors"]["size"] += 1
+    if kind == "header":
+        manifest["shards"]["source.safetensors"]["header_sha256"] = "bad"
+    with pytest.raises(ValueError):
+        source = PartialSource(tmp_path / "source", manifest)
+        source.verify(0)
+
+
+def test_invalid_shard_component_and_path():
+    from scripts.deepseek_v41_gptq_io import required_shards
+
+    with pytest.raises(ValueError, match="component"):
+        required_shards({"weight_map": {"embed.weight": "s"}}, "bad")
+    with pytest.raises(ValueError, match="unsafe"):
+        required_shards({"weight_map": {"embed.weight": "../s"}}, "top")
+
+
+def test_scan_rejects_bad_window_and_base_recipe():
+    from scripts import deepseek_v41_gptq_scan as scan
+
+    source = SimpleNamespace(args=SimpleNamespace(max_seq_len=4))
+    with pytest.raises(ValueError, match="window"):
+        scan.calibration_subset(source, None, None, 0)
+    for recipe in (
+        {**b.recipe(), "dense_bits": 8},
+        {**b.recipe(), "low_token_bump": True},
+    ):
+        with pytest.raises(ValueError, match="scan requires"):
+            scan.scan_metadata(source, recipe, {})

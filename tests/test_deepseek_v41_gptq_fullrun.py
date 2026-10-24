@@ -1,0 +1,570 @@
+"""CPU-only lifecycle and interrupted-export/resume contract; no SSH or MLX."""
+
+import json
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from scripts import deepseek_v41_gptq_fullrun as f
+
+
+@pytest.fixture(autouse=True)
+def local_scratch(tmp_path, monkeypatch):
+    monkeypatch.setattr(f, "SCRATCH_ROOT", tmp_path / "driver-scratch")
+
+
+def manifest(n=40):
+    tensors = {f"layers.{i}.weight": {"path": f"layer-{i}.bin"} for i in range(n)}
+    tensors.update(
+        {
+            "embed.weight": {"path": "embed.bin"},
+            "head.weight": {"path": "head.bin"},
+            "mtp.weight": {"path": "mtp.bin"},
+            "layers.0.scale": {"path": "shared.bin"},
+            f"layers.{n - 1}.scale": {"path": "shared.bin"},
+            "layers.1.head_scale": {"path": "head.bin"},
+        }
+    )
+    return {
+        "config": {"text_config": {"num_hidden_layers": n}},
+        "source_revision": "test",
+        "tensors": tensors,
+        "shards": {r["path"]: {"size": 4} for r in tensors.values()},
+    }
+
+
+def test_lifecycle_shared_and_nonlayer():
+    p = f.lifecycle(manifest())
+    assert {"embed.bin", "head.bin", "mtp.bin"} <= set(f.needed(p, 0, 40))
+    assert "layer-1.bin" in f.needed(p, 0, 40)
+    assert "layer-2.bin" not in f.needed(p, 0, 40)
+    assert "shared.bin" not in f.deletable(
+        p, 0, {"identity": "r", "next_layer": 1}, "r"
+    )
+    assert "shared.bin" in f.deletable(p, 39, {"identity": "r", "next_layer": 40}, "r")
+    assert "head.bin" not in f.deletable(
+        p, 39, {"identity": "r", "next_layer": 40}, "r"
+    )
+
+
+@pytest.mark.parametrize(
+    "cp",
+    [
+        {"identity": "r", "next_layer": 0, "phase": "ffn"},
+        {"identity": "other", "next_layer": 1},
+        {"identity": "r", "next_layer": True},
+    ],
+)
+def test_no_cleanup_before_authoritative_commit(cp):
+    with pytest.raises(ValueError):
+        f.deletable(f.lifecycle(manifest()), 0, cp, "r")
+
+
+@pytest.mark.parametrize(
+    "change", ["traversal", "missing", "unknown_layer", "unmapped"]
+)
+def test_bad_manifest_fails_closed(change):
+    m = manifest()
+    if change == "traversal":
+        m["tensors"]["layers.0.weight"]["path"] = "../victim"
+    if change == "missing":
+        m["tensors"]["layers.0.weight"]["path"] = "absent"
+    if change == "unknown_layer":
+        m["tensors"]["layers.40.weight"] = {"path": "head.bin"}
+    if change == "unmapped":
+        m["shards"]["unmapped"] = {"size": 4}
+    with pytest.raises(ValueError):
+        f.lifecycle(m)
+
+
+class FakeRemote:
+    def __init__(self, root, args):
+        self.root, self.a = root, args
+        self.events = []
+        self.fail_export = False
+        self.no_commit = False
+        self.fail_init = False
+        self.free = f.HEADROOM + 10000000
+        self.runs = []
+        self.path(args.remote_work).mkdir(parents=True)
+        for p in Path(f.__file__).parent.glob("deepseek_v41_gptq*.py"):
+            if p.name == Path(f.__file__).name:
+                continue
+            target = self.path(args.remote_work + "/repo/scripts/" + p.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, target)
+
+    def path(self, p):
+        return self.root / str(p).lstrip("/")
+
+    def call(self, op, **kw):
+        self.events.append((op, kw))
+        path = self.path(kw["path"]) if "path" in kw else None
+        if op == "free":
+            return self.free
+        if op == "json":
+            return json.loads(path.read_text()) if path.exists() else None
+        if op == "info":
+            return (
+                {"size": path.stat().st_size, "sha256": f.sha(path)}
+                if path.exists()
+                else None
+            )
+        if op == "mkdir":
+            path.mkdir(parents=True, exist_ok=True)
+            return True
+        if op == "lock":
+            path.mkdir()
+            return True
+        if op == "unlock":
+            path.rmdir()
+            return True
+        if op == "delete":
+            cp = json.loads(self.path(kw["checkpoint"]).read_text())
+            assert cp["identity"] == kw["identity"] and cp["next_layer"] > kw["layer"]
+            # Export marker and all its hashes must exist before ANY deletion.
+            marker = self.a.destination / f"layer-{kw['layer']}-export.json"
+            record = json.loads(marker.read_text())
+            assert all(
+                f.sha(self.a.destination / n) == h for n, h in record["files"].items()
+            )
+            path.unlink(missing_ok=True)
+            return True
+        if op == "recover_init":
+            assert not (path / "state/checkpoint.json").exists()
+            archived = []
+            for name in ("parts", "state"):
+                p = path / name
+                if p.exists():
+                    target = path / ("abandoned-init-test-" + name)
+                    p.rename(target)
+                    archived.append(target.name)
+            return archived
+        if op == "run":
+            argv = kw["argv"]
+            cmd = argv[2]
+
+            def arg(name):
+                return argv[argv.index(name) + 1]
+
+            parts = self.path(arg("--parts"))
+            state = self.path(arg("--scratch"))
+            if cmd == "init":
+                assert not parts.exists() and not state.exists()
+                parts.mkdir(parents=True)
+                state.mkdir(parents=True)
+                recipe = f.resolved_recipe(self.path(arg("--recipe")))
+                source = json.loads(self.path(arg("--manifest")).read_text())
+                reference = json.loads(
+                    (self.path(arg("--reference")) / "reference.json").read_text()
+                )
+                f.atomic(
+                    parts / "run.json",
+                    {
+                        "identity": "run",
+                        "recipe": recipe,
+                        "source_identity": f.digest(source),
+                        "heldout_reference_identity": reference["identity"],
+                    },
+                )
+                if self.fail_init:
+                    self.fail_init = False
+                    raise RuntimeError("interrupted init")
+                f.atomic(
+                    state / "checkpoint.json", {"identity": "run", "next_layer": 0}
+                )
+                return True
+            layer = int(arg("--layer"))
+            self.runs.append(layer)
+            cp = json.loads((state / "checkpoint.json").read_text())
+            assert cp["next_layer"] == layer
+            m = json.loads(self.a.manifest.read_text())
+            for name in f.needed(f.lifecycle(m), layer, 40):
+                assert (self.path(arg("--source")) / name).exists()
+            files = {}
+            for name in [
+                f"model-layer-{layer}.safetensors",
+                f"layer-{layer}-stats.json",
+            ]:
+                (parts / name).write_text(str(layer))
+                files[name] = f.sha(parts / name)
+            f.atomic(
+                parts / f"layer-{layer}-complete.json",
+                {"run_identity": "run", "files": files},
+            )
+            with (parts / "heldout-drift.jsonl").open("a") as out:
+                out.write(
+                    json.dumps(
+                        {
+                            "layer": layer,
+                            "candidate_identity": f.digest(
+                                dict(kind="gptq_parts", run="run")
+                            ),
+                            "reference_identity": "ref",
+                        }
+                    )
+                    + "\n"
+                )
+            if not self.no_commit:
+                f.atomic(
+                    state / "checkpoint.json",
+                    {"identity": "run", "next_layer": layer + 1},
+                )
+            return True
+        raise AssertionError(op)
+
+    def transfer(self, source, target, upload):
+        self.events.append(("transfer", {"upload": upload, "source": str(source)}))
+        if (
+            self.fail_export
+            and not upload
+            and str(source).endswith("model-layer-0.safetensors")
+        ):
+            self.fail_export = False
+            raise RuntimeError("interrupted export")
+        source = Path(source) if upload else self.path(source)
+        target = self.path(target) if upload else Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+
+@pytest.fixture
+def setup(tmp_path):
+    m = manifest()
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in m["shards"]:
+        (source / name).write_bytes(b"data")
+    for name in ("config.json", "tokenizer.json"):
+        (source / name).write_text("{}")
+    mp = tmp_path / "source-manifest.json"
+    f.atomic(mp, m)
+    recipe = tmp_path / "recipe.json"
+    f.atomic(recipe, {"pilot": False, "dense_8bit_layers": list(range(8))})
+    corpus = tmp_path / "calibration.json"
+    f.atomic(corpus, {"slices": {"general": ["text.txt"]}})
+    (tmp_path / "text.txt").write_text("corpus")
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    f.atomic(
+        reference / "reference.json",
+        {"identity": "ref", "source_identity": f.digest(m)},
+    )
+    for i in range(41):
+        boundary = reference / f"boundary-{i}"
+        boundary.mkdir()
+        (boundary / "tensor").write_text(str(i))
+        f.atomic(
+            boundary / "complete.json",
+            {"identity": "ref", "files": {"tensor": f.sha(boundary / "tensor")}},
+        )
+    a = SimpleNamespace(
+        manifest=mp,
+        recipe=recipe,
+        source=source,
+        reference_source=reference,
+        calibration=corpus,
+        destination=tmp_path / "collected",
+        remote_work="/m5",
+        remote_python="/python",
+    )
+    return a, FakeRemote(tmp_path / "remote", a)
+
+
+def test_full_run_then_idempotent_resume(setup):
+    a, r = setup
+    f.Driver(a, r).run()
+    assert r.runs == list(range(40))
+    assert len(list(a.destination.glob("layer-*-export.json"))) == 40
+    assert (
+        json.loads((a.destination / "fullrun-complete.json").read_text())["next_layer"]
+        == 40
+    )
+    assert r.path("/m5/stage/embed.bin").exists()
+    assert r.path("/m5/stage/head.bin").exists()
+    assert not r.path("/m5/stage/shared.bin").exists()
+    before = list(r.runs)
+    f.Driver(a, r).run()
+    assert r.runs == before
+
+
+def test_resume_after_checkpoint_before_export(setup):
+    a, r = setup
+    r.fail_export = True
+    with pytest.raises(RuntimeError, match="interrupted export"):
+        f.Driver(a, r).run()
+    assert (
+        json.loads(r.path("/m5/fullrun/state/checkpoint.json").read_text())[
+            "next_layer"
+        ]
+        == 1
+    )
+    assert r.path("/m5/stage/layer-0.bin").exists()
+    assert not any(op == "delete" for op, _ in r.events)
+    f.Driver(a, r).run()
+    assert r.runs == list(range(40))  # layer zero never reruns after commit
+
+
+def test_drift_and_completion_without_checkpoint_never_export_or_delete(setup):
+    a, r = setup
+    r.no_commit = True
+    with pytest.raises(ValueError, match="commit exactly one layer"):
+        f.Driver(a, r).run()
+    assert not list(a.destination.glob("layer-*-export.json"))
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+def test_transfer_requires_disk_reserve(setup):
+    a, r = setup
+    r.free = f.HEADROOM + 3
+    driver = f.Driver(a, r)
+    with pytest.raises(ValueError, match="insufficient M5 disk"):
+        driver.upload(a.source / "layer-0.bin", "/m5/stage/layer-0.bin")
+    assert not any(op == "transfer" for op, _ in r.events)
+
+
+def test_bad_transfer_hash_blocks_cleanup(setup):
+    a, r = setup
+    driver = f.Driver(a, r)
+    with pytest.raises(ValueError, match="local source hash mismatch"):
+        driver.upload(
+            a.source / "layer-0.bin",
+            "/m5/stage/layer-0.bin",
+            {"size": 4, "sha256": "bad"},
+        )
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+def test_changed_recipe_fails_closed_on_resume(setup):
+    a, r = setup
+    r.fail_export = True
+    with pytest.raises(RuntimeError):
+        f.Driver(a, r).run()
+    c = json.loads(a.recipe.read_text())
+    c["dense_8bit_layers"] = list(range(1, 9))
+    f.atomic(a.recipe, c)
+    with pytest.raises(ValueError, match="inputs changed"):
+        f.Driver(a, r).run()
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+def test_resume_interrupted_initialization_without_deleting_partial_state(setup):
+    a, r = setup
+    r.fail_init = True
+    with pytest.raises(RuntimeError, match="interrupted init"):
+        f.Driver(a, r).run()
+    assert r.path("/m5/fullrun/parts/run.json").exists()
+    assert not r.path("/m5/fullrun/state/checkpoint.json").exists()
+    f.Driver(a, r).run()
+    assert r.runs == list(range(40))
+    assert r.path("/m5/fullrun/abandoned-init-test-parts/run.json").exists()
+
+
+def test_remote_helper_header_hash_and_checkpoint_gate(tmp_path):
+    """Execute the actual remote helper locally, still without ssh or a model."""
+    import hashlib
+    import struct
+    import subprocess
+    import sys
+
+    shard = tmp_path / "shard"
+    header = b'{"tensor": {}}'
+    raw = struct.pack("<Q", len(header)) + header
+    shard.write_bytes(raw + b"payload")
+
+    def request(**q):
+        return subprocess.run(
+            [sys.executable, "-c", f.REMOTE],
+            input=json.dumps(q),
+            text=True,
+            capture_output=True,
+        )
+
+    result = request(
+        op="info",
+        path=str(shard),
+        meta={
+            "size": shard.stat().st_size,
+            "header_sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": f.sha(shard),
+        },
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {
+        "size": len(raw) + 7,
+        "header_sha256": hashlib.sha256(raw).hexdigest(),
+        "sha256": f.sha(shard),
+    }
+    cp = tmp_path / "checkpoint.json"
+    f.atomic(cp, {"identity": "run", "next_layer": 0})
+    q = dict(op="delete", path=str(shard), checkpoint=str(cp), identity="run", layer=0)
+    assert request(**q).returncode != 0
+    assert shard.exists()
+    f.atomic(cp, {"identity": "run", "next_layer": 1})
+    assert request(**q).returncode == 0
+    assert not shard.exists()
+
+
+def test_source_header_mismatch_after_transfer_fails_closed(setup):
+    a, r = setup
+    driver = f.Driver(a, r)
+    # Fake transfer supplies a size/SHA but cannot supply the expected source header.
+    with pytest.raises(ValueError, match="verification failed"):
+        driver.upload(
+            a.source / "layer-0.bin",
+            "/m5/stage/layer-0.bin",
+            {"size": 4, "header_sha256": "wrong"},
+        )
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+@pytest.mark.parametrize("kind", ["empty", "layer_name", "coverage", "size"])
+def test_invalid_lifecycle_metadata(kind):
+    m = manifest()
+    if kind == "empty":
+        m["shards"] = {}
+    elif kind == "layer_name":
+        m["tensors"]["layers.bad.weight"] = {"path": "head.bin"}
+    elif kind == "coverage":
+        m["tensors"].pop("layers.2.weight")
+        m["tensors"]["head.extra"] = {"path": "layer-2.bin"}
+    else:
+        m["shards"]["head.bin"]["size"] = 0
+    with pytest.raises(ValueError):
+        f.lifecycle(m)
+
+
+@pytest.mark.parametrize("kind", ["layers", "recipe", "unknown"])
+def test_driver_rejects_invalid_config(setup, kind):
+    a, r = setup
+    if kind == "layers":
+        f.atomic(a.manifest, manifest(4))
+    elif kind == "recipe":
+        f.atomic(a.recipe, {"pilot": True})
+    else:
+        f.atomic(a.recipe, {"unknown": 1})
+    with pytest.raises(ValueError):
+        f.Driver(a, r)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["source", "boundary", "size", "destination", "remote", "tooling", "initialized"],
+)
+def test_driver_preflight_rejections(setup, kind, monkeypatch):
+    a, r = setup
+    driver = f.Driver(a, r)
+    if kind == "source":
+        f.atomic(
+            a.reference_source / "reference.json",
+            {"identity": "ref", "source_identity": "bad"},
+        )
+    elif kind == "boundary":
+        f.atomic(a.reference_source / "boundary-0/complete.json", {"identity": "bad"})
+    elif kind == "size":
+        (a.source / "layer-0.bin").write_bytes(b"changed")
+    elif kind == "destination":
+        a.destination.mkdir()
+        (a.destination / "unbound").touch()
+    elif kind == "remote":
+        path = r.path(driver.parts + "/run.json")
+        path.parent.mkdir(parents=True)
+        f.atomic(path, {})
+    elif kind == "tooling":
+        r.path(a.remote_work + "/repo/scripts/deepseek_v41_gptq.py").write_text(
+            "changed"
+        )
+    else:
+        real = r.call
+
+        def changed(op, **kw):
+            result = real(op, **kw)
+            if op == "json" and kw.get("path") == driver.parts + "/run.json" and result:
+                result["source_identity"] = "bad"
+            return result
+
+        monkeypatch.setattr(r, "call", changed)
+    with pytest.raises(ValueError):
+        driver.run()
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+def test_upload_size_and_reference_identity_rejected(setup):
+    a, r = setup
+    driver = f.Driver(a, r)
+    with pytest.raises(ValueError, match="size"):
+        driver.upload(a.source / "layer-0.bin", "/work/file", {"size": 1})
+    driver.ref_identity = "different"
+    with pytest.raises(ValueError, match="boundary identity"):
+        driver.stage_reference(0)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "uncommitted",
+        "files",
+        "remote_hash",
+        "transfer_hash",
+        "drift_hash",
+        "drift_rows",
+    ],
+)
+def test_export_rejects_corrupt_state_without_cleanup(setup, monkeypatch, kind):
+    a, r = setup
+    driver = f.Driver(a, r)
+    r.fail_export = True
+    with pytest.raises(RuntimeError, match="interrupted export"):
+        driver.run()
+    r.events.clear()
+    if kind == "uncommitted":
+        f.atomic(
+            r.path(driver.state + "/checkpoint.json"),
+            {"identity": driver.identity, "next_layer": 0},
+        )
+    elif kind == "files":
+        path = r.path(driver.parts + "/layer-0-complete.json")
+        value = json.loads(path.read_text())
+        value["files"] = {}
+        f.atomic(path, value)
+    elif kind == "remote_hash":
+        r.path(driver.parts + "/model-layer-0.safetensors").write_bytes(b"changed")
+    elif kind in ("transfer_hash", "drift_hash"):
+        real = r.transfer
+
+        def corrupt(source, target, upload):
+            real(source, target, upload)
+            if not upload and (
+                (kind == "transfer_hash" and str(source).endswith(".safetensors"))
+                or (kind == "drift_hash" and str(source).endswith(".jsonl"))
+            ):
+                Path(target).write_bytes(b"changed")
+
+        monkeypatch.setattr(r, "transfer", corrupt)
+    else:
+        path = r.path(driver.parts + "/heldout-drift.jsonl")
+        path.write_text(path.read_text() * 2)
+    with pytest.raises(ValueError):
+        driver.export(0)
+    assert not any(op == "delete" for op, _ in r.events)
+
+
+def test_metadata_transfer_corruption_is_rejected(setup, monkeypatch):
+    a, r = setup
+    driver = f.Driver(a, r)
+    a.destination.mkdir()
+    path = r.path(driver.parts + "/run.json")
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    real = r.transfer
+
+    def corrupt(source, target, upload):
+        real(source, target, upload)
+        Path(target).write_text("changed")
+
+    monkeypatch.setattr(r, "transfer", corrupt)
+    with pytest.raises(ValueError, match="metadata hash"):
+        driver.collect_metadata()
+    assert not (a.destination / "run.json").exists()
