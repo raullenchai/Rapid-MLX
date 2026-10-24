@@ -79,6 +79,7 @@ def copy_verified(source, destination, expected_hash):
         raise ValueError("copied shard payload mismatch")
     with Path(destination).open("rb") as stream:
         os.fsync(stream.fileno())
+    sync_parent(destination)
 
 
 def metadata_hashes(source):
@@ -508,5 +509,8 @@ def atomic_destination(destination):
     ) as root:
         stage = Path(root) / "output"
         yield stage
+        # Include reports and other metadata copied outside the shard writer.
+        # File data and each containing directory must precede publication.
+        sync_files(path for path in stage.rglob("*") if path.is_file())
         rename_directory_exclusive(stage, destination)
         sync_parent(destination)

@@ -637,3 +637,47 @@ def test_restart_reclaims_only_unreferenced_payload_generations(tmp_path, monkey
     assert not old.exists()
     assert set(tmp_path.glob("state.*.safetensors")) == {current, unrelated}
     assert io.load_state(path)["value"].item() == 3
+
+
+def test_verified_copy_syncs_file_before_directory(tmp_path, monkeypatch):
+    import stat
+
+    from scripts import deepseek_v41_gptq_io as io
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(b"payload")
+    synced = []
+    real_sync = io.os.fsync
+
+    def sync(fd):
+        synced.append("directory" if stat.S_ISDIR(io.os.fstat(fd).st_mode) else "file")
+        real_sync(fd)
+
+    monkeypatch.setattr(io.os, "fsync", sync)
+    io.copy_verified(source, target, io.file_hash(source))
+    assert synced == ["file", "directory"]
+
+
+def test_assembly_flushes_supporting_files_before_publication(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+
+    events = []
+    sync_files, rename = io.sync_files, io.rename_directory_exclusive
+
+    def sync(paths):
+        paths = list(paths)
+        events.append(("sync", sorted(path.name for path in paths)))
+        sync_files(paths)
+
+    def publish(source, destination):
+        assert events == [("sync", ["README.md", "layer-0.json"])]
+        events.append(("publish", destination.name))
+        rename(source, destination)
+
+    monkeypatch.setattr(io, "sync_files", sync)
+    monkeypatch.setattr(io, "rename_directory_exclusive", publish)
+    with io.atomic_destination(tmp_path / "build") as stage:
+        (stage / "statistics").mkdir(parents=True)
+        (stage / "README.md").write_text("report")
+        (stage / "statistics" / "layer-0.json").write_text("{}")
+    assert events[-1] == ("publish", "build")
