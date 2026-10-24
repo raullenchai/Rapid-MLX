@@ -156,16 +156,6 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # backend. It preserves the model, cache dtype and serving route, and
         # only chooses stock versus fused arithmetic over the same packed KV.
         "RAPID_MLX_AFFINE8_ATTENTION",
-        # Opt-in request concurrency (1/2/4/8) for the already-selected native
-        # V4.1 product backend, like RAPID_MLX_TENSORFOLD_LANES. This one is a
-        # serving-lane switch inside that backend: counts above 1 replace the
-        # drafted single-stream lane with a target-only batched lane over the
-        # same target weights. Permitted because it never changes the model,
-        # checkpoint, parser, tier, or engine route, it is only read by that
-        # backend after its own selection, and the lane actually serving is
-        # reported via /v1/models speculative info, runtime status and the
-        # ready banner.
-        "RAPID_MLX_DSV41_LANES",
         # Draft-depth budget within the selected native V4.1 backend. Every
         # setting uses the same target, weights, parser and greedy contract.
         "RAPID_MLX_DSV41_DRAFT_DEPTH",
@@ -1267,6 +1257,12 @@ def _check_env_constant(
     # Strip RAPID_ prefix for the routing-shape check so both
     # RAPID_MLX_FORCE_* and MLX_FORCE_* are caught.
     if not (value.startswith("RAPID_MLX_") or value.startswith("MLX_")):
+        return
+    if value == "RAPID_MLX_DSV41_LANES":
+        # Retired variable: only the migration-error boundary may mention it.
+        # Runtime tests require rejection for every value, including empty.
+        if rel != "models/deepseek_v41_native/lanes.py":
+            offenders.append(f"{rel}:{lineno} references retired `{value}`")
         return
     if value == "RAPID_MLX_EXTRA_MODEL_ROOTS":
         # Narrow, reviewed local-storage exception for #1718. It may appear

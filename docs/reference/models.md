@@ -24,7 +24,7 @@ rapid-mlx info deepseek-v41-flash-1017
 rapid-mlx serve deepseek-v41-flash-1017
 ```
 
-The default serves one request at a time. For concurrent requests, set `RAPID_MLX_DSV41_LANES=2`, `4`, or `8` before starting the server; this turns drafting off. See the [0.16.6 release notes](../release-notes/v0.16.6.md) for the pinned weights and runtime details.
+The default serves one request at a time. For concurrent requests, pass `--dsv41-lanes 2`, `4`, or `8` to `rapid-mlx serve`; this turns drafting off. `--dsv41-lanes 1` (the default) or `--no-dsv41-lanes` keeps serial drafting. The retired `RAPID_MLX_DSV41_LANES` environment variable now causes a startup error even when set to `1` or an empty value; unset it and use the CLI option. The option is only supported for native DeepSeek V4.1 models. See the [0.16.6 release notes](../release-notes/v0.16.6.md) for the pinned weights and runtime details.
 
 ## Optional checkpoint revision
 

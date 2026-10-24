@@ -41,6 +41,7 @@ def run_server(
     body_receive_timeout_seconds: float = 15.0,
     default_timeout: float = 1800.0,
     max_concurrent_requests: int = 256,
+    lanes: int = 1,
     cors_policy: Any | None = None,
     reasoning_parser_name: str | None = "deepseek_v4",
     model_name: str = REAP.alias,
@@ -53,7 +54,7 @@ def run_server(
 
     from .lanes import request_lanes
 
-    lanes = request_lanes()
+    lanes = request_lanes(lanes)
     backend = None
     batch_options: dict[str, Any] = {}
     artifact = product_artifact(model_name)

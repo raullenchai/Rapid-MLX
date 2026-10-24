@@ -412,14 +412,22 @@ def test_local_server_uses_same_guarded_lane_and_unpinned_identity(
 
 
 @pytest.mark.requires_mlx
-def test_local_cli_skips_generic_and_pinned_downloads(monkeypatch, tmp_path):
+@pytest.mark.parametrize("lanes", [1, 2, 4, 8])
+def test_local_cli_skips_generic_and_pinned_downloads(monkeypatch, tmp_path, lanes):
     from rapid_mlx import _version_check, cli
     from rapid_mlx import server as generic_server
     from rapid_mlx.models.deepseek_v41_native import server
     from tests.test_deepseek_v41_artifacts import _product_serve_args
 
     args = _product_serve_args(
-        "--served-model-name", "dsv41-t256", "--host", "127.0.0.1", "--port", "8000"
+        "--served-model-name",
+        "dsv41-t256",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--dsv41-lanes",
+        str(lanes),
     )
     args.model = a.FLASH_1017.target_repo
     args._original_alias = a.FLASH_1017.alias
@@ -449,6 +457,7 @@ def test_local_cli_skips_generic_and_pinned_downloads(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     cli.serve_command(args)
     assert memory == [a.FLASH_1017.alias]
+    assert calls[0]["lanes"] == lanes
     assert calls[0]["model_name"] == a.FLASH_1017.target_repo
     assert calls[0]["served_model_name"] == "dsv41-t256"
     assert calls[0]["default_max_tokens"] == 4096

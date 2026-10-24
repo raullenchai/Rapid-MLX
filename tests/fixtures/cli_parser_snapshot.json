@@ -4387,6 +4387,42 @@
        "type": null
       },
       {
+       "choices": [
+        1,
+        2,
+        4,
+        8
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1,
+       "dest": "dsv41_lanes",
+       "help": "Native DeepSeek V4.1 decode lanes: 1 keeps serial drafting (default); 2, 4 or 8 selects draft-off batched decode.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--dsv41-lanes"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreConstAction",
+       "completer": null,
+       "const": 1,
+       "default": null,
+       "dest": "dsv41_lanes",
+       "help": "Keep native DeepSeek V4.1 serial drafting (equivalent to --dsv41-lanes 1).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--no-dsv41-lanes"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -6586,6 +6622,8 @@
         "listen_fd",
         "log_level",
         "log_file",
+        "dsv41_lanes",
+        "dsv41_lanes",
         "max_num_seqs",
         "max_concurrent_requests",
         "prefill_batch_size",
@@ -6728,7 +6766,15 @@
        "title": "options"
       }
      ],
-     "mutually_exclusive": [],
+     "mutually_exclusive": [
+      {
+       "dests": [
+        "dsv41_lanes",
+        "dsv41_lanes"
+       ],
+       "required": false
+      }
+     ],
      "prog": "rapid-mlx serve"
     },
     "service": {

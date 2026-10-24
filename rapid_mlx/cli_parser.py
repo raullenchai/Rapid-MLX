@@ -660,6 +660,24 @@ def _add_serve_parser(
         ),
     )
     _add_log_file_arg(serve_parser)
+    dsv41_lanes = serve_parser.add_mutually_exclusive_group()
+    dsv41_lanes.add_argument(
+        "--dsv41-lanes",
+        type=int,
+        choices=[1, 2, 4, 8],
+        default=1,
+        help=(
+            "Native DeepSeek V4.1 decode lanes: 1 keeps serial drafting (default); "
+            "2, 4 or 8 selects draft-off batched decode."
+        ),
+    )
+    dsv41_lanes.add_argument(
+        "--no-dsv41-lanes",
+        dest="dsv41_lanes",
+        action="store_const",
+        const=1,
+        help="Keep native DeepSeek V4.1 serial drafting (equivalent to --dsv41-lanes 1).",
+    )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
     )

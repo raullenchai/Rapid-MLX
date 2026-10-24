@@ -13,7 +13,6 @@ pytestmark = pytest.mark.requires_mlx
 
 from rapid_mlx.models.deepseek_v41_native.batch_scheduler import (
     BatchBackend,
-    request_lanes,
 )
 from rapid_mlx.models.deepseek_v41_native.cache import BatchModelCache, ModelCache
 from scripts.bench_deepseek_v41_batched_decode import make_tiny_model
@@ -430,32 +429,6 @@ def test_close_fails_pending_active_and_partial_prefill():
         backend.submit([1, 2], max_tokens=3)
 
 
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        (None, 1),
-        ("1", 1),
-        ("2", 2),
-        ("4", 4),
-        ("8", 8),
-        ("0", None),
-        ("3", None),
-        ("", None),
-        ("two", None),
-    ],
-)
-def test_lanes_parsing(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv("RAPID_MLX_DSV41_LANES", raising=False)
-    else:
-        monkeypatch.setenv("RAPID_MLX_DSV41_LANES", value)
-    if expected is None:
-        with pytest.raises(ValueError, match="RAPID_MLX_DSV41_LANES"):
-            request_lanes()
-    else:
-        assert request_lanes() == expected
-
-
 @pytest.mark.parametrize("lanes", [1, 2, 4, 8])
 def test_server_selects_serial_or_batch_path(monkeypatch, capsys, lanes):
     from pathlib import Path
@@ -465,7 +438,7 @@ def test_server_selects_serial_or_batch_path(monkeypatch, capsys, lanes):
     from rapid_mlx.models.deepseek_v41_native import batch_scheduler, server
     from rapid_mlx.speculative.dflash import server as serial
 
-    monkeypatch.setenv("RAPID_MLX_DSV41_LANES", str(lanes))
+    monkeypatch.delenv("RAPID_MLX_DSV41_LANES", raising=False)
     monkeypatch.setattr(server, "require_product_memory", lambda: None)
     monkeypatch.setattr(server, "download_target_snapshot", lambda: Path("target"))
     monkeypatch.setattr(server, "download_mtp_snapshot", lambda: Path("mtp"))
@@ -538,6 +511,7 @@ def test_server_selects_serial_or_batch_path(monkeypatch, capsys, lanes):
         monkeypatch.setattr(serial, "_build_app", capture_batch_app)
     monkeypatch.setattr("rapid_mlx._uvicorn.run_uvicorn", run)
     server.run_server(
+        lanes=lanes,
         host="127.0.0.1",
         port=8000,
         served_model_name="test",
@@ -691,7 +665,7 @@ def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch, fa
     from rapid_mlx.models.deepseek_v41_native import batch_scheduler, server
     from rapid_mlx.speculative.dflash import server as serial
 
-    monkeypatch.setenv("RAPID_MLX_DSV41_LANES", "2")
+    monkeypatch.delenv("RAPID_MLX_DSV41_LANES", raising=False)
     monkeypatch.setattr(server, "require_product_memory", lambda: None)
     monkeypatch.setattr(server, "download_target_snapshot", lambda: Path("target"))
     monkeypatch.setattr(server, "download_mtp_snapshot", lambda: Path("mtp"))
@@ -720,6 +694,7 @@ def test_server_closes_batch_backend_when_app_construction_fails(monkeypatch, fa
         monkeypatch.setattr(serial, "BackendExecutionPolicy", broken_app)
     with pytest.raises(RuntimeError, match="injected app failure"):
         server.run_server(
+            lanes=2,
             host="127.0.0.1",
             port=8000,
             served_model_name="test",

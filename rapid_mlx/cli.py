@@ -5853,6 +5853,16 @@ def serve_command(args):
     from rapid_mlx import disk_caches, log_file
     from rapid_mlx.runtime import optional_runtime
 
+    from .models.deepseek_v41_native.lanes import serve_lanes
+
+    try:
+        args.dsv41_lanes = serve_lanes(
+            getattr(args, "dsv41_lanes", 1), getattr(args, "model", None)
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
     args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
     try:
         log_target, log_source = log_file.resolve_validated(
@@ -7237,6 +7247,7 @@ def serve_command(args):
 
         server._sync_config()
         run_v41_server(
+            lanes=args.dsv41_lanes,
             model_name=args.model,
             host=args.host,
             port=_resolved_serve_port(args),

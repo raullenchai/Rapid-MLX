@@ -86,6 +86,14 @@ class RoutingFlagPair:
 
 AUTO_ROUTING_FLAG_PAIRS: tuple[RoutingFlagPair, ...] = (
     RoutingFlagPair(
+        force_on="--dsv41-lanes",
+        force_off="--no-dsv41-lanes",
+        desc="Native DeepSeek V4.1 batched versus serial decode (#4983)",
+        required_files=("cli.py",),
+        forwarded_kwargs=(),
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
         force_on="--mllm",
         force_off="--no-mllm",
         desc="MLLM vs text-only routing (#393)",
