@@ -311,6 +311,9 @@ struct RapidApp: App {
             onProductValueDelivered: { [weak telemetryLifecycle, weak starPromptCoordinator] kind in
                 telemetryLifecycle?.productValueDelivered(kind)
                 starPromptCoordinator?.productValueDelivered(kind)
+            },
+            onImageReplyDelivered: { [weak starPromptCoordinator] in
+                starPromptCoordinator?.productValueDelivered(.chatReply)
             }
         )
         // Deterministic AX fixture for the otherwise release-only state where

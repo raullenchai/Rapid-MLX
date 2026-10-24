@@ -265,8 +265,20 @@ final class PromptScheduler {
               (!requiresVisibleWindow || windowVisible()),
               !context.isBusy,
               !context.hasBlockingSurface else { return }
-        if let lastShown = defaults.object(forKey: PromoKeys.lastShown) as? Date,
-           now().timeIntervalSince(lastShown) < Self.deferralInterval { return }
+        let latestDeferral = now().addingTimeInterval(Self.deferralInterval)
+        if let deferredUntil = defaults.object(forKey: Keys.deferredUntil) as? Date,
+           deferredUntil > latestDeferral {
+            defaults.set(latestDeferral, forKey: Keys.deferredUntil)
+        }
+        if let lastShown = defaults.object(forKey: PromoKeys.lastShown) as? Date {
+            let currentTime = now()
+            if lastShown > currentTime {
+                defaults.set(currentTime, forKey: PromoKeys.lastShown)
+            }
+            if currentTime.timeIntervalSince(min(lastShown, currentTime)) < Self.deferralInterval {
+                return
+            }
+        }
         let newsletterEligible = effectiveUse.total >= 2
             && !defaults.bool(forKey: PromoKeys.newsletterCompleted)
         let starEligible = !defaults.bool(forKey: Keys.completed)

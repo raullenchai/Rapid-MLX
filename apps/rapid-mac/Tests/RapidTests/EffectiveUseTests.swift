@@ -48,6 +48,28 @@ struct EffectiveUseTests {
         #expect(EffectiveUse(defaults: recent).distinctDays == 1)
     }
 
+    @Test("A time-zone change keeps the same written calendar day, and old dates migrate once")
+    func calendarDayAcrossTimeZones() {
+        let defaults = defaults()
+        var east = Calendar(identifier: .gregorian)
+        east.timeZone = TimeZone(secondsFromGMT: 14 * 3_600)!
+        var west = Calendar(identifier: .gregorian)
+        west.timeZone = TimeZone(secondsFromGMT: -12 * 3_600)!
+        let first = Date(timeIntervalSince1970: 1_800_000_000)
+        let eastDay = east.dateComponents([.year, .month, .day], from: first)
+        let later = west.date(from: eastDay)!.addingTimeInterval(3_600)
+        let uses = EffectiveUse(defaults: defaults, calendar: east, now: { first })
+        uses.record(.chatReply)
+        let writtenDay = defaults.string(forKey: EffectiveUse.Keys.lastDay)
+        EffectiveUse(defaults: defaults, calendar: west, now: { later }).record(.chatReply)
+        #expect(defaults.string(forKey: EffectiveUse.Keys.lastDay) == writtenDay)
+        #expect(uses.distinctDays == 1)
+
+        defaults.set(east.startOfDay(for: first), forKey: EffectiveUse.Keys.lastDay)
+        _ = EffectiveUse(defaults: defaults, calendar: east, now: { first })
+        #expect(defaults.string(forKey: EffectiveUse.Keys.lastDay) == writtenDay)
+    }
+
     @Test("Newsletter starts at two outcomes, wins priority, and never returns")
     func newsletter() {
         let defaults = defaults()
@@ -101,5 +123,44 @@ struct EffectiveUseTests {
                                      presentationActive: true)
         prompt.startMonitoringUserActivity()
         #expect(!prompt.newsletterPresented)
+    }
+
+    @Test("Future promo and star timestamps are clamped once after a clock correction")
+    func futureTimestamps() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        var current = date
+        let newsletterDefaults = defaults()
+        newsletterDefaults.set(2, forKey: EffectiveUse.Keys.total)
+        newsletterDefaults.set(date.addingTimeInterval(30 * 24 * 3_600),
+                               forKey: PromptScheduler.PromoKeys.lastShown)
+        let newsletter = PromptScheduler(defaults: newsletterDefaults, now: { current },
+                                         quietWindow: .zero, presentationActive: true)
+        newsletter.startMonitoringUserActivity()
+        #expect(!newsletter.newsletterPresented)
+        #expect(newsletterDefaults.object(forKey: PromptScheduler.PromoKeys.lastShown) as? Date == date)
+        current.addTimeInterval(PromptScheduler.deferralInterval)
+        let later = PromptScheduler(defaults: newsletterDefaults, now: { current },
+                                    quietWindow: .zero, presentationActive: true)
+        later.startMonitoringUserActivity()
+        #expect(later.newsletterPresented)
+
+        current = date
+        let starDefaults = defaults()
+        starDefaults.set(true, forKey: PromptScheduler.PromoKeys.newsletterCompleted)
+        starDefaults.set(10, forKey: EffectiveUse.Keys.total)
+        starDefaults.set(2, forKey: EffectiveUse.Keys.distinctDays)
+        starDefaults.set(date.addingTimeInterval(30 * 24 * 3_600),
+                         forKey: PromptScheduler.Keys.deferredUntil)
+        let star = PromptScheduler(defaults: starDefaults, now: { current },
+                                   quietWindow: .zero, presentationActive: true)
+        star.startMonitoringUserActivity()
+        #expect(!star.isPresented)
+        #expect(starDefaults.object(forKey: PromptScheduler.Keys.deferredUntil) as? Date
+                == date.addingTimeInterval(PromptScheduler.deferralInterval))
+        current.addTimeInterval(PromptScheduler.deferralInterval)
+        let nextStar = PromptScheduler(defaults: starDefaults, now: { current },
+                                       quietWindow: .zero, presentationActive: true)
+        nextStar.startMonitoringUserActivity()
+        #expect(nextStar.isPresented)
     }
 }

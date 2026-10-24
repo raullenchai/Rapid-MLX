@@ -28,9 +28,12 @@ final class EffectiveUse {
                 let mature = previous >= PromptScheduler.initialWorkloadThreshold
                 defaults.set(mature ? calendar.date(byAdding: .day, value: -1, to: today) : today,
                              forKey: Keys.firstDay)
-                defaults.set(today, forKey: Keys.lastDay)
+                defaults.set(dayString(today), forKey: Keys.lastDay)
                 defaults.set(mature ? 2 : 1, forKey: Keys.distinctDays)
             }
+        }
+        if let oldDay = defaults.object(forKey: Keys.lastDay) as? Date {
+            defaults.set(dayString(oldDay), forKey: Keys.lastDay)
         }
     }
 
@@ -43,21 +46,28 @@ final class EffectiveUse {
     }
 
     func record(_ kind: ProductValueKind) {
-        let day = calendar.startOfDay(for: now())
+        let instant = now()
+        let day = calendar.startOfDay(for: instant)
+        let dayKey = dayString(instant)
         if firstDay == nil { defaults.set(day, forKey: Keys.firstDay) }
-        if let last = defaults.object(forKey: Keys.lastDay) as? Date {
-            if !calendar.isDate(last, inSameDayAs: day) {
+        if let last = defaults.string(forKey: Keys.lastDay) {
+            if last != dayKey {
                 defaults.set(distinctDays == Int.max ? Int.max : distinctDays + 1,
                              forKey: Keys.distinctDays)
-                defaults.set(day, forKey: Keys.lastDay)
+                defaults.set(dayKey, forKey: Keys.lastDay)
             }
         } else {
             defaults.set(1, forKey: Keys.distinctDays)
-            defaults.set(day, forKey: Keys.lastDay)
+            defaults.set(dayKey, forKey: Keys.lastDay)
         }
         defaults.set(total == Int.max ? Int.max : total + 1, forKey: Keys.total)
         let key = "Rapid.effectiveUse.\(kind.storageKey).v1"
         let count = defaults.integer(forKey: key)
         defaults.set(count == Int.max ? Int.max : count + 1, forKey: key)
+    }
+
+    private func dayString(_ date: Date) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
     }
 }

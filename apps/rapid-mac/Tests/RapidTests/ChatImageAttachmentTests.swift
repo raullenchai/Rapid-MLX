@@ -372,6 +372,33 @@ struct ChatImageAttachmentTests {
         #expect(model.messages.last?.status == .complete)
     }
 
+    @Test("Successful image reply counts locally without emitting chat activation telemetry")
+    @MainActor
+    func imageReplyCountsEffectiveUseOnly() async throws {
+        let name = "ImageEffectiveUse.\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        defer { defaults.removePersistentDomain(forName: name) }
+        let prompt = PromptScheduler(defaults: defaults, quietWindow: .zero)
+        var telemetryValues: [ProductValueKind] = []
+        let image = try ChatImageAttachment(
+            filename: "photo.png", mimeType: "image/png", data: Data("photo".utf8)
+        )
+        let model = ChatViewModel(
+            client: ChatStreamClient(baseURL: URL(string: "fake://image-success")!,
+                                     session: ImageSuccessProtocol.session()),
+            persistsConversations: false,
+            onProductValueDelivered: { telemetryValues.append($0) },
+            onImageReplyDelivered: { prompt.productValueDelivered(.chatReply) }
+        )
+        model.send("Describe", alias: "vision-model", supportsImageInput: true,
+                   imageAttachments: [image])
+        try await Self.waitForStream(model)
+        #expect(model.messages.last?.status == .complete)
+        #expect(EffectiveUse(defaults: defaults).count(.chatReply) == 1)
+        #expect(telemetryValues.isEmpty)
+    }
+
     @Test("a second terminal image failure quarantines only that image turn")
     @MainActor
     func secondTerminalFailureQuarantinesImage() async throws {
@@ -852,6 +879,34 @@ struct ChatImageAttachmentTests {
         }
         try #require(condition(), "the canned transport event must arrive")
     }
+}
+
+private final class ImageSuccessProtocol: URLProtocol, @unchecked Sendable {
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageSuccessProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("""
+            data: {"choices":[{"delta":{"content":"A photo"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private final class ImageCancellationProtocol: URLProtocol, @unchecked Sendable {

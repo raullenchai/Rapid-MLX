@@ -401,6 +401,7 @@ final class ChatViewModel {
     /// App-owned lifecycle signal for a real, visible assistant completion.
     /// Kept as a callback so chat has no dependency on telemetry policy.
     private let onProductValueDelivered: @MainActor (ProductValueKind) -> Void
+    private let onImageReplyDelivered: @MainActor () -> Void
     /// Injectable so conversation deletion can remove extracts in isolated tests.
     private let documentCache: DocumentContentCache
 
@@ -415,6 +416,7 @@ final class ChatViewModel {
         persistsConversations: Bool = true,
         conversationStoreURL: URL? = nil,
         onProductValueDelivered: @escaping @MainActor (ProductValueKind) -> Void = { _ in },
+        onImageReplyDelivered: @escaping @MainActor () -> Void = {},
         documentCache: DocumentContentCache = .shared
     ) {
         self.client = client
@@ -427,6 +429,7 @@ final class ChatViewModel {
         self.persistsConversations = persistsConversations
         self.conversationStoreURL = conversationStoreURL
         self.onProductValueDelivered = onProductValueDelivered
+        self.onImageReplyDelivered = onImageReplyDelivered
         self.documentCache = documentCache
         // Absent preferences enable tools; explicit stored false disables them.
         var disabled = Set<String>()
@@ -2649,9 +2652,9 @@ final class ChatViewModel {
                 if !Task.isCancelled,
                    let delivered = currentMessage(index: currentPlaceholder),
                    delivered.status == .complete,
-                   !usedImageInput,
                    !delivered.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    onProductValueDelivered(.chatReply)
+                    if usedImageInput { onImageReplyDelivered() }
+                    else { onProductValueDelivered(.chatReply) }
                 }
             }
         }
