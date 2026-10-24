@@ -909,6 +909,9 @@ def _load_gemma4_text_impl(
     tokenizer_config = tokenizer_config or {}
     eos_token_ids = config.get("eos_token_id", text_config.get("eos_token_id"))
     tokenizer = load_tokenizer(p, tokenizer_config, eos_token_ids=eos_token_ids)
+    from ..utils.tokenizer import augment_eos_token_ids_from_generation_config
+
+    augment_eos_token_ids_from_generation_config(tokenizer, str(p))
 
     logger.info(
         "[gemma4] Loaded %s text-only model via LLM path (%d layers)",

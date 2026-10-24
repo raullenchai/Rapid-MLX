@@ -538,7 +538,20 @@ def test_loader_routes_quantization_and_checked_weight_load(
             self.layers = []
 
     utils = ModuleType("mlx_lm.utils")
-    expected_tokenizer = object()
+    # Dedicated Gemma 4 text loading must retain turn stops even when neither
+    # model nor generation config declares the complete EOS set.
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/gemma_stop/gemma4.json").read_text()
+    )
+
+    class GemmaTokenizer:
+        def __init__(self):
+            self._eos_token_ids = {1}
+
+        def get_vocab(self):
+            return {entry["content"]: entry["id"] for entry in fixture["added_tokens"]}
+
+    expected_tokenizer = GemmaTokenizer()
     utils.load_tokenizer = lambda *_args, **_kwargs: expected_tokenizer
     mlx_lm = ModuleType("mlx_lm")
     mlx_lm.utils = utils
@@ -578,6 +591,7 @@ def test_loader_routes_quantization_and_checked_weight_load(
     )
 
     assert tokenizer is expected_tokenizer
+    assert tokenizer._eos_token_ids == {1, 50, 106}
     assert len(quantize_calls) == 1
     assert weight_calls == [(model, {"language_model.weight": weight}, False)]
 
