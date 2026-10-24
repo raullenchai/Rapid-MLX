@@ -349,12 +349,12 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
     args = _make_args()
     toggles = {"attached": False}
 
-    from rapid_mlx.agents import adapter as ad
+    from rapid_mlx import http_auth as ad
 
     fetched = []
     monkeypatch.setattr(
         ad,
-        "_fetch_models",
+        "probe_models",
         lambda base: fetched.append(base) or [{"id": "qwen3.5-9b-4bit"}],
     )
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
@@ -380,9 +380,9 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
 def test_reuse_incompatible_server_refuses(monkeypatch, capsys):
     """Port serving a different model -> clean refusal (exit 1)."""
     args = _make_args()
-    from rapid_mlx.agents import adapter as ad
+    from rapid_mlx import http_auth as ad
 
-    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other-model"}])
+    monkeypatch.setattr(ad, "probe_models", lambda base: [{"id": "other-model"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
 
     result = run_cli._reuse_or_refuse(
@@ -399,9 +399,9 @@ def test_reuse_incompatible_server_refuses(monkeypatch, capsys):
 def test_reuse_occupied_not_rapidmlx_refuses(monkeypatch, capsys):
     """Port occupied by a non-rapid-mlx listener -> clean refusal."""
     args = _make_args()
-    from rapid_mlx.agents import adapter as ad
+    from rapid_mlx import http_auth as ad
 
-    monkeypatch.setattr(ad, "_fetch_models", lambda base: [])
+    monkeypatch.setattr(ad, "probe_models", lambda base: [])
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
 
     result = run_cli._reuse_or_refuse(
@@ -911,9 +911,9 @@ def test_port_is_busy_wrapper(monkeypatch):
 def test_reuse_dry_run_branch(monkeypatch, capsys):
     """Reuse handler under --dry-run probes before promising an attach."""
     args = _make_args(dry_run=True)
-    from rapid_mlx.agents import adapter as ad
+    from rapid_mlx import http_auth as ad
 
-    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "m"}])
+    monkeypatch.setattr(ad, "probe_models", lambda base: [{"id": "m"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
     previews = []
     monkeypatch.setattr(
@@ -934,9 +934,9 @@ def test_reuse_dry_run_branch(monkeypatch, capsys):
 def test_reuse_dry_run_refuses_incompatible_server(monkeypatch, capsys):
     """Dry-run reports the same incompatible-port failure as a real start."""
     args = _make_args(dry_run=True)
-    from rapid_mlx.agents import adapter as ad
+    from rapid_mlx import http_auth as ad
 
-    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other"}])
+    monkeypatch.setattr(ad, "probe_models", lambda base: [{"id": "other"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
     assert (
         run_cli._reuse_or_refuse(

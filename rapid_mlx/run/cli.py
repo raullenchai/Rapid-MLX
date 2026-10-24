@@ -597,10 +597,19 @@ def _reuse_or_refuse(
     * 0 — reused or dry-run previewed; start_command returns directly.
     * Non-zero — refused; start_command returns the refusal.
     """
-    from rapid_mlx.agents.adapter import _fetch_models
+    from rapid_mlx.http_auth import probe_models
 
     api_base_url = f"{base_url.rstrip('/')}/v1"
-    served = {str(m.get("id")) for m in _fetch_models(api_base_url) if m.get("id")}
+    try:
+        models = probe_models(api_base_url)
+    except PermissionError:
+        print(
+            f"  Port {args.port}: server requires an API key. "
+            "Set RAPID_MLX_API_KEY to the server's valid key and retry. "
+            "Keys are sent only over loopback HTTP or HTTPS."
+        )
+        return 1
+    served = {str(m.get("id")) for m in models if m.get("id")}
     if not served:
         print(
             f"  Port {args.port} is occupied but not a healthy rapid-mlx "
