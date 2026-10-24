@@ -371,7 +371,7 @@ network arrival order. Both controls use the same cache-entry limit of eight,
 FCFS, four sequences, batch size four, prefill step 2048, temperature zero and
 32 output tokens, with the optional kernels/caches disabled as above.
 
-[Auditable receipts](2026-10-24-hybrid-boundary-retention.json) retain every
+[Auditable receipts](2026-10-24-hybrid-boundary-retention.json.gz) retain every
 response's text, reasoning, output hash, complete usage hash, normalized token
 usage hash, terminal/finish status and timings, plus cache counters/ledger after
 each phase. Complete usage hashes intentionally differ when cached-token
@@ -466,9 +466,10 @@ sequence, with loopback port 8736 and no other owned GPU work. Foreign CPU
 workers were observed; the timing assessment uses the requested measured
 run-to-run spread and does not assert a quiet host.
 
-[Source-bound summary and all receipts](2026-10-24-hybrid-boundary-followup.jsonl)
-contain a summary JSON record followed by one JSON record per response or cache
-status. They include full output text, hashes, usage, request IDs, timing samples,
+[Source-bound summary and all receipts](2026-10-24-hybrid-boundary-followup.jsonl.gz)
+are losslessly gzip-compressed and contain a summary JSON record followed by
+one JSON record per response or cache status. Read them with `gzip -dc`; compression
+keeps raw data from exhausting the code-review diff budget. They include full output text, hashes, usage, request IDs, timing samples,
 cache ledgers, mismatch identities and the original-response audit. All 256
 responses completed with the correct code, 32 output tokens, length finish and
 terminal stream marker. Every recorded cache ledger stays within its budget.
@@ -512,7 +513,10 @@ restored boundary or a proof of the precise numerical cause.
 Each run median is computed across the four document sets. All values below
 are seconds; the spread column is the minimum–maximum of the three run
 medians. The comparison uses the median of those three medians. No failed or
-slow request was excluded.
+slow request was excluded. The summary field
+`no_median_regression_beyond_observed_run_range` is true when the signed median
+increase does not exceed the observed range; decreases are improvements rather
+than regressions. It is not an absolute-change or output-identity predicate.
 
 | Measurement | Main run medians | Candidate run medians | Main median [spread] | Candidate median [spread] |
 | --- | --- | --- | --- | --- |
@@ -541,3 +545,11 @@ Focused CPU regressions still pass 145 tests; changed executable scheduler
 coverage remains 46/46 lines (100%), with Ruff and whitespace checks passing.
 No runtime code was changed to force output identity or improve a timing sample.
 All owned servers exited and the GPU lock was released after the final arm.
+
+The final integration rebase onto `73794395a` adds unrelated main changes; the
+measured text scheduler, memory cache, engine, server and benchmark-helper
+sources are unchanged. Receipt archives preserve the complete readable data;
+SHA-256 of the decompressed original and follow-up artifacts respectively:
+
+- `538aa22194e734b8aca88238fc4ce73e3dc94ea2f068790b0c407e6702e72b18`
+- `5f75b7d86b757d5df38a55b96eeb61d2c3d78c56d5c68c61060c230dc5bf9448`
