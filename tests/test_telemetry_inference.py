@@ -2643,8 +2643,7 @@ async def test_audio_speech_capability_rejections_emit(monkeypatch, case):
     monkeypatch.setitem(sys.modules, "rapid_mlx.audio.tts", fake_tts)
     monkeypatch.setattr(probe, "require_mlx_audio_tts", lambda: None)
     monkeypatch.setattr(probe, "require_kokoro_runtime", lambda: None)
-    resolved = "org/Qwen3-TTS-0.6B-Base" if case == "qwen_base" else "org/kokoro"
-    monkeypatch.setattr(audio, "_resolve_tts_model", lambda _model: resolved)
+    model = "qwen3-tts-clone" if case == "qwen_base" else "kokoro"
     monkeypatch.setattr(audio, "_is_clone_capable_model", lambda _model: False)
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -2655,7 +2654,7 @@ async def test_audio_speech_capability_rejections_emit(monkeypatch, case):
         ),
     )
     request = AudioSpeechRequest.model_construct(
-        model="model",
+        model=model,
         input="hello",
         voice="default",
         speed=1.0,
