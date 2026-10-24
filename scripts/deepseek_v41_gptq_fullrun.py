@@ -507,6 +507,14 @@ class Driver:
         for name, meta in self.manifest["shards"].items():
             if (self.a.source / name).stat().st_size != meta["size"]:
                 raise ValueError("source shard absent or size mismatch")
+        calibration = json.loads(self.a.calibration.read_text())
+        slices = calibration.get("slices") if isinstance(calibration, dict) else None
+        if (
+            not isinstance(slices, dict)
+            or not slices
+            or any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in slices)
+        ):
+            raise ValueError("calibration slice names must be safe filename components")
         self.r.call("lock", path=self.a.remote_work + "/fullrun.lock")
         try:
             self.r.call("mkdir", path=self.root)
@@ -519,9 +527,7 @@ class Driver:
                     str((self.a.calibration.parent / file).resolve()): sha(
                         self.a.calibration.parent / file
                     )
-                    for files in json.loads(self.a.calibration.read_text())[
-                        "slices"
-                    ].values()
+                    for files in slices.values()
                     for file in files
                 },
                 tool={
@@ -583,7 +589,7 @@ class Driver:
                         self.manifest["shards"][name],
                     )
                 self.stage_reference(0)
-                raw = json.loads(self.a.calibration.read_text())
+                raw = calibration
                 portable = {"slices": {}}
                 for name, files in raw["slices"].items():
                     portable["slices"][name] = []

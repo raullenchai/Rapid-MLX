@@ -26,6 +26,7 @@ from scripts.deepseek_v41_gptq import MemoryGuard, allocation, output_plan, reci
 from scripts.deepseek_v41_gptq_amend import epochs, validate_record
 from scripts.deepseek_v41_gptq_io import (
     PartialSource,
+    atomic_destination,
     atomic_json,
     conversion_record,
     digest,
@@ -255,12 +256,13 @@ def assemble_staged(
     with (
         locked(staging / ".stage.lock"),
         locked(verify_cache.with_name(verify_cache.name + ".lock")),
+        atomic_destination(destination) as output,
     ):
         return _assemble_staged(
             source,
             c,
             parts,
-            destination,
+            output,
             guard,
             staging,
             verify_cache,
@@ -280,8 +282,6 @@ def _assemble_staged(
     epochs(run)
     if run["recipe"] != c or run["source_identity"] != digest(source.manifest):
         raise ValueError("assembly recipe/source identity mismatch")
-    if destination.exists():
-        raise FileExistsError(destination)
     cache = load_cache(parts, verify_cache, run)
     entries, _ = output_plan(source, c)
     layer_groups, completion = {}, {}

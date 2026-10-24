@@ -239,3 +239,53 @@ def test_scan_rejects_bad_window_and_base_recipe():
     ):
         with pytest.raises(ValueError, match="scan requires"):
             scan.scan_metadata(source, recipe, {})
+
+
+def test_atomic_destination_publication_rollback_and_race(tmp_path):
+    from scripts.deepseek_v41_gptq_io import atomic_destination
+
+    target = tmp_path / "build"
+    with (
+        pytest.raises(OSError, match="interrupted"),
+        atomic_destination(target) as stage,
+    ):
+        stage.mkdir()
+        (stage / "partial").write_text("unfinished")
+        assert not target.exists()
+        raise OSError("interrupted")
+    assert not target.exists() and not list(tmp_path.glob(".build.partial-*"))
+    with atomic_destination(target) as stage:
+        stage.mkdir()
+        (stage / "complete").write_text("done")
+        assert not target.exists()
+    assert (target / "complete").read_text() == "done"
+    competitor = tmp_path / "competitor"
+    with pytest.raises(FileExistsError), atomic_destination(competitor) as stage:
+        stage.mkdir()
+        competitor.mkdir()
+        inode = competitor.stat().st_ino
+    assert competitor.stat().st_ino == inode
+    assert not list(tmp_path.glob(".competitor.partial-*"))
+    broken = tmp_path / "broken"
+    broken.symlink_to(tmp_path / "missing")
+    with pytest.raises(FileExistsError), atomic_destination(broken):
+        pytest.fail("must not enter a symlink destination")
+    assert broken.is_symlink()
+
+
+def test_exclusive_publication_platform_contract(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+
+    rename = Mock(return_value=0)
+    monkeypatch.setattr(
+        io.ctypes, "CDLL", lambda *a, **kw: SimpleNamespace(renameat2=rename)
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(io.sys, "platform", "linux")
+        io.rename_directory_exclusive(tmp_path / "source", tmp_path / "dest")
+        assert rename.call_args.args[-1] == 1
+        assert rename.call_args.args[1].startswith(b"/")
+    with monkeypatch.context() as patch:
+        patch.setattr(io.sys, "platform", "unsupported")
+        with pytest.raises(RuntimeError, match="unavailable"):
+            io.rename_directory_exclusive(tmp_path / "source", tmp_path / "dest")

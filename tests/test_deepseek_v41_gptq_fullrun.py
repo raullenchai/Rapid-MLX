@@ -568,3 +568,21 @@ def test_metadata_transfer_corruption_is_rejected(setup, monkeypatch):
     with pytest.raises(ValueError, match="metadata hash"):
         driver.collect_metadata()
     assert not (a.destination / "run.json").exists()
+
+
+@pytest.mark.parametrize(
+    "slices",
+    [
+        {"../../outside": ["text.txt"]},
+        {"a/b": ["text.txt"]},
+        {"": ["text.txt"]},
+        [],
+        {},
+    ],
+)
+def test_unsafe_calibration_names_fail_before_remote_actions(setup, slices):
+    a, remote = setup
+    f.atomic(a.calibration, {"slices": slices})
+    with pytest.raises(ValueError, match="safe filename"):
+        f.Driver(a, remote).run()
+    assert remote.events == []

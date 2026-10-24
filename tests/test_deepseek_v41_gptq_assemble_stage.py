@@ -481,3 +481,43 @@ def test_assembly_retains_heldout_reports(run, tmp_path):
         )
     assert (tmp_path / "out/gptq-heldout-drift.jsonl").read_text() == "{}\n"
     assert (tmp_path / "out/gptq-heldout-reference.json").read_text() == "{}\n"
+
+
+@pytest.mark.parametrize("mode", ["direct", "staged"])
+@pytest.mark.parametrize("failure", ["link", "metadata"])
+def test_failed_assembly_can_retry_without_partial_destination(
+    run, tmp_path, monkeypatch, mode, failure
+):
+    target = tmp_path / "published"
+    module = b if mode == "direct" else s
+
+    def assemble(guard):
+        if mode == "direct":
+            return b.assemble(run.source, run.c, run.parts, target, guard)
+        return s.assemble_staged(
+            run.source, run.c, run.parts, target, guard, run.staging, tmp_path / "cache"
+        )
+
+    with b.MemoryGuard(run.c) as guard:
+        with monkeypatch.context() as patch:
+            if failure == "link":
+
+                def fail_link(*args):
+                    raise OSError("injected link failure")
+
+                patch.setattr(module.os, "link", fail_link)
+            else:
+                real = module.atomic_json
+
+                def fail_metadata(path, value):
+                    if path.name == "config.json":
+                        raise OSError("injected metadata failure")
+                    return real(path, value)
+
+                patch.setattr(module, "atomic_json", fail_metadata)
+            with pytest.raises(OSError, match="injected"):
+                assemble(guard)
+        assert not target.exists()
+        assert not list(tmp_path.glob(".published.partial-*"))
+        assemble(guard)
+    assert file_bytes(target) == file_bytes(run.direct)

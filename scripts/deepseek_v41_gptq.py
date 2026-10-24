@@ -26,6 +26,7 @@ if __package__ in (None, ""):
 from scripts.deepseek_v41_gptq_io import (
     PartialSource,
     ShardSink,
+    atomic_destination,
     atomic_json,
     conversion_record,
     digest,
@@ -1646,6 +1647,11 @@ def run_layer(source, c, parts, scratch, layer, guard):
 
 
 def assemble(source, c, parts, destination, guard):
+    with atomic_destination(destination) as stage:
+        return _assemble(source, c, parts, stage, guard)
+
+
+def _assemble(source, c, parts, destination, guard):
     from scripts.deepseek_v41_gptq_amend import epochs, validate_record
     from scripts.deepseek_v41_rd_build import group_path
     from scripts.repack_deepseek_v41_native import _copy_metadata_files
@@ -1654,8 +1660,6 @@ def assemble(source, c, parts, destination, guard):
     epochs(run)
     if run["recipe"] != c or run["source_identity"] != digest(source.manifest):
         raise ValueError("assembly recipe/source identity mismatch")
-    if destination.exists():
-        raise FileExistsError(destination)
     entries, _ = output_plan(source, c)
     layer_groups, completion = {}, {}
     for i in range(source.args.n_layers):

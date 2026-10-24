@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
 import struct
+import sys
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -348,3 +352,53 @@ def conversion_record(source, destination):
         checkpoint_sha256=candidate,
         checkpoint_index_json=index,
     )
+
+
+def rename_directory_exclusive(source, destination):
+    """Atomically publish without replacing even an empty competing destination."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    paths = (
+        os.fsencode(Path(source).absolute()),
+        os.fsencode(Path(destination).absolute()),
+    )
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        args = (*paths, 4)  # RENAME_EXCL, from sys/stdio.h.
+    elif sys.platform == "linux" and hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        args = (
+            0,
+            paths[0],
+            0,
+            paths[1],
+            1,
+        )  # RENAME_NOREPLACE; absolute paths ignore dirfds.
+    else:
+        raise RuntimeError("atomic exclusive directory publication is unavailable")
+    rename.restype = ctypes.c_int
+    if rename(*args) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+@contextmanager
+def atomic_destination(destination):
+    """Keep incomplete assemblies private and remove them after a failed attempt."""
+    destination = Path(destination)
+    if os.path.lexists(destination):
+        raise FileExistsError(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=destination.parent, prefix=f".{destination.name}.partial-"
+    ) as root:
+        stage = Path(root) / "output"
+        yield stage
+        rename_directory_exclusive(stage, destination)
