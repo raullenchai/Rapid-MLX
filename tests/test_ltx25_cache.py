@@ -59,6 +59,15 @@ def test_complete_ltx25_cache_serves_offline_without_stub_notice(tmp_path, monke
     cli._ensure_model_downloaded(REPO)
 
 
+def test_complete_ltx25_cache_without_main_ref_serves_offline(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    (snap.parents[1] / "refs" / "main").unlink()
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    assert cli._cache_runnability(REPO) is True
+    cli._ensure_model_downloaded(REPO)
+
+
 @pytest.mark.parametrize(
     "missing", ["transformer-distilled.safetensors", "text_encoder/model.safetensors"]
 )
@@ -74,6 +83,17 @@ def test_partial_ltx25_cache_is_not_runnable(tmp_path, monkeypatch, missing):
     )
     with pytest.raises(SystemExit, match="1"):
         cli._ensure_model_downloaded(REPO)
+
+
+@pytest.mark.parametrize(
+    "preferred", ["transformer.safetensors", "transformer-distilled-1.1.safetensors"]
+)
+def test_empty_preferred_ltx25_weight_is_incomplete(tmp_path, monkeypatch, preferred):
+    snap = _cache(tmp_path, monkeypatch)
+    (snap / preferred).touch()
+
+    assert cli._cache_runnability(REPO) is False
+    assert gate.weightless_stub_notice(REPO) is not None
 
 
 def test_text_cache_behavior_unchanged(tmp_path, monkeypatch):

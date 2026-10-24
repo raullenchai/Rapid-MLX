@@ -9624,7 +9624,10 @@ def _cache_runnability(repo: str) -> bool | None:
             # can suppress the foreground download.
             return _snapshot_is_complete_mflux_model(repo)
         if repo == "MrMofer/ltx-2.5-mlx-q8":
-            return _snapshot_is_complete_ltx25_model(repo)
+            return (
+                _snapshot_is_complete_ltx25_model(repo)
+                or resolve_unreferenced_cached_snapshot(repo) is not None
+            )
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)

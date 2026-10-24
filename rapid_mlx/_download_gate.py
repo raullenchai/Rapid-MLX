@@ -1189,9 +1189,22 @@ def _snapshot_is_complete_ltx25(snap_dir: str) -> bool:
     """Check the files the bundled LTX-2.5 runtime opens in this snapshot."""
     from .video.ltx25 import LTX25_CHECKPOINT_FILES
 
-    return all(
+    required = all(
         _is_nonempty_snapshot_manifest_file(os.path.join(snap_dir, name), snap_dir)
         for name in LTX25_CHECKPOINT_FILES
+    )
+    if not required:
+        return False
+    # The runtime prefers these when present over transformer-distilled.safetensors.
+    from pathlib import Path
+
+    snapshot = Path(snap_dir)
+    alternatives = [snapshot / "transformer.safetensors"]
+    alternatives.extend(snapshot.glob("transformer-distilled-*.safetensors"))
+    return all(
+        not os.path.lexists(path)
+        or _is_nonempty_snapshot_manifest_file(str(path), snap_dir)
+        for path in alternatives
     )
 
 
