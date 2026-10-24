@@ -5725,6 +5725,25 @@ flow_dictation_rc2_upgrade() {
 }
 
 
+# Escape delivery and the AX inventory settle asynchronously. Never interpret
+# an incomplete walk as absence, and keep observation inside the caller's budget.
+wait_picker_dismissed() {
+    local destination="$1" started="$2"
+    while (( $(monotonic_ms) - started < 3000 )); do
+        see_main "$destination"
+        (( $(monotonic_ms) - started < 3000 )) || return 1
+        if jq -e '.success == true and .data.walk.complete == true
+                  and (.data.ui_elements | length > 0)
+                  and ([.data.ui_elements[]? | .identifier]
+                       | index("ModelPickerBar.Alias.fake-external-alias")) == null' \
+                "$destination" >/dev/null; then
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
 flow_model_switch_active_request() {
     log "flow: model-switch-active-request"
     # The default response has 19 chunks: 100 repeats at 20 ms provide at
@@ -5772,13 +5791,9 @@ flow_model_switch_active_request() {
     sleep 3
     picker_started="$(monotonic_ms)"
     "$AX_DRIVER" key "$APP_PID" escape > "$OUT/picker-dismissed.json"
-    see_main "$OUT/picker-after-dismiss.json"
+    wait_picker_dismissed "$OUT/picker-after-dismiss.json" "$picker_started" \
+        || die "streaming picker did not close on Escape within responsiveness budget"
     (( $(monotonic_ms) - picker_started < 3000 )) || die "streaming picker dismissal exceeded responsiveness budget"
-    jq -e '.data.ui_elements | length > 0' "$OUT/picker-after-dismiss.json" >/dev/null \
-        || die "app stopped responding after dismissing the streaming picker"
-    ! jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.Alias.fake-external-alias")' \
-        "$OUT/picker-after-dismiss.json" >/dev/null \
-        || die "streaming picker did not close on Escape"
     ! grep -q '"event": "chat_finished"' "$OUT/fake-events.jsonl" \
         || die "stream ended before the picker closed"
 

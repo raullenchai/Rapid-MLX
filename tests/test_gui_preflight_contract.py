@@ -251,6 +251,63 @@ def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
     assert "picker dismissal exceeded responsiveness budget" in picker
 
 
+@pytest.mark.parametrize(
+    "states,read_ms,expected",
+    [
+        (["open", "incomplete", "closed"], 100, 0),
+        (["closed"], 100, 0),
+        (["open"], 100, 1),
+        (["incomplete"], 100, 1),
+        (["empty"], 100, 1),
+        (["closed"], 3000, 1),
+    ],
+)
+def test_picker_dismissal_waits_for_complete_ax_within_budget(
+    tmp_path, states, read_ms, expected
+):
+    source = HARNESS.read_text()
+    helper = (
+        "wait_picker_dismissed() {"
+        + source.split("wait_picker_dismissed() {", 1)[1].split("\n}", 1)[0]
+        + "\n}"
+    )
+    for index, state in enumerate(states):
+        elements = [{"identifier": "ChatView.SendOrStopButton"}]
+        if state == "open":
+            elements.append({"identifier": "ModelPickerBar.Alias.fake-external-alias"})
+        if state == "empty":
+            elements = []
+        (tmp_path / f"{index}.json").write_text(
+            json.dumps(
+                {
+                    "success": True,
+                    "data": {
+                        "walk": {"complete": state != "incomplete"},
+                        "ui_elements": elements,
+                    },
+                }
+            )
+        )
+    script = f"""
+        set -euo pipefail
+        clock=0
+        index=0
+        monotonic_ms() {{ echo "$clock"; }}
+        sleep() {{ clock=$((clock + 50)); }}
+        see_main() {{
+            cp {str(tmp_path)!r}/"$index.json" "$1"
+            if (( index < {len(states) - 1} )); then index=$((index + 1)); fi
+            clock=$((clock + {read_ms}))
+        }}
+        {helper}
+        wait_picker_dismissed {str(tmp_path / "observed.json")!r} 0
+    """
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == expected, result.stderr
+
+
 def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     source = HARNESS.read_text()
     sink = source.split("start_telemetry_sink() {", 1)[1].split("\n}", 1)[0]
