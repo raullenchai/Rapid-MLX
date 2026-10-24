@@ -702,3 +702,121 @@ def test_point_command_base_url_is_shell_quoted():
     # The copy-paste command's --base-url is shell-quoted. (The human-facing
     # ``→  <url>`` echo line above it is informational, not a command.)
     assert f"--base-url {expected}" in out
+
+
+@pytest.fixture
+def auth_connect_server(monkeypatch):
+    """Exercise real HTTP discovery without loading a model or using the GPU."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    from rapid_mlx.config import get_config
+
+    cfg = get_config()
+    for name in ("bind_host", "bind_port", "model_alias", "model_name"):
+        monkeypatch.setattr(cfg, name, None)
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    state = {"status": 401, "requests": [], "models": [{"id": "loaded-model"}]}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["requests"].append((self.path, self.headers.get("Authorization")))
+            if self.path == "/v1/models" and state.get("redirect"):
+                self.send_response(302)
+                self.send_header("Location", "/redirected-models")
+            elif (
+                self.path in ("/healthz", "/redirected-models")
+                or self.headers.get("Authorization") == "Bearer test-key"
+            ):
+                self.send_response(200)
+            else:
+                self.send_response(state["status"])
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": state["models"]}).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_connect_authenticated_discovery(auth_connect_server, monkeypatch):
+    port, state = auth_connect_server
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-key")
+    payload = json.loads(_run_connect(host="127.0.0.1", port=port, json_=True))
+    assert payload["model"] == "loaded-model"
+    assert ("/v1/models", "Bearer test-key") in state["requests"]
+    assert "test-key" not in json.dumps(payload)
+    banner = _run_connect(host="127.0.0.1", port=port)
+    assert "loaded-model" in banner
+    assert "RAPID_MLX_API_KEY" in banner
+    assert "test-key" not in banner
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("key", [None, "wrong-key"])
+def test_connect_rejected_auth_is_explicit(
+    auth_connect_server, monkeypatch, status, key
+):
+    port, state = auth_connect_server
+    state["status"] = status
+    if key:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key)
+    payload = json.loads(_run_connect(host="127.0.0.1", port=port, json_=True))
+    assert payload["model"] is None
+    assert payload["auth_required"] is True
+    banner = _run_connect(host="127.0.0.1", port=port)
+    assert "(authentication required)" in banner
+    assert "(not yet loaded)" not in banner
+    assert "export RAPID_MLX_API_KEY=" in banner
+    assert "wrong-key" not in banner
+
+
+@pytest.mark.parametrize("key", [None, "test-key"])
+def test_connect_python_snippet_reads_environment(
+    auth_connect_server, monkeypatch, key
+):
+    port, _ = auth_connect_server
+    if key:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", key)
+    out = _run_connect(target="python", host="127.0.0.1", port=port, model="explicit")
+    assert "import os" in out
+    assert 'os.environ.get("RAPID_MLX_API_KEY") or "sk-noop"' in out
+    assert "RAPID_MLX_API_KEY" in out
+    assert "test-key" not in out
+
+
+@pytest.mark.parametrize(
+    "status,models,expected",
+    [
+        (200, [{"id": "public-model"}], "public-model"),
+        (200, [], None),
+        (500, [{"id": "not-available"}], None),
+    ],
+)
+def test_connect_non_auth_responses(auth_connect_server, status, models, expected):
+    port, state = auth_connect_server
+    state.update(status=status, models=models)
+    payload = json.loads(_run_connect(host="127.0.0.1", port=port, json_=True))
+    assert payload["model"] == expected
+    assert "auth_required" not in payload
+    assert state["requests"] == [("/v1/models", None)]
+
+
+def test_connect_does_not_forward_key_on_redirect(auth_connect_server, monkeypatch):
+    port, state = auth_connect_server
+    state["redirect"] = True
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-key")
+    assert connect._probe_running_model("127.0.0.1", port) == "loaded-model"
+    assert state["requests"] == [
+        ("/v1/models", "Bearer test-key"),
+        ("/redirected-models", None),
+    ]

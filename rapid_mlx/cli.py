@@ -14498,8 +14498,17 @@ def _connect_target(args, eps):
 
         print("     ", package_install_command("openai"))
         print()
+        print(
+            "  If authentication is enabled, set RAPID_MLX_API_KEY to the server key:"
+        )
+        print("      export RAPID_MLX_API_KEY='<server-api-key>'")
+        print()
+        print("      import os")
         print("      from openai import OpenAI")
-        print(f"      client = OpenAI(base_url={eps.openai_url!r}, api_key='sk-noop')")
+        print(
+            f"      client = OpenAI(base_url={eps.openai_url!r}, "
+            'api_key=os.environ.get("RAPID_MLX_API_KEY") or "sk-noop")'
+        )
         print("      resp = client.chat.completions.create(")
         print(f"          model={model!r},")
         print('          messages=[{"role": "user", "content": "Hello!"}],')

@@ -29,6 +29,7 @@ Constraints encoded here:
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -100,6 +101,8 @@ class ServerEndpoints:
     # address is unknown (owned by the supervisor). When set, ``ready_url``
     # and friends are meaningless and callers must render the fd form.
     listen_fd: int | None = None
+    # A model probe was rejected with HTTP 401/403. No credential is stored.
+    auth_required: bool = False
 
     @property
     def base_url(self) -> str:
@@ -137,6 +140,7 @@ class ServerEndpoints:
             "openai": self.openai_url,
             "anthropic": self.anthropic_url,
             "model": self.model,
+            **({"auth_required": True} if self.auth_required else {}),
         }
 
     def to_json(self) -> str:
@@ -193,7 +197,15 @@ def render_banner(
         lines.append("")
         lines.append(f"  OpenAI:    {ep.openai_url}")
         lines.append(f"  Anthropic: {ep.anthropic_url}")
-        lines.append(f"  Model:     {ep.model or '(not yet loaded)'}")
+        unknown_model = (
+            "(authentication required)" if ep.auth_required else "(not yet loaded)"
+        )
+        lines.append(f"  Model:     {ep.model or unknown_model}")
+        if ep.auth_required or os.environ.get("RAPID_MLX_API_KEY"):
+            lines.append(
+                "  Auth: connections use RAPID_MLX_API_KEY; set it to the server key."
+            )
+            lines.append("    export RAPID_MLX_API_KEY='<server-api-key>'")
         if image_note:
             lines.append(f"  Images:    off. {image_note}")
 
@@ -427,23 +439,37 @@ def resolve_endpoints(
     # Probe (best-effort) only when no model was supplied anywhere AND no
     # authoritative bind config pins the target. The probe result must never
     # overwrite an explicit `--model` (flags > config > defaults).
+    auth_required = False
     if out_model is None and cfg.bind_host is None and cfg.bind_port is None:
-        detected_model = _probe_running_model(out_host, out_port)
-        if detected_model:
-            out_model = detected_model
+        try:
+            out_model = _probe_running_model(out_host, out_port)
+        except PermissionError:
+            auth_required = True
 
-    return ServerEndpoints(out_host, out_port, model=out_model)
+    return ServerEndpoints(
+        out_host, out_port, model=out_model, auth_required=auth_required
+    )
 
 
 def _probe_running_model(host: str, port: int) -> str | None:
-    """Best-effort: ask a running server which model it serves. Never raises."""
+    """Probe the model; raise PermissionError only when authentication fails."""
     import urllib.error
     import urllib.request
 
+    from rapid_mlx.http_auth import rapid_mlx_auth_headers
+
     base = f"http://{_authority(host)}:{port}"
+    request = urllib.request.Request(f"{base}/v1/models")
+    for name, value in rapid_mlx_auth_headers().items():
+        # Never forward the credential if this endpoint redirects elsewhere.
+        request.add_unredirected_header(name, value)
     try:
-        with urllib.request.urlopen(f"{base}/v1/models", timeout=2.0) as resp:
+        with urllib.request.urlopen(request, timeout=2.0) as resp:
             payload = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise PermissionError("Model discovery requires a valid API key") from None
+        return None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return None
     if not isinstance(payload, dict):
