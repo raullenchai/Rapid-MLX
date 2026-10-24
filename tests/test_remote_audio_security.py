@@ -306,7 +306,7 @@ def test_local_colon_image_filename_decodes(inputs, tmp_path, monkeypatch, prefi
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "http:frame.png"
     Image.new("RGB", (2, 2)).save(path)
-    assert inputs.load_image(prefix + path.name).size == (2, 2)
+    assert inputs.load_image(prefix + str(path) if prefix else path.name).size == (2, 2)
 
 
 @pytest.mark.parametrize("prefix", ["", "file://", "FILE://"])
@@ -331,7 +331,7 @@ def test_local_colon_video_filename_reaches_local_decoder(
 
     monkeypatch.setattr(cv2, "VideoCapture", Capture)
     with pytest.raises(ValueError, match="Cannot open video"):
-        inputs.load_video(prefix + path.name)
+        inputs.load_video(prefix + str(path) if prefix else path.name)
     assert seen == [str(path)]
 
 
@@ -341,9 +341,10 @@ def test_local_colon_video_filename_reaches_local_decoder(
 @pytest.mark.parametrize("scheme", ["file", "FILE"])
 def test_audio_file_uri_resolves_to_local_path(tmp_path, monkeypatch, name, scheme):
     monkeypatch.chdir(tmp_path)
-    assert mllm.process_audio_input(scheme + "://" + name) == str(
-        (tmp_path / name).resolve()
-    )
+    path = (tmp_path / name).resolve()
+    assert mllm.process_audio_input(
+        path.as_uri().replace("file:", scheme + ":", 1)
+    ) == str(path)
 
 
 def test_remote_audio_without_extension_preserves_bytes_and_cleans_temp(
@@ -460,3 +461,48 @@ def test_image_file_uri_decodes_escaped_local_path(inputs, tmp_path, scheme):
     result = inputs.load_image(uri)
     assert result.getpixel((0, 0)) == (255, 0, 0)
     assert path.is_file()
+
+
+@pytest.mark.parametrize("authority", ["", "localhost", "LOCALHOST"])
+@pytest.mark.parametrize("kind", ["audio", "video", "image"])
+def test_media_file_uri_escaped_paths(inputs, tmp_path, monkeypatch, authority, kind):
+    path = tmp_path / "local clip.wav"
+    path.write_bytes(b"local")
+    uri = (
+        "FILE://" + authority + str(path).replace(" ", "%20") + "?ignored=yes#fragment"
+    )
+    if kind == "audio":
+        assert mllm.process_audio_input(uri) == str(path)
+    elif kind == "image":
+        from PIL import Image
+
+        Image.new("RGB", (2, 2)).save(path, format="PNG")
+        assert inputs.load_image(uri).size == (2, 2)
+    else:
+        cv2 = pytest.importorskip("cv2")
+        seen = []
+
+        class Capture:
+            def __init__(self, source):
+                seen.append(source)
+
+            def isOpened(self):  # noqa: N802 - OpenCV API
+                return False
+
+            def release(self):
+                pass
+
+        monkeypatch.setattr(cv2, "VideoCapture", Capture)
+        with pytest.raises(ValueError, match="Cannot open video"):
+            inputs.load_video(uri)
+        assert seen == [str(path)]
+    assert path.is_file()
+
+
+@pytest.mark.parametrize("kind", ["audio", "video", "image"])
+def test_media_file_uri_rejects_remote_authority(inputs, kind):
+    with pytest.raises(ValueError, match="authority"):
+        if kind == "audio":
+            mllm.process_audio_input("file://remote.example/share/media.wav")
+        else:
+            getattr(inputs, "load_" + kind)("file://remote.example/share/media")

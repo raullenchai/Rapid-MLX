@@ -30,7 +30,7 @@ from dataclasses import dataclass, fields
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 import mlx.core as mx
 import numpy as np
@@ -73,7 +73,9 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
             ):
                 image_source = str(Path(image_source).resolve())
             if isinstance(image_source, str) and image_source[:7].lower() == "file://":
-                image_source = str(Path(unquote(image_source[7:])).resolve())
+                from rapid_mlx.models.mllm import resolve_local_media_uri
+
+                image_source = resolve_local_media_uri(image_source)
             if isinstance(image_source, str) and urlsplit(image_source).scheme.lower() in (
                 "http",
                 "https",
@@ -452,7 +454,9 @@ def load_video(
         raise ValueError("Remote video URL must use http(s)")
 
     if video_path[:7].lower() == "file://":
-        video_path = str(Path(video_path[7:]).resolve())
+        from rapid_mlx.models.mllm import resolve_local_media_uri
+
+        video_path = resolve_local_media_uri(video_path)
 
     cap = None
     # VENDOR-DEVIATION(upstream-bugfix): the native capture handle leaked on

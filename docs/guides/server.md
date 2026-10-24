@@ -1329,3 +1329,5 @@ streamed responses without a length header; inline audio uses the same decoded
 size limit. Image and video retain their existing download limits. Ordinary
 local files remain supported. Remote decoder-specific protocols are not
 accepted for audio or video.
+
+Media `file:///absolute/path` URIs decode escaped path characters and ignore URI query/fragment components. Their authority must be empty or `localhost`; other authorities are refused. Use an ordinary filesystem path for relative local files.

@@ -36,7 +36,7 @@ from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 import numpy as np
 import requests
@@ -1291,6 +1291,14 @@ def download_audio(url: str, timeout: int = 30, max_size: int = MAX_AUDIO_SIZE) 
         _close_guarded_response(response)
 
 
+def resolve_local_media_uri(uri: str) -> str:
+    """Resolve a file URI without allowing a remote filesystem authority."""
+    parsed = urlsplit(uri)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        raise ValueError("Media file URI must have an empty or localhost authority")
+    return str(Path(unquote(parsed.path)).resolve())
+
+
 def process_audio_input(audio: str, timeout: int = 30):
     """Resolve remote/inline audio before a decoder can initiate network I/O.
 
@@ -1325,7 +1333,7 @@ def process_audio_input(audio: str, timeout: int = 30):
             raise FileSizeExceededError("Inline audio exceeds maximum size")
         return BytesIO(decoded)
     if audio[:7].lower() == "file://":
-        return str(Path(audio[7:]).resolve())
+        return resolve_local_media_uri(audio)
     if urlsplit(audio).scheme:
         raise RemoteMediaFetchError("Remote audio URL must use http(s)")
     return audio
