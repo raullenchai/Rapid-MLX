@@ -408,17 +408,20 @@ def test_cli_smoke_speed_save_raw_and_summary(
 ):
     import tokenizers
 
-    path, output = tmp_path / "manifest.json", tmp_path / "run"
+    path, output = tmp_path / "original" / "manifest.json", tmp_path / "run"
     manifest = make_manifest(path)
-    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer = path.parent / "tokenizer.json"
     tokenizer.write_text("{}")
     manifest.pop("sha256")
     manifest["tokenizer"] = {
-        "file": str(tokenizer),
+        "file": tokenizer.name,
         "sha256": bench.hashlib.sha256(tokenizer.read_bytes()).hexdigest(),
     }
     manifest["sha256"] = bench.digest(manifest)
     bench.dump(path, manifest)
+    moved = tmp_path / "moved"
+    path.parent.rename(moved)
+    path = moved / path.name
     monkeypatch.setattr(
         tokenizers, "Tokenizer", SimpleNamespace(from_file=lambda _: Tokenizer())
     )
@@ -626,7 +629,7 @@ def test_prefetch_freezes_revisions_and_refuses_replacement(tmp_path, monkeypatc
         ),
     )
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
-    manifest = tmp_path / "manifest.json"
+    manifest = tmp_path / "bundle" / "manifest.json"
     assert bench.main(["prefetch", "--manifest", str(manifest)]) == 0
     frozen = bench.load_manifest(manifest)
     assert frozen["counts"] == {
@@ -635,6 +638,14 @@ def test_prefetch_freezes_revisions_and_refuses_replacement(tmp_path, monkeypatc
         "humaneval": 1,
         "tools": 100,
     }
+    artifact = manifest.parent / frozen["tokenizer"]["file"]
+    assert not Path(frozen["tokenizer"]["file"]).is_absolute()
+    assert artifact.read_bytes() == tokenizer.read_bytes()
+    tokenizer.unlink()
+    moved = tmp_path / "moved"
+    manifest.parent.rename(moved)
+    manifest = moved / manifest.name
+    assert (moved / frozen["tokenizer"]["file"]).read_text() == "{}"
     assert len(downloads) == 12
     with pytest.raises(ValueError, match="Refusing to replace"):
         bench.prefetch(manifest, 1017)

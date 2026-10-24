@@ -35,6 +35,11 @@ No launcher or model checkpoint is bundled with these tools.
 | Incremental assembly | `deepseek_v41_gptq_assemble_stage.py` | Separate staging locks and hash verification; input run state stays immutable |
 | HTTP qualification | `eval_deepseek_v41_tasks.py` | Connects to an already-running endpoint; never starts a server or loads weights |
 
+HTTP `prefetch` writes a frozen manifest and an independent sibling named
+`<manifest filename>.tokenizer.json`. Move both files together. Smoke and speed
+commands resolve that sibling relative to the manifest and verify its digest;
+`--tokenizer` can supply another local copy with the same digest.
+
 All entry points live under `scripts/`; use `--help` for required inputs.
 See the dated build reports for recipe-specific command sequences and the
 [amendment procedure](gptq-recipe-amendment.md) before changing a recorded recipe.

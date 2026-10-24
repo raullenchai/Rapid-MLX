@@ -182,6 +182,12 @@ def prefetch(path, seed):
     repo = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     revision = api.model_info(repo).sha
     tokenizer = hf_hub_download(repo, "tokenizer.json", revision=revision)
+    tokenizer_bytes = Path(tokenizer).read_bytes()
+    tokenizer_name = path.name + ".tokenizer.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Publish an independent sibling artifact, never a machine-local cache path.
+    with path.with_name(tokenizer_name).open("xb") as stream:
+        stream.write(tokenizer_bytes)
     manifest = {
         "version": VERSION,
         "seed": seed,
@@ -189,8 +195,8 @@ def prefetch(path, seed):
         "tokenizer": {
             "repo": repo,
             "revision": revision,
-            "file": tokenizer,
-            "sha256": hashlib.sha256(Path(tokenizer).read_bytes()).hexdigest(),
+            "file": tokenizer_name,
+            "sha256": hashlib.sha256(tokenizer_bytes).hexdigest(),
         },
         "counts": dict(Counter(x["task"] for x in items)),
         "items": items,
@@ -990,7 +996,9 @@ def main(argv=None):
     else:
         from tokenizers import Tokenizer
 
-        tokenfile = args.tokenizer or Path(manifest["tokenizer"]["file"])
+        tokenfile = (
+            args.tokenizer or args.manifest.parent / manifest["tokenizer"]["file"]
+        )
         config["actual_tokenizer_sha256"] = hashlib.sha256(
             tokenfile.read_bytes()
         ).hexdigest()
