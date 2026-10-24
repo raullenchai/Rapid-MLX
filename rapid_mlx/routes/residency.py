@@ -20,7 +20,7 @@ from ..middleware.exception_handlers import (
     register_request_model,
     register_request_path,
 )
-from ..model_aliases import resolve_model, resolve_profile
+from ..model_aliases import RetiredModelAliasError, resolve_model, resolve_profile
 from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.resident_models import (
     ResidentModelBusyError,
@@ -133,7 +133,7 @@ def _resolved_group_for_profile(modality: str) -> str:
     return "assistant" if modality in {"text", "vision", "text-diffusion"} else modality
 
 
-def _load_failure(exc: Exception, model_ref: str) -> HTTPException:
+def _load_failure(exc: BaseException, model_ref: str) -> HTTPException:
     """Render expected load failures without reflecting upstream secrets/paths.
 
     Check local existence only after a failed load: a resident model can still
@@ -307,6 +307,12 @@ async def load_resident_model(request: ModelLoadRequest):
         ) from exc
     except ResidentModelError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RetiredModelAliasError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SystemExit as exc:
+        # CLI prefetch terminates on Hub/disk failures. At the HTTP boundary,
+        # preserve its underlying typed error without terminating the ASGI task.
+        raise _load_failure(exc.__cause__ or exc.__context__ or exc, load_ref) from exc
     except Exception as exc:
         raise _load_failure(exc, load_ref) from exc
     return _record_payload(record)

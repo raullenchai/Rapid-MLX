@@ -364,3 +364,86 @@ from rapid_mlx.routes import residency
 assert residency._load_failure(RuntimeError('failure'), 'org/model').status_code == 500
 """
     subprocess.run([sys.executable, "-c", script], check=True, capture_output=True)
+
+
+@pytest.mark.parametrize(
+    "model", ["nope-xyz", "qwen2.5-72b-4bit", "foo/bar-does-not-exist-xyz"]
+)
+def test_cli_prefetch_exit_is_actionable_http_error(control_plane, monkeypatch, model):
+    from rapid_mlx import cli, server
+
+    client, manager = control_plane
+    error = hub_error(RepositoryNotFoundError, 404)
+
+    def missing_metadata(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **kw: False)
+    monkeypatch.setattr("rapid_mlx.model_downloads.disabled", lambda: False)
+    monkeypatch.setattr("huggingface_hub.model_info", missing_metadata)
+
+    async def load(*args, **kwargs):
+        server._ensure_routing_config(model)
+
+    manager.load.side_effect = load
+    # Exercise the actual CLI prefetch failure, without downloading weights.
+    # Direct invocation first makes a leaked SystemExit a normal test failure.
+    with pytest.raises(residency.HTTPException) as caught:
+        asyncio.run(
+            residency.load_resident_model(residency.ModelLoadRequest(model=model))
+        )
+    assert caught.value.status_code == 404
+    response = client.post("/v1/models/load", json={"model": model})
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "not_found_error"
+    assert "Check the model name" in response.json()["error"]["message"]
+    assert "secret" not in response.text
+    assert client.get("/v1/models/residency").status_code == 200
+
+
+@pytest.mark.parametrize("model", ["ministral-3b-4bit", "qwopus-27b-8bit"])
+def test_retired_alias_is_actionable_http_error(control_plane, model):
+    client, manager = control_plane
+    response = client.post("/v1/models/load", json={"model": model})
+    assert response.status_code == 400
+    assert "retired" in response.json()["error"]["message"]
+    manager.load.assert_not_awaited()
+
+
+@pytest.mark.parametrize("explicit_cause", [False, True])
+def test_cli_exit_preserves_gated_access_error(control_plane, explicit_cause):
+    client, manager = control_plane
+    try:
+        raise hub_error(GatedRepoError, 403)
+    except GatedRepoError as error:
+        try:
+            if explicit_cause:
+                raise SystemExit(1) from error
+            raise SystemExit(1)
+        except SystemExit as exit_error:
+            manager.load.side_effect = exit_error
+    response = client.post("/v1/models/load", json={"model": "org/gated"})
+    assert response.status_code == 403
+    assert "HF_TOKEN" in response.json()["error"]["message"]
+    assert "secret" not in response.text
+
+
+def test_unclassified_cli_exit_is_safe_json(control_plane):
+    client, manager = control_plane
+    manager.load.side_effect = SystemExit("secret /Users/private/model")
+    response = client.post("/v1/models/load", json={"model": "org/model"})
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "api_error"
+    assert "secret" not in response.text
+
+
+def test_request_cancellation_still_propagates(control_plane):
+    _, manager = control_plane
+    manager.load.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            residency.load_resident_model(residency.ModelLoadRequest(model="org/model"))
+        )
