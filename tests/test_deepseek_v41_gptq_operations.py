@@ -583,3 +583,29 @@ def test_memory_guard_restores_limits_for_accounting_error(monkeypatch):
         pass
     assert memory.call_args.args == (123,)
     assert cache.call_args.args == (456,)
+
+
+def test_projection_error_matches_weighted_gram_objective():
+    import numpy as np
+
+    from scripts.deepseek_v41_gptq_quant import gram
+
+    rng = np.random.default_rng(5037)
+    x = rng.normal(size=(7, 32)).astype(np.float32)
+    weight = mx.array(rng.normal(size=(3, 32)).astype(np.float32))
+    gates = np.array([0.01, 0.1, 0.2, 0.4, 0.7, 0.9, 1.8], np.float32)
+    packed = mx.quantize(weight, bits=2, group_size=32)
+    result = b.projection_errors(weight, packed, 2, lambda: iter([(x, gates)]), 32)
+    w = np.asarray(weight).astype(np.float64)
+    q = np.asarray(mx.dequantize(*packed, bits=2, group_size=32)).astype(np.float64)
+    h, _ = gram([(x, gates)], 32)
+    energy = np.sum((x @ w.T) ** 2 * gates[:, None])
+    error = np.sum((x @ (w - q).T) ** 2 * gates[:, None])
+    assert result["calibration_output_energy"] == pytest.approx(energy, rel=1e-5)
+    assert result["gptq_relative_output_error"] == pytest.approx(
+        error / energy, rel=1e-5
+    )
+    assert error == pytest.approx(
+        np.trace((w - q) @ np.asarray(h) @ (w - q).T), rel=1e-5
+    )
+    assert energy != pytest.approx(np.sum((x @ w.T) ** 2 * gates[:, None] ** 2))

@@ -699,6 +699,11 @@ def attention_window(block, state, args, c, guard):
 
 
 def projection_errors(weight, packed, bits, chunks, group):
+    """Measure sum(g * squared projection error), the weighted-Gram objective.
+
+    Routing weights are sample weights here, as in gram(): H = sum(g*x*x.T).
+    This projection ranking proxy is not end-to-end routed FFN squared error.
+    """
     q = mx.dequantize(*packed, group_size=group, bits=bits, dtype=mx.float32)
     rtn = mx.dequantize(
         *mx.quantize(weight, bits=bits, group_size=group),

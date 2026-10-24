@@ -408,12 +408,13 @@ def test_ram_chunks_match_ffn_chunks(tmp_path, chunk):
     assert len(list(spill.chunks(6))) == 0
     if chunk == 4:
         assert any((np.count_nonzero(ids == e) % chunk) for e in range(5))
-    # Indexed += preserves existing semantics even with duplicate token rows.
+    # Every duplicate route must contribute, independently of chunk size.
     for expert in range(args.n_routed_experts):
         for rows, _, _ in spill.chunks(expert):
             update = rng.normal(size=(len(rows), args.dim)).astype(np.float32)
-            spill.output[rows] += update
-            output[rows] += update
+            spill.add_output(rows, update)
+            for row, contribution in zip(rows, update):
+                output[row] += contribution
     spill.write_output(guard)
     assert paths["y"].read_bytes() == output.tobytes()
     assert checks

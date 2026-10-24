@@ -179,6 +179,10 @@ class RoutedSpill:
                 raw, gates = self.x[rows], self.weights[start:end]
             yield rows, mx.array(raw).view(mx.bfloat16), gates
 
+    def add_output(self, rows, values):
+        """Accumulate every route, including repeated token rows in one chunk."""
+        np.add.at(self.output, rows, values)
+
     def write_output(self, guard):
         # Shared experts and finalize_windows read Y only after routed returns.
         # Keep each exact output[rows] += update operation on float32 RAM above.
@@ -428,7 +432,7 @@ def quantize_routed(source, layer, sink, specs, paths, total, c, guard, heldout)
                     ).astype(mx.float32)
                     y *= mx.array(g)[:, None]
                     mx.eval(y)
-                    calibration.output[rows] += np.asarray(y)
+                    calibration.add_output(rows, np.asarray(y))
                     guard.check()
                 if observed_spill is not None:
                     for rows, x, g in observed_spill.chunks(e):
@@ -437,7 +441,7 @@ def quantize_routed(source, layer, sink, specs, paths, total, c, guard, heldout)
                         ).astype(mx.float32)
                         y *= mx.array(g)[:, None]
                         mx.eval(y)
-                        observed_spill.output[rows] += np.asarray(y)
+                        observed_spill.add_output(rows, np.asarray(y))
                         guard.check()
                 print(
                     json.dumps(
