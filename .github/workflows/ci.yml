@@ -673,6 +673,17 @@ jobs:
             tests/test_deepseek_v41_allocation_rd.py \
             tests/test_deepseek_v41_merge_calibration.py \
             tests/test_model_load_entrypoint_boundaries.py \
+            tests/test_model_file_guard.py \
+            tests/test_kimi_tokenizer_security.py \
+            tests/test_kimi_vlm_security.py \
+            tests/test_mllm_model_file_consent.py \
+            tests/test_security_hardening.py \
+            tests/test_chat_template_registry.py \
+            tests/test_glm5_shardwise_load.py \
+            tests/test_gpt_oss_puzzle_vendored.py \
+            tests/test_nemotron_labs_diffusion_vendored.py \
+            tests/test_minicpmv4_7_contract.py \
+            tests/test_deepseek_v32_indexer_gate.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \
             tests/test_scheduler_recurrent_cache_materialization.py \
