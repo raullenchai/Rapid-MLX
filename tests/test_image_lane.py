@@ -173,7 +173,14 @@ def test_warm_cache_hands_mflux_a_local_directory(monkeypatch):
         lambda repo: "/cache/snapshots/abc",
     )
 
+    verified = []
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_cached_checkpoint",
+        lambda repo, snapshot: verified.append((repo, snapshot)),
+    )
+
     assert engine._model_path_for_mflux() == "/cache/snapshots/abc"
+    assert verified == [(engine.model_name, "/cache/snapshots/abc")]
 
 
 def test_unresolvable_cache_still_hands_mflux_the_repo_id(monkeypatch):

@@ -23,6 +23,8 @@ from __future__ import annotations
 import sys
 from unittest import mock
 
+import pytest
+
 import rapid_mlx.cli as cli
 import rapid_mlx.first_run as fr
 
@@ -386,10 +388,18 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     # before pulling. ``_ensure_model_downloaded`` calls ``_check_disk_space``
     # (under the spinner) so a full disk still aborts cleanly regardless of the
     # confirm gate above.
+    class DiskGateReached(BaseException):
+        pass
+
     called = {"disk": False}
 
-    def _fake_disk(model_name, force=False):
+    def _fake_disk(model_name, force=False, *, revision_override=None):
+        from rapid_mlx.model_aliases import resolve_revision
+
+        assert revision_override == resolve_revision(model_name)
+        assert revision_override is not None
         called["disk"] = True
+        raise DiskGateReached
 
     # An HF-style repo id is not a local path, so the early ``os.path.exists``
     # return is naturally skipped — no need to patch os.
@@ -398,7 +408,8 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     monkeypatch.setattr(
         "rapid_mlx._download_gate.is_repo_cached", lambda *a, **k: False
     )
-    cli._ensure_model_downloaded("mlx-community/Qwen3.5-4B-MLX-4bit")
+    with pytest.raises(DiskGateReached):
+        cli._ensure_model_downloaded("mlx-community/Qwen3.5-4B-MLX-4bit")
     assert called["disk"] is True
 
 

@@ -61,9 +61,15 @@ def write_model(
 
 def snapshot(cache, repo, **kwargs):
     root = cache / ("models--" + repo.replace("/", "--"))
-    directory = write_model(root / "snapshots" / ("a" * 40), **kwargs)
-    (root / "refs").mkdir()
-    (root / "refs" / "main").write_text("a" * 40)
+    revision = next(
+        (p.revision for p in ma.list_profiles().values() if p.hf_path == repo), None
+    )
+    directory = write_model(root / "snapshots" / (revision or "a" * 40), **kwargs)
+    # Explicit catalog pulls do not create refs/main. Uncataloged cache
+    # fixtures retain their moving-ref layout.
+    if revision is None:
+        (root / "refs").mkdir()
+        (root / "refs" / "main").write_text("a" * 40)
     return directory
 
 
