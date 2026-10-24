@@ -410,12 +410,19 @@ def test_lock_timeout_preserves_only_selection(monkeypatch):
     assert [section.id for section in report.sections] == ["network"]
 
 
-def test_doctor_json_does_not_mix_human_output(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "rapid_mlx.doctor.cli._collect_report_isolated", lambda **_: _report()
-    )
+@pytest.mark.parametrize("deep, expected_timeout", [(False, 25.0), (True, 35.0)])
+def test_doctor_json_does_not_mix_human_output(
+    monkeypatch, capsys, deep, expected_timeout
+):
+    def collect(**kwargs):
+        assert kwargs["timeout_s"] == expected_timeout
+        assert kwargs["deep"] is deep
+        return _report()
+
+    monkeypatch.setattr("rapid_mlx.doctor.cli._collect_report_isolated", collect)
     args = Namespace(
         tier=None,
+        deep=deep,
         verbose=False,
         json=True,
         summary=False,
@@ -958,7 +965,7 @@ def test_human_summary_includes_skipped_count():
     output = io.StringIO()
     render(eh.Report(sections=[section]), stream=output)
 
-    assert "1 skipped" in output.getvalue()
+    assert "1 skipped (run --deep for more time)" in output.getvalue()
 
 
 def test_output_modes_are_mutually_exclusive():

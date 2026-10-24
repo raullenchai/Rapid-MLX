@@ -8,7 +8,7 @@ this PR rips out the dispatch and leaves only the env-health surface.
 
 Output is modelled on ``hermes doctor``: sections of one-line ✓/⚠/✗ probes,
 a summary, and an exit code (0 unless any ✗). Built-in I/O is timeout-bounded,
-and the runner targets a five-second scheduling budget.
+and the runner targets a twenty-second scheduling budget.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _collect_report_isolated(
     only: set[str] | None,
     skip: set[str] | None,
     deep: bool = False,
-    timeout_s: float = 8.0,
+    timeout_s: float = 25.0,
 ) -> Report:
     """Collect a report in a fresh executable whose stdout is discarded."""
     with tempfile.TemporaryDirectory(prefix="rapid-mlx-doctor-") as result_dir:
@@ -447,7 +447,7 @@ def doctor_command(args: Any) -> None:
                     only=only,
                     skip=skip,
                     deep=use_deep,
-                    timeout_s=35.0 if use_deep else 8.0,
+                    timeout_s=35.0 if use_deep else 25.0,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve JSON contract
                 return _collection_failure_report(exc)
@@ -710,7 +710,7 @@ def _render_summary(report: Report, *, write, verbose: bool) -> None:
         f"{'s' if report.n_fail != 1 else ''}"
     )
     if report.n_skipped:
-        write(f", {report.n_skipped} skipped")
+        write(f", {report.n_skipped} skipped (run --deep for more time)")
     write("\n")
     if not verbose and (report.n_warn or report.n_fail):
         write("Run with `--verbose` for details on each check.\n")

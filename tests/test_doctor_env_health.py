@@ -2984,7 +2984,7 @@ def test_run_all_skips_remaining_sections_after_shared_deadline(monkeypatch):
     clock = [100.0]
 
     def consume_budget():
-        clock[0] = 105.0
+        clock[0] = 100.0 + eh._DOCTOR_BUDGET_S
         return eh.Section("First")
 
     def must_not_run():
@@ -3024,7 +3024,7 @@ def test_runtime_discovery_budget_overrun_skips_selected_sections(monkeypatch):
     clock = [100.0]
 
     def consume_budget():
-        clock[0] = 105.0
+        clock[0] = 100.0 + eh._DOCTOR_BUDGET_S
         return Path(sys.executable), False
 
     monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
@@ -3054,7 +3054,7 @@ def test_runtime_discovery_runs_after_preceding_independent_sections(monkeypatch
 
     def consume_budget():
         calls.append("runtime discovery")
-        clock[0] = 105.0
+        clock[0] = 100.0 + eh._DOCTOR_BUDGET_S
         return Path(sys.executable), False
 
     monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
@@ -3346,7 +3346,10 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
     assert broken.status is eh.CheckStatus.WARN
 
 
-def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch):
+@pytest.mark.parametrize(
+    "outcome", [eh._ImportProbeOutcome.TIMED_OUT, eh._ImportProbeOutcome.UNVERIFIED]
+)
+def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch, outcome):
     runtime = Path(sys.executable)
 
     def fake_ver(dist: str, runtime=None) -> str | None:
@@ -3355,7 +3358,7 @@ def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch):
     def module_available(module, _runtime=None, *, real_import=False):
         if module == "f5_tts_mlx":
             key = eh._import_probe_cache_key(runtime, module, None)
-            eh._RUNTIME_IMPORT_OUTCOMES[key] = eh._ImportProbeOutcome.TIMED_OUT
+            eh._RUNTIME_IMPORT_OUTCOMES[key] = outcome
             return False
         return True
 
@@ -3365,7 +3368,11 @@ def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch):
     section = eh.section_optional_packages()
     audio_row = next(c for c in section.checks if c.label.startswith("mlx-audio"))
 
-    assert audio_row.status is eh.CheckStatus.WARN
+    assert audio_row.status is (
+        eh.CheckStatus.SKIPPED
+        if outcome is eh._ImportProbeOutcome.TIMED_OUT
+        else eh.CheckStatus.WARN
+    )
     assert "importability unknown" in audio_row.label
     assert "not verify: f5-tts-mlx" in audio_row.label
     assert "incomplete" not in audio_row.label
@@ -5236,7 +5243,7 @@ def test_installed_vision_import_timeout_is_explicit_and_non_failing(
     vision_rows = [row for row in section.checks if row.label.startswith("mlx-vlm")]
 
     assert vision_rows
-    assert all(row.status is eh.CheckStatus.WARN for row in vision_rows)
+    assert all(row.status is eh.CheckStatus.SKIPPED for row in vision_rows)
     assert all("importability unknown" in row.label for row in vision_rows)
     assert all("broken or unverified" not in row.label for row in vision_rows)
     assert all("does not indicate" in row.detail for row in vision_rows)
@@ -5263,7 +5270,7 @@ def test_installed_vision_pillow_timeout_is_inconclusive(tmp_path, monkeypatch):
     section = eh.section_optional_packages()
     row = next(c for c in section.checks if c.label.startswith("mlx-vlm"))
 
-    assert row.status is eh.CheckStatus.WARN
+    assert row.status is eh.CheckStatus.SKIPPED
     assert "probe timed out" in row.label
     assert "Pillow (PIL) missing or broken" not in row.label
 
@@ -5664,3 +5671,109 @@ def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path)
     )
     assert "The Homebrew formula includes the text runtime" in row.label
     assert "pip install" not in row.label
+
+
+@pytest.mark.parametrize("import_seconds", [4.5, 40.0])
+@pytest.mark.parametrize("preceding_seconds", [2.0, 18.0])
+def test_slow_optional_import_preserves_later_diagnostics(
+    monkeypatch, import_seconds, preceding_seconds
+):
+    """A cold or stuck optional import must not starve unrelated checks."""
+    clock = [100.0]
+    runtime = Path(sys.executable)
+    calls = []
+
+    def preceding():
+        clock[0] += preceding_seconds
+        return eh.Section("Preceding")
+
+    def visibility(dist, runtime=None):
+        if dist != "mlx-vlm":
+            return False, False
+        key = eh._import_probe_cache_key(Path(sys.executable), "mlx_vlm", None)
+        if key not in eh._RUNTIME_IMPORT_OUTCOMES:
+            allowed = eh._bounded_timeout(eh._IMPORT_PROBE_TIMEOUT_S)
+            clock[0] += min(import_seconds, allowed)
+            eh._RUNTIME_IMPORT_OUTCOMES[key] = (
+                eh._ImportProbeOutcome.TIMED_OUT
+                if import_seconds > allowed
+                else eh._ImportProbeOutcome.VERIFIED
+            )
+        return True, eh._RUNTIME_IMPORT_OUTCOMES[key] is eh._ImportProbeOutcome.VERIFIED
+
+    def later_builder(section_id):
+        def later():
+            calls.append(section_id)
+            assert (
+                eh._DOCTOR_DEADLINE
+                == 100.0 + eh._DOCTOR_BUDGET_S - eh._DOCTOR_COMPLETION_HEADROOM_S
+            )
+            section = eh.Section(section_id, id=section_id)
+            section.add("healthy", eh.CheckStatus.OK)
+            return section
+
+        return later
+
+    later_ids = ("cache.huggingface", "network", "shell")
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_selected_runtime", lambda: (runtime, False))
+    monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)
+    monkeypatch.setattr(
+        eh, "_safe_version", lambda dist, *args: "0.7.2" if dist == "mlx-vlm" else None
+    )
+    monkeypatch.setattr(eh, "_pil_importable", lambda *args: True)
+    monkeypatch.setattr(eh, "_module_visibility", visibility)
+    monkeypatch.setattr(
+        eh,
+        "_SECTION_BUILDERS",
+        (
+            preceding,
+            eh.section_optional_packages,
+            *(later_builder(i) for i in later_ids),
+        ),
+    )
+
+    report = eh.run_all()
+
+    assert calls == list(later_ids), "cache/network/shell checks were starved"
+    vision = [c for c in report.sections[1].checks if c.label.startswith("mlx-vlm")]
+    assert len(vision) == 2
+    expected = (
+        eh.CheckStatus.OK
+        if import_seconds == 4.5 and preceding_seconds == 2.0
+        else eh.CheckStatus.SKIPPED
+    )
+    assert all(c.status is expected for c in vision)
+    assert eh._DOCTOR_DEADLINE is None
+
+
+@pytest.mark.parametrize("deep", [False, True])
+@pytest.mark.parametrize("crashes", [False, True])
+def test_optional_section_deadline_is_restored(monkeypatch, deep, crashes):
+    clock = [100.0]
+    deadlines = []
+
+    def optional():
+        deadlines.append(eh._DOCTOR_DEADLINE)
+        if crashes:
+            raise RuntimeError("probe crashed")
+        return eh.Section("Optional")
+
+    def later():
+        deadlines.append(eh._DOCTOR_DEADLINE)
+        return eh.Section("Later")
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setitem(eh._SECTION_IDS, optional, "packages.optional")
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (optional, later))
+    monkeypatch.setattr(eh, "_DEEP_SECTION_BUILDERS", ())
+
+    report = eh.run_all(deep=deep)
+
+    budget = eh._DOCTOR_DEEP_BUDGET_S if deep else eh._DOCTOR_BUDGET_S
+    deadline = 100.0 + budget - eh._DOCTOR_COMPLETION_HEADROOM_S
+    assert deadlines == [deadline if deep else deadline - 5.0, deadline]
+    assert len(report.sections) == 2
+    assert report.n_fail == int(crashes)
+    assert eh._DOCTOR_DEADLINE is None
