@@ -78,9 +78,13 @@ def load_image(image_source: Union[str, Path, BytesIO, Image.Image], timeout: in
             ):
                 # VENDOR-DEVIATION(upstream-bugfix): never let a decoder fetch
                 # untrusted URLs outside Rapid's DNS-pinned media transport.
-                from rapid_mlx.models.mllm import download_image
+                from rapid_mlx.models.mllm import _temp_manager, download_image
 
-                image_source = download_image(image_source, timeout=timeout)
+                downloaded = download_image(image_source, timeout=timeout)
+                try:
+                    image_source = BytesIO(Path(downloaded).read_bytes())
+                finally:
+                    _temp_manager.cleanup(downloaded)
 
             image = Image.open(image_source)
     except ValueError:
@@ -436,22 +440,25 @@ def load_video(
         and Path(video_path).is_file()
     ):
         video_path = str(Path(video_path).resolve())
+    cleanup_download = None
     if urlsplit(video_path).scheme.lower() in ("http", "https"):
-        from rapid_mlx.models.mllm import download_video
+        from rapid_mlx.models.mllm import _temp_manager, download_video
 
         video_path = download_video(video_path)
+        cleanup_download = _temp_manager.cleanup
     elif urlsplit(video_path).scheme and video_path[:7].lower() != "file://":
         raise ValueError("Remote video URL must use http(s)")
 
     if video_path[:7].lower() == "file://":
         video_path = str(Path(video_path[7:]).resolve())
 
-    cap = cv2.VideoCapture(video_path)
+    cap = None
     # VENDOR-DEVIATION(upstream-bugfix): the native capture handle leaked on
     # any exception after open (failed opens, frame sampler errors, index
     # validation, cap.read/cvtColor failures); everything from the isOpened
     # check on runs under try/finally so the handle is always released.
     try:
+        cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {video_path}")
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -511,7 +518,12 @@ def load_video(
                 break
             frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     finally:
-        cap.release()
+        try:
+            if cap is not None:
+                cap.release()
+        finally:
+            if cleanup_download is not None:
+                cleanup_download(video_path)
     if not frames:
         raise ValueError("No frames read from the video.")
 

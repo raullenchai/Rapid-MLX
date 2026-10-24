@@ -74,7 +74,11 @@ def transport(monkeypatch, tmp_path):
         "NamedTemporaryFile",
         lambda **kw: original_temp(dir=tmp_path, **kw),
     )
-    return state
+    manager = mllm.TempFileManager()
+    monkeypatch.setattr(mllm, "_temp_manager", manager)
+    state["manager"] = manager
+    yield state
+    manager.cleanup_all()
 
 
 @pytest.mark.parametrize(
@@ -226,7 +230,7 @@ def test_audio_invalid_length_closes_response(transport):
     assert transport["response"].closed
 
 
-def test_remote_image_decodes_valid_bytes(inputs, transport):
+def test_remote_image_decodes_valid_bytes(inputs, transport, tmp_path):
     from PIL import Image
 
     payload = BytesIO()
@@ -235,6 +239,8 @@ def test_remote_image_decodes_valid_bytes(inputs, transport):
     result = inputs.load_image("https://media.example/image.png")
     assert result.size == (2, 2)
     assert result.getpixel((0, 0)) == (255, 0, 0)
+    assert not transport["manager"]._files
+    assert not list(tmp_path.iterdir())
 
 
 def test_remote_audio_decodes_valid_wav(inputs, transport):
@@ -275,6 +281,8 @@ def test_remote_video_decodes_valid_frames(inputs, transport, tmp_path, source_k
     )
     assert len(frames) == 1
     assert metadata.total_num_frames == 2
+    assert not transport["manager"]._files
+    assert list(tmp_path.iterdir()) == [local]
     if source_kind == "https":
         assert transport["response"].closed
     else:
@@ -394,3 +402,44 @@ def test_remote_audio_repeated_reads_leave_no_files_or_registry_entries(
             )
         assert manager._files == set()
         assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["read", "decode"])
+def test_remote_image_failure_releases_download(
+    inputs, transport, tmp_path, monkeypatch, failure
+):
+    if failure == "read":
+
+        def fail_read(path):
+            raise OSError("read failed")
+
+        monkeypatch.setattr(Path, "read_bytes", fail_read)
+    with pytest.raises(ValueError):
+        inputs.load_image("https://media.example/image.png")
+    assert not transport["manager"]._files
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["constructor", "open", "release"])
+def test_remote_video_failure_releases_download(
+    inputs, transport, tmp_path, monkeypatch, failure
+):
+    cv2 = pytest.importorskip("cv2")
+
+    class Capture:
+        def __init__(self, source):
+            if failure == "constructor":
+                raise RuntimeError("constructor failed")
+
+        def isOpened(self):  # noqa: N802 - OpenCV API
+            return False
+
+        def release(self):
+            if failure == "release":
+                raise RuntimeError("release failed")
+
+    monkeypatch.setattr(cv2, "VideoCapture", Capture)
+    with pytest.raises((RuntimeError, ValueError)):
+        inputs.load_video("https://media.example/video.mp4")
+    assert not transport["manager"]._files
+    assert not list(tmp_path.iterdir())

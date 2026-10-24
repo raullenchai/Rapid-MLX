@@ -216,7 +216,7 @@ vendored copy differs by exactly the deviations listed):
   - ``VENDOR-DEVIATION(upstream-bugfix)`` in ``load_image``, ``load_audio``
     and ``load_video``: remote URLs use the shared DNS-pinned media downloader
     before decoding, including redirect checks and size bounds. Audio data
-    URIs are decoded to bounded in-memory bytes. Transport resources close on
+    URIs are decoded to bounded in-memory bytes. Transport resources and owned temporary files are released on
     success and failure. URI schemes are case-insensitive, and file URIs
     resolve to local paths before decoding.
 
