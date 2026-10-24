@@ -891,6 +891,7 @@ private struct DictationFixSheet: View {
 
             HStack {
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                     .buttonStyle(.rapidSecondary)
                     .accessibilityIdentifier("Dictation.Fix.Cancel")
                 Spacer()

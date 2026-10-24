@@ -122,6 +122,7 @@ struct SettingsMemoryPanel: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { editingEntry = nil }
+                        .keyboardShortcut(.cancelAction)
                         .accessibilityIdentifier("Settings.Memory.EditSheet.Cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {

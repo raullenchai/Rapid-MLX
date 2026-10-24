@@ -154,6 +154,8 @@ struct ConversationInstructionsPopover: View {
         .padding(RapidTheme.Space.xl)
         .frame(width: 440)
         .background(RapidTheme.surfaceOverlay)
+        // The focused multiline editor routes Escape through the responder chain.
+        .onExitCommand(perform: onCancel)
     }
 }
 
