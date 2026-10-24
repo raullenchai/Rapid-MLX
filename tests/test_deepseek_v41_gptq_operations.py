@@ -559,3 +559,27 @@ def test_memory_guard_restores_limit_if_cache_setup_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="cache"):
         b.MemoryGuard(b.recipe())
     assert memory.call_args.args == (123,)
+
+
+def test_verified_copy_isolates_output_and_rejects_corruption(tmp_path):
+    from scripts.deepseek_v41_gptq_io import copy_verified, file_hash
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(b"original")
+    copy_verified(source, target, file_hash(source))
+    assert source.stat().st_ino != target.stat().st_ino
+    target.write_bytes(b"mutated")
+    assert source.read_bytes() == b"original"
+    with pytest.raises(ValueError, match="copied shard payload mismatch"):
+        copy_verified(source, target, "incorrect")
+
+
+def test_memory_guard_restores_limits_for_accounting_error(monkeypatch):
+    memory, cache = Mock(return_value=123), Mock(return_value=456)
+    monkeypatch.setattr(mx, "set_memory_limit", memory)
+    monkeypatch.setattr(mx, "set_cache_limit", cache)
+    monkeypatch.setattr(b.MemoryGuard, "check", Mock(side_effect=OSError("accounting")))
+    with pytest.raises(OSError, match="accounting"), b.MemoryGuard(b.recipe()):
+        pass
+    assert memory.call_args.args == (123,)
+    assert cache.call_args.args == (456,)

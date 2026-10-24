@@ -30,6 +30,7 @@ from scripts.deepseek_v41_gptq_io import (
     atomic_destination,
     atomic_json,
     conversion_record,
+    copy_verified,
     digest,
     entries_from_json,
     entries_json,
@@ -366,7 +367,7 @@ class MemoryGuard:
     def __enter__(self):
         try:
             self.check()
-        except MemoryError:
+        except BaseException:
             self.restore_limits()
             raise
 
@@ -1729,7 +1730,10 @@ def _assemble(source, c, parts, destination, guard):
         target = destination / group_path(group)
         target.parent.mkdir(parents=True, exist_ok=True)
         if group.startswith("layer-"):
-            os.link(parts / target.name, target)
+            layer = group.split("-")[1]
+            copy_verified(
+                parts / target.name, target, completion[layer]["files"][target.name]
+            )
         else:
             # Source stages may be supplied independently to the assembly host.
             # Engram conversion is row-bounded and retains the SSD-native layout.

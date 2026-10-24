@@ -2,7 +2,7 @@
 """CPU-only incremental staging and hash verification for a live GPTQ run.
 
 Never writes parts/run state. Staging and cache have independent advisory locks;
-committed input files must remain immutable, including after hardlink assembly.
+committed input files must remain immutable, while assembly reads them.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
-import os
 import shutil
 import sys
 import time
@@ -29,6 +28,7 @@ from scripts.deepseek_v41_gptq_io import (
     atomic_destination,
     atomic_json,
     conversion_record,
+    copy_verified,
     digest,
     entries_json,
     verify_artifact,
@@ -337,16 +337,20 @@ def _assemble_staged(
         target.parent.mkdir(parents=True, exist_ok=True)
         if group.startswith("layer-"):
             # Staged hash checks can take minutes: recheck the cached file
-            # signatures immediately before linking each immutable layer.
+            # signatures immediately before copying each immutable layer.
             layer = int(group.split("-")[1])
             verify_layer(parts, run, layer, completion[str(layer)], cache)
-            os.link(parts / target.name, target)
+            copy_verified(
+                parts / target.name,
+                target,
+                completion[str(layer)]["files"][target.name],
+            )
         else:
-            # Link only the exact staged payload verified above.
+            # Copy only the exact staged payload verified above.
             path = staging / group_path(group)
             if signature(path) != staged_signatures[group]:
                 raise ValueError(f"staged file changed before linking: {group}")
-            os.link(path, target)
+            copy_verified(path, target, staged_hashes[str(group_path(group))])
             guard.check()
         for e in es:
             (mtp_mapping if group == "mtp" else mapping)[e.name] = target.name

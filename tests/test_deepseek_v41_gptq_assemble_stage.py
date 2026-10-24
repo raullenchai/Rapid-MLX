@@ -111,8 +111,8 @@ def file_bytes(root):
 def test_byte_identity_and_no_rehash(run, tmp_path, monkeypatch, trust):
     staging = run.staging
     if trust:
-        # A prior assembly hardlink changes ctime; exercise the fast trust path
-        # on a fresh stage whose complete signature still matches its manifest.
+        # Exercise the fast trust path on a fresh stage whose complete
+        # signature still matches its manifest.
         staging = tmp_path / "fresh-stage"
         with b.MemoryGuard(run.c) as guard:
             s.stage_other(run.source, run.parts, staging, guard)
@@ -145,7 +145,7 @@ def test_byte_identity_and_no_rehash(run, tmp_path, monkeypatch, trust):
     assert file_bytes(tmp_path / "out") == file_bytes(run.direct)
     for group in s.other_groups(run.source, run.c):
         relative = s.group_path(group)
-        assert (tmp_path / "out" / relative).stat().st_ino == (
+        assert (tmp_path / "out" / relative).stat().st_ino != (
             staging / relative
         ).stat().st_ino
     assert not any("model-layer-" in name for name in hashed)
@@ -484,7 +484,7 @@ def test_assembly_retains_heldout_reports(run, tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["direct", "staged"])
-@pytest.mark.parametrize("failure", ["link", "metadata"])
+@pytest.mark.parametrize("failure", ["copy", "metadata"])
 def test_failed_assembly_can_retry_without_partial_destination(
     run, tmp_path, monkeypatch, mode, failure
 ):
@@ -500,12 +500,12 @@ def test_failed_assembly_can_retry_without_partial_destination(
 
     with b.MemoryGuard(run.c) as guard:
         with monkeypatch.context() as patch:
-            if failure == "link":
+            if failure == "copy":
 
-                def fail_link(*args):
-                    raise OSError("injected link failure")
+                def fail_copy(*args):
+                    raise OSError("injected copy failure")
 
-                patch.setattr(module.os, "link", fail_link)
+                patch.setattr(module, "copy_verified", fail_copy)
             else:
                 real = module.atomic_json
 
@@ -563,3 +563,24 @@ def test_assembly_rejects_modified_completion_plan(run, tmp_path, staged, mutati
         else:
             b.assemble(run.source, run.c, parts, output, guard)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("mode", ["direct", "staged"])
+def test_published_checkpoint_mutation_cannot_change_parts(run, tmp_path, mode):
+    target = tmp_path / "published"
+    original = (run.parts / "model-layer-0.safetensors").read_bytes()
+    with b.MemoryGuard(run.c) as guard:
+        if mode == "direct":
+            b.assemble(run.source, run.c, run.parts, target, guard)
+        else:
+            s.assemble_staged(
+                run.source,
+                run.c,
+                run.parts,
+                target,
+                guard,
+                run.staging,
+                tmp_path / "cache",
+            )
+    (target / "model-layer-0.safetensors").write_bytes(b"modified output")
+    assert (run.parts / "model-layer-0.safetensors").read_bytes() == original

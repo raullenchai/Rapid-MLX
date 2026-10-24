@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -65,6 +66,15 @@ def write_all(stream, data):
         if count is None or count <= 0:
             raise OSError("short shard write")
         remaining = remaining[count:]
+
+
+def copy_verified(source, destination, expected_hash):
+    """Publishable shards have independent inodes and verified, durable bytes."""
+    shutil.copyfile(source, destination)
+    if file_hash(destination) != expected_hash:
+        raise ValueError("copied shard payload mismatch")
+    with Path(destination).open("rb") as stream:
+        os.fsync(stream.fileno())
 
 
 def inventory(source, source_revision=None):
