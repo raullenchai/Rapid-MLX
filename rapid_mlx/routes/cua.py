@@ -538,10 +538,16 @@ async def get_capabilities() -> CUACapabilities:
             screen_recording_ready = permission_state.get("screen_recording") is True
         except (ComputerUseError, ImportError) as exc:
             native_observation = False
-            detail = _discovery_error(exc).detail
-            reason = detail["message"]
-            hints = list(detail["recovery"])
-            if isinstance(exc, ImportError) or exc.code == "unsupported_platform":
+            failure = (
+                ComputerUseError(
+                    "unsupported_platform", "computer use requires macOS with PyObjC"
+                )
+                if isinstance(exc, ImportError)
+                else exc
+            )
+            reason = failure.message
+            hints = list(failure.recovery)
+            if failure.code == "unsupported_platform":
                 hints.append(
                     "Install native dependencies in the server's Python environment: "
                     "python -m pip install 'rapid-mlx[computer-use]'"
