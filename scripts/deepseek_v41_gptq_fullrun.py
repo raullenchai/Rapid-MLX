@@ -802,7 +802,9 @@ class Driver:
                 except Exception as error:
                     if active_error is None:
                         raise
-                    active_error.add_note(f"Remote unlock also failed: {error}")
+                    # Keep the conversion failure primary on Python 3.10 too,
+                    # while retaining the cleanup failure in the traceback.
+                    raise active_error from error
 
 
 def main():

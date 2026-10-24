@@ -963,9 +963,10 @@ def test_unlock_failure_preserves_conversion_error(setup, monkeypatch, primary_f
     with pytest.raises(RuntimeError, match=expected) as caught:
         f.Driver(args, remote).run()
     if primary_failure:
-        assert caught.value.__notes__ == [
-            "Remote unlock also failed: unlock unavailable"
-        ]
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == "unlock unavailable"
+    else:
+        assert caught.value.__cause__ is None
 
 
 def test_artifact_locks_exclude_other_processes_and_aliases(tmp_path, monkeypatch):
