@@ -144,3 +144,40 @@ def test_subfolder_only_alias_requires_complete_checkpoint(
     (checkpoint / "model.safetensors").write_bytes(b"weights")
     row = cli._cached_models_json_payload()["cached"][0]
     assert (row["alias"], row["subfolder"], row["state"]) == ("nested", "4bit", "ok")
+
+
+@pytest.mark.parametrize("subfolder", [None, "4bit"])
+def test_inventory_checks_real_cached_revision(
+    monkeypatch, tmp_path, capsys, subfolder
+):
+    import huggingface_hub.constants as hub_constants
+
+    import rapid_mlx.local_models as local_models
+
+    alias, repo, pin, other = "pinned", "org/pinned", "a" * 40, "b" * 40
+    profile = aliases.AliasProfile(hf_path=repo, revision=pin, subfolder=subfolder)
+    monkeypatch.setattr(aliases, "_load", lambda: {alias: profile})
+    monkeypatch.setattr(aliases, "_hf_to_alias", {repo: alias})
+    monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "aliases.json"))
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(local_models, "discover_runnable_chat_models", lambda: [])
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [(repo, 1024, 0)])
+    root = tmp_path / "models--org--pinned"
+    (root / "refs").mkdir(parents=True)
+    (root / "refs" / "main").write_text(other)
+    for revision in (other, pin):
+        checkpoint = root / "snapshots" / revision
+        if subfolder:
+            checkpoint /= subfolder
+        checkpoint.mkdir(parents=True)
+        (checkpoint / "config.json").write_text("{}")
+        (checkpoint / "model.safetensors").write_bytes(b"weights")
+        expected = revision == pin
+        assert cli._cache_entry_is_runnable(alias) is expected
+        row = cli._cached_models_json_payload()["cached"][0]
+        assert row["alias"] == (alias if expected else None)
+        assert row["subfolder"] == (subfolder if expected else None)
+        cli._print_cached_models()
+        columns = [line.split() for line in capsys.readouterr().out.splitlines()]
+        assert any(fields[:1] == [alias] for fields in columns) is expected
