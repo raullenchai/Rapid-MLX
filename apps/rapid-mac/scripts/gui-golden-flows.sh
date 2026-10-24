@@ -5727,6 +5727,8 @@ flow_dictation_rc2_upgrade() {
 
 flow_model_switch_active_request() {
     log "flow: model-switch-active-request"
+    # The default response has 19 chunks: 100 repeats at 20 ms provide at
+    # least 38 seconds of streaming, independent of the initial delay.
     start_persona model-switch-active-request \
         FAKE_LARGE_CHAT_CATALOG=1 \
         FAKE_CHAT_RESPONSE_DELAY_MS=10000 \

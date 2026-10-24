@@ -241,11 +241,11 @@ def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
     ) in flow
     assert '"$AX_DRIVER" click-center "$APP_PID" ModelSwitchGuard.Cancel' in flow
     assert '"$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Cancel' not in flow
-    picker, confirmation = flow.split('wait_identifier ModelSwitchGuard.Cancel', 1)
+    picker, confirmation = flow.split("wait_identifier ModelSwitchGuard.Cancel", 1)
     assert '"$AX_DRIVER" key "$APP_PID" escape' in picker
     assert '"$AX_DRIVER" key "$APP_PID" escape' not in confirmation
-    assert 'chat_content_started' in picker
-    assert 'stream ended before the picker closed' in picker
+    assert "chat_content_started" in picker
+    assert "stream ended before the picker closed" in picker
 
 
 def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
