@@ -326,6 +326,8 @@ class CUACapabilityFeatures(BaseModel):
 class CUACapabilities(BaseModel):
     protocol_version: int = 2
     available: bool
+    reason: str | None = None
+    hints: list[str] = Field(default_factory=list)
     platform: str
     discovery: list[str]
     run_operations: list[str]
@@ -525,6 +527,8 @@ def _public_observation_element(item: dict) -> CUAObservationElement:
 @router.get("/capabilities", response_model=CUACapabilities)
 async def get_capabilities() -> CUACapabilities:
     native_observation = sys.platform == "darwin"
+    reason = None if native_observation else "Computer use requires macOS."
+    hints = [] if native_observation else ["Run computer use on a macOS host."]
     accessibility_ready = False
     screen_recording_ready = False
     if native_observation:
@@ -532,15 +536,29 @@ async def get_capabilities() -> CUACapabilities:
             permission_state = await run_in_threadpool(_backend().permissions)
             accessibility_ready = permission_state.get("accessibility") is True
             screen_recording_ready = permission_state.get("screen_recording") is True
-        except (ComputerUseError, ImportError):
-            pass
+        except (ComputerUseError, ImportError) as exc:
+            native_observation = False
+            detail = _discovery_error(exc).detail
+            reason = detail["message"]
+            hints = list(detail["recovery"])
+            if isinstance(exc, ImportError) or exc.code == "unsupported_platform":
+                hints.append(
+                    "Install native dependencies in the server's Python environment: "
+                    "python -m pip install 'rapid-mlx[computer-use]'"
+                )
     return CUACapabilities(
         available=native_observation,
+        reason=reason,
+        hints=hints,
         platform=sys.platform,
-        discovery=["permissions", "apps", "windows"],
+        discovery=["permissions", "apps", "windows"] if native_observation else [],
         run_operations=["create", "poll", "approve", "deny", "cancel"],
         max_concurrent_runs=cua_service.MAX_CONCURRENT_RUNS,
         features=CUACapabilityFeatures(
+            app_discovery=native_observation,
+            window_discovery=native_observation,
+            window_selection=native_observation,
+            target_resolution=native_observation,
             visual_observation=native_observation and accessibility_ready,
             screenshot_observation=(
                 native_observation

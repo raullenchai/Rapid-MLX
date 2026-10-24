@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from rapid_mlx.computer_use.backend import permissions as real_permissions
 from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.cua import service as cua_service
 from rapid_mlx.routes import cua as cua_routes
@@ -235,9 +236,14 @@ def test_list_planners(client):
     assert {"local-27b", "local-9b"} <= names
 
 
-def test_discovery_contract(client):
+def test_discovery_contract(client, monkeypatch):
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
     capabilities = client.get("/v1/cua/capabilities", headers=AUTH)
     assert capabilities.status_code == 200
+    assert capabilities.json()["available"] is True
+    assert capabilities.json()["reason"] is None
+    assert capabilities.json()["hints"] == []
+    assert capabilities.json()["discovery"] == ["permissions", "apps", "windows"]
     assert capabilities.json()["run_operations"] == [
         "create",
         "poll",
@@ -2619,3 +2625,54 @@ def test_service_shutdown_during_window_freeze_does_not_commit_run(client, monke
     assert response.status_code == 409
     assert "shutting down" in response.json()["detail"]
     assert client.fresh_service.list_runs() == []
+
+
+@pytest.mark.parametrize("missing", ["ApplicationServices", "Quartz"])
+def test_capabilities_use_real_permission_runtime_check(client, monkeypatch, missing):
+    import builtins
+
+    from rapid_mlx.computer_use import backend
+
+    # Restore the production permission probe hidden by the client fixture.
+    monkeypatch.setattr(backend, "permissions", real_permissions)
+    monkeypatch.setattr(cua_routes.sys, "platform", "darwin")
+    original_import = builtins.__import__
+
+    def without_dependency(name, *args, **kwargs):
+        if name == missing:
+            raise ImportError(f"No module named {missing}")
+        if name == "ApplicationServices":
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_dependency)
+    response = client.get("/v1/cua/capabilities", headers=AUTH)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert "PyObjC" in payload["reason"]
+    assert any("rapid-mlx[computer-use]" in hint for hint in payload["hints"])
+    assert payload["discovery"] == []
+    for feature in (
+        "app_discovery",
+        "window_discovery",
+        "window_selection",
+        "target_resolution",
+        "visual_observation",
+        "screenshot_observation",
+        "observation_without_activation",
+        "permission_request",
+    ):
+        assert payload["features"][feature] is False
+    assert client.get("/v1/cua/permissions", headers=AUTH).status_code == 501
+
+
+def test_capabilities_unsupported_platform(client, monkeypatch):
+    monkeypatch.setattr(cua_routes.sys, "platform", "linux")
+    payload = client.get("/v1/cua/capabilities", headers=AUTH).json()
+    assert payload["available"] is False
+    assert payload["discovery"] == []
+    assert "macOS" in payload["reason"]
+    assert payload["hints"]
