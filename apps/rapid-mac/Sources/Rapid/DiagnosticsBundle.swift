@@ -102,13 +102,20 @@ enum DiagnosticsBundle {
             // including encoded separators and lower-case hex digits.
             value.unicodeScalars.map { scalar in
                 let literal = NSRegularExpression.escapedPattern(for: String(scalar))
-                let encoded = String(scalar).utf8.map { String(format: "%%%02X", $0) }.joined()
+                let encoded = [String(scalar), String(scalar).lowercased(), String(scalar).uppercased()]
+                    .map { $0.utf8.map { String(format: "%%%02X", $0) }.joined() }
+                    .joined(separator: "|")
                 let escapedSlash = scalar == "/" ? #"|\\/"# : ""
                 return "(?:" + literal + "|(?i:" + encoded + ")" + escapedSlash + ")"
             }.joined()
         }
         var patterns: [String] = []
-        if !home.isEmpty && home != "/" { patterns.append(identityPattern(home)) }
+        if !home.isEmpty && home != "/" {
+            // A home is a complete path component, not a prefix of another
+            // account's directory. Accept plain/escaped/encoded separators.
+            let boundary = #"(?=$|/|\\/|%2f|[\s"'<>:,;)\]}])"#
+            patterns.append(identityPattern(home) + boundary)
+        }
         let shortAccount = !username.isEmpty && username.count <= 2
         if !username.isEmpty {
             let account = identityPattern(username)
@@ -117,7 +124,7 @@ enum DiagnosticsBundle {
                 // identity fields and path/quoted components, not prose words.
                 let field = #"(\b(?i:USER|LOGNAME|USERNAME|account)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
                 patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
-                patterns.append(#"(?<=[/("'])"# + account + #"(?![\p{L}\p{N}_])"#)
+                patterns.append(#"(?<=[/("'])"# + account + #"(?![\p{L}\p{N}_.+-])"#)
             } else {
                 patterns.append(#"(?<![\p{L}\p{N}_])"# + account + #"(?![\p{L}\p{N}_])"#)
             }
@@ -127,7 +134,7 @@ enum DiagnosticsBundle {
         guard !patterns.isEmpty else { return LogScrubber.scrub(report) }
         let pattern = patterns.joined(separator: "|")
         let replacement = shortAccount ? "$1<redacted>" : "<redacted>"
-        let result = report.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        let result = report.replacingOccurrences(of: pattern, with: replacement, options: [.regularExpression, .caseInsensitive])
         return LogScrubber.scrub(result)
     }
 

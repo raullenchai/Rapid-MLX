@@ -51,6 +51,23 @@ struct DiagnosticsBundleTests {
             == "USER=<redacted>")
     }
 
+    @Test("Homes match complete components and preserve unrelated directory names")
+    func homeBoundary() {
+        let input = "/Users/a/cache /Users/alice/cache /Users/a-backup/cache HOME=/Users/a"
+        #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/a", username: "a")
+            == "<redacted>/cache /Users/alice/cache /Users/a-backup/cache HOME=<redacted>")
+    }
+
+    @Test("Mixed-case literal and encoded identities remain private")
+    func mixedCase() {
+        let inputs = ["/Users/FAKE.Person/cache", "/users/%46AKE.Person/cache",
+                      "USER=Fake.Person", "USER=%46ake.Person"]
+        for input in inputs {
+            let output = DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake.person", username: "fake.person")
+            #expect(output == (input.hasPrefix("USER=") ? "USER=<redacted>" : "<redacted>/cache"))
+        }
+    }
+
     @Test("Empty identities do not corrupt diagnostic text")
     func emptyIdentities() {
         #expect(DiagnosticsBundle.redact("ready /opt/bin", homeDirectory: "", username: "") == "ready /opt/bin")
