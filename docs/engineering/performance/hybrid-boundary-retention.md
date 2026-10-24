@@ -1,5 +1,7 @@
 # Restored hybrid boundary retention
 
+Latest qualification: the [noise-floor and repeated-control follow-up](#noise-floor-and-repeated-controls-2026-10-24) resolves the recorded performance hold under the owner’s revised acceptance rule. Earlier dispositions below are historical.
+
 When a non-trimmable cache restores almost the entire prompt, saving another
 prompt or completion entry can displace the boundary needed by another session.
 An exact match to the longer entry cannot restore the shorter recurrent state.
@@ -428,3 +430,114 @@ owned servers exited and the lock was released. The draft and #4451 stay open;
 Vector owns the numerical-identity investigation and a genuinely quiet paired
 nonregression qualification before exact-head validation and green CI can
 permit landing. No serving defaults, API, kernels or cache formats changed.
+
+## Noise floor and repeated controls (2026-10-24)
+
+**Performance qualification passes the owner's follow-up decision rule.**
+The follow-up replaces the prior strict output-identity decision with a
+same-main noise comparison and three repeated larger-cache controls. This
+supersedes the preceding BLOCKED performance disposition for this workload;
+exact-head validation and green CI remain separate merge gates. No numerical
+losslessness or generic cross-model/chip performance claim follows.
+
+### Fixed source and protocol
+
+Baseline: `b2822fd6fa6af8b7c789e333044aa69435d08a83`. Candidate:
+`2a236e0cc6be9cbaed451daa371c18c1f1cba28b`. The intervening main changes concern
+mirror metadata; the scheduler and benchmark helper are unchanged from the
+preceding experiment. Both revisions use the same cached model snapshot,
+M3 Ultra 256 GiB, Python 3.12.14, MLX 0.32.4, mlx-lm 0.31.3, Transformers
+5.15.1 and httpx 0.28.1. Nothing was downloaded into the model cache.
+
+Repeat the same 32-response arm described above: four document sets, cold
+A/B seeds, solo A/B repeats and four-request cohorts, with the same alternating
+submission-order groups, 32,752-token prompts and 32-token output cap. A full
+main-only pass consists of one 2 GiB and one 4 GiB arm (64 responses); repeat
+that pass twice at the same fixed main revision. The two 4 GiB main arms also
+serve as the first two timing controls. Add a third main 4 GiB arm and three
+candidate 4 GiB arms, for 256 measured responses in total.
+
+Actual arm order: main 2 GiB run 1, main 4 GiB run 1, candidate 4 GiB run 1,
+main 2 GiB run 2, candidate 4 GiB run 2, main 4 GiB run 2, main 4 GiB run 3,
+candidate 4 GiB run 3. Thus the three timing pairs use main/candidate,
+candidate/main, main/candidate order. Each arm starts a fresh owned server and
+uses the same short warmup and cache clears. The GPU lock covers the entire
+sequence, with loopback port 8736 and no other owned GPU work. Foreign CPU
+workers were observed; the timing assessment uses the requested measured
+run-to-run spread and does not assert a quiet host.
+
+[Source-bound summary and all receipts](2026-10-24-hybrid-boundary-followup.jsonl)
+contain a summary JSON record followed by one JSON record per response or cache
+status. They include full output text, hashes, usage, request IDs, timing samples,
+cache ledgers, mismatch identities and the original-response audit. All 256
+responses completed with the correct code, 32 output tokens, length finish and
+terminal stream marker. Every recorded cache ledger stays within its budget.
+All 64 main/main and 96 new main/candidate normalized usage comparisons match.
+
+### Output noise and the two original differences
+
+The two fresh identical-main passes differ in **7/64** output hashes: four
+2 GiB cohort responses (9201 A, 9202 C, 9203 D, 9204 D), and three 4 GiB cohort
+responses (9202 C/D and 9203 D). All are cold lanes with zero cached tokens in
+both runs. Cold-seed and solo-repeat hashes are identical. The original
+candidate comparison's **2/64** differences are below this measured noise
+floor. New 4 GiB main/candidate comparisons differ in 5/32, 1/32 and 2/32
+responses respectively, **8/96** overall, also below the main-only rate.
+These are descriptive counts for this workload, not a population confidence
+bound or a guarantee that future outputs will match.
+
+Both original differences concern 9203 D and share their first **24 of 32
+output tokens**. Both correctly state `9203D` and then describe its presence
+near the start of the supplied document. The different explanations are valid
+continuations of that answer, not garbage or context substitution. Both have
+identical prompt/completion/total usage, the requested length cap and a complete
+stream; neither is a transport-truncated response. Fresh main **itself** emits
+the candidate's exact variant at 4 GiB run 1 and 2 GiB run 2, and emits the
+original main variant in the other corresponding pass.
+
+The requested boundary audit corrects the proposed causal explanation: **D
+itself did not restore a different boundary**. Both original cache-fetch logs
+show a MISS and all 32,752 tokens scheduled for prefill. Its cohort neighbor A
+changes from zero cached tokens on main to 32,736 on the candidate, while B
+hits in both. The cohort therefore has different cache residency and batch
+execution, but attributing D's difference to its own restored state would be
+incorrect. The unchanged-main repeats reproduce both variants without this
+patch, including variation with identical per-request cached-token counts.
+This supports ordinary batch-dependent numeric variation, and the narrower
+noise-level/semantic acceptance rule; it is not evidence of a corrupted
+restored boundary or a proof of the precise numerical cause.
+
+### Three larger-cache controls
+
+Each run median is computed across the four document sets. All values below
+are seconds; the spread column is the minimum–maximum of the three run
+medians. The comparison uses the median of those three medians. No failed or
+slow request was excluded.
+
+| Measurement | Main run medians | Candidate run medians | Main median [spread] | Candidate median [spread] |
+| --- | --- | --- | --- | --- |
+| Cold A elapsed | 18.576, 18.387, 18.395 | 18.595, 18.424, 18.319 | 18.395 [18.387–18.576] | 18.424 [18.319–18.595] |
+| Cold B elapsed | 18.902, 18.432, 18.590 | 18.659, 18.437, 18.439 | 18.590 [18.432–18.902] | 18.439 [18.437–18.659] |
+| Solo A TTFT | 0.296, 0.300, 0.304 | 0.292, 0.279, 0.284 | 0.300 [0.296–0.304] | 0.284 [0.279–0.292] |
+| Solo B TTFT | 0.390, 0.372, 0.405 | 0.385, 0.374, 0.384 | 0.390 [0.372–0.405] | 0.384 [0.374–0.385] |
+| Solo A elapsed | 0.612, 0.624, 0.630 | 0.621, 0.616, 0.607 | 0.624 [0.612–0.630] | 0.616 [0.607–0.621] |
+| Solo B elapsed | 0.736, 0.708, 0.742 | 0.741, 0.664, 0.718 | 0.736 [0.708–0.742] | 0.718 [0.664–0.741] |
+| Cohort makespan | 61.474, 61.001, 61.018 | 43.116, 42.474, 42.437 | 61.018 [61.001–61.474] | 42.474 [42.437–43.116] |
+
+The alleged larger-cache warm elapsed regression does not reproduce: candidate
+medians are **1.2% lower for A and 2.4% lower for B**, with overlapping run
+ranges. The small cold A elapsed increase (+0.16%) is within the observed
+spread. Every measured timing median increase is smaller than the larger of
+its two observed run-median ranges; improvements are retained as improvements,
+not treated as failures because their ranges do not overlap. The full TTFT,
+elapsed and cohort timing samples are in the receipt file. This is the owner's
+requested three-run noise assessment, not the historical twenty-capture
+statistical gate or a new universal 5% guarantee.
+
+Together with the original 2 GiB benefit (B-repeat TTFT 18.622 → 0.390 seconds,
+32,736 cached tokens instead of zero, cohort makespan 63.441 → 43.441 seconds),
+these controls resolve the two performance blockers under the revised rule.
+Focused CPU regressions still pass 145 tests; changed executable scheduler
+coverage remains 46/46 lines (100%), with Ruff and whitespace checks passing.
+No runtime code was changed to force output identity or improve a timing sample.
+All owned servers exited and the GPU lock was released after the final arm.
