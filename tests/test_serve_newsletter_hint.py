@@ -163,6 +163,10 @@ def test_background_job_does_not_consume_marker(terminal, monkeypatch, capsys, p
 def test_background_update_before_print_defers_pointer(terminal, monkeypatch, capsys):
     from rapid_mlx import _version_check as vc
 
+    # Exercise the refresh even when the invoking shell opts out of real checks.
+    monkeypatch.delenv("RAPID_MLX_DISABLE_VERSION_CHECK", raising=False)
+    monkeypatch.setattr(update_refresh, "_latest", None)
+    monkeypatch.setattr(update_refresh, "_available", False)
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
     monkeypatch.setattr(vc, "get_latest_version", lambda: "1.1.0")
     monkeypatch.setattr(update_refresh, "_seen_versions", set())
