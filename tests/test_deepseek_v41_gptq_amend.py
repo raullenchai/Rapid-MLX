@@ -79,7 +79,7 @@ def test_rejects_unsafe_amendment(tmp_path, bad):
         new["gate_up_3bit_layers"] = [0]
         atomic_json(
             parts / "layer-0-complete.json",
-            dict(run_identity=run["identity"], files={}),
+            dict(run_identity=run["identity"], files={}, entries=[]),
         )
     if bad == "identity":
         cp["identity"] = "unknown"
@@ -324,3 +324,73 @@ def test_amendment_rejects_out_of_range_layers_before_commit(tmp_path, kind):
         (parts / "run.json").read_bytes(),
         (scratch / "checkpoint.json").read_bytes(),
     )
+
+
+def test_amendment_cannot_undershoot_committed_payloads(tmp_path):
+    from scripts.deepseek_v41_gptq_io import file_hash
+
+    parts, scratch, run = metadata(tmp_path)
+    payload = parts / "layer.bin"
+    payload.write_bytes(b"data" * 4)
+    atomic_json(
+        parts / "layer-0-complete.json",
+        dict(
+            run_identity=run["identity"],
+            files={"layer.bin": file_hash(payload)},
+            entries=[
+                dict(
+                    name="weight",
+                    shape=[4],
+                    dtype="F32",
+                    sources=[],
+                    component="fixed_bf16",
+                    bits=None,
+                    group_size=64,
+                    rows=None,
+                    suffix="weight",
+                )
+            ],
+        ),
+    )
+    atomic_json(
+        scratch / "checkpoint.json", dict(next_layer=1, identity=run["identity"])
+    )
+    before = [
+        (parts / "run.json").read_bytes(),
+        (scratch / "checkpoint.json").read_bytes(),
+    ]
+    with pytest.raises(ValueError, match="below committed payload"):
+        a.amend_recipe(
+            parts,
+            scratch,
+            {**run["recipe"], "resident_budget_gb": 15 / 1e9},
+            1,
+            "too small",
+        )
+    assert before == [
+        (parts / "run.json").read_bytes(),
+        (scratch / "checkpoint.json").read_bytes(),
+    ]
+    accepted = a.amend_recipe(
+        parts,
+        scratch,
+        {**run["recipe"], "resident_budget_gb": 16 / 1e9},
+        1,
+        "exact committed size",
+    )
+    assert accepted["recipe"]["resident_budget_gb"] == 16 / 1e9
+
+
+@pytest.mark.parametrize("budget", [True, None, float("nan")])
+def test_amendment_rejects_invalid_budget_before_metadata_changes(tmp_path, budget):
+    parts, scratch, run = metadata(tmp_path)
+    before = (parts / "run.json").read_bytes()
+    with pytest.raises(ValueError, match="invalid memory cap"):
+        a.amend_recipe(
+            parts,
+            scratch,
+            {**run["recipe"], "resident_budget_gb": budget},
+            0,
+            "invalid cap",
+        )
+    assert (parts / "run.json").read_bytes() == before

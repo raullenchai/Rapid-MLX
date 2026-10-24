@@ -475,7 +475,14 @@ def test_restart_layer_validation(tmp_path):
 def test_promoted_layout_cannot_exceed_resident_budget(tmp_path, source, monkeypatch):
     from scripts.deepseek_v41_rd_build import Entry
 
-    c = b.recipe({"prefill_chunk": 2, "ffn_chunk": 2})
+    c = b.recipe(
+        {
+            "prefill_chunk": 2,
+            "ffn_chunk": 2,
+            "pilot": False,
+            "dense_8bit_layers": [0, 1, 2, 3],
+        }
+    )
     parts, scratch = tmp_path / "parts", tmp_path / "scratch"
     with b.MemoryGuard(c) as guard:
         b.initialize(
@@ -498,6 +505,15 @@ def test_promoted_layout_cannot_exceed_resident_budget(tmp_path, source, monkeyp
         with pytest.raises(ValueError, match="cumulative resident"):
             b.run_layer(source, c, parts, scratch, 0, guard)
     assert not (parts / "layer-0-complete.json").exists()
+    assert (scratch / "boundary-0" / "window-0.json").is_file()
+    assert not (scratch / "working-0").exists()
+    assert "phase" not in json.loads((scratch / "checkpoint.json").read_text())
+    from scripts.deepseek_v41_gptq_amend import amend_recipe
+
+    amended = amend_recipe(
+        parts, scratch, {**c, "resident_budget_gb": 211.0}, 0, "raise budget"
+    )
+    assert amended["recipe"]["resident_budget_gb"] == 211.0
 
 
 @pytest.mark.parametrize("group", [32, 64])
@@ -695,3 +711,29 @@ def test_resume_rejects_unbound_or_stale_output_window(tmp_path, mismatch):
             run_identity="run",
             layer=0,
         )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("min_tokens", float("nan")),
+        ("min_tokens", float("inf")),
+        ("min_tokens", 1.5),
+        ("min_tokens", True),
+        ("group_size", 64.0),
+        ("block_size", 128.0),
+        ("block_size", True),
+        ("damping", True),
+        ("damping", "0.1"),
+        ("low_token_damping", True),
+        ("low_token_damping", None),
+        ("gate_up_bits", 2.0),
+        ("down_bits", 3.0),
+        ("dense_bits", 4.0),
+        ("engram_bits", 8.0),
+        ("engram_group_size", 64.0),
+    ],
+)
+def test_recipe_quantization_parameters_reject_invalid_numeric_types(field, value):
+    with pytest.raises(ValueError):
+        b.recipe({field: value})

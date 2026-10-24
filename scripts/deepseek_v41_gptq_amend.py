@@ -96,7 +96,7 @@ def amend_recipe(parts, scratch, new, first, reason):
     Readers fail closed during that interval. No layer artifacts are rewritten.
     """
     from rapid_mlx.models.deepseek_v41_native.config import ModelArgs
-    from scripts.deepseek_v41_gptq_io import verify_artifact
+    from scripts.deepseek_v41_gptq_io import entries_from_json, verify_artifact
 
     run_path, checkpoint_path = parts / "run.json", scratch / "checkpoint.json"
     run = json.loads(run_path.read_text())
@@ -136,10 +136,21 @@ def amend_recipe(parts, scratch, new, first, reason):
         raise ValueError("uncommitted layer output exists")
     if not reason.strip():
         raise ValueError("amendment reason is required")
+    budget = new.get("resident_budget_gb")
+    if type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0:
+        raise ValueError("invalid memory cap")
+    committed_bytes = 0
     for layer in range(first):
         record = json.loads((parts / f"layer-{layer}-complete.json").read_text())
         validate_record(run, layer, record)
         verify_artifact(parts, record)
+        committed_bytes += sum(
+            entry.nbytes
+            for entry in entries_from_json(record["entries"])
+            if entry.component != "engram_ssd"
+        )
+    if committed_bytes > budget * 1e9:
+        raise ValueError("amended resident budget is below committed payload size")
     if checkpoint["identity"] != run["identity"]:
         last = run.get("recipe_amendments", [{}])[-1]
         if not (

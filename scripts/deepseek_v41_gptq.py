@@ -112,6 +112,15 @@ def recipe(overrides=None):
     for k in ("memory_limit_gb", "cache_limit_gb", "resident_budget_gb"):
         if type(c[k]) not in (int, float) or not math.isfinite(c[k]) or c[k] <= 0:
             raise ValueError(f"invalid {k}")
+    for key in (
+        "gate_up_bits",
+        "down_bits",
+        "dense_bits",
+        "engram_bits",
+        "engram_group_size",
+    ):
+        if type(c[key]) is not int:
+            raise ValueError(f"invalid {key}")
     if c["gate_up_bits"] not in (2, 3, 4) or c["down_bits"] not in (2, 3, 4):
         raise ValueError("routed expert bits must be 2, 3 or 4")
     if c["dense_bits"] not in (4, 8) or c["engram_bits"] not in (6, 8):
@@ -1561,14 +1570,6 @@ def run_layer(source, c, parts, scratch, layer, guard):
             ]
         )
         atomic_json(work / "ffn-inputs-ready.json", dict(counts=counts.tolist()))
-        atomic_json(
-            scratch / "checkpoint.json",
-            dict(next_layer=layer, identity=run["identity"], phase="ffn"),
-        )
-    if not c["pilot"] and boundary.exists():
-        # The attention output and FFN inputs are now a durable layer-local
-        # restart point. Drop the obsolete residual boundary before allocating y.
-        shutil.rmtree(boundary)
     entries, costs = output_plan(source, c, layer, counts)
     candidate = groups_for(entries)
     for previous in range(layer):
@@ -1582,7 +1583,18 @@ def run_layer(source, c, parts, scratch, layer, guard):
         if e.component != "engram_ssd"
     )
     if actual_resident > c["resident_budget_gb"] * 1e9:
+        if checkpoint.get("phase") != "ffn":
+            # Leave the committed input boundary amendable after a rejected plan.
+            shutil.rmtree(work)
         raise ValueError("low-token bank promotion exceeds cumulative resident budget")
+    if checkpoint.get("phase") != "ffn":
+        atomic_json(
+            scratch / "checkpoint.json",
+            dict(next_layer=layer, identity=run["identity"], phase="ffn"),
+        )
+    if not c["pilot"] and boundary.exists():
+        # Commit the durable FFN restart point only after accepting its budget.
+        shutil.rmtree(boundary)
     es = groups_for(entries)[f"layer-{layer}"]
     sink = ShardSink(parts / f"model-layer-{layer}.safetensors", es)
     try:

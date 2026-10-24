@@ -36,12 +36,19 @@ class QuantConfig:
     low_token_damping: float = 1.0
 
     def __post_init__(self):
-        if self.group_size not in (32, 64, 128):
+        if type(self.group_size) is not int or self.group_size not in (32, 64, 128):
             raise ValueError("unsupported affine group size")
-        if self.block_size < self.group_size or self.block_size % self.group_size:
+        if (
+            type(self.block_size) is not int
+            or self.block_size < self.group_size
+            or self.block_size % self.group_size
+        ):
             raise ValueError("block size must be a multiple of group size")
         if (
-            not np.isfinite(self.damping)
+            type(self.min_tokens) is not int
+            or type(self.damping) not in (int, float)
+            or type(self.low_token_damping) not in (int, float)
+            or not np.isfinite(self.damping)
             or self.damping <= 0
             or not np.isfinite(self.low_token_damping)
             or self.low_token_damping < self.damping
