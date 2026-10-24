@@ -15,6 +15,7 @@ from scripts.deepseek_v41_public_ruler import (
 )
 from scripts.deepseek_v41_rd_common import file_hash
 from scripts.evaluate_deepseek_v41_rd import compare, token_metrics
+from tests.test_deepseek_v41_evaluation import checkpoint_fixture
 
 
 @pytest.mark.parametrize("k", [1, 8, 31, 32])
@@ -73,14 +74,10 @@ def test_compare_compact_and_online_fields_and_integrity(tmp_path, online):
         ruler="tiny",
         vocab_size=32,
         num_layers=2,
-        checkpoint_sha256={
-            "config.json": "a" * 64,
-            "model.safetensors.index.json": "b" * 64,
-        },
-        source_checkpoint_sha256={
-            "config.json": "a" * 64,
-            "model.safetensors.index.json": "b" * 64,
-        },
+        checkpoint_sha256=checkpoint_fixture()[0],
+        source_checkpoint_sha256=checkpoint_fixture()[0],
+        checkpoint_index_json=checkpoint_fixture()[1],
+        source_index_json=checkpoint_fixture()[1],
     )
     rm = dict(
         base,

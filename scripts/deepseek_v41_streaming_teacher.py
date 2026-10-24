@@ -524,6 +524,12 @@ def main():
         slices_manifest_sha256=input_hashes[a.slices],
         model_revision=a.model_revision or a.source.resolve().name,
         checkpoint_sha256=source_identity,
+        checkpoint_index_json=(a.source / "model.safetensors.index.json")
+        .read_bytes()
+        .decode("utf-8"),
+        source_index_json=(a.source / "model.safetensors.index.json")
+        .read_bytes()
+        .decode("utf-8"),
         source_checkpoint_sha256=source_identity,
         config_sha256=source_identity["config.json"],
         checkpoint_config_sha256=source_identity["config.json"],

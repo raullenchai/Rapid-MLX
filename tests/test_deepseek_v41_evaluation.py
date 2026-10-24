@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -28,6 +29,15 @@ def test_kl_direction_shift_invariance_and_flip_rate():
         token_metrics(r, c[:, :1])
 
 
+def checkpoint_fixture():
+    index = json.dumps({"weight_map": {"weight": "weights.safetensors"}})
+    return {
+        "config.json": "a" * 64,
+        "model.safetensors.index.json": hashlib.sha256(index.encode()).hexdigest(),
+        "weights.safetensors": "c" * 64,
+    }, index
+
+
 def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
     from scripts.deepseek_v41_rd_common import file_hash
 
@@ -51,14 +61,10 @@ def write_cache(root, logits, mode, ids=(1, 2), corpus="hash"):
                 "allocation_sha256": file_hash(root / "allocation.json")
                 if mode == "pruning_mask_only"
                 else None,
-                "checkpoint_sha256": {
-                    "config.json": "a" * 64,
-                    "model.safetensors.index.json": "b" * 64,
-                },
-                "source_checkpoint_sha256": {
-                    "config.json": "a" * 64,
-                    "model.safetensors.index.json": "b" * 64,
-                },
+                "checkpoint_sha256": checkpoint_fixture()[0],
+                "source_checkpoint_sha256": checkpoint_fixture()[0],
+                "checkpoint_index_json": checkpoint_fixture()[1],
+                "source_index_json": checkpoint_fixture()[1],
                 "model_revision": "revision",
                 "tokenizer_sha256": "tokenizer",
                 "slices": {

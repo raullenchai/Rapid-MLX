@@ -114,7 +114,7 @@ def install_native_masks(model, allocation, masses):
         gate.__class__ = EvaluationGate
 
 
-def validate_checkpoint_identity(identity):
+def validate_checkpoint_identity(identity, index_json=None):
     if (
         not isinstance(identity, dict)
         or not {"config.json", "model.safetensors.index.json"} <= identity.keys()
@@ -126,25 +126,58 @@ def validate_checkpoint_identity(identity):
         raise ValueError(
             "invalid immutable checkpoint identity; regenerate legacy caches"
         )
+    if (
+        not isinstance(index_json, str)
+        or hashlib.sha256(index_json.encode()).hexdigest()
+        != identity["model.safetensors.index.json"]
+    ):
+        raise ValueError("checkpoint index document hash mismatch")
+    index = json.loads(index_json)
+    mapping = index.get("weight_map") if isinstance(index, dict) else None
+    if (
+        not isinstance(mapping, dict)
+        or not mapping
+        or any(
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+            for path in mapping.values()
+        )
+    ):
+        raise ValueError("invalid checkpoint weight map")
+    if set(identity) != {
+        "config.json",
+        "model.safetensors.index.json",
+        *mapping.values(),
+    }:
+        raise ValueError("checkpoint identity must cover every indexed weight shard")
     return identity
 
 
-def source_identity_for_checkpoint(checkpoint, provenance_path=None):
+def source_identity_for_checkpoint(checkpoint, provenance_path=None, index_json=None):
     """A conversion record binds the exact source and candidate payload sets.
 
     The record is an operator-supplied conversion artifact, not proof of model
     quality. Its checkpoint_sha256 must match the files actually evaluated.
     """
-    validate_checkpoint_identity(checkpoint)
+    validate_checkpoint_identity(checkpoint, index_json)
     if provenance_path is None:
-        return checkpoint, None
+        return checkpoint, None, index_json
     raw = provenance_path.read_bytes()
     provenance = json.loads(raw)
-    if provenance.get("checkpoint_sha256") != checkpoint:
+    if (
+        provenance.get("checkpoint_sha256") != checkpoint
+        or provenance.get("checkpoint_index_json") != index_json
+    ):
         raise ValueError("conversion provenance candidate checkpoint mismatch")
     return (
-        validate_checkpoint_identity(provenance.get("source_checkpoint_sha256")),
+        validate_checkpoint_identity(
+            provenance.get("source_checkpoint_sha256"),
+            provenance.get("source_index_json"),
+        ),
         hashlib.sha256(raw).hexdigest(),
+        provenance["source_index_json"],
     )
 
 
@@ -187,12 +220,17 @@ def collect(a):
         raise ValueError("incompatible compact reference")
     # Explicit lazy avoids full materialization and automatic page-cache prewarm.
     source_identity = checkpoint_hashes(a.model)
-    origin_identity, conversion_digest = source_identity_for_checkpoint(
-        source_identity, getattr(a, "conversion_provenance", None)
+    checkpoint_index = (
+        (a.model / "model.safetensors.index.json").read_bytes().decode("utf-8")
+    )
+    origin_identity, conversion_digest, origin_index = source_identity_for_checkpoint(
+        source_identity, getattr(a, "conversion_provenance", None), checkpoint_index
     )
     if (
         rm
-        and validate_checkpoint_identity(rm.get("source_checkpoint_sha256"))
+        and validate_checkpoint_identity(
+            rm.get("source_checkpoint_sha256"), rm.get("source_index_json")
+        )
         != origin_identity
     ):
         raise ValueError("reference source checkpoint identity mismatch")
@@ -229,6 +267,8 @@ def collect(a):
         "serving_qmv": getattr(a, "serving_qmv", False),
         "model_revision": a.model_revision,
         "checkpoint_sha256": source_identity,
+        "checkpoint_index_json": checkpoint_index,
+        "source_index_json": origin_index,
         "source_checkpoint_sha256": origin_identity,
         "conversion_provenance_sha256": conversion_digest,
         "checkpoint_config_sha256": source_identity["config.json"],
@@ -349,8 +389,12 @@ def compare(reference: Path, candidate: Path, subset=False):
     ):
         raise ValueError("cache provenance/slice mismatch")
     for root, meta in ((reference, rm), (candidate, cm)):
-        checkpoint = validate_checkpoint_identity(meta.get("checkpoint_sha256"))
-        source = validate_checkpoint_identity(meta.get("source_checkpoint_sha256"))
+        checkpoint = validate_checkpoint_identity(
+            meta.get("checkpoint_sha256"), meta.get("checkpoint_index_json")
+        )
+        source = validate_checkpoint_identity(
+            meta.get("source_checkpoint_sha256"), meta.get("source_index_json")
+        )
         digest = meta.get("conversion_provenance_sha256")
         if checkpoint != source or digest is not None:
             if (
@@ -359,8 +403,10 @@ def compare(reference: Path, candidate: Path, subset=False):
             ):
                 raise ValueError("cache lacks conversion provenance digest")
             try:
-                recorded_source, recorded_digest = source_identity_for_checkpoint(
-                    checkpoint, root / "conversion-provenance.json"
+                recorded_source, recorded_digest, _ = source_identity_for_checkpoint(
+                    checkpoint,
+                    root / "conversion-provenance.json",
+                    meta["checkpoint_index_json"],
                 )
             except OSError as exc:
                 raise ValueError("cache conversion provenance record missing") from exc
@@ -588,7 +634,7 @@ def main():
     cache.add_argument(
         "--conversion-provenance",
         type=Path,
-        help="JSON conversion record with source_checkpoint_sha256 and checkpoint_sha256 maps; required when source and candidate weights differ",
+        help="JSON conversion record with source/candidate hash maps and exact source_index_json/checkpoint_index_json documents; required when source and candidate weights differ",
     )
     cache.add_argument(
         "--serving-qmv",

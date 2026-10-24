@@ -10,7 +10,7 @@ import pytest
 
 from scripts import evaluate_deepseek_v41_rd as evaluator
 from scripts.deepseek_v41_rd_common import checkpoint_hashes, file_hash
-from tests.test_deepseek_v41_evaluation import write_cache
+from tests.test_deepseek_v41_evaluation import checkpoint_fixture, write_cache
 
 
 @pytest.mark.parametrize(
@@ -100,7 +100,8 @@ def collector(tmp_path, monkeypatch):
     tok = Tokenizer(models.WordLevel({"a": 0, "b": 1}, unk_token="a"))
     tok.save(str(source / "tokenizer.json"))
     (source / "config.json").write_text("{}")
-    (source / "model.safetensors.index.json").write_text('{"weight_map": {}}')
+    (source / "model.safetensors.index.json").write_text(checkpoint_fixture()[1])
+    (source / "weights.safetensors").write_bytes(b"fixture weights")
     np.save(tmp_path / "a.npy", np.zeros(17, np.int32))
     manifest = tmp_path / "slices.json"
     manifest.write_text(json.dumps({"slices": {"a": ["a.npy"]}}))
@@ -201,6 +202,7 @@ def test_collect_guards(collector, tmp_path, bad):
             "slices": {"a": {"compact_sha256": {}, "corpus_sha256": []}},
             "vocab_size": 2,
             "source_checkpoint_sha256": checkpoint_hashes(a.model),
+            "source_index_json": (a.model / "model.safetensors.index.json").read_text(),
         }
         if bad == "reference":
             rm["mode"] = "candidate"
@@ -266,18 +268,26 @@ def test_comparison_binds_immutable_source_identity(tmp_path, bad):
 
 
 def test_conversion_record_binds_exact_candidate_payloads(tmp_path):
-    source = {"config.json": "a" * 64, "model.safetensors.index.json": "b" * 64}
-    candidate = dict(source, **{"weights.safetensors": "c" * 64})
+    source, index = checkpoint_fixture()
+    candidate = dict(source, **{"weights.safetensors": "d" * 64})
     path = tmp_path / "conversion.json"
     path.write_text(
-        json.dumps(dict(source_checkpoint_sha256=source, checkpoint_sha256=candidate))
+        json.dumps(
+            dict(
+                source_checkpoint_sha256=source,
+                checkpoint_sha256=candidate,
+                source_index_json=index,
+                checkpoint_index_json=index,
+            )
+        )
     )
-    assert evaluator.source_identity_for_checkpoint(candidate, path) == (
+    assert evaluator.source_identity_for_checkpoint(candidate, path, index) == (
         source,
         file_hash(path),
+        index,
     )
     with pytest.raises(ValueError, match="candidate checkpoint mismatch"):
-        evaluator.source_identity_for_checkpoint(source, path)
+        evaluator.source_identity_for_checkpoint(source, path, index)
     for invalid in [None, {}, dict(source, **{"weights.safetensors": "not-a-hash"})]:
         with pytest.raises(ValueError, match="immutable checkpoint identity"):
             evaluator.validate_checkpoint_identity(invalid)
@@ -299,7 +309,12 @@ def test_conversion_record_binds_exact_candidate_payloads(tmp_path):
         evaluator.compare(r, c)
     record.write_text(
         json.dumps(
-            dict(source_checkpoint_sha256=candidate, checkpoint_sha256=candidate)
+            dict(
+                source_checkpoint_sha256=candidate,
+                checkpoint_sha256=candidate,
+                source_index_json=index,
+                checkpoint_index_json=index,
+            )
         )
     )
     metadata["conversion_provenance_sha256"] = file_hash(record)
@@ -307,7 +322,14 @@ def test_conversion_record_binds_exact_candidate_payloads(tmp_path):
     with pytest.raises(ValueError, match="record mismatch"):
         evaluator.compare(r, c)
     record.write_text(
-        json.dumps(dict(source_checkpoint_sha256=source, checkpoint_sha256=source))
+        json.dumps(
+            dict(
+                source_checkpoint_sha256=source,
+                checkpoint_sha256=source,
+                source_index_json=index,
+                checkpoint_index_json=index,
+            )
+        )
     )
     with pytest.raises(ValueError, match="candidate checkpoint mismatch"):
         evaluator.compare(r, c)
@@ -324,10 +346,8 @@ def test_collect_rejects_different_source_reference(collector, tmp_path):
         tokenizer_sha256=file_hash(a.model / "tokenizer.json"),
         model_revision="test",
         slices={"a": {}},
-        source_checkpoint_sha256={
-            "config.json": "a" * 64,
-            "model.safetensors.index.json": "b" * 64,
-        },
+        source_checkpoint_sha256=checkpoint_fixture()[0],
+        source_index_json=checkpoint_fixture()[1],
     )
     (a.reference / "metadata.json").write_text(json.dumps(rm))
     with pytest.raises(ValueError, match="reference source checkpoint"):
@@ -360,10 +380,18 @@ def test_collect_retains_verified_conversion_record(
 ):
     a = collector
     checkpoint = checkpoint_hashes(a.model)
-    source = dict(checkpoint, **{"source.safetensors": "d" * 64})
+    source = dict(checkpoint, **{"weights.safetensors": "d" * 64})
+    index = (a.model / "model.safetensors.index.json").read_text()
     record = tmp_path / "conversion.json"
     record.write_text(
-        json.dumps(dict(checkpoint_sha256=checkpoint, source_checkpoint_sha256=source))
+        json.dumps(
+            dict(
+                checkpoint_sha256=checkpoint,
+                source_checkpoint_sha256=source,
+                source_index_json=index,
+                checkpoint_index_json=index,
+            )
+        )
     )
     a.conversion_provenance = record
     if changed:
@@ -492,3 +520,48 @@ def test_collect_rechecks_tokenization_inputs(collector, tmp_path, monkeypatch, 
     with pytest.raises(ValueError, match="slice inputs changed"):
         evaluator.collect(a)
     assert not (a.output / "metadata.json").exists()
+
+
+@pytest.mark.parametrize(
+    "bad", ["missing_shard", "extra_shard", "index_hash", "empty_index", "unsafe_path"]
+)
+def test_checkpoint_identity_requires_complete_indexed_payloads(bad):
+    import hashlib
+
+    identity, index = checkpoint_fixture()
+    assert evaluator.validate_checkpoint_identity(identity, index) == identity
+    if bad == "missing_shard":
+        del identity["weights.safetensors"]
+    elif bad == "extra_shard":
+        identity["unindexed.safetensors"] = "d" * 64
+    elif bad == "index_hash":
+        index += " "
+    else:
+        index = json.dumps(
+            {
+                "weight_map": {}
+                if bad == "empty_index"
+                else {"weight": "../outside.safetensors"}
+            }
+        )
+        identity["model.safetensors.index.json"] = hashlib.sha256(
+            index.encode()
+        ).hexdigest()
+    with pytest.raises(ValueError, match="index|weight map"):
+        evaluator.validate_checkpoint_identity(identity, index)
+
+
+@pytest.mark.requires_mlx
+def test_collection_retains_exact_index_newlines(collector):
+    a = collector
+    index_path = a.model / "model.safetensors.index.json"
+    raw = (
+        json.dumps(json.loads(index_path.read_text()), indent=2)
+        .replace("\n", "\r\n")
+        .encode()
+    )
+    index_path.write_bytes(raw)
+    evaluator.collect(a)
+    metadata = json.loads((a.output / "metadata.json").read_text())
+    assert metadata["checkpoint_index_json"].encode() == raw
+    assert evaluator.compare(a.output, a.output)["kl_nats"] == 0

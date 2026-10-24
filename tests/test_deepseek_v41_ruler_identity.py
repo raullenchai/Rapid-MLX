@@ -8,6 +8,7 @@ import pytest
 
 from scripts import deepseek_v41_public_ruler as ruler
 from scripts import evaluate_deepseek_v41_rd as evaluator
+from tests.test_deepseek_v41_evaluation import checkpoint_fixture
 from tests.test_deepseek_v41_ruler_cli import build_inputs
 
 
@@ -84,7 +85,7 @@ def public_cache(root, bundle):
     manifest = bundle / "long17k.json"
     digest = ruler.file_hash(manifest)
     ruler.retain_ruler_manifest(manifest, root, digest)
-    identity = {"config.json": "a" * 64, "model.safetensors.index.json": "b" * 64}
+    identity, index = checkpoint_fixture()
     metadata = dict(
         mode="unpruned_reference",
         model_revision="test",
@@ -92,6 +93,8 @@ def public_cache(root, bundle):
         num_layers=2,
         checkpoint_sha256=identity,
         source_checkpoint_sha256=identity,
+        source_index_json=index,
+        checkpoint_index_json=index,
         ruler="long17k",
         ruler_manifest_sha256=digest,
         slices={},
