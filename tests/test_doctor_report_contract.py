@@ -958,14 +958,18 @@ def test_doctor_human_output_modes(monkeypatch, capsys, summary, expected):
     assert expected in capsys.readouterr().out
 
 
-def test_human_summary_includes_skipped_count():
+@pytest.mark.parametrize(
+    "detail", ["not selected", "probe timed out; rerun doctor with --deep"]
+)
+def test_human_summary_includes_skipped_count(detail):
     section = eh.Section("Optional", id="optional")
-    section.add("not selected", eh.CheckStatus.SKIPPED)
+    section.add("not selected", eh.CheckStatus.SKIPPED, detail=detail)
 
     output = io.StringIO()
     render(eh.Report(sections=[section]), stream=output)
 
-    assert "1 skipped (run --deep for more time)" in output.getvalue()
+    assert "1 skipped" in output.getvalue()
+    assert ("run --deep for more time" in output.getvalue()) == ("--deep" in detail)
 
 
 def test_output_modes_are_mutually_exclusive():
@@ -974,3 +978,14 @@ def test_output_modes_are_mutually_exclusive():
     with pytest.raises(SystemExit) as exc:
         build_parser().parse_args(["doctor", "--json", "--verbose"])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_budget_skip_summary_only_suggests_deep_for_default_run(deep):
+    report = eh._budget_exhausted_report(only={"network"}, deep=deep)
+    output = io.StringIO()
+
+    render(report, stream=output)
+
+    assert report.n_skipped == 1
+    assert ("--deep" in output.getvalue()) is not deep

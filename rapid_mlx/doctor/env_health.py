@@ -2429,8 +2429,13 @@ def section_optional_packages() -> Section:
                         else CheckStatus.WARN,
                         detail=(
                             f"distribution={dist} version={ver} "
-                            f"inconclusive={inconclusive_text}; rerun doctor "
-                            "with --deep; this result does not "
+                            f"inconclusive={inconclusive_text}; "
+                            + (
+                                "inspect the dependency imports directly"
+                                if _DOCTOR_DEEP_MODE
+                                else "rerun doctor with --deep"
+                            )
+                            + "; this result does not "
                             "indicate that reinstall or rollback is needed"
                         ),
                     )
@@ -3900,13 +3905,13 @@ def _budget_exhausted_report(
 ) -> Report:
     report = Report()
     _append_budget_exhausted_sections(
-        report, _selected_section_builders(only=only, skip=skip, deep=deep)
+        report, _selected_section_builders(only=only, skip=skip, deep=deep), deep=deep
     )
     return report
 
 
 def _append_budget_exhausted_sections(
-    report: Report, builders: Sequence[Callable[[], Section]]
+    report: Report, builders: Sequence[Callable[[], Section]], *, deep: bool = False
 ) -> None:
     """Record selected sections that could not start before the deadline."""
     for builder in builders:
@@ -3918,7 +3923,10 @@ def _append_budget_exhausted_sections(
         skipped.add(
             "Skipped: doctor time budget exhausted",
             CheckStatus.SKIPPED,
-            detail="probe did not start before the shared deadline",
+            detail=(
+                "probe did not start before the shared deadline"
+                + ("" if deep else "; rerun doctor with --deep for more time")
+            ),
             check_id=f"{_builder_id(builder)}.budget",
         )
         skipped.id = _builder_id(builder)
@@ -3961,7 +3969,9 @@ def _run_all_serialized(
         runtime_discovery_error: Exception | None = None
         for index, builder in enumerate(selected_builders):
             if time.monotonic() >= _DOCTOR_DEADLINE:
-                _append_budget_exhausted_sections(report, selected_builders[index:])
+                _append_budget_exhausted_sections(
+                    report, selected_builders[index:], deep=deep
+                )
                 break
             if builder in _RUNTIME_SECTION_BUILDERS and not runtime_selected:
                 started_at = time.monotonic()
@@ -3992,7 +4002,9 @@ def _run_all_serialized(
                     )
                     continue
                 if time.monotonic() >= _DOCTOR_DEADLINE:
-                    _append_budget_exhausted_sections(report, selected_builders[index:])
+                    _append_budget_exhausted_sections(
+                        report, selected_builders[index:], deep=deep
+                    )
                     break
             elif builder in _RUNTIME_SECTION_BUILDERS:
                 if runtime_discovery_error is not None:

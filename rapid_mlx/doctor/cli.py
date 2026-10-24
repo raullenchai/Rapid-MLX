@@ -710,7 +710,12 @@ def _render_summary(report: Report, *, write, verbose: bool) -> None:
         f"{'s' if report.n_fail != 1 else ''}"
     )
     if report.n_skipped:
-        write(f", {report.n_skipped} skipped (run --deep for more time)")
+        write(f", {report.n_skipped} skipped")
+        if any(
+            check.status is CheckStatus.SKIPPED and "--deep" in check.detail
+            for check in report.all_checks()
+        ):
+            write(" (run --deep for more time)")
     write("\n")
     if not verbose and (report.n_warn or report.n_fail):
         write("Run with `--verbose` for details on each check.\n")

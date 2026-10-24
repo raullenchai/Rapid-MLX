@@ -3349,7 +3349,11 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
 @pytest.mark.parametrize(
     "outcome", [eh._ImportProbeOutcome.TIMED_OUT, eh._ImportProbeOutcome.UNVERIFIED]
 )
-def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch, outcome):
+@pytest.mark.parametrize("deep", [False, True])
+def test_audio_dependency_timeout_is_inconclusive_not_incomplete(
+    monkeypatch, outcome, deep
+):
+    monkeypatch.setattr(eh, "_DOCTOR_DEEP_MODE", deep)
     runtime = Path(sys.executable)
 
     def fake_ver(dist: str, runtime=None) -> str | None:
@@ -3377,6 +3381,7 @@ def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch, ou
     assert "not verify: f5-tts-mlx" in audio_row.label
     assert "incomplete" not in audio_row.label
     assert "does not indicate" in audio_row.detail
+    assert ("--deep" in audio_row.detail) is not deep
 
 
 def _stage_sidecar_bundle(tmp_path: Path, *, slot: str = "embedded") -> Path:
