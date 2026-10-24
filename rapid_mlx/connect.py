@@ -310,9 +310,10 @@ def probe_server_alive(host: str, port: int, *, scheme: str = "http") -> bool:
 
     url = f"{scheme}://{_authority(host)}:{port}/healthz"
     try:
-        urllib.request.urlopen(url, timeout=2.0)
-        return True
+        with urllib.request.urlopen(url, timeout=2.0):
+            return True
     except urllib.error.HTTPError as exc:
+        exc.close()
         return exc.code in (401, 403)
     # http.client.HTTPException (e.g. BadStatusLine) covers a port occupied by a
     # non-HTTP service (SSH, a database) that answers with garbage — not a

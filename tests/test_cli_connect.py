@@ -160,12 +160,18 @@ def test_probe_server_alive_keys_on_healthz_status_code(monkeypatch):
     import urllib.error
     import urllib.request
 
+    responses = []
+
     def _ok(url, timeout=None):
-        return object()  # urlopen returns without raising on 2xx
+        response = io.BytesIO(b"healthy")
+        responses.append(response)
+        return response
 
     def _raise(code):
         def _open(url, timeout=None):
-            raise urllib.error.HTTPError(url, code, "err", {}, None)
+            response = io.BytesIO(b"error")
+            responses.append(response)
+            raise urllib.error.HTTPError(url, code, "err", {}, response)
 
         return _open
 
@@ -175,17 +181,20 @@ def test_probe_server_alive_keys_on_healthz_status_code(monkeypatch):
     # 2xx (any serving mode) → alive.
     monkeypatch.setattr(urllib.request, "urlopen", _ok)
     assert connect.probe_server_alive("localhost", 8000) is True
+    assert responses[-1].closed
 
     # Auth-gated DDTree /healthz answers 401/403 → still a server there.
     for code in (401, 403):
         monkeypatch.setattr(urllib.request, "urlopen", _raise(code))
         assert connect.probe_server_alive("localhost", 8000) is True, code
+        assert responses[-1].closed
 
     # 404 (unrelated server), 503 (up but draining, refusing new work), and
     # 500 (broken) are all "don't hand a client this endpoint".
     for code in (404, 500, 503):
         monkeypatch.setattr(urllib.request, "urlopen", _raise(code))
         assert connect.probe_server_alive("localhost", 8000) is False, code
+        assert responses[-1].closed
 
     # Nothing listening: connection refused.
     monkeypatch.setattr(urllib.request, "urlopen", _conn)
