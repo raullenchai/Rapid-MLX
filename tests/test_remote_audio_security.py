@@ -368,3 +368,29 @@ def test_remote_audio_preserves_value_error_boundary(
     with pytest.raises(ValueError, match="Failed to load audio from URL") as exc:
         inputs.load_audio("https://media.example/audio.wav", 16000)
     assert exc.value.__cause__ is error
+
+
+@pytest.mark.parametrize("read_error", [False, True])
+def test_remote_audio_repeated_reads_leave_no_files_or_registry_entries(
+    transport, tmp_path, monkeypatch, read_error
+):
+    manager = mllm.TempFileManager()
+    monkeypatch.setattr(mllm, "_temp_manager", manager)
+    if read_error:
+
+        def fail_read(_path):
+            raise OSError("audio read failed")
+
+        monkeypatch.setattr(Path, "read_bytes", fail_read)
+    for _ in range(3):
+        transport["response"] = Response()
+        if read_error:
+            with pytest.raises(OSError, match="audio read failed"):
+                mllm.process_audio_input("https://media.example/audio.wav")
+        else:
+            assert (
+                mllm.process_audio_input("https://media.example/audio.wav").getvalue()
+                == b"audio"
+            )
+        assert manager._files == set()
+        assert not list(tmp_path.iterdir())

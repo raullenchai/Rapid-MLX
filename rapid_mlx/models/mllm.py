@@ -1313,7 +1313,7 @@ def process_audio_input(audio: str, timeout: int = 30):
             # The downloader has already bounded these bytes.
             return BytesIO(downloaded.read_bytes())
         finally:
-            downloaded.unlink(missing_ok=True)
+            _temp_manager.cleanup(str(downloaded))
     if audio.startswith("data:audio/"):
         header, separator, payload = audio.partition(",")
         if not separator or not header.endswith(";base64"):
