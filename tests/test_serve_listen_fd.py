@@ -549,7 +549,7 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     cli.serve_command(ns)
 
     assert captured.get("fd") == listener_fd, (
-        f"expected fd=7 in the real uvicorn.run call, got {captured!r}"
+        f"expected fd={listener_fd} in the real uvicorn.run call, got {captured!r}"
     )
     assert "host" not in captured, (
         f"host must NOT be passed in the listen-fd branch, got {captured!r}"
@@ -1199,7 +1199,7 @@ def test_serve_command_skips_port_preflight_when_listen_fd_set(
         cli.serve_command(ns)
 
     assert captured.get("fd") == listener_fd, (
-        f"expected uvicorn.run(fd=11, ...), got {captured!r}"
+        f"expected uvicorn.run(fd={listener_fd}, ...), got {captured!r}"
     )
     assert "host" not in captured
     assert "port" not in captured
