@@ -102,9 +102,12 @@ def test_empty_preferred_ltx25_weight_is_incomplete(tmp_path, monkeypatch, prefe
     assert gate.weightless_stub_notice(REPO) is not None
 
 
-def test_truncated_ltx25_encoder_config_is_incomplete(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "name", [name for name in CHECKPOINT_FILES if name.endswith(".json")]
+)
+def test_truncated_ltx25_json_is_incomplete(tmp_path, monkeypatch, name):
     snap = _cache(tmp_path, monkeypatch)
-    (snap / "text_encoder" / "config.json").write_text("{")
+    (snap / name).write_text("{")
 
     assert cli._cache_runnability(REPO) is False
     assert gate.weightless_stub_notice(REPO) is not None
@@ -156,3 +159,12 @@ def test_complete_ltx25_cache_online_with_preferred_weights(tmp_path, monkeypatc
     assert cli._cache_runnability(REPO) is True
     assert gate.weightless_stub_notice(REPO) is None
     cli._ensure_model_downloaded(REPO)
+
+
+def test_ltx25_tokenizer_larger_than_config_limit_is_admitted(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    (snap / "text_encoder/tokenizer.json").write_text(
+        json.dumps({"vocab": "x" * (2 * 1024 * 1024)})
+    )
+    assert cli._cache_runnability(REPO) is True
+    assert gate.weightless_stub_notice(REPO) is None

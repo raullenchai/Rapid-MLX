@@ -1196,7 +1196,18 @@ def _snapshot_is_complete_ltx25(snap_dir: str) -> bool:
         _is_nonempty_snapshot_manifest_file(os.path.join(snap_dir, name), snap_dir)
         for name in LTX25_CHECKPOINT_FILES
     )
-    if not required or _read_json(Path(snap_dir) / "text_encoder/config.json") is None:
+    if not required or any(
+        _read_json(
+            Path(snap_dir) / name,
+            # Tokenizer vocabularies exceed the ordinary 1 MiB config bound.
+            max_bytes=128 * 1024 * 1024
+            if name == "text_encoder/tokenizer.json"
+            else 1024 * 1024,
+        )
+        is None
+        for name in LTX25_CHECKPOINT_FILES
+        if name.endswith(".json")
+    ):
         return False
     # The runtime prefers these when present over the required base weights.
     snapshot = Path(snap_dir)
