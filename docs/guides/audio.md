@@ -447,6 +447,15 @@ Every Whisper request is therefore pre-filtered by Silero VAD
   audio and falls back to Whisper. Real quiet / whispered speech is
   never silenced.
 
+The VAD weights are a separate first-use download. Rapid-MLX fixes this auxiliary
+model to a reviewed commit and checks its configuration and weights against the
+file hashes shipped with the application before loading them. A complete cached
+copy works offline without resolving the remote `main` branch. The
+`--disable-model-downloads` flag also applies to this helper: if the verified
+snapshot is unavailable, VAD keeps its existing best-effort fallback instead of
+downloading behind the operator's setting. A verification failure never passes
+the rejected files to the VAD loader; transcription retains its existing fallback.
+
 Operator controls:
 
 | Knob | Type | Default | Effect |

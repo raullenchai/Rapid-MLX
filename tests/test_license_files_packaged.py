@@ -96,6 +96,14 @@ def test_package_data_ships_every_tracked_license_file():
     )
 
 
+def test_package_data_declares_auxiliary_integrity_manifest():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    declared = _declared_package_data(
+        "rapid_mlx", pyproject["tool"]["setuptools"]["package-data"]["rapid_mlx"]
+    )
+    assert "model_catalog_lock.json" in declared
+
+
 def test_ci_runs_the_real_license_file_package_build_once():
     steps = _workflow_job(
         REPO_ROOT / ".github" / "workflows" / "ci.yml", "test-matrix"
@@ -159,11 +167,19 @@ def test_real_distributions_ship_every_tracked_license_file(tmp_path):
     )
     (wheel,) = out.glob("*.whl")
     (sdist,) = out.glob("*.tar.gz")
+    # The reviewed helper manifest must survive distribution unchanged: losing
+    # it would silently replace packaged trust with online metadata lookup.
+    manifest = "rapid_mlx/model_catalog_lock.json"
+    expected_manifest = (REPO_ROOT / manifest).read_bytes()
+    top = sdist.name.removesuffix(".tar.gz")
     with zipfile.ZipFile(wheel) as archive:
         wheel_names = set(archive.namelist())
+        assert archive.read(manifest) == expected_manifest
     with tarfile.open(sdist) as archive:
         sdist_names = set(archive.getnames())
-    top = sdist.name.removesuffix(".tar.gz")
+        member = archive.extractfile(f"{top}/{manifest}")
+        assert member is not None
+        assert member.read() == expected_manifest
     missing = []
     inventory = _tracked_license_files()
     assert inventory and ("rapid_mlx", "spec_decode/mtp/LICENSE-MTPLX") in inventory

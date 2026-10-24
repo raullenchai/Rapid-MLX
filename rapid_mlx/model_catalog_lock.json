@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scope": "Exact Silero VAD repository inventory; identity evidence, not publisher authenticity or a global catalog pin migration.",
+  "source": "https://huggingface.co/api/models/mlx-community/silero-vad/revision/7bc17f22d3c0451bd3a6cd71e759b009271ff49a?blobs=true",
+  "repositories": {
+    "mlx-community/silero-vad": {
+      "revision": "7bc17f22d3c0451bd3a6cd71e759b009271ff49a",
+      "git_files": {
+        ".gitattributes": {
+          "blob_id": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+          "size": 1519
+        },
+        "README.md": {
+          "blob_id": "2bfe53f1800809fddf9fc2b73eb0ae5f83d15e1d",
+          "size": 602
+        },
+        "config.json": {
+          "blob_id": "af83a8c743562a75af3edad522a6c94d1f885115",
+          "size": 549
+        }
+      },
+      "lfs_files": {
+        "model.safetensors": {
+          "sha256": "185e0bc3ee2c48ce425a37209fe917a1aca22ab6b85799430dd1b4894087a8b8",
+          "size": 2179454
+        }
+      }
+    }
+  }
+}

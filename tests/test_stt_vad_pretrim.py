@@ -482,7 +482,9 @@ class TestTransientLoadFailureRetries:
     subsequent call.
     """
 
-    def test_transient_load_failure_retries_on_next_call(self, monkeypatch):
+    def test_transient_load_failure_retries_on_next_call(
+        self, monkeypatch, verified_vad_snapshot
+    ):
         from rapid_mlx.audio import stt as stt_mod
 
         # Fresh module state.
@@ -497,7 +499,7 @@ class TestTransientLoadFailureRetries:
 
         state = {"calls": 0}
 
-        def _flaky_load(_repo):
+        def _flaky_load(_repo, **kwargs):
             state["calls"] += 1
             if state["calls"] == 1:
                 raise RuntimeError("simulated: HF 502")
@@ -666,7 +668,7 @@ class TestVADLoadLock:
     """Codex r2 NIT #3: the load path must be serialized so N
     concurrent transcriptions don't kick off N duplicate downloads."""
 
-    def test_load_lock_serializes_first_load(self, monkeypatch):
+    def test_load_lock_serializes_first_load(self, monkeypatch, verified_vad_snapshot):
         import sys as _sys
         import threading
         import types as _types
@@ -682,7 +684,7 @@ class TestVADLoadLock:
         call_count = [0]
         released = threading.Event()
 
-        def _slow_load(_repo):
+        def _slow_load(_repo, **kwargs):
             call_count[0] += 1
             # Block long enough for a second thread to enter the
             # ``_get_vad_model`` fast path.
@@ -920,3 +922,123 @@ class TestShiftHelper:
         _shift_segment_time(s, 3.0)
         assert s.start == 4.0
         assert s.end == 5.0
+
+
+@pytest.fixture
+def verified_vad_snapshot(monkeypatch, tmp_path):
+    snapshot = tmp_path / "custom-cache" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents=True)
+    monkeypatch.setattr(
+        "rapid_mlx.audio.vad_artifacts.resolve_vad_snapshot", lambda: snapshot
+    )
+    return snapshot
+
+
+@pytest.fixture
+def native_vad_boundary(monkeypatch):
+    import sys
+    import types
+
+    from rapid_mlx.audio import stt
+
+    for name, value in (
+        ("_VAD_MODEL_CACHE", None),
+        ("_VAD_IMPORT_UNAVAILABLE", False),
+        ("_VAD_LOAD_FAILURE_LOGGED", False),
+    ):
+        monkeypatch.setattr(stt, name, value)
+    loaded = []
+    model = _FakeVAD([])
+    module = types.ModuleType("mlx_audio.vad")
+    module.load = lambda path, **kwargs: loaded.append((path, kwargs)) or model
+    monkeypatch.setitem(sys.modules, "mlx_audio.vad", module)
+    return stt, loaded, model
+
+
+def test_vad_native_loader_receives_verified_snapshot_and_hint(
+    native_vad_boundary, verified_vad_snapshot
+):
+    stt, loaded, model = native_vad_boundary
+    assert stt._get_vad_model() is model
+    assert stt._get_vad_model() is model
+    assert loaded == [(verified_vad_snapshot, {"model_name_parts": ["silero", "vad"]})]
+
+
+@pytest.mark.parametrize("failure", ["integrity", "disabled"])
+def test_vad_resolution_failure_never_loads_and_can_recover(
+    native_vad_boundary, monkeypatch, tmp_path, failure
+):
+    from rapid_mlx.model_downloads import ModelDownloadsDisabledError
+    from rapid_mlx.model_integrity import ModelIntegrityError
+
+    stt, loaded, model = native_vad_boundary
+    error = (
+        ModelIntegrityError("changed weights")
+        if failure == "integrity"
+        else ModelDownloadsDisabledError(stt._VAD_MODEL_REPO, "offline")
+    )
+    attempts = []
+
+    def resolve():
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise error
+        return tmp_path
+
+    monkeypatch.setattr("rapid_mlx.audio.vad_artifacts.resolve_vad_snapshot", resolve)
+    assert stt._get_vad_model() is None
+    assert stt._get_vad_model() is None
+    assert loaded == []
+    assert stt._VAD_IMPORT_UNAVAILABLE is False
+    assert stt._get_vad_model() is model
+    assert loaded == [(tmp_path, {"model_name_parts": ["silero", "vad"]})]
+
+
+@pytest.mark.requires_mlx
+def test_vad_installed_native_dispatch_preserves_custom_cache_hint(
+    monkeypatch, tmp_path
+):
+    import json
+    import types
+
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    native_vad = pytest.importorskip("mlx_audio.vad")
+    from mlx_audio.vad.models import silero_vad
+
+    from rapid_mlx.audio import stt
+
+    snapshot = tmp_path / "custom-cache" / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents=True)
+    # Without a config selector or literal 'hub' path segment, dispatch must
+    # use the original native Silero name hint instead of the commit basename.
+    (snapshot / "config.json").write_text(json.dumps({}))
+    mx.save_safetensors(str(snapshot / "model.safetensors"), {"weight": mx.zeros((1,))})
+    configs = []
+
+    class TinyNativeModel(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            configs.append(config)
+            self.weight = mx.zeros((1,))
+
+    monkeypatch.setattr(silero_vad, "Model", TinyNativeModel)
+    monkeypatch.setattr(
+        silero_vad,
+        "ModelConfig",
+        types.SimpleNamespace(from_dict=lambda config: config),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.audio.vad_artifacts.resolve_vad_snapshot", lambda: snapshot
+    )
+    monkeypatch.setattr(
+        "mlx_audio.utils.get_model_path",
+        lambda *a, **kw: pytest.fail("native loader must not resolve another snapshot"),
+    )
+    monkeypatch.setattr(stt, "_VAD_MODEL_CACHE", None)
+    monkeypatch.setattr(stt, "_VAD_IMPORT_UNAVAILABLE", False)
+    monkeypatch.setattr(stt, "_VAD_LOAD_FAILURE_LOGGED", False)
+    assert callable(native_vad.load)
+    model = stt._get_vad_model()
+    assert isinstance(model, TinyNativeModel)
+    assert configs[0]["model_path"] == str(snapshot)

@@ -46,6 +46,8 @@ _CONTROL_PATHS = (
     "rapid_mlx/audio/runtime_catalog.py",
     "rapid_mlx/audio/runtime_requirements.py",
     "rapid_mlx/audio/tts.py",
+    "rapid_mlx/audio/stt.py",
+    "rapid_mlx/audio/vad_artifacts.py",
     "rapid_mlx/audio/processor.py",
     "rapid_mlx/audio/sam_security.py",
     "rapid_mlx/audio/f5_security.py",

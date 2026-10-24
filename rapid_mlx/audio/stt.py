@@ -253,7 +253,12 @@ def _get_vad_model() -> Any | None:
             )
             return None
         try:
-            _VAD_MODEL_CACHE = vad_load(_VAD_MODEL_REPO)
+            from .vad_artifacts import resolve_vad_snapshot
+
+            snapshot = resolve_vad_snapshot()
+            # Preserve native Silero dispatch even when the verified snapshot
+            # lives in a custom HF cache without a literal "hub" directory.
+            _VAD_MODEL_CACHE = vad_load(snapshot, model_name_parts=["silero", "vad"])
         except Exception as e:  # noqa: BLE001
             # Transient: log ONCE, then retry on every subsequent call
             # so a recovered network / freed disk still gets the guard
