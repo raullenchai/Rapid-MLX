@@ -1172,6 +1172,16 @@
         }
       }
     },
+    "The runtime returned no models available for benchmarking." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行时未返回可用于基准测试的模型。"
+          }
+        }
+      }
+    },
     "Whole Mac" : {
       "localizations": {
         "zh-Hans": {
