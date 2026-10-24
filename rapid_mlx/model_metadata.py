@@ -401,6 +401,10 @@ def resolve_offline_cached_snapshot(model_name: str) -> Path | None:
 
     if resolve_revision(model_name) is not None:
         return resolve_pinned_cached_snapshot(model_name)
+    # LTX resolves the repository ID in its runtime without accepting this
+    # fallback path, so only its refs/main snapshot can satisfy admission.
+    if model_name == "MrMofer/ltx-2.5-mlx-q8":
+        return None
     if not hub_offline_mode_active() or not _looks_like_hub_repo_id(model_name):
         return None
     try:
