@@ -609,3 +609,26 @@ def test_projection_error_matches_weighted_gram_objective():
         np.trace((w - q) @ np.asarray(h) @ (w - q).T), rel=1e-5
     )
     assert energy != pytest.approx(np.sum((x @ w.T) ** 2 * gates[:, None] ** 2))
+
+
+def test_restart_reclaims_only_unreferenced_payload_generations(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+
+    path = tmp_path / "state"
+    io.save_state(path, {"value": mx.array([1])})
+    old = io.state_snapshot(path)[1]
+    unrelated = tmp_path / "state.not-a-generation.safetensors"
+    unrelated.write_bytes(b"preserve")
+    real = io.atomic_json
+    monkeypatch.setattr(io, "atomic_json", Mock(side_effect=OSError("interrupted")))
+    with pytest.raises(OSError, match="interrupted"):
+        io.save_state(path, {"value": mx.array([2])})
+    assert len(list(tmp_path.glob("state.*.safetensors"))) == 3
+    assert io.load_state(path)["value"].item() == 1
+    assert set(tmp_path.glob("state.*.safetensors")) == {old, unrelated}
+    monkeypatch.setattr(io, "atomic_json", real)
+    io.save_state(path, {"value": mx.array([3])})
+    current = io.state_snapshot(path)[1]
+    assert not old.exists()
+    assert set(tmp_path.glob("state.*.safetensors")) == {current, unrelated}
+    assert io.load_state(path)["value"].item() == 3

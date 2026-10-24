@@ -313,6 +313,24 @@ def save_state(path, state):
     temporary.replace(payload)
     sync_parent(payload)
     atomic_json(path.with_suffix(".json"), dict(tree=tree, tensor_sha256=sha))
+    prune_state_payloads(path, payload)
+
+
+def prune_state_payloads(path, committed):
+    """Reclaim unreferenced generations under the conversion's single-writer lock."""
+    path = Path(path)
+    removed = False
+    for candidate in path.parent.glob(f"{path.name}.*.safetensors"):
+        generation = candidate.name[len(path.name) + 1 : -len(".safetensors")]
+        if (
+            candidate != committed
+            and len(generation) == 64
+            and all(c in "0123456789abcdef" for c in generation)
+        ):
+            candidate.unlink()
+            removed = True
+    if removed:
+        sync_parent(committed)
 
 
 def state_snapshot(path):
@@ -329,6 +347,7 @@ def state_snapshot(path):
     payload = path.with_name(f"{path.name}.{sha}.safetensors")
     if file_hash(payload) != sha:
         raise ValueError("state payload identity mismatch")
+    prune_state_payloads(path, payload)
     return record["tree"], payload
 
 
