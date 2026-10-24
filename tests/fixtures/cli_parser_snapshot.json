@@ -2278,6 +2278,21 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "allow_insecure_api_key",
+       "help": "Allow the API key to be sent unencrypted to a remote HTTP server",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--allow-insecure-api-key"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "json",
        "help": "Emit machine-readable JSON instead of the rendered banner",
        "metavar": null,
@@ -2367,6 +2382,7 @@
        "description": null,
        "dests": [
         "help",
+        "allow_insecure_api_key",
         "json",
         "host",
         "port",
