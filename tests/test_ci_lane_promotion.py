@@ -478,3 +478,9 @@ def test_combined_platform_job_enforces_changed_lines_coverage_without_baseline(
     assert "--show-uncovered" in gate["run"]
     assert "--fail-under 100" in gate["run"]
     assert "--cov-fail-under" not in gate["run"]
+
+
+def test_apple_lane_retains_security_hardening_once():
+    invocations = dict(_pytest_invocations(ENGINE_WORKFLOW))
+    nodes = invocations["ci.yml:test-apple-silicon:Run MLX-dependent tests"]
+    assert nodes.count("tests/test_security_hardening.py") == 1

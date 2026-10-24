@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import json
 import math
@@ -86,7 +87,7 @@ SUFFIXES = ("weight", "scales", "biases")
 
 
 def recipe(overrides=None):
-    c = {**DEFAULTS, **(overrides or {})}
+    c = copy.deepcopy({**DEFAULTS, **(overrides or {})})
     if set(c) != set(DEFAULTS):
         raise ValueError(f"unknown recipe keys: {set(c) - set(DEFAULTS)}")
     QuantConfig(**{k: c[k] for k in asdict(QuantConfig())})
@@ -1648,6 +1649,11 @@ def run_layer(source, c, parts, scratch, layer, guard):
 
 def assemble(source, c, parts, destination, guard):
     with atomic_destination(destination) as stage:
+        if Path(parts).stat().st_dev != stage.parent.stat().st_dev:
+            raise ValueError(
+                "direct assembly requires parts and destination on the same filesystem; "
+                "choose a destination on the parts volume"
+            )
         return _assemble(source, c, parts, stage, guard)
 
 

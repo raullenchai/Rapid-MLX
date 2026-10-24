@@ -472,3 +472,34 @@ def test_shard_sink_handles_short_writes(tmp_path, stop):
                 sink.finish()
     finally:
         sink.close()
+
+
+def test_direct_assembly_rejects_cross_volume_before_conversion(tmp_path, monkeypatch):
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    destination = tmp_path / "output"
+    real_stat = type(parts).stat
+    monkeypatch.setattr(
+        type(parts),
+        "stat",
+        lambda p, *a, **kw: (
+            SimpleNamespace(st_dev=-1) if p == parts else real_stat(p, *a, **kw)
+        ),
+    )
+    conversion = Mock()
+    monkeypatch.setattr(b, "_assemble", conversion)
+    with pytest.raises(ValueError, match="same filesystem"):
+        b.assemble(None, None, parts, destination, None)
+    conversion.assert_not_called()
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == [parts]
+
+
+def test_recipe_mutable_defaults_and_overrides_are_isolated():
+    first = b.recipe()
+    first["dense_8bit_layers"].append(123)
+    assert 123 not in b.recipe()["dense_8bit_layers"]
+    overrides = {"gate_up_3bit_layers": [1]}
+    second = b.recipe(overrides)
+    second["gate_up_3bit_layers"].append(2)
+    assert overrides == {"gate_up_3bit_layers": [1]}
