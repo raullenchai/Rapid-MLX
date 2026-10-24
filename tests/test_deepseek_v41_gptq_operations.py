@@ -392,3 +392,83 @@ def test_remote_operation_deadlines_and_keepalives(tmp_path, monkeypatch):
         with pytest.raises(RuntimeError, match="timed out") as error:
             action()
         assert "sensitive-output" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"bad", (2**63).to_bytes(8, "little"), (10).to_bytes(8, "little") + b"{}"],
+)
+def test_inventory_rejects_unbounded_headers(tmp_path, payload):
+    from scripts.deepseek_v41_gptq_io import PartialSource, inventory
+    from tests.test_deepseek_v41_streaming_teacher import write_source
+
+    root = tmp_path / "source"
+    write_source(root)
+    manifest = inventory(root)
+    shard = root / "source.safetensors"
+    shard.write_bytes(payload)
+    manifest["shards"][shard.name]["size"] = len(payload)
+    with pytest.raises(ValueError, match="header"):
+        inventory(root)
+    with pytest.raises(ValueError, match="header"):
+        PartialSource(root, manifest).verify(0)
+
+
+def test_header_rejects_truncation_during_read(tmp_path, monkeypatch):
+    from scripts import deepseek_v41_gptq_io as io
+
+    path = tmp_path / "shard"
+    path.write_bytes((2).to_bytes(8, "little") + b"{}")
+    real_open = type(path).open
+
+    class Truncated:
+        def __enter__(self):
+            self.stream = real_open(path, "rb")
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size):
+            return self.stream.read(size) if size == 8 else b""
+
+    monkeypatch.setattr(type(path), "open", lambda *a, **kw: Truncated())
+    with pytest.raises(ValueError, match="truncated safetensors header"):
+        io.read_header(path)
+
+
+@pytest.mark.parametrize("stop", [None, 0, -1, "partial"])
+def test_shard_sink_handles_short_writes(tmp_path, stop):
+    from scripts.deepseek_v41_gptq_io import ShardSink
+    from scripts.deepseek_v41_rd_build import Entry
+
+    path = tmp_path / "out.safetensors"
+    sink = ShardSink(path, [Entry("value", (4,), "F32", (), "test")])
+    real = sink.file
+
+    class Writer:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def write(self, data):
+            if stop == "partial":
+                return real.write(data[:3])
+            return stop
+
+    sink.file = Writer()
+    try:
+        if stop == "partial":
+            sink.put("value", mx.arange(4, dtype=mx.float32))
+            sink.finish()
+            assert mx.array_equal(mx.load(str(path))["value"], mx.arange(4))
+        else:
+            with pytest.raises(OSError, match="short shard write"):
+                sink.put("value", mx.zeros((4,)))
+            assert not sink.written and not path.exists()
+            with pytest.raises(ValueError, match="incomplete"):
+                sink.finish()
+    finally:
+        sink.close()

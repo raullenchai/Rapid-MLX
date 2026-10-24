@@ -40,24 +40,48 @@ def atomic_json(path, value):
     sync_parent(path)
 
 
+MAX_HEADER_BYTES = 100_000_000
+
+
+def read_header(path):
+    """Read a safetensors header only after bounding its advertised allocation."""
+    with Path(path).open("rb") as stream:
+        prefix = stream.read(8)
+        if len(prefix) != 8:
+            raise ValueError("truncated safetensors header length")
+        size = struct.unpack("<Q", prefix)[0]
+        if size > MAX_HEADER_BYTES or size > os.fstat(stream.fileno()).st_size - 8:
+            raise ValueError("invalid safetensors header length")
+        raw = stream.read(size)
+        if len(raw) != size:
+            raise ValueError("truncated safetensors header")
+        return prefix + raw
+
+
+def write_all(stream, data):
+    remaining = memoryview(data)
+    while remaining:
+        count = stream.write(remaining)
+        if count is None or count <= 0:
+            raise OSError("short shard write")
+        remaining = remaining[count:]
+
+
 def inventory(source, source_revision=None):
     """Run on the source host once; subsequent commands need only this JSON."""
     source = Path(source)
     before = checkpoint_hashes(source)
     index_json = (source / "model.safetensors.index.json").read_bytes().decode("utf-8")
-    index = CheckpointIndex(source)
+    index = CheckpointIndex(source, header_reader=read_header)
     shards = {}
     for t in index.tensors.values():
         name = str(t.path.relative_to(source))
         if name not in shards:
-            with t.path.open("rb") as f:
-                raw_len = f.read(8)
-                n = struct.unpack("<Q", raw_len)[0]
-                shards[name] = dict(
-                    sha256=before[name],
-                    size=t.path.stat().st_size,
-                    header_sha256=hashlib.sha256(raw_len + f.read(n)).hexdigest(),
-                )
+            shards[name] = dict(
+                sha256=before[name],
+                size=t.path.stat().st_size,
+                header_sha256=hashlib.sha256(read_header(t.path)).hexdigest(),
+            )
     tensors = {
         n: {**asdict(t), "path": str(t.path.relative_to(source))}
         for n, t in index.tensors.items()
@@ -160,10 +184,7 @@ class PartialSource(SourceWeights):
             meta = self.manifest["shards"][name]
             if path.stat().st_size != meta["size"]:
                 raise ValueError(f"source shard size mismatch: {name}")
-            with path.open("rb") as f:
-                raw_len = f.read(8)
-                n = struct.unpack("<Q", raw_len)[0]
-                sha = hashlib.sha256(raw_len + f.read(n)).hexdigest()
+            sha = hashlib.sha256(read_header(path)).hexdigest()
             if sha != meta["header_sha256"]:
                 raise ValueError(f"source shard header mismatch: {name}")
             expected = self.manifest["checkpoint_sha256"].get(name)
@@ -181,8 +202,8 @@ class ShardSink:
         self.locations = {}
         raw = header(entries)
         self.file = self.temporary.open("w+b")
-        self.file.write(struct.pack("<Q", len(raw)))
-        self.file.write(raw)
+        write_all(self.file, struct.pack("<Q", len(raw)))
+        write_all(self.file, raw)
         offset = 8 + len(raw)
         for e in entries:
             self.locations[e.name] = offset
@@ -218,7 +239,7 @@ class ShardSink:
             raise ValueError(f"wrong native output dtype: {name}")
         offset = self.locations[name] + (0 if expert is None else expert * expected)
         self.file.seek(offset)
-        self.file.write(raw.tobytes())
+        write_all(self.file, raw.tobytes())
         self.written[key] = True
 
     def finish(self):

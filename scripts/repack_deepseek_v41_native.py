@@ -92,7 +92,7 @@ class TensorPlan:
 
 
 class CheckpointIndex:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, header_reader=None):
         self.root = root
         index_path = root / "model.safetensors.index.json"
         weight_map = json.loads(index_path.read_text())["weight_map"]
@@ -103,9 +103,13 @@ class CheckpointIndex:
         self.tensors: dict[str, SourceTensor] = {}
         for shard, expected_names in sorted(by_shard.items()):
             path = root / shard
-            with path.open("rb") as handle:
-                header_len = struct.unpack("<Q", handle.read(8))[0]
-                header = json.loads(handle.read(header_len))
+            if header_reader is not None:
+                raw = header_reader(path)
+                header_len, header = len(raw) - 8, json.loads(raw[8:])
+            else:
+                with path.open("rb") as handle:
+                    header_len = struct.unpack("<Q", handle.read(8))[0]
+                    header = json.loads(handle.read(header_len))
             data_start = 8 + header_len
             for name in expected_names:
                 meta = header[name]
