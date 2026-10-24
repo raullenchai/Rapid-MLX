@@ -10,7 +10,8 @@ import Foundation
 /// state, and the recent (already-scrubbed) log tail — and lets the
 /// user save it to share.
 ///
-/// Privacy: every free-text line runs back through ``LogScrubber``
+/// Privacy: the complete report redacts the home directory and username,
+/// and runs back through ``LogScrubber``
 /// so tokens / auth headers can't ride along, and the machine section
 /// carries only the same non-identifying facts telemetry already
 /// reports (chip, RAM, macOS) — never a username, hostname, or path.
@@ -18,7 +19,11 @@ enum DiagnosticsBundle {
 
     /// Build the report text from live diagnostics.
     @MainActor
-    static func makeReport(server: ServerManager) -> String {
+    static func makeReport(
+        server: ServerManager,
+        homeDirectory: String = NSHomeDirectory(),
+        username: String = NSUserName()
+    ) -> String {
         let hw = MacHardware.detect()
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
@@ -57,7 +62,7 @@ enum DiagnosticsBundle {
                 line("  " + LogScrubber.scrub(l))
             }
         }
-        return out
+        return redact(out, homeDirectory: homeDirectory, username: username)
     }
 
     /// Present a save panel and write the report. Reveals the saved
@@ -86,6 +91,30 @@ enum DiagnosticsBundle {
     }
 
     // MARK: - Helpers
+
+    /// Scrub the complete export, including metadata, state, environment/log
+    /// text and crash messages. Keep path suffixes useful for troubleshooting.
+    /// Literal replacement also handles account names containing regex syntax.
+    static func redact(_ report: String, homeDirectory: String, username: String) -> String {
+        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+        func variants(_ value: String) -> [String] {
+            guard !value.isEmpty && value != "/" else { return [] }
+            return [value, value.replacingOccurrences(of: "/", with: "\\/"),
+                    value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value]
+                .sorted { $0.count > $1.count }
+                .map { NSRegularExpression.escapedPattern(for: $0) }
+        }
+        let patterns = variants(home) + variants(username).map {
+            // Avoid destroying ordinary words for short account names.
+            "(?<![\\p{L}\\p{N}_])" + $0 + "(?![\\p{L}\\p{N}_])"
+        }
+        // Replace in one pass so a short account name cannot rewrite the
+        // placeholder inserted for a home path (or another identity variant).
+        guard !patterns.isEmpty else { return LogScrubber.scrub(report) }
+        let pattern = patterns.joined(separator: "|")
+        let result = report.replacingOccurrences(of: pattern, with: "<redacted>", options: .regularExpression)
+        return LogScrubber.scrub(result)
+    }
 
     static let logTailCount = 300
 
