@@ -77,11 +77,14 @@ def test_wan_engine_resolves_public_alias_at_pinned_revision(
     _checkpoint(tmp_path)
     captured = {}
 
-    def fake_snapshot_download(repository, *, revision):
+    def fake_snapshot_download(repository, revision):
         captured.update(repository=repository, revision=revision)
         return str(tmp_path)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    # This tests alias routing; the shared downloader separately verifies snapshots.
+    monkeypatch.setattr(
+        "rapid_mlx._mirror.pinned_snapshot_download", fake_snapshot_download
+    )
     WanVideoEngine("wan2.2-ti2v-5b-q8")
     assert captured == {
         "repository": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",
