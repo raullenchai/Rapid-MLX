@@ -51,9 +51,6 @@ def epochs(run):
     amendments = run.get("recipe_amendments", [])
     if not isinstance(amendments, list):
         raise ValueError("invalid recipe amendment chain")
-    if not amendments:
-        # Preserve the legacy contract: run.json supplies the single identity.
-        return [(0, run["identity"], run["recipe"])]
     state = deepcopy(run)
     state.pop("identity", None)
     state.pop("recipe_amendments", None)

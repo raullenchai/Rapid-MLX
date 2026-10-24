@@ -161,20 +161,19 @@ class FakeRemote:
                 reference = json.loads(
                     (self.path(arg("--reference")) / "reference.json").read_text()
                 )
-                f.atomic(
-                    parts / "run.json",
-                    {
-                        "identity": "run",
-                        "recipe": recipe,
-                        "source_identity": f.digest(source),
-                        "heldout_reference_identity": reference["identity"],
-                    },
-                )
+                metadata = {
+                    "recipe": recipe,
+                    "source_identity": f.digest(source),
+                    "heldout_reference_identity": reference["identity"],
+                }
+                self.identity = f.digest(metadata)
+                f.atomic(parts / "run.json", {**metadata, "identity": self.identity})
                 if self.fail_init:
                     self.fail_init = False
                     raise RuntimeError("interrupted init")
                 f.atomic(
-                    state / "checkpoint.json", {"identity": "run", "next_layer": 0}
+                    state / "checkpoint.json",
+                    {"identity": self.identity, "next_layer": 0},
                 )
                 return True
             layer = int(arg("--layer"))
@@ -193,7 +192,7 @@ class FakeRemote:
                 files[name] = f.sha(parts / name)
             f.atomic(
                 parts / f"layer-{layer}-complete.json",
-                {"run_identity": "run", "files": files},
+                {"run_identity": self.identity, "files": files},
             )
             with (parts / "heldout-drift.jsonl").open("a") as out:
                 out.write(
@@ -201,7 +200,7 @@ class FakeRemote:
                         {
                             "layer": layer,
                             "candidate_identity": f.digest(
-                                dict(kind="gptq_parts", run="run")
+                                dict(kind="gptq_parts", run=self.identity)
                             ),
                             "reference_identity": "ref",
                         }
@@ -211,7 +210,7 @@ class FakeRemote:
             if not self.no_commit:
                 f.atomic(
                     state / "checkpoint.json",
-                    {"identity": "run", "next_layer": layer + 1},
+                    {"identity": self.identity, "next_layer": layer + 1},
                 )
             return True
         raise AssertionError(op)

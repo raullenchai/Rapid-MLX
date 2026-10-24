@@ -197,7 +197,8 @@ def test_constructed_rankings_equal_pilot_selection(tmp_path, monkeypatch):
     atomic_json(
         scan / "scan-checkpoint.json", dict(identity=run["identity"], next_layer=10)
     )
-    atomic_json(pilot / "run.json", dict(identity="pilot", recipe=c))
+    pilot_identity = digest(dict(recipe=c))
+    atomic_json(pilot / "run.json", dict(identity=pilot_identity, recipe=c))
     for i in range(10):
         # Benefit ranks opposite dense movement; tied scores break by layer ID.
         projections = {
@@ -228,7 +229,7 @@ def test_constructed_rankings_equal_pilot_selection(tmp_path, monkeypatch):
         }
         atomic_json(
             pilot / f"layer-{i}-stats.json",
-            {**row, "run_identity": "pilot", "projections": real},
+            {**row, "run_identity": pilot_identity, "projections": real},
         )
     monkeypatch.setattr(
         b,

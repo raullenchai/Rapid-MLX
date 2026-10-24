@@ -330,7 +330,9 @@ def test_select_recipe_rejects_incomplete_and_mixed_pilots(tmp_path):
                 "run_identity": "wrong",
             },
         )
-    atomic_json(tmp_path / "run.json", {"identity": "expected", "recipe": c})
+    atomic_json(
+        tmp_path / "run.json", {"identity": b.digest(dict(recipe=c)), "recipe": c}
+    )
     with pytest.raises(ValueError, match="mixed"):
         b.select_recipe(tmp_path, source, c)
 
@@ -455,14 +457,17 @@ def test_attention_without_affine_compatible_shapes(tmp_path, monkeypatch):
 def test_restart_layer_validation(tmp_path):
     source = SimpleNamespace(manifest={}, args=SimpleNamespace(n_layers=1))
     c = b.recipe()
+    run = dict(recipe=c, source_identity=b.digest({}))
+    run["identity"] = b.digest(run)
+    atomic_json(tmp_path / "run.json", run)
     atomic_json(
-        tmp_path / "run.json",
-        dict(identity="run", recipe=c, source_identity=b.digest({})),
+        tmp_path / "checkpoint.json", dict(identity=run["identity"], next_layer=0)
     )
-    atomic_json(tmp_path / "checkpoint.json", dict(identity="run", next_layer=0))
     with pytest.raises(ValueError, match="restart boundary"):
         b.run_layer(source, c, tmp_path, tmp_path, 1, None)
-    atomic_json(tmp_path / "checkpoint.json", dict(identity="run", next_layer=2))
+    atomic_json(
+        tmp_path / "checkpoint.json", dict(identity=run["identity"], next_layer=2)
+    )
     with pytest.raises(ValueError, match="invalid layer"):
         b.run_layer(source, c, tmp_path, tmp_path, 2, None)
 

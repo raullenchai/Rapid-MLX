@@ -361,11 +361,16 @@ def test_selector_uses_measured_block_movement_then_exact_spare_budget(tmp_path)
         source, {**c, "pilot": False, "dense_8bit_layers": list(range(4, 12))}
     )
     c["resident_budget_gb"] = (baseline["resident_tensor_bytes"] + 6144) / 1e9
-    (tmp_path / "run.json").write_text(json.dumps(dict(identity="pilot", recipe=c)))
+    from scripts.deepseek_v41_gptq_io import digest
+
+    pilot_identity = digest(dict(recipe=c))
+    (tmp_path / "run.json").write_text(
+        json.dumps(dict(identity=pilot_identity, recipe=c))
+    )
     for layer in range(12):
         stats = dict(
             layer=layer,
-            run_identity="pilot",
+            run_identity=pilot_identity,
             block_output_4bit_relative_error=layer / 100,
             projections={
                 "expert.0.w1": dict(

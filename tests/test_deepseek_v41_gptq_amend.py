@@ -285,3 +285,20 @@ def test_launcher_checks_recorded_recipe_at_next_layer(tmp_path):
         )
         assert (result.returncode == 0) == succeeds, result.stderr.decode()
     assert json.loads(dst.read_text()) == new
+
+
+@pytest.mark.parametrize(
+    "field", ["source_identity", "calibration_identity", "recipe", "identity"]
+)
+def test_unamended_run_rejects_modified_identity_fields(tmp_path, field):
+    _, _, run = metadata(tmp_path)
+    assert a.epochs(run) == [(0, run["identity"], run["recipe"])]
+    original = run["identity"]
+    if field == "recipe":
+        run["recipe"]["damping"] *= 2
+    else:
+        run[field] = "modified"
+    with pytest.raises(ValueError, match="authenticate"):
+        a.epochs(run)
+    with pytest.raises(ValueError, match="authenticate"):
+        a.validate_record(run, 0, {"run_identity": original})
