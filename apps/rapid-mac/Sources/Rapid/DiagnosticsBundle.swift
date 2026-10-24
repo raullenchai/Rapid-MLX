@@ -22,7 +22,8 @@ enum DiagnosticsBundle {
     static func makeReport(
         server: ServerManager,
         homeDirectory: String = NSHomeDirectory(),
-        username: String = NSUserName()
+        username: String = NSUserName(),
+        fullName: String = NSFullUserName()
     ) -> String {
         let hw = MacHardware.detect()
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -62,7 +63,7 @@ enum DiagnosticsBundle {
                 line("  " + LogScrubber.scrub(l))
             }
         }
-        return redact(out, homeDirectory: homeDirectory, username: username)
+        return redact(out, homeDirectory: homeDirectory, username: username, fullName: fullName)
     }
 
     /// Present a save panel and write the report. Reveals the saved
@@ -92,52 +93,47 @@ enum DiagnosticsBundle {
 
     // MARK: - Helpers
 
-    /// Scrub the complete export, including metadata, state, environment/log
-    /// text and crash messages. Keep path suffixes useful for troubleshooting.
-    /// Literal replacement also handles account names containing regex syntax.
-    static func redact(_ report: String, homeDirectory: String, username: String) -> String {
-        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+    /// Owner policy: redact home paths anywhere, including backup/escaped
+    /// paths. Known account names of at least three characters are redacted
+    /// as whole tokens, even when they are also ordinary words. Unknown names
+    /// in free text cannot be identified reliably and remain a residual risk.
+    static func redact(
+        _ report: String, homeDirectory: String, username: String, fullName: String = ""
+    ) -> String {
         func identityPattern(_ value: String) -> String {
-            // Accept mixtures of literal and percent-encoded characters,
-            // including encoded separators and lower-case hex digits.
+            // Match literal, shell/JSON-escaped, and percent-encoded text,
+            // including mixed encodings and mixed-case account paths.
             value.unicodeScalars.map { scalar in
                 let literal = NSRegularExpression.escapedPattern(for: String(scalar))
                 let encoded = [String(scalar), String(scalar).lowercased(), String(scalar).uppercased()]
                     .map { $0.utf8.map { String(format: "%%%02X", $0) }.joined() }
                     .joined(separator: "|")
-                let escapedCharacter = #"|\\"# + literal
-                return "(?:" + literal + "|(?i:" + encoded + ")" + escapedCharacter + ")"
+                return "(?:" + literal + "|(?i:" + encoded + ")" + #"|\\"# + literal + ")"
             }.joined()
         }
-        var patterns: [String] = []
-        // Match delimiters in their literal and encoded forms alike.
-        let delimiters = "/ \t\r\n\"'<>:,;)]}?!#&="
-            .map { identityPattern(String($0)) }.joined(separator: "|")
-        let ending = "(?:$|" + delimiters + ")"
-        if !home.isEmpty && home != "/" {
-            // A home is a complete path component, not a prefix of another
-            // account's directory. A final period may terminate prose.
-            let boundary = "(?=" + ending + "|" + identityPattern(".") + "(?=" + ending + "))"
-            patterns.append(identityPattern(home) + boundary)
+        func replace(_ text: String, pattern: String, with placeholder: String) -> String {
+            text.replacingOccurrences(of: pattern, with: placeholder,
+                                      options: [.regularExpression, .caseInsensitive])
         }
-        if !username.isEmpty {
-            let account = identityPattern(username)
-            // Account names of any length can be ordinary words ("a", "model").
-            // Limit matching to identity fields and path/quoted components.
-            let field = #"(\b(?i:USER|LOGNAME|USERNAME|account|serving|alias)\s*[=:]\s*["']?|\b(?i:user|account)\s+)"#
-            patterns.append(field + account + #"(?![\p{L}\p{N}_])"#)
-            let filenameBoundary = username.count > 2
-                ? "(?:" + ending + "|" + identityPattern("-") + "|" + identityPattern("_") + ")"
-                : ending
-            patterns.append(#"(?:(?<=/)|(?<=%2f))"# + account + "(?=" + filenameBoundary + ")")
-            patterns.append(#"(?<=[("'])"# + account + #"(?![\p{L}\p{N}_])"#)
+
+        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+        var paths: [String] = []
+        if !home.isEmpty && home != "/" { paths.append(identityPattern(home) + #"(?![\p{L}\p{N}_.+-])"#) }
+        // Also cover other accounts, embedded backup paths, and file:// URLs.
+        // Encoded/escaped separators terminate the account component.
+        let account = #"(?:\\[^/\r\n]|%(?!2f|09|0a|0d|3f|23|26|3d)[0-9a-f]{2}|[^/\s\\%"'<>:,;)\]}?!#&=])+"#
+        paths.append(identityPattern("/Users/") + account)
+        // A literal ~/ path is already anonymous; ~account/ is not.
+        paths.append(identityPattern("~") + account + "(?=" + identityPattern("/") + ")")
+        var result = replace(report, pattern: paths.joined(separator: "|"), with: "~")
+
+        let names = [username, fullName].filter { $0.count >= 3 }.sorted { $0.count > $1.count }
+        if !names.isEmpty {
+            let tokens = names.map {
+                #"(?<![\p{L}\p{N}_])"# + identityPattern($0) + #"(?![\p{L}\p{N}_])"#
+            }.joined(separator: "|")
+            result = replace(result, pattern: tokens, with: "<redacted>")
         }
-        // Replace in one pass so a short account name cannot rewrite the
-        // placeholder inserted for a home path (or another identity variant).
-        guard !patterns.isEmpty else { return LogScrubber.scrub(report) }
-        let pattern = patterns.joined(separator: "|")
-        let replacement = !username.isEmpty ? "$1<redacted>" : "<redacted>"
-        let result = report.replacingOccurrences(of: pattern, with: replacement, options: [.regularExpression, .caseInsensitive])
         return LogScrubber.scrub(result)
     }
 

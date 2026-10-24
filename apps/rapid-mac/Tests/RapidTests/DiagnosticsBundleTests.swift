@@ -4,136 +4,92 @@ import Testing
 
 @Suite("Diagnostics export privacy")
 struct DiagnosticsBundleTests {
-    @Test("Every exported field redacts fake home and account while retaining context")
+    @Test("Home paths are removed throughout the report, preserving useful suffixes")
     func allFields() {
         let home = "/Users/fake.person+test"
-        let report = """
+        let input = """
         binary: \(home)/bin/rapid-mlx
-        log: sampling defaults from \(home)/.cache/models/snapshots/config.json
-        env: HOME=\(home) USER=fake.person+test LOGNAME=fake.person+test
-        crash: failed opening \(home)/Library/Logs/crash.txt (user fake.person+test)
+        log: loaded \(home)/.cache/models/config.json
+        env: HOME=\(home) USER=fake.person+test
+        crash: process owned by fake.person+test (Fake Person)
         Authorization: Bearer secret-value
         chip: Apple M3 Ultra
         """
-        let out = DiagnosticsBundle.redact(report, homeDirectory: home, username: "fake.person+test")
+        let out = DiagnosticsBundle.redact(input, homeDirectory: home, username: "fake.person+test", fullName: "Fake Person")
         #expect(!out.contains(home))
         #expect(!out.contains("fake.person+test"))
+        #expect(!out.contains("Fake Person"))
         #expect(!out.contains("secret-value"))
-        #expect(out.contains("<redacted>/.cache/models/snapshots/config.json"))
-        #expect(out.contains("HOME=<redacted> USER=<redacted> LOGNAME=<redacted>"))
-        #expect(out.contains("<redacted>/Library/Logs/crash.txt"))
+        #expect(out.contains("~/.cache/models/config.json"))
+        #expect(out.contains("HOME=~ USER=<redacted>"))
         #expect(out.contains("chip: Apple M3 Ultra"))
     }
 
-    @Test("Custom homes, escaped paths and URL paths use the same placeholder")
-    func representations() {
-        let home = "/Volumes/Accounts/Fake Person"
-        let input = #"/Volumes/Accounts/Fake Person/cache \/Volumes\/Accounts\/Fake Person/cache file:///Volumes/Accounts/Fake%20Person/cache /Volumes/Accounts/Fake\ Person/cache"#
-        let out = DiagnosticsBundle.redact(input, homeDirectory: home + "/", username: "fake-account")
-        #expect(out == "<redacted>/cache <redacted>/cache file://<redacted>/cache <redacted>/cache")
+    @Test("Embedded, backup, escaped, URL and expanded homes are redacted", arguments: [
+        "/Users/fake-account/cache", "file:///Users/fake-account/cache",
+        "/Volumes/backup/Users/fake-account/cache", #"\/Users\/fake-account/cache"#,
+        "%2fUsers%2fFAKE-account/cache", "/Users/%66ake-account/cache",
+        "~fake-account/cache", "/Users/other-account/cache", "~/cache"
+    ])
+    func pathForms(_ input: String) {
+        let out = DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake-account", username: "fake-account")
+        #expect(out.hasSuffix("~/cache"))
+        #expect(!out.contains("fake-account"))
+        #expect(!out.contains("other-account"))
     }
 
-    @Test("Short account names cannot rewrite redaction placeholders")
-    func shortAccount() {
-        #expect(DiagnosticsBundle.redact("/Users/a/cache USER=a LOGNAME=a user a failed to load a model", homeDirectory: "/Users/a", username: "a")
-            == "<redacted>/cache USER=<redacted> LOGNAME=<redacted> user <redacted> failed to load a model")
+    @Test("Custom homes and shell-escaped spaces are covered", arguments: [
+        "/Volumes/Accounts/Fake Person/cache", #"/Volumes/Accounts/Fake\ Person/cache"#,
+        "file:///Volumes/Accounts/Fake%20Person/cache",
+        "/backup/Volumes/Accounts/Fake Person/cache"
+    ])
+    func customHomes(_ input: String) {
+        let out = DiagnosticsBundle.redact(input, homeDirectory: "/Volumes/Accounts/Fake Person/", username: "fake")
+        #expect(out.hasSuffix("~/cache"))
+        #expect(!out.contains("Person"))
     }
 
-    @Test("Percent-encoded allowed characters and separators cannot leak identities")
-    func percentEncodings() {
-        let inputs = ["/Users/fake%2Bperson/cache", "%2fUsers%2ffake%2bperson/cache",
-                      "/Users/%66ake+person/cache"]
-        for input in inputs {
-            #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake+person", username: "fake+person")
-                == "<redacted>/cache")
-        }
-        #expect(DiagnosticsBundle.redact("USER=fake%2Bperson", homeDirectory: "/Users/fake+person", username: "fake+person")
-            == "USER=<redacted>")
+    @Test("Known short and full names match whole tokens, case-insensitively")
+    func wholeTokens() {
+        let input = "ann ANN Annette joann ann_2 ann2 Ann Lee ANN LEE Ann Leeway xAnn Lee"
+        let out = DiagnosticsBundle.redact(input, homeDirectory: "/Users/ann", username: "ann", fullName: "Ann Lee")
+        #expect(out == "<redacted> <redacted> Annette joann ann_2 ann2 <redacted> <redacted> <redacted> Leeway xAnn Lee")
+        #expect(DiagnosticsBundle.redact("model failed; modelled; remodel", homeDirectory: "", username: "model")
+            == "<redacted> failed; modelled; remodel")
     }
 
-    @Test("Homes match complete components and preserve unrelated directory names")
-    func homeBoundary() {
-        let input = "/Users/a/cache /Users/alice/cache /Users/a-backup/cache HOME=/Users/a"
-        #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/a", username: "a")
-            == "<redacted>/cache /Users/alice/cache /Users/a-backup/cache HOME=<redacted>")
+    @Test("Names shorter than three characters remain in prose but home paths never do")
+    func shortNames() {
+        let out = DiagnosticsBundle.redact("a model AB /Users/a/cache /Users/ab/cache", homeDirectory: "/Users/a", username: "a", fullName: "AB")
+        #expect(out == "a model AB ~/cache ~/cache")
     }
 
-    @Test("Mixed-case literal and encoded identities remain private")
-    func mixedCase() {
-        let inputs = ["/Users/FAKE.Person/cache", "/users/%46AKE.Person/cache",
-                      "USER=Fake.Person", "USER=%46ake.Person"]
-        for input in inputs {
-            let output = DiagnosticsBundle.redact(input, homeDirectory: "/Users/fake.person", username: "fake.person")
-            #expect(output == (input.hasPrefix("USER=") ? "USER=<redacted>" : "<redacted>/cache"))
-        }
+    @Test("Unknown free-text names are an accepted residual risk")
+    func unknownNames() {
+        #expect(DiagnosticsBundle.redact("owned by Unknown Person", homeDirectory: "/Users/known", username: "known", fullName: "Known Person")
+            == "owned by Unknown Person")
     }
 
-    @Test("Home paths ending in prose punctuation and URL delimiters are redacted")
-    func homeTerminators() {
-        for ending in [".", "?mode=value", "!", "#fragment", "&mode=value", "=value"] {
-            #expect(DiagnosticsBundle.redact("/Users/fake-home" + ending,
-                                             homeDirectory: "/Users/fake-home", username: "account")
-                == "<redacted>" + ending)
-        }
-        #expect(DiagnosticsBundle.redact("/Users/fake-home.backup/cache",
-                                         homeDirectory: "/Users/fake-home", username: "account")
-            == "/Users/fake-home.backup/cache")
-    }
-
-    @Test("Short usernames in encoded non-home paths are redacted")
-    func encodedShortAccount() {
-        #expect(DiagnosticsBundle.redact("%2Ftmp%2Fa%2Fcache", homeDirectory: "/Users/a", username: "a")
-            == "%2Ftmp%2F<redacted>%2Fcache")
-    }
-
-    @Test("Ordinary account words retain prose while identity fields are redacted")
-    func ordinaryAccountWords() {
-        for account in ["model", "server", "admin"] {
-            let input = "\(account) failed; USER=\(account); /tmp/\(account)/cache"
-            #expect(DiagnosticsBundle.redact(input, homeDirectory: "/Users/\(account)", username: account)
-                == "\(account) failed; USER=<redacted>; /tmp/<redacted>/cache")
-        }
-    }
-
-    @Test("Encoded home delimiters cannot bypass redaction")
-    func encodedHomeDelimiters() {
-        for ending in ["%3Fmode=value", "%20failed", "%2E", "%09failed", "%23fragment", "%26mode=value"] {
-            #expect(DiagnosticsBundle.redact("/Users/fake-home" + ending,
-                                             homeDirectory: "/Users/fake-home", username: "account")
-                == "<redacted>" + ending)
-        }
-    }
-
-    @Test("Account-prefixed binary filenames outside the home are redacted")
-    func binaryFilename() {
-        for separator in ["-", "%2D", "_", "%5f"] {
-            #expect(DiagnosticsBundle.redact("/opt/fake-account" + separator + "engine",
-                                             homeDirectory: "/Users/fake-account", username: "fake-account")
-                == "/opt/<redacted>" + separator + "engine")
-        }
-    }
-
-    @Test("Empty identities do not corrupt diagnostic text")
+    @Test("Empty identity values do not alter ordinary text")
     func emptyIdentities() {
         #expect(DiagnosticsBundle.redact("ready /opt/bin", homeDirectory: "", username: "") == "ready /opt/bin")
     }
 
     @MainActor
-    @Test("Report generation applies redaction to state and binary metadata")
+    @Test("The export boundary covers logs, state, binary metadata and full names")
     func reportBoundary() {
         let home = "/Users/fake-account"
         let server = ServerManager(
-            testingState: .crashed(alias: "fake-account-model", message: "failed \(home)/model/config.json"),
+            testingState: .crashed(alias: "fake-account-model", message: "Fake Person failed opening \(home)/model/config.json"),
             binaryPath: URL(fileURLWithPath: "\(home)/bin/fake-account-engine")
         )
-        server.appendLogLines(["sampling defaults from \(home)/.cache/config.json", "USER=fake-account"])
-        let report = DiagnosticsBundle.makeReport(server: server, homeDirectory: home, username: "fake-account")
+        server.appendLogLines(["loaded \(home)/.cache/config.json", "USER=fake-account"])
+        let report = DiagnosticsBundle.makeReport(server: server, homeDirectory: home, username: "fake-account", fullName: "Fake Person")
         #expect(!report.contains(home))
         #expect(!report.contains("fake-account"))
-        #expect(report.contains("<redacted>/model/config.json"))
+        #expect(!report.contains("Fake Person"))
+        #expect(report.contains("~/model/config.json"))
         #expect(report.contains("found (<redacted>-engine)"))
-        #expect(report.contains("Recent log"))
-        #expect(report.contains("<redacted>/.cache/config.json"))
-        #expect(report.contains("USER=<redacted>"))
+        #expect(report.contains("~/.cache/config.json"))
     }
 }
