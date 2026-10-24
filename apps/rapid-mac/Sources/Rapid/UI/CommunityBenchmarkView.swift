@@ -1064,7 +1064,10 @@ final class BenchmarkProcessBox: @unchecked Sendable {
             standardOutput: standardOutput,
             standardError: standardError,
             environmentAdditions: EngineProcessEnvironment.sidecar(
-                ProcessInfo.processInfo.environment
+                ServerManager.serveEnvironmentAdditions(
+                    bearer: "",
+                    ambient: ProcessInfo.processInfo.environment
+                )
             ),
             replaceEnvironment: true
         )
@@ -1981,7 +1984,7 @@ struct CommunityBenchmarkView: View {
         } else {
             CommunityUnavailableBand(
                 title: String(localized: "No benchmark models available"),
-                message: String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
+                message: errorMessage ?? String(localized: "No benchmark models available")
             )
         }
     }
@@ -2569,7 +2572,7 @@ struct CommunityBenchmarkView: View {
             benchmarkCLIAvailable = false
             benchmarkMetadata = [:]
             errorTone = .error
-            errorMessage = String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
+            errorMessage = error.localizedDescription
         }
     }
 }

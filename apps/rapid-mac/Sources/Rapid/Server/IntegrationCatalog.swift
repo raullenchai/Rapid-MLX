@@ -75,7 +75,9 @@ enum IntegrationCatalog {
             let process = Process()
             process.executableURL = binary
             process.arguments = ["launch", "list", "--json"]
-            var environment = ProcessInfo.processInfo.environment
+            var environment = ServerManager.serveEnvironmentAdditions(
+                bearer: "", ambient: ProcessInfo.processInfo.environment
+            )
             environment["RAPID_MLX_TELEMETRY"] = "0"
             process.environment = EngineProcessEnvironment.sidecar(environment)
             let output = Pipe()
