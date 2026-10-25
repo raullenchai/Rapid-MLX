@@ -3588,6 +3588,7 @@ def _clean_final_content_tool_envelope(
         get_config().tool_call_parser in ("glm47", "glm4")
         and request_dict
         and request_dict.get("tools")
+        and not tool_choice_is_none(request_dict)
     ):
         from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
 

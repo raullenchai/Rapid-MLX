@@ -61,7 +61,7 @@ class Engine(BaseEngine):
         "Private thought.</think></arg_value><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
     ],
 )
-def test_flint_routes(surface, stream, later, raw, step):
+def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
     cfg = reset_config()
     cfg.model_name = "flint-40b-a2.5b-4bit"
     cfg.no_thinking = False
@@ -154,6 +154,10 @@ def test_flint_routes(surface, stream, later, raw, step):
                 for c in i["content"]
             )
             calls = [i for i in packets[0]["output"] if i["type"] == "function_call"]
+        if expected_literal is not None:
+            assert visible == expected_literal
+            assert not calls
+            return
         assert "Private thought" not in visible
         assert not any(
             tag in visible
@@ -260,8 +264,9 @@ def test_glm_stream_flush(raw, expected):
     assert parser.flush_held_content(raw) == ""
 
 
-def test_responses_finalize_flushes_literal_prefix():
-    test_flint_routes("responses", True, False, "Literal <arg_", 1)
+@pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>"])
+def test_responses_finalize_flushes_literal_prefix(text):
+    test_flint_routes("responses", True, False, text, 1, expected_literal=text)
 
 
 @pytest.mark.parametrize("name", ["run_shell_command", "unknown"])
@@ -309,18 +314,23 @@ def test_glm_literal_examples_survive_buffered_and_streamed(text):
         "Use <tool_call> as the opening marker.",
     ],
 )
-def test_glm_without_tools_preserves_markup(text):
+@pytest.mark.parametrize(
+    "tool_request", [{"tools": []}, {"tools": TOOLS, "tool_choice": "none"}]
+)
+def test_glm_without_tools_preserves_markup(text, tool_request):
     from rapid_mlx.service.helpers import _clean_final_content_tool_envelope
 
     cfg = reset_config()
     cfg.tool_call_parser = "glm47"
     try:
-        assert _clean_final_content_tool_envelope(text, {"tools": []}) == text
+        assert _clean_final_content_tool_envelope(text, tool_request) == text
         parser = Glm47ToolParser()
-        assert parser.extract_tool_calls(text).content == text
+        assert parser.extract_tool_calls(text, tool_request).content == text
         messages = []
         for i, char in enumerate(text):
-            message = parser.extract_tool_calls_streaming(text[:i], text[: i + 1], char)
+            message = parser.extract_tool_calls_streaming(
+                text[:i], text[: i + 1], char, request=tool_request
+            )
             if message:
                 messages.append(message.get("content", ""))
         assert "".join(messages) + parser.flush_held_content(text) == text

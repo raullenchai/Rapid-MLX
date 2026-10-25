@@ -226,7 +226,11 @@ class Glm47ToolParser(ToolParser):
             )
         else:
             content_filter = Glm47ContentFilter()
-            content_filter.enabled = bool(request and request.get("tools"))
+            content_filter.enabled = bool(
+                request
+                and request.get("tools")
+                and request.get("tool_choice") != "none"
+            )
             content = content_filter.process(cleaned_text) + content_filter.flush()
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=content
@@ -255,7 +259,9 @@ class Glm47ToolParser(ToolParser):
             filter_delta = current_text.partition("</think>")[2]
         if not hasattr(self, "_content_filter"):
             self.reset()
-        self._content_filter.enabled = bool(request and request.get("tools"))
+        self._content_filter.enabled = bool(
+            request and request.get("tools") and request.get("tool_choice") != "none"
+        )
         # Include complete envelopes so a previously held prefix cannot survive
         # after its block is consumed.
         filtered_delta = self._content_filter.process(filter_delta)
