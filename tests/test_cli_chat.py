@@ -2035,7 +2035,9 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
     monkeypatch.setattr(cli, "_wait_for_chat_server", _fake_wait)
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda alias: f"mlx-community/{alias}-resolved",
+        lambda alias, **kwargs: (
+            alias if "/" in alias else f"mlx-community/{alias}-resolved"
+        ),
     )
 
     canned = [_delta("ack")]
@@ -2115,7 +2117,9 @@ def test_chat_switch_download_abort_reports_reason_above(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda alias: f"mlx-community/{alias}-resolved",
+        lambda alias, **kwargs: (
+            alias if "/" in alias else f"mlx-community/{alias}-resolved"
+        ),
     )
 
     canned = [_delta("ack")]
@@ -2187,7 +2191,9 @@ def test_chat_switch_confirm_cancel_keeps_old_server(
     )
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda alias: f"mlx-community/{alias}-resolved",
+        lambda alias, **kwargs: (
+            alias if "/" in alias else f"mlx-community/{alias}-resolved"
+        ),
     )
 
     canned = [_delta("ack")]
@@ -2261,7 +2267,9 @@ def test_chat_switch_refuses_offline_uncached_before_confirm(monkeypatch, capsys
     monkeypatch.setattr(gate, "confirm_or_abort", _confirm_never)
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda alias: f"mlx-community/{alias}-resolved",
+        lambda alias, **kwargs: (
+            alias if "/" in alias else f"mlx-community/{alias}-resolved"
+        ),
     )
 
     canned = [_delta("ack")]
@@ -2774,7 +2782,9 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda alias: f"mlx-community/{alias}-resolved",
+        lambda alias, **kwargs: (
+            alias if "/" in alias else f"mlx-community/{alias}-resolved"
+        ),
     )
 
     # --- Case 1: empty log → unlinked on swap ---
