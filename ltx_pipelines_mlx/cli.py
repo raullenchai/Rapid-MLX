@@ -1316,18 +1316,12 @@ def _cmd_enhance(args: argparse.Namespace) -> None:
 
 def _cmd_info(args: argparse.Namespace) -> None:
     """Show model info and memory estimate."""
-    from pathlib import Path
+    from rapid_mlx.video_snapshots import resolve_model_dir
 
-    from huggingface_hub import snapshot_download
-
-    model_dir = Path(args.model)
-    if not model_dir.exists():
-        try:
-            model_dir = Path(snapshot_download(args.model))
-        except Exception as e:
-            print(f"Could not find or download model: {args.model}")
-            print(f"  {e}")
-            sys.exit(1)
+    try:
+        model_dir = resolve_model_dir(args.model)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise SystemExit(f"Could not resolve verified local model: {exc}") from exc
 
     print(f"Model: {args.model}")
     print(f"Path:  {model_dir}")

@@ -3,9 +3,9 @@
 """Vendor the pinned LTX-2.5 MLX runtime into this source tree.
 
 The runtime is distributed inside rapid-mlx as two top-level packages,
-``ltx_core_mlx`` and ``ltx_pipelines_mlx``, copied verbatim from the pinned
+``ltx_core_mlx`` and ``ltx_pipelines_mlx``, copied from the pinned
 upstream source archive.  ``--update`` reproduces that copy from the archive;
-``--check`` proves the checked-in tree still matches it.  The Desktop sidecar
+``--check`` verifies the resulting tree including our local-snapshot patch.  The Desktop sidecar
 build runs ``--check`` so a signed app can never embed an unaudited runtime.
 
 This script is deliberately self-contained: importing ``rapid_mlx.video`` would
@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -70,8 +71,9 @@ Archive SHA-256: {archive_sha256}
 Copyright (c) 2025 dgrauet. Licensed under the MIT License; the LICENSE file
 in this directory is a verbatim copy of the upstream license text.
 
-The upstream source files in this directory are unmodified. This distribution
-adds only this NOTICE, the LICENSE copy, and the generated ``{provenance}``
+The pipeline download helpers carry the reproducible local-snapshot patch in
+scripts/patches/ltx25-local-snapshots.patch. This distribution also adds
+this NOTICE, the LICENSE copy, and the generated ``{provenance}``
 provenance metadata (repository, commit, version, package name, tree digest).
 The tree digest covers every upstream file and excludes those three files.
 
@@ -225,6 +227,12 @@ def _write_notice(package: str, destination: Path) -> None:
     )
 
 
+def apply_local_snapshot_patch(root: Path) -> None:
+    """Reapply the reviewed downstream download boundary after vendoring."""
+    patch = Path(__file__).with_name("patches") / "ltx25-local-snapshots.patch"
+    subprocess.run(["git", "apply", str(patch)], cwd=root, check=True)
+
+
 def update(root: Path, tarball: Path | None) -> None:
     """Replace the vendored packages with the pinned upstream snapshot."""
     with tempfile.TemporaryDirectory(prefix="rapidmlx-ltx25-vendor-") as temporary:
@@ -253,6 +261,8 @@ def update(root: Path, tarball: Path | None) -> None:
             destination = root / package
             _copy_package(source, destination)
             shutil.copyfile(license_source, destination / "LICENSE")
+            if package == "ltx_pipelines_mlx":
+                apply_local_snapshot_patch(root)
             _write_notice(package, destination)
             _write_provenance(package, destination, tree_digest(destination))
             print(f"vendored {package} -> {destination}")

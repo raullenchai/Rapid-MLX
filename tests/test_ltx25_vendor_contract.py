@@ -21,6 +21,7 @@ import importlib.util
 import io
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -186,7 +187,7 @@ def test_vendored_provenance_licenses_and_digests() -> None:
         assert package in notice
         assert ltx25.LTX25_RUNTIME_COMMIT in notice
         assert vendor.LTX25_RUNTIME_SHA256 in notice
-        assert "unmodified" in notice
+        assert "ltx25-local-snapshots.patch" in notice
 
 
 def test_tree_digest_ignores_generated_metadata_and_caches(tmp_path: Path) -> None:
@@ -265,9 +266,22 @@ def _synthetic_archive(tmp_path: Path) -> Path:
         / "ltx_pipelines_mlx"
         / "__init__.py"
     ).write_text("")
-    (
-        root / "packages" / "ltx-pipelines-mlx" / "src" / "ltx_pipelines_mlx" / "cli.py"
-    ).write_text("def main():\n    return 0\n")
+    # Recover the exact upstream files from the reproducible downstream patch.
+    pipeline = root / "packages" / "ltx-pipelines-mlx" / "src" / "ltx_pipelines_mlx"
+    for name in ("cli.py", "ic_lora.py", "utils/blocks.py", "utils/_orchestration.py"):
+        target = pipeline / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / "ltx_pipelines_mlx" / name, target)
+    subprocess.run(
+        [
+            "git",
+            "apply",
+            "--reverse",
+            str(REPO_ROOT / "scripts/patches/ltx25-local-snapshots.patch"),
+        ],
+        cwd=pipeline.parent,
+        check=True,
+    )
 
     archive = tmp_path / "ltx-2-mlx.tar.gz"
     with tarfile.open(archive, "w:gz") as tarball:

@@ -16,6 +16,13 @@ from rapid_mlx.routes import video
 from rapid_mlx.video import ltx25
 
 
+@pytest.fixture(autouse=True)
+def _local_video_snapshot(monkeypatch, tmp_path):
+    from rapid_mlx import video_snapshots
+
+    monkeypatch.setattr(video_snapshots, "resolve_model_dir", lambda _: tmp_path)
+
+
 class Upload:
     def __init__(self, data: bytes) -> None:
         self.data = data

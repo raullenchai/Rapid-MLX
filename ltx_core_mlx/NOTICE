@@ -7,8 +7,9 @@ Archive SHA-256: fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c
 Copyright (c) 2025 dgrauet. Licensed under the MIT License; the LICENSE file
 in this directory is a verbatim copy of the upstream license text.
 
-The upstream source files in this directory are unmodified. This distribution
-adds only this NOTICE, the LICENSE copy, and the generated ``_vendored.py``
+The pipeline download helpers carry the reproducible local-snapshot patch in
+scripts/patches/ltx25-local-snapshots.patch. This distribution also adds
+this NOTICE, the LICENSE copy, and the generated ``_vendored.py``
 provenance metadata (repository, commit, version, package name, tree digest).
 The tree digest covers every upstream file and excludes those three files.
 

@@ -20,6 +20,14 @@ from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 from rapid_mlx.runtime.video_lane import VideoEngine, VideoRuntimeError
 from rapid_mlx.video import ltx25
 
+
+@pytest.fixture(autouse=True)
+def _local_video_snapshot(monkeypatch, tmp_path):
+    from rapid_mlx import video_snapshots
+
+    monkeypatch.setattr(video_snapshots, "resolve_model_dir", lambda _: tmp_path)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_SCRIPT = REPO_ROOT / "scripts" / "vendor_ltx25.py"
 
@@ -1709,6 +1717,8 @@ def test_ltx25_engine_invokes_pinned_runtime_contract(
     command, run_kwargs = calls[0]
     child_environment = run_kwargs.pop("env")
     readiness_fds = run_kwargs.pop("pass_fds")
+    assert child_environment["HF_HUB_OFFLINE"] == "1"
+    assert command[command.index("--model") + 1] == str(tmp_path)
     assert "PYTHONHOME" not in child_environment
     assert "PYTHONPATH" not in child_environment
     assert child_environment[ltx25._READINESS_FD_ENV] == str(readiness_fds[0])

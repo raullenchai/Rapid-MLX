@@ -645,33 +645,7 @@ def _load_mask_video(
 
 
 def _resolve_lora_path(path: str) -> str:
-    """Resolve a LoRA path — download from HuggingFace if needed.
+    """Resolve verified local video data through Rapid."""
+    from rapid_mlx.video_snapshots import resolve_lora_path as resolve
 
-    Supports:
-        - Local file paths: returned as-is if they exist.
-        - HuggingFace repo IDs: downloads the repo and finds the .safetensors file.
-          Example: "Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control"
-
-    Args:
-        path: Local path or HuggingFace repo ID.
-
-    Returns:
-        Resolved local path to the .safetensors file.
-    """
-    local = Path(path)
-    if local.exists():
-        return str(local)
-
-    # Try HuggingFace download
-    from huggingface_hub import snapshot_download
-
-    logger.info(f"Downloading LoRA from HuggingFace: {path}")
-    repo_dir = Path(snapshot_download(path))
-
-    # Find the .safetensors file in the downloaded repo
-    safetensors_files = list(repo_dir.glob("*.safetensors"))
-    if not safetensors_files:
-        raise FileNotFoundError(f"No .safetensors files found in {repo_dir}")
-    if len(safetensors_files) > 1:
-        logger.warning(f"Multiple .safetensors files found, using first: {safetensors_files[0].name}")
-    return str(safetensors_files[0])
+    return resolve(path)

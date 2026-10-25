@@ -60,13 +60,10 @@ _materialize = getattr(mx, "eval")  # noqa: B009 -- security hook flags the lite
 
 
 def _resolve_model_dir(model_dir: str | Path) -> Path:
-    """Resolve a model dir — download from HuggingFace if not a local path."""
-    path = Path(model_dir)
-    if path.exists():
-        return path
-    from huggingface_hub import snapshot_download
+    """Resolve verified local video data through Rapid."""
+    from rapid_mlx.video_snapshots import resolve_model_dir as resolve
 
-    return Path(snapshot_download(str(model_dir)))
+    return resolve(model_dir)
 
 
 class PromptEncoder:

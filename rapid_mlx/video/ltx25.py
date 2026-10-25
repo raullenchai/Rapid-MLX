@@ -925,6 +925,14 @@ class LTX25VideoEngine:
         else:
             raise LTX25BackendError(runtime_unavailable_message(runtime))
         assert interpreter is not None
+        from rapid_mlx.video_snapshots import resolve_model_dir
+
+        command = list(command)
+        model_index = command.index("--model") + 1
+        command[model_index] = str(resolve_model_dir(command[model_index]))
+        environment["HF_HUB_OFFLINE"] = "1"
+        environment["TRANSFORMERS_OFFLINE"] = "1"
+        environment["RAPID_MLX_DISABLE_MODEL_DOWNLOADS"] = "1"
         try:
             staging = tempfile.TemporaryDirectory(
                 prefix=f".{output_path.name}.",

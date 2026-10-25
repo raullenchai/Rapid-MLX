@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 import mlx.core as mx
 import numpy as np
-from huggingface_hub import snapshot_download
 
 from ltx_core_mlx.model.transformer.model import LTXModel, LTXModelConfig
 from ltx_core_mlx.utils.memory import aggressive_cleanup
@@ -30,11 +29,10 @@ if TYPE_CHECKING:
 
 
 def resolve_model_dir(model_dir: str | Path) -> Path:
-    """Resolve a model dir — return local path or download from HuggingFace."""
-    path = Path(model_dir)
-    if path.exists():
-        return path
-    return Path(snapshot_download(str(model_dir)))
+    """Resolve verified local video data through Rapid."""
+    from rapid_mlx.video_snapshots import resolve_model_dir as resolve
+
+    return resolve(model_dir)
 
 
 def detect_model_version(model_dir: str | Path) -> str:
@@ -80,28 +78,10 @@ def detect_model_version(model_dir: str | Path) -> str:
 
 
 def resolve_lora_path(path: str) -> str:
-    """Resolve a LoRA path — return local path or download from HuggingFace.
+    """Resolve verified local video data through Rapid."""
+    from rapid_mlx.video_snapshots import resolve_lora_path as resolve
 
-    Supports local ``.safetensors`` files and HuggingFace repo IDs
-    (e.g. ``"some-user/my-lora"``).  When a repo is downloaded its
-    ``.safetensors`` files are collected; exactly one must be present.
-    """
-    local = Path(path)
-    if local.exists():
-        return str(local)
-
-    print(f"Downloading LoRA from HuggingFace: {path}", file=sys.stderr)
-    repo_dir = Path(snapshot_download(path))
-    safetensors_files = list(repo_dir.glob("*.safetensors"))
-    if not safetensors_files:
-        raise FileNotFoundError(f"No .safetensors files found in {repo_dir}")
-    if len(safetensors_files) > 1:
-        names = sorted(f.name for f in safetensors_files)
-        raise ValueError(
-            f"Ambiguous: {len(safetensors_files)} .safetensors files in repo '{path}' "
-            f"({', '.join(names)}); pass the full local path to the specific file instead."
-        )
-    return str(safetensors_files[0])
+    return resolve(path)
 
 
 def fuse_pending_loras(
