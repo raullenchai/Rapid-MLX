@@ -5,14 +5,17 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
 from rapid_mlx import _download_gate as gate
 from rapid_mlx import cli, model_downloads, model_metadata
 from rapid_mlx import model_aliases as aliases
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 PIN = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
 OTHER = "a" * 40
@@ -570,7 +573,8 @@ def test_launch_warm_pinned_cache_has_no_download_label(
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a: None)
     start = Mock(return_value=12345)
     monkeypatch.setattr(launch_cli, "_start_server_background", start)
-    run = Mock()
+    run = MagicMock()
+    run.return_value.__enter__.return_value = run.return_value
     run.return_value.wait.return_value = 0
     monkeypatch.setattr(launch_cli, "Popen", run)
     forbidden = Mock(side_effect=AssertionError("warm cache must not download"))

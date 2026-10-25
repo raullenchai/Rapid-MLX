@@ -37,7 +37,8 @@ one-time connection tip: installed coding agents with their launch commands,
 or the bound API URL and a Python SDK example. It requires no response and
 can be ignored. Quiet, piped, and Desktop output omit the tip. The existing
 local state directory remembers dismissal. With telemetry enabled, the tip
-records `onboarding_next_step_shown`; the first successful CLI integration
+records `onboarding_next_step_shown`; the first successful CLI integration (the
+agent stays up for 10 seconds or exits cleanly)
 within 24 hours of first serve readiness records `first_integration` with only
 a closed agent label. Telemetry opt-out suppresses both events.
 

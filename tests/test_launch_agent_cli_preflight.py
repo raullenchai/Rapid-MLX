@@ -5,7 +5,7 @@ import shlex
 import subprocess
 from argparse import ArgumentParser
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -14,7 +14,8 @@ from rapid_mlx.agents.base import AgentProfile, AgentTestingSpec
 
 
 def _launch_child(returncode=0):
-    child = Mock()
+    child = MagicMock()
+    child.__enter__.return_value = child
     child.wait.return_value = returncode
     return child
 
@@ -125,21 +126,14 @@ def test_installed_cli_launches_without_warning(private_home, capsys, exit_code)
             _launch_args("goose", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
     call.assert_called_once()
-    assert configured.call_args_list == [(("goose",),)]
+    expected = [(("goose",),)] if exit_code == 0 else []
+    assert configured.call_args_list == expected
     assert "not installed" not in capsys.readouterr().err
 
 
-def test_integration_is_tracked_before_the_child_exits(private_home):
+def _run_goose_launch(child, tracked, code):
     from rapid_mlx.launch.cli import launch_command
 
-    tracked = []
-    child = Mock()
-
-    def wait():
-        assert tracked == ["goose"]
-        return 1
-
-    child.wait.side_effect = wait
     with (
         patch.object(cli_preflight, "agent_cli_found", return_value=True),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
@@ -149,12 +143,35 @@ def test_integration_is_tracked_before_the_child_exits(private_home):
             "rapid_mlx.onboarding.track_first_integration",
             side_effect=tracked.append,
         ),
-        pytest.raises(SystemExit, match="1"),
+        pytest.raises(code),
     ):
         launch_command(
             _launch_args("goose", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
+
+
+def test_long_session_is_tracked_before_the_child_exits(private_home):
+    tracked = []
+    child = _launch_child()
+
+    def wait(timeout=None):
+        if timeout is not None:
+            raise subprocess.TimeoutExpired("agent", timeout)
+        assert tracked == ["goose"]
+        return 130
+
+    child.wait.side_effect = wait
+    _run_goose_launch(child, tracked, SystemExit)
     assert tracked == ["goose"]
+
+
+def test_interrupt_kills_the_agent_and_reraises(private_home):
+    tracked = []
+    child = _launch_child()
+    child.wait.side_effect = KeyboardInterrupt
+    _run_goose_launch(child, tracked, KeyboardInterrupt)
+    child.kill.assert_called_once()
+    assert tracked == []
 
 
 @pytest.fixture(autouse=True)

@@ -13,7 +13,7 @@ import sys
 import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -27,7 +27,8 @@ from rapid_mlx.agents import isolated
 
 
 def _launch_child(returncode=0):
-    child = Mock()
+    child = MagicMock()
+    child.__enter__.return_value = child
     child.wait.return_value = returncode
     return child
 

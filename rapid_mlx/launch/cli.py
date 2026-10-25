@@ -202,6 +202,10 @@ def _print_preview(
     print(diff if diff else f"[dry-run] {name}: already configured; no changes")
 
 
+# Seconds an agent must stay up before launch counts as a working integration.
+_INTEGRATION_READY_S = 10
+
+
 def launch_command(args: argparse.Namespace) -> None:
     """Argparse entry point for ``rapid-mlx launch``.
 
@@ -554,15 +558,24 @@ def launch_command(args: argparse.Namespace) -> None:
                 "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
                 flush=True,
             )
-            child = Popen(["/bin/zsh", "-lc", command])
             from rapid_mlx.onboarding import track_first_integration
 
-            track_first_integration(args.client)
-            try:
-                result = child.wait()
-            except KeyboardInterrupt:
-                child.wait()
-                raise
+            # An agent that stays up past startup, or exits cleanly, is a
+            # successful integration; long sessions must not wait for exit.
+            with Popen(["/bin/zsh", "-lc", command]) as child:
+                try:
+                    try:
+                        result = child.wait(timeout=_INTEGRATION_READY_S)
+                    except subprocess.TimeoutExpired:
+                        track_first_integration(args.client)
+                        result = child.wait()
+                    else:
+                        if result == 0:
+                            track_first_integration(args.client)
+                except BaseException:
+                    # Same cleanup as subprocess.call: never orphan the agent.
+                    child.kill()
+                    raise
             raise SystemExit(result)
         from rapid_mlx.onboarding import track_first_integration
 

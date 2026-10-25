@@ -822,7 +822,7 @@
       "props": {}
     },
     "first_integration": {
-      "_about": "First successful CLI integration within 24 hours of first serve readiness; consent gated.",
+      "_about": "First successful CLI integration (agent stayed up 10 s or exited cleanly) within 24 hours of first serve readiness; consent gated.",
       "props": {
         "agent": {"kind": "enum", "enum": "agent", "required": true}
       }
