@@ -145,3 +145,69 @@ def test_failed_resolution_never_starts_child(monkeypatch, tmp_path):
             output_path=tmp_path / "out.mp4",
             on_loaded=None,
         )
+
+
+def test_run_runtime_resolves_repo_lora_before_offline_child(monkeypatch, tmp_path):
+    from rapid_mlx.video import ltx25
+
+    monkeypatch.setattr(
+        ltx25,
+        "ltx25_runtime",
+        lambda: ltx25.LTX25Runtime(
+            state="trusted", source="vendored", executable="python"
+        ),
+    )
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    lora_dir = tmp_path / "lora"
+    lora_dir.mkdir()
+    lora_file = lora_dir / "adapter.safetensors"
+    lora_file.touch()
+
+    def resolve(value):
+        if value == "fixture/model":
+            return model_dir
+        if value == "fixture/lora":
+            return lora_dir
+        raise AssertionError(value)
+
+    monkeypatch.setattr(video_snapshots, "resolve_model_dir", resolve)
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+            calls.append((command, kwargs))
+
+        def communicate(self, *, input, timeout):
+            Path(self.command[self.command.index("--output") + 1]).write_bytes(b"mp4")
+            return "", ""
+
+    monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
+    ltx25.LTX25VideoEngine("fixture/model")._run_runtime(
+        command=[
+            "generate",
+            "--model",
+            "fixture/model",
+            "--lora",
+            "fixture/lora",
+            "0.8",
+            "--lora",
+            str(lora_file),
+            "1.0",
+        ],
+        prompt="fixture",
+        output_path=tmp_path / "out.mp4",
+        on_loaded=None,
+    )
+
+    command, run_kwargs = calls[0]
+    assert run_kwargs["env"]["HF_HUB_OFFLINE"] == "1"
+    assert command[command.index("--model") + 1] == str(model_dir)
+    lora_indexes = [i for i, value in enumerate(command) if value == "--lora"]
+    assert command[lora_indexes[0] + 1] == str(lora_file)
+    assert command[lora_indexes[0] + 2] == "0.8"
+    assert command[lora_indexes[1] + 1] == str(lora_file)
+    assert command[lora_indexes[1] + 2] == "1.0"

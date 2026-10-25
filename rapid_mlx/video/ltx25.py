@@ -925,11 +925,14 @@ class LTX25VideoEngine:
         else:
             raise LTX25BackendError(runtime_unavailable_message(runtime))
         assert interpreter is not None
-        from rapid_mlx.video_snapshots import resolve_model_dir
+        from rapid_mlx.video_snapshots import resolve_lora_path, resolve_model_dir
 
         command = list(command)
         model_index = command.index("--model") + 1
         command[model_index] = str(resolve_model_dir(command[model_index]))
+        for index, argument in enumerate(command):
+            if argument == "--lora" and index + 1 < len(command):
+                command[index + 1] = resolve_lora_path(command[index + 1])
         environment["HF_HUB_OFFLINE"] = "1"
         environment["TRANSFORMERS_OFFLINE"] = "1"
         environment["RAPID_MLX_DISABLE_MODEL_DOWNLOADS"] = "1"
