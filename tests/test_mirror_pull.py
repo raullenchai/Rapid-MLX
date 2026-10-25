@@ -278,6 +278,68 @@ def test_catalog_url_encodes_special_chars():
     assert url == "https://models.rapidmlx.com/foo/bar/file%20with%20spaces.txt"
 
 
+@pytest.mark.parametrize(
+    ("catalog_base", "expected"),
+    [
+        (
+            "/LiquidAI/LFM2.5-2.6B-MLX/4bit/",
+            "https://dl.models.rapidmlx.com/LiquidAI/LFM2.5-2.6B-MLX/4bit/model.safetensors",
+        ),
+        (
+            "/LiquidAI/LFM2.5-2.6B-MLX/",
+            "https://dl.models.rapidmlx.com/LiquidAI/LFM2.5-2.6B-MLX/4bit/model.safetensors",
+        ),
+    ],
+)
+def test_subfolder_url_is_joined_once(catalog_base, expected):
+    assert (
+        _mirror._build_r2_url(
+            "https://dl.models.rapidmlx.com",
+            catalog_base,
+            "4bit/model.safetensors",
+            subfolder="4bit",
+        )
+        == expected
+    )
+
+
+def test_subfolder_catalog_base_downloads_without_hf_fallback(tmp_path, monkeypatch):
+    import hashlib
+
+    repo = "LiquidAI/LFM2.5-2.6B-MLX"
+    revision = "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
+    payload = b"x" * 100
+    catalog = _catalog_payload([("lfm2.5-2.6b-4bit", repo, "mirrored")])
+    catalog["models"][0]["download_url_base"] = f"/{repo}/4bit/"
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    correct_url = f"https://models.rapidmlx.com/{repo}/4bit/model.safetensors"
+    router.add(correct_url, _FakeResponse(200, payload))
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision,
+                [("4bit/model.safetensors", 100, hashlib.sha256(payload).hexdigest())],
+            ),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_download,
+    ):
+        assert _mirror.download_with_mirror_fallback(
+            repo, cache_dir=tmp_path, revision=revision, allow_patterns=["4bit/*"]
+        )
+    assert [request["url"] for request in router.requests] == [
+        "https://models.rapidmlx.com/api/models",
+        correct_url,
+    ]
+    hf_download.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # 2. Per-file fallback — fully mirrored.
 # ---------------------------------------------------------------------------

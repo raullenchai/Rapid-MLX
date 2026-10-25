@@ -750,20 +750,29 @@ def _validate_relative_filename(fname: str) -> bool:
     return True
 
 
-def _build_r2_url(base: str, download_url_base: str, fname: str) -> str:
+def _build_r2_url(
+    base: str, download_url_base: str, fname: str, *, subfolder: str | None = None
+) -> str:
     """Compose the per-file R2 URL.
 
-    The catalog gives ``download_url_base`` as ``/<owner>/<repo>/`` —
-    we append a URL-encoded filename. Encoding each segment individually
-    handles spaces, ``#``, ``?``, ``%`` in filenames.
+    The catalog base may already end in the alias's subfolder. In that case
+    the HF-relative filename includes the same prefix, which we omit once.
+    Encoding each segment individually handles special characters in filenames.
     """
     fname_parts = Path(fname).parts
+    path = download_url_base.strip("/")
+    if subfolder:
+        subfolder_parts = Path(subfolder).parts
+        if (
+            tuple(path.split("/"))[-len(subfolder_parts) :] == subfolder_parts
+            and fname_parts[: len(subfolder_parts)] == subfolder_parts
+        ):
+            fname_parts = fname_parts[len(subfolder_parts) :]
     encoded = "/".join(urllib.parse.quote(p, safe="") for p in fname_parts)
     # Normalize the join — strip trailing slash on base, leading slash on
     # path, then rejoin with one separator. Avoids ``//`` and missing
     # ``/`` cases.
     base = base.rstrip("/")
-    path = download_url_base.strip("/")
     return f"{base}/{path}/{encoded}"
 
 
@@ -2354,7 +2363,9 @@ def download_with_mirror_fallback(
             # ``dub`` is set above to either the catalog's
             # download_url_base (default mirror) or the synthetic
             # ``/<owner>/<repo>/`` (custom mirror / catalog absent).
-            url = _build_r2_url(base, dub, fname)
+            from .model_aliases import resolve_subfolder
+
+            url = _build_r2_url(base, dub, fname, subfolder=resolve_subfolder(repo_id))
             ok, _reason = _download_one_from_r2(
                 url,
                 target,
