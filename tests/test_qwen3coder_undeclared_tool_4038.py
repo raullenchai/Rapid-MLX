@@ -93,7 +93,11 @@ def test_non_streaming(case):
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_streaming(case, size):
     got = _shape(stream(case["text"], REQUESTS[case["request"]], size))
-    if size in MARKDOWN_WHITESPACE_4714.get(case["name"], set()):
+    if case["name"] == "shared_wrapper_rejected_sibling":
+        # Shared marker holdback makes fine deltas match the established whole
+        # delta behavior: admitted call wire must not also appear as content.
+        assert got == case["stream_overrides"]["0"]
+    elif size in MARKDOWN_WHITESPACE_4714.get(case["name"], set()):
         content = case.get("after_drop_main", {}).get("remainder", case["text"])
         assert got == {"calls": [], "content": content}
     elif "after_drop_main" in case:

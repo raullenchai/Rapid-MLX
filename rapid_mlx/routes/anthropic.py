@@ -2192,10 +2192,6 @@ async def _stream_anthropic_messages(
     )
     from ..tool_parsers.streaming import streaming_output_filter
 
-    tool_filter = streaming_output_filter(
-        cfg, openai_request.model_dump(), filter_tools, tool_filter
-    )
-
     # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
     # guard predated the abstract declaration and is the same silent-skip
     # shape that produced #500. The inner ``chat_template`` guard stays
@@ -2359,6 +2355,14 @@ async def _stream_anthropic_messages(
             configure_request(**configure_kwargs)
         else:
             reasoning_parser.reset_state()
+
+    tool_filter = streaming_output_filter(
+        cfg,
+        openai_request.model_dump(),
+        filter_tools,
+        tool_filter,
+        preserve_think_close=reasoning_parser is None,
+    )
 
     # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
     # Same chars-÷4 heuristic the OpenAI route uses so the same effective

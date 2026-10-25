@@ -536,11 +536,18 @@ def _tail(text: str, size: int) -> str:
 class StreamingContentSanitizer:
     """Hold unresolved markup so content sanitization ignores chunking (#4925)."""
 
-    def __init__(self, *, strip_tool_markup: bool = True) -> None:
+    def __init__(
+        self, *, strip_tool_markup: bool = True, preserve_think_close: bool = False
+    ) -> None:
         self._strip_tool_markup = strip_tool_markup
         self._pattern = (
             _FINAL_SANITIZER if strip_tool_markup else _FINAL_SANITIZER_NO_TOOL_MARKUP
         )
+        if preserve_think_close:
+            # The downstream reasoning router still needs its closing boundary.
+            self._pattern = re.compile(
+                self._pattern.pattern.replace(r"|</think>", ""), re.DOTALL
+            )
         self._pending = ""
         #: Held chunks of an open suppressed block, waiting for its closer.
         #: Kept as a list so a long unclosed block is not rescanned or

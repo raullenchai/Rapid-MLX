@@ -67,7 +67,9 @@ WIRE_ENVELOPES = {
 
 def tool_openers(parser) -> tuple[str, ...]:
     """Select only the wire formats owned by this request's parser."""
-    formats = parser.EXPECTED_WIRE_FORMATS or tuple(WIRE_OPENERS)
+    formats = getattr(parser, "EXPECTED_WIRE_FORMATS", ())
+    if formats == ():
+        formats = tuple(WIRE_OPENERS)
     return tuple(
         dict.fromkeys(opener for fmt in formats for opener in WIRE_OPENERS.get(fmt, ()))
     )
@@ -109,14 +111,22 @@ class StreamingToolContentFilter:
 class StreamingOutputFilter:
     """Recognize native tool wire before applying stateful content cleanup."""
 
-    def __init__(self, tool_filter: ContentFilter, *, enabled: bool):
+    def __init__(
+        self,
+        tool_filter: ContentFilter,
+        *,
+        enabled: bool,
+        preserve_think_close: bool = False,
+    ):
         from ..api.utils import StreamingContentSanitizer
 
         self.tool_filter = tool_filter
         self.special = StreamingMarkerBuffer(
             ("<s>", "</s>", "<pad>", "[PAD]", "[SEP]", "[CLS]", "[e~[", "]~!b[")
         )
-        self.sanitizer = StreamingContentSanitizer(strip_tool_markup=enabled)
+        self.sanitizer = StreamingContentSanitizer(
+            strip_tool_markup=enabled, preserve_think_close=preserve_think_close
+        )
 
     def process(self, delta: str) -> str:
         from ..api.utils import strip_special_tokens
@@ -133,7 +143,9 @@ class StreamingOutputFilter:
         )
 
 
-def streaming_output_filter(cfg, request, enabled, fallback):
+def streaming_output_filter(
+    cfg, request, enabled, fallback, *, preserve_think_close=False
+):
     """Construct one request-local content lane using the selected parser."""
     from ..api.utils import StreamingToolCallFilter
     from . import ToolParserManager
@@ -176,4 +188,6 @@ def streaming_output_filter(cfg, request, enabled, fallback):
                 )
             elif not set(parser.EXPECTED_WIRE_FORMATS).issubset(covered):
                 fallback = StreamingToolContentFilter(parser, request)
-    return StreamingOutputFilter(fallback, enabled=enabled)
+    return StreamingOutputFilter(
+        fallback, enabled=enabled, preserve_think_close=preserve_think_close
+    )

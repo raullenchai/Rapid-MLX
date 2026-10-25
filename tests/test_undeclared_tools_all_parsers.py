@@ -251,6 +251,7 @@ def anchor(name, index=0):
 def test_incremental_drop_and_renumber():
     pp = processor()
     pp.tool_parser = Mock()
+    pp.tool_parser.EXPECTED_WIRE_FORMATS = ("tool_call_json",)
     pp.tool_parser._undeclared_dropped = 0
     pp.tool_parser.extract_tool_calls_streaming.side_effect = [
         {"tool_calls": [anchor("send_email")], "content": "Before"},
@@ -259,7 +260,7 @@ def test_incremental_drop_and_renumber():
         {"tool_calls": [anchor("write_file", 1)]},
         {"tool_calls": [{"index": 1, "function": {"arguments": '"path":"x"}'}}]},
     ]
-    assert pp._detect_tool_calls("<") == {"content": "Before"}
+    assert pp._detect_tool_calls("<tool_call>") == {"content": "Before"}
     assert not pp.tool_calls_detected
     assert pp._detect_tool_calls("x") == {"content": ""}
     assert pp._detect_tool_calls("x") == {"content": ""}
@@ -364,6 +365,7 @@ def test_channel_structured_cap_preserves_narration(finished):
 def test_finalize_authorizes_every_recovery(mode):
     pp = processor()
     pp.tool_parser = Mock()
+    pp.tool_parser.EXPECTED_WIRE_FORMATS = ("tool_call_json",)
     pp.tool_parser._undeclared_dropped = int(mode == "reported")
     pp.tool_parser.finalize_legacy_raw_stream = None
     pp.tool_parser.flush_pending = Mock(return_value=None)
@@ -545,6 +547,7 @@ def test_inferred_parser_reports_drops(monkeypatch, called):
 def test_dropped_stream_keeps_prose_and_honest_finish(channel):
     pp = processor()
     pp.tool_parser = Mock()
+    pp.tool_parser.EXPECTED_WIRE_FORMATS = ("tool_call_json",)
     pp.tool_parser._undeclared_dropped = 0
     pp.tool_parser.extract_tool_calls_streaming.side_effect = [
         {"tool_calls": [anchor("send_email")], "content": "Before. "},
@@ -1013,6 +1016,7 @@ def test_authorization_round6_mixed_index_resume(cap, batch):
         {"function": {"arguments": '"}'}},
     ]
     pp.tool_parser = Mock()
+    pp.tool_parser.EXPECTED_WIRE_FORMATS = ("tool_call_json",)
     pp.tool_parser._undeclared_dropped = 0
     pp.tool_parser.extract_tool_calls_streaming.side_effect = (
         [{"tool_calls": fragments}]
@@ -1021,7 +1025,7 @@ def test_authorization_round6_mixed_index_resume(cap, batch):
     )
     calls = []
     for _ in range(1 if batch else len(fragments)):
-        calls.extend(pp._detect_tool_calls("<").get("tool_calls", []))
+        calls.extend(pp._detect_tool_calls("<tool_call>").get("tool_calls", []))
     assert (
         "".join(call["function"].get("arguments", "") for call in calls)
         == '{"path":"x"}'

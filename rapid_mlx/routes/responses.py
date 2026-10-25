@@ -3233,10 +3233,6 @@ async def _stream_responses(
 
         from ..tool_parsers.streaming import streaming_output_filter
 
-        tool_filter = streaming_output_filter(
-            cfg, openai_request.model_dump(), filter_tools, tool_filter
-        )
-
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
         # forces a tool_choice (``required`` or named-function), the
         # message item MUST NOT be emitted if synthesis fires after
@@ -3459,6 +3455,14 @@ async def _stream_responses(
                 configure_request(**configure_kwargs)
             else:
                 reasoning_parser.reset_state()
+
+        tool_filter = streaming_output_filter(
+            cfg,
+            openai_request.model_dump(),
+            filter_tools,
+            tool_filter,
+            preserve_think_close=reasoning_parser is None,
+        )
 
         reasoning_close_marker = "</think>"
         if reasoning_parser is not None:
