@@ -49,7 +49,9 @@ def partitions(raw):
         yield [raw[:i], raw[i:]]
 
 
-def request_result(surface, raw, chunks, parser=None, reasoning=None, names=()):
+def request_result(
+    surface, raw, chunks, parser=None, reasoning=None, names=(), body_updates=None
+):
     cfg = reset_config()
     cfg.model_name = "test-model"
     cfg.no_thinking = reasoning is None
@@ -94,6 +96,8 @@ def request_result(surface, raw, chunks, parser=None, reasoning=None, names=()):
         body["chat_template_kwargs"] = {"enable_thinking": True}
         if surface == "messages":
             body["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+    if body_updates:
+        body.update(body_updates)
     try:
         reply = TestClient(app).post(url, json=body)
         assert reply.status_code == 200, reply.text
@@ -413,3 +417,53 @@ def test_gemma_closer_inside_string(surface):
             surface, raw, chunks, parser="gemma4", names=["get_weather"]
         )
         assert result == ("", "", [("get_weather", {"city": value})]), chunks
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_coalesced_gemma_channel_transitions(surface):
+    raw = "<|channel>thought\nSecret.<|channel>final\nAnswer"
+    for chunks in partitions(raw):
+        assert request_result(surface, raw, chunks, reasoning="gemma4") == (
+            "Answer",
+            "Secret.",
+            [],
+        )
+
+
+def test_delayed_literal_content_keeps_order_when_reasoning_resumes(monkeypatch):
+    from rapid_mlx.api.utils import StreamingReasoningSanitizer
+
+    class WithPendingContent(StreamingReasoningSanitizer):
+        def __init__(self):
+            super().__init__()
+            # The sanitizer owns text until its destination and marker status
+            # resolve. Exercise its supported content-release contract.
+            assert super().process("[Calli", "reasoning_overflow") == []
+
+    monkeypatch.setattr(responses, "StreamingReasoningSanitizer", WithPendingContent)
+    raw = "<|channel>thought\nXSecret.<channel|>Answer"
+    assert (
+        request_result("responses", raw, [raw], reasoning="gemma4")[0] == "[CalliAnswer"
+    )
+
+
+def test_messages_terminal_parser_release_uses_stream_sanitizer(monkeypatch):
+    from rapid_mlx import reasoning
+    from rapid_mlx.reasoning.base import DeltaMessage
+
+    class TerminalParser(Gemma4ReasoningParser):
+        def extract_reasoning_streaming(self, previous_text, current_text, delta_text):
+            if delta_text == "</think>":
+                return DeltaMessage(content="Answer<|im_end|>")
+            return DeltaMessage(reasoning=delta_text)
+
+    monkeypatch.setattr(reasoning, "get_parser", lambda name: TerminalParser)
+    result = request_result(
+        "messages",
+        "abcd",
+        ["abcd"],
+        reasoning="gemma4",
+        body_updates={"thinking": {"type": "enabled", "budget_tokens": 1}},
+    )
+    assert result[0] == "Answer"
+    assert result[1] == "abcd"
