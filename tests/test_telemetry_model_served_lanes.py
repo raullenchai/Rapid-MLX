@@ -541,7 +541,7 @@ def test_ltx25_child_failure_emits_only_after_readiness(monkeypatch, tmp_path, r
     engine = _video_engine(_VideoBackend())
     engine.video_family = "ltx-2.5"
     engine._wan_engine = None
-    engine._ltx25_engine = ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8")
+    engine._ltx25_engine = ltx25.LTX25VideoEngine(str(tmp_path))
     monkeypatch.setattr(
         server,
         "_emit_primary_model_served_once",
