@@ -3978,6 +3978,10 @@ class StreamingPostProcessor:
                             GenerationOutput(text="", new_text="", finished=False),
                         )
                     )
+                    # EOF calls carry the same terminal reason as fallback calls.
+                    for event in held_content_events:
+                        if event.tool_calls:
+                            event.finish_reason = "tool_calls"
 
         # Fallback tool call detection: streaming parser missed a tool call
         # that the non-stream parser can recover. The streaming code path of

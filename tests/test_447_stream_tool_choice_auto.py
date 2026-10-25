@@ -88,7 +88,11 @@ def _drive(pp: StreamingPostProcessor, deltas: list[str]) -> dict:
         finished = i == len(deltas) - 1
         all_events.extend(pp.process_chunk(_make_output(d, finished=finished)))
     # Match the route lifecycle: thinking-off ambiguous text is released at EOF.
-    all_events.extend(pp.finalize())
+    final_events = pp.finalize()
+    for event in final_events:
+        if event.tool_calls:
+            assert event.finish_reason == "tool_calls"
+    all_events.extend(final_events)
     reasoning = "".join(
         getattr(e, "reasoning", "") or "" for e in all_events if e.type == "reasoning"
     )
