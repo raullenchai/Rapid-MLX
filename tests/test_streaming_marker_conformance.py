@@ -467,3 +467,12 @@ def test_messages_terminal_parser_release_uses_stream_sanitizer(monkeypatch):
     )
     assert result[0] == "Answer"
     assert result[1] == "abcd"
+
+
+@pytest.mark.parametrize("parser", ["hermes", "gemma4", "auto"])
+def test_eof_marker_tail_follows_older_sanitizer_tail(parser):
+    raw = "[Calli<"
+    for chunks in partitions(raw):
+        assert request_result(
+            "chat", raw, chunks, parser=parser, names=["get_weather"]
+        ) == (raw, "", [])

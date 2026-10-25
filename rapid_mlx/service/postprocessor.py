@@ -4251,6 +4251,8 @@ class StreamingPostProcessor:
 
         marker_tail = self._tool_marker_buffer.flush()
         if marker_tail and not self.tool_calls_detected:
+            # Queue for the shared sanitizer pass below; do not emit directly.
+            # Its older held bytes must precede this later marker suffix.
             events.append(StreamEvent(type="content", content=marker_tail))
 
         # Every EOF content release (reasoning-parser tails, parser-held
