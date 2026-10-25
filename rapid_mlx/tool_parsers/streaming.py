@@ -88,6 +88,8 @@ class StreamingToolContentFilter:
         self.buffer = StreamingMarkerBuffer(tool_openers(parser))
         self.text = ""
         self._flushed: str | None = None
+        self._tools_seen = False
+        self._preserve_post_tool_content = False
 
     def process(self, delta: str) -> str:
         delta = self.buffer.process(delta)
@@ -98,13 +100,24 @@ class StreamingToolContentFilter:
         result = self.parser.extract_tool_calls_streaming(
             previous, self.text, delta, request=self.request
         )
+        if result and result.get("tool_calls"):
+            self._tools_seen = True
+            self._preserve_post_tool_content = bool(
+                result.get("preserve_post_tool_content")
+            )
         return cast(str, (result or {}).get("content") or "")
 
     def flush(self) -> str:
         tail = self.buffer.flush()
         if self._flushed == self.text:
-            return tail
+            return "" if self._tools_seen else tail
         self._flushed = self.text
+        if self._tools_seen:
+            # Match Chat's parser-owned post-call content contract: a suffix
+            # may still be tool wire, even after an earlier call was emitted.
+            if self._preserve_post_tool_content:
+                return self.parser.flush_held_content(self.text + tail)
+            return ""
         return self.parser.flush_held_content(self.text) + tail
 
 

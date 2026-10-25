@@ -496,3 +496,30 @@ def test_post_call_marker_suffix_uses_parser_eof_content_policy():
         calls = [call for event in events for call in event.tool_calls or []]
         assert len(calls) == 1
         assert calls[0]["function"]["arguments"] == "<malformed_function_body>oops"
+
+
+@pytest.mark.parametrize("surface", ["responses", "messages"])
+@pytest.mark.parametrize(
+    "parser,suffix", [("granite", "<|too"), ("granite", "<"), ("mistral", "[TOOL_")]
+)
+def test_post_call_partial_native_opener_stays_private(surface, parser, suffix):
+    _, _, wire, expected = next(row for row in NATIVE if row[0] == parser)
+    raw = wire + suffix
+    for chunks in partitions(raw):
+        assert request_result(
+            surface, raw, chunks, parser=parser, names=[name for name, _ in expected]
+        ) == ("", "", expected)
+
+
+def test_tool_content_filter_preserves_parser_owned_eof_suffix():
+    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.tool_parsers.streaming import StreamingToolContentFilter
+
+    request = {"tools": [{"type": "function", "function": {"name": "get_weather"}}]}
+    wire = "<tool_call><function=get_weather>oops</tool_call>Tail <"
+    for chunks in partitions(wire):
+        content_filter = StreamingToolContentFilter(HermesToolParser(), request)
+        visible = "".join(content_filter.process(chunk) for chunk in chunks)
+        visible += content_filter.flush()
+        assert visible == "Tail <"
+        assert content_filter.flush() == ""
