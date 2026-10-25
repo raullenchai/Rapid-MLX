@@ -97,18 +97,25 @@ def test_desktop_never_runs_installer(environment, monkeypatch, capsys):
     assert environment == ["command_shown"]
 
 
-@pytest.mark.parametrize("answer", ["", "n\n", "yes\n"])
+@pytest.mark.parametrize("answer", ["\n", "n\n", "yes\n"])
 def test_prompt_requires_single_y(environment, monkeypatch, answer):
     stdin(monkeypatch, answer)
     assert not repair.recover()
     assert environment == ["declined"]
 
 
-def test_interrupted_prompt(environment, monkeypatch):
+def test_eof_prompt_is_no_answer(environment, monkeypatch):
+    stdin(monkeypatch, "")
+    assert not repair.recover()
+    assert environment == ["no_answer"]
+
+
+def test_interrupted_prompt_preserves_ctrl_c(environment, monkeypatch):
     stdin(monkeypatch)
     monkeypatch.setattr(sys.stdin, "readline", Mock(side_effect=KeyboardInterrupt))
-    assert not repair.recover()
-    assert environment == ["declined"]
+    with pytest.raises(KeyboardInterrupt):
+        repair.recover()
+    assert environment == ["interrupted"]
 
 
 @pytest.mark.parametrize("failure", [OSError(), subprocess.CompletedProcess([], 1)])

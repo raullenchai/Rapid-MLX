@@ -174,10 +174,16 @@ def recover(
         return False
     print("Run this repair now? [y/N] ", end="", file=sys.stderr, flush=True)
     try:
-        accepted = sys.stdin.readline().strip().lower() == "y"
+        reply = sys.stdin.readline()
     except KeyboardInterrupt:
-        accepted = False
-    if not accepted:
+        record_outcome("interrupted")
+        raise
+    except (OSError, ValueError):
+        reply = ""
+    if not reply:
+        record_outcome("no_answer")
+        return False
+    if reply.strip().lower() != "y":
         record_outcome("declined")
         return False
     try:
