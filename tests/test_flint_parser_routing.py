@@ -53,6 +53,7 @@ class Engine(BaseEngine):
         CALL,
         "Private thought.</think>" + CALL[:-12],
         "Private thought.</think>Done.",
+        "Private thought.</think>Literal <arg_",
         "Private thought.</think>" + CALL,
         "Private thought.<tool_call>run_shell_command</think><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
         "Private thought.</think></arg_value><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
@@ -166,6 +167,8 @@ def test_flint_routes(surface, stream, later, raw, step):
             assert calls
         elif raw.endswith("Done."):
             assert visible == "Done."
+        elif raw.endswith("Literal <arg_"):
+            assert visible == "Literal <arg_"
     finally:
         reset_config()
 
@@ -220,3 +223,31 @@ def test_glm_malformed_markup_is_not_content(raw):
 
 def test_responses_finalize_preserves_plain_text():
     test_flint_routes("responses", True, False, "Done.", 1)
+
+
+def test_glm_interrupted_name_requires_arguments():
+    parser = Glm47ToolParser()
+    raw = "<tool_call>run_shell_command</think></tool_call>"
+    assert not parser.extract_tool_calls(raw, {"tools": TOOLS}).tools_called
+    assert parser.flush_held_content("") == ""
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("Literal <arg_", "Literal <arg_"), ("<arg_key>x", ""), ("Plain <", "Plain <")],
+)
+def test_glm_stream_flush(raw, expected):
+    parser = Glm47ToolParser()
+    parser.reset()
+    chunks = []
+    for i, char in enumerate(raw):
+        message = parser.extract_tool_calls_streaming(raw[:i], raw[: i + 1], char)
+        if message:
+            chunks.append(message.get("content", ""))
+    chunks.append(parser.flush_held_content(raw))
+    assert "".join(chunks) == expected
+    assert parser.flush_held_content(raw) == ""
+
+
+def test_responses_finalize_flushes_literal_prefix():
+    test_flint_routes("responses", True, False, "Literal <arg_", 1)

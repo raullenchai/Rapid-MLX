@@ -61,7 +61,7 @@ class Glm47ToolParser(ToolParser):
 
     # A delayed reasoning close may interrupt the name, before arguments begin.
     _INTERRUPTED_NAME = re.compile(
-        r"(<tool_call>\s*[\w.:-]+)\s*</think>\s*(?=<arg_key>|</tool_call>)"
+        r"(<tool_call>\s*[\w.:-]+)\s*</think>\s*(?=<arg_key>)"
     )
     ORPHAN_TAGS = [
         (tag, "</tool_call>")
@@ -78,6 +78,11 @@ class Glm47ToolParser(ToolParser):
         from ..api.utils import StreamingToolCallFilter
 
         self._content_filter = StreamingToolCallFilter(extra_tags=self.ORPHAN_TAGS)
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release an incomplete literal prefix, but discard open wire blocks."""
+        content_filter = getattr(self, "_content_filter", None)
+        return content_filter.flush() if content_filter is not None else ""
 
     def _deserialize(self, value: str) -> Any:
         """Convert string value to appropriate Python type.
