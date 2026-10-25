@@ -865,7 +865,6 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     """The boot guard's prefetch: targets the exact repo's ``config.json``
     only, under the shared Hub deadline, at most once per process — and Hub
     failures are swallowed (best-effort, never fatal)."""
-    import huggingface_hub
 
     from rapid_mlx import _download_gate, model_metadata
     from rapid_mlx.api import utils as api_utils
@@ -891,7 +890,7 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
         calls.append((repo, filename))
         return "cfg"
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _record)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _record)
 
     api_utils._prefetch_config_for_degrade_probe("org/checkpoint")
     # A repeated probe within the same process never refetches.
@@ -902,7 +901,7 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     def _boom(*a, **k):
         raise OSError("no network")
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _boom)
     monkeypatch.setattr(api_utils, "_DEGRADE_CONFIG_PREFETCHED", set())
     api_utils._prefetch_config_for_degrade_probe("org/unreachable")  # must not raise
 

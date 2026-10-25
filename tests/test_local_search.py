@@ -2382,7 +2382,6 @@ def runnable_text_snapshot(path):
 
 @pytest.mark.parametrize("downloads_disabled", [False, True])
 def test_local_availability_never_downloads(tmp_path, monkeypatch, downloads_disabled):
-    import huggingface_hub
 
     from rapid_mlx import cli, model_downloads
 
@@ -2390,8 +2389,7 @@ def test_local_availability_never_downloads(tmp_path, monkeypatch, downloads_dis
 
     monkeypatch.setattr(cli, "_cache_runnability", lambda _: False)
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *a, **kw: pytest.fail("missing model must not resolve/download"),
     )
     assert local_model_path("missing") is None
@@ -2403,14 +2401,13 @@ def test_local_availability_never_downloads(tmp_path, monkeypatch, downloads_dis
         calls.append(kwargs)
         return str(model_path)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", snapshot)
     assert local_model_path("cached") == str(model_path)
     assert calls == [{"local_files_only": True}]
 
 
 @pytest.mark.parametrize("downloads_disabled", [False, True])
 def test_local_availability_cache_miss_fails_closed(monkeypatch, downloads_disabled):
-    import huggingface_hub
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     from rapid_mlx import cli, model_downloads, model_metadata
@@ -2430,7 +2427,7 @@ def test_local_availability_cache_miss_fails_closed(monkeypatch, downloads_disab
         calls.append((model, kwargs))
         raise LocalEntryNotFoundError("cache entry disappeared")
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", missing)
     assert local_model_path("test/missing") is None
     assert calls == [("test/missing", {"local_files_only": True})]
 

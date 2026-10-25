@@ -416,20 +416,23 @@ def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_model",
-        lambda _name: "publisher/multi-variant",
+        lambda _name, **_kwargs: "publisher/multi-variant",
     )
     monkeypatch.setattr(
         "rapid_mlx.model_aliases.resolve_subfolder", lambda _name: "4bit"
     )
     monkeypatch.setattr(
         "huggingface_hub.model_info",
-        lambda _repo: SimpleNamespace(sha="abc123"),
+        lambda _repo: SimpleNamespace(sha="a" * 40),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/cache/snapshot",
     )
 
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     path = server._prefetch_routing_metadata("vision-4bit")
 
     assert path == "/cache/snapshot/4bit"
@@ -437,7 +440,7 @@ def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
         (
             "publisher/multi-variant",
             {
-                "revision": "abc123",
+                "revision": "a" * 40,
                 "allow_patterns": [
                     "4bit/config.json",
                     "4bit/model.safetensors.index.json",
@@ -486,7 +489,7 @@ def test_routing_metadata_download_defers_to_configured_mirror(monkeypatch):
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
     monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="a" * 40)
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -529,7 +532,7 @@ def test_routing_metadata_download_failure_raises_without_mirror(monkeypatch):
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
     monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="a" * 40)
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",

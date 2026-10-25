@@ -13,6 +13,15 @@ from rapid_mlx import model_aliases, model_downloads
 from rapid_mlx.audio import registry
 
 
+@pytest.fixture(autouse=True)
+def _mock_integrity_for_synthetic_hub_paths(monkeypatch):
+    # This suite tests pin propagation, not file bytes. Real integrity is covered
+    # by test_verified_runtime_downloads and test_model_integrity.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
+
+
 def test_all_catalog_aliases_resolve_exact_revision():
     root = Path(__file__).resolve().parents[1]
     repos = {}
@@ -225,7 +234,10 @@ def test_f5_pin_adapter_without_optional_backend(monkeypatch):
     cfm.F5TTS = SimpleNamespace(
         from_pretrained=lambda repo: utils.snapshot_download(repo)
     )
-    for module in (package, utils, cfm):
+    vocos = ModuleType("vocos_mlx")
+    vocos_model = ModuleType("vocos_mlx.model")
+    vocos.model = vocos_model
+    for module in (package, utils, cfm, vocos, vocos_model):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     calls = []
     model = "/pinned-f5-snapshot"
@@ -239,6 +251,7 @@ def test_f5_pin_adapter_without_optional_backend(monkeypatch):
     engine.load()
     assert engine.model == model
     assert utils.snapshot_download is model_downloads.snapshot_download
+    assert vocos_model.snapshot_download is model_downloads.snapshot_download
     assert calls == [
         (
             (engine.model_name,),

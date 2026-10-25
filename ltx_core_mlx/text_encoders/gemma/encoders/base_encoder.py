@@ -44,6 +44,10 @@ class GemmaLanguageModel(nn.Module):
         if path is None:
             raise ValueError("model_path must be provided")
 
+        if not Path(path).is_dir():
+            from rapid_mlx.model_downloads import snapshot_download
+
+            path = snapshot_download(path)
         self._model, self._tokenizer = mlx_lm_load(path)
 
     def tokenize(self, text: str, max_length: int = 1024) -> tuple[mx.array, mx.array]:

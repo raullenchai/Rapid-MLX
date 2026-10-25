@@ -25,7 +25,14 @@ from rapid_mlx.system_one.server import create_app
 
 def test_clef_vendor_source_matches_pinned_release():
     source = Path(__file__).parents[1] / "rapid_mlx/clef/vendor/joint_schema_model.py"
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == (
+    # The only owned adaptation replaces the raw download transport.
+    adapted = source.read_text()
+    assert adapted.count("from rapid_mlx.model_downloads import snapshot_download") == 1
+    upstream = adapted.replace(
+        "from rapid_mlx.model_downloads import snapshot_download",
+        "from huggingface_hub import snapshot_download",
+    )
+    assert hashlib.sha256(upstream.encode()).hexdigest() == (
         "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"
     )
 
@@ -198,6 +205,9 @@ def test_clef_backend_loads_pinned_checkpoint_without_remote_code(
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
     monkeypatch.setattr(joint_schema_model, "load_release_model", load_release_model)
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     backend = ClefBackend("clef-flash", device=device)
     assert backend.default_model == "clef-flash"
     assert captured == {

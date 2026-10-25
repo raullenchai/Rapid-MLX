@@ -282,7 +282,6 @@ def _patch_snapshot_download(monkeypatch, *, cached, networked):
     ``cached=None`` models a cache the Hub client cannot resolve at all (no
     ``refs/main``), which is what an interrupted mirror pull leaves behind.
     """
-    import huggingface_hub
 
     calls: list[bool] = []
 
@@ -294,7 +293,7 @@ def _patch_snapshot_download(monkeypatch, *, cached, networked):
             return str(cached)
         return str(networked)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", _fake)
     return calls
 
 

@@ -7,10 +7,10 @@ Archive SHA-256: fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c
 Copyright (c) 2025 dgrauet. Licensed under the MIT License; the LICENSE file
 in this directory is a verbatim copy of the upstream license text.
 
-The upstream source files in this directory are unmodified. This distribution
-adds only this NOTICE, the LICENSE copy, and the generated ``_vendored.py``
-provenance metadata (repository, commit, version, package name, tree digest).
-The tree digest covers every upstream file and excludes those three files.
+This distribution routes Hub downloads and the Gemma loader through the shared
+pinned, verified download boundary. scripts/vendor_ltx25.py reproduces these
+adaptations after verifying the upstream archive. The generated ``_vendored.py``
+records the digest of the adapted tree, excluding NOTICE, LICENSE and itself.
 
 Model weights are not distributed here — they are downloaded at runtime from
 their publishers under their own separate licenses.

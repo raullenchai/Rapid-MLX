@@ -498,7 +498,7 @@ def load_release_model(
     **from_pretrained_kwargs: Any,
 ) -> tuple[ClefModel, Any]:
     """Load a Clef release (merged backbone, joint schema head, and processor)."""
-    from huggingface_hub import snapshot_download
+    from rapid_mlx.model_downloads import snapshot_download
     from safetensors.torch import load_file
     from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 

@@ -386,6 +386,9 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     # before pulling. ``_ensure_model_downloaded`` calls ``_check_disk_space``
     # (under the spinner) so a full disk still aborts cleanly regardless of the
     # confirm gate above.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     called = {"disk": False}
 
     def _fake_disk(model_name, force=False, *, revision_override=None):

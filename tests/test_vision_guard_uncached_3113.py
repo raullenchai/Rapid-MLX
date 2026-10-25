@@ -154,10 +154,9 @@ def test_vendored_text_arch_is_exempt(monkeypatch):
 def test_prefetch_respects_offline_switch(monkeypatch):
     calls = []
     monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: True)
-    import huggingface_hub
 
     monkeypatch.setattr(
-        huggingface_hub, "hf_hub_download", lambda *a, **k: calls.append(a)
+        "rapid_mlx.model_downloads.hf_hub_download", lambda *a, **k: calls.append(a)
     )
     cli._prefetch_config_for_lane_guard("org/checkpoint")
     assert calls == []

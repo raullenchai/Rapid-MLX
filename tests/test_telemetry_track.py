@@ -1104,7 +1104,8 @@ if sys.argv[1:3] == ["serve", "owner/gated-model"]:
     huggingface_hub.model_info = lambda *_args, **_kwargs: SimpleNamespace(
         sha="abc123", siblings=[]
     )
-    huggingface_hub.snapshot_download = lambda *_args, **_kwargs: (
+    from rapid_mlx import model_downloads
+    model_downloads.snapshot_download = lambda *_args, **_kwargs: (
         (_ for _ in ()).throw(
             HfHubHTTPError("token=wire-secret", response=response)
         )

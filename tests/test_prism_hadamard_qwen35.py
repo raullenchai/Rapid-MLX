@@ -467,7 +467,7 @@ def test_text_lane_guard_config_prefetch_is_best_effort(monkeypatch, tmp_path):
 
     downloads = []
     monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download",
+        "rapid_mlx.model_downloads.hf_hub_download",
         lambda *args: downloads.append(args),
     )
 
@@ -489,7 +489,7 @@ def test_text_lane_guard_config_prefetch_is_best_effort(monkeypatch, tmp_path):
     def _fail(*_args):
         raise OSError("network unavailable")
 
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", _fail)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _fail)
     server._prefetch_config_for_text_lane_guard("org/model")
 
 

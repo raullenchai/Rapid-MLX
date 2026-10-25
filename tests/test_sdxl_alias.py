@@ -253,13 +253,11 @@ def test_sdxl_snapshot_is_pinned_and_requires_every_runtime_file(
 def test_cold_engine_download_uses_exact_revision_and_data_only_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import huggingface_hub
 
     calls = []
     monkeypatch.setattr(_download_gate, "mflux_local_snapshot", lambda _repo: None)
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/snapshot",
     )
     engine = ImageGenerationEngine(REPO)

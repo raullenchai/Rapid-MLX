@@ -185,7 +185,8 @@ def test_real_ensure_model_downloaded_emits_success_once(monkeypatch, tmp_path):
     _stub_implicit_download(monkeypatch)
     snapshot = _make_fake_snapshot(tmp_path / "snapshot", 1024)
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download", lambda *_args, **_kwargs: str(snapshot)
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *_args, **_kwargs: str(snapshot),
     )
     calls = []
     monkeypatch.setattr(
@@ -207,7 +208,7 @@ def test_real_ensure_model_downloaded_emits_failure_with_mocked_hub(monkeypatch)
     _stub_implicit_download(monkeypatch)
     failure = requests.ConnectionError("private endpoint")
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
     )
     calls = []
@@ -252,6 +253,10 @@ def test_real_ensure_model_downloaded_mirror_failure_emits_once(monkeypatch):
     from rapid_mlx.telemetry import model_events
 
     _stub_implicit_download(monkeypatch)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_revision", lambda _: "a" * 40)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     failure = RuntimeError("mirror failed")
 
     def fail_mirror(_model, *, out, **_kwargs):
@@ -281,6 +286,10 @@ def test_real_ensure_model_downloaded_mirror_success_emits_once(monkeypatch, tmp
     from rapid_mlx.telemetry import model_events
 
     _stub_implicit_download(monkeypatch)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_revision", lambda _: "a" * 40)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     snapshot = _make_fake_snapshot(tmp_path / "snapshot", 7)
 
     def fetch_from_mirror(_model, *, out, **_kwargs):
@@ -354,9 +363,13 @@ def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
     from rapid_mlx.telemetry import model_events
 
     _stub_implicit_download(monkeypatch)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_revision", lambda _: "a" * 40)
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         cli,
-        "_hf_cache_root",
+        "_active_hf_snapshot_path",
         lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
     )
 
@@ -381,10 +394,10 @@ def test_implicit_pull_telemetry_bookkeeping_never_breaks_success(
         download_calls.append(repo_id)
         return str(snapshot)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", download)
     monkeypatch.setattr(
         cli,
-        "_hf_cache_root",
+        "_active_hf_snapshot_path",
         lambda _repo: (_ for _ in ()).throw(TypeError("bad cache root")),
     )
     failed_calls = []
@@ -427,7 +440,7 @@ def test_implicit_pull_unknown_after_fingerprint_suppresses_success_event(
         return str(snapshot)
 
     monkeypatch.setattr(cli, "_hf_cache_root", transient_cache_root)
-    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", download)
     pulled_calls = []
     failed_calls = []
     monkeypatch.setattr(
@@ -462,7 +475,7 @@ def test_real_ensure_model_downloaded_forwards_subfolder_patterns(
         calls.append(kwargs)
         return str(snapshot)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", download)
 
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
 

@@ -3,8 +3,9 @@
 """Vendor the pinned LTX-2.5 MLX runtime into this source tree.
 
 The runtime is distributed inside rapid-mlx as two top-level packages,
-``ltx_core_mlx`` and ``ltx_pipelines_mlx``, copied verbatim from the pinned
-upstream source archive.  ``--update`` reproduces that copy from the archive;
+``ltx_core_mlx`` and ``ltx_pipelines_mlx``, copied from the pinned upstream source
+archive with the reviewed download adapter applied. ``--update`` reproduces that
+copy from the archive;
 ``--check`` proves the checked-in tree still matches it.  The Desktop sidecar
 build runs ``--check`` so a signed app can never embed an unaudited runtime.
 
@@ -70,10 +71,10 @@ Archive SHA-256: {archive_sha256}
 Copyright (c) 2025 dgrauet. Licensed under the MIT License; the LICENSE file
 in this directory is a verbatim copy of the upstream license text.
 
-The upstream source files in this directory are unmodified. This distribution
-adds only this NOTICE, the LICENSE copy, and the generated ``{provenance}``
-provenance metadata (repository, commit, version, package name, tree digest).
-The tree digest covers every upstream file and excludes those three files.
+This distribution routes Hub downloads and the Gemma loader through the shared
+pinned, verified download boundary. scripts/vendor_ltx25.py reproduces these
+adaptations after verifying the upstream archive. The generated ``{provenance}``
+records the digest of the adapted tree, excluding NOTICE, LICENSE and itself.
 
 Model weights are not distributed here — they are downloaded at runtime from
 their publishers under their own separate licenses.
@@ -225,6 +226,26 @@ def _write_notice(package: str, destination: Path) -> None:
     )
 
 
+def _apply_download_adapter(destination: Path) -> None:
+    """Reproduce the owned download boundary without changing model computation."""
+    for path in destination.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        adapted = source.replace(
+            "from huggingface_hub import snapshot_download",
+            "from rapid_mlx.model_downloads import snapshot_download",
+        )
+        if path.name == "base_encoder.py":
+            adapted = adapted.replace(
+                "        self._model, self._tokenizer = mlx_lm_load(path)",
+                "        if not Path(path).is_dir():\n"
+                "            from rapid_mlx.model_downloads import snapshot_download\n\n"
+                "            path = snapshot_download(path)\n"
+                "        self._model, self._tokenizer = mlx_lm_load(path)",
+            )
+        if adapted != source:
+            path.write_text(adapted, encoding="utf-8")
+
+
 def update(root: Path, tarball: Path | None) -> None:
     """Replace the vendored packages with the pinned upstream snapshot."""
     with tempfile.TemporaryDirectory(prefix="rapidmlx-ltx25-vendor-") as temporary:
@@ -252,6 +273,7 @@ def update(root: Path, tarball: Path | None) -> None:
                 raise VendorError(f"the source archive lacks {source_name}")
             destination = root / package
             _copy_package(source, destination)
+            _apply_download_adapter(destination)
             shutil.copyfile(license_source, destination / "LICENSE")
             _write_notice(package, destination)
             _write_provenance(package, destination, tree_digest(destination))

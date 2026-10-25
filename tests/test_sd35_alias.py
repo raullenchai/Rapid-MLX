@@ -242,7 +242,6 @@ def test_pull_fetches_all_three_exact_allowlisted_snapshots(
 def test_engine_ensures_only_missing_pinned_runtime_assets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)
     calls = []
@@ -252,8 +251,7 @@ def test_engine_ensures_only_missing_pinned_runtime_assets(
         lambda repo: "/cached" if repo == _download_gate.SD35_SHARED_REPO else None,
     )
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/downloaded",
     )
     engine._ensure_runtime_assets()  # noqa: SLF001

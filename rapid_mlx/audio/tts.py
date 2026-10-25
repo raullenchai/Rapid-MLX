@@ -652,10 +652,12 @@ class TTSEngine:
         if self._model_family == "f5":
             from f5_tts_mlx import utils as f5_utils
             from f5_tts_mlx.cfm import F5TTS
+            from vocos_mlx import model as vocos_model
 
             # This loader has no revision argument and always resolves through
             # its imported Hub helper. Bind that helper to the shared pin gate.
             f5_utils.snapshot_download = model_downloads.snapshot_download
+            vocos_model.snapshot_download = model_downloads.snapshot_download
 
             self.model = F5TTS.from_pretrained(self.model_name)
             self._loaded = True
@@ -671,11 +673,48 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
-            if self._model_family == "kokoro":
+            model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
+            family = self._model_family
+            config_path = model_path / "config.json"
+            if config_path.is_file():
+                family = str(
+                    json.loads(config_path.read_text()).get("model_type") or family
+                ).lower()
+            if family == "kokoro":
                 from mlx_audio.tts.models.kokoro import pipeline
 
                 pipeline.snapshot_download = model_downloads.snapshot_download
-            model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
+            if family == "chatterbox":
+                from mlx_audio.tts.models.chatterbox import chatterbox, tokenizer
+
+                tokenizer.hf_hub_download = model_downloads.hf_hub_download
+                chatterbox.Model.post_load_hook = staticmethod(
+                    model_downloads.bind_hub_downloads(chatterbox.Model.post_load_hook)
+                )
+            if family == "chatterbox_turbo":
+                from mlx_audio.tts.models.chatterbox_turbo import chatterbox_turbo
+
+                chatterbox_turbo.ChatterboxTurboTTS.post_load_hook = staticmethod(
+                    model_downloads.bind_hub_downloads(
+                        chatterbox_turbo.ChatterboxTurboTTS.post_load_hook
+                    )
+                )
+            if family == "dia":
+                from mlx_audio.codec.models.descript import dac
+
+                dac.snapshot_download = model_downloads.snapshot_download
+            if family in {"vibevoice", "vibevoice_streaming"}:
+                from types import SimpleNamespace
+
+                from mlx_audio.tts.models.vibevoice import vibevoice
+
+                vibevoice.AutoTokenizer = SimpleNamespace(
+                    from_pretrained=model_downloads.tokenizer_from_pretrained
+                )
+            if family.startswith("indextts"):
+                self.model = _load_indextts_model(str(model_path))
+                self._loaded = True
+                return
             legacy_vae = model_path / "audiovae.pth"
             if legacy_vae.exists() or legacy_vae.is_symlink():
                 from .voxcpm_security import load_voxcpm_checkpoint

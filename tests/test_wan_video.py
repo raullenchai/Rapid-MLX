@@ -81,7 +81,9 @@ def test_wan_engine_resolves_public_alias_at_pinned_revision(
         captured.update(repository=repository, revision=revision)
         return str(tmp_path)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
     WanVideoEngine("wan2.2-ti2v-5b-q8")
     assert captured == {
         "repository": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",

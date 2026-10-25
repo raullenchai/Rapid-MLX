@@ -161,7 +161,6 @@ def test_complete_snapshot_requires_every_reviewed_data_file(
 def test_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
@@ -173,8 +172,7 @@ def test_cold_snapshot_is_pinned_allowlisted_and_verified(
     )
     calls = []
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda model, **kwargs: calls.append((model, kwargs)) or "/pinned/snapshot",
     )
 

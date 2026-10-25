@@ -73,53 +73,147 @@ def require_local(model: str) -> None:
     check(model)
 
 
+def _download_identity(repo_id: str, kwargs: dict) -> str:
+    """Resolve only reviewed identities; a missing pin cannot select main."""
+    import re
+
+    from .model_aliases import resolve_hub_model, resolve_revision
+    from .model_integrity import ModelIntegrityError
+    from .runtime_model_pins import AUXILIARY_REVISIONS
+
+    resolved_repo = resolve_hub_model(repo_id)
+    revision = resolve_revision(repo_id) or AUXILIARY_REVISIONS.get(resolved_repo)
+    requested = kwargs.get("revision")
+    if revision is not None and requested is not None and requested != revision:
+        raise ValueError(
+            f"{repo_id} is pinned to revision {revision}; "
+            f"cannot download conflicting revision {requested}"
+        )
+    revision = revision or requested
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ModelIntegrityError(
+            f"Implicit download of {repo_id} requires a full immutable revision; "
+            "provision a verified local checkpoint with rapid-mlx pull first"
+        )
+    kwargs["revision"] = revision
+    return resolved_repo
+
+
+def _verify(repo_id: str, path: str, kwargs: dict, *, filename=None) -> None:
+    from pathlib import Path, PurePosixPath
+
+    from huggingface_hub.constants import HF_HUB_OFFLINE
+
+    from .model_integrity import verify_snapshot
+
+    root = Path(path)
+    if filename is not None:
+        # Hub file results retain the snapshot path (do not resolve blob symlinks).
+        for _ in PurePosixPath(filename).parts:
+            root = root.parent
+    verify_snapshot(
+        repo_id,
+        root,
+        revision=kwargs["revision"],
+        resolved_revision=kwargs["revision"] if kwargs.get("local_dir") else None,
+        allow_patterns=kwargs.get("allow_patterns"),
+        ignore_patterns=kwargs.get("ignore_patterns"),
+        filenames=[filename] if filename is not None else None,
+        local_files_only=bool(kwargs.get("local_files_only") or HF_HUB_OFFLINE),
+        token=kwargs.get("token"),
+    )
+
+
 def snapshot_download(repo_id: str, **kwargs: Any) -> str:
-    """Resolve a snapshot without permitting a network fallback when disabled."""
+    """Download an immutable snapshot and verify selected files before use."""
     from huggingface_hub import snapshot_download as hub_snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    from .model_aliases import resolve_hub_model, resolve_revision
-
-    if (revision := resolve_revision(repo_id)) is not None:
-        requested = kwargs.get("revision")
-        if requested is not None and requested != revision:
-            raise ValueError(
-                f"{repo_id} is pinned to revision {revision}; "
-                f"cannot download conflicting revision {requested}"
-            )
-        kwargs["revision"] = revision
-        repo_id = resolve_hub_model(repo_id)
-    if not disabled():
-        return str(hub_snapshot_download(repo_id, **kwargs))
-    local_kwargs = dict(kwargs)
-    local_kwargs["local_files_only"] = True
+    repo_id = _download_identity(repo_id, kwargs)
+    if disabled():
+        kwargs["local_files_only"] = True
     try:
-        return str(hub_snapshot_download(repo_id, **local_kwargs))
+        path = str(hub_snapshot_download(repo_id, **kwargs))
     except LocalEntryNotFoundError:
-        raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None
+        if disabled():
+            raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None
+        raise
+    _verify(repo_id, path, kwargs)
+    return path
 
 
 def hf_hub_download(repo_id: str, filename: str, **kwargs: Any) -> str:
-    """Resolve one Hub file locally when downloads are disabled."""
+    """Download and verify exactly one file from an immutable snapshot."""
     from huggingface_hub import hf_hub_download as hub_file_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    from .model_aliases import resolve_hub_model, resolve_revision
-
-    if (revision := resolve_revision(repo_id)) is not None:
-        requested = kwargs.get("revision")
-        if requested is not None and requested != revision:
-            raise ValueError(
-                f"{repo_id} is pinned to revision {revision}; "
-                f"cannot download conflicting revision {requested}"
-            )
-        kwargs["revision"] = revision
-        repo_id = resolve_hub_model(repo_id)
-    if not disabled():
-        return str(hub_file_download(repo_id, filename, **kwargs))
-    local_kwargs = dict(kwargs)
-    local_kwargs["local_files_only"] = True
+    repo_id = _download_identity(repo_id, kwargs)
+    if disabled():
+        kwargs["local_files_only"] = True
     try:
-        return str(hub_file_download(repo_id, filename, **local_kwargs))
+        path = str(hub_file_download(repo_id, filename, **kwargs))
     except LocalEntryNotFoundError:
-        raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None
+        if disabled():
+            raise ModelDownloadsDisabledError(repo_id, source() or FLAG) from None
+        raise
+    subfolder = kwargs.get("subfolder")
+    selected = f"{subfolder}/{filename}" if subfolder else filename
+    _verify(repo_id, path, kwargs, filename=selected)
+    return path
+
+
+def bind_hub_downloads(function):
+    """Bind a dependency hook's local Hub imports without mutating the Hub.
+
+    Some optional loaders import download functions inside their post-load hook.
+    A function-local builtins namespace keeps the adapter isolated from other
+    threads, explicit pulls and third-party code outside that hook.
+    """
+    import builtins
+    from functools import update_wrapper
+    from types import FunctionType, SimpleNamespace
+
+    def verified_import(name, globals=None, locals=None, fromlist=(), level=0):
+        module = builtins.__import__(name, globals, locals, fromlist, level)
+        if name == "huggingface_hub" and fromlist:
+            replacements = {
+                "snapshot_download": snapshot_download,
+                "hf_hub_download": hf_hub_download,
+            }
+            return SimpleNamespace(
+                **{
+                    key: replacements[key]
+                    if key in replacements
+                    else getattr(module, key)
+                    for key in fromlist
+                }
+            )
+        return module
+
+    namespace = dict(function.__globals__)
+    namespace["__builtins__"] = dict(vars(builtins), __import__=verified_import)
+    adapted = FunctionType(
+        function.__code__,
+        namespace,
+        function.__name__,
+        function.__defaults__,
+        function.__closure__,
+    )
+    adapted.__kwdefaults__ = function.__kwdefaults__
+    return update_wrapper(adapted, function)
+
+
+def tokenizer_from_pretrained(name):
+    """Resolve config-selected text tokenizers before entering transformers."""
+    from pathlib import Path
+
+    from transformers import AutoTokenizer
+
+    path = str(name)
+    if not Path(path).is_dir():
+        path = snapshot_download(
+            path, allow_patterns=["*.json", "*.txt", "*.model", "*.tiktoken"]
+        )
+    return AutoTokenizer.from_pretrained(
+        path, trust_remote_code=False, local_files_only=True
+    )

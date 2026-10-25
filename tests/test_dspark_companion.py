@@ -232,7 +232,7 @@ def test_artifact_downloads_pin_both_revisions(monkeypatch, tmp_path) -> None:
         calls.append((repo, revision))
         return str(target if repo == LFM25_VL_3B.target_repo else draft)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", fake_download)
     resolved = artifacts.download_companion_artifacts(LFM25_VL_3B)
 
     assert resolved.target_path == str(target)

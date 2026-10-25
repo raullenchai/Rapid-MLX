@@ -119,7 +119,7 @@ def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
         calls.append((repo, revision))
         return str(next(paths))
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", download)
     monkeypatch.setattr(adapter, "validate_pair", lambda a, b: calls.append((a, b)))
     result = adapter.download_qualified_pair()
     assert result.target_path == str(target)

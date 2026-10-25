@@ -2017,7 +2017,9 @@ def _prefetch_routing_metadata(model_name: str) -> str:
     if os.path.exists(model_name):
         return model_name
 
-    from huggingface_hub import model_info, snapshot_download
+    from huggingface_hub import model_info
+
+    from rapid_mlx.model_downloads import snapshot_download
 
     from ._download_gate import (
         _HF_RESOLVE_TIMEOUT_SECONDS,
