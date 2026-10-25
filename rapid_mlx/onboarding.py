@@ -39,9 +39,16 @@ def track_first_integration(agent: str) -> None:
         accepted = would_accept("first_integration", {"agent": _telemetry_agent(agent)})
         if accepted is None:
             return
-        with (_state_dir() / "first_integration_seen").open("x"):
+        marker = _state_dir() / "first_integration_seen"
+        with marker.open("x"):
             pass
-        _enqueue_accepted(accepted)
+        try:
+            queued = _enqueue_accepted(accepted)
+        except Exception:
+            marker.unlink(missing_ok=True)
+            return
+        if not queued:
+            marker.unlink(missing_ok=True)
     except Exception:
         pass
 

@@ -31,7 +31,9 @@ def test_attribution_window_and_dedupe(monkeypatch, tmp_path, age, expected):
     monkeypatch.setattr(ob.time, "time", lambda: start + age)
     events = []
     monkeypatch.setattr(track, "would_accept", lambda name, props: (name, props))
-    monkeypatch.setattr(track, "_enqueue_accepted", events.append)
+    monkeypatch.setattr(
+        track, "_enqueue_accepted", lambda event: events.append(event) or True
+    )
     ob.track_first_integration("unknown-private-name")
     ob.track_first_integration("codex")
     assert events == [("first_integration", {"agent": "other"})] * expected
@@ -93,3 +95,33 @@ def test_closed_event_shapes():
     assert registry.validate("first_integration", {"agent": "codex"}) is not None
     assert registry.validate("first_integration", {"agent": "/private/path"}) is None
     assert registry.validate("onboarding_next_step_shown", {"model": "secret"}) is None
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_enqueue_failure_allows_retry(monkeypatch, tmp_path, raises):
+    ob.record_serve_success()
+    monkeypatch.setattr(track, "would_accept", lambda *_: object())
+
+    def fail(_event):
+        if raises:
+            raise RuntimeError("queue unavailable")
+        return False
+
+    monkeypatch.setattr(track, "_enqueue_accepted", fail)
+    ob.track_first_integration("codex")
+    assert not (tmp_path / "first_integration_seen").exists()
+    monkeypatch.setattr(track, "_enqueue_accepted", lambda _: True)
+    ob.track_first_integration("codex")
+    assert (tmp_path / "first_integration_seen").exists()
+
+
+def test_existing_configuration_success_attributes_integration(monkeypatch):
+    from rapid_mlx.agents.telemetry import track_agent_configured
+
+    events = []
+    integrations = []
+    monkeypatch.setattr(track, "track", lambda *args: events.append(args))
+    monkeypatch.setattr(ob, "track_first_integration", integrations.append)
+    track_agent_configured("codex")
+    assert events == [("agent_configured", {"agent": "codex"})]
+    assert integrations == ["codex"]

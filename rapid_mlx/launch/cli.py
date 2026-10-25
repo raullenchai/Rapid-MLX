@@ -555,13 +555,13 @@ def launch_command(args: argparse.Namespace) -> None:
             )
             result = subprocess.call(["/bin/zsh", "-lc", command])
             if result == 0:
-                from rapid_mlx.agents.telemetry import track_agent_configured
+                from rapid_mlx.onboarding import track_first_integration
 
-                track_agent_configured(args.client)
+                track_first_integration(args.client)
             raise SystemExit(result)
-        from rapid_mlx.agents.telemetry import track_agent_configured
+        from rapid_mlx.onboarding import track_first_integration
 
-        track_agent_configured(args.client)
+        track_first_integration(args.client)
         print(f"  If the local server is stopped: {start_hint}")
         return
 
@@ -724,9 +724,9 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"  {name}: FAILED — {exc}", file=sys.stderr)
             failures.append(name)
             continue
-        from rapid_mlx.agents.telemetry import track_agent_configured
+        from rapid_mlx.onboarding import track_first_integration
 
-        track_agent_configured(name)
+        track_first_integration(name)
         print(f"  Patched {name} config at {path}")
         notes = getattr(adapter, "post_setup_notes", None)
         if notes is not None:

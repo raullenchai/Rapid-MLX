@@ -109,7 +109,7 @@ def test_installed_cli_launches_without_warning(private_home, capsys, exit_code)
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
         patch("rapid_mlx.launch.cli.subprocess.call", return_value=exit_code) as call,
-        patch("rapid_mlx.agents.telemetry.track_agent_configured") as configured,
+        patch("rapid_mlx.onboarding.track_first_integration") as configured,
         pytest.raises(SystemExit, match=str(exit_code)),
     ):
         launch_command(
