@@ -81,7 +81,8 @@ def _download_identity(repo_id: str, kwargs: dict) -> str:
     from .model_integrity import ModelIntegrityError
     from .runtime_model_pins import AUXILIARY_REVISIONS
 
-    revision = resolve_revision(repo_id) or AUXILIARY_REVISIONS.get(repo_id)
+    resolved_repo = resolve_hub_model(repo_id)
+    revision = resolve_revision(repo_id) or AUXILIARY_REVISIONS.get(resolved_repo)
     requested = kwargs.get("revision")
     if revision is not None and requested is not None and requested != revision:
         raise ValueError(
@@ -95,7 +96,7 @@ def _download_identity(repo_id: str, kwargs: dict) -> str:
             "provision a verified local checkpoint with rapid-mlx pull first"
         )
     kwargs["revision"] = revision
-    return resolve_hub_model(repo_id)
+    return resolved_repo
 
 
 def _verify(repo_id: str, path: str, kwargs: dict, *, filename=None) -> None:
@@ -200,3 +201,19 @@ def bind_hub_downloads(function):
     )
     adapted.__kwdefaults__ = function.__kwdefaults__
     return update_wrapper(adapted, function)
+
+
+def tokenizer_from_pretrained(name):
+    """Resolve config-selected text tokenizers before entering transformers."""
+    from pathlib import Path
+
+    from transformers import AutoTokenizer
+
+    path = str(name)
+    if not Path(path).is_dir():
+        path = snapshot_download(
+            path, allow_patterns=["*.json", "*.txt", "*.model", "*.tiktoken"]
+        )
+    return AutoTokenizer.from_pretrained(
+        path, trust_remote_code=False, local_files_only=True
+    )

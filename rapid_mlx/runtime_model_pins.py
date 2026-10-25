@@ -33,4 +33,6 @@ AUXILIARY_REVISIONS = {
     "ResembleAI/chatterbox": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     "dgrauet/ltx-2.3-mlx-q8": "6671a7572a530862d1d60ce393b5d93491e3f76b",
     "mlx-community/gemma-3-12b-it-4bit": "86cc6a8dedbc456dd0e4af01a9d09f396f77e558",
+    "mlx-community/descript-audio-codec-44khz": "91dff27c81edbb0992be17ac51d2c7d515411a32",
+    "Qwen/Qwen2.5-0.5B": "060db6499f32faf8b98477b0a26969ef7d8b9987",
 }

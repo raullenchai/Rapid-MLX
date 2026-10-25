@@ -86,6 +86,10 @@ def test_explicit_and_auxiliary_pins(asset, monkeypatch):
         SHA,
     )
     assert model_downloads.snapshot_download("fixture/aux") == str(asset)
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_hub_model", lambda name: "fixture/aux"
+    )
+    assert model_downloads.snapshot_download("custom-auxiliary-alias") == str(asset)
 
 
 def test_disabled_uses_receipt_without_network(asset, monkeypatch):
@@ -362,7 +366,9 @@ def test_generated_video_provenance_imports():
     assert len(core.TREE_SHA256) == len(pipelines.TREE_SHA256) == 64
 
 
-def test_chatterbox_nested_hook_cannot_load_unverified_bytes(asset, monkeypatch):
+def test_chatterbox_nested_hook_cannot_load_unverified_bytes(
+    asset, monkeypatch, tmp_path
+):
     from rapid_mlx.audio import tts
 
     chatterbox = pytest.importorskip("mlx_audio.tts.models.chatterbox.chatterbox")
@@ -374,7 +380,9 @@ def test_chatterbox_nested_hook_cannot_load_unverified_bytes(asset, monkeypatch)
         staticmethod(chatterbox.Model.post_load_hook),
     )
     monkeypatch.setattr(tokenizer, "hf_hub_download", tokenizer.hf_hub_download)
-    monkeypatch.setattr(tts, "_resolve_safe_tts_checkpoint", lambda name: str(asset))
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / "config.json").write_text('{"model_type":"chatterbox"}')
     monkeypatch.setattr(
         generate,
         "load_model",
@@ -387,7 +395,7 @@ def test_chatterbox_nested_hook_cannot_load_unverified_bytes(asset, monkeypatch)
     )
     (asset / "config.json").write_text("corrupt")
     with pytest.raises(ModelIntegrityError):
-        tts.TTSEngine("mlx-community/chatterbox-fp16").load()
+        tts.TTSEngine(str(primary)).load()
 
 
 def test_scoped_hub_import_leaves_other_imports_and_hub_unchanged():
@@ -441,3 +449,114 @@ def test_image_prompt_tokenizer_uses_verified_local_data(asset, monkeypatch):
     with pytest.raises(ModelIntegrityError):
         engine._validate_hidream_prompt_tokens("fixture")
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("family", ["dia", "vibevoice_streaming"])
+def test_config_selected_audio_dependencies_verify_before_loading(
+    asset, monkeypatch, tmp_path, family
+):
+    from rapid_mlx.audio import tts
+
+    generate = pytest.importorskip("mlx_audio.tts.generate")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / "config.json").write_text('{"model_type":"' + family + '"}')
+    if family == "dia":
+        dac = pytest.importorskip("mlx_audio.codec.models.descript.dac")
+        monkeypatch.setattr(dac, "snapshot_download", dac.snapshot_download)
+        load = lambda path: dac.DAC.from_pretrained(
+            "mlx-community/descript-audio-codec-44khz"
+        )
+    else:
+        vibevoice = pytest.importorskip("mlx_audio.tts.models.vibevoice.vibevoice")
+        monkeypatch.setattr(vibevoice, "AutoTokenizer", vibevoice.AutoTokenizer)
+        load = lambda path: vibevoice.Model.post_load_hook(
+            SimpleNamespace(tokenizer=None), path
+        )
+    monkeypatch.setattr(generate, "load_model", load)
+    (asset / "config.json").write_text("corrupt")
+    with pytest.raises(ModelIntegrityError):
+        tts.TTSEngine(str(primary)).load()
+
+
+def test_turbo_speech_hook_does_not_consume_corrupt_assets(
+    asset, monkeypatch, tmp_path, caplog
+):
+    import sys
+
+    from rapid_mlx.audio import tts
+
+    turbo = pytest.importorskip(
+        "mlx_audio.tts.models.chatterbox_turbo.chatterbox_turbo"
+    )
+    generate = pytest.importorskip("mlx_audio.tts.generate")
+    monkeypatch.setattr(
+        turbo.ChatterboxTurboTTS,
+        "post_load_hook",
+        staticmethod(turbo.ChatterboxTurboTTS.post_load_hook),
+    )
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / "config.json").write_text('{"model_type":"chatterbox_turbo"}')
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoTokenizer=SimpleNamespace(
+                from_pretrained=lambda *a, **k: SimpleNamespace(pad_token="pad")
+            )
+        ),
+    )
+    loads = []
+    monkeypatch.setattr(turbo.mx, "load", lambda *a, **k: loads.append(a))
+    monkeypatch.setattr(
+        generate,
+        "load_model",
+        lambda path: turbo.ChatterboxTurboTTS.post_load_hook(SimpleNamespace(), path),
+    )
+    with pytest.raises(FileNotFoundError, match="conds.safetensors"):
+        tts.TTSEngine(str(primary)).load()
+    assert not loads
+    assert "Could not load S3 speech tokenizer" in caplog.text
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_verified_tokenizer_forces_local_no_remote_code(asset, monkeypatch, local):
+    import sys
+
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoTokenizer=SimpleNamespace(
+                from_pretrained=lambda *a, **k: calls.append((a, k)) or "tokenizer"
+            )
+        ),
+    )
+    assert (
+        model_downloads.tokenizer_from_pretrained(
+            str(asset) if local else "fixture/model"
+        )
+        == "tokenizer"
+    )
+    assert calls == [
+        ((str(asset),), {"trust_remote_code": False, "local_files_only": True})
+    ]
+
+
+def test_config_selected_indextts_keeps_owned_loader(tmp_path, monkeypatch):
+    from rapid_mlx.audio import tts
+
+    pytest.importorskip("mlx_audio.tts.generate")
+    (tmp_path / "config.json").write_text('{"model_type":"indextts"}')
+    paths = []
+    monkeypatch.setattr(
+        tts, "_load_indextts_model", lambda path: paths.append(path) or "model"
+    )
+    monkeypatch.chdir(tmp_path)
+    engine = tts.TTSEngine(".")
+    engine.load()
+    assert engine.model == "model"
+    assert engine._loaded
+    assert paths == ["."]
