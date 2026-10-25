@@ -12,13 +12,16 @@ import pytest
 from rapid_mlx import _download_gate as gate
 from rapid_mlx import cli, model_downloads, model_metadata
 from rapid_mlx import model_aliases as aliases
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 PIN = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
 OTHER = "a" * 40
 ALIAS = "flint-40b-a2.5b-4bit"
 REPO = "RecursiveSI/flint-int4"
-UNPINNED = "mlx-community/Qwen3-0.6B-4bit"
+UNPINNED = "example/uncataloged-model"
 
 
 @pytest.fixture(params=[REPO, ALIAS, "my-flint"])

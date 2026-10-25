@@ -657,7 +657,16 @@ class STTEngine:
         try:
             from mlx_audio.stt.utils import load_model
 
-            self.model = load_model(self.model_name)
+            from ..model_aliases import resolve_revision
+
+            model_path = self.model_name
+            if resolve_revision(model_path) is not None:
+                from mlx_audio.utils import DEFAULT_ALLOW_PATTERNS
+
+                model_path = model_downloads.snapshot_download(
+                    model_path, allow_patterns=list(DEFAULT_ALLOW_PATTERNS)
+                )
+            self.model = load_model(model_path)
             # Prefer the backend metadata after loading so renamed/private
             # SenseVoice repos still receive the native generate() contract.
             # The constructor's name check remains a useful pre-load fallback.

@@ -14,7 +14,10 @@ import pytest
 
 from rapid_mlx import cli
 from rapid_mlx.audio import registry, runtime_requirements
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +33,7 @@ def test_kokoro_alias_and_hf_id_declare_voice_assets() -> None:
         registry.AudioRuntimeAsset(
             repo_id="prince-canuma/Kokoro-82M",
             allow_patterns=("voices/*.safetensors",),
+            revision="e02c9eada7ce7416798af36b190a8a2dd2ecd566",
         ),
     )
 
@@ -56,10 +60,13 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
     calls: list[tuple[str, list[str] | None, str | None, str | None]] = []
     preparations = []
 
-    def fake_pull_repository(args, *, allow_patterns_override=None):
+    def fake_pull_repository(
+        args, *, allow_patterns_override=None, revision_override=None
+    ):
         calls.append(
             (
                 args.model,
+                revision_override,
                 allow_patterns_override,
                 getattr(args, "bits", None),
                 getattr(args, "format", None),
@@ -82,9 +89,16 @@ def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> Non
     cli.pull_command(args)
 
     assert calls == [
-        ("mlx-community/Kokoro-82M-bf16", None, None, None),
+        (
+            "mlx-community/Kokoro-82M-bf16",
+            "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
+            None,
+            None,
+            None,
+        ),
         (
             "prince-canuma/Kokoro-82M",
+            "e02c9eada7ce7416798af36b190a8a2dd2ecd566",
             ["voices/*.safetensors"],
             None,
             None,

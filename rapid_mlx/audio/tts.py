@@ -650,7 +650,12 @@ class TTSEngine:
         # the Chinese expressive/cloneable gap Qwen3-TTS (flat) and Chatterbox
         # (English-only) leave open.
         if self._model_family == "f5":
+            from f5_tts_mlx import utils as f5_utils
             from f5_tts_mlx.cfm import F5TTS
+
+            # This loader has no revision argument and always resolves through
+            # its imported Hub helper. Bind that helper to the shared pin gate.
+            f5_utils.snapshot_download = model_downloads.snapshot_download
 
             self.model = F5TTS.from_pretrained(self.model_name)
             self._loaded = True
@@ -666,6 +671,10 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
+            if self._model_family == "kokoro":
+                from mlx_audio.tts.models.kokoro import pipeline
+
+                pipeline.snapshot_download = model_downloads.snapshot_download
             model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
             legacy_vae = model_path / "audiovae.pth"
             if legacy_vae.exists() or legacy_vae.is_symlink():

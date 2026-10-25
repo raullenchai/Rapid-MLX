@@ -100,9 +100,9 @@ def _semantic(entry):
 def catalog_changes(
     before: dict, after: dict, path: str
 ) -> tuple[list[str], list[str]]:
-    """Return semantic aliases and invalid new/changed text checkpoint identities.
+    """Return semantic aliases and invalid checkpoint identities.
 
-    Existing unpinned entries are grandfathered, not silently treated as reviewed.
+    Every catalog identity requires an immutable pin, including unchanged entries.
     Pins identify proposed content; runtime pin consumption needs separate review.
     """
     changed, errors = [], []
@@ -116,9 +116,10 @@ def catalog_changes(
         if alias == "_comment":
             continue
         old, new = before.get(alias), after.get(alias)
-        if alias in before and alias in after and _semantic(old) == _semantic(new):
-            continue
-        changed.append(alias)
+        if not (
+            alias in before and alias in after and _semantic(old) == _semantic(new)
+        ):
+            changed.append(alias)
         if alias == "_runtime_assets" and alias in after:
             if not isinstance(new, dict):
                 errors.append("Runtime assets must be an object of asset lists")
@@ -127,9 +128,6 @@ def catalog_changes(
                 if not isinstance(assets, list):
                     errors.append(f"{alias}.{family}: runtime assets must be a list")
                     continue
-                old_assets = old.get(family, []) if isinstance(old, dict) else []
-                if not isinstance(old_assets, list):
-                    old_assets = []
                 for asset in assets:
                     if (
                         not isinstance(asset, dict)
@@ -139,38 +137,20 @@ def catalog_changes(
                         errors.append(
                             f"{alias}.{family}: runtime asset requires a repository"
                         )
-                    elif asset in old_assets:
-                        continue
                     pin = asset.get("revision") if isinstance(asset, dict) else None
                     if not isinstance(pin, str) or not SHA.fullmatch(pin):
                         errors.append(
-                            f"{alias}.{family}: changed runtime asset requires a full 40-hex revision"
+                            f"{alias}.{family}: runtime asset requires a full 40-hex revision"
                         )
         if alias not in after or alias.startswith("_"):
             continue
         source_field = "hf_id" if path == "rapid_mlx/audio/aliases.json" else "hf_path"
-        old_source = old.get(source_field) if isinstance(old, dict) else old
         new_source = new.get(source_field) if isinstance(new, dict) else new
         if not isinstance(new_source, str) or not new_source.strip():
             errors.append(f"{alias}: catalog source must be a nonempty repository")
-        old_pin = old.get("revision") if isinstance(old, dict) else None
         new_pin = new.get("revision") if isinstance(new, dict) else None
-        identity_changed = (
-            old is None
-            or old_source != new_source
-            or old_pin != new_pin
-            or (
-                isinstance(old, dict)
-                and isinstance(new, dict)
-                and old.get("subfolder") != new.get("subfolder")
-            )
-        )
-        if identity_changed and (
-            not isinstance(new_pin, str) or not SHA.fullmatch(new_pin)
-        ):
-            errors.append(
-                f"{alias}: new/changed source requires a reviewed full 40-hex revision"
-            )
+        if not isinstance(new_pin, str) or not SHA.fullmatch(new_pin):
+            errors.append(f"{alias}: catalog source requires a full 40-hex revision")
     return changed, errors
 
 

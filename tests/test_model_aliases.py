@@ -491,11 +491,11 @@ def test_draft_gate_never_refuses_an_existing_local_path(monkeypatch, tmp_path):
     assert draft_only_conflict("mlx-community/Qwen3.6-35B-A3B-MTP-4bit") is not None
 
 
-def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
+def test_cli_serve_explicit_external_path_named_like_draft(
     monkeypatch, tmp_path
 ):
-    """A complete external-root model wins during resolution even when its
-    displayed name matches a catalog draft alias."""
+    """An explicit external path remains local even when its name matches a
+    pinned catalog draft alias."""
     import sys
 
     from rapid_mlx import cli
@@ -509,7 +509,7 @@ def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
     monkeypatch.setattr(
         "rapid_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
     )
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.6-35b-mtp-4bit"])
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(model)])
     reached = []
     monkeypatch.setattr(
         cli,
@@ -522,7 +522,7 @@ def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
     cli.main()
 
     assert reached == [
-        (os.path.realpath(model), "qwen3.6-35b-mtp-4bit"),
+        (os.path.realpath(model), None),
     ]
 
 

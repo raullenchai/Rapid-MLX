@@ -7,11 +7,9 @@ validator. Ordinary alias changes already select the engine CI lane; they are
 not exempted from CI as documentation-only changes.
 
 The offline `scripts/catalog_trust.py` policy compares the trusted base catalog
-with the proposed catalog. New text/audio aliases, changed repository/subfolder
-sources, and changed or removed revision pins require a full lowercase 40-hex
-commit SHA. A SHA identifies content; it is not a publisher signature or proof
-that someone reviewed the content. Existing unpinned identities are grandfathered
-so a cosmetic edit does not require blindly pinning the entire catalog.
+with the proposed catalog. Every text, image, video, embedding, audio and runtime-asset identity
+requires a full lowercase 40-hex commit SHA, even when unchanged. A SHA identifies content; it is not a publisher signature or proof
+that someone reviewed the content. Unpinned identities fail CI; there is no grandfather exemption.
 
 `pr_validate` reports these violations as blocking supply-chain findings. The
 trusted default-branch merge controller independently reads the base/head JSON
@@ -34,18 +32,41 @@ require review. This gate does not change loaders or certify that a proposed pin
 is consumed by every runtime. Reviewers must verify runtime pin consumption before
 approving a new audio or runtime-asset identity.
 
-To inventory the remaining text-catalog migration offline:
+## Bumping a pin
 
-```sh
-python scripts/catalog_trust.py --report-unpinned
-python scripts/catalog_trust.py --base <exact-base-commit-sha>
+Resolve metadata only (no weights) with the Hugging Face API:
+
+```python
+from huggingface_hub import model_info
+info = model_info("owner/repository", revision="main")
+print(info.sha)
 ```
 
-Existing unpinned entries remain unreviewed by this policy. For each source migration, review the actual repository
-commit/config/code, choose that immutable SHA, update all aliases sharing its
-repository consistently, and verify the appropriate runtime consumes the pin.
-Do not bulk resolve current remote HEAD and label the result reviewed. These
-commands download no weights and make no network requests.
+Review the repository and commit before changing `revision` in
+`rapid_mlx/aliases.json` or `rapid_mlx/audio/aliases.json`. Update all aliases
+sharing that repository consistently. Keep image/video loader pins and
+speculative-decoding target pins in agreement. Audio `_runtime_assets` also
+carry `revision`; their consumers use the shared download gate.
+
+Check the project mirror catalog and any exact-revision manifest before choosing
+the commit. Preserve a recorded served revision rather than inferring it from
+upload timestamps. Report disagreements; do not silently switch runtime pins to
+a newer upstream tip. A pin does not certify model quality or publisher identity.
+The catalog migration preserves existing runtime pins where upstream has advanced.
+The public mirror catalog currently does not publish revision fields; per-file
+integrity checks still decide whether mirror bytes match the requested revision.
+
+Run the offline catalog policy and focused download tests:
+
+```sh
+python scripts/catalog_trust.py --base <exact-base-commit-sha>
+python -m pytest tests/test_catalog_trust.py tests/test_alias_revision.py
+```
+
+Pinned catalog names select their exact snapshot. To load an independently
+managed local checkpoint, use its explicit filesystem path. Uncataloged repository
+IDs retain their existing behavior. No catalog migration downloads weights or
+publishes mirror data.
 
 The policy takes effect for automatic merges after the controller changes are
 merged to the trusted default branch. It does not change GitHub branch-protection

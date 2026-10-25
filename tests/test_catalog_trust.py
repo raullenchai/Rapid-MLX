@@ -32,10 +32,10 @@ def test_reviewed_new_identity_and_semantic_weight_change_require_review():
     assert catalog_changes(original, updated, PATH) == (["alias"], [])
 
 
-def test_cosmetic_edit_does_not_force_unreviewed_mass_pinning():
+def test_cosmetic_edit_does_not_exempt_unpinned_identity():
     before = {"old": {"hf_path": "org/model", "notes": "old"}}
     after = {"old": {"hf_path": "org/model", "notes": "new"}}
-    assert catalog_changes(before, after, PATH) == ([], [])
+    assert catalog_changes(before, after, PATH)[1]
     after["old"]["hf_path"] = "attacker/model"
     assert catalog_changes(before, after, PATH)[1]
 
@@ -115,13 +115,13 @@ def test_supply_chain_blocks_catalog_only_unpinned_pr(tmp_path, monkeypatch):
     monkeypatch.setattr(policy, "read_git_catalog", lambda *_args: {})
     result = SupplyChainStep().run(ctx)
     assert result.status == "fail"
-    assert any("reviewed full 40-hex" in finding for finding in result.findings)
+    assert any("full 40-hex" in finding for finding in result.findings)
 
 
 def test_alias_reordering_requires_review_of_reverse_lookup_winner():
     before = {
-        "one": {"hf_path": "org/model", "is_text_only": True},
-        "two": {"hf_path": "org/model", "is_text_only": False},
+        "one": {"hf_path": "org/model", "revision": PIN, "is_text_only": True},
+        "two": {"hf_path": "org/model", "revision": PIN, "is_text_only": False},
     }
     assert catalog_changes(before, dict(reversed(list(before.items()))), PATH) == (
         ["<alias-order>"],
@@ -152,8 +152,8 @@ def test_malformed_or_unpinned_runtime_assets_fail_closed(assets):
     assert catalog_changes({}, {"_runtime_assets": assets}, PATH)[1]
 
 
-def test_runtime_asset_positive_and_grandfathered_identity():
-    existing = {"repo_id": "org/old"}
+def test_existing_runtime_asset_requires_pin():
+    existing = {"repo_id": "org/old", "revision": PIN}
     added = {"repo_id": "org/new", "revision": PIN}
     before = {"_runtime_assets": {"family": [existing]}}
     after = {"_runtime_assets": {"family": [existing, added]}}
@@ -226,7 +226,7 @@ def test_git_catalog_and_worktree_errors(tmp_path):
     git("commit", "-qm", "fixture")
     base = git("rev-parse", "HEAD")
     assert read_git_catalog(tmp_path, base, PATH) == {"old": "org/model"}
-    assert audit_worktree(tmp_path, base, [PATH]) == ([], [])
+    assert audit_worktree(tmp_path, base, [PATH])[1]
     target.unlink()
     assert audit_worktree(tmp_path, base, [PATH]) == ([PATH + ":old"], [])
     target.symlink_to("missing")
@@ -264,3 +264,24 @@ def test_cli_report_and_comparison(tmp_path, monkeypatch, capsys):
         policy.main()
     monkeypatch.setattr(sys, "argv", ["catalog_trust", "--base", PIN])
     assert policy.main() == 1
+
+
+def test_every_shipped_catalog_identity_is_pinned():
+    from pathlib import Path
+
+    from scripts.catalog_trust import CATALOGS
+
+    root = Path(__file__).resolve().parents[1]
+    for path in CATALOGS:
+        catalog = parse_catalog((root / path).read_text())
+        assert catalog_changes(catalog, catalog, path) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "path,field", [(PATH, "hf_path"), ("rapid_mlx/audio/aliases.json", "hf_id")]
+)
+def test_unchanged_identity_cannot_be_grandfathered(path, field):
+    catalog = {"old": {field: "org/model"}}
+    assert catalog_changes(catalog, catalog, path)[1]
+    assets = {"_runtime_assets": {"family": [{"repo_id": "org/asset"}]}}
+    assert catalog_changes(assets, assets, path)[1]

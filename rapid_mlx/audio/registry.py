@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Literal
@@ -58,6 +59,7 @@ class AudioRuntimeAsset:
 
     repo_id: str
     allow_patterns: tuple[str, ...]
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,7 @@ class AudioAliasEntry:
     default_voice: str | None = None
     languages: str | None = None
     notes: str = ""
+    revision: str | None = None
 
 
 # Lazy cache. Populated on first call to :func:`_load_registry`. Reset
@@ -116,6 +119,26 @@ _HF_ID_INDEX: dict[str, str] = {}
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
 _RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
 _REGISTRY_LOCK = threading.Lock()
+
+
+def _revision(entry: dict) -> str | None:
+    pin = entry.get("revision")
+    if pin is not None and (
+        not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{40}", pin)
+    ):
+        raise ValueError("audio catalog revision must be a full 40-hex commit SHA")
+    return pin
+
+
+def resolve_audio_revision(name: str) -> str | None:
+    entry = resolve_audio_alias(name)
+    if entry is not None:
+        return entry.revision
+    for assets in _RUNTIME_ASSETS.values():
+        for asset in assets:
+            if asset.repo_id.lower() == name.lower():
+                return asset.revision
+    return None
 
 
 def _registry_path() -> str:
@@ -194,7 +217,7 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
                     "allow_patterns must be an array of non-empty strings"
                 )
             seen_repos.add(repo_id)
-            parsed.append(AudioRuntimeAsset(repo_id, tuple(patterns)))
+            parsed.append(AudioRuntimeAsset(repo_id, tuple(patterns), _revision(asset)))
         runtime_assets[family] = tuple(parsed)
 
     runtime_requirements: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
@@ -284,6 +307,7 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
             default_voice=value.get("default_voice"),
             languages=value.get("languages"),
             notes=value.get("notes", ""),
+            revision=_revision(value),
         )
 
     known_families = {entry.family for entry in entries.values()}

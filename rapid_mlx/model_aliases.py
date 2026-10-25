@@ -967,7 +967,11 @@ def resolve_revision(name: str) -> str | None:
         repo = resolve_hub_model(name)
         canonical = _alias_for_hf_path(repo)
         profile = profiles[canonical] if canonical is not None else None
-    return profile.revision if profile is not None else None
+    if profile is not None:
+        return profile.revision
+    from .audio.registry import resolve_audio_revision
+
+    return resolve_audio_revision(name)
 
 
 # Files whose presence makes a directory a model checkpoint the user may mean
@@ -1215,7 +1219,11 @@ def resolve_hub_model(name: str) -> str:
     Same as :func:`resolve_model` but never returns a model found in an
     external model folder: ``pull`` and ``rm`` act on the Hub repo id.
     """
-    return resolve_model(name, include_external_roots=False)
+    resolved = resolve_model(name, include_external_roots=False)
+    from .audio.registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(resolved)
+    return entry.hf_id if entry is not None else resolved
 
 
 def _imported_or(name: str) -> str:

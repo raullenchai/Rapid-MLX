@@ -5,6 +5,7 @@
     "kokoro": [
       {
         "repo_id": "prince-canuma/Kokoro-82M",
+        "revision": "e02c9eada7ce7416798af36b190a8a2dd2ecd566",
         "allow_patterns": ["voices/*.safetensors"]
       }
     ]
@@ -22,6 +23,7 @@
   "kokoro": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "Default Kokoro 82M (bf16). Drop-in OpenAI-style TTS."
@@ -29,6 +31,7 @@
   "kokoro-82m": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "Long-form alias for ``kokoro`` — same HF id."
@@ -36,6 +39,7 @@
   "kokoro-82m-bf16": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "Explicit bf16 quant of Kokoro 82M."
@@ -43,6 +47,7 @@
   "kokoro-82m-4bit": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-4bit",
+    "revision": "e4468a460f6f70b9125a003e0adb1ab7d4904bbd",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "4-bit quant of Kokoro 82M — smaller download, mild quality drop."
@@ -50,6 +55,7 @@
   "kokoro-82m-8bit": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-8bit",
+    "revision": "7e173a214392b1e0cb397e71c9745cbd14c06063",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "8-bit quant of Kokoro 82M."
@@ -57,6 +63,7 @@
   "kokoro-4bit": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-4bit",
+    "revision": "e4468a460f6f70b9125a003e0adb1ab7d4904bbd",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "Short-form 4-bit alias."
@@ -64,6 +71,7 @@
   "kokoro-8bit": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-8bit",
+    "revision": "7e173a214392b1e0cb397e71c9745cbd14c06063",
     "family": "kokoro",
     "default_voice": "af_heart",
     "notes": "Short-form 8-bit alias."
@@ -72,6 +80,7 @@
   "chatterbox": {
     "type": "tts",
     "hf_id": "mlx-community/chatterbox-turbo-fp16",
+    "revision": "b2d0a13aa7cfff0a06d9acb247ae91c8f19a6d75",
     "family": "chatterbox",
     "default_voice": "default",
     "notes": "Multilingual expressive TTS. Voice cloning via reference audio."
@@ -79,6 +88,7 @@
   "chatterbox-4bit": {
     "type": "tts",
     "hf_id": "mlx-community/chatterbox-turbo-4bit",
+    "revision": "c63817725071d7b5269c7b558772d6e8cbf59cec",
     "family": "chatterbox",
     "default_voice": "default",
     "notes": "4-bit quant of Chatterbox Turbo."
@@ -87,6 +97,7 @@
   "vibevoice": {
     "type": "tts",
     "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
+    "revision": "550877a15358642c1e062aa38ce1fe0623beaa1b",
     "family": "vibevoice",
     "default_voice": "en-Grace_woman",
     "notes": "Realtime low-latency TTS, 0.5B 4bit. Per-language voice caches; en-Grace_woman is the canonical English-female default. Full set: en-{Grace_woman,Mike_man,Carter_man,Davis_man,Frank_man,Emma_woman} + de/fr/it/jp/kr/nl/pl/pt/sp Spk0/Spk1 pairs + in-Samuel_man."
@@ -94,6 +105,7 @@
   "vibevoice-realtime": {
     "type": "tts",
     "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
+    "revision": "550877a15358642c1e062aa38ce1fe0623beaa1b",
     "family": "vibevoice",
     "default_voice": "en-Grace_woman",
     "notes": "Long-form alias for ``vibevoice``."
@@ -102,6 +114,7 @@
   "voxcpm": {
     "type": "tts",
     "hf_id": "mlx-community/VoxCPM1.5",
+    "revision": "2e10fbc91ea9eba3f711a5dc5160caec8ba14819",
     "family": "voxcpm",
     "default_voice": "default",
     "notes": "English (experimental) TTS (CPM-based). WARNING: Chinese is currently BROKEN in this MLX port — Chinese input produces Thai-script gibberish plus long runaway generation, so do NOT use voxcpm for Chinese. For Chinese TTS use `f5-tts-zh` (EN+ZH, cloneable) or `qwen3-tts` (named Chinese speakers) instead. English-only is usable but best-effort; report upstream if synth fails."
@@ -110,6 +123,7 @@
   "dia": {
     "type": "tts",
     "hf_id": "mlx-community/Dia-1.6B-4bit",
+    "revision": "d74afc38d6ee8909c1cf17ba2c281cfc66423bb7",
     "family": "dia",
     "default_voice": "default",
     "notes": "Dia 1.6B multi-speaker dialogue TTS (4-bit). Best-effort — covered by the audio probe but mlx_audio support is experimental; report bugs upstream if synth fails."
@@ -118,6 +132,7 @@
   "qwen3-tts": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+    "revision": "52f4770fd9726457eae3d3b6aa92047a25a10776",
     "family": "qwen3_tts",
     "default_voice": "Serena",
     "notes": "Alibaba Qwen3-TTS 1.7B CustomVoice (bf16). Multilingual predefined speakers (Chinese: Vivian, Serena, Uncle_Fu, Dylan, Eric; English: Ryan, Aiden; Japanese: Ono_Anna; Korean: Sohee) matched case-insensitively, with emotion/style control via the OpenAI `instructions` field. The CustomVoice variant is used (not 0.6B-Base, which is voice-cloning-only and needs a reference clip)."
@@ -125,6 +140,7 @@
   "f5-tts-zh": {
     "type": "tts",
     "hf_id": "lucasnewman/f5-tts-mlx",
+    "revision": "2d719cadec8fd3887c8599475a5f65924d523654",
     "family": "f5",
     "default_voice": "clone",
     "notes": "F5-TTS (pure-MLX, no torch): EN+ZH multilingual, zero-shot voice CLONING via ref_audio (24kHz clip) + ref_text. Fills the Chinese expressive/cloneable gap (Qwen3-TTS is flat, Chatterbox English-only). With no ref it uses a packaged default voice; supply a Chinese ref for a natural Chinese narrator."
@@ -132,6 +148,7 @@
   "indextts": {
     "type": "tts",
     "hf_id": "mlx-community/IndexTTS-1.5",
+    "revision": "d163f13bc1816c20bd79d730cc88f866a2a43ceb",
     "family": "indextts",
     "default_voice": "clone",
     "notes": "IndexTTS 1.5 zero-shot voice cloning. Requires ref_audio; the reference transcript is not required. No predefined speakers."
@@ -139,6 +156,7 @@
   "indextts-1.5": {
     "type": "tts",
     "hf_id": "mlx-community/IndexTTS-1.5",
+    "revision": "d163f13bc1816c20bd79d730cc88f866a2a43ceb",
     "family": "indextts",
     "default_voice": "clone",
     "notes": "Long-form alias for indextts — same IndexTTS 1.5 MLX checkpoint."
@@ -146,6 +164,7 @@
   "qwen3-tts-clone": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "revision": "a6eb4f68e4b056f1215157bb696209bc82a6db48",
     "family": "qwen3_tts",
     "default_voice": "clone",
     "notes": "Alibaba Qwen3-TTS 1.7B **Base** — zero-shot Chinese/multilingual voice CLONING. Requires ref_audio (a clean 5-10s reference clip at the model's native sample rate) plus ref_text (its exact transcript); ignores predefined speakers. Lets a channel reuse ONE consistent branded narrator voice. Distinct from the CustomVoice variant (named speakers + `instruct` emotion, no cloning)."
@@ -153,6 +172,7 @@
   "qwen3-tts-customvoice": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+    "revision": "52f4770fd9726457eae3d3b6aa92047a25a10776",
     "family": "qwen3_tts",
     "default_voice": "Serena",
     "notes": "Long-form alias for ``qwen3-tts`` — same HF id (1.7B CustomVoice bf16)."
@@ -160,6 +180,7 @@
   "qwen3-tts-6bit": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+    "revision": "1c6c0ff58c43afa8df571facde2efa077efd85e2",
     "family": "qwen3_tts",
     "default_voice": "Serena",
     "notes": "6-bit quant of Qwen3-TTS 1.7B CustomVoice — smaller download, mild quality drop."
@@ -167,6 +188,7 @@
   "qwen3-tts-4bit": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
+    "revision": "f35faf19b0cc2160865af64ecf0f22f83d335135",
     "family": "qwen3_tts",
     "default_voice": "Serena",
     "notes": "4-bit quant of Qwen3-TTS 1.7B CustomVoice — smallest download."
@@ -175,6 +197,7 @@
   "qwen3-tts-voicedesign": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+    "revision": "7d3824abff87e49756bb0f83fb5411de75d160c4",
     "family": "qwen3_tts",
     "default_voice": "describe",
     "notes": "Qwen3-TTS 1.7B VoiceDesign (bf16). The VOICE-DESIGN sibling of CustomVoice: instead of picking a named speaker, the ENTIRE voice — timbre, gender, age, accent, emotion, prosody — is described in natural language via the OpenAI `instructions` field (mapped to mlx_audio's mandatory `instruct` arg; the weights self-dispatch to `generate_voice_design`). Richer style control than CustomVoice's `instruct` (which only modulates a fixed speaker). Has NO named speakers, so `voice` is ignored — the voice surface is the single `describe` sentinel (like F5's `clone`) and `default_voice` is that sentinel so the voice-omitted path validates. Supply a description, e.g. `instructions=\"a warm, low female narrator, calm and measured\"`."
@@ -182,6 +205,7 @@
   "qwen3-tts-voicedesign-8bit": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+    "revision": "f90d617701d9f7f4ca499291e0b57f2b3c2fd2ee",
     "family": "qwen3_tts",
     "default_voice": "describe",
     "notes": "8-bit quant of Qwen3-TTS 1.7B VoiceDesign — smaller download, mild quality drop."
@@ -189,6 +213,7 @@
   "qwen3-tts-voicedesign-4bit": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+    "revision": "5c390979e4b93af5f2932f90742ca99c7dd04687",
     "family": "qwen3_tts",
     "default_voice": "describe",
     "notes": "4-bit quant of Qwen3-TTS 1.7B VoiceDesign — smallest download."
@@ -197,6 +222,7 @@
   "whisper": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Bare ``whisper`` -> largest-v3. Matches OpenAI's ``whisper-1`` placeholder."
@@ -204,6 +230,7 @@
   "whisper-1": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "OpenAI-spec id from the legacy Whisper API. Same destination as ``whisper-large-v3``."
@@ -211,6 +238,7 @@
   "whisper-large-v3": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "revision": "49e6aa286ad60c14352c404340ded53710378a11",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper large-v3 (multilingual, 99+ languages)."
@@ -218,6 +246,7 @@
   "whisper-large-v3-turbo": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-turbo",
+    "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper large-v3 turbo (faster decode, slight quality drop)."
@@ -225,6 +254,7 @@
   "whisper-medium": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-medium-mlx",
+    "revision": "7fc08c4eac4c316526498f147dfdee6f6303f975",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper medium."
@@ -232,6 +262,7 @@
   "whisper-small": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-small-mlx",
+    "revision": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper small."
@@ -239,6 +270,7 @@
   "whisper-base": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-base-mlx",
+    "revision": "1e3e249fb8d01c655324bd6841b1deadffd6d04c",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper base."
@@ -246,6 +278,7 @@
   "whisper-tiny": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-tiny-mlx",
+    "revision": "6caf9c55601caafbe6508a8b0d216bdf4783c4e8",
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper tiny (smallest, fastest, lowest accuracy)."
@@ -254,6 +287,7 @@
   "qwen3-aligner": {
     "type": "stt",
     "hf_id": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+    "revision": "0e1a68e91d815300c7c9754b2a7639378b23db15",
     "family": "qwen3_aligner",
     "languages": "multilingual",
     "notes": "Forced ALIGNMENT (not ASR): given audio + the KNOWN transcript, returns per-character start/end times with zero recognition error. Use STTEngine.align(audio, text, language) or /v1/audio/transcriptions with a `text` field. Powers karaoke captions + beat-synced editing; unoccupied on MLX."
@@ -261,6 +295,7 @@
   "qwen3-forced-aligner": {
     "type": "stt",
     "hf_id": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+    "revision": "0e1a68e91d815300c7c9754b2a7639378b23db15",
     "family": "qwen3_aligner",
     "languages": "multilingual",
     "notes": "Long-form alias for ``qwen3-aligner`` — same HF id."
@@ -269,6 +304,7 @@
   "parakeet": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "revision": "8ae155301e23d820d82aa60d24817c900e69e487",
     "family": "parakeet",
     "languages": "en",
     "notes": "NVIDIA Parakeet TDT 0.6B v2 (English, fastest STT)."
@@ -276,6 +312,7 @@
   "parakeet-tdt-0.6b": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "revision": "8ae155301e23d820d82aa60d24817c900e69e487",
     "family": "parakeet",
     "languages": "en",
     "notes": "Long-form alias for ``parakeet``."
@@ -283,6 +320,7 @@
   "parakeet-tdt-0.6b-v2": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "revision": "8ae155301e23d820d82aa60d24817c900e69e487",
     "family": "parakeet",
     "languages": "en",
     "notes": "Parakeet TDT 0.6B v2."
@@ -290,6 +328,7 @@
   "parakeet-v3": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
+    "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
     "family": "parakeet",
     "languages": "en,es,fr,de,bg,hr,cs,da,nl,et,fi,el,hu,it,lv,lt,mt,pl,pt,ro,sk,sl,sv,ru,uk",
     "notes": "Parakeet TDT 0.6B v3 with automatic language detection. Chinese is not supported."
@@ -297,6 +336,7 @@
   "parakeet-tdt-0.6b-v3": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
+    "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
     "family": "parakeet",
     "languages": "en,es,fr,de,bg,hr,cs,da,nl,et,fi,el,hu,it,lv,lt,mt,pl,pt,ro,sk,sl,sv,ru,uk",
     "notes": "Parakeet TDT 0.6B v3 with automatic language detection. Chinese is not supported."
@@ -304,6 +344,7 @@
   "qwen3-asr": {
     "type": "stt",
     "hf_id": "mlx-community/Qwen3-ASR-1.7B-5bit",
+    "revision": "af6ce82200cac21fecc1b8f9e4e5184bde2e1fab",
     "family": "qwen3_asr",
     "languages": "multilingual",
     "notes": "Qwen3-ASR 1.7B (5-bit). An audio LLM rather than an encoder-decoder ASR model: keeps Chinese/English code-switching straight without a decoding hint, and emits normal punctuation plus spacing between scripts. Takes hotwords as ``system_prompt`` (STTEngine maps the neutral ``context`` argument onto it). Bare ``qwen3-asr`` -> the 1.7B."
@@ -311,6 +352,7 @@
   "qwen3-asr-1.7b": {
     "type": "stt",
     "hf_id": "mlx-community/Qwen3-ASR-1.7B-5bit",
+    "revision": "af6ce82200cac21fecc1b8f9e4e5184bde2e1fab",
     "family": "qwen3_asr",
     "languages": "multilingual",
     "notes": "Explicit long-form alias for ``qwen3-asr`` — same HF id."
@@ -318,6 +360,7 @@
   "qwen3-asr-0.6b": {
     "type": "stt",
     "hf_id": "mlx-community/Qwen3-ASR-0.6B-5bit",
+    "revision": "782e765bd462bbe565586d6e55588a3bf0e3750a",
     "family": "qwen3_asr",
     "languages": "multilingual",
     "notes": "Smaller Qwen3-ASR. Faster than the 1.7B with a small accuracy cost."
@@ -326,6 +369,7 @@
   "sensevoice": {
     "type": "stt",
     "hf_id": "mlx-community/SenseVoiceSmall",
+    "revision": "8ddd966bd96243cff196422f81f0c5d955814792",
     "family": "sensevoice",
     "languages": "zh,yue,ja,ko,en",
     "notes": "FunAudioLLM SenseVoice Small (~234M, non-autoregressive CTC). Dedicated fast Asian-language ASR (strong on Chinese/Cantonese/Japanese/Korean). Also emits per-segment emotion + audio-event tags. Bare ``sensevoice`` -> the small model."
@@ -333,6 +377,7 @@
   "sensevoice-small": {
     "type": "stt",
     "hf_id": "mlx-community/SenseVoiceSmall",
+    "revision": "8ddd966bd96243cff196422f81f0c5d955814792",
     "family": "sensevoice",
     "languages": "zh,yue,ja,ko,en",
     "notes": "Explicit long-form alias for ``sensevoice`` — same HF id."

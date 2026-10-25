@@ -11766,6 +11766,7 @@ def pull_command(args):
         _pull_repository(
             dependency_args,
             allow_patterns_override=list(asset.allow_patterns),
+            revision_override=asset.revision,
         )
     for requirement in runtime_requirements_for(primary_repo):
         print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")
