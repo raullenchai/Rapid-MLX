@@ -216,3 +216,7 @@ def test_glm_malformed_markup_is_not_content(raw):
             ),
         ]
         assert not "".join(m.get("content", "") for m in messages if m)
+
+
+def test_responses_finalize_preserves_plain_text():
+    test_flint_routes("responses", True, False, "Done.", 1)
