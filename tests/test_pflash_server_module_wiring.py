@@ -126,6 +126,9 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
         mock.patch("rapid_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
         mock.patch("rapid_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
         mock.patch("rapid_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch(
+            "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+        ),
         mock.patch("rapid_mlx.server.resolve_serving_lane", lambda name, **kw: lane),
         mock.patch("rapid_mlx.pflash.validate_model_support", _capture_validate),
         mock.patch.object(sys, "argv", ["rapid_mlx.server", *argv]),
@@ -192,6 +195,9 @@ def _run_server_main_capturing_scheduler(
         mock.patch("rapid_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
         mock.patch("rapid_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
         mock.patch("rapid_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch(
+            "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+        ),
         mock.patch(
             "rapid_mlx.server.resolve_serving_lane", lambda _name, **_kw: (False, False)
         ),

@@ -292,7 +292,6 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
         "mirror": expected,
         "metadata": expected,
         "download": expected,
-        "ref": expected,
     }
 
 
@@ -328,7 +327,7 @@ def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch, tm
     (refs / "main").write_text(main_revision)
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
 
-    assert download_gate.is_repo_cached(FLUX2_KLEIN_BF16_REPO) is True
+    assert download_gate.is_repo_cached(FLUX2_KLEIN_BF16_REPO) is False
     assert (
         download_gate._snapshot_is_complete_mflux_model(FLUX2_KLEIN_BF16_REPO) is False
     )

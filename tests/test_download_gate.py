@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from rapid_mlx import _download_gate as gate
+from rapid_mlx import model_aliases
 
 # ---------------------------------------------------------------------------
 # estimate_repo_size_bytes
@@ -669,7 +670,7 @@ def test_whisper_cache_accepts_its_npz_checkpoint_layout(tmp_path, monkeypatch):
     """mlx-audio Whisper uses config.json + weights.npz, not safetensors."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-medium-mlx"
-    sha = "whisper123"
+    sha = model_aliases.resolve_revision("mlx-community/whisper-medium-mlx")
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -690,7 +691,7 @@ def test_whisper_cache_accepts_its_npz_checkpoint_layout(tmp_path, monkeypatch):
 def test_whisper_cache_rejects_incomplete_npz_layout(tmp_path, monkeypatch, missing):
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-small-mlx"
-    sha = "whisper456"
+    sha = model_aliases.resolve_revision("mlx-community/whisper-small-mlx")
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     files = {"config.json": b"{}", "weights.npz": b"weights"}
@@ -714,7 +715,7 @@ def test_whisper_cache_rejects_files_symlinked_outside_repo(
     """A crafted cache symlink must not borrow proof from an unrelated file."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-small-mlx"
-    sha = "whisper789"
+    sha = model_aliases.resolve_revision("mlx-community/whisper-small-mlx")
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     files = {"config.json": b"{}", "weights.npz": b"weights"}
@@ -2706,7 +2707,7 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     false alarm). Exercises the real ``_snapshot_is_complete_split_model``."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--dgrauet--CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
-    sha = "027bc0493a9dc41fad584568a9453961e18abb55"
+    sha = model_aliases.resolve_revision("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4")
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -2764,7 +2765,21 @@ def _seed_mflux_snapshot(
     _seed_refs_main(repo_root, sha)
 
 
-_UNPINNED_MFLUX_REPO = "filipstrand/Z-Image-Turbo-mflux-4bit"
+_UNPINNED_MFLUX_REPO = "fixtures/unpinned-mflux"
+
+
+@pytest.fixture(autouse=True)
+def _uncataloged_mflux_profile(monkeypatch):
+    """Keep moving-ref/fallback cases independent of the shipped pinned catalog."""
+    resolve = model_aliases.resolve_profile
+    profile = model_aliases.AliasProfile(
+        hf_path=_UNPINNED_MFLUX_REPO, modality="image-gen"
+    )
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda name: profile if name == _UNPINNED_MFLUX_REPO else resolve(name),
+    )
 
 
 def _mflux_repo_root(cache_root, repo: str):
@@ -3317,7 +3332,7 @@ def test_split_model_local_snapshot_resolves_a_complete_checkpoint(
     cache_root = tmp_path / "hf-cache"
     repo = "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
     repo_root = cache_root / f"models--{repo.replace('/', '--')}"
-    snap = _seed_split_model_snapshot(repo_root, "1" * 40)
+    snap = _seed_split_model_snapshot(repo_root, model_aliases.resolve_revision(repo))
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
@@ -3331,7 +3346,9 @@ def test_split_model_local_snapshot_declines_a_partial_checkpoint(
     cache_root = tmp_path / "hf-cache"
     repo = "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
     repo_root = cache_root / f"models--{repo.replace('/', '--')}"
-    _seed_split_model_snapshot(repo_root, "2" * 40, omit="vae")
+    _seed_split_model_snapshot(
+        repo_root, model_aliases.resolve_revision(repo), omit="vae"
+    )
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 

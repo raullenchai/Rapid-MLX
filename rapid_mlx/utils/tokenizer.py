@@ -1267,23 +1267,9 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     from ..model_aliases import resolve_model, resolve_revision, resolve_subfolder
 
     repo_id = resolve_model(model_name)
+    if os.path.exists(repo_id):
+        return repo_id
     revision = resolve_revision(model_name)
-    if revision is not None:
-        from .._mirror import pinned_snapshot_download
-        from ..model_aliases import subfolder_allow_patterns
-        from ..model_metadata import resolve_pinned_cached_snapshot
-
-        cached = resolve_pinned_cached_snapshot(model_name)
-        if cached is not None:
-            return str(cached)
-        local = pinned_snapshot_download(
-            repo_id, revision, allow_patterns=subfolder_allow_patterns(model_name)
-        )
-        checkpoint = os.path.join(local, resolve_subfolder(model_name) or "")
-        if not _snapshot_is_complete(checkpoint):
-            raise RuntimeError(f"Pinned checkpoint {repo_id}@{revision} is incomplete")
-        return checkpoint
-
     # #2340 precedence is intentional:
     #
     # 1. An explicit alias names a specific catalog checkpoint and must win.
@@ -1297,6 +1283,27 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     catalog_subfolder = resolve_subfolder(model_name)
     explicit_alias_subfolder = catalog_subfolder if model_name != repo_id else None
     subfolder = explicit_alias_subfolder or pulled_variant(repo_id) or catalog_subfolder
+    if revision is not None:
+        from .._mirror import pinned_snapshot_download
+        from ..model_metadata import resolve_pinned_cached_snapshot
+
+        cached = resolve_pinned_cached_snapshot(
+            model_name, checkpoint_subfolder=subfolder or ""
+        )
+        if cached is not None:
+            return str(cached)
+        local = pinned_snapshot_download(
+            repo_id,
+            revision,
+            allow_patterns=[f"{_escape_variant_glob_literal(subfolder)}/*"]
+            if subfolder
+            else None,
+        )
+        checkpoint = os.path.join(local, subfolder or "")
+        if not _snapshot_is_complete(checkpoint):
+            raise RuntimeError(f"Pinned checkpoint {repo_id}@{revision} is incomplete")
+        return checkpoint
+
     if not subfolder:
         return model_name
     # ``resolve_subfolder`` answers for BOTH spellings — the alias the user

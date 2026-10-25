@@ -17,7 +17,8 @@ OTHER_SHA = "b" * 40
 CONFIG = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 
 
-def snapshot(cache, repo, sha=SHA, weight="model.safetensors"):
+def snapshot(cache, repo, sha=None, weight="model.safetensors"):
+    sha = sha or model_aliases.resolve_revision(repo) or SHA
     root = cache / ("models--" + repo.replace("/", "--"))
     path = root / "snapshots" / sha
     path.mkdir(parents=True, exist_ok=True)
@@ -242,3 +243,19 @@ def test_sidecar_subfolder_is_applied_once(cached_target, monkeypatch, no_ref, p
     if no_ref:
         (local.parent.parent / "refs" / "main").unlink()
     assert cli._cached_mtp_sidecar(profile.mtp_draft_model) == str(local / "4bit")
+
+
+@pytest.mark.parametrize("main_revision", [None, OTHER_SHA])
+def test_pinned_target_ignores_missing_or_moved_main(cached_target, main_revision):
+    cache, profile = cached_target
+    local = snapshot(cache, profile.mtp_draft_model)
+    target_root = cache / ("models--" + profile.hf_path.replace("/", "--"))
+    if main_revision is None:
+        (target_root / "refs" / "main").unlink()
+    else:
+        moving = snapshot(cache, profile.hf_path, main_revision)
+        (moving / "config.json").write_text('{"model_type": "other"}')
+    args = _args(ALIAS)
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar == str(local)

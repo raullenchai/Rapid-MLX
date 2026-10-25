@@ -20,10 +20,20 @@ CONFIG = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    # The refs/main and ambiguous-snapshot cases deliberately exercise an
+    # unpinned profile, as uncataloged/custom repositories still support it.
+    resolve = model_aliases.resolve_profile
+    unpinned = replace(resolve(ALIAS), revision=None)
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda name: unpinned if name in (ALIAS, REPO) else resolve(name),
+    )
     sidecar = tmp_path / "models--mlx-community--Qwen3.5-9B-MTP-4bit"
-    _snapshot(sidecar)
-    (sidecar / "snapshots" / SHA_A / "model.safetensors").write_bytes(b"weights")
-    _main(sidecar)
+    sidecar_sha = model_aliases.resolve_revision(unpinned.mtp_draft_model) or SHA_A
+    _snapshot(sidecar, sidecar_sha)
+    (sidecar / "snapshots" / sidecar_sha / "model.safetensors").write_bytes(b"weights")
+    _main(sidecar, sidecar_sha)
     return tmp_path / "models--mlx-community--Qwen3.5-9B-4bit"
 
 

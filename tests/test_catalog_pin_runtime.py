@@ -158,3 +158,17 @@ def test_catalog_agrees_with_runtime_artifact_pins():
         assert (
             model_aliases.resolve_revision(artifact.alias) == artifact.target_revision
         )
+
+
+def test_pinned_alias_resolved_to_configured_local_folder_stays_local(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+
+    monkeypatch.setattr(model_aliases, "resolve_model", lambda name: str(tmp_path))
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_revision",
+        lambda name: pytest.fail("local checkpoint must not resolve a Hub revision"),
+    )
+    assert _resolve_subfolder_checkpoint("flint-40b-a2.5b-4bit") == str(tmp_path)

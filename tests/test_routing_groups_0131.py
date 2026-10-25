@@ -376,6 +376,10 @@ def test_fix3_cli_serve_forwards_parsed_spec_decode_to_lane_contract(
 
 
 def test_fix3_standalone_server_forwards_parsed_mtp_to_lane_contract(monkeypatch):
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx import cli, server
 
     class _StopAtPFlashError(Exception):

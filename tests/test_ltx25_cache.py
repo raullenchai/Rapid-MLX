@@ -6,7 +6,7 @@ import json
 import pytest
 
 from rapid_mlx import _download_gate as gate
-from rapid_mlx import cli, model_metadata
+from rapid_mlx import cli, model_aliases, model_metadata
 
 REPO = "MrMofer/ltx-2.5-mlx-q8"
 CHECKPOINT_FILES = (
@@ -32,14 +32,15 @@ CHECKPOINT_FILES = (
 
 def _cache(tmp_path, monkeypatch):
     root = tmp_path / "models--MrMofer--ltx-2.5-mlx-q8"
-    snap = root / "snapshots" / "revision"
+    revision = model_aliases.resolve_revision(REPO)
+    snap = root / "snapshots" / revision
     snap.mkdir(parents=True)
     for name in CHECKPOINT_FILES:
         path = snap / name
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(b"{}" if name.endswith(".json") else b"weights")
     (root / "refs").mkdir()
-    (root / "refs" / "main").write_text("revision")
+    (root / "refs" / "main").write_text(revision)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     import huggingface_hub.file_download as fd
 
@@ -59,14 +60,13 @@ def test_complete_ltx25_cache_serves_offline_without_stub_notice(tmp_path, monke
     cli._ensure_model_downloaded(REPO)
 
 
-def test_complete_ltx25_cache_without_main_ref_is_not_admitted(tmp_path, monkeypatch):
+def test_complete_pinned_ltx25_cache_needs_no_main_ref(tmp_path, monkeypatch):
     snap = _cache(tmp_path, monkeypatch)
     (snap.parents[1] / "refs" / "main").unlink()
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-    assert cli._cache_runnability(REPO) is False
-    with pytest.raises(SystemExit, match="1"):
-        cli._ensure_model_downloaded(REPO)
+    assert cli._cache_runnability(REPO) is True
+    cli._ensure_model_downloaded(REPO)
 
 
 @pytest.mark.parametrize(
@@ -132,7 +132,7 @@ def test_text_cache_behavior_unchanged(tmp_path, monkeypatch):
     assert gate.is_weightless_stub("publisher/text") is False
 
 
-def test_ltx25_main_ref_must_select_complete_snapshot(tmp_path, monkeypatch):
+def test_ltx25_pin_ignores_moved_main(tmp_path, monkeypatch):
     snap = _cache(tmp_path, monkeypatch)
     partial = snap.parent / "new-revision"
     partial.mkdir()
@@ -140,10 +140,9 @@ def test_ltx25_main_ref_must_select_complete_snapshot(tmp_path, monkeypatch):
     (snap.parents[1] / "refs" / "main").write_text(partial.name)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-    assert cli._cache_runnability(REPO) is False
-    assert gate.weightless_stub_notice(REPO) is not None
-    with pytest.raises(SystemExit, match="1"):
-        cli._ensure_model_downloaded(REPO)
+    assert cli._cache_runnability(REPO) is True
+    assert gate.weightless_stub_notice(REPO) is None
+    cli._ensure_model_downloaded(REPO)
 
 
 def test_complete_ltx25_cache_online_with_preferred_weights(tmp_path, monkeypatch):
@@ -168,3 +167,14 @@ def test_ltx25_tokenizer_larger_than_config_limit_is_admitted(tmp_path, monkeypa
     )
     assert cli._cache_runnability(REPO) is True
     assert gate.weightless_stub_notice(REPO) is None
+
+
+def test_ltx25_moving_main_cannot_replace_missing_pin(tmp_path, monkeypatch):
+    snap = _cache(tmp_path, monkeypatch)
+    moving = snap.with_name("a" * 40)
+    snap.rename(moving)
+    (moving.parents[1] / "refs" / "main").write_text(moving.name)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert cli._cache_runnability(REPO) is False
+    with pytest.raises(SystemExit, match="1"):
+        cli._ensure_model_downloaded(REPO)

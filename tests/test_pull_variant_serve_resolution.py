@@ -34,8 +34,12 @@ import pytest
 from huggingface_hub import RepoFile, RepoFolder
 
 from rapid_mlx import _download_gate
+from rapid_mlx.model_aliases import resolve_revision
 from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 # A raw multi-variant repo id with NO catalog alias — ``resolve_subfolder``
 # and ``resolve_model`` both leave it untouched, so only the marker fallback
@@ -471,7 +475,13 @@ def test_pull_persist_failure_still_completes_the_pull(
     )
 
     def fake_snapshot(*a, **kw):
-        return str(snapshot_tree(tmp_path, filename="4bit/model.safetensors"))
+        return str(
+            snapshot_tree(
+                tmp_path,
+                revision=resolve_revision(CATALOG_REPO),
+                filename="4bit/model.safetensors",
+            )
+        )
 
     def boom_persist(repo_id, variant):
         raise OSError("cannot write marker")

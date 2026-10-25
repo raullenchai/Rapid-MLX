@@ -262,7 +262,7 @@ def test_pinned_revision_covers_checkpoints_pinned_without_a_file_list():
     for repo_id in whole_repo_pins:
         assert runtime.pinned_runtime_files(repo_id) is None
         assert runtime.pinned_revision(repo_id) == IMAGE_MODEL_REVISIONS[repo_id]
-    assert runtime.pinned_revision("mlx-community/Qwen3-0.6B-4bit") is None
+    assert runtime.pinned_revision("example/uncataloged-model") is None
 
 
 def test_audit_lists_a_whole_repo_pin_at_its_commit(monkeypatch, tmp_path):
@@ -627,7 +627,7 @@ def _run_uploader(monkeypatch, tmp_path, repo, *, revision=None, files=FILES):
 
 def test_uploader_mirrors_an_image_repo_at_its_loader_pin(monkeypatch, tmp_path):
     """Only the loader pins this repository; ``main`` may move under it."""
-    assert runtime.catalog_revision(IMAGE_PIN_REPO) is None
+    assert runtime.catalog_revision(IMAGE_PIN_REPO) == IMAGE_PIN
     assert runtime.pinned_revision(IMAGE_PIN_REPO) == IMAGE_PIN
     code, listed, downloaded = _run_uploader(monkeypatch, tmp_path, IMAGE_PIN_REPO)
     assert code == 0
@@ -667,7 +667,7 @@ def test_uploader_keeps_a_revision_pinned_alias_at_its_catalog_pin(
 def test_uploader_explicit_revision_still_selects_an_unpinned_repo(
     monkeypatch, tmp_path
 ):
-    repo = "mlx-community/Qwen3-0.6B-4bit"
+    repo = "example/uncataloged-model"
     assert runtime.pinned_revision(repo) is None
     code, listed, downloaded = _run_uploader(monkeypatch, tmp_path, repo, revision=PIN)
     assert code == 0

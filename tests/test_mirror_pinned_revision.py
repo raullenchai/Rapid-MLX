@@ -539,8 +539,8 @@ def test_pull_of_an_unpinned_repo_follows_main(monkeypatch):
     monkeypatch.setattr(
         cli, "_pull_repository", lambda args, **kw: calls.append((args.model, kw))
     )
-    cli.pull_command(SimpleNamespace(model="mlx-community/Qwen3-0.6B-4bit"))
-    assert calls == [("mlx-community/Qwen3-0.6B-4bit", {})]
+    cli.pull_command(SimpleNamespace(model="example/uncataloged-model"))
+    assert calls == [("example/uncataloged-model", {})]
 
 
 def test_stale_same_size_config_in_the_pinned_snapshot_is_refetched(

@@ -89,6 +89,10 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     native-format support. Pre-fix this asserted False because cfg was
     unsynced when detection ran.
     """
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
@@ -136,6 +140,10 @@ def test_load_model_tracks_explicit_served_model_name(monkeypatch, served, expec
     flag the readiness banner consumes, and leave it clear when no override
     is supplied — otherwise the banner would silently fall back to the
     catalog alias."""
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
@@ -992,6 +1000,10 @@ def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
 
 
 def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx import server
     from rapid_mlx.config import get_config, reset_config
 
@@ -1038,6 +1050,10 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
 def test_load_model_mtp_kwarg_translates_to_scheduler_config(
     monkeypatch, scheduler_config_stub
 ):
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     pytest.importorskip("mlx")  # mtp spec-decode path imports mlx.core (no-MLX job)
     from rapid_mlx import server
 
@@ -1126,6 +1142,10 @@ def test_load_model_response_cache_reconfigure_failure_forces_disabled(monkeypat
     the except path → the pre-seeded, enabled cache object survives with its
     entries, so this fails.
     """
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx import response_cache as rc
     from rapid_mlx import server
 

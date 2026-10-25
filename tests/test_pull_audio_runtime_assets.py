@@ -57,7 +57,7 @@ def test_kokoro_alias_and_hf_id_declare_g2p_requirement() -> None:
 
 
 def test_pull_downloads_primary_then_declared_runtime_assets(monkeypatch) -> None:
-    calls: list[tuple[str, list[str] | None, str | None, str | None]] = []
+    calls: list[tuple[str, str | None, list[str] | None, str | None, str | None]] = []
     preparations = []
 
     def fake_pull_repository(

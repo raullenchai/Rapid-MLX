@@ -531,6 +531,10 @@ def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
     fragile post-construction wiring is skipped — we only care that the
     routing kwargs are correct.
     """
+    # Model construction is stubbed; materialize no pinned weights in this test.
+    monkeypatch.setattr(
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
     from rapid_mlx.model_aliases import resolve_profile
 
     assert resolve_profile("bonsai-27b-2bit").is_text_only is True

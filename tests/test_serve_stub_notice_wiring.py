@@ -28,7 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from rapid_mlx import cli
-from rapid_mlx.model_aliases import resolve_model
+from rapid_mlx.model_aliases import resolve_model, resolve_revision
 
 _ALIAS = "qwen3.5-4b-4bit"
 
@@ -71,7 +71,8 @@ def _seed_alias_cache(monkeypatch, tmp_path, *, with_weights: bool):
 
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / ("models--" + resolved.replace("/", "--"))
-    sha = "seed0000seed0000seed0000seed0000seed0000"
+    sha = resolve_revision(_ALIAS)
+    assert sha is not None
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     blobs = repo_root / "blobs"

@@ -26,16 +26,38 @@ from rapid_mlx.model_aliases import (
     _coerce,
     resolve_model,
     resolve_profile,
+    resolve_revision,
     resolve_subfolder,
     subfolder_allow_patterns,
 )
 from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 ALIAS = "lfm2.5-2.6b-4bit"
 REPO = "LiquidAI/LFM2.5-2.6B-MLX"
 ABLITERATED_ALIAS = "qwen3.8-27b-abliterated-4bit"
 ABLITERATED_REPO = "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp"
+
+
+@pytest.fixture
+def unpinned_subfolder(monkeypatch):
+    """Exercise the supported unpinned subfolder path with a synthetic identity."""
+    import sys
+
+    from rapid_mlx import model_aliases
+
+    repo = "example/UnpinnedSubfolderModel"
+    alias = "test-subfolder"
+    monkeypatch.setattr(sys.modules[__name__], "REPO", repo)
+    monkeypatch.setattr(
+        model_aliases,
+        "_aliases",
+        {alias: _coerce(alias, {"hf_path": repo, "subfolder": "4bit"})},
+    )
+    monkeypatch.setattr(model_aliases, "_hf_to_alias", {repo.lower(): alias})
 
 
 # --------------------------------------------------------------------------
@@ -225,7 +247,7 @@ def test_allow_pattern_prefix_matches_the_real_repo_layout():
 
 
 def test_flat_repo_id_passes_through_untouched():
-    name = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
+    name = "example/UnpinnedFlatModel"
     assert _resolve_subfolder_checkpoint(name) == name
 
 
@@ -280,7 +302,9 @@ def test_joins_the_subfolder_onto_the_snapshot(monkeypatch, tmp_path):
     assert json.loads(Path(out, "config.json").read_text()) == {}
 
 
-def test_download_failure_raises_instead_of_returning_the_repo_id(monkeypatch):
+def test_download_failure_raises_instead_of_returning_the_repo_id(
+    monkeypatch, unpinned_subfolder
+):
     """Returning the bare repo id would send mlx-lm to its own UNFILTERED
     snapshot_download: the user waits out ~20 GB and then fails anyway,
     because the repo root is not a checkpoint. Fail immediately instead."""
@@ -294,7 +318,9 @@ def test_download_failure_raises_instead_of_returning_the_repo_id(monkeypatch):
         _resolve_subfolder_checkpoint(REPO)
 
 
-def test_warm_complete_subfolder_never_touches_the_network(monkeypatch, tmp_path):
+def test_warm_complete_subfolder_never_touches_the_network(
+    monkeypatch, tmp_path, unpinned_subfolder
+):
     """A warm, COMPLETE cache resolves offline-first with zero network.
 
     The online ``snapshot_download`` used to run first; on a poisoned-DNS
@@ -340,7 +366,9 @@ def test_warm_complete_subfolder_never_touches_the_network(monkeypatch, tmp_path
     )
 
 
-def test_incomplete_cached_subfolder_falls_through_to_the_hub(monkeypatch, tmp_path):
+def test_incomplete_cached_subfolder_falls_through_to_the_hub(
+    monkeypatch, tmp_path, unpinned_subfolder
+):
     """A half-pulled cache must NOT short-circuit — it still hits the Hub to
     finish the download, rather than loading a shard-less checkpoint that
     would fail (or render garbage). Only a *complete* offline resolve wins."""
@@ -375,19 +403,20 @@ def test_incomplete_cached_subfolder_falls_through_to_the_hub(monkeypatch, tmp_p
 
 
 def test_flat_repos_are_untouched_by_the_strict_path(monkeypatch):
-    """The strictness applies only to subfolder aliases — a flat repo must
-    never reach snapshot_download here at all."""
+    """An unpinned flat repository must not trigger snapshot resolution."""
     import huggingface_hub
 
     def tripwire(repo_id, **kwargs):
-        raise AssertionError("flat repo must not be downloaded by this helper")
+        raise AssertionError("unpinned flat repo must not be downloaded by this helper")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", tripwire)
-    name = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
+    name = "example/UnpinnedFlatModel"
     assert _resolve_subfolder_checkpoint(name) == name
 
 
-def test_missing_subfolder_after_download_raises(monkeypatch, tmp_path):
+def test_missing_subfolder_after_download_raises(
+    monkeypatch, tmp_path, unpinned_subfolder
+):
     """Publisher renamed or dropped the folder. Say so — silently loading
     the repo root would either fail obscurely or, worse, succeed against
     some other checkpoint that happens to sit there."""
@@ -731,7 +760,9 @@ def test_pull_narrows_to_the_checkpoint_and_says_so(
 
     import rapid_mlx.cli as cli
 
-    snapshot = snapshot_tree(tmp_path, filename="4bit/model.safetensors")
+    snapshot = snapshot_tree(
+        tmp_path, revision=resolve_revision(REPO), filename="4bit/model.safetensors"
+    )
     seen: dict = {}
 
     def fake_dl(rid, **kw):
@@ -761,7 +792,7 @@ def test_pull_of_a_flat_repo_is_unfiltered(hub_online_env, monkeypatch, tmp_path
 
     def fake_dl(rid, **kw):
         seen["allow"] = kw.get("allow_patterns", "ABSENT")
-        return str(snapshot_tree(tmp_path))
+        return str(snapshot_tree(tmp_path, revision=resolve_revision(rid)))
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_dl)
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **kw: False)
@@ -776,7 +807,9 @@ def test_pull_of_a_flat_repo_is_unfiltered(hub_online_env, monkeypatch, tmp_path
     )
 
 
-def test_incomplete_cached_checkpoint_is_rejected(monkeypatch, tmp_path):
+def test_incomplete_cached_checkpoint_is_rejected(
+    monkeypatch, tmp_path, unpinned_subfolder
+):
     """A directory is not a checkpoint.
 
     An earlier pull that ran out of disk leaves ``4bit/`` present with its

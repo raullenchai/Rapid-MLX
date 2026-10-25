@@ -1148,11 +1148,7 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     # Preserve the historical resolver hot path exactly unless the external
     # roots are available. In particular, ordinary chat/serve resolution
     # must not introduce a cache/download-gate probe.
-    if (
-        not include_external_roots
-        or not external_model_root_paths()
-        or ("/" in name and resolve_revision(name))
-    ):
+    if not include_external_roots or not external_model_root_paths():
         if "/" in name:
             canonical = _alias_for_hf_path(name)
             if canonical is not None:
@@ -1222,7 +1218,7 @@ def resolve_hub_model(name: str) -> str:
     resolved = resolve_model(name, include_external_roots=False)
     from .audio.registry import resolve_audio_alias
 
-    entry = resolve_audio_alias(resolved)
+    entry = resolve_audio_alias(resolved) if "/" not in resolved else None
     return entry.hf_id if entry is not None else resolved
 
 

@@ -388,7 +388,7 @@ def test_autoselected_starter_still_runs_disk_gate_in_prefetch(
     # confirm gate above.
     called = {"disk": False}
 
-    def _fake_disk(model_name, force=False):
+    def _fake_disk(model_name, force=False, *, revision_override=None):
         called["disk"] = True
 
     # An HF-style repo id is not a local path, so the early ``os.path.exists``

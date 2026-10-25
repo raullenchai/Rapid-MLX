@@ -1223,6 +1223,13 @@ def _snapshot_is_complete_ltx25(snap_dir: str) -> bool:
     )
 
 
+def _catalog_snapshot_sha(repo_id: str, repo_root: str) -> str | None:
+    """Use the catalog identity before considering mutable cache references."""
+    from .model_aliases import resolve_revision
+
+    return resolve_revision(repo_id) or _resolved_snapshot_sha(repo_root)
+
+
 def _snapshot_is_complete_ltx25_model(repo_id: str) -> bool:
     """Resolve LTX-2.5's selected Hub snapshot and check its runtime files."""
     if repo_id != "MrMofer/ltx-2.5-mlx-q8":
@@ -1230,7 +1237,7 @@ def _snapshot_is_complete_ltx25_model(repo_id: str) -> bool:
     from huggingface_hub.constants import HF_HUB_CACHE
 
     repo_root = os.path.join(HF_HUB_CACHE, "models--MrMofer--ltx-2.5-mlx-q8")
-    sha = _resolved_snapshot_sha(repo_root)
+    sha = _catalog_snapshot_sha(repo_id, repo_root)
     return sha is not None and _snapshot_is_complete_ltx25(
         os.path.join(repo_root, "snapshots", sha)
     )
@@ -1258,7 +1265,7 @@ def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
@@ -1312,7 +1319,7 @@ def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
@@ -1394,7 +1401,7 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
@@ -1478,7 +1485,7 @@ def split_model_local_snapshot(repo_id: str) -> str | None:
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
+        resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)
         if resolved_sha is None:
             return None
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
@@ -1935,7 +1942,7 @@ def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
         snap_dir = os.path.join(repo_root, "snapshots", pinned_revision)
         return (repo_root, snap_dir) if os.path.isdir(snap_dir) else None
 
-    resolved_sha = _resolved_snapshot_sha(repo_root)
+    resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)
     if resolved_sha is None:
         # An interrupted first download can leave component indexes and
         # shards behind before huggingface_hub commits refs/main.  With one

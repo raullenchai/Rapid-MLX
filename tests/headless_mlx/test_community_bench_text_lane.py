@@ -1050,7 +1050,13 @@ def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
         raise RuntimeError("stop here")
 
     monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", fake_loader)
-    monkeypatch.setattr(model_aliases, "resolve_model", lambda name: "/tmp/same-dir")
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_model",
+        lambda name, *, include_external_roots=True: (
+            "/tmp/same-dir" if include_external_roots else name
+        ),
+    )
     with pytest.raises(RuntimeError, match="stop here"):
         asyncio.run(
             local_runner._text_measurements(

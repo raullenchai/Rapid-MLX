@@ -131,7 +131,9 @@ def _revision(entry: dict) -> str | None:
 
 
 def resolve_audio_revision(name: str) -> str | None:
-    entry = resolve_audio_alias(name)
+    registry = _load_registry()
+    key = name.lower()
+    entry = registry.get(key) or registry.get(_HF_ID_INDEX.get(key, key))
     if entry is not None:
         return entry.revision
     for assets in _RUNTIME_ASSETS.values():

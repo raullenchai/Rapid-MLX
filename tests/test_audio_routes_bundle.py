@@ -108,6 +108,15 @@ def _install_fake_mlx_audio(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", fake_tts_generate)
 
 
+@pytest.fixture(autouse=True)
+def _stub_audio_checkpoint_download(monkeypatch, tmp_path):
+    """The backend loaders below are fakes; keep checkpoint provisioning fake too."""
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *args, **kwargs: str(tmp_path / "snapshot"),
+    )
+
+
 @pytest.fixture
 def _reset_audio_probe():
     """Clear cached probe verdicts + recorded lane statuses between tests."""
