@@ -29,7 +29,7 @@ class Glm47ContentFilter:
 
     _OPEN = "<tool_call>"
     _CLOSE = "</tool_call>"
-    _ORPHANS = ("<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>")
+    _ORPHANS = ("<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>", _CLOSE)
     _HEADER = re.compile(r"<tool_call>\s*[\w.:-]*\s*")
 
     def __init__(self):
@@ -81,7 +81,15 @@ class Glm47ContentFilter:
         return "".join(visible)
 
     def flush(self) -> str:
-        visible = "" if self._in_wire else self._buffer
+        incomplete_header = (
+            self.enabled
+            and self._buffer.startswith(self._OPEN)
+            and (
+                self._at_start
+                or re.fullmatch(r"<tool_call>\s*[\w.:-]+\s*", self._buffer) is not None
+            )
+        )
+        visible = "" if self._in_wire or incomplete_header else self._buffer
         self._buffer = ""
         self._in_wire = False
         return visible
@@ -237,16 +245,20 @@ class Glm47ToolParser(ToolParser):
         """
         Extract tool calls from streaming GLM-4.7 model output.
         """
-        # Feed every delta, including complete envelopes, so a prefix held on
-        # the preceding chunk cannot survive after that envelope is consumed.
+        # Reasoning bytes must not change the content filter's leading-orphan
+        # state. Reset at the first close, including a split closing marker.
+        if "<think>" in current_text and "</think>" not in current_text:
+            return None
+        filter_delta = delta_text
+        if "</think>" in current_text and "</think>" not in previous_text:
+            self._content_filter = Glm47ContentFilter()
+            filter_delta = current_text.partition("</think>")[2]
         if not hasattr(self, "_content_filter"):
             self.reset()
         self._content_filter.enabled = bool(request and request.get("tools"))
-        filtered_delta = self._content_filter.process(delta_text)
-
-        # Skip thinking content in streaming
-        if "<think>" in current_text and "</think>" not in current_text:
-            return None
+        # Include complete envelopes so a previously held prefix cannot survive
+        # after its block is consumed.
+        filtered_delta = self._content_filter.process(filter_delta)
 
         # Once <tool_call> is detected, buffer everything until it closes.
         # Do NOT emit content deltas here, because if tool calls are found

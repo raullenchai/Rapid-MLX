@@ -52,6 +52,7 @@ class Engine(BaseEngine):
     [
         CALL,
         "Private thought.</think>" + CALL[:-12],
+        "Private thought.</think><tool_call>run_shell_command",
         "Private thought.</think>",
         "Private thought.</think>Done.",
         "Private thought.</think>Literal <arg_",
@@ -236,6 +237,7 @@ def test_glm_interrupted_name_requires_arguments():
     parser.reset()
     delta = parser.extract_tool_calls_streaming("", raw, raw, request={"tools": TOOLS})
     assert not delta or not delta.get("tool_calls")
+    assert not delta or not delta.get("content")
     assert parser.flush_held_content(raw) == ""
 
 
@@ -336,3 +338,59 @@ def test_no_tools_final_cleanup_preserves_complete_tool_example():
         assert _clean_final_content_tool_envelope(text, {"tools": []}) == text
     finally:
         reset_config()
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("<tool_call>run_shell_command", ""),
+        ("<tool_call>", ""),
+        ("I will call <tool_call>run_shell_command", "I will call "),
+        ("Use <tool_call>", "Use <tool_call>"),
+    ],
+)
+def test_glm_incomplete_header_flush(raw, expected):
+    parser = Glm47ToolParser()
+    assert parser.extract_tool_calls(raw, {"tools": TOOLS}).content == expected
+    for split in range(1, len(raw)):
+        parser.reset()
+        first = parser.extract_tool_calls_streaming(
+            "", raw[:split], raw[:split], request={"tools": TOOLS}
+        )
+        last = parser.extract_tool_calls_streaming(
+            raw[:split], raw, raw[split:], request={"tools": TOOLS}
+        )
+        content = "".join(m.get("content", "") for m in (first, last) if m)
+        assert content + parser.flush_held_content(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [
+            "<think>private",
+            "</think>",
+            "<arg_key>x</arg_key><arg_value>1</arg_value></tool_call>",
+        ],
+        [
+            "<think>private</thi",
+            "nk><arg_key>x</arg_key><arg_value>1</arg_value></tool_call>",
+        ],
+        [
+            "<think>private</think><arg_key>x</arg_key><arg_value>1</arg_value></tool_call>"
+        ],
+    ],
+)
+def test_glm_reasoning_does_not_consume_leading_orphan_state(parts):
+    parser = Glm47ToolParser()
+    previous = ""
+    visible = []
+    for part in parts:
+        current = previous + part
+        message = parser.extract_tool_calls_streaming(
+            previous, current, part, request={"tools": TOOLS}
+        )
+        if message:
+            visible.append(message.get("content", ""))
+        previous = current
+    assert "".join(visible) + parser.flush_held_content(previous) == ""
