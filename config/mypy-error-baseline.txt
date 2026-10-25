@@ -21,7 +21,7 @@ rapid_mlx/api/tool_grammar.py 1
 rapid_mlx/api/utils.py 5
 rapid_mlx/audio/processor.py 4
 rapid_mlx/audio/stt.py 10
-rapid_mlx/audio/tts.py 7
+rapid_mlx/audio/tts.py 5
 rapid_mlx/bench/_server.py 1
 rapid_mlx/bench/pflash_replication.py 1
 rapid_mlx/bench/tier_runner.py 2

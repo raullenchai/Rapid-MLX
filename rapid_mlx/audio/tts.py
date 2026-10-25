@@ -1051,8 +1051,11 @@ class TTSEngine:
         results = self.model.generate(**gen_kwargs)
         if self._model_family != "kokoro":
             return results
-        from mlx_audio.tts.models.kokoro import pipeline
-
+        try:
+            from mlx_audio.tts.models.kokoro import pipeline
+        except ImportError:
+            # Only the real Kokoro backend fetches voices from the Hub.
+            return results
         return _first_result_scoped(results, pipeline)
 
     def stream_generate(
