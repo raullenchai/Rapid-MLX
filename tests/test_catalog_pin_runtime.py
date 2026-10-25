@@ -291,3 +291,49 @@ def test_kokoro_scope_covers_only_first_result(monkeypatch):
     tts._SNAPSHOT_DOWNLOAD_LOCK.release()
     assert list(stream) == [2]
     assert seen == [model_downloads.snapshot_download, original]
+
+
+def test_scoped_download_removes_attribute_it_added():
+    import types
+
+    from rapid_mlx.audio import tts
+
+    module = types.SimpleNamespace()
+    assert list(tts._first_result_scoped(iter(()), module)) == []
+    assert not hasattr(module, "snapshot_download")
+
+
+def test_kokoro_generate_results_scopes_backend_pipeline(monkeypatch):
+    import sys
+    import types
+
+    from rapid_mlx import model_downloads
+    from rapid_mlx.audio import tts
+
+    original = object()
+    pipeline = types.ModuleType("mlx_audio.tts.models.kokoro.pipeline")
+    pipeline.snapshot_download = original
+    kokoro = types.ModuleType("mlx_audio.tts.models.kokoro")
+    kokoro.pipeline = pipeline
+    for name, module in {
+        "mlx_audio": types.ModuleType("mlx_audio"),
+        "mlx_audio.tts": types.ModuleType("mlx_audio.tts"),
+        "mlx_audio.tts.models": types.ModuleType("mlx_audio.tts.models"),
+        "mlx_audio.tts.models.kokoro": kokoro,
+        "mlx_audio.tts.models.kokoro.pipeline": pipeline,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    seen = []
+
+    class Model:
+        def generate(self, **_kwargs):
+            seen.append(pipeline.snapshot_download)
+            yield "chunk"
+
+    engine = tts.TTSEngine.__new__(tts.TTSEngine)
+    engine.model = Model()
+    engine._model_family = "kokoro"
+    assert list(engine._generate_results({})) == ["chunk"]
+    assert seen == [model_downloads.snapshot_download]
+    assert pipeline.snapshot_download is original
