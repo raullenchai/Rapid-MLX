@@ -637,3 +637,18 @@ def test_declared_modules_survives_malformed_requirement(monkeypatch):
         lambda _name: ["mlx>=0.30; sys_platform ==", "numpy>=1"],
     )
     assert repair.declared_modules(active_only=True) == {"mlx", "numpy"}
+
+
+def test_verification_argv_never_interpolates_unsafe_names():
+    argv = repair._verification_argv("bad name; rm", "x")
+    assert argv[-1] == "bad name; rm"
+    assert "importlib.import_module" in argv[2]
+    assert repair._verification_argv("pkg.mod", "Name")[2] == "from pkg.mod import Name"
+    assert repair._verification_argv("pkg", "bad name")[2] == "import pkg"
+
+
+def test_unreadable_prompt_is_no_answer(environment, monkeypatch):
+    stdin(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "readline", Mock(side_effect=OSError()))
+    assert not repair.recover()
+    assert environment == ["no_answer"]
