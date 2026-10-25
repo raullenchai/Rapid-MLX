@@ -33,11 +33,14 @@ class Glm47ContentFilter:
     _HEADER = re.compile(r"<tool_call>\s*[\w.:-]*\s*")
 
     def __init__(self):
+        self.enabled = True
         self._buffer = ""
         self._in_wire = False
         self._at_start = True
 
     def process(self, delta: str) -> str:
+        if not self.enabled:
+            return delta
         self._buffer += delta
         visible = []
         while self._buffer:
@@ -214,6 +217,7 @@ class Glm47ToolParser(ToolParser):
             )
         else:
             content_filter = Glm47ContentFilter()
+            content_filter.enabled = bool(request and request.get("tools"))
             content = content_filter.process(cleaned_text) + content_filter.flush()
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=content
@@ -236,6 +240,7 @@ class Glm47ToolParser(ToolParser):
         # the preceding chunk cannot survive after that envelope is consumed.
         if not hasattr(self, "_content_filter"):
             self.reset()
+        self._content_filter.enabled = bool(request and request.get("tools"))
         filtered_delta = self._content_filter.process(delta_text)
 
         # Skip thinking content in streaming

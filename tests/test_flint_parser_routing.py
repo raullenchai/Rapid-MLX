@@ -248,7 +248,9 @@ def test_glm_stream_flush(raw, expected):
     parser.reset()
     chunks = []
     for i, char in enumerate(raw):
-        message = parser.extract_tool_calls_streaming(raw[:i], raw[: i + 1], char)
+        message = parser.extract_tool_calls_streaming(
+            raw[:i], raw[: i + 1], char, request={"tools": TOOLS}
+        )
         if message:
             chunks.append(message.get("content", ""))
     chunks.append(parser.flush_held_content(raw))
@@ -295,3 +297,42 @@ def test_glm_literal_examples_survive_buffered_and_streamed(text):
         ]
         visible = "".join(m.get("content", "") for m in messages if m)
         assert visible + parser.flush_held_content(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<arg_key>x",
+        "<arg_key>name</arg_key><arg_value>value</arg_value>",
+        "Use <tool_call> as the opening marker.",
+    ],
+)
+def test_glm_without_tools_preserves_markup(text):
+    from rapid_mlx.service.helpers import _clean_final_content_tool_envelope
+
+    cfg = reset_config()
+    cfg.tool_call_parser = "glm47"
+    try:
+        assert _clean_final_content_tool_envelope(text, {"tools": []}) == text
+        parser = Glm47ToolParser()
+        assert parser.extract_tool_calls(text).content == text
+        messages = []
+        for i, char in enumerate(text):
+            message = parser.extract_tool_calls_streaming(text[:i], text[: i + 1], char)
+            if message:
+                messages.append(message.get("content", ""))
+        assert "".join(messages) + parser.flush_held_content(text) == text
+    finally:
+        reset_config()
+
+
+def test_no_tools_final_cleanup_preserves_complete_tool_example():
+    from rapid_mlx.service.helpers import _clean_final_content_tool_envelope
+
+    cfg = reset_config()
+    cfg.tool_call_parser = "glm47"
+    text = "<tool_call>name</tool_call>"
+    try:
+        assert _clean_final_content_tool_envelope(text, {"tools": []}) == text
+    finally:
+        reset_config()

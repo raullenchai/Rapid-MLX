@@ -3583,7 +3583,12 @@ def _clean_final_content_tool_envelope(
         return None
     # Run GLM cleanup after reasoning extraction, when leading orphan arguments
     # have structural context. Do not strip argument examples in global prose.
-    if get_config().tool_call_parser in ("glm47", "glm4"):
+    request_dict = request.model_dump() if hasattr(request, "model_dump") else request
+    if (
+        get_config().tool_call_parser in ("glm47", "glm4")
+        and request_dict
+        and request_dict.get("tools")
+    ):
         from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
 
         content_filter = Glm47ContentFilter()
