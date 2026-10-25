@@ -21,7 +21,6 @@ from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x
 from ..runtime.cache import save_prefix_cache_to_disk
 from ..service.helpers import (
     _TOOL_USE_SYSTEM_SUFFIX,
-    _append_tool_use_suffix,
     enforce_context_length,
     enforce_context_length_for_messages,
 )
@@ -126,9 +125,7 @@ def _render_inputs(
     if body.tools and getattr(cfg, "tool_call_parser", None):
         for message in messages:
             if message["role"] == "system":
-                message["content"] = _append_tool_use_suffix(
-                    message["content"], _TOOL_USE_SYSTEM_SUFFIX
-                )
+                # Match chat auto mode: preserve the client's system verbatim.
                 break
         else:
             messages.insert(

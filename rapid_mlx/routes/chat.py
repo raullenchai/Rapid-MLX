@@ -5022,7 +5022,13 @@ async def _create_chat_completion_impl(
             == "system"
             for m in messages
         )
-        if has_system:
+        # Auto mode offers tools without overriding client instructions (#5234).
+        # The template owns tool placement; our default behavior prompt is only
+        # for requests without a system message. Explicit forced choices retain
+        # their instruction because the caller requested that constraint.
+        if has_system and _inject_suffix == _TOOL_USE_SYSTEM_SUFFIX:
+            _inject_suffix = None
+        elif has_system:
             for i, m in enumerate(messages):
                 role = (
                     m.get("role") if isinstance(m, dict) else getattr(m, "role", None)

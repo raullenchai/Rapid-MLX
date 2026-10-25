@@ -289,7 +289,7 @@ def test_prefill_matches_chat_tool_prompt_and_schema(monkeypatch):
         ],
     )
     messages, tools, thinking = api._render_inputs(body)
-    assert messages[0]["content"] == "agent instructions" + _TOOL_USE_SYSTEM_SUFFIX
+    assert messages[0]["content"] == "agent instructions"
     assert body.messages[0]["content"] == "agent instructions"
     assert tools == api.convert_tools_for_template(body.tools)
     assert thinking is False

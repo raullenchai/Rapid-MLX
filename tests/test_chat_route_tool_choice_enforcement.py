@@ -1301,9 +1301,8 @@ def _system_content(messages):
 
 def test_list_of_blocks_system_content_with_tools_returns_200_not_500():
     """#1142 core regression: a system message with list-of-blocks content
-    plus a tools array must NOT 500. Pre-fix the suffix injection did
-    ``list + str`` → TypeError → 500; post-fix the suffix is appended as a
-    trailing text block and the request succeeds (200)."""
+    plus a tools array must NOT 500. Auto mode preserves the blocks
+    verbatim instead of appending behavior instructions (#5234)."""
     engine = _MLLMToolCallingEngine()
     client = _make_client(engine)
     resp = client.post(
@@ -1325,18 +1324,8 @@ def test_list_of_blocks_system_content_with_tools_returns_200_not_500():
     )
     assert resp.status_code == 200, resp.text
 
-    # The suffix must land as an appended trailing text block, leaving the
-    # original block intact and the content shape a list (never a str+list
-    # concatenation, which is what crashed).
     content = _system_content(engine.last_messages)
-    assert isinstance(content, list), (
-        f"expected list-of-blocks content to stay a list, got {type(content)}"
-    )
-    assert content[0]["text"] == "You are a helpful assistant."
-    joined = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
-    assert "you MUST use the appropriate tool" in joined, (
-        f"tool-use suffix not appended; content={content!r}"
-    )
+    assert content == [{"type": "text", "text": "You are a helpful assistant."}]
 
 
 def test_list_of_blocks_system_content_required_choice_returns_200():
@@ -1370,9 +1359,8 @@ def test_list_of_blocks_system_content_required_choice_returns_200():
     )
 
 
-def test_plain_str_system_content_still_appends_suffix_inline():
-    """Regression guard: the ``str`` fast path must be unchanged — the
-    suffix is concatenated inline, content stays a plain ``str``."""
+def test_plain_str_system_content_is_preserved_in_auto_mode():
+    """Auto tool choice must not append conflicting behavior instructions."""
     engine = _MLLMToolCallingEngine()
     client = _make_client(engine)
     resp = client.post(
@@ -1390,8 +1378,7 @@ def test_plain_str_system_content_still_appends_suffix_inline():
     assert resp.status_code == 200, resp.text
     content = _system_content(engine.last_messages)
     assert isinstance(content, str)
-    assert content.startswith("You are a helpful assistant.")
-    assert "you MUST use the appropriate tool" in content
+    assert content == "You are a helpful assistant."
 
 
 def test_append_tool_use_suffix_handles_all_content_shapes():
