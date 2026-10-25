@@ -4324,6 +4324,8 @@ async def _stream_responses(
                     _transition_reasoning_to_content(final_msg.content)
                 )
                 if content:
+                    # Flush below, after the sanitizer's final tail has also
+                    # passed through this same filter, preserving split markers.
                     filtered = tool_filter.process(content)
                     if filtered:
                         async for ev in _emit_text_delta(filtered):

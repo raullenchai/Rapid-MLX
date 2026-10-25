@@ -171,6 +171,15 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
         )
         if "<tool_call>" in raw and raw.endswith("</tool_call>"):
             assert calls
+            functions = (
+                [call["function"] for call in calls] if surface == "chat" else calls
+            )
+            assert [f["name"] for f in functions if f.get("name")] == [
+                "run_shell_command"
+            ]
+            assert json.loads("".join(f.get("arguments", "") for f in functions)) == {
+                "command": "pwd"
+            }
         elif raw.endswith("Done."):
             assert visible == "Done."
         elif raw.endswith("Literal <arg_"):
