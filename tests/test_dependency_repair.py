@@ -411,6 +411,14 @@ def test_doctor_plans_and_verifies_dependency_repair(environment, monkeypatch):
             else Mock(return_value=result)
         )
         assert apply_repairs(actions, run=run)[0].status == "failed"
+    # Installer succeeds but the fresh-process verifier still fails.
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 1, "", ""),
+        ]
+    )
+    assert apply_repairs(actions, run=run)[0].status == "failed"
     monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
     assert plan_repairs(report) == []
 
