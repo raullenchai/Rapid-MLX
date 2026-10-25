@@ -147,3 +147,22 @@ Pre-tap it once, then retry:
 brew tap homebrew/core --force   # ~1.3 GB, one-time
 brew install rapid-mlx
 ```
+
+### Recovering a damaged Python environment
+
+If startup cannot import a required dependency, Rapid-MLX prints one repair
+command for the active installation: uv tool, pipx, Homebrew, or the running
+Python environment. In a terminal, enter `y` at `Run this repair now? [y/N]`
+to run it. Enter or any other answer declines. After the repair, Rapid-MLX
+verifies the failed import in a fresh Python process and retries startup once.
+Scripts receive the command and a nonzero exit status without an installer
+being run automatically.
+
+`rapid-mlx doctor` also checks declared required modules. Use
+`rapid-mlx doctor --fix` to review and apply a dependency repair, or
+`rapid-mlx doctor --fix --dry-run` to inspect it. Desktop's bundled Python is
+never modified: update or reinstall the app instead.
+
+This recovery needs Python to start. If the executable or the launcher's
+interpreter has been deleted, reinstall Rapid-MLX with the installation method
+used above to restore the launcher first.

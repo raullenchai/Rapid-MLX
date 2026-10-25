@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -35,6 +36,20 @@ class RepairResult:
 def plan_repairs(report: Report) -> list[RepairAction]:
     """Return only repairs with a bounded action and objective verifier."""
     checks = {check.id: check for check in report.all_checks()}
+    dependencies = checks.get("packages.required.dependencies")
+    if dependencies is not None and dependencies.status is CheckStatus.FAIL:
+        from rapid_mlx.dependency_repair import repair_argv
+
+        command = repair_argv()
+        if command is not None:
+            return [
+                RepairAction(
+                    "repair.dependencies",
+                    "restore required Python dependencies",
+                    tuple(command),
+                    requires_root=command[0] == "sudo",
+                )
+            ]
     registration = checks.get("service.registration")
     process = checks.get("service.process")
     liveness = checks.get("service.endpoint.liveness")
@@ -92,6 +107,42 @@ def apply_repairs(
                     summary=action.summary,
                     command=["sudo", *command],
                     detail="root is required; Doctor never invokes sudo automatically",
+                )
+            )
+            continue
+        if action.id == "repair.dependencies":
+            from rapid_mlx.dependency_repair import record_outcome
+
+            try:
+                completed = run(
+                    command, capture_output=True, text=True, timeout=600, check=False
+                )
+                verified = (
+                    completed.returncode == 0
+                    and run(
+                        [
+                            sys.executable,
+                            "-c",
+                            "from rapid_mlx.doctor.env_health import section_required_packages, CheckStatus; "
+                            "raise SystemExit(any(c.status is CheckStatus.FAIL "
+                            "for c in section_required_packages().checks))",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+            except (OSError, subprocess.SubprocessError):
+                verified = False
+            record_outcome("repaired" if verified else "failed")
+            results.append(
+                RepairResult(
+                    action.id,
+                    "verified" if verified else "failed",
+                    action.summary,
+                    command,
                 )
             )
             continue

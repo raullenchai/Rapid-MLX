@@ -617,9 +617,9 @@ Changelog = "https://rapidmlx.com/changelog/"
 Issues = "https://github.com/raullenchai/Rapid-MLX/issues"
 
 [project.scripts]
-rapid-mlx = "rapid_mlx.cli:cli_entrypoint"
+rapid-mlx = "rapid_mlx.dependency_repair:cli_entrypoint"
 # First-class short command for accessibility and reduced typing (#1279).
-rmlx = "rapid_mlx.cli:cli_entrypoint"
+rmlx = "rapid_mlx.dependency_repair:cli_entrypoint"
 rapid-mlx-chat = "rapid_mlx.gradio_app:main"
 rapid-mlx-bench = "rapid_mlx.benchmark:main"
 rapid-mlx-convert-clm-head = "rapid_mlx.system_one.convert_clm:main"

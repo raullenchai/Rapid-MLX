@@ -472,6 +472,10 @@ def doctor_command(args: Any) -> None:
                 )
                 assume_yes = sys.stdin.readline().strip().lower() in {"y", "yes"}
                 if not assume_yes:
+                    if any(action.id == "repair.dependencies" for action in actions):
+                        from rapid_mlx.dependency_repair import record_outcome
+
+                        record_outcome("declined")
                     report.repairs = [
                         {
                             "id": action.id,

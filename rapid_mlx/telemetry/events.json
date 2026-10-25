@@ -305,8 +305,8 @@
     },
     "extra_recovery": {
       "_about": [
-        "Closed outcome of the missing-extra recovery decision, recorded only",
-        "after the prompt result is known and before any installer or exec.",
+        "Closed outcome of optional-runtime or required-dependency recovery.",
+        "Required dependencies record repaired only after fresh-process verification.",
         "declined means an explicit no; no_answer covers timeout, EOF, or",
         "read failure; interrupted preserves Ctrl-C after the event is emitted.",
         "Contains no command, path, package version, or other free text."
@@ -314,7 +314,8 @@
       "values": [
         "accepted", "declined", "no_answer", "interrupted",
         "non_interactive", "assume_yes",
-        "no_installer", "managed_runtime", "broken_runtime"
+        "no_installer", "managed_runtime", "broken_runtime",
+        "repaired", "command_shown", "failed"
       ]
     },
     "agent": {
@@ -698,7 +699,7 @@
         "free-form string (forbidden by sec 1.5) or an invented enum. It lands",
         "when a real allow-list exists; error_class already separates",
         "unsupported_architecture from the other failure modes. For",
-        "missing_extra only, extra_recovery records the closed recovery",
+        "extra_recovery records the closed dependency recovery",
         "decision after prompting and before any installer runs.",
         "failure_stage names the closed startup boundary the failure crossed",
         "(same enum as server_start_state); it is emitted only when the caller",

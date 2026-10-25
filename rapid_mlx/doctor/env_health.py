@@ -2230,6 +2230,25 @@ def section_required_packages() -> Section:
                     "runtime to restore compatibility checks"
                 ),
             )
+    if not _runtime_uses_context(runtime):
+        from rapid_mlx.dependency_repair import missing_modules, repair_argv
+
+        missing = missing_modules()
+        if missing or any(check.status is CheckStatus.FAIL for check in s.checks):
+            command = repair_argv()
+            hint = (
+                shlex.join(command)
+                if command
+                else "Update or reinstall Rapid-MLX Desktop"
+            )
+            s.add(
+                "Required Python dependencies are missing or broken: "
+                + ", ".join(missing)
+                + "; repair with: "
+                + hint,
+                CheckStatus.FAIL,
+                check_id="packages.required.dependencies",
+            )
     return s
 
 

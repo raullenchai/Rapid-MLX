@@ -814,7 +814,8 @@ def test_agent_integrations_warn_for_malformed_or_inactive_config(
 # ---------------------------------------------------------------------------
 
 
-def test_required_packages_all_present_marks_ok():
+def test_required_packages_all_present_marks_ok(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.dependency_repair.missing_modules", lambda: [])
     """When every required dist is installed, every row is OK."""
     supported = {
         "mlx": "0.32.5",
