@@ -1318,7 +1318,7 @@ def _cmd_info(args: argparse.Namespace) -> None:
     """Show model info and memory estimate."""
     from pathlib import Path
 
-    from huggingface_hub import snapshot_download
+    from rapid_mlx.model_downloads import snapshot_download
 
     model_dir = Path(args.model)
     if not model_dir.exists():

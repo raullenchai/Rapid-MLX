@@ -652,10 +652,12 @@ class TTSEngine:
         if self._model_family == "f5":
             from f5_tts_mlx import utils as f5_utils
             from f5_tts_mlx.cfm import F5TTS
+            from vocos_mlx import model as vocos_model
 
             # This loader has no revision argument and always resolves through
             # its imported Hub helper. Bind that helper to the shared pin gate.
             f5_utils.snapshot_download = model_downloads.snapshot_download
+            vocos_model.snapshot_download = model_downloads.snapshot_download
 
             self.model = F5TTS.from_pretrained(self.model_name)
             self._loaded = True
@@ -675,6 +677,13 @@ class TTSEngine:
                 from mlx_audio.tts.models.kokoro import pipeline
 
                 pipeline.snapshot_download = model_downloads.snapshot_download
+            if self._model_family == "chatterbox":
+                from mlx_audio.tts.models.chatterbox import chatterbox, tokenizer
+
+                tokenizer.hf_hub_download = model_downloads.hf_hub_download
+                chatterbox.Model.post_load_hook = staticmethod(
+                    model_downloads.bind_hub_downloads(chatterbox.Model.post_load_hook)
+                )
             model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
             legacy_vae = model_path / "audiovae.pth"
             if legacy_vae.exists() or legacy_vae.is_symlink():

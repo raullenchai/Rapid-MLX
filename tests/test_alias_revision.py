@@ -35,6 +35,15 @@ def pinned_name(request, monkeypatch, tmp_path):
     return request.param
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_checkpoint_integrity(monkeypatch):
+    # Pin-propagation fixtures use artificial Hub paths; byte verification is
+    # covered independently with real files in test_verified_runtime_downloads.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
+
+
 @pytest.mark.parametrize(
     "extra,expected", [({}, None), ({"revision": None}, None), ({"revision": PIN}, PIN)]
 )
@@ -205,7 +214,6 @@ def test_shared_download_wrappers_enforce_catalog_pin(
         (pinned_name, {}, PIN),
         (pinned_name, {"revision": None}, PIN),
         (pinned_name, {"revision": PIN}, PIN),
-        (UNPINNED, {}, None),
         (UNPINNED, {"revision": OTHER}, OTHER),
     ]:
         assert fn(repo, *rest, **kwargs) == "/snapshot"
@@ -214,7 +222,11 @@ def test_shared_download_wrappers_enforce_catalog_pin(
         assert actual.get("revision") == expected
         assert actual.get("local_files_only", False) == disabled
 
+    from rapid_mlx.model_integrity import ModelIntegrityError
+
     download.reset_mock()
+    with pytest.raises(ModelIntegrityError, match="immutable revision"):
+        fn(UNPINNED, *rest)
     with pytest.raises(ValueError, match=rf"{pinned_name}.*{PIN}"):
         fn(pinned_name, *rest, revision=OTHER)
     download.assert_not_called()
@@ -300,9 +312,12 @@ def test_ensure_download_threads_pin_and_preserves_main(
     main_ref = Mock()
     monkeypatch.setattr(gate, "pin_main_ref", main_ref)
     cli._ensure_model_downloaded(repo)
-    assert mirror.call_args.kwargs["revision"] == pin
+    if pin:
+        assert mirror.call_args.kwargs["revision"] == pin
+    else:
+        mirror.assert_not_called()
     assert disk.call_args.kwargs.get("revision_override") == pin
-    if not mirror_ok:
+    if not mirror_ok or pin is None:
         assert info.call_args.kwargs.get("revision") == pin
         assert hf.call_args.kwargs["revision"] == (pin or OTHER)
     if pin:

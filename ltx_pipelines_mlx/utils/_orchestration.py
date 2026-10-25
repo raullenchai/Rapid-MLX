@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import mlx.core as mx
 import numpy as np
-from huggingface_hub import snapshot_download
+from rapid_mlx.model_downloads import snapshot_download
 
 from ltx_core_mlx.model.transformer.model import LTXModel, LTXModelConfig
 from ltx_core_mlx.utils.memory import aggressive_cleanup

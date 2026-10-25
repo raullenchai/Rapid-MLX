@@ -2924,7 +2924,9 @@ def _ensure_model_downloaded(
         # to the normal HuggingFace download below.
         mirror_out: dict[str, object] = {}
         try:
-            mirror_ok = _try_mirror_prefetch(
+            # Uncataloged user models resolve a commit in the bounded metadata
+            # step below; never transfer an implicit snapshot from mutable main.
+            mirror_ok = bool(pinned_revision) and _try_mirror_prefetch(
                 model_name,
                 on_pull_start=spinner.stop,
                 out=mirror_out,
@@ -2942,6 +2944,16 @@ def _ensure_model_downloaded(
                 )
                 raise
     if mirror_ok:
+        from rapid_mlx.model_aliases import subfolder_allow_patterns
+        from rapid_mlx.model_integrity import verify_snapshot
+
+        verify_snapshot(
+            model_name,
+            _hf_cache_root(model_name) / "snapshots" / pinned_revision,
+            revision=pinned_revision,
+            allow_patterns=subfolder_allow_patterns(model_name),
+            local_files_only=_offline_hub_mode_active(),
+        )
         if pinned_image_revision is not None:
             # Same ref transaction as the pinned HF download below: the
             # warm-cache gate reads ``refs/main``, which a SHA-addressed
@@ -2958,7 +2970,7 @@ def _ensure_model_downloaded(
         return
 
     try:
-        from huggingface_hub import model_info, snapshot_download
+        from huggingface_hub import model_info
 
         from rapid_mlx._download_gate import (
             _HF_RESOLVE_TIMEOUT_SECONDS,
@@ -2966,6 +2978,7 @@ def _ensure_model_downloaded(
             pin_main_ref,
         )
         from rapid_mlx.model_aliases import subfolder_allow_patterns
+        from rapid_mlx.model_downloads import snapshot_download
 
         # Repos that ship one folder per quantization: fetch and measure
         # ONLY this alias's folder. Without the filter a 1.6 GB 4-bit pull

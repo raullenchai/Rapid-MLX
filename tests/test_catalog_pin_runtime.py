@@ -13,6 +13,15 @@ from rapid_mlx import model_aliases, model_downloads
 from rapid_mlx.audio import registry
 
 
+@pytest.fixture(autouse=True)
+def _mock_integrity_for_synthetic_hub_paths(monkeypatch):
+    # This suite tests pin propagation, not file bytes. Real integrity is covered
+    # by test_verified_runtime_downloads and test_model_integrity.
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
+
+
 def test_all_catalog_aliases_resolve_exact_revision():
     root = Path(__file__).resolve().parents[1]
     repos = {}

@@ -23,6 +23,19 @@ _REVISION = "a" * 40
 def _clean_switch(monkeypatch):
     for name in (model_downloads.ENV_VAR, "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(name, raising=False)
+    # Policy tests use synthetic checkpoints; integrity is exercised separately
+    # with real hashed fixture files in test_verified_runtime_downloads.
+    from rapid_mlx import model_aliases
+
+    original = model_aliases.resolve_revision
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_revision",
+        lambda name: _REVISION if name.startswith("acme/") else original(name),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     model_downloads.configure(False)
     yield
     model_downloads.configure(False)
@@ -192,7 +205,11 @@ def test_policy_snapshot_resolver_forces_local_only_and_fails_closed(monkeypatch
     assert calls == [
         (
             "acme/sidecar",
-            {"allow_patterns": ["*.json"], "local_files_only": True},
+            {
+                "allow_patterns": ["*.json"],
+                "local_files_only": True,
+                "revision": _REVISION,
+            },
         )
     ]
 
@@ -208,7 +225,9 @@ def test_policy_file_resolver_forces_local_only_and_fails_closed(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
     with pytest.raises(ModelDownloadsDisabledError):
         model_downloads.hf_hub_download("acme/model", "config.json")
-    assert calls == [("acme/model", "config.json", {"local_files_only": True})]
+    assert calls == [
+        ("acme/model", "config.json", {"local_files_only": True, "revision": _REVISION})
+    ]
 
 
 def test_policy_resolvers_preserve_default_online_behavior(monkeypatch):
@@ -226,13 +245,13 @@ def test_policy_resolvers_preserve_default_online_behavior(monkeypatch):
         ),
     )
 
-    assert model_downloads.snapshot_download("acme/model", revision="main") == (
+    assert model_downloads.snapshot_download("acme/model", revision=_REVISION) == (
         "/snapshot"
     )
     assert model_downloads.hf_hub_download("acme/model", "config.json") == "/file"
     assert calls == [
-        ("acme/model", {"revision": "main"}),
-        ("acme/model", "config.json", {}),
+        ("acme/model", {"revision": _REVISION}),
+        ("acme/model", "config.json", {"revision": _REVISION}),
     ]
 
 
@@ -240,11 +259,11 @@ def test_policy_resolvers_allow_complete_local_cache(monkeypatch):
     model_downloads.configure(True)
 
     def snapshot(_repo_id, **kwargs):
-        assert kwargs == {"local_files_only": True}
+        assert kwargs == {"local_files_only": True, "revision": _REVISION}
         return "/snapshot"
 
     def file(_repo_id, _filename, **kwargs):
-        assert kwargs == {"local_files_only": True}
+        assert kwargs == {"local_files_only": True, "revision": _REVISION}
         return "/file"
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
@@ -259,7 +278,7 @@ def test_ddtree_draft_cache_miss_cannot_download(monkeypatch):
     model_downloads.configure(True)
 
     def missing(_repo_id, **kwargs):
-        assert kwargs == {"local_files_only": True}
+        assert kwargs == {"local_files_only": True, "revision": _REVISION}
         raise LocalEntryNotFoundError("not cached")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
@@ -290,6 +309,7 @@ def test_indextts_partial_cache_cannot_retry_online(monkeypatch):
                     "*.safetensors",
                     "*.safetensors.index.json",
                 ],
+                "revision": _REVISION,
                 "local_files_only": True,
             },
         )
@@ -336,16 +356,11 @@ def test_server_reachable_hub_boundaries_use_the_policy_resolvers():
         "model_downloads.py": {"snapshot_download", "hf_hub_download"},
         # Mirror internals are reached through pinned_snapshot_download's policy
         # guard or the explicit pull command.
-        "_mirror.py": {"snapshot_download", "hf_hub_download"},
+        "_mirror.py": {"hf_hub_download"},
         # Explicit provisioning/import flows remain exempt by contract.
         "cli.py": {"snapshot_download"},
         "byom/imports.py": {"snapshot_download"},
         "byom/preflight.py": {"hf_hub_download"},
-        # Music performs a per-file cache proof before this call.
-        "audio/music.py": {"hf_hub_download"},
-        # The server backend resolves the pinned release to a local path before
-        # entering the integrity-pinned vendored loader.
-        "clef/vendor/joint_schema_model.py": {"snapshot_download"},
     }
 
 
@@ -504,11 +519,24 @@ def test_whisper_processor_patch_forces_cache_only(monkeypatch):
     monkeypatch.setitem(
         sys.modules, "transformers", SimpleNamespace(WhisperProcessor=Processor)
     )
+
+    def snapshot(repo, **kwargs):
+        assert repo == "openai/whisper-large-v3-turbo"
+        assert kwargs["local_files_only"] is True
+        assert len(kwargs["revision"]) == 40
+        return "/verified-processor"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
     engine = STTEngine("mlx-community/whisper-large-v3-turbo")
     engine.model = SimpleNamespace(_processor=None)
     engine._ensure_whisper_processor()
     assert engine.model._processor == "processor"
-    assert calls == [("openai/whisper-large-v3-turbo", {"local_files_only": True})]
+    assert calls == [
+        (
+            "/verified-processor",
+            {"local_files_only": True, "trust_remote_code": False},
+        )
+    ]
 
 
 def test_anthropic_download_policy_error_keeps_anthropic_envelope():

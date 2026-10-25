@@ -644,7 +644,7 @@ class ImageGenerationEngine:
     def _validate_hidream_prompt_tokens(self, prompt: str) -> None:
         """Reject token-dense prompts before constructing the 17 GB model."""
 
-        from .._download_gate import IMAGE_MODEL_REVISIONS, mflux_local_snapshot
+        from .._download_gate import mflux_local_snapshot
         from .hidream_runtime.runtime import MAX_PROMPT_TOKENS, _encode_prompt_ids
 
         processor = getattr(self._model, "processor", None)
@@ -653,11 +653,16 @@ class ImageGenerationEngine:
                 from transformers import AutoTokenizer
 
                 local = mflux_local_snapshot(self.model_name)
-                source = local or self.model_name
-                kwargs: dict[str, object] = {"trust_remote_code": False}
-                revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
-                if local is None and revision is not None:
-                    kwargs["revision"] = revision
+                from ..model_downloads import snapshot_download
+
+                source = local or snapshot_download(
+                    self.model_name,
+                    allow_patterns=["*.json", "*.model", "*.txt", "tokenizer/*"],
+                )
+                kwargs: dict[str, object] = {
+                    "trust_remote_code": False,
+                    "local_files_only": True,
+                }
                 try:
                     self._prompt_tokenizer = AutoTokenizer.from_pretrained(
                         source, **kwargs

@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -238,11 +237,7 @@ def test_ensure_weights_fetches_missing_and_returns_cache_paths(tmp_path, monkey
         src.write_bytes(b"tensors")
         return str(src)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=_dl),
-    )
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _dl)
 
     resolved = MusicEngine(dit="sm-music", decoder="same-s")._ensure_weights()
 
@@ -284,9 +279,7 @@ def test_ensure_weights_does_not_write_into_readonly_package_dir(tmp_path, monke
         src.write_bytes(b"real")
         return str(src)
 
-    monkeypatch.setitem(
-        sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=_dl)
-    )
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", _dl)
 
     # Make the package dir read-only — any attempt to symlink/copy a weight
     # into it would raise PermissionError.

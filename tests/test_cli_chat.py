@@ -1707,6 +1707,9 @@ def test_ensure_model_downloaded_pins_resolved_sha_and_records_main_ref(
     pins = []
     monkeypatch.setattr(gate, "pin_main_ref", lambda *a: pins.append(a))
 
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
     cli._ensure_model_downloaded("org/repo")
 
     assert downloads == [(("org/repo",), {"revision": sha})]

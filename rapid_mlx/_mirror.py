@@ -691,13 +691,13 @@ def pinned_snapshot_download(
     and the whole repository whenever the mirror path cannot complete, come
     from Hugging Face at exactly ``revision``. Returns the snapshot directory.
     """
-    from huggingface_hub import snapshot_download
-
     from . import model_downloads
+    from .model_downloads import snapshot_download
 
     if isinstance(allow_patterns, str):
         allow_patterns = [allow_patterns]
     kwargs: dict[str, Any] = {"revision": revision}
+    repo_id = model_downloads._download_identity(repo_id, kwargs)
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
     if model_downloads.disabled():
@@ -712,9 +712,11 @@ def pinned_snapshot_download(
         repo_id, revision=revision, allow_patterns=allow_patterns
     ):
         owner, _, name = repo_id.partition("/")
-        return str(
+        path = str(
             _hf_cache_root() / f"models--{owner}--{name}" / "snapshots" / revision
         )
+        model_downloads._verify(repo_id, path, kwargs)
+        return path
     from huggingface_hub.errors import OfflineModeIsEnabled
 
     try:

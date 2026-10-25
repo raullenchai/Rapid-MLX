@@ -123,7 +123,7 @@ class MusicEngine:
 
         if to_fetch:
             try:
-                from huggingface_hub import hf_hub_download
+                from rapid_mlx.model_downloads import hf_hub_download
             except ImportError as e:
                 raise RuntimeError(
                     "huggingface_hub is required to auto-download SA3 weights.\n"

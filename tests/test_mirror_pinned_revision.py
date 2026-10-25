@@ -304,6 +304,24 @@ def test_git_blob_oid_matches_git(tmp_path):
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _mock_wrapper_integrity(monkeypatch, request):
+    # Wrapper routing tests return synthetic paths; byte integrity has its own
+    # real-file tests. Lower-level mirror transport tests retain their hashes.
+    if request.node.name.startswith(
+        (
+            "test_pinned_snapshot_download",
+            "test_image_engine_cold_fetch",
+            "test_image_runtime_assets",
+            "test_wan_checkpoint",
+            "test_ensure_downloaded",
+        )
+    ):
+        monkeypatch.setattr(
+            "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+        )
+
+
 @pytest.mark.parametrize("patterns", [["a"], "a"])
 def test_pinned_snapshot_download_returns_the_mirror_snapshot(
     tmp_path, monkeypatch, patterns
@@ -361,9 +379,14 @@ def test_pinned_snapshot_download_never_mirrors_a_moving_revision(monkeypatch):
         "download_with_mirror_fallback",
         lambda *_a, **_k: pytest.fail("a branch name must not use the mirror"),
     )
-    with patch("huggingface_hub.snapshot_download", return_value="/snap") as snap:
-        assert _mirror.pinned_snapshot_download(REPO, "main") == "/snap"
-    assert snap.call_args.kwargs == {"revision": "main"}
+    from rapid_mlx.model_integrity import ModelIntegrityError
+
+    with (
+        patch("huggingface_hub.snapshot_download") as snap,
+        pytest.raises(ModelIntegrityError, match="immutable revision"),
+    ):
+        _mirror.pinned_snapshot_download(REPO, "main")
+    snap.assert_not_called()
 
 
 # --------------------------------------------------------------------------

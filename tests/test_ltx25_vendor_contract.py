@@ -16,6 +16,7 @@ The runtime is copied verbatim from a pinned upstream archive by
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import io
@@ -186,7 +187,7 @@ def test_vendored_provenance_licenses_and_digests() -> None:
         assert package in notice
         assert ltx25.LTX25_RUNTIME_COMMIT in notice
         assert vendor.LTX25_RUNTIME_SHA256 in notice
-        assert "unmodified" in notice
+        assert "pinned, verified download boundary" in notice
 
 
 def test_tree_digest_ignores_generated_metadata_and_caches(tmp_path: Path) -> None:
@@ -331,9 +332,12 @@ def test_update_rejects_unsafe_archive_paths(tmp_path: Path, monkeypatch) -> Non
 def test_vendor_script_is_self_contained() -> None:
     """The script must not import ``rapid_mlx`` (which pulls the MLX engine)."""
     source = VENDOR_SCRIPT.read_text(encoding="utf-8")
-    assert "import rapid_mlx" not in source
-    assert "from rapid_mlx" not in source
-    assert "from .video" not in source
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            assert not (node.module or "").startswith("rapid_mlx")
+            assert not node.level
+        elif isinstance(node, ast.Import):
+            assert all(not name.name.startswith("rapid_mlx") for name in node.names)
 
 
 def test_sidecar_build_keeps_the_vendored_provenance_sources() -> None:

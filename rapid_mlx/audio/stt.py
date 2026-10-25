@@ -756,10 +756,13 @@ class STTEngine:
         try:
             from .. import model_downloads
 
-            local_only = (
-                {"local_files_only": True} if model_downloads.disabled() else {}
+            processor_path = model_downloads.snapshot_download(
+                processor_source,
+                allow_patterns=["*.json", "*.txt", "*.model"],
             )
-            processor = WhisperProcessor.from_pretrained(processor_source, **local_only)
+            processor = WhisperProcessor.from_pretrained(
+                processor_path, local_files_only=True, trust_remote_code=False
+            )
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first
